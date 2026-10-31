@@ -167,8 +167,14 @@ fn revisions_carry_the_feedback() {
         revises: Some(&pending),
         ..submission(2)
     };
-    assert!(fit::submit(&config(), &request(&revision), &not_refused).is_err());
-    assert!(fit::submit(&config(), &request(&revision), &submission(2)).is_err());
+    assert_rejected(
+        fit::submit(&config(), &request(&revision), &not_refused),
+        "can't be revised: it was not refused",
+    );
+    assert_rejected(
+        fit::submit(&config(), &request(&revision), &submission(2)),
+        "(revises) does not exist",
+    );
 }
 
 #[test]
@@ -190,21 +196,33 @@ fn amendments_need_an_active_lease_from_the_same_session() {
         session_key: fp('Z'),
         ..ok.clone()
     };
-    assert!(fit::submit(&config(), &request(&amendment), &other_session).is_err());
+    assert_rejected(
+        fit::submit(&config(), &request(&amendment), &other_session),
+        "can't be amended from another session",
+    );
     let mut revoked = lease.clone();
     revoked.state = State::Revoked;
     let gone = Submission {
         amends: Some(&revoked),
         ..ok.clone()
     };
-    assert!(fit::submit(&config(), &request(&amendment), &gone).is_err());
+    assert_rejected(
+        fit::submit(&config(), &request(&amendment), &gone),
+        "can't be amended: its lease is not active",
+    );
     let expired = Submission {
         now: later(3 * 3600),
         ..ok.clone()
     };
-    assert!(fit::submit(&config(), &request(&amendment), &expired).is_err());
+    assert_rejected(
+        fit::submit(&config(), &request(&amendment), &expired),
+        "can't be amended: its lease is not active",
+    );
     let not_found = Submission { amends: None, ..ok };
-    assert!(fit::submit(&config(), &request(&amendment), &not_found).is_err());
+    assert_rejected(
+        fit::submit(&config(), &request(&amendment), &not_found),
+        "(amends) does not exist",
+    );
 }
 
 // The state machine.
@@ -294,7 +312,10 @@ fn activation() {
     let mut amendment = ticket.clone();
     amendment.text.amends = Some(ticket_id(77));
     let record = TicketRecord::pending(amendment.clone());
-    assert!(lease::activate(&config(), &record, amendment, approval(), 9, later(5)).is_err());
+    assert_eq!(
+        lease::activate(&config(), &record, amendment, approval(), 9, later(5)).unwrap_err(),
+        LifecycleError::ActivatingAmendment
+    );
 }
 
 #[test]
@@ -303,7 +324,13 @@ fn refusing() {
     let refused = lease::refuse(&record, "split this in two".to_owned()).unwrap();
     assert_eq!(refused.state, State::Refused);
     assert_eq!(refused.feedback.as_deref(), Some("split this in two"));
-    assert!(lease::refuse(&refused, "again".to_owned()).is_err());
+    assert_eq!(
+        lease::refuse(&refused, "again".to_owned()).unwrap_err(),
+        LifecycleError::Transition {
+            from: State::Refused,
+            to: State::Refused
+        }
+    );
 }
 
 #[test]
@@ -521,7 +548,7 @@ fn an_applied_amendment_replaces_the_scope() {
 
     // Not for another lease, nor an ended one, nor with another session key.
     let other = lease_of(fit::submit(&config(), &request(REQUEST), &submission(3)).unwrap());
-    assert!(
+    assert!(matches!(
         lease::apply_amendment(
             &config(),
             &other,
@@ -529,12 +556,12 @@ fn an_applied_amendment_replaces_the_scope() {
             amendment.clone(),
             approval(),
             later(700)
-        )
-        .is_err()
-    );
+        ),
+        Err(LifecycleError::AmendsAnotherLease { .. })
+    ));
     let mut revoked = lease.clone();
     revoked.state = State::Revoked;
-    assert!(
+    assert!(matches!(
         lease::apply_amendment(
             &config(),
             &revoked,
@@ -542,10 +569,10 @@ fn an_applied_amendment_replaces_the_scope() {
             amendment.clone(),
             approval(),
             later(700)
-        )
-        .is_err()
-    );
-    assert!(
+        ),
+        Err(LifecycleError::LeaseNotActive(_))
+    ));
+    assert!(matches!(
         lease::apply_amendment(
             &config(),
             &lease,
@@ -553,12 +580,12 @@ fn an_applied_amendment_replaces_the_scope() {
             amendment.clone(),
             approval(),
             later(2 * 3600)
-        )
-        .is_err()
-    );
+        ),
+        Err(LifecycleError::LeaseNotActive(_))
+    ));
     let mut other_key = amendment.clone();
     other_key.subject.session_key = fp('K');
-    assert!(
+    assert!(matches!(
         lease::apply_amendment(
             &config(),
             &lease,
@@ -566,11 +593,11 @@ fn an_applied_amendment_replaces_the_scope() {
             other_key,
             approval(),
             later(700)
-        )
-        .is_err()
-    );
+        ),
+        Err(LifecycleError::SessionKeyChanged)
+    ));
     // Applied once.
-    assert!(
+    assert!(matches!(
         lease::apply_amendment(
             &config(),
             &lease,
@@ -578,7 +605,22 @@ fn an_applied_amendment_replaces_the_scope() {
             amendment,
             approval(),
             later(700)
-        )
-        .is_err()
-    );
+        ),
+        Err(LifecycleError::Transition {
+            from: State::Applied,
+            to: State::Applied
+        })
+    ));
+}
+
+/// A submission rejected with a reason containing `expected`.
+fn assert_rejected(result: Result<writ_core::ticket::Ticket, fit::Rejection>, expected: &str) {
+    match result {
+        Ok(ticket) => panic!("accepted: {}", ticket.id),
+        Err(rejection) => assert!(
+            rejection.reasons.iter().any(|r| r.contains(expected)),
+            "{expected:?} not in {:?}",
+            rejection.reasons
+        ),
+    }
 }

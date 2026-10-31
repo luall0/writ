@@ -16,7 +16,7 @@ use writ_core::names::{CommitId, KeyFingerprint, RepoName, TicketId};
 use writ_core::policy::Denial;
 use writ_core::units::Timestamp;
 
-use crate::{Result, StoreError};
+use crate::Result;
 
 /// What happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -254,7 +254,7 @@ impl AuditLog {
             .as_ref()
             .is_some_and(|b| b.load(std::sync::atomic::Ordering::SeqCst))
         {
-            return Err(StoreError::Io(std::io::Error::other(
+            return Err(crate::StoreError::Io(std::io::Error::other(
                 "the audit log was broken by the test",
             )));
         }

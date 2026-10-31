@@ -107,7 +107,8 @@ impl Service {
         })
     }
 
-    /// Tells the approver a ticket waits. Off the request's thread; a failure is only logged.
+    /// Tells the approver a ticket waits: queued for the notification worker, so the request
+    /// never waits on the sink. A failure is only logged.
     fn notify_waiting(&self, ticket: &Ticket) {
         let kind = if ticket.text.amends.is_some() {
             "Amendment"
@@ -123,12 +124,10 @@ impl Service {
             priority: Priority::Default,
             tags: vec!["writ".to_owned(), "ticket".to_owned()],
         };
-        let notifier = Arc::clone(&self.notifier);
-        std::thread::spawn(move || {
-            if let Err(e) = notifier.notify(&notification) {
-                tracing::warn!(error = %e, "notification failed");
-            }
-        });
+        if let Ok(outbox) = self.notifications.lock() {
+            // The worker only stops with the service; a send can't fail before that.
+            let _ = outbox.send(notification);
+        }
     }
 
     /// Waits until the ticket is decided. Only the session that submitted it (same key) can

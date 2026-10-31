@@ -119,5 +119,8 @@ fn fake_attestor_facts_change_at_runtime_for_every_clone() {
     attestor.set_facts(chain_facts());
     assert_eq!(clone.attest(&unix()).unwrap(), chain_facts());
     attestor.set_failing();
-    assert!(clone.attest(&memory()).is_err());
+    assert!(matches!(
+        clone.attest(&memory()),
+        Err(PlatformError::Attestation(_))
+    ));
 }

@@ -388,7 +388,7 @@ impl KeystoreUnlock for FakeUnlock {
 /// record.
 #[derive(Debug, Clone, Default)]
 pub struct RecordingNotifier {
-    delivered: Arc<Mutex<Vec<Notification>>>,
+    delivered: Arc<(Mutex<Vec<Notification>>, std::sync::Condvar)>,
     failing: bool,
 }
 
@@ -407,7 +407,23 @@ impl RecordingNotifier {
 
     /// Everything delivered so far, oldest first.
     pub fn notifications(&self) -> Vec<Notification> {
-        lock(&self.delivered).clone()
+        lock(&self.delivered.0).clone()
+    }
+
+    /// Waits until `count` notifications were delivered (woken by each delivery, no polling)
+    /// and returns them. Panics after [`WAIT_LIMIT`]: a test fails, it never hangs.
+    pub fn wait_for(&self, count: usize) -> Vec<Notification> {
+        let (delivered, arrived) = &*self.delivered;
+        let guard = lock(delivered);
+        let (guard, timeout) = arrived
+            .wait_timeout_while(guard, WAIT_LIMIT, |d| d.len() < count)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            !timeout.timed_out(),
+            "{count} notification(s) expected, {} delivered",
+            guard.len()
+        );
+        guard.clone()
     }
 }
 
@@ -418,8 +434,40 @@ impl Notifier for RecordingNotifier {
                 "the recording notifier is set to fail".to_owned(),
             ));
         }
-        lock(&self.delivered).push(notification.neutralized());
+        let (delivered, arrived) = &*self.delivered;
+        lock(delivered).push(notification.neutralized());
+        arrived.notify_all();
         Ok(())
+    }
+}
+
+/// The longest any test helper waits for something that happens on another thread or in
+/// another process. Reaching it fails the test: a deadline bounds how long a test looks, it
+/// never decides what the test checks.
+pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Waits until `check` holds, checking again every few milliseconds, for things that give no
+/// signal (another process's socket, a file). Panics after [`WAIT_LIMIT`], naming `what`.
+pub fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + WAIT_LIMIT;
+    while !check() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// [`eventually`], in async code.
+pub async fn eventually_async(what: &str, mut check: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + WAIT_LIMIT;
+    while !check() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 }
 

@@ -578,10 +578,58 @@ fn as_lease(ticket: Ticket) -> Lease {
     }
 }
 
+/// Every failure proptest ever found, replayed first by every run.
+const REGRESSIONS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/properties.proptest-regressions"
+);
+
+/// The seed of the fixed pass: every run of `cargo test` checks the same inputs.
+const FIXED_SEED: u64 = 0x5752_4954_0000_0001;
+
+/// The seed: [`FIXED_SEED`], or `WRIT_PROPTEST_SEED` (`random` for a new one, or a number to
+/// replay a run). The seed is printed, so any failing run can be replayed exactly; a failing
+/// case is also saved in `properties.proptest-regressions` and checked first by every run.
+fn seed() -> u64 {
+    static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *SEED.get_or_init(pick_seed)
+}
+
+/// One seed per run, shared by every property.
+fn pick_seed() -> u64 {
+    let seed = match std::env::var("WRIT_PROPTEST_SEED").ok().as_deref() {
+        None | Some("") => FIXED_SEED,
+        Some("random") => {
+            use std::hash::{BuildHasher, Hasher};
+            // A seed from the OS's per-process random keys, printed below.
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_u128(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            );
+            hasher.finish()
+        }
+        Some(number) => number
+            .parse()
+            .expect("WRIT_PROPTEST_SEED is `random` or a number"),
+    };
+    eprintln!("proptest seed: {seed} (replay with WRIT_PROPTEST_SEED={seed})");
+    seed
+}
+
 fn proptest_config() -> ProptestConfig {
     ProptestConfig {
         cases: 1024,
         max_global_rejects: 1_000_000,
+        rng_algorithm: proptest::test_runner::RngAlgorithm::ChaCha,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(seed()),
+        // Named directly: from an integration test, proptest can't find the file by itself,
+        // and the saved failures would silently not be replayed.
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(REGRESSIONS),
+        )),
         ..ProptestConfig::default()
     }
 }
@@ -790,6 +838,15 @@ proptest! {
             prop_assert!(in_window <= limits.2);
         }
     }
+}
+
+#[test]
+fn the_saved_failures_are_found() {
+    let text = std::fs::read_to_string(REGRESSIONS).expect("the regressions file is readable");
+    assert!(
+        text.lines().any(|l| l.starts_with("cc ")),
+        "no saved case in {REGRESSIONS}"
+    );
 }
 
 #[test]

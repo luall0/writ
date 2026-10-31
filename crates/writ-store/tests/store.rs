@@ -201,11 +201,13 @@ fn transitions_are_compare_and_set() {
         Err(StoreError::Lifecycle(LifecycleError::Transition { .. }))
     ));
     // Activation only through activate().
-    assert!(
-        store
-            .transition(&lease.id, State::Pending, State::Active, t(12))
-            .is_err()
-    );
+    assert!(matches!(
+        store.transition(&lease.id, State::Pending, State::Active, t(12)),
+        Err(StoreError::Lifecycle(LifecycleError::Transition {
+            from: State::Pending,
+            to: State::Active
+        }))
+    ));
     store
         .transition(&lease.id, State::Active, State::Revoked, t(13))
         .unwrap();
@@ -213,17 +215,25 @@ fn transitions_are_compare_and_set() {
         store.lease(&lease.id).unwrap().unwrap().state,
         State::Revoked
     );
-    assert!(
-        store
-            .transition(&lease.id, State::Revoked, State::Active, t(14))
-            .is_err()
-    );
+    assert!(matches!(
+        store.transition(&lease.id, State::Revoked, State::Active, t(14)),
+        Err(StoreError::Lifecycle(LifecycleError::Transition {
+            from: State::Revoked,
+            to: State::Active
+        }))
+    ));
     assert!(matches!(
         store.transition(&id(9), State::Active, State::Revoked, t(14)),
         Err(StoreError::NotFound(_))
     ));
     // Refusing a lease, or twice.
-    assert!(store.refuse(&lease.id, "no", t(15)).is_err());
+    assert!(matches!(
+        store.refuse(&lease.id, "no", t(15)),
+        Err(StoreError::Conflict {
+            expected: State::Pending,
+            ..
+        })
+    ));
     // The same id twice.
     let again = ticket(1, REQUEST, None);
     assert!(matches!(
@@ -371,7 +381,13 @@ fn an_amendment_replaces_the_terms_in_force() {
     // The amendment's id is not a lease of its own.
     assert!(store.lease(&amendment.id).unwrap().is_none());
     // Applying again: the amendment is no longer pending, nothing changes.
-    assert!(store.apply_amendment(&updated, &applied, t(60)).is_err());
+    assert!(matches!(
+        store.apply_amendment(&updated, &applied, t(60)),
+        Err(StoreError::Conflict {
+            expected: State::Pending,
+            ..
+        })
+    ));
     assert_eq!(store.lease(&lease.id).unwrap().unwrap(), updated);
 }
 
@@ -396,7 +412,13 @@ fn an_amendment_of_an_ended_lease_changes_nothing() {
     store
         .transition(&lease.id, State::Active, State::Revoked, t(55))
         .unwrap();
-    assert!(store.apply_amendment(&updated, &applied, t(56)).is_err());
+    assert!(matches!(
+        store.apply_amendment(&updated, &applied, t(56)),
+        Err(StoreError::Conflict {
+            expected: State::Active,
+            ..
+        })
+    ));
     // Both or neither: the amendment is still pending, the lease keeps its terms.
     assert_eq!(
         store.ticket(&amendment.id).unwrap().unwrap().state,
@@ -425,11 +447,11 @@ fn the_ledger_keeps_the_first_entry() {
     );
     assert!(store.ledger_entries(&commit(8)).unwrap().is_empty());
     // An entry for a lease that doesn't exist is refused.
-    assert!(
-        store
-            .ledger_append(&entry(9, &id(42), "omega-code"))
-            .is_err()
-    );
+    assert!(matches!(
+        store.ledger_append(&entry(9, &id(42), "omega-code")),
+        Err(StoreError::Sqlite(_))
+    ));
+    assert!(store.ledger_entries(&commit(9)).unwrap().is_empty());
 }
 
 #[test]
@@ -454,17 +476,29 @@ fn tampered_records_fail_closed() {
         store.lease(&lease.id),
         Err(StoreError::Corrupt { .. })
     ));
-    assert!(store.leases(State::Active).is_err());
+    assert!(matches!(
+        store.leases(State::Active),
+        Err(StoreError::Corrupt { .. })
+    ));
     raw.execute("UPDATE tickets SET canonical = ?1", [&original])
         .unwrap();
     assert!(store.lease(&lease.id).unwrap().is_some());
 
     tamper("UPDATE tickets SET state = 'superuser'");
-    assert!(store.lease(&lease.id).is_err());
+    assert!(matches!(
+        store.lease(&lease.id),
+        Err(StoreError::Corrupt { .. })
+    ));
     tamper("UPDATE tickets SET state = 'active', namespace = 'git'");
-    assert!(store.lease(&lease.id).is_err());
+    assert!(matches!(
+        store.lease(&lease.id),
+        Err(StoreError::Corrupt { .. })
+    ));
     tamper("UPDATE tickets SET namespace = 'writ-approval', sshsig = NULL");
-    assert!(store.lease(&lease.id).is_err());
+    assert!(matches!(
+        store.lease(&lease.id),
+        Err(StoreError::Corrupt { .. })
+    ));
 }
 
 #[test]

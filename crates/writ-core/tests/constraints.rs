@@ -377,7 +377,12 @@ fn force_push_when_the_lease_allows_it() {
         "  branches: [\"agent/oauth-*\"]\n  force_push: true\n",
     ));
     // Without the template allowing it, the ticket doesn't fit.
-    assert!(writ_core::fit::submit(&common::config(), &request, &submission(1)).is_err());
+    let rejection =
+        writ_core::fit::submit(&common::config(), &request, &submission(1)).unwrap_err();
+    assert!(
+        rejection.reasons.iter().any(|r| r.contains("force_push")),
+        "{rejection}"
+    );
     let ticket = writ_core::fit::submit(&config, &request, &submission(1)).unwrap();
     let record = writ_core::lease::TicketRecord::pending(ticket.clone());
     let lease =
@@ -729,8 +734,11 @@ fn process_tree_with_code_identity() {
         ..identity.clone()
     });
     world.caller.process_chain = Some(chain_with(root.clone()));
-    assert!(
-        policy::decide_fetch(&world.ctx(), &fetch_request()).is_err(),
+    assert_eq!(
+        policy::decide_fetch(&world.ctx(), &fetch_request())
+            .unwrap_err()
+            .code,
+        DenyCode::Caller,
         "other team"
     );
     root.code_identity = Some(identity);

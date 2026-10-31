@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
 
 use writ_core::caller::ProcessRef;
 use writ_platform::contract::{self, WatcherKind};
@@ -33,10 +32,9 @@ fn counter() -> (Arc<AtomicUsize>, writ_platform::OnExit) {
 }
 
 fn wait_for(count: &AtomicUsize, value: usize) {
-    let start = Instant::now();
-    while count.load(Ordering::SeqCst) < value && start.elapsed() < Duration::from_secs(5) {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    writ_platform::testing::eventually("the exit callbacks", || {
+        count.load(Ordering::SeqCst) >= value
+    });
     assert_eq!(count.load(Ordering::SeqCst), value);
 }
 

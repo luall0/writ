@@ -1,17 +1,30 @@
-.PHONY: check test test-agent fmt run dev-client
+.PHONY: check test test-props test-agent fmt run dev-client
 
 # Lint, format check, dependency directions, source rules, doc links.
+# Each library is also linted alone: the workspace build turns on the `testing` features the
+# tests ask for, which could hide code that only compiles with them.
+LIBRARIES := writ-core writ-proto writ-crypto writ-platform writ-store writ-approval writ-gateway
+
 check:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
+	for crate in $(LIBRARIES); do cargo clippy -q -p $$crate --lib -- -D warnings || exit 1; done
 	python3 -I tool/check-deps.py
 	python3 -I tool/check-rules.py
 	python3 -I tool/check-links.py
 
-# The end-to-end tests run the workspace binaries (writd, writ-sign), so build them first.
+# The integration tests run the workspace binaries (writd, writ, writ-sign), so build them
+# first. The property tests run twice: with the fixed seed (the same inputs every run), then
+# with a new random seed, printed so a failure can be replayed with `make test-props SEED=…`.
 test:
 	cargo build --workspace --bins
 	cargo test --workspace
+	WRIT_PROPTEST_SEED=random cargo test -q -p writ-core --test properties -- --nocapture
+
+# The property tests with one seed (a number from a failed run, or `random`).
+test-props:
+	@test -n "$(SEED)" || { echo "usage: make test-props SEED=<number|random>"; exit 2; }
+	WRIT_PROPTEST_SEED="$(SEED)" cargo test -p writ-core --test properties -- --nocapture
 
 # Opt-in: an approval signed by a key in your own ssh-agent (may ask for Touch ID or a touch).
 # make test-agent KEY=<public key .pub> [AGENT=<agent socket, default $$SSH_AUTH_SOCK>]

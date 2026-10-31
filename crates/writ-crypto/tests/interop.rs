@@ -164,13 +164,16 @@ impl TestAgent {
             .unwrap();
         // Built before waiting, so a timeout still stops the agent (on drop).
         let agent = Self { child, socket, dir };
-        for _ in 0..100 {
-            if agent.socket.exists() {
-                return agent;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        // ssh-agent gives no signal but its socket.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !agent.socket.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "ssh-agent did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("ssh-agent did not start");
+        agent
     }
 
     fn add(&self, key: &PrivateKey) {

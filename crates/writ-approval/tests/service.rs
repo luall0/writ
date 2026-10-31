@@ -23,7 +23,7 @@ use writ_crypto::ca::validate_user_certificate;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Certificate, HashAlg, PrivateKey};
 use writ_crypto::sshsig;
-use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier};
+use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier, WAIT_LIMIT};
 use writ_proto::{ApproveRequest, Decision, Decisions, RefuseRequest, Relation, RevokeRequest};
 use writ_store::looks_secret;
 
@@ -156,6 +156,27 @@ impl Harness {
     }
 }
 
+/// Turned down, with a message containing `expected`.
+fn refused_with<T: std::fmt::Debug>(result: Result<T, ServiceError>, expected: &str) {
+    match result {
+        Err(ServiceError::Refused { message, .. }) => {
+            assert!(
+                message.contains(expected),
+                "{expected:?} not in {message:?}"
+            );
+        }
+        other => panic!("expected a refusal with {expected:?}, got {other:?}"),
+    }
+}
+
+/// Failed because the audit log can't be written, and for no other reason.
+fn audit_log_down<T: std::fmt::Debug>(result: Result<T, ServiceError>) {
+    assert!(
+        matches!(result, Err(ServiceError::AuditLog(_))),
+        "expected an audit log failure, got {result:?}"
+    );
+}
+
 fn identity(cert: &Certificate) -> CertIdentity {
     CertIdentity {
         key_id: cert.key_id().to_owned(),
@@ -167,17 +188,6 @@ fn identity(cert: &Certificate) -> CertIdentity {
             .parse()
             .unwrap(),
     }
-}
-
-/// Waits for something that happens on another thread.
-fn eventually(mut check: impl FnMut() -> bool) {
-    for _ in 0..200 {
-        if check() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("condition never became true");
 }
 
 #[test]
@@ -204,11 +214,12 @@ fn a_ticket_outside_every_template_is_rejected_before_reaching_the_approver() {
     );
     assert!(h.service.list(true).unwrap().tickets.is_empty());
     assert_eq!(h.events("submit", "denied"), 2);
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(
-        h.notifier.notifications().is_empty(),
-        "rejected tickets never notify"
-    );
+    // Notifications are delivered in order: if a rejected ticket had queued one, it would
+    // arrive before the valid ticket's.
+    let (valid, _) = h.submit(REQUEST);
+    let delivered = h.notifier.wait_for(1);
+    assert_eq!(delivered.len(), 1, "rejected tickets never notify");
+    assert!(delivered[0].message.contains(valid.id.as_str()));
 }
 
 #[test]
@@ -217,8 +228,7 @@ fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
     let (ticket, key) = h.submit(REQUEST);
     assert_eq!(ticket.text.revision, 1);
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
-    eventually(|| h.notifier.notifications().len() == 1);
-    let notification = &h.notifier.notifications()[0];
+    let notification = &h.notifier.wait_for(1)[0];
     assert!(notification.title.contains("Add OAuth login"));
     assert!(notification.message.contains(ticket.id.as_str()));
 
@@ -345,7 +355,10 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
         feedback: "no".into(),
         signature: None,
     };
-    assert!(h.service.refuse(&ticket.id, &unsigned, &facts()).is_err());
+    refused_with(
+        h.service.refuse(&ticket.id, &unsigned, &facts()),
+        "refusal not accepted: this daemon requires an approver signature",
+    );
     let forged = RefuseRequest {
         feedback: "different words".into(),
         signature: Some(
@@ -356,7 +369,10 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
             ),
         ),
     };
-    assert!(h.service.refuse(&ticket.id, &forged, &facts()).is_err());
+    refused_with(
+        h.service.refuse(&ticket.id, &forged, &facts()),
+        "refusal not accepted: the signature does not match the signed bytes",
+    );
     assert_eq!(h.events("refuse", "denied"), 2);
 
     assert_eq!(
@@ -369,10 +385,7 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
             feedback: "Don't touch billing".into()
         }
     );
-    assert!(
-        h.approve(&ticket).is_err(),
-        "a refused ticket can't be signed"
-    );
+    refused_with(h.approve(&ticket), "is refused, not pending");
 
     let revision = REQUEST.replace(
         "  plan: [Add the callback route, Tests]",
@@ -404,10 +417,10 @@ fn a_revocation_puts_the_certificate_on_the_deny_list_and_announces_it() {
     let h = Harness::new(Decisions::Signed);
     let (ticket, _key, cert) = h.lease();
     let mut revocations = h.service.subscribe_revocations();
-    assert!(
+    refused_with(
         h.service
-            .revoke(&ticket.id, &RevokeRequest::default(), &facts())
-            .is_err()
+            .revoke(&ticket.id, &RevokeRequest::default(), &facts()),
+        "revocation not accepted: this daemon requires an approver signature",
     );
     assert_eq!(h.revoke_signed(&ticket.id).unwrap(), State::Revoked);
     assert_eq!(revocations.try_recv().unwrap(), cert.serial());
@@ -417,10 +430,7 @@ fn a_revocation_puts_the_certificate_on_the_deny_list_and_announces_it() {
         .authorize(&identity(&cert), &facts(), None)
         .unwrap_err();
     assert_eq!(denial.code, DenyCode::NotActive);
-    assert!(
-        h.revoke_signed(&ticket.id).is_err(),
-        "nothing left to revoke"
-    );
+    refused_with(h.revoke_signed(&ticket.id), "nothing to revoke");
     assert_eq!(h.events("revoke", "done"), 1);
     assert_eq!(h.events("revoke", "denied"), 2);
     assert_eq!(h.events("connect", "denied"), 1);
@@ -441,7 +451,10 @@ fn open_decisions_need_no_signature_but_check_one_given() {
             .unwrap(),
         ),
     };
-    assert!(h.service.refuse(&pending.id, &bad, &facts()).is_err());
+    refused_with(
+        h.service.refuse(&pending.id, &bad, &facts()),
+        "refusal not accepted: the signature",
+    );
     let open = RefuseRequest {
         feedback: "no".into(),
         signature: None,
@@ -464,7 +477,10 @@ fn open_decisions_need_no_signature_but_check_one_given() {
         signed: String::from_utf8(other.canonical_bytes().unwrap()).unwrap(),
         signature: String::new(),
     };
-    assert!(h.service.approve(&other.id, &unsigned, &facts()).is_err());
+    refused_with(
+        h.service.approve(&other.id, &unsigned, &facts()),
+        "approval refused: unreadable signature",
+    );
 }
 
 #[test]
@@ -479,10 +495,7 @@ fn expiry_ends_pending_tickets_and_leases() {
     assert!(h.service.is_revoked(cert.serial()));
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Expired);
     assert_eq!(h.wait(&pending.id, &pending_key), Decision::Expired);
-    assert!(
-        h.approve(&pending).is_err(),
-        "an expired ticket can't be signed"
-    );
+    refused_with(h.approve(&pending), "is expired, not pending");
     assert_eq!(h.events("expire", "done"), 2);
 }
 
@@ -509,11 +522,18 @@ fn waiting_returns_when_the_approver_decides() {
     let service = h.service.clone();
     let id = ticket.id.clone();
     let public = key.public_key().clone();
-    let waiting = runtime.spawn(async move { service.wait(&id, &public).await });
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(!waiting.is_finished());
+    let mut waiting = runtime.spawn(async move { service.wait(&id, &public).await });
+    // Pending: no decision to return, however long it waits (the bound only stops looking).
+    let early = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_millis(50), &mut waiting).await });
+    assert!(early.is_err(), "returned before any decision: {early:?}");
     h.approve(&ticket).unwrap();
-    let decision = runtime.block_on(waiting).unwrap().unwrap();
+    // Woken by the decision itself, well before the 30 s re-check.
+    let decision = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), waiting).await })
+        .expect("the decision wakes the waiting client")
+        .unwrap()
+        .unwrap();
     assert!(matches!(decision, Decision::Active { .. }));
 }
 
@@ -566,8 +586,16 @@ fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
         .authorize(&identity(&cert), &inside, None)
         .unwrap();
 
+    let mut revocations = h.service.subscribe_revocations();
     h.watcher.exit(4242, 7);
-    eventually(|| h.service.is_revoked(cert.serial()));
+    // The revocation is announced once done: wait for that signal, not for time to pass.
+    let revoked = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async { tokio::time::timeout(WAIT_LIMIT, revocations.recv()).await })
+        .expect("the ended session's lease is revoked")
+        .unwrap();
+    assert_eq!(revoked, cert.serial());
+    assert!(h.service.is_revoked(cert.serial()));
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Revoked);
 }
 
@@ -655,15 +683,15 @@ fn nothing_changes_without_its_audit_line() {
     let (ticket, key) = h.submit(REQUEST);
     let before = audit_lines();
     h.audit_breaker.set_broken(true);
-    assert!(h.approve(&ticket).is_err());
+    audit_log_down(h.approve(&ticket));
     h.audit_breaker.set_broken(false);
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
     assert_eq!(audit_lines(), before, "a broken log holds nothing");
 
     // Refusal and withdrawal: still pending.
     h.audit_breaker.set_broken(true);
-    assert!(h.refuse_signed(&ticket.id, "no").is_err());
-    assert!(h.revoke_signed(&ticket.id).is_err());
+    audit_log_down(h.refuse_signed(&ticket.id, "no"));
+    audit_log_down(h.revoke_signed(&ticket.id));
     h.audit_breaker.set_broken(false);
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
 
@@ -690,7 +718,7 @@ fn nothing_changes_without_its_audit_line() {
         .unwrap();
     let amendment = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
     h.audit_breaker.set_broken(true);
-    assert!(h.approve(&amendment).is_err());
+    audit_log_down(h.approve(&amendment));
     h.audit_breaker.set_broken(false);
     assert_eq!(h.service.show(&amendment.id).unwrap().state, State::Pending);
     let Decision::Active { lease, .. } = h.wait(&ticket.id, &key) else {
@@ -704,7 +732,7 @@ fn nothing_changes_without_its_audit_line() {
 
     // Revocation: the certificate still works.
     h.audit_breaker.set_broken(true);
-    assert!(h.revoke_signed(&ticket.id).is_err());
+    audit_log_down(h.revoke_signed(&ticket.id));
     h.audit_breaker.set_broken(false);
     assert!(!h.service.is_revoked(cert.serial()));
     assert!(

@@ -23,7 +23,7 @@ use writ_core::units::Timestamp;
 use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::ssh_key::{HashAlg, PublicKey};
-use writ_platform::{Clock, Notifier, SessionWatcher, WatchHandle};
+use writ_platform::{Clock, Notification, Notifier, SessionWatcher, WatchHandle};
 use writ_proto::{Decisions, Info};
 use writ_store::{AuditEvent, AuditLog, Outcome, Store};
 
@@ -67,10 +67,30 @@ pub struct Service {
     changed: Notify,
     /// Serials just revoked or expired: the gateway drops their open sessions.
     revocations: broadcast::Sender<u64>,
-    notifier: Arc<dyn Notifier>,
+    /// Notifications for the worker thread ([`notification_worker`]), delivered one at a
+    /// time in the order they were queued.
+    notifications: Mutex<std::sync::mpsc::Sender<Notification>>,
     watcher: Arc<dyn SessionWatcher>,
     clock: Arc<dyn Clock>,
     me: Weak<Service>,
+}
+
+/// Delivers queued notifications one at a time, in order, until the service is dropped: one
+/// thread however many tickets arrive, and a slow sink never holds a request.
+fn notification_worker(
+    notifier: Arc<dyn Notifier>,
+) -> std::io::Result<std::sync::mpsc::Sender<Notification>> {
+    let (outbox, inbox) = std::sync::mpsc::channel::<Notification>();
+    std::thread::Builder::new()
+        .name("writ-notify".to_owned())
+        .spawn(move || {
+            for notification in inbox {
+                if let Err(e) = notifier.notify(&notification) {
+                    tracing::warn!(error = %e, "notification failed");
+                }
+            }
+        })?;
+    Ok(outbox)
 }
 
 struct Inner {
@@ -135,6 +155,7 @@ impl Service {
                     .map(|l| l.cert_serial),
             );
         }
+        let outbox = notification_worker(platform.notifier).map_err(internal)?;
         let approver_keys = config.approvers.iter().map(|a| a.key.clone()).collect();
         let (revocations, _) = broadcast::channel(256);
         let service = Arc::new_cyclic(|me| Self {
@@ -149,7 +170,7 @@ impl Service {
             revoked: RwLock::new(revoked),
             changed: Notify::new(),
             revocations,
-            notifier: platform.notifier,
+            notifications: Mutex::new(outbox),
             watcher: platform.watcher,
             clock: platform.clock,
             me: me.clone(),

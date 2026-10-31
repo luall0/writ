@@ -558,7 +558,10 @@ fn bad_bot_token_files_fail_without_echoing_them() {
         }
     }
     write_mode(&path, &"a".repeat(10_000), 0o600);
-    assert!(BotToken::from_file(&path).is_err());
+    match BotToken::from_file(&path) {
+        Err(PlatformError::Config(why)) => assert!(why.contains("too large"), "{why}"),
+        other => panic!("a 10 kB token file must be refused, got {other:?}"),
+    }
     let missing = BotToken::from_file(&dir.path().join("absent"));
     assert!(
         matches!(missing, Err(PlatformError::Config(_))),

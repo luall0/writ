@@ -7,7 +7,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use russh::ChannelMsg;
 use russh::client::{self, Handle};
@@ -22,7 +21,7 @@ use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_platform::PeerInfo;
 use writ_platform::clock::system::SystemClock;
-use writ_platform::testing::{FakeAttestor, FakeConnector, FakeTransport};
+use writ_platform::testing::{FakeAttestor, FakeConnector, FakeTransport, eventually_async};
 use writ_proto::{Ack, ApiError, Command, Decision, Decisions, Info, Listing, Submitted};
 
 const POLICY: &str = r#"
@@ -86,7 +85,8 @@ fn peer() -> PeerInfo {
 impl Daemon {
     async fn start(attestor: FakeAttestor) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        // Real time: the certificates are checked by the SSH layer too.
+        // The system clock: russh checks a certificate's validity window against it itself,
+        // so the service must issue certificates valid now. Nothing here waits on time.
         let test = TestServiceBuilder::new(POLICY)
             .clock(Arc::new(SystemClock))
             .build(dir.path());
@@ -413,13 +413,11 @@ async fn revoking_drops_open_sessions_and_refuses_the_next_connection() {
     let holder = Daemon::with_cert(&daemon.agents, &key, &cert)
         .await
         .unwrap();
-    for _ in 0..100 {
-        if daemon.gateway.open_sessions(cert.serial()) == 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(daemon.gateway.open_sessions(cert.serial()), 1);
+    // Registered by the server once authentication completes, which the client can't see.
+    eventually_async("the session to be registered", || {
+        daemon.gateway.open_sessions(cert.serial()) == 1
+    })
+    .await;
 
     let approver = Daemon::with_key(
         &daemon.approvals,
@@ -438,13 +436,7 @@ async fn revoking_drops_open_sessions_and_refuses_the_next_connection() {
     .await
     .unwrap();
 
-    for _ in 0..200 {
-        if holder.is_closed() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(holder.is_closed(), "the open session was dropped");
+    eventually_async("the open session to be dropped", || holder.is_closed()).await;
     assert_eq!(daemon.gateway.open_sessions(cert.serial()), 0);
     assert!(
         Daemon::with_cert(&daemon.agents, &key, &cert)

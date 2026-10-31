@@ -116,8 +116,16 @@ fn enroll_refuses_to_overwrite() {
         &DataKey::from_bytes([1; 32]),
         LOG_N,
     );
-    assert!(again.is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(
+        matches!(
+            again,
+            Err(PlatformError::Unlock(_))
+                | Err(PlatformError::Io(_))
+                | Err(PlatformError::Config(_))
+        ),
+        "{again:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before, "never overwritten");
 }
 
 #[cfg(unix)]
