@@ -132,7 +132,7 @@ notifiers: [{ ntfy: https://ntfy.home/writ }]
 transports: [{ unix: ~/Library/Application Support/Writ/writd.sock }]
 attestor: macos_process_chain
 session_watcher: macos
-signer: { software: /var/db/writ/keys }   # se-keychain or se-cryptokit from M7.5
+signer: { software: /var/db/writ/keys }   # se-cryptokit from M7.5 (key blob there, _writd only)
 unlock: passphrase
 notifiers: [{ ntfy: https://ntfy.home/writ }]
 ```

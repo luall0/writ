@@ -58,6 +58,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [HTTP credential proxy (v2)](http-credential-proxy.md) | Credentials | feature | L | idea, sketched |
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
+| [Keychain Secure Enclave signer with a paid Apple account](#keychain-secure-enclave-signer-with-a-paid-apple-account) | Signers | feature | M | idea, spiked |
 | [Hardware unseal recipients](#hardware-unseal-recipients) | Sealing | feature | M | idea |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
@@ -80,6 +81,29 @@ to Plan D for local mode. The Secure Enclave signer itself is on the roadmap (M7
 ### TPM signer backend
 
 Same, on the server's TPM 2.0 (P-256), keys bound to that machine.
+
+### Keychain Secure Enclave signer with a paid Apple account
+
+The `se-keychain` backend of [macOS Secure Enclave](../architecture/macos-secure-enclave.md):
+a Secure Enclave key in the data protection keychain under a keychain access group, once the
+Apple Developer Program is paid. The M0 spike built it with a free Personal Team (the Xcode
+project is archived in commit `7c69eff`, `spikes/secure-enclave/keychain-app/`); what it found:
+
+- Works: the capability, launching with the profile, key creation and signing with no
+  prompt (6–7 ms); code without the entitlement is refused (`-34018`), an ad-hoc binary
+  claiming it is killed at launch.
+- **Isolation is by team, not by daemon:** other code, reusing the profile and signed with my
+  Apple Development identity, used the key without a prompt. Anything running as my user can
+  sign with my team (identity in the login keychain, Xcode's account session), so the design
+  must keep the signing identity out of the agents' reach (build elsewhere, or remove it from
+  this Mac after signing) and drop `get-task-allow` (no debugger attach).
+- A Personal Team profile lasts 7 days; a paid account's lasts years, which is what makes
+  removing the identity from this Mac practical.
+- The paid team ID likely differs from the Personal Team's: the access group changes, so the
+  keys are created again (agent keys re-registered on forges and in `allowed_signers`).
+
+Most of what it needs (SSHSIG conversion, the `Signer` contract suite, key creation) comes
+with the CryptoKit backend in [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac).
 
 ## Sealing
 

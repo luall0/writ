@@ -1,10 +1,12 @@
 # macOS Secure Enclave signer without a paid Apple Developer account
 
-Status: **to test in the [M0 spike](../roadmap.md#m0--protocol-spike-gono-go)**. Several
-points below are assumptions to verify on a real Mac; they are marked ⚠️. The backend the
-spike picks is built in [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac); how the
-daemon runs (app bundle or dedicated user) is set up in
-[M7](../roadmap.md#m7--local-mode-on-the-mac). Every option is a `Signer` implementation
+Status: **tested in the [M0 spike](../roadmap.md#m0--protocol-spike-gono-go) on 2026-10-31.
+Plan B is the local-mode signer**: a CryptoKit Secure Enclave key under a dedicated `_writd`
+user, built in [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac); the `_writd`
+LaunchDaemon is set up in [M7](../roadmap.md#m7--local-mode-on-the-mac). Plan A works but
+doesn't isolate the key from my user; Plan D wasn't needed. Every check and number is in
+[the M0 spike's results](../history/m0-protocol-spike.md#secure-enclave-results);
+the summary is in [M0 results](#m0-results) below. Every option is a `Signer` implementation
 ([Signer and sealing](signer.md), [Platform interfaces](platform.md)).
 
 ## Goal
@@ -30,7 +32,7 @@ Secure Enclave keys can only be persisted in the **data protection keychain**, s
 
 ## Options, in order of preference
 
-### Plan A: Xcode free "Personal Team" + keychain access group ⚠️
+### Plan A: Xcode free "Personal Team" + keychain access group ❌ (tested: no isolation from my user)
 
 A free Apple ID gives an Apple Development certificate and development provisioning profiles. If they cover the keychain sharing capability for macOS, we get the same design as the paid route, for free, on this Mac only.
 
@@ -57,7 +59,7 @@ A free Apple ID gives an Apple Development certificate and development provision
 
 **Pass:** all checked. **Risks:** short-lived development profiles mean periodic rebuilds; if the app stops launching when the profile expires, agents are blocked until I rebuild (fail closed, but annoying).
 
-### Plan B: CryptoKit Secure Enclave key + dedicated macOS user ⚠️
+### Plan B: CryptoKit Secure Enclave key + dedicated macOS user ✅ (tested, chosen)
 
 CryptoKit (`SecureEnclave.P256.Signing.PrivateKey`) creates Secure Enclave keys **without any entitlement** (`age-plugin-se` ships as a plain CLI using it). It returns an encrypted blob (`dataRepresentation`) that only this Mac's Secure Enclave can use, but which isn't tied to an app: any process that can read the blob can probably use it on this Mac.
 
@@ -124,13 +126,42 @@ flowchart TD
   P[Pay for Apple Developer Program] -.replaces.-> A1
 ```
 
+## M0 results
+
+Measured on an M1 Pro, macOS 27.2, FileVault on; details in
+[the M0 spike's results](../history/m0-protocol-spike.md#secure-enclave-results).
+
+- **Plan A** works mechanically: a Personal Team may use keychain access groups on macOS,
+  the key is created and signs with no prompt (6–7 ms); code without the entitlement is
+  refused, an ad-hoc binary claiming it is killed. But **other code, reusing the profile and
+  signed with my Apple Development identity, used the key with no prompt**: the group binds
+  the key to my team, and anything running as my user can sign with my team (identity in the
+  login keychain, Xcode's account session). Development builds also allow debugger attach,
+  and the profile lasts 7 days. Kept for a paid account in the
+  [backlog](../backlog/README.md#keychain-secure-enclave-signer-with-a-paid-apple-account).
+- **Plan B** passes: a role account `_writd` (uid below 500, no shell, hidden) creates the
+  key from a LaunchDaemon and signs with no prompt (8–44 ms), with the screen locked, after a
+  reboot and while nobody is logged in. My user can't read the blob, use it, attach to the
+  daemon, signal it, or replace its binary or LaunchDaemon.
+- Not run: copying the blob to another Mac (no second Mac available).
+
+Notes for M7 and M7.5:
+- **With FileVault on, there is no "before login" state:** nothing on the data volume runs
+  until the first login after a boot unlocks the disk. The daemon starts then, and keeps
+  signing after I log out.
+- **The Mac must stay awake:** with the lid closed it sleeps and the daemon pauses (true of
+  the agents too).
+- **A corrupted blob crashes the process** inside CryptoKit instead of throwing: the backend
+  must guard against it (check the blob, or load it where a crash can't take the daemon down).
+- The first signatures after a boot take 170–420 ms, then 15–45 ms.
+
 ## Summary
 
 | Plan | Cost | Non-exportable | Only the daemon | Works with screen locked | Maintenance |
 |---|---|---|---|---|---|
-| Paid account + access group | 99 €/yr | ✅ | ✅ (code signature) | ✅ | Low |
-| A: Personal Team + access group ⚠️ | Free | ✅ | ✅ (code signature) | ✅ | Rebuild when profiles expire |
-| B: CryptoKit + dedicated user ⚠️ | Free | ✅ | ✅ (Unix permissions) | ⚠️ to test | Medium (user + LaunchDaemon setup) |
+| Paid account + access group | 99 €/yr | ✅ | ⚠️ team-wide: only if the signing identity is out of my user's reach | ✅ | Low |
+| A: Personal Team + access group (tested) | Free | ✅ | ❌ team-wide: any code I can sign with my team | ✅ | Rebuild every 7 days |
+| B: CryptoKit + dedicated user (tested, chosen) | Free | ✅ | ✅ (Unix permissions) | ✅ | Medium (user + LaunchDaemon setup) |
 | C: CryptoKit, own user | Free | ✅ | ❌ | ✅ | Testing only |
 | D: YubiKey PIV + dedicated user | Hardware I already own | ✅ | ✅ (PIN held by daemon) ⚠️ | ✅ | Low |
 | D: software + dedicated user | Free | ❌ (root) | ✅ (Unix permissions) | ✅ | Low |
@@ -154,4 +185,5 @@ Switching plans changes only the configured backend, not the daemon.
 - Self-signed certificate claiming `keychain-access-groups`: killed at launch (restricted entitlement, no profile)
 - Data protection keychain without the entitlement: `errSecMissingEntitlement` (-34018)
 - Legacy file-based keychain with ACLs: can't hold Secure Enclave keys
-- CryptoKit blob alone as an isolation mechanism: it's bound to the Mac, not to the app
+- CryptoKit blob alone as an isolation mechanism: it's bound to the Mac, not to the app (confirmed in M0)
+- Personal Team keychain access group as isolation from my user: any code signed with my team can use the key, and anything running as my user can sign with my team (M0)

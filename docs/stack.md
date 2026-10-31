@@ -1,8 +1,8 @@
 # Stack
 
 **Rust core** (decided, [Q9](decisions.md)): one codebase for the Linux container and the
-native Mac build. Swift only where the Secure Enclave needs it (CryptoKit, an app bundle with
-a provisioning profile: settled by the M0 spike) and for the later approver apps.
+native Mac build. Swift only where the Secure Enclave needs it (CryptoKit, M7.5) and for the
+later approver apps.
 
 | Layer | Choice | Status |
 |---|---|---|
@@ -23,7 +23,7 @@ a provisioning profile: settled by the M0 spike) and for the later approver apps
 | Errors | `thiserror` in library crates, `anyhow` only in binaries | Decided (M0) |
 | Secrets in memory | `zeroize` / `secrecy` | Proposed |
 | Logging | `tracing` (the audit log is separate and never goes through it) | Proposed |
-| Secure Enclave (local mode) | Swift + CryptoKit or the Security framework; Xcode Personal Team for Plan A | To decide in the M0 spike ([macOS Secure Enclave](architecture/macos-secure-enclave.md)) |
+| Secure Enclave (local mode) | Swift + CryptoKit, key blob under the `_writd` user | Decided (M0 spike, [Q33](decisions.md)); how `writd` calls it is settled in M7.5 |
 | Tests | `proptest` for policy properties, `tempfile`, real `git` and `ssh-keygen` binaries | Proposed |
 
 Settle each "Proposed" row when the milestone that needs it starts, and change it to
@@ -38,7 +38,7 @@ Settle each "Proposed" row when the milestone that needs it starts, and change i
 | Docker + compose | recent | Detached mode (M8), test forge (M4) |
 | Secretive | any | v1 approver key (Mac) |
 
-Versions used in M0 are in its [notes](roadmap.md#versions).
+Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versions).
 
 ## Version pinning
 

@@ -38,8 +38,9 @@ The daemon host is the crown jewel: it holds agent keys, upstream credentials an
 
 The same `writd`, built natively, listening on a Unix socket (with
 [process chain checks](identity.md#local-mode-process-chain-checks)) and started by launchd,
-isolated from my user: a LaunchDaemon under a dedicated `_writd` user, or an app bundle whose
-keys are bound to its code signature, as the M0 spike decides
-([macOS Secure Enclave](macos-secure-enclave.md)). It is
+isolated from my user: a LaunchDaemon running as the dedicated role user `_writd`, as the M0
+spike decided ([macOS Secure Enclave](macos-secure-enclave.md#m0-results)). The Mac must stay
+awake for agents to work while I'm away (lid open, or on power with a display); with FileVault
+the daemon starts at the first login after a boot. It is
 the local [configuration preset](platform.md#configuration-presets), with the macOS
 implementations plugged in. Built in [M7](../roadmap.md#m7--local-mode-on-the-mac).

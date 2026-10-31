@@ -11,4 +11,4 @@ starts in the [backlog](../backlog/README.md) and its pages move here when done,
 
 | # | Item | What it brought |
 |---|---|---|
-| | *Nothing done yet: [M0](../roadmap.md#m0--protocol-spike-gono-go) is in progress.* | |
+| 1 | [M0 — Protocol spike](m0-protocol-spike.md) | Go for the stack: certificate-only SSH gateway (TCP and Unix socket), git fetch/push checked by the daemon in git's quarantine, daemon-signed commits through `writ-sign`, agent-held approval keys; local mode's signer chosen (CryptoKit Secure Enclave key under a `_writd` user) |

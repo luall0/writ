@@ -83,8 +83,9 @@ See [Deployment](architecture/deployment.md).
 ### 6. Local mode: the daemon vs my own user
 In local mode, agents run as my user. A daemon running as my user can't keep its keys from
 them: they could read its files, use a Secure Enclave key blob, or attach to the process. So
-the local daemon is isolated from my user, by an access group bound to its code signature
-(Plan A) or by a dedicated macOS user (Plans B and D). Root stays out of scope.
+the local daemon runs as a dedicated macOS user, `_writd`: my user can't read its files, use
+its key blob or attach to it (checked in the M0 spike). Root stays out of scope, so my user
+must not have passwordless `sudo`.
 
 See [macOS Secure Enclave](architecture/macos-secure-enclave.md).
 

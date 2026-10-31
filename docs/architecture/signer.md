@@ -24,7 +24,7 @@ pub trait Signer: Send + Sync {
 |---|---|---|---|
 | **Software** (v1) | ed25519, P-256 | While unsealed, by root on the host | Encrypted keystore at rest, sealed start |
 | **YubiKey PIV** | P-256, P-384, ed25519 (recent firmware) | No | Touch policy must be `never` for unattended agent keys; USB passthrough to the container |
-| **Secure Enclave** | P-256 | No | Local mode on a Mac only. Without a paid Apple account: a Personal Team keychain access group (`se-keychain`) or a CryptoKit key under a dedicated user (`se-cryptokit`), see [macOS Secure Enclave](macos-secure-enclave.md) |
+| **Secure Enclave** | P-256 | No | Local mode on a Mac only. v1: a CryptoKit key under the dedicated `_writd` user (`se-cryptokit`, M7.5); a keychain access group (`se-keychain`) needs a paid Apple account. See [macOS Secure Enclave](macos-secure-enclave.md) |
 | **TPM 2.0** | P-256 | No | Possible future backend on the server |
 | **ssh-agent** (any socket: Secretive, yubikey-agent, 1Password…) | Whatever the agent holds | Depends on what backs it | Lets the daemon reuse an existing agent. Caveat: if agents run as the same user and can reach that socket, they can bypass Writ; only safe when the socket is out of the agents' reach (other user, other host) |
 
@@ -32,8 +32,8 @@ The same interface also holds the **upstream credentials** (the SSH key the daem
 push to forges), so those can move to a YubiKey too.
 
 v1 ships the software backend; the others are in the [backlog](../backlog/README.md) (and
-the Secure Enclave in local mode in [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac),
-with the backend the M0 spike picks).
+the Secure Enclave in local mode, `se-cryptokit`, in
+[M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac)).
 
 ## Startup and sealing
 
