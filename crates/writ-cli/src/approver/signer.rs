@@ -1,7 +1,8 @@
-//! How the approver signs: `ssh-keygen -Y sign -n writ-approval -f <approval key .pub>` with
-//! `SSH_AUTH_SOCK` set to the approver's agent (Secretive). Only the dedicated approval key is
-//! ever used, and only its public half is ever handed to ssh-keygen, so the private key stays
-//! in the agent (hard rule 8).
+//! How the approver signs: `ssh-keygen -Y sign -U -n writ-approval -f <approval key .pub>`
+//! with `SSH_AUTH_SOCK` set to the approver's agent (Secretive). Only the dedicated approval
+//! key is ever used, only its public half is ever handed to ssh-keygen, and `-U` makes
+//! ssh-keygen sign with the agent only, never a private key file (hard rule 8). ssh-keygen is
+//! run by its absolute path, never looked up in `PATH`.
 
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -41,14 +42,23 @@ impl Signer {
             let file = dir.join("message");
             std::fs::write(&file, message)
                 .with_context(|| format!("cannot write {}", file.display()))?;
-            let mut command = Process::new("ssh-keygen");
+            let mut command = Process::new(ssh_keygen()?);
             command
-                .args(["-Y", "sign", "-n", APPROVAL_NAMESPACE, "-f"])
+                .env_clear()
+                .args(["-Y", "sign", "-U", "-n", APPROVAL_NAMESPACE, "-f"])
                 .arg(&key)
                 .arg(&file);
-            if let Some(agent) = &self.agent {
-                command.env("SSH_AUTH_SOCK", agent);
-            }
+            // A clean environment: only the agent socket, the approver's or SSH_AUTH_SOCK.
+            let agent = self
+                .agent
+                .clone()
+                .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no ssh-agent: set WRIT_APPROVAL_AGENT (Secretive's socket) or SSH_AUTH_SOCK"
+                    )
+                })?;
+            command.env("SSH_AUTH_SOCK", agent);
             // Its chatter ("Signing file …") would clutter the trusted display: shown only on
             // failure. Touch ID is Secretive's own prompt, not a terminal one.
             let output = command
@@ -56,7 +66,10 @@ impl Signer {
                 .output()
                 .context("cannot run ssh-keygen")?;
             if !output.status.success() {
-                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                eprintln!(
+                    "{}",
+                    crate::display::clean_lines(&String::from_utf8_lossy(&output.stderr))
+                );
                 bail!("ssh-keygen could not sign (is the approval key in the agent?)");
             }
             let signature = std::fs::read_to_string(dir.join("message.sig"))
@@ -79,6 +92,22 @@ impl Signer {
             Decisions::Signed => Ok(Some(self.sign(document)?)),
             Decisions::Open => Ok(None),
         }
+    }
+}
+
+/// The ssh-keygen the approver signs with: `WRIT_SSH_KEYGEN` (an absolute path), else the
+/// system's, `/usr/bin/ssh-keygen` (OpenSSH ≥ 8.9 for `-U`). Never a `PATH` lookup: whatever
+/// sits first in `PATH` would see the approval and choose what gets signed.
+fn ssh_keygen() -> anyhow::Result<PathBuf> {
+    match std::env::var_os("WRIT_SSH_KEYGEN") {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                bail!("WRIT_SSH_KEYGEN must be an absolute path");
+            }
+            Ok(path)
+        }
+        None => Ok(PathBuf::from("/usr/bin/ssh-keygen")),
     }
 }
 

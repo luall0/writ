@@ -204,7 +204,9 @@ impl Service {
             "Ticket"
         };
         let notification = Notification {
-            title: format!("{kind} waiting: {}", ticket.text.title),
+            // No agent-written text: it would leave the network through a third party, and
+            // Telegram turns URLs and @mentions in it into links. `writ sign` shows the title.
+            title: format!("{kind} waiting"),
             message: format!(
                 "{} (template {}, revision {}). To review it: writ sign {}",
                 ticket.id, ticket.template, ticket.text.revision, ticket.id

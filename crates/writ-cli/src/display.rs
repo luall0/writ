@@ -41,6 +41,12 @@ pub fn clean(text: &str) -> String {
     out
 }
 
+/// Text from outside the program (a daemon's error, a tool's stderr) for the terminal: each
+/// line [`clean`]ed, the line breaks kept. Nothing from elsewhere reaches the terminal raw.
+pub fn clean_lines(text: &str) -> String {
+    text.lines().map(clean).collect::<Vec<_>>().join("\n")
+}
+
 /// Agent text over several lines, each behind the gutter and indented: runs of blank lines
 /// shown as one, and, unless `full`, at most [`MAX_BLOCK_LINES`] lines, then how many more.
 pub fn block(text: &str, indent: &str, full: bool) -> String {
@@ -562,6 +568,17 @@ mod tests {
         let agent = shown.find("Written by the agent").unwrap();
         let paths = shown.find("  expected paths").unwrap();
         assert!(scope < paths && paths < agent, "{shown}");
+    }
+
+    #[test]
+    fn outside_text_keeps_its_lines_and_loses_its_escapes() {
+        let daemon = "ticket rejected\n- branch \u{1b}[2Jmain\u{202e}";
+        let shown = clean_lines(daemon);
+        assert_eq!(shown.lines().count(), 2);
+        for c in shown.chars() {
+            assert!(c == '\n' || !is_hidden_char(c), "{c:?}");
+        }
+        assert!(shown.contains("\\u{1b}[2J"));
     }
 
     #[test]

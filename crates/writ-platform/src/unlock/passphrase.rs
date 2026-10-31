@@ -98,24 +98,13 @@ impl PassphraseUnlock {
     }
 
     fn read_wrapped(&self) -> Result<Vec<u8>> {
-        let unreadable = |e: std::io::Error| {
-            PlatformError::Unlock(format!(
-                "cannot read the wrapped key {}: {e}",
-                self.wrapped_path.display()
-            ))
-        };
-        let file = std::fs::File::open(&self.wrapped_path).map_err(unreadable)?;
-        let mut wrapped = Vec::new();
-        file.take(MAX_WRAPPED_LEN + 1)
-            .read_to_end(&mut wrapped)
-            .map_err(unreadable)?;
-        if wrapped.len() as u64 > MAX_WRAPPED_LEN {
-            return Err(PlatformError::Unlock(format!(
-                "{} is too large to be a wrapped key",
-                self.wrapped_path.display()
-            )));
-        }
-        Ok(wrapped)
+        // Encrypted, but a copy allows an offline attack on the passphrase: a secret file.
+        crate::fs::read_secret(&self.wrapped_path, "the wrapped key", MAX_WRAPPED_LEN)
+            .map(|wrapped| wrapped.to_vec())
+            .map_err(|e| match e {
+                PlatformError::Config(message) => PlatformError::Unlock(message),
+                other => other,
+            })
     }
 }
 

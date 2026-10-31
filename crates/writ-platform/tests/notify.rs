@@ -559,7 +559,9 @@ fn bad_bot_token_files_fail_without_echoing_them() {
     }
     write_mode(&path, &"a".repeat(10_000), 0o600);
     match BotToken::from_file(&path) {
-        Err(PlatformError::Config(why)) => assert!(why.contains("too large"), "{why}"),
+        Err(PlatformError::Config(why)) => {
+            assert!(why.contains("is larger than 4096 bytes"), "{why}")
+        }
         other => panic!("a 10 kB token file must be refused, got {other:?}"),
     }
     let missing = BotToken::from_file(&dir.path().join("absent"));
@@ -614,6 +616,7 @@ fn api_bases_are_validated() {
         "https://api.telegram.org/",
         "http://127.0.0.1:8081",
         "http://[::1]:8081",
+        "http://localhost:8081",
         "https://bot-api.home:8443",
     ] {
         assert!(
@@ -634,6 +637,10 @@ fn api_bases_are_validated() {
         "https://user:secret@api.telegram.org",
         "https://",
         "not a url",
+        // The token in clear over the network.
+        "http://bot-api.home:8081",
+        "http://192.0.2.7:8081",
+        "http://api.telegram.org",
     ] {
         let result = TelegramNotifier::with_api_base(token(), "42", bad);
         assert!(

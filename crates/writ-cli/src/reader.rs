@@ -4,45 +4,24 @@
 //! It is never the approver's Secretive key (hard rule 8): it only opens the connection, and
 //! approvals stay signed with the approval key.
 
-use std::io::Read as _;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Algorithm, PrivateKey};
-use zeroize::Zeroizing;
 
 use crate::session::write_private;
 
 /// Reads the reader key. Refused if others can read it, or if it isn't Ed25519.
 pub fn load(path: &Path) -> anyhow::Result<PrivateKey> {
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!(
+    if !path.exists() {
+        bail!(
             "no reader key at {}: run `writ reader` and add the line it prints to the daemon's \
              readers file",
             path.display()
-        ),
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
-    };
-    let mode = file
-        .metadata()
-        .with_context(|| format!("cannot read {}", path.display()))?
-        .permissions()
-        .mode();
-    if mode & 0o077 != 0 {
-        bail!(
-            "{} can be read by others (mode {:o}): it must be 0600",
-            path.display(),
-            mode & 0o777
         );
     }
-    let mut text = Zeroizing::new(String::new());
-    file.read_to_string(&mut text)
-        .with_context(|| format!("cannot read {}", path.display()))?;
-    let key = PrivateKey::from_openssh(text.as_bytes())
-        .with_context(|| format!("{} is not a key", path.display()))?;
+    let key = crate::session::load_key(path)?;
     if key.algorithm() != Algorithm::Ed25519 {
         bail!("{} is not an ssh-ed25519 key", path.display());
     }
@@ -71,6 +50,8 @@ pub fn ensure(path: &Path, name: &str) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     #[test]

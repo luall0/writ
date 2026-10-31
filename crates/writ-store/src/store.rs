@@ -15,6 +15,7 @@ mod schema;
 
 pub use ledger::LedgerEntry;
 
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -47,6 +48,13 @@ pub struct Store {
 impl Store {
     /// Opens (or creates) the database at `path`.
     pub fn open(path: &Path) -> Result<Self> {
+        // Private from creation (0600), whatever the umask; SQLite gives its WAL and shared
+        // memory files the database file's mode.
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?;
         Self::init(Connection::open(path)?)
     }
 

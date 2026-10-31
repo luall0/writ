@@ -47,11 +47,10 @@ fn dev_tls(dir: &Path) -> anyhow::Result<TlsIdentity> {
     }
     let cert = std::fs::read_to_string(&cert_path)
         .with_context(|| format!("reading {}", cert_path.display()))?;
-    let key = zeroize::Zeroizing::new(
-        std::fs::read_to_string(&key_path)
-            .with_context(|| format!("reading {}", key_path.display()))?,
-    );
-    Ok(TlsIdentity::from_pem(&cert, &key)?)
+    let key = writ_platform::fs::read_secret(&key_path, "the TLS key", 1 << 16)?;
+    let key = std::str::from_utf8(&key)
+        .with_context(|| format!("{} is not a PEM key", key_path.display()))?;
+    Ok(TlsIdentity::from_pem(&cert, key)?)
 }
 
 /// Creates a new file only the daemon can read (0600); fails if it exists.
@@ -66,9 +65,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 fn dev_key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
     let path = dir.join(name);
     if path.exists() {
-        let pem = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        return Ok(PrivateKey::from_openssh(pem)?);
+        // A private file of the daemon's user, read into memory wiped on drop.
+        let pem = writ_platform::fs::read_secret(&path, "the key", 1 << 16)?;
+        return Ok(PrivateKey::from_openssh(pem.as_slice())?);
     }
     let key = generate(KeyKind::Ed25519)?;
     write_private(&path, key.to_openssh(LineEnding::LF)?.as_bytes())?;

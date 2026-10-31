@@ -65,10 +65,9 @@ fn rejected_signed_narrowed_and_refused_tickets_end_to_end() {
     let request = daemon.request("first", &ticket("", "1h"));
     let id = request.id.clone();
     let notification = daemon.telegram.wait_for(1)[0].clone();
-    assert!(
-        notification.contains("Ticket waiting: Add OAuth login"),
-        "{notification}"
-    );
+    assert!(notification.contains("Ticket waiting"), "{notification}");
+    // Agent-written text never goes to the third party.
+    assert!(!notification.contains("Add OAuth login"), "{notification}");
     assert!(notification.contains(&id), "{notification}");
     assert!(notification.contains(r#""chat_id":42"#), "{notification}");
 
@@ -340,4 +339,61 @@ fn only_a_key_in_approvers_can_sign() {
     assert!(daemon.run(&["sign", &id, "--yes"], "").status.success());
     assert!(request.finish().0.success());
     assert_eq!(daemon.audited("grant", "allowed"), 1);
+}
+
+#[test]
+fn writ_sign_never_signs_with_a_private_key_file() {
+    // Hard rule 8: the approval key lives in the agent. Here a stray key's private half sits
+    // next to its .pub, and isn't in the agent: ssh-keygen must not fall back to the file.
+    let daemon = Daemon::start(POLICY, Approvals::Ssh);
+    let request = daemon.request("file-key", &ticket("", "1h"));
+    let stray = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+    let private = daemon.root().join("stray");
+    fs::write(
+        &private,
+        stray
+            .to_openssh(writ_crypto::ssh_key::LineEnding::LF)
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).unwrap();
+    let public = daemon.root().join("stray.pub");
+    fs::write(&public, stray.public_key().to_openssh().unwrap()).unwrap();
+
+    let out = daemon.run(
+        &[
+            "sign",
+            &request.id,
+            "--yes",
+            "--key",
+            public.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("ssh-keygen could not sign"),
+        "refused by ssh-keygen itself, before the daemon: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        daemon.audited("grant", "denied"),
+        0,
+        "nothing reached the daemon"
+    );
+    let listing = stdout(&daemon.run(&["ls"], ""));
+    assert!(
+        listing.contains(&request.id) && listing.contains("pending"),
+        "{listing}"
+    );
+
+    // The real approval key, in the agent, still signs (the refusal above was the file's).
+    assert!(
+        daemon
+            .run(&["refuse", &request.id, "-m", "done"], "")
+            .status
+            .success()
+    );
+    assert_eq!(request.finish().0.code(), Some(4));
 }

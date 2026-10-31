@@ -1,6 +1,5 @@
 //! [`TelegramNotifier`]: plain-text messages from a Telegram bot (`sendMessage`).
 
-use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -45,32 +44,12 @@ impl BotToken {
         }
     }
 
-    /// Reads a file holding only the token (surrounding whitespace trimmed). Refuses a file
-    /// readable or writable by group or others (mode & 0o077 != 0) with a `Config` error
-    /// naming the path.
+    /// Reads a file holding only the token (surrounding whitespace trimmed): a secret file
+    /// ([`crate::fs::read_secret`]: a regular file of the daemon's user, no link, readable by
+    /// nobody else), or a `Config` error naming the path.
     pub fn from_file(path: &Path) -> Result<Self> {
-        let unreadable = |e: std::io::Error| {
-            PlatformError::Config(format!(
-                "cannot read the Telegram bot token file {}: {}",
-                path.display(),
-                e.kind()
-            ))
-        };
-        let file = std::fs::File::open(path).map_err(unreadable)?;
-        // Checked on the open file, so the file read is the one checked.
-        let metadata = file.metadata().map_err(unreadable)?;
-        crate::fs::check_private(path, &metadata)?;
-        // Capacity above the read limit: the buffer never grows, so no copy is left behind.
-        let mut contents = Zeroizing::new(Vec::with_capacity(MAX_TOKEN_FILE_LEN as usize + 64));
-        file.take(MAX_TOKEN_FILE_LEN + 1)
-            .read_to_end(&mut contents)
-            .map_err(unreadable)?;
-        if contents.len() as u64 > MAX_TOKEN_FILE_LEN {
-            return Err(PlatformError::Config(format!(
-                "{} is too large to hold a Telegram bot token",
-                path.display()
-            )));
-        }
+        let contents =
+            crate::fs::read_secret(path, "the Telegram bot token file", MAX_TOKEN_FILE_LEN)?;
         let text = std::str::from_utf8(&contents).map_err(|_| {
             PlatformError::Config(format!(
                 "{} does not hold a valid Telegram bot token",
@@ -255,6 +234,21 @@ fn parse_api_base(api_base: &str) -> Result<String> {
     }
     if authority.host().is_empty() {
         return Err(invalid("no host"));
+    }
+    // The token travels in the URL path: in clear only to this machine (a local bot server,
+    // the tests' fake).
+    let host = authority
+        .host()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if scheme == "http" && !loopback {
+        return Err(invalid(
+            "http is only for a server on this machine (the token would cross the network in clear)",
+        ));
     }
     let base = format!("{scheme}://{}", authority.as_str());
     // Nothing after the authority (a single trailing slash is tolerated).

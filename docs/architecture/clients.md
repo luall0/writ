@@ -26,7 +26,9 @@ skill). The approver side of the CLI is described in [Approvals](approvals.md).
 is pinned; `writd host-key` prints it), `WRIT_TLS_PINS` (default `~/.writ/tls_pins`, lines
 `[host]:port SHA256:…` pinning the HTTPS certificate; `writd tls-fingerprint` prints it) and
 `WRIT_READER` (default `~/.writ/reader`: the key the approval API lets in; `writ reader
-[<name>]` makes it on first use and prints the line for the daemon's `readers` file). It never reads `~/.ssh` or uses the user's ssh-agent
+[<name>]` makes it on first use and prints the line for the daemon's `readers` file), and
+`WRIT_SSH_KEYGEN` (the ssh-keygen `writ sign` runs, an absolute path; default
+`/usr/bin/ssh-keygen`, never looked up in `PATH`). It never reads `~/.ssh` or uses the user's ssh-agent
 for connections: it would offer personal keys to the daemon. Exit statuses: 0 done, 1 error,
 3 rejected by policy, 4 refused, 5 expired or withdrawn, 6 not signed (`writ sign` answered no).
 

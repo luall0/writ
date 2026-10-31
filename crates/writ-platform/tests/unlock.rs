@@ -3,7 +3,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::io::Write;
 use std::path::Path;
 
 use writ_platform::contract;
@@ -53,7 +52,14 @@ fn wrap_raw(path: &Path, plaintext: &[u8]) {
         age::scrypt::Recipient::new(age::secrecy::SecretString::from(PASSPHRASE.to_owned()));
     recipient.set_work_factor(LOG_N);
     let wrapped = age::encrypt(&recipient, plaintext).unwrap();
-    std::fs::write(path, wrapped).unwrap();
+    write_private(path, &wrapped);
+}
+
+/// Writes a file only its owner can read, as the daemon requires of a wrapped key.
+fn write_private(path: &Path, contents: &[u8]) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, contents).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 #[test]
@@ -199,7 +205,7 @@ fn a_truncated_or_corrupted_file_fails_cleanly() {
 
     for (i, (what, contents)) in variants.into_iter().enumerate() {
         let path = dir.path().join(format!("bad-{i}.age"));
-        std::fs::write(&path, &contents).unwrap();
+        write_private(&path, &contents);
         let unlock = PassphraseUnlock::new(&path);
         let error = unlock_error(&unlock, PASSPHRASE);
         assert!(!error.contains(PASSPHRASE), "{what}: {error}");
@@ -228,10 +234,25 @@ fn a_wrapped_key_of_the_wrong_length_fails() {
 fn a_huge_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("huge.age");
-    let mut file = std::fs::File::create(&path).unwrap();
-    file.write_all(&vec![b'a'; 200 * 1024]).unwrap();
+    write_private(&path, &vec![b'a'; 200 * 1024]);
     let error = unlock_error(&PassphraseUnlock::new(&path), PASSPHRASE);
-    assert!(error.contains("too large"), "{error}");
+    assert!(error.contains("is larger than"), "{error}");
+}
+
+#[test]
+fn a_wrapped_key_others_can_read_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data-key.age");
+    let unlock = enroll(&path);
+    assert!(unlock.unlock(&request(PASSPHRASE)).is_ok());
+    // A copy others can read allows an offline attack on the passphrase.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let error = unlock_error(&unlock, PASSPHRASE);
+    assert!(
+        error.contains("accessible by group or others (mode 644)"),
+        "{error}"
+    );
 }
 
 #[test]

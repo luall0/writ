@@ -104,7 +104,11 @@ Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit
 - Secrets never reach the log: no key material, passphrases, tokens or full signatures. No
   field of `AuditEvent` can hold one (an approval is logged by its approver's fingerprint).
 - The file is only ever opened for appending; each event is one write followed by a sync. If
-  the last line was cut by a crash, the next event starts on a new line and nothing is
-  rewritten.
+  the last line was cut by a crash, or a write failed part way (a full disk), the next event
+  starts on a new line and nothing is rewritten.
+- Characters a terminal could act on (C1 controls, bidi, zero-width, tags: the same set as
+  `writ sign` escapes) are written as JSON `\u` escapes, so `cat` on the log is safe; the
+  text reads back the same.
+- The log and `leases.db` are created `0600`, whatever the umask.
 - The ledger and the audit log must survive an incident for review: back them up
   ([Deployment](deployment.md)).

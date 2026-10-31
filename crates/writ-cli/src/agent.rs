@@ -67,9 +67,9 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> an
                 match session.call(&Command::Request, text.as_bytes()).await? {
                     Ok(submitted) => submitted,
                     Err(error) => {
-                        eprintln!("writ: {}", error.message);
+                        eprintln!("writ: {}", display::clean(&error.message));
                         for reason in &error.reasons {
-                            eprintln!("  - {reason}");
+                            eprintln!("  - {}", display::clean(reason));
                         }
                         return Ok(Exit::Rejected);
                     }

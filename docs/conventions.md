@@ -110,8 +110,11 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   that can embed it (a URL holding a token) are replaced by a short word (`transport_failure`).
   Tests check it (`errors_and_debug_never_contain_the_token`, `looks_secret`).
 - **Files holding secrets are private**: created `0600` with `create_new` (never overwritten,
-  never through a link), directories `0700`; a secret file handed to the daemon is refused if
-  others can read it. Daemon side: `writ_platform::fs`; client side: `writ-cli`'s `session`.
+  never through a link), directories `0700` from creation; a secret file handed to the daemon
+  is read with `writ_platform::fs::read_secret` (no link followed, never blocking on a FIFO,
+  a regular file of the daemon's user, readable by nobody else, bounded, zeroized), and a
+  file that grants authority with `read_authority` (the same, writable by nobody else).
+  Client side: `writ-cli`'s `session` (`create_private_dir`, `write_private`, `load_key`).
 - **Key material moves, it isn't copied**: when a library takes ownership (rustls), no other
   copy is kept.
 

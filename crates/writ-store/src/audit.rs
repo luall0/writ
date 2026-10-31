@@ -8,6 +8,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::IpAddr;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -190,30 +191,65 @@ impl AuditEvent {
 pub struct AuditLog {
     path: PathBuf,
     file: File,
-    /// Set by a test to make every write fail (feature `testing` only).
+    /// A write failed part way: the file may end in a cut line, so the next line starts
+    /// with a newline (never glued onto the fragment).
+    dirty: bool,
+    /// Set by a test to make writes fail (feature `testing` only).
     #[cfg(feature = "testing")]
-    broken: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    broken: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
 }
 
 /// Breaks and repairs an [`AuditLog`] opened with [`AuditLog::open_breakable`], so tests can
 /// check that nothing changes without its log line (feature `testing`).
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone)]
-pub struct AuditBreaker(std::sync::Arc<std::sync::atomic::AtomicBool>);
+pub struct AuditBreaker(std::sync::Arc<std::sync::atomic::AtomicU8>);
 
 #[cfg(feature = "testing")]
 impl AuditBreaker {
     /// While broken, every [`AuditLog::append`] fails and writes nothing.
     pub fn set_broken(&self, broken: bool) {
-        self.0.store(broken, std::sync::atomic::Ordering::SeqCst);
+        self.0
+            .store(u8::from(broken), std::sync::atomic::Ordering::SeqCst);
     }
+
+    /// While set, every [`AuditLog::append`] writes half its line, then fails (a full disk).
+    pub fn set_cut_short(&self, cut: bool) {
+        self.0
+            .store(if cut { 2 } else { 0 }, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// `line` with every character a terminal could act on, or that renders as nothing
+/// (`writ_core::text::is_hidden_char`), written as a JSON `\u` escape: serde_json only
+/// escapes controls below 0x20, so C1 controls, bidi and zero-width characters in an
+/// agent-chosen ref or reason would otherwise reach whoever runs `cat` on the log. Such
+/// characters only ever appear inside JSON strings, where the escape means the same.
+fn escape_hidden(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for c in line.chars() {
+        if c != '\n' && writ_core::text::is_hidden_char(c) {
+            let mut units = [0u16; 2];
+            for unit in c.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 impl AuditLog {
     /// Opens the log for appending, creating it if needed. If the last line was cut short
     /// (a crash mid-write), the next event starts on a new line; nothing is rewritten.
     pub fn open(path: &Path) -> Result<Self> {
-        let mut file = OpenOptions::new().append(true).create(true).open(path)?;
+        // Private from creation (0600): never readable by another user, whatever the umask.
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(path)?;
         let len = file.metadata()?.len();
         if len > 0 {
             let mut reader = File::open(path)?;
@@ -228,6 +264,7 @@ impl AuditLog {
         Ok(Self {
             path: path.to_owned(),
             file,
+            dirty: false,
             #[cfg(feature = "testing")]
             broken: None,
         })
@@ -236,7 +273,7 @@ impl AuditLog {
     /// [`AuditLog::open`], with a switch that makes writes fail (feature `testing`).
     #[cfg(feature = "testing")]
     pub fn open_breakable(path: &Path) -> Result<(Self, AuditBreaker)> {
-        let switch = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let switch = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let mut log = Self::open(path)?;
         log.broken = Some(switch.clone());
         Ok((log, AuditBreaker(switch)))
@@ -248,21 +285,40 @@ impl AuditLog {
 
     /// Appends one event as one line, and syncs it to disk before returning.
     pub fn append(&mut self, event: &AuditEvent) -> Result<()> {
+        let mut line = String::new();
+        if self.dirty {
+            line.push('\n');
+        }
+        line.push_str(&escape_hidden(&serde_json::to_string(event)?));
+        line.push('\n');
         #[cfg(feature = "testing")]
-        if self
+        match self
             .broken
             .as_ref()
-            .is_some_and(|b| b.load(std::sync::atomic::Ordering::SeqCst))
+            .map(|b| b.load(std::sync::atomic::Ordering::SeqCst))
         {
-            return Err(crate::StoreError::Io(std::io::Error::other(
-                "the audit log was broken by the test",
-            )));
+            Some(1) => {
+                return Err(crate::StoreError::Io(std::io::Error::other(
+                    "the audit log was broken by the test",
+                )));
+            }
+            Some(2) => {
+                self.dirty = true;
+                let half = line.len() / 2;
+                self.file
+                    .write_all(line.as_bytes().get(..half).unwrap_or_default())?;
+                return Err(crate::StoreError::Io(std::io::Error::other(
+                    "the audit log was cut short by the test",
+                )));
+            }
+            _ => {}
         }
-        let mut line = serde_json::to_vec(event)?;
-        line.push(b'\n');
-        // One write of the whole line: with O_APPEND, it lands after everything already there.
-        self.file.write_all(&line)?;
+        // Dirty until the whole line is on disk. One write of the whole line: with O_APPEND,
+        // it lands after everything already there.
+        self.dirty = true;
+        self.file.write_all(line.as_bytes())?;
         self.file.sync_data()?;
+        self.dirty = false;
         Ok(())
     }
 }

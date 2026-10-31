@@ -240,7 +240,12 @@ impl Service {
             Ok(watch) => watch,
             Err(reason) => return denied.deny(inner, reason),
         };
-        let valid_after = now.saturating_sub_seconds(CLOCK_SKEW_SECONDS).unix();
+        // A time that doesn't fit fails the grant: no fallback (a 0 would mean "valid since
+        // 1970").
+        let valid_after = u64::try_from(now.saturating_sub_seconds(CLOCK_SKEW_SECONDS).unix())
+            .map_err(internal)?;
+        let valid_before =
+            u64::try_from(lease.ticket.limits.expires_at.unix()).map_err(internal)?;
         let certificate = self
             .ca
             .issue(&CertificateRequest {
@@ -248,8 +253,8 @@ impl Service {
                 serial,
                 key_id: lease.id.as_str(),
                 principals: &[PRINCIPAL],
-                valid_after: u64::try_from(valid_after).unwrap_or(0),
-                valid_before: u64::try_from(lease.ticket.limits.expires_at.unix()).unwrap_or(0),
+                valid_after,
+                valid_before,
             })
             .and_then(|cert| Ok(cert.to_openssh()?))
             .map_err(internal)?;

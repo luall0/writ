@@ -80,8 +80,12 @@ still grants nothing: approvals (and, with `decisions: signed`, refusals and rev
 are SSHSIGs the approval service verifies. `writ ls --all` returns the 200 most recent
 tickets. Commands: `writ info`, `writ ls [--all]`, `writ show <id>`, `writ approve <id>`,
 `writ refuse <id>`, `writ revoke <id>` (`writ_proto::Command`). Signatures are made with
-`ssh-keygen -Y sign -n writ-approval -f <approval key .pub>` against the approver's agent
-socket (`WRIT_APPROVAL_AGENT`, else `SSH_AUTH_SOCK`): only the dedicated approval key is used.
+`ssh-keygen -Y sign -U -n writ-approval -f <approval key .pub>` against the approver's agent
+socket (`WRIT_APPROVAL_AGENT`, else `SSH_AUTH_SOCK`): only the dedicated approval key is used,
+`-U` makes ssh-keygen sign with the agent only (never a private key file beside the `.pub`),
+and ssh-keygen runs by its absolute path (`/usr/bin/ssh-keygen`, or `WRIT_SSH_KEYGEN`) with a
+clean environment, never found through `PATH`. Text from the daemon or from ssh-keygen is
+escaped like agent text before it reaches the terminal.
 
 ## Refusing and revoking
 

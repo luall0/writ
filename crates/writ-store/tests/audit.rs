@@ -222,3 +222,69 @@ fn the_scan_finds_what_it_looks_for() {
         "outside ticket wrt_01: branch main not allowed"
     ));
 }
+
+#[test]
+fn the_log_and_the_database_are_private_from_creation() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let audit = dir.path().join("audit.jsonl");
+    AuditLog::open(&audit).unwrap();
+    let mode = |p: &std::path::Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&audit), 0o600);
+    let db = dir.path().join("leases.db");
+    writ_store::Store::open(&db).unwrap();
+    assert_eq!(mode(&db), 0o600);
+}
+
+#[test]
+fn a_write_cut_short_never_glues_the_next_line_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let (mut log, breaker) = AuditLog::open_breakable(&path).unwrap();
+    let events = lifecycle();
+    log.append(&events[0]).unwrap();
+    breaker.set_cut_short(true);
+    assert!(log.append(&events[1]).is_err());
+    breaker.set_cut_short(false);
+    log.append(&events[2]).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    // The first and the last are whole events; the middle one is the fragment, alone.
+    for line in [lines[0], lines[2]] {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(line).is_ok(),
+            "{line}"
+        );
+    }
+    assert!(serde_json::from_str::<serde_json::Value>(lines[1]).is_err());
+}
+
+#[test]
+fn characters_a_terminal_acts_on_are_escaped_in_the_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let mut log = AuditLog::open(&path).unwrap();
+    let hostile = "refs/heads/x\u{9b}31m\u{202e}\u{200b}\u{e0041}é";
+    log.append(
+        &AuditEvent::new(t(0), EventKind::Push, Outcome::Denied)
+            .refs([hostile.to_owned()])
+            .reason(hostile),
+    )
+    .unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    for c in text.trim_end().chars() {
+        assert!(
+            !writ_core::text::is_hidden_char(c),
+            "{c:?} reached the file"
+        );
+    }
+    assert!(
+        text.contains("\\u009b") && text.contains("\\u202e") && text.contains("\\udb40\\udc41")
+    );
+    assert!(text.contains('é'), "visible characters stay as they are");
+    // Still the same text once read back.
+    let event: serde_json::Value = serde_json::from_str(text.trim_end()).unwrap();
+    assert_eq!(event["reason"], hostile);
+    assert_eq!(event["refs"][0], hostile);
+}

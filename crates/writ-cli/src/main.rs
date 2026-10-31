@@ -269,7 +269,8 @@ fn main() -> ExitCode {
     match runtime.block_on(run(cli)) {
         Ok(exit) => ExitCode::from(exit as u8),
         Err(e) => {
-            eprintln!("writ: {e:#}");
+            // The chain may hold the daemon's words: shown escaped, like any outside text.
+            eprintln!("writ: {}", display::clean_lines(&format!("{e:#}")));
             ExitCode::from(Exit::Error as u8)
         }
     }

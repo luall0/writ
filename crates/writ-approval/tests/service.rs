@@ -229,8 +229,12 @@ fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
     assert_eq!(ticket.text.revision, 1);
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
     let notification = &h.notifier.wait_for(1)[0];
-    assert!(notification.title.contains("Add OAuth login"));
+    assert_eq!(notification.title, "Ticket waiting");
     assert!(notification.message.contains(ticket.id.as_str()));
+    // No agent-written text goes to a notification sink.
+    for text in [&notification.title, &notification.message] {
+        assert!(!text.contains("Add OAuth login"), "{text}");
+    }
 
     assert_eq!(h.approve(&ticket).unwrap(), State::Active);
     let Decision::Active { lease, certificate } = h.wait(&ticket.id, &key) else {

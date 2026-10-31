@@ -7,10 +7,10 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use writ_core::names::TicketId;
 use writ_crypto::ssh_key::PrivateKey;
 
@@ -39,19 +39,47 @@ pub fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> anyhow::Result<()>
     fs::write(path, contents).with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// Creates a directory (and its parents) only the user can enter (0700).
+/// Creates a directory (and its parents) only the user can enter: 0700 from creation (no
+/// moment at the umask's mode), made 0700 again if it exists; a link in its place is refused.
 pub fn create_private_dir(path: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("cannot create {}", path.display()))?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+        .with_context(|| format!("cannot create {}", path.display()))?;
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("cannot read {}", path.display()))?;
+    if !metadata.is_dir() {
+        bail!("{} is not a directory (a link?)", path.display());
+    }
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
         .with_context(|| format!("cannot make {} private", path.display()))?;
     Ok(())
 }
 
-/// Reads a session's private key.
+/// Reads a private key file: refused if others can read it (mode & 0o077), checked on the
+/// open file; the text is wiped from memory once parsed.
 pub fn load_key(path: &Path) -> anyhow::Result<PrivateKey> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
-    PrivateKey::from_openssh(text).with_context(|| format!("{} is not a key", path.display()))
+    use std::io::Read as _;
+    let mut file =
+        fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let mode = file
+        .metadata()
+        .with_context(|| format!("cannot read {}", path.display()))?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 {
+        bail!(
+            "{} can be read by others (mode {:o}): it must be 0600",
+            path.display(),
+            mode & 0o777
+        );
+    }
+    let mut text = zeroize::Zeroizing::new(String::new());
+    file.read_to_string(&mut text)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    PrivateKey::from_openssh(text.as_bytes())
+        .with_context(|| format!("{} is not a key", path.display()))
 }
 
 /// Points `<home>/sessions/current` at a lease's session, replacing the link atomically.
@@ -103,6 +131,35 @@ mod tests {
         );
         assert_eq!(fs::read(dir.join("key")).unwrap(), b"secret");
         assert!(load_key(&dir.join("key")).is_err(), "not a key");
+    }
+
+    #[test]
+    fn a_link_or_a_key_others_can_read_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        create_private_dir(&real).unwrap();
+        assert_eq!(mode(&real), 0o700);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let error = create_private_dir(&link).unwrap_err().to_string();
+        assert!(error.contains("is not a directory (a link?)"), "{error}");
+
+        let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+        let path = real.join("key");
+        write_private(
+            &path,
+            key.to_openssh(writ_crypto::ssh_key::LineEnding::LF)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(load_key(&path).unwrap().public_key(), key.public_key());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let error = load_key(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("can be read by others (mode 640)"),
+            "{error}"
+        );
     }
 
     #[test]
