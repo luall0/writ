@@ -3,7 +3,8 @@
 
 - no `#[cfg(target_os ...)]` outside the platform crates and writd/src/platform.rs (rule 4);
 - no `println!` / `eprintln!` in library crates: they log with `tracing` (conventions);
-- no `mod.rs` outside `tests/common/` (module layout).
+- no `mod.rs` outside `tests/common/` (module layout);
+- every crate has a README.md: what it does and its scope (conventions).
 """
 
 import pathlib
@@ -23,6 +24,8 @@ PRINT = re.compile(r"\b(e?println!|e?print!|dbg!)")
 
 errors = []
 for crate in sorted(p for p in CRATES.iterdir() if p.is_dir()):
+    if not (crate / "README.md").is_file():
+        errors.append(f"{crate.relative_to(ROOT)}: no README.md (what it does, its scope)")
     for path in sorted(crate.rglob("*.rs")):
         rel = path.relative_to(ROOT).as_posix()
         if "/target/" in rel:
