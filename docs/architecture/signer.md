@@ -1,0 +1,60 @@
+# Signer and sealing
+
+Code: `crates/writ-signer` (trait, software backend, cross-platform hardware backends behind
+Cargo features). Platform-only backends, like the Secure Enclave, live in their platform crate
+(`writ-platform-macos`) and implement the same trait ([Platform interfaces](platform.md)).
+
+## Signer interface
+
+Keys sit behind an interface; the daemon never depends on the backend.
+
+```rust
+/// Abstraction over where agent keys live and how they sign.
+pub trait Signer: Send + Sync {
+    /// Keys this backend exposes (public part only).
+    fn list_keys(&self) -> Result<Vec<KeyInfo>>;
+    /// Sign raw data with the given key. The caller builds the SSHSIG / userauth blob.
+    fn sign(&self, key_id: &KeyId, data: &[u8]) -> Result<Signature>;
+    /// What this backend can do (algorithms, exportability, touch requirement).
+    fn capabilities(&self) -> Capabilities;
+}
+```
+
+| Backend | Algorithms | Key exportable? | Notes |
+|---|---|---|---|
+| **Software** (v1) | ed25519, P-256 | While unsealed, by root on the host | Encrypted keystore at rest, sealed start |
+| **YubiKey PIV** | P-256, P-384, ed25519 (recent firmware) | No | Touch policy must be `never` for unattended agent keys; USB passthrough to the container |
+| **Secure Enclave** | P-256 | No | Local mode on a Mac only; needs a code-signed native component |
+| **TPM 2.0** | P-256 | No | Possible future backend on the server |
+| **ssh-agent** (any socket: Secretive, yubikey-agent, 1Password…) | Whatever the agent holds | Depends on what backs it | Lets the daemon reuse an existing agent. Caveat: if agents run as the same user and can reach that socket, they can bypass Writ; only safe when the socket is out of the agents' reach (other user, other host) |
+
+The same interface also holds the **upstream credentials** (the SSH key the daemon uses to
+push to forges), so those can move to a YubiKey too.
+
+v1 ships the software backend; the others are in the [backlog](../backlog/README.md) (and
+[Q27](../decisions.md#open-questions) for the Secure Enclave in local mode).
+
+## Startup and sealing
+
+The daemon always **starts sealed**: it serves nothing except the unseal endpoint until
+unlocked ([Q17](../decisions.md)).
+
+- Software keys are stored in an encrypted keystore (age format), with a random data key.
+- v1: `writ unseal` on the Mac asks for the keystore passphrase **and** signs an unseal
+  approval with Secretive. Both travel over the authenticated channel; the daemon decrypts in
+  memory only.
+- Later: the data key is wrapped to hardware recipients (age plugins for the Secure Enclave or
+  YubiKey), so unsealing needs no passphrase. Secretive can't do this part because SSH keys
+  only sign; they can't decrypt.
+- A recovery recipient (offline YubiKey or paper key) avoids losing everything with one device.
+- Hardware signer backends (YubiKey, TPM) don't need the keystore; sealing then only gates the
+  daemon.
+- How the data key is recovered is a `KeystoreUnlock` implementation (passphrase + approver
+  signature in v1; age plugin recipients later), so new unseal methods plug in without
+  touching the sealing logic ([Platform interfaces](platform.md)).
+
+The unseal sequence is [Flows § 7](../flows.md#7-daemon-startup-sealed). Until unsealed, every
+request fails closed with "daemon sealed".
+
+Secrets held in memory (decrypted keys, the data key, tokens) are zeroized on drop and never
+printed through `Debug` or logs.

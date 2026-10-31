@@ -1,0 +1,13 @@
+# Rust
+/target/
+
+# Local dev daemon data (test keys, mirrors, leases)
+/dev/data/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local Claude settings
+.claude/settings.local.json
