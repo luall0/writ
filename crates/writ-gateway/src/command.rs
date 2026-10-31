@@ -1,13 +1,15 @@
 //! Commands a client may run through the gateway. Anything else is refused. Which identity
 //! may run which command is decided by the connection handler.
 
+use writ_core::names::RepoName;
+
 /// A parsed exec request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// `git-upload-pack '<repo>'`: fetch.
-    UploadPack { repo: String },
-    /// `git-receive-pack '<repo>'`: push.
-    ReceivePack { repo: String },
+    /// `git-upload-pack '<repo>.git'`: fetch.
+    UploadPack { repo: RepoName },
+    /// `git-receive-pack '<repo>.git'`: push.
+    ReceivePack { repo: RepoName },
     /// `writ-sign <namespace>`: sign the object sent on stdin.
     Sign { namespace: String },
     /// `writ …`: a lease or approval command (`writ_proto::Command`).
@@ -43,15 +45,12 @@ fn unquote(arg: &str) -> Option<&str> {
     (!inner.contains('\'')).then_some(inner)
 }
 
-/// A repo is a plain name (`omega-code.git`), never a path.
-fn repo_name(path: &str) -> Option<String> {
+/// A repo is a registry name, with or without `.git` and one leading `/` (`/omega-code.git`),
+/// never a path.
+fn repo_name(path: &str) -> Option<RepoName> {
     let name = path.strip_prefix('/').unwrap_or(path);
-    let valid = !name.is_empty()
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-    valid.then(|| name.to_owned())
+    let name = name.strip_suffix(".git").unwrap_or(name);
+    name.parse().ok()
 }
 
 #[cfg(test)]
@@ -60,17 +59,20 @@ mod tests {
 
     #[test]
     fn parses_git_commands() {
-        assert_eq!(
-            Command::parse(b"git-upload-pack '/demo.git'"),
-            Some(Command::UploadPack {
-                repo: "demo.git".into()
-            })
-        );
+        let demo: RepoName = "demo".parse().unwrap();
+        for line in [
+            &b"git-upload-pack '/demo.git'"[..],
+            b"git-upload-pack 'demo.git'",
+            b"git-upload-pack 'demo'",
+        ] {
+            assert_eq!(
+                Command::parse(line),
+                Some(Command::UploadPack { repo: demo.clone() })
+            );
+        }
         assert_eq!(
             Command::parse(b"git-receive-pack 'demo.git'"),
-            Some(Command::ReceivePack {
-                repo: "demo.git".into()
-            })
+            Some(Command::ReceivePack { repo: demo })
         );
         assert_eq!(
             Command::parse(b"writ-sign git"),
@@ -94,6 +96,11 @@ mod tests {
             b"git-upload-pack /demo.git",
             b"git-upload-pack 'demo'\\''.git'",
             b"git-upload-pack ''",
+            b"git-upload-pack '-demo.git'",
+            b"git-upload-pack '//demo.git'",
+            b"git-upload-pack 'demo.git.git'",
+            b"git-upload-pack '.git'",
+            b"git-upload-pack 'de mo.git'",
             b"writ-sign writ-approval",
             b"writ ls -l",
             b"writ request extra",

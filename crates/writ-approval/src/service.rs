@@ -11,7 +11,7 @@ use writ_core::caller::{self, CallerFacts, ProcessRef};
 use writ_core::config::{Operation, PolicyConfig};
 use writ_core::fit::{self, Submission};
 use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, State, TicketRecord};
-use writ_core::names::{KeyFingerprint, TicketId};
+use writ_core::names::{KeyFingerprint, RepoName, TicketId};
 use writ_core::policy::{self, CertIdentity, Denial, DenyCode};
 use writ_core::signed::{MAX_FEEDBACK_CHARS, Refusal, Revocation};
 use writ_core::ticket::{Ticket, TicketRequest};
@@ -186,6 +186,11 @@ impl Service {
         self.ca.public_key()
     }
 
+    /// The repo registry and the templates.
+    pub fn policy(&self) -> &PolicyConfig {
+        &self.config.policy
+    }
+
     /// Now, by the service's clock.
     pub fn now(&self) -> Result<Timestamp, ApiError> {
         let seconds = i64::try_from(self.clock.now_ms() / 1000).map_err(internal)?;
@@ -211,11 +216,28 @@ impl Service {
         })
     }
 
-    /// Logs a denial. The request is denied whatever happens to the log line.
-    fn log_denial(inner: &mut Inner, event: &AuditEvent) {
+    /// Logs a denial, or a change the daemon makes on its own (an expiry). What it records
+    /// happens whatever becomes of the log line: a denial is denied anyway.
+    fn log_best_effort(inner: &mut Inner, event: &AuditEvent) {
         if let Err(e) = inner.audit.append(event) {
             eprintln!("writd: cannot write the audit log: {e}");
         }
+    }
+
+    /// Writes `event`, then makes the change it records: nothing changes without its log
+    /// line. If the change then fails, a denial line with the reason follows.
+    fn logged<T>(
+        inner: &mut Inner,
+        event: AuditEvent,
+        change: impl FnOnce(&mut Inner) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        Self::log(inner, &event)?;
+        change(inner).inspect_err(|e| {
+            let mut failed = event;
+            failed.result = Outcome::Denied;
+            failed.reason = Some(format!("not applied: {}", e.message));
+            Self::log_best_effort(inner, &failed);
+        })
     }
 
     fn deny_serial(&self, serial: u64) {
@@ -275,7 +297,7 @@ impl Service {
                     .ticket(id)
                     .lease(record.ticket.lease_id())
                     .reason("not signed before expires_at");
-                Self::log_denial(inner, &event);
+                Self::log_best_effort(inner, &event);
                 changed = true;
             }
         }
@@ -298,7 +320,7 @@ impl Service {
             let event = AuditEvent::new(now, kind, Outcome::Done)
                 .lease(&lease.id)
                 .cert(lease.cert_serial);
-            Self::log_denial(inner, &event);
+            Self::log_best_effort(inner, &event);
             changed = true;
         }
         Ok(changed)
@@ -327,7 +349,7 @@ impl Service {
             let event = AuditEvent::new(now, EventKind::Submit, Outcome::Denied)
                 .caller(caller)
                 .reason(reason);
-            Self::log_denial(inner, &event);
+            Self::log_best_effort(inner, &event);
             Err(error)
         };
 
@@ -378,15 +400,16 @@ impl Service {
             }
         };
         let pubkey = session_key.to_openssh().map_err(internal)?;
-        inner
-            .store
-            .insert_pending(&ticket, &pubkey, now)
-            .map_err(internal)?;
         let event = AuditEvent::new(now, EventKind::Submit, Outcome::Allowed)
             .ticket(&ticket.id)
             .lease(ticket.lease_id())
             .caller(caller);
-        Self::log(&mut inner, &event)?;
+        Self::logged(&mut inner, event, |inner| {
+            inner
+                .store
+                .insert_pending(&ticket, &pubkey, now)
+                .map_err(internal)
+        })?;
         drop(inner);
         self.changed.notify_waiters();
         self.notify_waiting(&ticket);
@@ -422,13 +445,22 @@ impl Service {
 
     /// Waits until the ticket is decided. Only the session that submitted it (same key) can
     /// wait on it; to anyone else it doesn't exist.
+    /// The store is read on a blocking thread, never on the runtime's.
     pub async fn wait(&self, id: &TicketId, session_key: &PublicKey) -> Result<Decision, ApiError> {
         let fingerprint = fingerprint(session_key)?;
+        let service = self
+            .me
+            .upgrade()
+            .ok_or_else(|| internal("the service is gone"))?;
         loop {
             let notified = self.changed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let deadline = match self.decision(id, &fingerprint)? {
+            let (me, ticket, key) = (Arc::clone(&service), id.clone(), fingerprint.clone());
+            let decided = tokio::task::spawn_blocking(move || me.decision(&ticket, &key))
+                .await
+                .map_err(internal)??;
+            let deadline = match decided {
                 Ok(decision) => return Ok(decision),
                 Err(expires_at) => expires_at,
             };
@@ -437,7 +469,10 @@ impl Service {
                 Duration::from_secs(u64::try_from(left.max(0)).unwrap_or(0) + 1).min(WAIT_RECHECK);
             tokio::select! {
                 () = &mut notified => {}
-                () = tokio::time::sleep(sleep) => self.sweep(),
+                () = tokio::time::sleep(sleep) => {
+                    let me = Arc::clone(&service);
+                    tokio::task::spawn_blocking(move || me.sweep()).await.map_err(internal)?;
+                }
             }
         }
     }
@@ -596,8 +631,14 @@ impl Service {
             .ticket(id)
             .map_err(internal)?
             .ok_or_else(|| not_found(id))?;
+        // An amendment's approval is logged as `amend`, a new lease's as `grant`.
+        let kind = if record.ticket.ticket.amends.is_some() {
+            EventKind::Amend
+        } else {
+            EventKind::Grant
+        };
         let deny = |inner: &mut Inner, reason: String, approver: Option<&KeyFingerprint>| {
-            let mut event = AuditEvent::new(now, EventKind::Grant, Outcome::Denied)
+            let mut event = AuditEvent::new(now, kind, Outcome::Denied)
                 .ticket(id)
                 .lease(record.ticket.lease_id())
                 .caller(caller)
@@ -605,7 +646,7 @@ impl Service {
             if let Some(approver) = approver {
                 event = event.approver(approver);
             }
-            Self::log_denial(inner, &event);
+            Self::log_best_effort(inner, &event);
             Err(ApiError::new(format!("approval refused: {reason}")))
         };
         if record.state != State::Pending {
@@ -645,17 +686,18 @@ impl Service {
                 Ok(result) => result,
                 Err(e) => return deny(&mut inner, e.to_string(), Some(&approver)),
             };
-            inner
-                .store
-                .apply_amendment(&updated, &applied, now)
-                .map_err(internal)?;
             let event = AuditEvent::new(now, EventKind::Amend, Outcome::Allowed)
                 .lease(&lease_id)
                 .ticket(id)
                 .cert(updated.cert_serial)
                 .approver(&approver)
                 .caller(caller);
-            Self::log(&mut inner, &event)?;
+            Self::logged(&mut inner, event, |inner| {
+                inner
+                    .store
+                    .apply_amendment(&updated, &applied, now)
+                    .map_err(internal)
+            })?;
             drop(inner);
             self.changed.notify_waiters();
             return Ok(Ack {
@@ -691,26 +733,19 @@ impl Service {
             })
             .and_then(|cert| Ok(cert.to_openssh()?))
             .map_err(internal)?;
-        inner
-            .store
-            .activate(&lease, &certificate, now)
-            .map_err(internal)?;
-        if let Some(watch) = watch {
-            inner.watches.insert(lease.id.clone(), watch);
-        }
         let event = AuditEvent::new(now, EventKind::Grant, Outcome::Allowed)
             .lease(&lease.id)
             .cert(serial)
             .approver(&approver)
             .caller(caller);
-        if let Err(e) = Self::log(&mut inner, &event) {
-            // Nothing is granted without a log line: take it back at once.
-            let _ = inner
+        Self::logged(&mut inner, event, |inner| {
+            inner
                 .store
-                .transition(&lease.id, State::Active, State::Revoked, now);
-            inner.watches.remove(&lease.id);
-            self.deny_serial(serial);
-            return Err(e);
+                .activate(&lease, &certificate, now)
+                .map_err(internal)
+        })?;
+        if let Some(watch) = watch {
+            inner.watches.insert(lease.id.clone(), watch);
         }
         drop(inner);
         self.changed.notify_waiters();
@@ -790,7 +825,7 @@ impl Service {
             .lease(lease_id)
             .cert(lease.cert_serial)
             .reason("the session's process ended");
-        Self::log_denial(&mut inner, &event);
+        Self::log_best_effort(&mut inner, &event);
         drop(inner);
         self.changed.notify_waiters();
     }
@@ -832,7 +867,7 @@ impl Service {
                 .lease(record.ticket.lease_id())
                 .caller(caller)
                 .reason(reason.clone());
-            Self::log_denial(inner, &event);
+            Self::log_best_effort(inner, &event);
             Err(ApiError::new(format!("refusal not accepted: {reason}")))
         };
         let feedback = request.feedback.trim();
@@ -858,10 +893,6 @@ impl Service {
                 format!("ticket {id} is {}, not pending", record.state),
             );
         }
-        inner
-            .store
-            .refuse(id, &request.feedback, now)
-            .map_err(internal)?;
         let mut event = AuditEvent::new(now, EventKind::Refuse, Outcome::Done)
             .ticket(id)
             .lease(record.ticket.lease_id())
@@ -869,10 +900,14 @@ impl Service {
         if let Some(approver) = &approver {
             event = event.approver(approver);
         }
-        let logged = Self::log(&mut inner, &event);
+        Self::logged(&mut inner, event, |inner| {
+            inner
+                .store
+                .refuse(id, &request.feedback, now)
+                .map_err(internal)
+        })?;
         drop(inner);
         self.changed.notify_waiters();
-        logged?;
         Ok(Ack {
             id: id.clone(),
             state: State::Refused,
@@ -901,7 +936,7 @@ impl Service {
                 .lease(record.ticket.lease_id())
                 .caller(caller)
                 .reason(reason.clone());
-            Self::log_denial(inner, &event);
+            Self::log_best_effort(inner, &event);
             Err(ApiError::new(format!("revocation not accepted: {reason}")))
         };
         let document = Revocation::new(id.clone())
@@ -917,20 +952,24 @@ impl Service {
         }
         match (record.state, inner.store.lease(id).map_err(internal)?) {
             (State::Active, Some(lease)) => {
-                inner
-                    .store
-                    .transition(id, State::Active, State::Revoked, now)
-                    .map_err(internal)?;
+                let event = event.lease(id).cert(lease.cert_serial);
+                Self::logged(&mut inner, event, |inner| {
+                    inner
+                        .store
+                        .transition(id, State::Active, State::Revoked, now)
+                        .map_err(internal)
+                })?;
                 inner.watches.remove(id);
                 self.deny_serial(lease.cert_serial);
-                event = event.lease(id).cert(lease.cert_serial);
             }
             (State::Pending, _) => {
-                inner
-                    .store
-                    .transition(id, State::Pending, State::Revoked, now)
-                    .map_err(internal)?;
-                event = event.ticket(id).lease(record.ticket.lease_id());
+                let event = event.ticket(id).lease(record.ticket.lease_id());
+                Self::logged(&mut inner, event, |inner| {
+                    inner
+                        .store
+                        .transition(id, State::Pending, State::Revoked, now)
+                        .map_err(internal)
+                })?;
             }
             (state, _) => {
                 return deny(
@@ -939,10 +978,8 @@ impl Service {
                 );
             }
         }
-        let logged = Self::log(&mut inner, &event);
         drop(inner);
         self.changed.notify_waiters();
-        logged?;
         Ok(Ack {
             id: id.clone(),
             state: State::Revoked,
@@ -1015,7 +1052,7 @@ impl Service {
                 Ok(lease)
             }
             Err(denial) => {
-                Self::log_denial(&mut inner, &event.denial(&denial));
+                Self::log_best_effort(&mut inner, &event.denial(&denial));
                 Err(denial)
             }
         }
@@ -1061,25 +1098,75 @@ impl Service {
         Ok(lease)
     }
 
-    /// Logs a certificate the gateway refused before any lease lookup (unknown CA, expired,
-    /// revoked, wrong principal).
-    pub fn certificate_refused(
-        &self,
-        serial: u64,
-        key_id: &str,
-        reason: &str,
-        caller: &CallerFacts,
-    ) {
+    /// Logs a request the gateway turned away on its own, without a lease decision: a
+    /// certificate refused before any lease lookup (unknown CA, expired, revoked, wrong
+    /// principal), a caller the attestor can't attest, a command it doesn't serve, an unknown
+    /// repo, a ref update or a signature it refused.
+    pub fn gateway_denied(&self, denial: &GatewayDenial, caller: &CallerFacts) {
         let Ok(now) = self.now() else { return };
         let Ok(mut inner) = self.lock() else { return };
-        let mut event = AuditEvent::new(now, EventKind::Connect, Outcome::Denied)
-            .cert(serial)
+        let mut event = AuditEvent::new(now, denial.kind, Outcome::Denied)
             .caller(caller)
-            .reason(format!("certificate refused: {reason}"));
-        if let Ok(id) = key_id.parse::<TicketId>() {
+            .refs(denial.refs.iter().cloned())
+            .reason(denial.reason.clone());
+        if let Some(serial) = denial.serial {
+            event = event.cert(serial);
+        }
+        if let Some(id) = denial
+            .key_id
+            .as_deref()
+            .and_then(|k| k.parse::<TicketId>().ok())
+        {
             event = event.lease(&id);
         }
-        Self::log_denial(&mut inner, &event);
+        if let Some(repo) = &denial.repo {
+            event = event.repo(repo);
+        }
+        Self::log_best_effort(&mut inner, &event);
+    }
+}
+
+/// What the gateway denied on its own (see [`Service::gateway_denied`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayDenial {
+    pub kind: EventKind,
+    /// The session certificate's serial, when one was presented.
+    pub serial: Option<u64>,
+    /// The certificate's key id (the lease id, if it is one).
+    pub key_id: Option<String>,
+    pub repo: Option<RepoName>,
+    /// The ref updates refused.
+    pub refs: Vec<String>,
+    pub reason: String,
+}
+
+impl GatewayDenial {
+    pub fn new(kind: EventKind, reason: impl Into<String>) -> Self {
+        Self {
+            kind,
+            serial: None,
+            key_id: None,
+            repo: None,
+            refs: Vec::new(),
+            reason: reason.into(),
+        }
+    }
+
+    /// The certificate the request came with.
+    pub fn cert(mut self, cert: &CertIdentity) -> Self {
+        self.serial = Some(cert.serial);
+        self.key_id = Some(cert.key_id.clone());
+        self
+    }
+
+    pub fn repo(mut self, repo: &RepoName) -> Self {
+        self.repo = Some(repo.clone());
+        self
+    }
+
+    pub fn refs(mut self, refs: impl IntoIterator<Item = String>) -> Self {
+        self.refs = refs.into_iter().collect();
+        self
     }
 }
 

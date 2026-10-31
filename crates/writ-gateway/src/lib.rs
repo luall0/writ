@@ -14,9 +14,12 @@
 //! and the deny list are the approval service's ([`writ_approval::Service`]); when a lease
 //! ends, the gateway drops its open sessions.
 //!
-//! Until M3 and M4, signing uses a key held in memory and pushes are only checked against a
-//! fixed list of protected refs (the M0 spike), for any active lease that allows the
-//! operation.
+//! Until M3 and M4, signing uses a key held in memory and pushes are only checked against the
+//! repo's protected refs (the M0 spike), for any active lease that allows the operation and
+//! names the repo.
+//!
+//! Every request the gateway turns away on its own is logged through
+//! [`Service::gateway_denied`]; the lease decisions are logged by the service itself.
 
 mod command;
 mod handler;
@@ -34,9 +37,13 @@ use std::time::Duration;
 use russh::Disconnect;
 use tokio::net::UnixListener;
 use tokio::sync::broadcast::error::RecvError;
-use writ_approval::Service;
+use writ_approval::{EventKind, GatewayDenial, Service};
+use writ_core::caller::CallerFacts;
+use writ_core::config::Operation;
+use writ_core::lease::Lease;
+use writ_core::policy::{CertIdentity, Denial, DenyCode};
 use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
-use writ_platform::{CallerAttestor, Transport};
+use writ_platform::{CallerAttestor, PeerInfo, Transport};
 
 pub use command::Command;
 pub use https::TlsIdentity;
@@ -82,8 +89,6 @@ pub struct GatewayConfig {
     pub hook_program: PathBuf,
     /// Private directory for the gateway's own files (hooks, the hook socket).
     pub state_dir: PathBuf,
-    /// Refs no push may update (`refs/heads/main`, or a prefix pattern `refs/tags/*`).
-    pub protected_refs: Vec<String>,
 }
 
 /// A running gateway, shared by every connection.
@@ -157,8 +162,36 @@ impl Gateway {
         Ok(gateway)
     }
 
+    /// The approval service the gateway asks.
     pub fn service(&self) -> &Arc<Service> {
         &self.shared.service
+    }
+
+    /// [`Service::authorize`], off the async threads (it reads the store and syncs the audit
+    /// log).
+    async fn authorize(
+        &self,
+        cert: &CertIdentity,
+        caller: &CallerFacts,
+        operation: Option<Operation>,
+    ) -> std::result::Result<Lease, Denial> {
+        let (service, cert, caller) = (self.service().clone(), cert.clone(), caller.clone());
+        tokio::task::spawn_blocking(move || service.authorize(&cert, &caller, operation))
+            .await
+            .unwrap_or_else(|_| {
+                Err(Denial {
+                    code: DenyCode::Invalid,
+                    reason: "internal error in the daemon".to_owned(),
+                    hint: None,
+                })
+            })
+    }
+
+    /// Logs a request the gateway turned away on its own ([`Service::gateway_denied`]), off
+    /// the async threads.
+    async fn log_denial(&self, denial: GatewayDenial, caller: CallerFacts) {
+        let service = self.service().clone();
+        let _ = tokio::task::spawn_blocking(move || service.gateway_denied(&denial, &caller)).await;
     }
 
     /// Serves SSH connections from a transport, with what `attestor` says about each caller,
@@ -175,6 +208,7 @@ impl Gateway {
                 Ok(facts) => facts,
                 Err(e) => {
                     eprintln!("writ gateway: connection turned away: {e}");
+                    self.turned_away(&connection.peer, &e).await;
                     continue;
                 }
             };
@@ -194,6 +228,19 @@ impl Gateway {
                 }
             });
         }
+    }
+
+    /// Logs a caller the attestor couldn't attest (event `connect`, denied).
+    async fn turned_away(&self, peer: &PeerInfo, error: &writ_platform::PlatformError) {
+        let caller = match peer {
+            PeerInfo::Tcp { remote } => CallerFacts {
+                source_addr: Some(remote.ip()),
+                process_chain: None,
+            },
+            _ => CallerFacts::default(),
+        };
+        let denial = GatewayDenial::new(EventKind::Connect, format!("caller turned away: {error}"));
+        self.log_denial(denial, caller).await;
     }
 
     fn connection_number(&self) -> u64 {

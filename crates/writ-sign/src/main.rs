@@ -5,7 +5,9 @@
 //! `-Y find-principals`, …) is the real `ssh-keygen`'s job.
 //!
 //! The daemon is found from git's configuration: `writ.url` (`ssh://git@host:port`) and the
-//! SSH command git itself uses (`GIT_SSH_COMMAND`, then `core.sshCommand`, then `ssh`).
+//! SSH command git itself uses (`GIT_SSH_COMMAND`, then `core.sshCommand`). There is no
+//! fallback to a plain `ssh`: it would offer the user's own keys and agent and trust their
+//! `known_hosts`, so without a configured command nothing is sent.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -77,15 +79,30 @@ fn parse_url(url: &str) -> anyhow::Result<(String, Option<String>)> {
         .with_context(|| format!("writ.url must be ssh://user@host[:port], got {url}"))?;
     let rest = rest.trim_end_matches('/');
     let (destination, port) = match rest.rsplit_once(':') {
-        Some((destination, port)) if port.bytes().all(|b| b.is_ascii_digit()) => {
+        Some((destination, port))
+            if !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit()) =>
+        {
             (destination, Some(port.to_owned()))
         }
         _ => (rest, None),
     };
-    if destination.is_empty() || destination.starts_with('-') || destination.contains('/') {
+    // An IPv6 address comes bracketed (`git@[::1]`); ssh takes it bare.
+    let destination = match destination.split_once('[') {
+        Some((user, host)) => match host.strip_suffix(']') {
+            Some(ip) if ip.parse::<std::net::Ipv6Addr>().is_ok() => format!("{user}{ip}"),
+            _ => bail!("invalid writ.url {url}"),
+        },
+        None if destination.contains(':') => bail!("invalid writ.url {url}"),
+        None => destination.to_owned(),
+    };
+    if destination.is_empty()
+        || destination.starts_with('-')
+        || destination.contains('/')
+        || destination.ends_with('@')
+    {
         bail!("invalid writ.url {url}");
     }
-    Ok((destination.to_owned(), port))
+    Ok((destination, port))
 }
 
 fn sign(args: &[OsString]) -> anyhow::Result<()> {
@@ -94,10 +111,10 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
         .with_context(|| format!("reading {}", request.file.display()))?;
     let url = git_config("writ.url").context("git config writ.url is not set (run writ init)")?;
     let (destination, port) = parse_url(&url)?;
-    let ssh = std::env::var("GIT_SSH_COMMAND")
-        .ok()
-        .or_else(|| git_config("core.sshCommand"))
-        .unwrap_or_else(|| "ssh".to_owned());
+    let ssh = ssh_command(
+        std::env::var("GIT_SSH_COMMAND").ok(),
+        git_config("core.sshCommand"),
+    )?;
 
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(format!("{ssh} \"$@\"")).arg("writ-sign");
@@ -120,10 +137,38 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
     if !out.status.success() {
         bail!("the daemon refused to sign (see above)");
     }
+    check_signature(&out.stdout)?;
     let mut sig_path = request.file.into_os_string();
     sig_path.push(".sig");
     std::fs::write(&sig_path, &out.stdout).context("cannot write the signature")?;
     Ok(())
+}
+
+/// The SSH command to reach the daemon: `GIT_SSH_COMMAND`, then `core.sshCommand`. Never a
+/// plain `ssh` (see the module documentation).
+fn ssh_command(from_env: Option<String>, from_config: Option<String>) -> anyhow::Result<String> {
+    from_env
+        .filter(|c| !c.trim().is_empty())
+        .or(from_config.filter(|c| !c.trim().is_empty()))
+        .context(
+            "no SSH command for the daemon: set core.sshCommand to the session's key and \
+             certificate (see docs/architecture/clients.md, repo setup)",
+        )
+}
+
+/// What the daemon sent is one armored SSH signature, nothing else.
+fn check_signature(out: &[u8]) -> anyhow::Result<()> {
+    let text = std::str::from_utf8(out).ok().map(str::trim_end);
+    match text {
+        Some(text)
+            if text.starts_with("-----BEGIN SSH SIGNATURE-----\n")
+                && text.ends_with("\n-----END SSH SIGNATURE-----")
+                && text.matches("-----BEGIN").count() == 1 =>
+        {
+            Ok(())
+        }
+        _ => bail!("the daemon sent something that is not an SSH signature"),
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +201,51 @@ mod tests {
         assert!(parse_url("git@writ.home:2222").is_err());
         assert!(parse_url("ssh://-oProxyCommand=x").is_err());
         assert!(parse_url("ssh://git@host/path").is_err());
+        // An empty or out-of-range port is no port: the rest is then not a valid host.
+        assert!(parse_url("ssh://git@host:").is_err());
+        assert!(parse_url("ssh://git@host:123456").is_err());
+        assert!(parse_url("ssh://git@").is_err());
+        assert_eq!(
+            parse_url("ssh://git@[::1]:2222").unwrap(),
+            ("git@::1".into(), Some("2222".into()))
+        );
+        assert_eq!(
+            parse_url("ssh://git@[::1]").unwrap(),
+            ("git@::1".into(), None)
+        );
+        assert!(parse_url("ssh://git@[not-an-ip]:2222").is_err());
+        assert!(parse_url("ssh://git@::1").is_err());
+    }
+
+    #[test]
+    fn never_falls_back_to_a_plain_ssh() {
+        let some = |s: &str| Some(s.to_owned());
+        assert_eq!(
+            ssh_command(some("ssh -i k"), some("ssh -i c")).unwrap(),
+            "ssh -i k"
+        );
+        assert_eq!(ssh_command(None, some("ssh -i c")).unwrap(), "ssh -i c");
+        assert_eq!(
+            ssh_command(some("  "), some("ssh -i c")).unwrap(),
+            "ssh -i c"
+        );
+        assert!(ssh_command(None, None).is_err());
+        assert!(ssh_command(some(""), some(" ")).is_err());
+    }
+
+    #[test]
+    fn only_an_armored_signature_is_written() {
+        let sig = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n";
+        assert!(check_signature(sig.as_bytes()).is_ok());
+        for bad in [
+            "",
+            "ok\n",
+            "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n",
+            "junk\n-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n",
+            "-----BEGIN SSH SIGNATURE-----\n-----BEGIN SSH SIGNATURE-----\n-----END SSH SIGNATURE-----",
+        ] {
+            assert!(check_signature(bad.as_bytes()).is_err(), "{bad:?}");
+        }
+        assert!(check_signature(&[0xff, 0xfe]).is_err());
     }
 }

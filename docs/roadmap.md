@@ -21,6 +21,7 @@ an unchanged core.
 | M0 | [Protocol spike](history/m0-protocol-spike.md) ✅ | Go for the gateway (certificates, git, daemon-signed commits, agent-held approval keys); local mode's signer: CryptoKit Secure Enclave key under a `_writd` user |
 | M1 | [Lease model and policy core](history/m1-lease-model-and-policy-core.md) ✅ | `writ-core`: tickets, templates, registry, narrowing, lifecycle, decisions; store and audit log |
 | M2 | [Ticket flow](history/m2-ticket-flow.md) ✅ | `writ request` / `sign` / `refuse` / `revoke` / `ls`, certificates, the approval API over SSH and HTTPS, notifications (Telegram) |
+| M2.5 | [Code quality checkup](#m25--code-quality-checkup) | A review of code quality and architecture after M2, the approved fixes, and `docs/conventions.md`, the repo's code conventions |
 | M3 | [Signed commits](#m3--signed-commits) | `writ-sign`, the sign command, the ledger, `writ init` |
 | M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only forges |
@@ -52,6 +53,25 @@ caller checks, decisions) and `writ-store` (leases, ledger, audit log).
 traits with their portable implementations, fakes and contract suites; the approval service;
 the approval API over SSH and HTTPS (each optional); `writ request` / `wait` / `ls` / `sign` /
 `refuse` / `revoke`; certificates and revocation; Telegram notifications.
+
+## M2.5 — Code quality checkup
+
+A stop between M2 and M3: review the code and architecture built so far, fix what is approved,
+and write down the conventions the code follows so later milestones keep to them. No new
+behavior: every change keeps the existing tests passing unchanged in meaning.
+
+- A review report (module layout, public API surface, errors, logging, duplication, tests),
+  discussed and approved item by item.
+- The approved fixes.
+- `docs/conventions.md`: the repo's code conventions (crate and module
+  layout, interfaces and their implementations, errors, secrets, logging, docs, tests),
+  linked from [AGENTS.md](../AGENTS.md).
+
+Acceptance:
+- [ ] Every approved item of the review is done, or moved to a later milestone with a reason.
+- [ ] `docs/conventions.md` exists, the code follows it, and AGENTS.md points at it.
+- [ ] `make check` and `make test` pass; the M2 manual checks still pass against the running
+      daemon.
 
 ## M3 — Signed commits
 

@@ -176,7 +176,6 @@ impl Spike {
             signing_key: agent_key.clone(),
             hook_program: PathBuf::from(WRITD),
             state_dir: root.join("run"),
-            protected_refs: vec!["refs/heads/main".into(), "refs/tags/*".into()],
         };
         let gateway = runtime
             .block_on(Gateway::start(config, service.clone()))
@@ -453,6 +452,19 @@ fn fetch_and_push_through_the_gateway() {
         stderr(&out)
     );
     assert_eq!(spike.bare_ref("refs/tags/v1"), None);
+
+    // Both refusals are in the audit log, written before git was answered.
+    let audit = fs::read_to_string(spike.root().join("audit.jsonl")).unwrap();
+    let refused: Vec<serde_json::Value> = audit
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|e| e["event"] == "push" && e["result"] == "denied")
+        .collect();
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert_eq!(refused[0]["reason"], "refs/heads/main is protected");
+    assert_eq!(refused[0]["refs"][0], "refs/heads/main");
+    assert_eq!(refused[0]["repo"], "demo");
+    assert_eq!(refused[1]["reason"], "refs/tags/v1 is protected");
 
     // Fetch sees the pushed branch.
     let other = spike.clone("other");

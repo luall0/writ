@@ -24,7 +24,7 @@ use writ_crypto::ssh_key::{Certificate, HashAlg, PrivateKey};
 use writ_crypto::sshsig;
 use writ_platform::testing::{FakeWatcher, RecordingNotifier};
 use writ_proto::{ApproveRequest, Decision, Decisions, RefuseRequest, Relation, RevokeRequest};
-use writ_store::{AuditLog, Store, looks_secret};
+use writ_store::{AuditBreaker, AuditLog, Store, looks_secret};
 
 const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 const START: u64 = 1_800_000_000;
@@ -52,6 +52,7 @@ struct Harness {
     watcher: FakeWatcher,
     approver: PrivateKey,
     ca_fingerprint: writ_crypto::ssh_key::Fingerprint,
+    audit_breaker: AuditBreaker,
 }
 
 fn facts() -> CallerFacts {
@@ -73,6 +74,8 @@ impl Harness {
         let ca_fingerprint = ca_key.public_key().fingerprint(HashAlg::Sha256);
         let clock = Arc::new(ManualClock::at_unix(START));
         let notifier = RecordingNotifier::new();
+        let (audit, audit_breaker) =
+            AuditLog::open_breakable(&dir.path().join("audit.jsonl")).unwrap();
         let service = Service::new(
             ServiceConfig {
                 policy: PolicyConfig::from_yaml(POLICY).unwrap(),
@@ -85,7 +88,7 @@ impl Harness {
             },
             CertificateAuthority::new(ca_key),
             Store::open(&dir.path().join("leases.db")).unwrap(),
-            AuditLog::open(&dir.path().join("audit.jsonl")).unwrap(),
+            audit,
             Platform {
                 notifier: Arc::new(notifier.clone()),
                 watcher: Arc::new(watcher.clone()),
@@ -101,6 +104,7 @@ impl Harness {
             watcher,
             approver,
             ca_fingerprint,
+            audit_breaker,
         }
     }
 
@@ -666,4 +670,122 @@ fn the_audit_log_holds_every_decision_and_no_secret() {
             .to_string()
     );
     assert_eq!(grant["source_addr"], "192.0.2.7");
+}
+
+#[test]
+fn nothing_changes_without_its_audit_line() {
+    let h = Harness::new(Decisions::Signed);
+    let audit_lines = || h.audit().len();
+
+    // Submission: no pending ticket.
+    h.audit_breaker.set_broken(true);
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let error = h
+        .service
+        .submit(key.public_key(), REQUEST.as_bytes(), &facts())
+        .unwrap_err();
+    assert_eq!(
+        error.message,
+        "the audit log can't be written; nothing was done"
+    );
+    assert!(h.service.list(true).unwrap().tickets.is_empty());
+    h.audit_breaker.set_broken(false);
+
+    // Grant: the ticket stays pending, no certificate.
+    let (ticket, key) = h.submit(REQUEST);
+    let before = audit_lines();
+    h.audit_breaker.set_broken(true);
+    assert!(h.approve(&ticket).is_err());
+    h.audit_breaker.set_broken(false);
+    assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
+    assert_eq!(audit_lines(), before, "a broken log holds nothing");
+
+    // Refusal and withdrawal: still pending.
+    h.audit_breaker.set_broken(true);
+    assert!(h.refuse_signed(&ticket.id, "no").is_err());
+    assert!(h.revoke_signed(&ticket.id).is_err());
+    h.audit_breaker.set_broken(false);
+    assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
+
+    // With the log back, the same approval goes through.
+    assert_eq!(h.approve(&ticket).unwrap(), State::Active);
+    let Decision::Active { certificate, .. } = h.wait(&ticket.id, &key) else {
+        panic!("expected an active lease");
+    };
+    let cert = Certificate::from_openssh(&certificate).unwrap();
+
+    // Amendment: the lease keeps its terms.
+    let amendment = REQUEST
+        .replace("max_signatures: 30", "max_signatures: 40")
+        .replace(
+            "  plan: [Add the callback route, Tests]",
+            &format!(
+                "  plan: [Add the callback route, Tests]\n  amends: {}",
+                ticket.id
+            ),
+        );
+    let submitted = h
+        .service
+        .submit(key.public_key(), amendment.as_bytes(), &facts())
+        .unwrap();
+    let amendment = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+    h.audit_breaker.set_broken(true);
+    assert!(h.approve(&amendment).is_err());
+    h.audit_breaker.set_broken(false);
+    assert_eq!(h.service.show(&amendment.id).unwrap().state, State::Pending);
+    let Decision::Active { lease, .. } = h.wait(&ticket.id, &key) else {
+        panic!("expected an active lease");
+    };
+    let terms = Ticket::from_canonical(lease.as_bytes()).unwrap();
+    assert_eq!(
+        terms.limits.max_signatures, 30,
+        "the amendment was not applied"
+    );
+
+    // Revocation: the certificate still works.
+    h.audit_breaker.set_broken(true);
+    assert!(h.revoke_signed(&ticket.id).is_err());
+    h.audit_breaker.set_broken(false);
+    assert!(!h.service.is_revoked(cert.serial()));
+    assert!(
+        h.service
+            .authorize(&identity(&cert), &facts(), None)
+            .is_ok()
+    );
+
+    // Each step that went through has its line.
+    assert_eq!(h.events("submit", "allowed"), 2);
+    assert_eq!(h.events("grant", "allowed"), 1);
+    assert_eq!(h.events("amend", "allowed"), 0);
+    assert_eq!(h.events("refuse", "done"), 0);
+    assert_eq!(h.events("revoke", "done"), 0);
+}
+
+#[test]
+fn a_refused_amendment_approval_is_logged_as_amend() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, key, _) = h.lease();
+    let amendment = REQUEST.replace(
+        "  plan: [Add the callback route, Tests]",
+        &format!(
+            "  plan: [Add the callback route, Tests]\n  amends: {}",
+            ticket.id
+        ),
+    );
+    let submitted = h
+        .service
+        .submit(key.public_key(), amendment.as_bytes(), &facts())
+        .unwrap();
+    let amendment = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+    let other = generate(KeyKind::Ed25519).unwrap();
+    let forged = sign_with(&other, &amendment, APPROVAL_NAMESPACE);
+    let error = h
+        .service
+        .approve(&amendment.id, &forged, &facts())
+        .unwrap_err();
+    assert!(error.message.contains("not in approvers"), "{error}");
+    assert_eq!(h.events("amend", "denied"), 1);
+    assert_eq!(h.events("grant", "denied"), 0);
+    assert_eq!(h.approve(&amendment).unwrap(), State::Applied);
+    assert_eq!(h.events("amend", "allowed"), 1);
 }

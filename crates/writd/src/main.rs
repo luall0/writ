@@ -85,7 +85,17 @@ struct Keys {
 /// The TLS certificate and key of the dev keystore, generated on first start.
 fn dev_tls(dir: &Path) -> anyhow::Result<TlsIdentity> {
     let (cert_path, key_path) = (dir.join("tls-cert.pem"), dir.join("tls-key.pem"));
-    if !cert_path.exists() {
+    // The key is written first: a cert without its key (or a key alone, after a crash
+    // between the two writes) is a pair to make again.
+    if !(cert_path.exists() && key_path.exists()) {
+        for leftover in [&cert_path, &key_path] {
+            match std::fs::remove_file(leftover) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(e).with_context(|| format!("cannot remove {}", leftover.display()));
+                }
+                _ => {}
+            }
+        }
         let generated = writ_crypto::tls::generate_self_signed()?;
         write_private(&key_path, generated.key_pem.as_bytes())?;
         std::fs::write(&cert_path, &generated.cert_pem)?;
@@ -171,13 +181,6 @@ fn run(path: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(config.state_dir.join("repos"))?;
     let store = Store::open(&config.state_dir.join("leases.db"))?;
     let audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
-    // The gateway's push check is still M0's: every repo's protected refs, whatever the repo
-    // (M4 checks pushes per repo and per lease).
-    let protected_refs: Vec<String> = policy
-        .repos()
-        .values()
-        .flat_map(|repo| repo.protected_refs.iter().map(ToString::to_string))
-        .collect();
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
@@ -207,7 +210,6 @@ fn run(path: &Path) -> anyhow::Result<()> {
                 signing_key: keys.agent,
                 hook_program: std::env::current_exe()?,
                 state_dir: config.state_dir.join("run"),
-                protected_refs,
             },
             service.clone(),
         )
@@ -272,4 +274,28 @@ fn run(path: &Path) -> anyhow::Result<()> {
             },
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tls_pair_cut_short_by_a_crash_is_made_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dev_tls(dir.path()).unwrap().fingerprint().to_owned();
+        assert_eq!(dev_tls(dir.path()).unwrap().fingerprint(), first, "kept");
+        // The key written, the cert not: a crash between the two writes.
+        std::fs::remove_file(dir.path().join("tls-cert.pem")).unwrap();
+        let second = dev_tls(dir.path()).unwrap().fingerprint().to_owned();
+        assert_ne!(second, first);
+        // The cert alone.
+        std::fs::remove_file(dir.path().join("tls-key.pem")).unwrap();
+        assert_ne!(dev_tls(dir.path()).unwrap().fingerprint(), second);
+        let mode = std::fs::metadata(dir.path().join("tls-key.pem"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 }

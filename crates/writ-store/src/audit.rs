@@ -37,6 +37,8 @@ pub enum EventKind {
     /// A session certificate presented to the gateway (allowed: it stands for an active
     /// lease; denied: refused, with the reason).
     Connect,
+    /// An exec request the gateway doesn't serve for this caller.
+    Command,
     Sign,
     Push,
     Fetch,
@@ -188,6 +190,23 @@ impl AuditEvent {
 pub struct AuditLog {
     path: PathBuf,
     file: File,
+    /// Set by a test to make every write fail (feature `testing` only).
+    #[cfg(feature = "testing")]
+    broken: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+/// Breaks and repairs an [`AuditLog`] opened with [`AuditLog::open_breakable`], so tests can
+/// check that nothing changes without its log line (feature `testing`).
+#[cfg(feature = "testing")]
+#[derive(Debug, Clone)]
+pub struct AuditBreaker(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(feature = "testing")]
+impl AuditBreaker {
+    /// While broken, every [`AuditLog::append`] fails and writes nothing.
+    pub fn set_broken(&self, broken: bool) {
+        self.0.store(broken, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl AuditLog {
@@ -209,7 +228,18 @@ impl AuditLog {
         Ok(Self {
             path: path.to_owned(),
             file,
+            #[cfg(feature = "testing")]
+            broken: None,
         })
+    }
+
+    /// [`AuditLog::open`], with a switch that makes writes fail (feature `testing`).
+    #[cfg(feature = "testing")]
+    pub fn open_breakable(path: &Path) -> Result<(Self, AuditBreaker)> {
+        let switch = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut log = Self::open(path)?;
+        log.broken = Some(switch.clone());
+        Ok((log, AuditBreaker(switch)))
     }
 
     pub fn path(&self) -> &Path {
@@ -218,6 +248,16 @@ impl AuditLog {
 
     /// Appends one event as one line, and syncs it to disk before returning.
     pub fn append(&mut self, event: &AuditEvent) -> Result<()> {
+        #[cfg(feature = "testing")]
+        if self
+            .broken
+            .as_ref()
+            .is_some_and(|b| b.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return Err(StoreError::Io(std::io::Error::other(
+                "the audit log was broken by the test",
+            )));
+        }
         let mut line = serde_json::to_vec(event).map_err(|e| StoreError::Encode(e.to_string()))?;
         line.push(b'\n');
         // One write of the whole line: with O_APPEND, it lands after everything already there.

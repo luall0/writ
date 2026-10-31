@@ -71,23 +71,73 @@ pub fn parse(text: &str, namespace: &str) -> Result<Vec<AllowedSigner>> {
 /// Whether the options keep the key for `namespace`; refuses options that can't be honored.
 fn options_allow(options: &str, namespace: &str) -> std::result::Result<bool, String> {
     let mut allowed = true;
-    for option in options.split(',').filter(|o| !o.is_empty()) {
-        let (name, value) = match option.split_once('=') {
-            Some((name, value)) => (name, Some(value.trim_matches('"'))),
-            None => (option, None),
-        };
+    for (name, value) in split_options(options)? {
         match (name.to_ascii_lowercase().as_str(), value) {
-            ("namespaces", Some(list)) => {
-                allowed = list.split(['|', ' ']).any(|n| n == namespace)
-                    || list.split(',').any(|n| n == namespace);
-            }
+            ("namespaces", Some(list)) => allowed = namespaces_allow(list, namespace)?,
             ("cert-authority" | "valid-after" | "valid-before", _) => {
                 return Err(format!("option {name} is not supported"));
             }
-            _ => return Err(format!("unknown option {option:?}")),
+            _ => return Err(format!("unknown option {name:?}")),
         }
     }
     Ok(allowed)
+}
+
+/// Splits `name[="value"],…` on the commas outside quotes. A quote left open, an empty
+/// option or a value that is only partly quoted is an error.
+fn split_options(options: &str) -> std::result::Result<Vec<(&str, Option<&str>)>, String> {
+    let mut parts = Vec::new();
+    let (mut start, mut quoted) = (0, false);
+    for (i, c) in options.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                parts.push(&options[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if quoted {
+        return Err("unterminated quote in the options".to_owned());
+    }
+    parts.push(&options[start..]);
+    parts
+        .into_iter()
+        .map(|option| {
+            if option.is_empty() {
+                return Err("empty option".to_owned());
+            }
+            match option.split_once('=') {
+                None if !option.contains('"') => Ok((option, None)),
+                Some((name, value)) if !name.contains('"') => {
+                    let inner = value.strip_prefix('"').and_then(|v| v.strip_suffix('"'));
+                    match inner {
+                        Some(inner) if !inner.contains('"') => Ok((name, Some(inner))),
+                        None if !value.contains('"') => Ok((name, Some(value))),
+                        _ => Err(format!("malformed option {option:?}")),
+                    }
+                }
+                _ => Err(format!("malformed option {option:?}")),
+            }
+        })
+        .collect()
+}
+
+/// Whether a `namespaces` list names `namespace`. OpenSSH reads it as a pattern list
+/// (`*`, `?`, `!`); patterns aren't supported here, so a list using them is refused rather
+/// than read as plain names.
+fn namespaces_allow(list: &str, namespace: &str) -> std::result::Result<bool, String> {
+    let names: Vec<&str> = list.split(',').collect();
+    if names
+        .iter()
+        .any(|n| n.is_empty() || n.contains(['*', '?', '!']))
+    {
+        return Err(format!(
+            "namespaces={list:?}: only plain names are supported, not patterns"
+        ));
+    }
+    Ok(names.contains(&namespace))
 }
 
 #[cfg(test)]
@@ -105,10 +155,12 @@ mod tests {
         let (a, key_a) = line("me@mac");
         let (b, key_b) = line("backup namespaces=\"writ-approval\"");
         let (c, _) = line("git-only namespaces=\"git\"");
-        let text = format!("# approvers\n\n{a}\n{b} comment here\n{c}\n");
+        let (d, key_d) = line("both namespaces=\"git,writ-approval\"");
+        let (e, _) = line("near namespaces=\"writ-approval2,git\"");
+        let text = format!("# approvers\n\n{a}\n{b} comment here\n{c}\n{d}\n{e}\n");
         let signers = parse(&text, "writ-approval").unwrap();
         let keys: Vec<_> = signers.iter().map(|s| s.key.clone()).collect();
-        assert_eq!(keys, vec![key_a, key_b]);
+        assert_eq!(keys, vec![key_a, key_b, key_d]);
         assert_eq!(signers[0].principals, "me@mac");
     }
 
@@ -119,6 +171,14 @@ mod tests {
             "old valid-before=\"20300101\"",
             "x valid-after=\"20200101\"",
             "x restrict",
+            "x namespaces=\"writ-*\"",
+            "x namespaces=\"!git\"",
+            "x namespaces=\"git,\"",
+            "x namespaces=\"writ-approval",
+            "x namespaces=writ\"-approval\"",
+            "x namespaces=\"writ-approval\",",
+            "x namespaces=\"writ-approval\",cert-authority",
+            "x namespaces=\"writ-approval\",valid-before=\"20300101\"",
         ] {
             let (text, _) = line(prefix);
             assert!(parse(&text, "writ-approval").is_err(), "{prefix}");

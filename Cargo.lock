@@ -3801,6 +3801,7 @@ dependencies = [
  "russh",
  "rustls",
  "serde",
+ "serde_json",
  "ssh-key",
  "tempfile",
  "thiserror 2.0.21",

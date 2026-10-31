@@ -10,6 +10,8 @@
 mod audit;
 mod store;
 
+#[cfg(feature = "testing")]
+pub use audit::AuditBreaker;
 pub use audit::{AuditEvent, AuditLog, EventKind, Outcome, looks_secret};
 pub use store::{Counter, LedgerEntry, Store};
 

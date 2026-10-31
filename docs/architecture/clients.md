@@ -46,8 +46,14 @@ before exiting 1, and git shows the gateway's rejection message after a push.
 [user]
     signingkey = key::<agent public key>
 [core]
-    sshCommand = ssh -i ~/.writ/sessions/current/key -o CertificateFile=~/.writ/sessions/current/key-cert.pub
+    sshCommand = ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -i ~/.writ/sessions/current/key -o CertificateFile=~/.writ/sessions/current/key-cert.pub -o UserKnownHostsFile=~/.writ/known_hosts -o StrictHostKeyChecking=yes
 ```
+
+The SSH command never reaches the user's own SSH setup: no `~/.ssh/config` (`-F /dev/null`), no
+other key and no agent (`IdentitiesOnly`, `IdentityAgent=none`: Secretive's keys are never
+offered), and only the daemon's pinned host key (`~/.writ/known_hosts`). `writ-sign` uses the
+same command (`GIT_SSH_COMMAND`, then `core.sshCommand`) and refuses to sign when neither is
+set: it never falls back to a plain `ssh`.
 
 Agents never get a remote pointing at the real forge with credentials. With `gateway` or
 `proxy` push modes, `writ init` can also write the [URL rewrite](gateway.md#url-rewrite) so

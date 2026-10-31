@@ -1,6 +1,7 @@
 //! The gateway on the platform fakes only: an in-memory transport, a fake attestor, an
-//! in-process SSH client and an in-process HTTPS client pinning the daemon's certificate. Who may run what on which listener, the whole ticket flow over the
-//! protocol, and open sessions dropped when a lease is revoked.
+//! in-process SSH client and an in-process HTTPS client pinning the daemon's certificate.
+//! Who may run what on which listener, the whole ticket flow over the protocol, open sessions
+//! dropped when a lease is revoked, and the audit line of everything the gateway turns away.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -37,6 +38,9 @@ repos:
   demo:
     upstream: ssh://git@forge.invalid/demo.git
     upstream_credential: upstream-01
+  other:
+    upstream: ssh://git@forge.invalid/other.git
+    upstream_credential: upstream-01
 templates:
   work:
     repos: [demo]
@@ -71,7 +75,7 @@ impl client::Handler for Accept {
 }
 
 struct Daemon {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     gateway: Gateway,
     agents: FakeConnector,
     approvals: FakeConnector,
@@ -118,7 +122,6 @@ impl Daemon {
                 signing_key: generate(KeyKind::Ed25519).unwrap(),
                 hook_program: PathBuf::from("/bin/false"),
                 state_dir: dir.path().join("run"),
-                protected_refs: vec![],
             },
             service,
         )
@@ -142,7 +145,7 @@ impl Daemon {
             tokio::spawn(async move { g.serve(Arc::new(transport), a, role).await });
         }
         Self {
-            _dir: dir,
+            dir,
             gateway,
             agents,
             approvals,
@@ -150,6 +153,16 @@ impl Daemon {
             pin,
             approver,
         }
+    }
+
+    /// The audit log's lines with this event and result.
+    fn audit(&self, event: &str, result: &str) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.dir.path().join("audit.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .filter(|e| e["event"] == event && e["result"] == result)
+            .collect()
     }
 
     async fn connect(connector: &FakeConnector) -> Handle<Accept> {
@@ -358,6 +371,66 @@ async fn a_caller_the_attestor_cannot_attest_is_turned_away() {
         connected.is_err(),
         "no SSH session without attested caller facts"
     );
+    // Logged before the connection is dropped.
+    let lines = daemon.audit("connect", "denied");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("caller turned away: "),
+        "{lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn git_runs_only_on_the_lease_repos_and_every_refusal_is_logged() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let (key, cert) = lease(&daemon).await;
+    let holder = Daemon::with_cert(&daemon.agents, &key, &cert)
+        .await
+        .unwrap();
+    let id = cert.key_id();
+
+    // In the registry, not in the lease.
+    let (_, err, status) = exec(&holder, "git-upload-pack 'other.git'", b"").await;
+    assert_eq!(status, Some(1));
+    assert!(
+        err.contains(&format!(
+            "outside ticket {id}: repo other is not in the lease"
+        )),
+        "{err}"
+    );
+    // The lease has no push: the service denies it before any repo is looked at.
+    let (_, err, status) = exec(&holder, "git-receive-pack 'demo.git'", b"").await;
+    assert_eq!(status, Some(1));
+    assert!(err.contains("operation push is not in the lease"), "{err}");
+    // In the lease, but no repository on disk.
+    let (_, err, status) = exec(&holder, "git-upload-pack 'demo.git'", b"").await;
+    assert_eq!(status, Some(1));
+    assert!(err.contains("unknown repo demo"), "{err}");
+    // A command nobody may run.
+    let (_, err, status) = exec(&holder, "sh -c id", b"").await;
+    assert_eq!(status, Some(1));
+    assert!(err.contains("not allowed"), "{err}");
+
+    let fetches = daemon.audit("fetch", "denied");
+    assert_eq!(fetches.len(), 2, "{fetches:?}");
+    for line in &fetches {
+        assert_eq!(line["cert"], cert.serial());
+        assert_eq!(line["lease"], id);
+    }
+    assert_eq!(fetches[0]["repo"], "other");
+    assert_eq!(fetches[1]["repo"], "demo");
+    assert_eq!(fetches[1]["reason"], "unknown repo demo");
+    // The lease doesn't allow push: the service denied it before the repo check.
+    let pushes = daemon.audit("push", "denied");
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert_eq!(pushes[0]["code"], "operation");
+    let commands = daemon.audit("command", "denied");
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert_eq!(commands[0]["cert"], cert.serial());
+    assert!(commands[0]["reason"].as_str().unwrap().contains("sh -c id"));
 }
 
 #[tokio::test]

@@ -27,10 +27,14 @@ use crate::{Error, Gateway, Result};
 /// How long a client has to finish the TLS handshake, and to send its request headers.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The approval API's certificate and key, and the fingerprint clients pin.
+/// The approval API's TLS server configuration (certificate and key), and the fingerprint
+/// clients pin.
+///
+/// The private key is moved straight into rustls when the identity is made: no other copy is
+/// kept (rustls holds it for the daemon's life, without zeroizing it: see the threat model's
+/// residual risks).
 pub struct TlsIdentity {
-    certs: Vec<CertificateDer<'static>>,
-    key: PrivateKeyDer<'static>,
+    config: Arc<rustls::ServerConfig>,
     fingerprint: String,
 }
 
@@ -43,35 +47,31 @@ impl std::fmt::Debug for TlsIdentity {
 }
 
 impl TlsIdentity {
-    /// Reads a PEM certificate and its PEM private key.
+    /// Reads a PEM certificate and its PEM private key. TLS 1.3 only, ALPN `http/1.1`.
     pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self> {
         let bad = |what: &str| Error::Config(format!("invalid TLS {what}"));
         let cert =
             CertificateDer::from_pem_slice(cert_pem.as_bytes()).map_err(|_| bad("certificate"))?;
         let key =
             PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).map_err(|_| bad("private key"))?;
+        let fingerprint = writ_crypto::tls::fingerprint(&cert);
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|e| Error::Config(format!("TLS: {e}")))?
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .map_err(|e| Error::Config(format!("TLS: {e}")))?;
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
         Ok(Self {
-            fingerprint: writ_crypto::tls::fingerprint(&cert),
-            certs: vec![cert],
-            key,
+            config: Arc::new(config),
+            fingerprint,
         })
     }
 
     /// The pin clients check: `SHA256:<base64>` of the certificate.
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
-    }
-
-    fn server_config(&self) -> Result<rustls::ServerConfig> {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let mut config = rustls::ServerConfig::builder_with_provider(provider)
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|e| Error::Config(format!("TLS: {e}")))?
-            .with_no_client_auth()
-            .with_single_cert(self.certs.clone(), self.key.clone_key())
-            .map_err(|e| Error::Config(format!("TLS: {e}")))?;
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Ok(config)
     }
 }
 
@@ -83,13 +83,14 @@ impl Gateway {
         attestor: Arc<dyn CallerAttestor>,
         identity: Arc<TlsIdentity>,
     ) -> Result<()> {
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(identity.server_config()?));
+        let acceptor = tokio_rustls::TlsAcceptor::from(identity.config.clone());
         loop {
             let connection = transport.accept().await?;
             let facts = match attestor.attest(&connection.peer) {
                 Ok(facts) => facts,
                 Err(e) => {
                     eprintln!("writ gateway: HTTPS connection turned away: {e}");
+                    self.turned_away(&connection.peer, &e).await;
                     continue;
                 }
             };

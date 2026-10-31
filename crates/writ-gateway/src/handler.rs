@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use russh::server::{Auth, ChannelOpenHandle, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId};
+use writ_approval::{EventKind, GatewayDenial};
 use writ_core::caller::CallerFacts;
 use writ_core::policy::CertIdentity;
 use writ_crypto::ca::validate_user_certificate;
@@ -48,6 +49,48 @@ impl Connection {
     }
 }
 
+impl Connection {
+    /// The certificate's identity, if the gateway can trust it at all: issued by the daemon's
+    /// CA for the lease user, valid now, not revoked.
+    fn check_certificate(
+        &self,
+        user: &str,
+        certificate: &Certificate,
+    ) -> Result<CertIdentity, String> {
+        if user != LEASE_USER {
+            return Err(format!(
+                "lease holders connect as {LEASE_USER}, not {user:?}"
+            ));
+        }
+        let service = self.gateway.service();
+        let serial = certificate.serial();
+        let revoked = if service.is_revoked(serial) {
+            std::iter::once(serial).collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        validate_user_certificate(
+            certificate,
+            &self.gateway.shared.authorities,
+            &revoked,
+            user,
+            service.now_unix(),
+        )
+        .map_err(|e| e.to_string())?;
+        let session_key = certificate
+            .public_key()
+            .fingerprint(HashAlg::Sha256)
+            .to_string()
+            .parse()
+            .map_err(|_| "unreadable session key".to_owned())?;
+        Ok(CertIdentity {
+            key_id: certificate.key_id().to_owned(),
+            serial,
+            session_key,
+        })
+    }
+}
+
 impl Drop for Connection {
     fn drop(&mut self) {
         if let Some(Identity::Lease(cert)) = &self.identity {
@@ -87,48 +130,28 @@ impl russh::server::Handler for Connection {
             self.identity = Some(Identity::Approver);
             return Ok(Auth::Accept);
         }
-        let service = self.gateway.service();
         let serial = certificate.serial();
-        let refused = |reason: String| {
-            service.certificate_refused(serial, certificate.key_id(), &reason, &self.facts);
-            Ok(Auth::reject())
-        };
-        if user != LEASE_USER {
-            return refused(format!(
-                "lease holders connect as {LEASE_USER}, not {user:?}"
-            ));
-        }
-        let revoked = if service.is_revoked(serial) {
-            std::iter::once(serial).collect()
-        } else {
-            std::collections::HashSet::new()
-        };
-        let authorities = &self.gateway.shared.authorities;
-        if let Err(reason) =
-            validate_user_certificate(certificate, authorities, &revoked, user, service.now_unix())
-        {
-            return refused(reason.to_string());
-        }
-        let cert = CertIdentity {
-            key_id: certificate.key_id().to_owned(),
-            serial,
-            session_key: match certificate
-                .public_key()
-                .fingerprint(HashAlg::Sha256)
-                .to_string()
-                .parse()
-            {
-                Ok(fingerprint) => fingerprint,
-                Err(_) => return refused("unreadable session key".to_owned()),
-            },
-        };
-        // The service logs the outcome (event `connect`).
-        match service.authorize(&cert, &self.facts, None) {
-            Ok(_) => {
-                self.identity = Some(Identity::Lease(cert));
-                Ok(Auth::Accept)
+        match self.check_certificate(user, certificate) {
+            Ok(cert) => {
+                // The service logs the outcome (event `connect`).
+                match self.gateway.authorize(&cert, &self.facts, None).await {
+                    Ok(_) => {
+                        self.identity = Some(Identity::Lease(cert));
+                        Ok(Auth::Accept)
+                    }
+                    Err(_) => Ok(Auth::reject()),
+                }
             }
-            Err(_) => Ok(Auth::reject()),
+            Err(reason) => {
+                let mut denial = GatewayDenial::new(
+                    EventKind::Connect,
+                    format!("certificate refused: {reason}"),
+                );
+                denial.serial = Some(serial);
+                denial.key_id = Some(certificate.key_id().to_owned());
+                self.gateway.log_denial(denial, self.facts.clone()).await;
+                Ok(Auth::reject())
+            }
         }
     }
 
@@ -202,10 +225,16 @@ impl russh::server::Handler for Connection {
                 .chars()
                 .take(80)
                 .collect::<String>();
-            tokio::spawn(process::refuse(
-                channel,
-                format!("command not allowed here: {}", shown.escape_debug()),
-            ));
+            let reason = format!("command not allowed here: {}", shown.escape_debug());
+            let mut denial = GatewayDenial::new(EventKind::Command, reason.clone());
+            if let Identity::Lease(cert) = &identity {
+                denial = denial.cert(cert);
+            }
+            let (gateway, facts) = (self.gateway.clone(), self.facts.clone());
+            tokio::spawn(async move {
+                gateway.log_denial(denial, facts).await;
+                process::refuse(channel, reason).await;
+            });
             return Ok(());
         };
         tokio::spawn(process::run(

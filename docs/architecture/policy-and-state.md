@@ -83,12 +83,17 @@ caller ([Identity](identity.md#local-mode-process-chain-checks)).
 ```
 
 Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`,
-`refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `connect` (a session certificate presented to the gateway), `sign`, `push`, `fetch`, `admin`,
+`refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `admin`,
 `seal`, `unseal`), `result` (`allowed`, `denied`, `done`), `lease`, `ticket`, `cert`,
 `approver`, `repo`, `commit`, `refs`, `committer`, `code`, `reason`, `warnings`,
 `source_addr`, `process_chain`.
 
-- Allowed **and** denied operations are logged.
+- Allowed **and** denied operations are logged, including what the gateway turns away on its
+  own (a caller the attestor can't attest, a command it doesn't serve, an unknown repo, a ref
+  update or a signature it refuses).
+- A change is logged **before** it is made: the line is written (and synced), then the state
+  changes. If the change then fails, a `denied` line with the reason follows. So nothing is
+  granted, applied, refused or revoked without its line.
 - Secrets never reach the log: no key material, passphrases, tokens or full signatures. No
   field of `AuditEvent` can hold one (an approval is logged by its approver's fingerprint).
 - The file is only ever opened for appending; each event is one write followed by a sync. If

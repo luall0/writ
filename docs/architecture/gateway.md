@@ -30,8 +30,11 @@ Every request goes through the [policy engine](policy-and-state.md#policy-engine
 anything else happens. Git itself is not reimplemented: the daemon shells out to
 `git upload-pack` / `git receive-pack` / `git index-pack` against its own repositories.
 
-Anything else is refused with a reason on stderr. Repos are plain names (`omega-code.git`),
-never paths; only `GIT_PROTOCOL` is taken from the client's environment.
+Anything else is refused with a reason on stderr, and logged (event `command`). Repos are
+registry names, with or without `.git` (`omega-code.git`), never paths; git runs only on a repo
+in the lease's `scope.repos`, at `<repos_root>/<name>.git`. Only `GIT_PROTOCOL` is taken from
+the client's environment, and git runs with a clean environment (`PATH` and `TMPDIR` only),
+without the daemon user's system or global git config.
 
 ## Push checks in git's quarantine
 
@@ -40,8 +43,11 @@ pre-receive hook before any ref moves ([Q31](../decisions.md)). The gateway star
 `core.hooksPath` set to its own hooks directory; the hook (`writd hook pre-receive`) only
 forwards the ref updates and a per-push token to the daemon over a private Unix socket in
 its state directory. The daemon looks the token up (which lease, which repo), decides, and
-answers `ok` or `deny <reason>`. On a refusal git drops the quarantine and shows the agent
-`remote: writ: <reason>`. The commit checks against the ledger (M4) run at the same point,
+answers `ok` or `deny <reason>`. Input the daemon can't read whole (over 1 MiB, cut short,
+not UTF-8, a line that isn't a ref update) is refused, never decided on in part. Until M4, the
+check is the repo's own `protected_refs` from the registry. Every refusal is logged (event
+`push`, denied, with the refs) before the hook is answered. On a refusal git drops the
+quarantine and shows the agent `remote: writ: <reason>`. The commit checks against the ledger (M4) run at the same point,
 on the quarantined objects. Any failure to reach the daemon refuses the push.
 
 ## Repo mirrors

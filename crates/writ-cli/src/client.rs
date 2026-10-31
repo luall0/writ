@@ -52,16 +52,39 @@ impl Endpoint {
             Some((_, host)) => host,
             None => rest,
         };
-        let (host, port) = match rest.rsplit_once(':') {
-            Some((host, port)) if !host.ends_with(']') || host.starts_with('[') => (
-                host,
-                port.parse::<u16>()
+        let default_port = if https { 443 } else { 22 };
+        // `[v6]:port`, `[v6]`, `host:port` or `host`. A bare IPv6 address is ambiguous and
+        // refused.
+        let (host, port) = if let Some(bracketed) = rest.strip_prefix('[') {
+            let (ip, after) = bracketed
+                .split_once(']')
+                .with_context(|| format!("invalid endpoint {url}: unclosed ["))?;
+            if ip.parse::<std::net::Ipv6Addr>().is_err() {
+                bail!("invalid endpoint {url}: {ip:?} is not an IPv6 address");
+            }
+            let port = match after {
+                "" => default_port,
+                _ => after
+                    .strip_prefix(':')
+                    .and_then(|p| p.parse::<u16>().ok())
                     .with_context(|| format!("invalid port in {url}"))?,
-            ),
-            _ => (rest, if https { 443 } else { 22 }),
+            };
+            (ip, port)
+        } else {
+            match rest.split_once(':') {
+                Some((host, port)) => (
+                    host,
+                    port.parse::<u16>()
+                        .with_context(|| format!("invalid port in {url}"))?,
+                ),
+                None => (rest, default_port),
+            }
         };
-        let host = host.trim_start_matches('[').trim_end_matches(']');
-        if host.is_empty() || host.contains('/') || host.starts_with('-') {
+        if host.is_empty()
+            || host.starts_with('-')
+            || host.contains(['/', '[', ']', '@', ' '])
+            || (host.contains(':') && host.parse::<std::net::Ipv6Addr>().is_err())
+        {
             bail!("invalid endpoint {url}");
         }
         let host = host.to_owned();
@@ -88,7 +111,7 @@ impl Endpoint {
 /// comma-separated; hashed names and markers are not read). None pinned: an error saying how
 /// to pin it.
 pub fn pinned_host_key(known_hosts: &Path, name: &str) -> anyhow::Result<PublicKey> {
-    let text = std::fs::read_to_string(known_hosts).unwrap_or_default();
+    let text = read_pins(known_hosts)?;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with('@') {
@@ -106,9 +129,18 @@ pub fn pinned_host_key(known_hosts: &Path, name: &str) -> anyhow::Result<PublicK
     }
     bail!(
         "the daemon's host key for {name} is not pinned in {}: add the line \
-         `{name} <host key>` (writd prints its host key when it starts)",
+         `{name} <host key>` (`writd host-key <config>` prints it)",
         known_hosts.display()
     )
+}
+
+/// A pins file's text; a missing file pins nothing, any other read error is reported.
+pub fn read_pins(path: &Path) -> anyhow::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+    }
 }
 
 struct Pinned {
@@ -299,6 +331,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_unreadable_pins_file_is_an_error_not_an_empty_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_pins(&dir.path().join("missing")).unwrap(), "");
+        let locked = dir.path().join("known_hosts");
+        std::fs::write(&locked, "host ssh-ed25519 AAAA\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let error = format!("{:#}", pinned_host_key(&locked, "host").unwrap_err());
+        assert!(error.starts_with("cannot read"), "{error}");
+        assert!(!error.contains("not pinned"), "{error}");
+        // A directory can't be read as a file either.
+        assert!(read_pins(dir.path()).is_err());
+    }
+
+    #[test]
     fn parses_endpoints() {
         let tcp = |host: &str, port| Endpoint::Tcp {
             host: host.into(),
@@ -320,6 +367,14 @@ mod tests {
             Endpoint::parse("ssh://[::1]:2222").unwrap(),
             tcp("::1", 2222)
         );
+        assert_eq!(Endpoint::parse("ssh://[::1]").unwrap(), tcp("::1", 22));
+        assert_eq!(
+            Endpoint::parse("https://[fe80::1]:8443").unwrap(),
+            Endpoint::Https {
+                host: "fe80::1".into(),
+                port: 8443
+            }
+        );
         assert_eq!(
             Endpoint::parse("unix:/tmp/w.sock").unwrap(),
             Endpoint::Unix {
@@ -333,6 +388,15 @@ mod tests {
             "ssh://-oProxy",
             "unix:",
             "ssh://a/b",
+            "ssh://::1",
+            "ssh://[::1",
+            "ssh://[not-ip]:22",
+            "ssh://[::1]x",
+            "ssh://[::1]:",
+            "ssh://host:",
+            "ssh://host:99999",
+            "ssh://a:1:2",
+            "https://git@host",
         ] {
             assert!(Endpoint::parse(bad).is_err(), "{bad}");
         }

@@ -23,7 +23,7 @@ const MAX_REPLY: usize = 8 * 1024 * 1024;
 /// Finds the pinned fingerprint for `name` in the pins file. None pinned: an error saying how
 /// to pin it.
 pub fn pinned_fingerprint(pins: &Path, name: &str) -> anyhow::Result<String> {
-    let text = std::fs::read_to_string(pins).unwrap_or_default();
+    let text = crate::client::read_pins(pins)?;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {

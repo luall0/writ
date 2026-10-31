@@ -20,7 +20,10 @@
 
 mod service;
 
-pub use service::{Clock, ManualClock, Platform, Service, ServiceConfig, SystemClock};
+pub use service::{
+    Clock, GatewayDenial, ManualClock, Platform, Service, ServiceConfig, SystemClock,
+};
+pub use writ_store::EventKind;
 
 /// The SSH user a session certificate is valid for (`ssh://git@host`).
 pub const PRINCIPAL: &str = "git";
