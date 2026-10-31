@@ -4,7 +4,7 @@ Code: decisions in `crates/writ-core` (pure), storage in `crates/writ-store`.
 
 ## Policy engine
 
-Every request → find the single active lease matching the caller's certificate → allow / deny
+Every request → find the single lease matching the caller's certificate → allow / deny
 + notify. It's the only place where decisions are made.
 
 - **Fail closed**: no matching lease, more than one, a sealed daemon, an unreadable config or
@@ -17,13 +17,59 @@ Every request → find the single active lease matching the caller's certificate
 - The constraints it checks, and how much each can be trusted, are listed in
   [Lease model](../lease-model.md#constraints-and-how-much-to-trust-them).
 
+### The decisions (`writ_core::policy`)
+
+| Function | Input facts | Checks, in order |
+|---|---|---|
+| `resolve_lease` | Certificate key id, serial, session key fingerprint | Exactly one lease matches all three |
+| `decide_sign` | Repo, object kind, committer email, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree or blob), committer email in the lease, the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
+| `decide_push` | Repo, push mode, ref updates (old, new, fast-forward), new commits with their ledger entries, pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, not protected, a branch, within the lease's branches, no force push or deletion unless allowed; every new commit in the ledger for this lease and repo; size; `max_pushes`; rate |
+| `decide_fetch` | Repo | Common checks, rate |
+
+The **common checks** come first in every decision: the lease is active and before
+`expires_at`, not exhausted; the caller satisfies the lease's caller constraint
+([platform](platform.md#caller-facts-and-the-policy)); the operation and the repo are in the
+lease; the template and the repo still exist and the lease still fits its template under the
+current config. Counts and rate come last, so an out-of-scope request gets the out-of-scope
+reason.
+
+Each denial has a code (`DenyCode`). Out-of-scope codes (operation, repo, push mode, object
+type, committer, ticket link, paths, ref, protected ref, force push, unsigned commit, size)
+are **violations** and trigger the lease's `on_violation`; running out of time, counts or
+rate, a wrong caller or a config change are not.
+
+Around them: `fit::submit` (a request → a complete ticket fitting one template, or every
+reason why not), `fit::fits` (a ticket within its template and the registry, used at
+submission, at approval and on every request), `narrow::check` (signed ⊆ submitted),
+`lease::activate` / `lease::apply_amendment` / `lease::refuse` (the lifecycle, after the
+approval service verified the SSHSIG), `lease::due_transition` (expired or exhausted now).
+
+The daemon takes counts through the store's atomic `consume` after a decision allows, so two
+concurrent requests can't both take the last signature.
+
 ## Lease store + ledger (SQLite)
 
 - Leases and their state ([lifecycle](../lease-model.md#lifecycle))
-- **Ledger**: every commit hash signed, with lease ID, key ID, timestamp. Used at push time to
-  check that every pushed commit was signed under this lease.
+- **Ledger**: every commit hash signed, with lease ID, repo, key ID, timestamp. Used at push
+  time to check that every pushed commit was signed under this lease, for this repo.
 
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
+
+Tables (`writ_store::Store`, schema version in `PRAGMA user_version`; a newer one is refused):
+
+| Table | Holds |
+|---|---|
+| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, and `current_ticket`: the row whose terms are in force (itself, or the last applied amendment) |
+| `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s) |
+| `ledger` | `(commit, lease, repo)` → signer key id, time. Signing the same commit again for the same lease and repo keeps the first entry |
+
+- Stored tickets are decoded strictly (canonical bytes only), and an approval must be complete
+  and under `writ-approval`: a record edited by hand fails closed.
+- State changes are compare-and-set (`… WHERE state = <expected>`) and follow the lifecycle;
+  applying an amendment updates the amendment and its lease in one transaction.
+- `consume` raises a counter only while it is under the limit and the lease is active, and
+  records the operation, in one transaction.
+- WAL journal, `synchronous = FULL`, foreign keys on, a 5 s busy timeout.
 
 ## Audit log
 
@@ -36,7 +82,17 @@ caller ([Identity](identity.md#local-mode-process-chain-checks)).
 {"time":"2026-10-31T14:05:09Z","event":"sign","result":"allowed","lease":"wrt_01JD8X","cert":1842,"repo":"omega-code","commit":"9e1c2f…","committer":"user+agent@…","process_chain":["/Applications/Omega Code.app/…/omega","/usr/local/bin/claude","/usr/bin/git","/usr/local/bin/writ-sign"]}
 ```
 
+Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`,
+`refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `sign`, `push`, `fetch`, `admin`,
+`seal`, `unseal`), `result` (`allowed`, `denied`, `done`), `lease`, `ticket`, `cert`,
+`approver`, `repo`, `commit`, `refs`, `committer`, `code`, `reason`, `warnings`,
+`source_addr`, `process_chain`.
+
 - Allowed **and** denied operations are logged.
-- Secrets never reach the log: no key material, passphrases, tokens or full signatures.
+- Secrets never reach the log: no key material, passphrases, tokens or full signatures. No
+  field of `AuditEvent` can hold one (an approval is logged by its approver's fingerprint).
+- The file is only ever opened for appending; each event is one write followed by a sync. If
+  the last line was cut by a crash, the next event starts on a new line and nothing is
+  rewritten.
 - The ledger and the audit log must survive an incident for review: back them up
   ([Deployment](deployment.md)).

@@ -1,0 +1,242 @@
+//! The audit log: append-only JSONL, one line per event.
+//!
+//! The file is only ever opened for appending, and [`AuditLog`] has no method that removes or
+//! rewrites anything. [`AuditEvent`] has no field for key material, passphrases, tokens or
+//! signatures (an approval is logged by its approver's fingerprint only), so a secret can't be
+//! logged by mistake through a typed field.
+
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use writ_core::caller::CallerFacts;
+use writ_core::names::{CommitId, KeyFingerprint, RepoName, TicketId};
+use writ_core::policy::Denial;
+use writ_core::units::Timestamp;
+
+use crate::{Result, StoreError};
+
+/// What happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    /// A ticket was submitted (allowed: pending; denied: rejected by policy).
+    Submit,
+    /// An approval was accepted (allowed) or refused (denied).
+    Grant,
+    /// The approver refused a ticket.
+    Refuse,
+    /// An amendment was applied to its lease.
+    Amend,
+    Revoke,
+    Expire,
+    Exhaust,
+    Close,
+    Sign,
+    Push,
+    Fetch,
+    Admin,
+    Seal,
+    Unseal,
+}
+
+/// How it ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    Allowed,
+    Denied,
+    /// A state change that is neither (an expiry, a close).
+    Done,
+}
+
+/// One line of the audit log. Empty fields are left out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AuditEvent {
+    pub time: Timestamp,
+    pub event: EventKind,
+    pub result: Outcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease: Option<TicketId>,
+    /// The ticket, when it isn't the lease itself (a pending ticket, an amendment).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<TicketId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approver: Option<KeyFingerprint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<RepoName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<CommitId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committer: Option<String>,
+    /// The denial's category (`DenyCode`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_addr: Option<IpAddr>,
+    /// Executables of the caller's process chain (local mode), the caller first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_chain: Option<Vec<String>>,
+}
+
+impl AuditEvent {
+    pub fn new(time: Timestamp, event: EventKind, result: Outcome) -> Self {
+        Self {
+            time,
+            event,
+            result,
+            lease: None,
+            ticket: None,
+            cert: None,
+            approver: None,
+            repo: None,
+            commit: None,
+            refs: Vec::new(),
+            committer: None,
+            code: None,
+            reason: None,
+            warnings: Vec::new(),
+            source_addr: None,
+            process_chain: None,
+        }
+    }
+
+    pub fn lease(mut self, lease: &TicketId) -> Self {
+        self.lease = Some(lease.clone());
+        self
+    }
+
+    pub fn ticket(mut self, ticket: &TicketId) -> Self {
+        self.ticket = Some(ticket.clone());
+        self
+    }
+
+    pub fn cert(mut self, serial: u64) -> Self {
+        self.cert = Some(serial);
+        self
+    }
+
+    pub fn approver(mut self, approver: &KeyFingerprint) -> Self {
+        self.approver = Some(approver.clone());
+        self
+    }
+
+    pub fn repo(mut self, repo: &RepoName) -> Self {
+        self.repo = Some(repo.clone());
+        self
+    }
+
+    pub fn commit(mut self, commit: &CommitId) -> Self {
+        self.commit = Some(commit.clone());
+        self
+    }
+
+    pub fn refs(mut self, refs: impl IntoIterator<Item = String>) -> Self {
+        self.refs = refs.into_iter().collect();
+        self
+    }
+
+    pub fn committer(mut self, email: &str) -> Self {
+        self.committer = Some(email.to_owned());
+        self
+    }
+
+    pub fn reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+
+    pub fn warnings(mut self, warnings: impl IntoIterator<Item = String>) -> Self {
+        self.warnings = warnings.into_iter().collect();
+        self
+    }
+
+    /// The denial's code and its full text (reason and hint).
+    pub fn denial(mut self, denial: &Denial) -> Self {
+        self.code = Some(denial.code.to_string());
+        self.reason = Some(denial.to_string());
+        self
+    }
+
+    /// What the transport said about the caller.
+    pub fn caller(mut self, facts: &CallerFacts) -> Self {
+        self.source_addr = facts.source_addr;
+        self.process_chain = facts.process_chain.as_ref().map(|chain| {
+            chain
+                .iter()
+                .map(|p| p.executable.to_string_lossy().into_owned())
+                .collect()
+        });
+        self
+    }
+}
+
+/// The append-only audit log file.
+pub struct AuditLog {
+    path: PathBuf,
+    file: File,
+}
+
+impl AuditLog {
+    /// Opens the log for appending, creating it if needed. If the last line was cut short
+    /// (a crash mid-write), the next event starts on a new line; nothing is rewritten.
+    pub fn open(path: &Path) -> Result<Self> {
+        let mut file = OpenOptions::new().append(true).create(true).open(path)?;
+        let len = file.metadata()?.len();
+        if len > 0 {
+            let mut reader = File::open(path)?;
+            reader.seek(SeekFrom::Start(len - 1))?;
+            let mut last = [0u8; 1];
+            reader.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                file.write_all(b"\n")?;
+                file.sync_data()?;
+            }
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            file,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Appends one event as one line, and syncs it to disk before returning.
+    pub fn append(&mut self, event: &AuditEvent) -> Result<()> {
+        let mut line = serde_json::to_vec(event).map_err(|e| StoreError::Encode(e.to_string()))?;
+        line.push(b'\n');
+        // One write of the whole line: with O_APPEND, it lands after everything already there.
+        self.file.write_all(&line)?;
+        self.file.sync_data()?;
+        Ok(())
+    }
+}
+
+/// A coarse scan for things that must never be in the log: private keys, SSH signatures,
+/// public key blobs, tokens. Used by the tests over everything the log holds.
+pub fn looks_secret(text: &str) -> bool {
+    const MARKERS: [&str; 9] = [
+        "PRIVATE KEY",
+        "BEGIN SSH SIGNATURE",
+        "BEGIN OPENSSH",
+        "AGE-SECRET-KEY",
+        "ssh-ed25519 AAAA",
+        "ecdsa-sha2-nistp256 AAAA",
+        "ghp_",
+        "github_pat_",
+        "glpat-",
+    ];
+    MARKERS.iter().any(|m| text.contains(m))
+}

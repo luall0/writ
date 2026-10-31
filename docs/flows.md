@@ -138,7 +138,8 @@ credentials, even read-only ones.
 
 - `writ revoke <id>`, menu bar, phone → lease `revoked`, certificate added to the deny list,
   open sessions dropped
-- TTL or limits reached → `expired` / `exhausted`, notify
+- TTL reached → `expired`; every counted operation used up → `exhausted` (never with
+  `fetch`, [lease model](lease-model.md#lifecycle)); notify
 - Local mode: session root process exits → `revoked`
 - Violation with `on_violation: revoke_lease` → revoked + notify
 

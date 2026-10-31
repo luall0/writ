@@ -1,0 +1,55 @@
+# The policy configuration used by writ-core's tests (registry + templates).
+repos:
+  omega-code:
+    upstream: ssh://git@github.com/user/omega-code.git
+    upstream_credential: upstream-github-01
+    protected_refs: ["refs/heads/main", "refs/tags/*"]
+    push_modes: [gateway]
+    ticket_link: trailer
+  homelab-scripts:
+    upstream: ssh://git@forgejo.home/user/homelab-scripts.git
+    upstream_credential: upstream-forgejo-01
+    protected_refs: ["refs/heads/main"]
+    push_modes: [gateway, proxy]
+    ticket_link: ledger_only
+  dotfiles:
+    upstream: ssh://git@github.com/user/dotfiles.git
+    upstream_credential: deploy-dotfiles-01
+    push_modes: [direct_ssh]
+    direct_ssh:
+      hosts: [github.com]
+
+templates:
+  feature-branch:
+    repos: [omega-code, homelab-scripts]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    push_modes: [gateway, proxy]
+    committer_emails: ["user+agent@example.org"]
+    signing_key: agent-ed25519-01
+    max_ttl: 4h
+    max_signatures: 50
+    max_pushes: 30
+    max_ops_per_minute: 20
+    max_push_size: 50MB
+    paths_check: warn
+  quick-fix:
+    repos: [omega-code, homelab-scripts, dotfiles]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/fix-*"]
+    committer_emails: ["user+agent@example.org", "user+fix@example.org"]
+    signing_key: agent-ed25519-01
+    max_ttl: 1h
+    max_signatures: 10
+    max_pushes: 5
+    max_ops_per_minute: 10
+    max_push_size: 10MB
+    paths_check: deny
+  read-only:
+    repos: [omega-code]
+    operations: [fetch]
+    max_ttl: 8h
+    max_signatures: 0
+    max_pushes: 0
+    max_ops_per_minute: 30
+    max_push_size: 0

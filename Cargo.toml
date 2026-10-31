@@ -21,8 +21,17 @@ dbg_macro = "deny"
 writ-core = { path = "crates/writ-core" }
 writ-crypto = { path = "crates/writ-crypto" }
 writ-gateway = { path = "crates/writ-gateway" }
+writ-store = { path = "crates/writ-store" }
 
 anyhow = "1.0.104"
+globset = { version = "0.4.21", default-features = false }
+jiff = { version = "0.2.38", default-features = false, features = ["std"] }
+proptest = "1.12.0"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = "2.0.0"
+serde_json = "1.0.154"
+serde_path_to_error = "0.1.20"
 russh = { version = "0.65.0", default-features = false, features = ["flate2", "ring"] }
 # Pinned to the exact version russh uses, so certificates and keys are the same types.
 ssh-key = { version = "=0.7.0-rc.11", features = ["alloc", "std", "ed25519", "p256", "getrandom"] }

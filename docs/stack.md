@@ -15,16 +15,19 @@ later approver apps.
 | Keystore | age format | Decided |
 | Notifications | ntfy | Decided |
 | Async runtime | `tokio` | Decided (M0) |
-| SQLite access | `rusqlite` (bundled SQLite) | Proposed |
+| SQLite access | `rusqlite` 0.41 (bundled SQLite) | Decided (M1) |
 | age | `age` crate | Proposed |
 | Approval API | `axum` + `rustls` | Proposed |
-| Config | `serde` + `serde_yaml` | Proposed |
+| Config | `serde` + `serde-saphyr` 2 (YAML, duplicate keys refused) + `serde_path_to_error` (errors name the field) | Decided (M1): `serde_yaml` is deprecated |
 | CLI | `clap` (derive) | Proposed |
 | Errors | `thiserror` in library crates, `anyhow` only in binaries | Decided (M0) |
 | Secrets in memory | `zeroize` / `secrecy` | Proposed |
 | Logging | `tracing` (the audit log is separate and never goes through it) | Proposed |
 | Secure Enclave (local mode) | Swift + CryptoKit, key blob under the `_writd` user | Decided (M0 spike, [Q33](decisions.md)); how `writd` calls it is settled in M7.5 |
-| Tests | `proptest` for policy properties, `tempfile`, real `git` and `ssh-keygen` binaries | Proposed |
+| Tests | `proptest` for policy properties, `tempfile`, real `git` and `ssh-keygen` binaries | Decided (M1) |
+| Time | `jiff` (no default features): RFC 3339 for timestamps; the policy never reads a clock | Decided (M1) |
+| Globs | `globset` for `expected_paths` | Decided (M1) |
+| Canonical encoding | `serde_json`, compact, fixed field order ([lease model](lease-model.md#canonical-encoding)) | Decided (M1) |
 
 Settle each "Proposed" row when the milestone that needs it starts, and change it to
 "Decided" here ([Q28](decisions.md#open-questions)).

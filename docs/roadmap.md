@@ -19,7 +19,7 @@ an unchanged core.
 | # | Milestone | What it brings |
 |---|---|---|
 | M0 | [Protocol spike](history/m0-protocol-spike.md) ✅ | Go for the gateway (certificates, git, daemon-signed commits, agent-held approval keys); local mode's signer: CryptoKit Secure Enclave key under a `_writd` user |
-| M1 | [Lease model and policy core](#m1--lease-model-and-policy-core) | `writ-core`: tickets, templates, registry, narrowing, lifecycle, decisions; store and audit log |
+| M1 | [Lease model and policy core](history/m1-lease-model-and-policy-core.md) ✅ | `writ-core`: tickets, templates, registry, narrowing, lifecycle, decisions; store and audit log |
 | M2 | [Ticket flow](#m2--ticket-flow-request-sign-refuse-revoke) | `writ request` / `sign` / `refuse` / `revoke` / `ls`, certificates, ntfy |
 | M3 | [Signed commits](#m3--signed-commits) | `writ-sign`, the sign command, the ledger, `writ init` |
 | M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
@@ -42,30 +42,9 @@ stack is a go, and local mode's signer is a CryptoKit Secure Enclave key under a
 
 ## M1 — Lease model and policy core
 
-[Lease model](lease-model.md) as code in `writ-core`, plus `writ-store`. No network.
-
-- Types for the repo registry, templates, tickets and leases; YAML config loading with
-  errors that name the field.
-- Canonical encoding of a ticket (the bytes an approval signs), pinned by fixtures.
-- Template fit (which template, or why none), narrowing check (signed ⊆ submitted, strict),
-  lifecycle state machine, amendments replacing a scope.
-- Policy decisions as pure functions: sign request, push (refs, protected refs, force push,
-  ledger, size), fetch, limits and rate.
-- `CallerFacts` and the lease's caller constraint
-  ([Platform interfaces](architecture/platform.md#caller-facts-and-the-policy)): checked purely,
-  missing facts deny.
-- SQLite lease store + ledger, JSONL audit log ([Policy, state and audit](architecture/policy-and-state.md)).
-
-Acceptance:
-- [ ] Table-driven tests for every row of
-      [Constraints](lease-model.md#constraints-and-how-much-to-trust-them) checked by the daemon.
-- [ ] Property tests: a narrowed ticket never grants anything the submitted one did not; no
-      ticket outside every template is ever accepted; ambiguity (two matching leases) denies.
-- [ ] A lease with a caller constraint denies when the facts lack a process chain, and when
-      the chain doesn't contain the required ancestor (executable and generation).
-- [ ] Canonical encoding fixtures stable across runs; any field change changes the bytes.
-- [ ] Leases and ledger survive a reopen of the database; the audit log is append-only and
-      holds no secret.
+**Done.** Moved to [history/m1-lease-model-and-policy-core.md](history/m1-lease-model-and-policy-core.md):
+`writ-core` (tickets, templates, registry, canonical encoding, fit, narrowing, lifecycle,
+caller checks, decisions) and `writ-store` (leases, ledger, audit log).
 
 ## M2 — Ticket flow: request, sign, refuse, revoke
 

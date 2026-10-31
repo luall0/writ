@@ -78,13 +78,21 @@ pub struct ProcessRef {
     pub executable: PathBuf,
     pub code_identity: Option<CodeIdentity>,
 }
+
+/// macOS code signature: signing identifier and team.
+pub struct CodeIdentity {
+    pub signing_id: String,
+    pub team_id: Option<String>,
+}
 ```
 
 A lease may require a caller (e.g. "descends from this Omega Code session",
-[lease model](../lease-model.md#ticket--lease-schema-draft)). `writ-core` checks it against the
+[lease model](../lease-model.md#the-complete-ticket)). `writ-core` checks it against the
 facts; **missing facts fail closed**: a lease that requires a process ancestor can never be
 used over TCP, because the network attestor can't provide a process chain. That is the whole
-difference between modes, as far as the policy is concerned.
+difference between modes, as far as the policy is concerned. The constraint matches when a
+process in the chain (the caller included) has the same executable path, pid and generation,
+and the same code identity if the constraint names one (`writ_core::caller::check`).
 
 ## Where the code lives
 

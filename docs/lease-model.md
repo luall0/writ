@@ -43,6 +43,9 @@ repos:
       allow_account_wide: false               # refuse if the credential isn't repo-scoped
 ```
 
+Defaults: `protected_refs: []`, `push_modes: [gateway]`, `ticket_link: trailer`. The
+`direct_ssh` section is required with the `direct_ssh` push mode and refused without it.
+
 A lease can only use a push mode that its repo allows. `direct_ssh` with an account-wide key
 requires `allow_account_wide: true` in the registry **and** is shown as a warning in the
 approval prompt. Push modes are described in [Gateway](architecture/gateway.md#push-modes-per-repo).
@@ -57,46 +60,108 @@ templates:
     repos: [omega-code, homelab-scripts]   # a ticket picks from this set
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
-    push_modes: [gateway, proxy]           # never direct_ssh
+    push_modes: [gateway, proxy]           # default [gateway]; never direct_ssh here
+    force_push: false                      # default false: tickets can't ask for it
+    committer_emails: ["user+agent@example.org"]   # required with commit_sign
+    signing_key: agent-ed25519-01          # required with commit_sign: the signer key for commits
     max_ttl: 4h
     max_signatures: 50
     max_pushes: 30
-    paths_check: warn                      # off | warn | deny
+    max_ops_per_minute: 20
+    max_push_size: 50MB
+    paths_check: warn                      # off | warn | deny (default warn)
     require_expected_paths: false
   quick-fix:
     repos: [omega-code, homelab-scripts, dotfiles]
     operations: [fetch, commit_sign, push]
     branches: ["agent/fix-*"]
+    committer_emails: ["user+agent@example.org"]
+    signing_key: agent-ed25519-01
     max_ttl: 1h
     max_signatures: 10
+    max_pushes: 5
+    max_ops_per_minute: 10
+    max_push_size: 10MB
     paths_check: off                       # quick fixes rarely map to paths
 ```
 
-A ticket that doesn't fit any template is rejected by the daemon before it reaches me, with
-the reason sent back to the agent.
+Every limit is required, so a template never caps by accident. A template caps every part
+of a ticket: repos, operations, branches, force push, committer emails, the signing key and
+each limit. `quick-fix` lists `dotfiles`, but `dotfiles` only allows `direct_ssh` and the
+template only `gateway` (the default), so a quick-fix ticket can sign for `dotfiles` but not
+push to it.
 
-## Ticket / lease schema (draft)
+A ticket that doesn't fit any template is rejected by the daemon before it reaches me, with
+every reason sent back to the agent. Config errors name the field
+(`templates.quick-fix.max_ttl: invalid duration "1 hour"`).
+
+### Patterns and units
+
+- **Branches** (`branches`) are short names: an exact branch (`agent/oauth-login`) or a prefix
+  and one trailing `*` (`agent/*`, `agent/fix-*`, `*`), which matches any rest, `/` included.
+  Nothing else (no `*` in the middle, no `**`), so whether one pattern is within another is
+  exact: `agent/*` covers `agent/fix-*`, which covers `agent/fix-login`.
+- **Protected refs** (`protected_refs`) are full refs with the same syntax (`refs/tags/*`).
+- **Expected paths** (`expected_paths`) are globs over repository paths: `*` and `?` stay
+  inside one directory, `**` crosses them.
+- Durations: a number and one unit, `s`, `m`, `h` or `d` (`90s`, `4h`). Sizes: bytes, or a
+  number and `KB`, `MB`, `GB` (powers of 10) or `KiB`, `MiB`, `GiB`.
+
+## The ticket the agent writes
+
+`writ request` sends this file; the daemon completes it into the full ticket below.
 
 ```yaml
+template: feature-branch         # optional: omitted, the only template it fits is chosen
+origin_hint: macbook-user       # optional, advisory
+caller:                          # optional, set by a harness (see subject.caller below)
+scope:
+  repos: [omega-code]
+  operations: [fetch, commit_sign, push]
+  branches: ["agent/oauth-*"]
+  force_push: false              # optional
+  committer_emails: []           # optional: omitted, the template's
+ticket:
+  title: "Add OAuth login"
+  task: "Add GitHub OAuth login to the web app, behind a feature flag"
+  plan: ["Add OAuth client config and callback route", "Store tokens in the existing session store", "Feature flag + tests"]
+  expected_paths: ["src/auth/**", "src/routes/oauth*", "tests/auth/**"]
+  amends: null                   # the lease this ticket amends
+  revises: null                  # the refused ticket this one revises
+limits:                          # each optional: omitted, the template's maximum
+  ttl: 2h
+  max_signatures: 40
+  max_pushes: 20
+  max_ops_per_minute: 10
+  max_push_size: 50MB
+on_violation: deny_and_notify    # optional
+```
+
+A ticket that fits several templates must name one. Text is bounded so a ticket stays
+reviewable (title 200 characters, task 4,000, plan 50 steps of 500, 100 expected paths).
+
+## The complete ticket
+
+What the approver signs, and once signed, the lease's terms. The daemon fills `id`,
+`created_at`, `subject.session_key` (from the key sent with the request), the template's
+committer emails and signing key, `limits.expires_at = created_at + ttl` (so time spent
+waiting for my signature counts), every omitted limit, `revision` and `previous_feedback`.
+
+```yaml
+kind: writ-ticket/1              # the format: an approval can't be read as anything else
 id: wrt_01JD8X...
 created_at: 2026-10-31T14:02:11Z
-state: active                    # pending | active | exhausted | expired | revoked
 template: feature-branch
 
-approval:
-  approver: SHA256:Kp3…            # fingerprint of an approver key (e.g. Secretive "writ-approver")
-  namespace: writ-approval
-  sshsig: <SSHSIG over the canonical lease content>
-
 subject:                         # WHO
-  session_key: SHA256:9fq...
-  cert_serial: 1842
+  session_key: SHA256:9fq...      # the certificate is issued for this key
   origin_hint: macbook-user     # advisory, shown in the approval prompt
   caller:                        # optional; checked against CallerFacts, missing facts deny
-    descends_from:               # local mode: a kernel-resolved process ancestor
+    descends_from:               # local mode: a kernel-resolved process ancestor (or the caller itself)
       executable: /Applications/Omega Code.app/Contents/MacOS/omega
       pid: 4242
       generation: 118            # pidversion: rejects a reused pid
+      code_identity: null        # optional: { signing_id, team_id } that must match too
 
 scope:                           # WHAT
   repos: [omega-code]
@@ -104,7 +169,7 @@ scope:                           # WHAT
   branches: ["agent/*"]
   force_push: false
   committer_emails: ["user+agent@…"]
-  signing_key: agent-ed25519-01
+  signing_key: agent-ed25519-01  # from the template; null without commit_sign
 
 ticket:                          # written by the agent, reviewed by me
   title: "Add OAuth login"
@@ -114,8 +179,9 @@ ticket:                          # written by the agent, reviewed by me
     - "Store tokens in the existing session store"
     - "Feature flag + tests"
   expected_paths: ["src/auth/**", "src/routes/oauth*", "tests/auth/**"]   # see Q24
-  amends: null                   # id of the ticket this one extends, if any
-  revision: 2                    # bumped each time the agent resubmits after a refusal
+  amends: null                   # id of the lease this one amends, if any
+  revises: wrt_01JD8W...         # id of the refused ticket this one revises, if any
+  revision: 2                    # 1, then one more than the ticket it revises
   previous_feedback: "Don't touch billing; keep the session store as is"
 
 limits:                          # HOW MUCH
@@ -123,14 +189,31 @@ limits:                          # HOW MUCH
   max_signatures: 40
   max_pushes: 20
   max_ops_per_minute: 10
-  max_push_size: 50MB
+  max_push_size: 50000000        # bytes
 
 on_violation: deny_and_notify    # deny_and_notify | revoke_lease
 ```
 
-The approval signs the **canonical** encoding of this content: one deterministic byte form,
-defined once in `writ-core` and pinned by fixtures, so `writ sign` and the daemon always sign
-and verify the same bytes.
+The lease record adds what is not signed: its **state**, the **approval** (approver key
+fingerprint, namespace `writ-approval`, the SSHSIG), the **certificate serial** and the
+counters. A lease's id is its first ticket's id: the certificate's key id and the `Writ:`
+trailer carry it, and it stays when amendments replace the terms.
+
+### Canonical encoding
+
+The approval signs the ticket's **canonical bytes**, defined once in `writ-core`
+(`Ticket::canonical_bytes`) and pinned by fixtures (`crates/writ-core/tests/fixtures/`), so
+`writ sign` and the daemon always sign and verify the same bytes:
+
+- compact JSON (no whitespace), fields in the order above, `kind` first;
+- set-like lists (`repos`, `operations`, `branches`, `committer_emails`, `expected_paths`)
+  sorted and deduplicated; `plan` keeps its order;
+- absent values as `null`; timestamps as `YYYY-MM-DDTHH:MM:SSZ`; sizes in bytes;
+- strings as JSON escapes them (control characters escaped, other characters as UTF-8).
+
+Decoding accepts only bytes that re-encode to exactly themselves: another key order,
+whitespace, an unsorted set, an unknown field or another `kind` is refused. Any change to
+any field changes the bytes. A new format gets a new `kind`.
 
 ## Constraints and how much to trust them
 
@@ -158,26 +241,46 @@ stateDiagram-v2
   submitted --> rejected_by_policy: doesn't fit any template
   submitted --> pending: fits a template, waiting for me
   pending --> refused: I refuse, with feedback
+  pending --> expired: expires_at reached before signing
+  pending --> revoked: withdrawn
+  pending --> applied: amendment signed → becomes the scope of its lease
   refused --> [*]: agent revises → new revision submitted
   rejected_by_policy --> [*]: agent revises → new revision submitted
   pending --> active: approver SSHSIG verified → certificate issued
   active --> closed: agent closes the ticket with a summary
-  active --> exhausted: a limit reached
+  active --> exhausted: every counted operation used up
   active --> expired: expires_at reached
   active --> revoked: manual / violation policy
   active --> revoked: session process exits (local mode)
+  applied --> [*]
   closed --> [*]
   exhausted --> [*]
   expired --> [*]
   revoked --> [*]
 ```
 
-An **amendment** is a new ticket with `amends: <id>`. While pending, the original lease keeps
-running; once signed, it replaces the original's scope.
+`submitted` and `rejected_by_policy` are answers to `writ request`, never stored. Every
+transition not drawn here is refused (`State::can_become` in `writ-core`).
+
+An **amendment** is a new ticket with `amends: <id>`, from the same session (same session
+key), submitted while the lease is active. While pending, the original lease keeps running;
+once signed, the amendment becomes `applied` and its terms replace the lease's: the lease
+keeps its id, certificate and counters (its `max_signatures` is the new total, not more on
+top). If the lease ended before the amendment is signed, the amendment can't be applied.
+
+A lease is **exhausted** when every operation it allows is used up: signatures with
+`commit_sign`, pushes with `push`. `fetch` has no count, so a lease that allows it never
+becomes exhausted (it ends by expiry, close or revocation); its signing and pushing still
+stop at their limits. This keeps exhaustion monotone: narrowing away an operation never
+revives a used-up lease.
 
 ## Rules
 
-- A request must match **exactly one** active lease; ambiguity means deny.
+- A request must match **exactly one** lease (certificate key id, serial and session key);
+  none or more than one means deny. The lease must then be active and not past `expires_at`.
+- A lease is used only while it still fits its template **under the current config**: if an
+  admin change tightens or removes the template or a repo, its leases are denied (fail
+  closed) until amended.
 - Leases are **never extended silently**. Extending is a new signed approval.
 - **Every ticket must fit a template** (Q14). An approval can't exceed a template; new
   templates are admin changes.
@@ -186,15 +289,27 @@ running; once signed, it replaces the original's scope.
 - Refusals carry my feedback back to the agent; the next revision shows it alongside the new
   ticket.
 - I can **narrow** a ticket while signing it (shorter TTL, fewer repos/branches/ops, lower
-  limits). The daemon accepts the signature only if the signed ticket is a strict subset of
-  the submitted one, then returns the final lease to the agent.
-- `ticket_link` (per repo): with `trailer`, every commit must carry `Writ: <id>` matching the
-  lease, or signing is refused. The trailer must be in the message **before** signing; the
+  limits). The daemon accepts the signature only if every field of the signed ticket is the
+  same as submitted or narrower, then returns the final lease to the agent. Narrower means:
+  fewer repos, operations or committer emails; branches each within a submitted pattern;
+  force push off; each limit and `expires_at` lower or equal; `on_violation` as strict or
+  stricter; `expected_paths` a non-empty subset (emptying it would turn the path check off),
+  or any if none were submitted. Id, time, template, subject, signing key and text can't
+  change.
+- **Force push** covers non-fast-forward updates and deleting a branch. Creating a branch is
+  never one.
+- Only branches (`refs/heads/…`) can be pushed; any other ref is denied even if no pattern
+  protects it.
+- Signing names the repo the commit is for; the ledger records it, and a push only accepts
+  commits signed under the same lease **for the same repo**.
+- `ticket_link` (per repo): with `trailer`, every commit must carry exactly one `Writ: <id>`
+  matching the lease, or signing is refused. The trailer must be in the message **before** signing; the
   daemon never rewrites commits. With `notes`, the daemon attaches a note under
   `refs/notes/writ` and pushes it upstream. With `ledger_only`, the link exists only in the
   daemon.
 - `paths_check` (per template): compares files touched by each commit with `expected_paths`.
-  `warn` notifies and flags the activity report; `deny` refuses to sign.
+  `warn` notifies and flags the activity report; `deny` refuses to sign, also when the
+  touched paths can't be computed.
 - `protected_refs` from the registry always win over any lease. With account-wide upstream
   keys, this registry is the **only** per-repo boundary.
 - Active leases are persisted (SQLite) and reloaded after unsealing; certificates stay valid
