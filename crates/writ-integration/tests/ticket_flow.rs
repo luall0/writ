@@ -116,6 +116,26 @@ fn rejected_signed_narrowed_and_refused_tickets_end_to_end() {
     // Revision 2 shows my feedback and the diff, with its escape sequences neutralized.
     let revision = ticket(&format!("  revises: {refused}\n"), "1h")
         .replace("\"Add OAuth login\"", "\"Add OAuth \\e[2J\\e[31mlogin\"");
+    // Only from the session that submitted the refused ticket: from another host (another
+    // `writ` home), there's no key to revise it with.
+    let elsewhere = daemon.root().join("revision-elsewhere.yaml");
+    fs::write(&elsewhere, &revision).unwrap();
+    let out = writ_integration::process::finish(
+        daemon
+            .writ(&["request", elsewhere.to_str().unwrap()])
+            .env("WRIT_HOME", daemon.root().join("another-host"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("comes from the session that submitted it"),
+        "{}",
+        stderr(&out)
+    );
     let request = daemon.request("third", &revision);
     let third = request.id.clone();
     let out = daemon.run(&["sign", &third], "n\n");

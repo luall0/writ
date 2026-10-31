@@ -161,6 +161,18 @@ fn revisions_carry_the_feedback() {
         Some("Don't touch billing")
     );
 
+    // Only from the session the feedback was written for: another session gets a rejection,
+    // never the feedback.
+    let other_session = Submission {
+        session_key: fp('Z'),
+        revises: Some(&refused),
+        ..submission(2)
+    };
+    assert_rejected(
+        fit::submit(&config(), &request(&revision), &other_session),
+        "can't be revised from another session",
+    );
+
     // Only a refused ticket can be revised, and only if the store found it.
     let pending = TicketRecord::pending(first.clone());
     let not_refused = Submission {

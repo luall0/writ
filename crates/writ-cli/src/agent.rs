@@ -1,6 +1,7 @@
 //! The agent's side: `writ request` and `writ wait`.
 //!
-//! `writ request` generates a session key, submits the ticket file over the agents' listener
+//! `writ request` generates a session key (or reuses the session's: an amendment's lease, a
+//! revision's refused ticket), submits the ticket file over the agents' listener
 //! authenticated with that key (so the daemon knows the submitter holds it), and waits for
 //! the decision. Once signed, the session lives in `<home>/sessions/<lease>/`: `key`,
 //! `key.pub`, `key-cert.pub` (the certificate, valid until the lease expires), `ticket.json`
@@ -40,10 +41,23 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> an
             return Ok(Exit::Rejected);
         }
     };
-    // An amendment comes from the lease's own session (same key).
-    let (key, new_session) = match &parsed.ticket.amends {
-        Some(lease) => (load_key(&session_dir(paths, lease).join("key"))?, false),
-        None => (generate(KeyKind::Ed25519)?, true),
+    // An amendment comes from the lease's own session, a revision from the refused ticket's
+    // (same key): the daemon refuses either from another session. A revision is a new ticket,
+    // so it gets its own session directory, with that same key.
+    let (key, new_session) = match (&parsed.ticket.amends, &parsed.ticket.revises) {
+        (Some(lease), _) => (load_key(&session_dir(paths, lease).join("key"))?, false),
+        (None, Some(refused)) => {
+            let path = session_dir(paths, refused).join("key");
+            let key = load_key(&path).with_context(|| {
+                format!(
+                    "a revision of {refused} comes from the session that submitted it, and \
+                     it isn't on this host (looked in {})",
+                    path.display()
+                )
+            })?;
+            (key, true)
+        }
+        (None, None) => (generate(KeyKind::Ed25519)?, true),
     };
     let endpoint = Endpoint::parse(url)?;
     let session = Session::connect(&endpoint, &paths.known_hosts, CLIENT_USER, key.clone()).await?;

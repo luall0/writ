@@ -322,6 +322,12 @@ fn check_links(
                     "ticket {id} can't be revised: it was not refused"
                 )));
             }
+            // Like an amendment: only the session the feedback was written for gets it.
+            if previous.ticket.subject.session_key != submission.session_key {
+                return Err(Rejection::one(format!(
+                    "ticket {id} can't be revised from another session"
+                )));
+            }
             if previous.ticket.text.amends != request.ticket.amends {
                 return Err(Rejection::one(format!(
                     "a revision of {id} must amend the same lease as {id}"

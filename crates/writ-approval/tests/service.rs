@@ -394,7 +394,32 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
             ticket.id
         ),
     );
-    let (revised, _) = h.submit(&revision);
+    // From another session: rejected, and the feedback stays with the session it was for.
+    let other = generate(KeyKind::Ed25519).unwrap();
+    match h
+        .service
+        .submit(other.public_key(), revision.as_bytes(), &facts())
+    {
+        Err(ServiceError::Refused { reasons, .. }) => {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|r| r.contains("can't be revised from another session")),
+                "{reasons:?}"
+            );
+            assert!(
+                !reasons.iter().any(|r| r.contains("billing")),
+                "{reasons:?}"
+            );
+        }
+        other => panic!("a revision from another session was accepted: {other:?}"),
+    }
+    // From the session that submitted the refused ticket.
+    let submitted = h
+        .service
+        .submit(key.public_key(), revision.as_bytes(), &facts())
+        .unwrap();
+    let revised = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
     assert_eq!(revised.text.revision, 2);
     assert_eq!(
         revised.text.previous_feedback.as_deref(),

@@ -287,7 +287,9 @@ revives a used-up lease.
 - The ticket's text (title, task, plan) is written by the agent: shown to me as-is, never
   trusted by the policy engine. Only the structured scope is enforced.
 - Refusals carry my feedback back to the agent; the next revision shows it alongside the new
-  ticket.
+  ticket. A revision comes from the **same session** as the refused ticket (its session key):
+  from any other, it is rejected and the feedback stays with the session it was written for.
+  `writ request` reuses that session's key for a revision, as it does for an amendment.
 - I can **narrow** a ticket while signing it (shorter TTL, fewer repos/branches/ops, lower
   limits). The daemon accepts the signature only if every field of the signed ticket is the
   same as submitted or narrower, then returns the final lease to the agent. Narrower means:
