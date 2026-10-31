@@ -94,7 +94,7 @@ impl TestServiceBuilder {
                 decisions: self.decisions,
                 max_pending: self.max_pending,
             },
-            CertificateAuthority::new(ca_key),
+            CertificateAuthority::new(ca_key.clone()),
             Store::open(&dir.join("leases.db")).unwrap(),
             audit,
             ServicePlatform {
@@ -107,6 +107,7 @@ impl TestServiceBuilder {
         TestService {
             service,
             approver,
+            ca_key,
             ca_fingerprint,
             audit_breaker,
             audit_path,
@@ -119,6 +120,8 @@ pub struct TestService {
     pub service: Arc<Service>,
     /// The one key in `approvers`.
     pub approver: PrivateKey,
+    /// The key of the CA that issues session certificates (to forge one without a lease).
+    pub ca_key: PrivateKey,
     /// The fingerprint of the CA that issues session certificates.
     pub ca_fingerprint: Fingerprint,
     /// Makes the audit log fail, to check that nothing changes without its line.
@@ -127,6 +130,11 @@ pub struct TestService {
 }
 
 impl TestService {
+    /// The service's CA, to issue certificates no lease stands for.
+    pub fn ca(&self) -> CertificateAuthority {
+        CertificateAuthority::new(self.ca_key.clone())
+    }
+
     /// Every audit log line, parsed.
     pub fn audit(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(&self.audit_path)

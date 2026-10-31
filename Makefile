@@ -31,7 +31,7 @@ test-props:
 test-agent:
 	@test -n "$(KEY)" || { echo "usage: make test-agent KEY=<public key .pub> [AGENT=<socket>]"; exit 2; }
 	WRIT_TEST_AGENT_KEY="$(KEY)" SSH_AUTH_SOCK="$(or $(AGENT),$(SSH_AUTH_SOCK))" \
-		cargo test -p writ-crypto --test interop -- --ignored --exact your_agent_key_signs_approvals_rust_verifies
+		cargo test -p writ-integration --test interop -- --ignored --exact your_agent_key_signs_approvals_rust_verifies
 
 fmt:
 	cargo fmt --all

@@ -3880,6 +3880,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-integration"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "writ-approval",
+ "writ-core",
+ "writ-crypto",
+ "writ-gateway",
+ "writ-platform",
+ "writ-proto",
+ "writ-store",
+]
+
+[[package]]
 name = "writ-platform"
 version = "0.0.0"
 dependencies = [
@@ -3929,7 +3945,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "serde",
- "serde_json",
  "ssh-key",
  "tempfile",
  "tokio",

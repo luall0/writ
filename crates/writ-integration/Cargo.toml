@@ -1,0 +1,24 @@
+[package]
+name = "writ-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Test-only: the crates and binaries working together, with the real local tools (git,
+# OpenSSH) and no external service. Nothing depends on this crate.
+
+[dependencies]
+writ-approval = { workspace = true, features = ["testing"] }
+writ-core.workspace = true
+writ-crypto.workspace = true
+writ-gateway.workspace = true
+writ-platform = { workspace = true, features = ["testing"] }
+writ-proto.workspace = true
+writ-store = { workspace = true, features = ["testing"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

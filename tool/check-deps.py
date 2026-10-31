@@ -37,6 +37,11 @@ for name, package in members.items():
     if name in CORE and internal & PLATFORM_ONLY:
         errors.append(f"{name} must use platform traits, not {sorted(internal & PLATFORM_ONLY)}")
 
+# The integration crate is test-only: nothing may depend on it, not even for its tests.
+for name, package in members.items():
+    if any(d["name"] == "writ-integration" for d in package["dependencies"]):
+        errors.append(f"{name} must not depend on writ-integration (test-only)")
+
 for e in errors:
     print(f"check-deps: {e}", file=sys.stderr)
 sys.exit(1 if errors else 0)

@@ -1,4 +1,6 @@
-//! SSHSIG and certificates against the real OpenSSH tools, in both directions.
+//! SSHSIG and certificates against the real OpenSSH tools, in both directions: what
+//! `writ-crypto` makes, `ssh-keygen` accepts, and the other way around (including signatures
+//! made through an `ssh-agent`, the way approvers sign).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -12,6 +14,7 @@ use writ_crypto::ca::{CertificateAuthority, CertificateError, CertificateRequest
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey, PublicKey};
 use writ_crypto::{CryptoError, ca, sshsig};
+use writ_integration::agent::TestAgent;
 
 const MSG: &[u8] =
     b"tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 0 +0000\n\nmsg\n";
@@ -144,65 +147,13 @@ fn agent_signature_verifies(socket: &Path, key: &PublicKey) {
     ));
 }
 
-/// A throwaway `ssh-agent`, never the user's.
-struct TestAgent {
-    child: std::process::Child,
-    socket: PathBuf,
-    dir: tempfile::TempDir,
-}
-
-impl TestAgent {
-    fn start() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("agent.sock");
-        let child = Command::new("ssh-agent")
-            .arg("-D")
-            .arg("-a")
-            .arg(&socket)
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
-        // Built before waiting, so a timeout still stops the agent (on drop).
-        let agent = Self { child, socket, dir };
-        // ssh-agent gives no signal but its socket.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !agent.socket.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "ssh-agent did not start"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        agent
-    }
-
-    fn add(&self, key: &PrivateKey) {
-        let path = write_private_key(self.dir.path(), "key", key);
-        let status = Command::new("ssh-add")
-            .arg("-q")
-            .arg(&path)
-            .env("SSH_AUTH_SOCK", &self.socket)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        fs::remove_file(path).unwrap();
-    }
-}
-
-impl Drop for TestAgent {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 #[test]
 fn agent_held_keys_sign_approvals_rust_verifies() {
     let agent = TestAgent::start();
     for kind in [KeyKind::Ed25519, KeyKind::P256] {
         let key = generate(kind).unwrap();
         agent.add(&key);
-        agent_signature_verifies(&agent.socket, key.public_key());
+        agent_signature_verifies(agent.socket(), key.public_key());
     }
 }
 
