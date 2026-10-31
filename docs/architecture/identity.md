@@ -37,7 +37,11 @@ session".
 - Track processes by pid + pidversion to avoid PID reuse.
 
 In local mode, the lease is also revoked when the session's root process exits
-([lifecycle](../lease-model.md#lifecycle)).
+([lifecycle](../lease-model.md#lifecycle)). The watches live in memory, so the daemon watches
+every bound lease again when it starts: a process that ended while it was down revokes its
+lease at once, and a session it can't watch any more revokes it too. An amendment keeps the
+lease's whole subject (session key and process). The certificate goes on the deny list before
+anything that can fail, so a revocation is never lost to a store or log error.
 
 None of this is special-cased in the core: the Unix socket is a `Transport`, the ancestry is
 produced by a `CallerAttestor` as `CallerFacts`, exit notices come from a `SessionWatcher`, and

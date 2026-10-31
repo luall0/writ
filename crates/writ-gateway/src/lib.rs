@@ -284,8 +284,12 @@ impl Gateway {
         }
     }
 
-    /// Disconnects every open session of a certificate.
+    /// Disconnects every open session of a certificate, and forgets its pushes in progress
+    /// (their hook is then refused as an unknown push).
     fn drop_sessions(&self, serial: u64) {
+        if let Ok(mut pushes) = self.shared.pushes.lock() {
+            pushes.retain(|_, push| push.cert.serial != serial);
+        }
         let handles: Vec<russh::server::Handle> = match self.shared.sessions.lock() {
             Ok(mut sessions) => sessions
                 .remove(&serial)

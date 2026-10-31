@@ -111,7 +111,8 @@ impl Service {
         caller: &CallerFacts,
     ) -> Result<Ack, ServiceError> {
         let (now, mut inner) = self.begin()?;
-        let record = inner.record(id)?;
+        let unknown = AuditEvent::new(now, EventKind::Grant, Outcome::Denied).caller(caller);
+        let record = Self::record_or_deny(&mut inner, id, unknown)?;
         // An amendment's approval is logged as `amend`, a new lease's as `grant`.
         let kind = if record.ticket.text.amends.is_some() {
             EventKind::Amend
@@ -284,7 +285,7 @@ impl Service {
     /// Starts watching the session process a lease is bound to (`subject.caller`), if any.
     /// A daemon that can't watch processes can't grant such a lease: it would outlive its
     /// session.
-    fn watch_session(&self, lease: &Lease) -> Result<Option<WatchHandle>, String> {
+    pub(super) fn watch_session(&self, lease: &Lease) -> Result<Option<WatchHandle>, String> {
         let Some(constraint) = &lease.ticket.subject.caller else {
             return Ok(None);
         };
@@ -296,13 +297,13 @@ impl Service {
             code_identity: target.code_identity.clone(),
         };
         let me = self.me.clone();
-        let lease_id = lease.id.clone();
+        let (lease_id, serial) = (lease.id.clone(), lease.cert_serial);
         let on_exit = Box::new(move || {
             // Possibly called right away, while the caller holds the state lock: revoke from
             // another thread.
             std::thread::spawn(move || {
                 if let Some(service) = me.upgrade() {
-                    service.session_ended(&lease_id);
+                    service.session_ended(&lease_id, serial);
                 }
             });
         });
@@ -336,7 +337,8 @@ impl Service {
         caller: &CallerFacts,
     ) -> Result<Ack, ServiceError> {
         let (now, mut inner) = self.begin()?;
-        let record = inner.record(id)?;
+        let unknown = AuditEvent::new(now, EventKind::Refuse, Outcome::Denied).caller(caller);
+        let record = Self::record_or_deny(&mut inner, id, unknown)?;
         let denied = Denied::new(
             AuditEvent::new(now, EventKind::Refuse, Outcome::Denied)
                 .ticket(id)
@@ -397,7 +399,8 @@ impl Service {
         caller: &CallerFacts,
     ) -> Result<Ack, ServiceError> {
         let (now, mut inner) = self.begin()?;
-        let record = inner.record(id)?;
+        let unknown = AuditEvent::new(now, EventKind::Revoke, Outcome::Denied).caller(caller);
+        let record = Self::record_or_deny(&mut inner, id, unknown)?;
         let denied = Denied::new(
             AuditEvent::new(now, EventKind::Revoke, Outcome::Denied)
                 .ticket(id)
@@ -417,20 +420,24 @@ impl Service {
             event = event.approver(approver);
         }
         match (record.state, inner.store.lease(id).map_err(internal)?) {
+            // A reduction of privilege: applied even if the log can't take its line now
+            // (kept and written once it can), and the certificate is refused first.
             (State::Active, Some(lease)) => {
+                self.bar_serial(lease.cert_serial);
+                inner.watches.remove(id);
                 let event = event.lease(id).cert(lease.cert_serial);
-                Self::logged(&mut inner, event, |inner| {
+                let done = Self::reduced(&mut inner, event, |inner| {
                     inner
                         .store
                         .transition(id, State::Active, State::Revoked, now)
                         .map_err(internal)
-                })?;
-                inner.watches.remove(id);
+                });
                 self.deny_serial(lease.cert_serial);
+                done?;
             }
             (State::Pending, _) => {
                 let event = event.ticket(id).lease(record.ticket.lease_id());
-                Self::logged(&mut inner, event, |inner| {
+                Self::reduced(&mut inner, event, |inner| {
                     inner
                         .store
                         .transition(id, State::Pending, State::Revoked, now)

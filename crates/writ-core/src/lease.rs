@@ -127,6 +127,10 @@ pub enum LifecycleError {
     LeaseNotActive(TicketId),
     #[error("an amendment must keep the lease's session key")]
     SessionKeyChanged,
+    /// The session process the lease is bound to (`subject.caller`) is part of what the
+    /// daemon watches to revoke it: an amendment can't drop, add or move it.
+    #[error("an amendment must keep the lease's subject (session key and process)")]
+    SubjectChanged,
 }
 
 /// Checks a transition.
@@ -258,6 +262,9 @@ pub fn apply_amendment(
     }
     if signed.subject.session_key != lease.ticket.subject.session_key {
         return Err(LifecycleError::SessionKeyChanged);
+    }
+    if signed.subject != lease.ticket.subject {
+        return Err(LifecycleError::SubjectChanged);
     }
     check_approval(config, &amendment.ticket, &signed, &approval, now)?;
     let applied = TicketRecord {

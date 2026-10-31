@@ -23,7 +23,7 @@ use writ_crypto::ca::validate_user_certificate;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Certificate, HashAlg, PrivateKey};
 use writ_crypto::sshsig;
-use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier, WAIT_LIMIT};
+use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier, WAIT_LIMIT, eventually};
 use writ_proto::{ApproveRequest, Decision, Decisions, RefuseRequest, Relation, RevokeRequest};
 use writ_store::looks_secret;
 
@@ -624,6 +624,110 @@ fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Revoked);
 }
 
+/// Waits for the next revocation announced by `service` (the signal that the lease's state
+/// change was made).
+fn next_revocation(revocations: &mut tokio::sync::broadcast::Receiver<u64>) -> u64 {
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async { tokio::time::timeout(WAIT_LIMIT, revocations.recv()).await })
+        .expect("a revocation is announced")
+        .unwrap()
+}
+
+/// A lease bound to the session process 4242 (generation 7), and its certificate's serial.
+fn bound_lease(h: &Harness) -> (Ticket, u64) {
+    let (ticket, key) = h.submit(BOUND);
+    h.approve(&ticket).unwrap();
+    let Decision::Active { certificate, .. } = h.wait(&ticket.id, &key) else {
+        panic!("expected an active lease");
+    };
+    let serial = Certificate::from_openssh(&certificate).unwrap().serial();
+    (ticket, serial)
+}
+
+#[test]
+fn a_restart_watches_bound_sessions_again() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, serial) = bound_lease(&h);
+    let watcher = FakeWatcher::new();
+    let restarted = TestServiceBuilder::new(POLICY)
+        .clock(h.clock.clone())
+        .watcher(Arc::new(watcher.clone()))
+        .build(h.dir.path());
+    assert_eq!(watcher.active_watches(), 1, "watched again");
+    assert!(!restarted.service.is_revoked(serial));
+
+    let mut revocations = restarted.service.subscribe_revocations();
+    watcher.exit(4242, 7);
+    assert_eq!(next_revocation(&mut revocations), serial);
+    assert!(restarted.service.is_revoked(serial));
+    assert_eq!(
+        restarted.service.show(&ticket.id).unwrap().state,
+        State::Revoked
+    );
+    let revoked = restarted.events("revoke", "done");
+    assert_eq!(revoked.len(), 1);
+    assert_eq!(revoked[0]["reason"], "the session's process ended");
+}
+
+#[test]
+fn a_session_that_ended_while_the_daemon_was_down_revokes_at_restart() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, serial) = bound_lease(&h);
+    let watcher = FakeWatcher::new();
+    watcher.exit(4242, 7);
+    let restarted = TestServiceBuilder::new(POLICY)
+        .clock(h.clock.clone())
+        .watcher(Arc::new(watcher.clone()))
+        .build(h.dir.path());
+    // The watcher calls back at once, on its own thread, while the service is being built:
+    // there is nothing to subscribe to in time, so the revocation is polled for.
+    eventually("the lease of the ended session is revoked", || {
+        restarted.service.show(&ticket.id).unwrap().state == State::Revoked
+    });
+    assert!(restarted.service.is_revoked(serial));
+    assert_eq!(restarted.events("revoke", "done").len(), 1);
+}
+
+#[test]
+fn a_restart_without_a_watcher_revokes_bound_leases() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, serial) = bound_lease(&h);
+    let restarted = TestServiceBuilder::new(POLICY)
+        .clock(h.clock.clone())
+        .watcher(Arc::new(FakeWatcher::unsupported()))
+        .build(h.dir.path());
+    assert!(restarted.service.is_revoked(serial));
+    assert_eq!(
+        restarted.service.show(&ticket.id).unwrap().state,
+        State::Revoked
+    );
+    let revoked = restarted.events("revoke", "done");
+    assert_eq!(revoked.len(), 1);
+    assert!(
+        revoked[0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("after a restart: the lease is bound to a session the daemon can't watch"),
+        "{:?}",
+        revoked[0]
+    );
+}
+
+#[test]
+fn an_ended_session_revokes_even_with_the_audit_log_down() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, serial) = bound_lease(&h);
+    let mut revocations = h.service.subscribe_revocations();
+    h.audit_breaker.set_broken(true);
+    h.watcher.exit(4242, 7);
+    assert_eq!(next_revocation(&mut revocations), serial);
+    assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Revoked);
+    h.audit_breaker.set_broken(false);
+    h.service.sweep();
+    assert_eq!(h.events("revoke", "done"), 1);
+}
+
 #[test]
 fn too_many_waiting_tickets_are_turned_away() {
     let h = Harness::with(Decisions::Signed, FakeWatcher::new(), 2);
@@ -685,7 +789,7 @@ fn the_audit_log_holds_every_decision_and_no_secret() {
 }
 
 #[test]
-fn nothing_changes_without_its_audit_line() {
+fn nothing_is_granted_without_its_audit_line() {
     let h = Harness::new(Decisions::Signed);
     let audit_lines = || h.audit().len();
 
@@ -713,10 +817,9 @@ fn nothing_changes_without_its_audit_line() {
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
     assert_eq!(audit_lines(), before, "a broken log holds nothing");
 
-    // Refusal and withdrawal: still pending.
+    // Refusal: still pending (a refusal reduces nothing granted; it waits for its line).
     h.audit_breaker.set_broken(true);
     audit_log_down(h.refuse_signed(&ticket.id, "no"));
-    audit_log_down(h.revoke_signed(&ticket.id));
     h.audit_breaker.set_broken(false);
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
 
@@ -755,23 +858,94 @@ fn nothing_changes_without_its_audit_line() {
         "the amendment was not applied"
     );
 
-    // Revocation: the certificate still works.
-    h.audit_breaker.set_broken(true);
-    audit_log_down(h.revoke_signed(&ticket.id));
-    h.audit_breaker.set_broken(false);
-    assert!(!h.service.is_revoked(cert.serial()));
-    assert!(
-        h.service
-            .authorize(&identity(&cert), &facts(), None)
-            .is_ok()
-    );
-
     // Each step that went through has its line.
     assert_eq!(h.events("submit", "allowed"), 2);
     assert_eq!(h.events("grant", "allowed"), 1);
     assert_eq!(h.events("amend", "allowed"), 0);
     assert_eq!(h.events("refuse", "done"), 0);
-    assert_eq!(h.events("revoke", "done"), 0);
+    let _ = cert;
+}
+
+#[test]
+fn a_revocation_never_waits_for_the_audit_log() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, _key, cert) = h.lease();
+    let (pending, _) = h.submit(REQUEST);
+
+    // A full disk must not keep a lease alive: revoked, refused at once, sessions dropped.
+    let mut revocations = h.service.subscribe_revocations();
+    h.audit_breaker.set_broken(true);
+    assert_eq!(h.revoke_signed(&ticket.id).unwrap(), State::Revoked);
+    assert_eq!(revocations.try_recv().unwrap(), cert.serial());
+    assert!(h.service.is_revoked(cert.serial()));
+    assert_eq!(
+        h.service
+            .authorize(&identity(&cert), &facts(), None)
+            .unwrap_err()
+            .code,
+        DenyCode::NotActive
+    );
+    // A pending ticket is withdrawn the same way.
+    assert_eq!(h.revoke_signed(&pending.id).unwrap(), State::Revoked);
+    assert_eq!(
+        h.events("revoke", "done"),
+        0,
+        "nothing reached the broken log"
+    );
+
+    // The lines are written, in order, as soon as the log can take them.
+    h.audit_breaker.set_broken(false);
+    h.service.sweep();
+    let revoked: Vec<_> = h
+        .test
+        .events("revoke", "done")
+        .into_iter()
+        .map(|e| e["lease"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(revoked, [ticket.id.to_string(), pending.id.to_string()]);
+    assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Revoked);
+}
+
+#[test]
+fn expiry_never_waits_for_the_audit_log() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, _key, cert) = h.lease();
+    h.audit_breaker.set_broken(true);
+    h.clock.advance(2 * 3600);
+    h.service.sweep();
+    assert!(h.service.is_revoked(cert.serial()));
+    h.audit_breaker.set_broken(false);
+    assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Expired);
+    h.service.sweep();
+    assert_eq!(h.events("expire", "done"), 1);
+}
+
+#[test]
+fn an_unknown_ticket_is_logged_as_denied() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, _) = h.submit(REQUEST);
+    let unknown: TicketId = "wrt_01JD8X0000000000000000000Z".parse().unwrap();
+    let mut other = ticket.clone();
+    other.id = unknown.clone();
+    for (result, event) in [
+        (
+            h.service
+                .approve(&unknown, &h.signed(&other), &facts())
+                .map(|a| a.state),
+            "grant",
+        ),
+        (h.refuse_signed(&unknown, "no"), "refuse"),
+        (h.revoke_signed(&unknown), "revoke"),
+    ] {
+        assert!(
+            matches!(&result, Err(ServiceError::NotFound(id)) if *id == unknown),
+            "{result:?}"
+        );
+        let denied = h.test.events(event, "denied");
+        assert_eq!(denied.len(), 1, "{event}");
+        assert_eq!(denied[0]["reason"], "no such ticket");
+        assert_eq!(denied[0]["ticket"], unknown.as_str());
+    }
 }
 
 #[test]

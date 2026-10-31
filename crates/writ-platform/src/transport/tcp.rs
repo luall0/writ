@@ -32,7 +32,9 @@ impl TcpTransport {
 impl Transport for TcpTransport {
     fn accept(&self) -> BoxFuture<'_, Result<Connection>> {
         Box::pin(async move {
-            let (stream, remote) = self.listener.accept().await?;
+            let listener = self.describe();
+            let (stream, remote) =
+                super::retry::accept_retrying(&listener, || self.listener.accept()).await?;
             // Small request/response exchanges: don't wait to fill packets.
             let _ = stream.set_nodelay(true);
             Ok(Connection {

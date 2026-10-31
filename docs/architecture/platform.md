@@ -27,7 +27,10 @@ Shapes (as in `crates/writ-platform`, kept in sync here; the traits are used as 
 /// How clients reach the daemon. Every transport carries the same SSH protocol:
 /// only the byte stream and what is known about its peer differ.
 pub trait Transport: Send + Sync {
-    /// Waits for the next client connection.
+    /// Waits for the next client connection. Fails only when the listener itself can't go
+    /// on: an error about one connection or a passing shortage (out of file descriptors, a
+    /// connection reset before it was accepted) is retried inside, never returned, since the
+    /// daemon stops when a listener fails.
     fn accept(&self) -> BoxFuture<'_, Result<Connection>>;
     /// Where it listens, for logs (`tcp 127.0.0.1:2222`).
     fn describe(&self) -> String;

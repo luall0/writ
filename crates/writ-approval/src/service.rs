@@ -10,7 +10,7 @@ mod sweep;
 
 pub use gateway::GatewayDenial;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Duration;
 
@@ -35,6 +35,10 @@ const CLOCK_SKEW_SECONDS: i64 = 60;
 
 /// The longest a waiting client sleeps before checking again.
 const WAIT_RECHECK: Duration = Duration::from_secs(30);
+
+/// The most audit lines kept in memory while the log can't be written (a reduction of
+/// privilege applied anyway, a denial). Past it, lines are counted as lost and reported.
+const MAX_UNLOGGED: usize = 10_000;
 
 /// The service's settings, from the daemon's configuration.
 pub struct ServiceConfig {
@@ -98,6 +102,10 @@ struct Inner {
     audit: AuditLog,
     /// Session watches of leases bound to a process, dropped (cancelled) when they end.
     watches: HashMap<TicketId, WatchHandle>,
+    /// Lines the log couldn't take when they happened, written first once it can.
+    unlogged: VecDeque<AuditEvent>,
+    /// Lines dropped because [`MAX_UNLOGGED`] was reached.
+    lost: u64,
 }
 
 impl Inner {
@@ -166,6 +174,8 @@ impl Service {
                 store,
                 audit,
                 watches: HashMap::new(),
+                unlogged: VecDeque::new(),
+                lost: 0,
             }),
             revoked: RwLock::new(revoked),
             changed: Notify::new(),
@@ -176,6 +186,7 @@ impl Service {
             me: me.clone(),
         });
         service.sweep();
+        service.rewatch_sessions()?;
         Ok(service)
     }
 
@@ -216,26 +227,73 @@ impl Service {
         Ok((now, inner))
     }
 
+    /// Writes the lines the log couldn't take earlier, oldest first; stops at the first
+    /// failure.
+    fn flush_unlogged(inner: &mut Inner) -> Result<(), ServiceError> {
+        while let Some(event) = inner.unlogged.front() {
+            inner.audit.append(event).map_err(ServiceError::AuditLog)?;
+            inner.unlogged.pop_front();
+        }
+        if inner.lost > 0 {
+            tracing::error!(
+                lost = inner.lost,
+                "audit lines were lost while the audit log couldn't be written"
+            );
+            inner.lost = 0;
+        }
+        Ok(())
+    }
+
+    /// Writes `event` (after any line still waiting): a grant or an allow is refused when
+    /// this fails.
     fn log(inner: &mut Inner, event: &AuditEvent) -> Result<(), ServiceError> {
+        Self::flush_unlogged(inner)?;
         inner.audit.append(event).map_err(ServiceError::AuditLog)
     }
 
-    /// Logs a denial, or a change the daemon makes on its own (an expiry). What it records
-    /// happens whatever becomes of the log line: a denial is denied anyway.
+    /// Logs a denial, or a reduction of privilege: what it records happens whatever becomes
+    /// of the line (a denial is denied anyway, a revocation is never held back). A line the
+    /// log can't take is kept and written first once it can.
     fn log_best_effort(inner: &mut Inner, event: &AuditEvent) {
-        if let Err(e) = inner.audit.append(event) {
-            tracing::error!(error = %e, "cannot write the audit log");
+        if let Err(e) = Self::log(inner, event) {
+            tracing::error!(error = %e.detail(), "cannot write the audit log; the line is kept");
+            if inner.unlogged.len() < MAX_UNLOGGED {
+                inner.unlogged.push_back(event.clone());
+            } else {
+                inner.lost += 1;
+            }
         }
     }
 
-    /// Writes `event`, then makes the change it records: nothing changes without its log
-    /// line. If the change then fails, a denial line with the reason follows.
+    /// Writes `event`, then makes the change it records: nothing is granted or allowed
+    /// without its log line. If the change then fails, a denial line with the reason follows.
     fn logged<T>(
         inner: &mut Inner,
         event: AuditEvent,
         change: impl FnOnce(&mut Inner) -> Result<T, ServiceError>,
     ) -> Result<T, ServiceError> {
         Self::log(inner, &event)?;
+        Self::apply(inner, event, change)
+    }
+
+    /// A reduction of privilege (revocation, withdrawal, expiry, exhaustion, an ended
+    /// session): its line is written first when the log can take it, but the change is made
+    /// either way. A full disk must never keep a lease alive (docs/decisions.md).
+    fn reduced<T>(
+        inner: &mut Inner,
+        event: AuditEvent,
+        change: impl FnOnce(&mut Inner) -> Result<T, ServiceError>,
+    ) -> Result<T, ServiceError> {
+        Self::log_best_effort(inner, &event);
+        Self::apply(inner, event, change)
+    }
+
+    /// Makes a logged change; a failure gets its denial line.
+    fn apply<T>(
+        inner: &mut Inner,
+        event: AuditEvent,
+        change: impl FnOnce(&mut Inner) -> Result<T, ServiceError>,
+    ) -> Result<T, ServiceError> {
         change(inner).inspect_err(|e| {
             let mut failed = event;
             failed.result = Outcome::Denied;
@@ -244,13 +302,38 @@ impl Service {
         })
     }
 
-    fn deny_serial(&self, serial: u64) {
+    /// The ticket `id` for an approver request; an unknown id is logged as denied (event
+    /// `kind`) before the "does not exist" answer.
+    fn record_or_deny(
+        inner: &mut Inner,
+        id: &TicketId,
+        denied: AuditEvent,
+    ) -> Result<TicketRecord, ServiceError> {
+        match inner.store.ticket(id).map_err(internal)? {
+            Some(record) => Ok(record),
+            None => {
+                Self::log_best_effort(inner, &denied.ticket(id).reason("no such ticket"));
+                Err(not_found(id))
+            }
+        }
+    }
+
+    /// Puts a certificate on the deny list, without announcing it: done first when a lease
+    /// ends, before anything that can fail, so the certificate is refused whatever follows.
+    fn bar_serial(&self, serial: u64) {
         match self.revoked.write() {
             Ok(mut revoked) => {
                 revoked.insert(serial);
             }
+            // Reads of a poisoned deny list say "revoked" ([`Service::is_revoked`]).
             Err(_) => tracing::error!(serial, "the deny list lock is poisoned"),
         }
+    }
+
+    /// Puts a certificate on the deny list and announces it (the gateway drops its open
+    /// sessions). Called once the lease's state change was attempted, whatever its outcome.
+    fn deny_serial(&self, serial: u64) {
+        self.bar_serial(serial);
         let _ = self.revocations.send(serial);
     }
 

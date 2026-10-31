@@ -14,6 +14,8 @@ impl Service {
     pub fn sweep(&self) {
         let Ok(now) = self.now() else { return };
         let Ok(mut inner) = self.lock() else { return };
+        // Lines kept while the log was down are retried even when no request comes.
+        let _ = Self::flush_unlogged(&mut inner);
         match self.sweep_locked(&mut inner, now) {
             Ok(true) => self.changed.notify_waiters(),
             Ok(false) => {}
@@ -30,15 +32,16 @@ impl Service {
         for record in inner.store.tickets(State::Pending).map_err(internal)? {
             if let Some(next) = lease::pending_due(&record, now) {
                 let id = &record.ticket.id;
-                inner
-                    .store
-                    .transition(id, State::Pending, next, now)
-                    .map_err(internal)?;
                 let event = AuditEvent::new(now, EventKind::Expire, Outcome::Done)
                     .ticket(id)
                     .lease(record.ticket.lease_id())
                     .reason("not signed before expires_at");
-                Self::log_best_effort(inner, &event);
+                Self::reduced(inner, event, |inner| {
+                    inner
+                        .store
+                        .transition(id, State::Pending, next, now)
+                        .map_err(internal)
+                })?;
                 changed = true;
             }
         }
@@ -47,12 +50,10 @@ impl Service {
             let Some(next) = lease::due_transition(&lease, &usage, now) else {
                 continue;
             };
-            inner
-                .store
-                .transition(&lease.id, State::Active, next, now)
-                .map_err(internal)?;
+            // The certificate is refused first: whatever happens to the store write, the
+            // lease is over.
+            self.bar_serial(lease.cert_serial);
             inner.watches.remove(&lease.id);
-            self.deny_serial(lease.cert_serial);
             let kind = if next == State::Exhausted {
                 EventKind::Exhaust
             } else {
@@ -61,37 +62,80 @@ impl Service {
             let event = AuditEvent::new(now, kind, Outcome::Done)
                 .lease(&lease.id)
                 .cert(lease.cert_serial);
-            Self::log_best_effort(inner, &event);
+            let done = Self::reduced(inner, event, |inner| {
+                inner
+                    .store
+                    .transition(&lease.id, State::Active, next, now)
+                    .map_err(internal)
+            });
+            self.deny_serial(lease.cert_serial);
+            done?;
             changed = true;
         }
         Ok(changed)
     }
 
-    /// The session process of a lease ended: the lease is revoked.
-    pub(super) fn session_ended(&self, lease_id: &TicketId) {
-        let Ok(now) = self.now() else { return };
-        let Ok(mut inner) = self.lock() else { return };
-        let Ok(Some(lease)) = inner.store.lease(lease_id) else {
-            return;
+    /// The session process of a lease ended: the lease is revoked. Its certificate goes on the
+    /// deny list first, before anything that could fail (the lock, the store, the log): the
+    /// watch fires once, so a revocation lost here would be lost for good.
+    pub(super) fn session_ended(&self, lease_id: &TicketId, serial: u64) {
+        self.bar_serial(serial);
+        let reason = "the session's process ended";
+        if let Err(e) = self.revoke_by_daemon(lease_id, reason) {
+            tracing::error!(
+                lease = %lease_id,
+                error = %e.detail(),
+                "cannot record the revocation of a lease whose session ended; its certificate is refused"
+            );
+        }
+        self.deny_serial(serial);
+        self.changed.notify_waiters();
+    }
+
+    /// Revokes an active lease on the daemon's own decision (`reason` in its audit line).
+    fn revoke_by_daemon(&self, lease_id: &TicketId, reason: &str) -> Result<(), ServiceError> {
+        let now = self.now()?;
+        let mut inner = self.lock()?;
+        let Some(lease) = inner.store.lease(lease_id).map_err(internal)? else {
+            return Ok(());
         };
         if lease.state != State::Active {
-            return;
+            return Ok(());
         }
-        if let Err(e) = inner
-            .store
-            .transition(lease_id, State::Active, State::Revoked, now)
-        {
-            tracing::error!(lease = %lease_id, error = %e, "cannot revoke a lease after its session ended");
-            return;
-        }
+        self.bar_serial(lease.cert_serial);
         inner.watches.remove(lease_id);
-        self.deny_serial(lease.cert_serial);
         let event = AuditEvent::new(now, EventKind::Revoke, Outcome::Done)
             .lease(lease_id)
             .cert(lease.cert_serial)
-            .reason("the session's process ended");
-        Self::log_best_effort(&mut inner, &event);
+            .reason(reason);
+        let done = Self::reduced(&mut inner, event, |inner| {
+            inner
+                .store
+                .transition(lease_id, State::Active, State::Revoked, now)
+                .map_err(internal)
+        });
         drop(inner);
-        self.changed.notify_waiters();
+        self.deny_serial(lease.cert_serial);
+        done
+    }
+
+    /// At startup: watches again the session of every active lease bound to one (watches
+    /// live in memory). A session the daemon can't watch any more revokes its lease, and a
+    /// process that ended while the daemon was down revokes it right away (the watcher calls
+    /// back at once).
+    pub(super) fn rewatch_sessions(&self) -> Result<(), ServiceError> {
+        let leases = self.lock()?.store.leases(State::Active).map_err(internal)?;
+        for lease in leases.iter().filter(|l| l.ticket.subject.caller.is_some()) {
+            match self.watch_session(lease) {
+                Ok(Some(watch)) => {
+                    self.lock()?.watches.insert(lease.id.clone(), watch);
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    self.revoke_by_daemon(&lease.id, &format!("after a restart: {reason}"))?;
+                }
+            }
+        }
+        Ok(())
     }
 }

@@ -1,10 +1,12 @@
 //! The daemon side of the hook: reads what a hook sends, decides, answers, and logs every
-//! refusal.
+//! refusal. The lease is checked again here, when the ref updates are known: a lease revoked
+//! (or expired) while the pack was coming in moves no ref.
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use writ_approval::{EventKind, GatewayDenial};
 use writ_core::caller::CallerFacts;
+use writ_core::ticket::Operation;
 
 use super::{MAX_HOOK_INPUT, PushContext, RefUpdate, check_ref_updates};
 use crate::Gateway;
@@ -28,6 +30,8 @@ struct Refused {
     reason: String,
     context: Option<Box<PushContext>>,
     refs: Vec<String>,
+    /// Already logged by the approval service (a lease decision).
+    logged: bool,
 }
 
 impl Refused {
@@ -36,20 +40,32 @@ impl Refused {
             reason: reason.into(),
             context: None,
             refs: Vec::new(),
+            logged: false,
+        }
+    }
+
+    fn of(reason: impl Into<String>, context: PushContext, refs: Vec<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            context: Some(Box::new(context)),
+            refs,
+            logged: false,
         }
     }
 }
 
 async fn answer(gateway: Gateway, mut stream: UnixStream) {
     let decided = match read_input(&mut stream).await {
-        Ok(input) => decide(&gateway, &input),
+        Ok(input) => decide(&gateway, &input).await,
         Err(reason) => Err(Refused::new(reason)),
     };
     let reply = match decided {
         Ok(()) => "ok\n".to_owned(),
         Err(refused) => {
             let reply = format!("deny {}\n", refused.reason);
-            log_refusal(&gateway, refused).await;
+            if !refused.logged {
+                log_refusal(&gateway, refused).await;
+            }
             reply
         }
     };
@@ -91,7 +107,7 @@ pub(super) fn parse_input(input: &[u8]) -> Result<(&str, Vec<RefUpdate>), &'stat
     Ok((token, updates))
 }
 
-fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
+async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
     let (token, updates) = parse_input(input).map_err(Refused::new)?;
     let context = gateway
         .shared
@@ -101,23 +117,39 @@ fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         .get(token)
         .cloned()
         .ok_or_else(|| Refused::new("unknown push"))?;
+    let refs = || {
+        updates
+            .iter()
+            .map(|u| u.name.to_string())
+            .collect::<Vec<_>>()
+    };
+    // The lease again, now that the pack is in: it may have been revoked or have expired
+    // since the push started (the service logs this decision).
+    let lease = match gateway
+        .authorize(&context.cert, &context.caller, Some(Operation::Push))
+        .await
+    {
+        Ok(lease) => lease,
+        Err(denial) => {
+            let mut refused = Refused::of(denial.to_string(), context, refs());
+            refused.logged = true;
+            return Err(refused);
+        }
+    };
+    if !lease.ticket.scope.repos.contains(&context.repo) {
+        let reason = format!("repo {} is no longer in lease {}", context.repo, lease.id);
+        return Err(Refused::of(reason, context, refs()));
+    }
     // A repo that left the registry protects nothing it used to: refuse.
     let protected = match gateway.service().policy().repo(&context.repo) {
         Some(entry) => &entry.protected_refs,
         None => {
-            return Err(Refused {
-                reason: format!("repo {} is not in the registry", context.repo),
-                context: Some(Box::new(context)),
-                refs: Vec::new(),
-            });
+            let reason = format!("repo {} is not in the registry", context.repo);
+            return Err(Refused::of(reason, context, Vec::new()));
         }
     };
     if let Err(reason) = check_ref_updates(&updates, protected) {
-        return Err(Refused {
-            reason,
-            refs: updates.iter().map(|u| u.name.to_string()).collect(),
-            context: Some(Box::new(context)),
-        });
+        return Err(Refused::of(reason, context, refs()));
     }
     tracing::info!(
         lease = %context.cert.key_id,
@@ -146,6 +178,136 @@ mod tests {
     use super::*;
 
     const A: &str = "1111111111111111111111111111111111111111";
+
+    mod revoked_mid_push {
+        use super::super::decide;
+        use super::A;
+        use crate::hook::PushContext;
+        use crate::{Gateway, GatewayConfig};
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        use writ_approval::testing::TestServiceBuilder;
+        use writ_core::caller::CallerFacts;
+        use writ_core::canonical::Canonical;
+        use writ_core::policy::CertIdentity;
+        use writ_core::ticket::Ticket;
+        use writ_crypto::keys::{KeyKind, generate};
+        use writ_crypto::ssh_key::{Certificate, HashAlg};
+        use writ_platform::clock::system::SystemClock;
+        use writ_proto::Decision;
+
+        const POLICY: &str = r#"
+repos:
+  demo:
+    upstream: ssh://git@forge.invalid/demo.git
+    upstream_credential: upstream-01
+    protected_refs: [refs/heads/main]
+templates:
+  work:
+    repos: [demo]
+    operations: [fetch, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ"]
+    signing_key: agent-01
+    max_ttl: 1h
+    max_signatures: 0
+    max_pushes: 5
+    max_ops_per_minute: 100
+    max_push_size: 1MB
+"#;
+
+        const TICKET: &str = r#"
+scope:
+  repos: [demo]
+  operations: [fetch, push]
+  branches: ["agent/x"]
+ticket:
+  title: Revoked mid-push
+  task: The hook's decision
+"#;
+
+        #[tokio::test]
+        async fn a_lease_revoked_while_the_pack_comes_in_moves_no_ref() {
+            let dir = tempfile::tempdir().unwrap();
+            let test = TestServiceBuilder::new(POLICY)
+                .clock(Arc::new(SystemClock))
+                .build(dir.path());
+            let gateway = Gateway::start(
+                GatewayConfig {
+                    host_key: generate(KeyKind::Ed25519).unwrap(),
+                    repos_root: dir.path().join("repos"),
+                    signing_key: generate(KeyKind::Ed25519).unwrap(),
+                    hook_program: PathBuf::from("/bin/false"),
+                    state_dir: dir.path().join("run"),
+                },
+                test.service.clone(),
+            )
+            .await
+            .unwrap();
+            let key = generate(KeyKind::Ed25519).unwrap();
+            let caller = CallerFacts::default();
+            let submitted = test
+                .service
+                .submit(key.public_key(), TICKET.as_bytes(), &caller)
+                .unwrap();
+            let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+            test.service
+                .approve(&ticket.id, &test.approval(&ticket), &caller)
+                .unwrap();
+            let Decision::Active { certificate, .. } = test
+                .service
+                .wait(&ticket.id, key.public_key())
+                .await
+                .unwrap()
+            else {
+                panic!("expected an active lease");
+            };
+            let certificate = Certificate::from_openssh(&certificate).unwrap();
+            let cert = CertIdentity {
+                key_id: certificate.key_id().to_owned(),
+                serial: certificate.serial(),
+                session_key: certificate
+                    .public_key()
+                    .fingerprint(HashAlg::Sha256)
+                    .to_string()
+                    .parse()
+                    .unwrap(),
+            };
+            gateway.shared.pushes.lock().unwrap().insert(
+                "tok".to_owned(),
+                PushContext {
+                    cert,
+                    repo: "demo".parse().unwrap(),
+                    caller,
+                },
+            );
+            let input = format!("tok\n{A} {A} refs/heads/agent/x\n");
+
+            // In force: the push goes through (the denial below is the revocation's doing).
+            assert!(decide(&gateway, input.as_bytes()).await.is_ok());
+
+            test.service
+                .revoke(
+                    &ticket.id,
+                    &test.revocation(&ticket.id),
+                    &CallerFacts::default(),
+                )
+                .unwrap();
+            let refused = match decide(&gateway, input.as_bytes()).await {
+                Ok(()) => panic!("a revoked lease's push was accepted"),
+                Err(refused) => refused,
+            };
+            assert_eq!(
+                refused.reason,
+                format!("lease {} is revoked", ticket.id),
+                "the service's denial"
+            );
+            assert!(refused.logged, "logged once, by the service");
+            let denied = test.events("push", "denied");
+            assert_eq!(denied.len(), 1);
+            assert_eq!(denied[0]["code"], "not_active");
+        }
+    }
 
     async fn read(bytes: Vec<u8>) -> Result<Vec<u8>, &'static str> {
         let (mut ours, mut theirs) = tokio::io::duplex(64 * 1024);

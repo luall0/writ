@@ -35,12 +35,14 @@ impl Service {
             Some(Operation::Push) => EventKind::Push,
             Some(Operation::Fetch) => EventKind::Fetch,
         };
-        let decision = Self::lease_for(&mut inner, cert, caller, now).and_then(|lease| {
-            if let Some(operation) = operation {
-                policy::check_operation(&lease, operation)?;
-            }
-            Ok(lease)
-        });
+        let decision = self
+            .lease_for(&mut inner, cert, caller, now)
+            .and_then(|lease| {
+                if let Some(operation) = operation {
+                    policy::check_operation(&lease, operation)?;
+                }
+                Ok(lease)
+            });
         let mut event = AuditEvent::new(
             now,
             kind,
@@ -70,6 +72,7 @@ impl Service {
     }
 
     fn lease_for(
+        &self,
         inner: &mut Inner,
         cert: &CertIdentity,
         caller: &CallerFacts,
@@ -87,10 +90,17 @@ impl Service {
             hint: None,
         })?;
         let lease = policy::resolve_lease(found.iter(), cert)?.clone();
-        if lease.state != State::Active {
+        // The deny list first: a lease that ended is refused even if its state change hasn't
+        // reached the store.
+        if lease.state != State::Active || self.is_revoked(cert.serial) {
+            let state = if lease.state == State::Active {
+                State::Revoked
+            } else {
+                lease.state
+            };
             return Err(Denial {
                 code: DenyCode::NotActive,
-                reason: format!("lease {} is {}", lease.id, lease.state),
+                reason: format!("lease {} is {state}", lease.id),
                 hint: None,
             });
         }

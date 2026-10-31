@@ -608,6 +608,45 @@ fn an_applied_amendment_replaces_the_scope() {
         ),
         Err(LifecycleError::SessionKeyChanged)
     ));
+    // The process the lease is bound to (watched to revoke it) can't be added, dropped or
+    // moved by an amendment, even with the same session key.
+    let process = |pid| writ_core::caller::CallerConstraint {
+        descends_from: writ_core::caller::ProcessMatch {
+            executable: "/usr/bin/agent".to_owned(),
+            pid,
+            generation: 1,
+            code_identity: None,
+        },
+    };
+    let mut bound_lease = lease.clone();
+    bound_lease.ticket.subject.caller = Some(process(10));
+    let mut same = amendment.clone();
+    same.subject.caller = Some(process(10));
+    let mut bound_record = record.clone();
+    bound_record.ticket.subject.caller = Some(process(10));
+    let mut moved = same.clone();
+    moved.subject.caller = Some(process(11));
+    for (lease, signed) in [
+        (&lease, same.clone()),            // added
+        (&bound_lease, amendment.clone()), // dropped
+        (&bound_lease, moved),             // moved to another process
+    ] {
+        assert!(matches!(
+            lease::apply_amendment(&config(), lease, &record, signed, approval(), later(700)),
+            Err(LifecycleError::SubjectChanged)
+        ));
+    }
+    // The same binding is applied: the refusals above are the subject check's doing.
+    let (updated, _) = lease::apply_amendment(
+        &config(),
+        &bound_lease,
+        &bound_record,
+        same,
+        approval(),
+        later(700),
+    )
+    .unwrap();
+    assert_eq!(updated.ticket.subject.caller, Some(process(10)));
     // Applied once.
     assert!(matches!(
         lease::apply_amendment(

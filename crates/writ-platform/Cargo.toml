@@ -15,6 +15,7 @@ age.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 ureq.workspace = true
 zeroize.workspace = true
 
@@ -22,6 +23,8 @@ zeroize.workspace = true
 # The tests run the fakes and the contract suites: always build them with `testing`.
 writ-platform = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
+# Paused time: retries with a backoff are tested without waiting.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

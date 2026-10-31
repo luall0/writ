@@ -22,6 +22,7 @@ an unchanged core.
 | M1 | [Lease model and policy core](history/m1-lease-model-and-policy-core.md) ✅ | `writ-core`: tickets, templates, registry, narrowing, lifecycle, decisions; store and audit log |
 | M2 | [Ticket flow](history/m2-ticket-flow.md) ✅ | `writ request` / `sign` / `refuse` / `revoke` / `ls`, certificates, the approval API over SSH and HTTPS, notifications (Telegram) |
 | M2.5 | [Code quality checkup](history/m2.5-code-quality-checkup.md) ✅ | The review after M2 and its fixes; module layout and conventions ([conventions.md](conventions.md)); hardened tests and the integration test crate |
+| M2.6 | [Security checkup](#m26--security-checkup) | The security review after M2.5 and its fixes; the security conventions (`docs/security.md`), their checks in `make check`, CI |
 | M3 | [Signed commits](#m3--signed-commits) | `writ-sign`, the sign command, the ledger, `writ init` |
 | M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only forges |
@@ -60,6 +61,31 @@ the approval API over SSH and HTTPS (each optional); `writ request` / `wait` / `
 the review after M2 and its fixes (the pre-receive input limit, audit before change, gateway
 denials logged, `writ-sign` without a plain `ssh`), the module layout and the
 [code conventions](conventions.md), hardened tests and `crates/writ-integration`.
+
+## M2.6 — Security checkup
+
+A stop before M3, asked for by the user: a security review of everything built so far
+(four reviews by trust boundary, plus the supply chain and the build), the fixes the user
+approved, and the security conventions every later change follows.
+
+Decided with the user: reads of the approval API need a registered `readers` key (SSH auth
+key, mutual TLS on HTTPS); reductions of privilege never wait for the audit log; ticket
+submission is bounded by caps and a required `submitters` address allowlist; CI is
+`make ci`, run by GitHub Actions on Linux and by a `pre-push` hook on the Mac; every
+finding is fixed now (the shared `sessions/current` pointer waits for M6/M7).
+
+Steps (one commit each): availability and revocation; listener bounds and authenticated
+reads; authority files and the trusted display; core hardening; crypto and SSH; files, logs
+and clients; supply chain and build; tests; docs.
+
+Acceptance:
+- [ ] Every finding of the review is fixed with a test that tries to break it, or deferred
+      with its reason.
+- [ ] `docs/security.md` exists, AGENTS.md points at it, and `make check` enforces what a
+      script can (dependency policy, no test-only features in the binaries, guarantee
+      registry, source rules, stricter lints).
+- [ ] `make ci` passes locally and on GitHub Actions; the threat model and the decision log
+      hold the new residual risks and decisions.
 
 ## M3 — Signed commits
 

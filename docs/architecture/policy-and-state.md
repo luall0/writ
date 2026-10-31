@@ -91,9 +91,16 @@ Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit
 - Allowed **and** denied operations are logged, including what the gateway turns away on its
   own (a caller the attestor can't attest, a command it doesn't serve, an unknown repo, a ref
   update or a signature it refuses).
-- A change is logged **before** it is made: the line is written (and synced), then the state
+- A grant is logged **before** it is made: the line is written (and synced), then the state
   changes. If the change then fails, a `denied` line with the reason follows. So nothing is
-  granted, applied, refused or revoked without its line.
+  granted, applied, submitted or refused without its line; when the log can't be written,
+  those are refused.
+- A **reduction of privilege** (revocation, withdrawal, expiry, exhaustion, an ended session)
+  never waits for the log: the certificate goes on the deny list first, the line is written
+  first when the log can take it, and otherwise kept in memory (up to 10,000 lines) and
+  written, in order, as soon as it can, with an error in the daemon's log meanwhile.
+- A request about a ticket that doesn't exist (approve, refuse, revoke) is logged as denied
+  (`no such ticket`).
 - Secrets never reach the log: no key material, passphrases, tokens or full signatures. No
   field of `AuditEvent` can hold one (an approval is logged by its approver's fingerprint).
 - The file is only ever opened for appending; each event is one write followed by a sync. If

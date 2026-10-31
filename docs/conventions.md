@@ -120,8 +120,10 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
 - **The audit log records decisions; logs are diagnostics.** Every allow, deny, grant,
   refusal, revocation and admin change writes one audit line (hard rule 9), through the
   service's typed helpers (`Service::logged`, `gateway_denied`). A log line never replaces one.
-- **Audit before change**: the line is written (and synced) before the state changes; if the
-  change then fails, a `denied` line follows ([decision](decisions.md)).
+- **Audit before change** for grants (`Service::logged`): the line is written (and synced)
+  before the state changes; if the change then fails, a `denied` line follows. **Reductions
+  of privilege never wait for the log** (`Service::reduced`): applied either way, the line
+  kept and retried ([decisions](decisions.md)).
 - **Libraries log with `tracing`** (`tracing::warn!(error = %e, "notification failed")`):
   lowercase message, facts as fields. They never print: `tool/check-rules.py` refuses
   `println!`/`eprintln!` in library code. The one exception is a program's own output (the
