@@ -13,15 +13,15 @@ later approver apps.
 | Leases + ledger | SQLite | Decided |
 | Audit log | JSONL, append-only | Decided |
 | Keystore | age format | Decided |
-| Notifications | ntfy | Decided |
+| Notifications | Behind the `Notifier` trait; v1: Telegram Bot API (`sendMessage`, plain text) over `ureq` 3 | Decided (M2) |
 | Async runtime | `tokio` | Decided (M0) |
 | SQLite access | `rusqlite` 0.41 (bundled SQLite) | Decided (M1) |
-| age | `age` crate | Proposed |
-| Approval API | `axum` + `rustls` | Proposed |
+| age | `age` 0.11 (0.12 pulls `ml-kem` 0.2, whose `kem` pre-release conflicts with russh 0.65's) | Decided (M2) |
+| Approval API | The gateway's SSH protocol on its own listener (`russh`), and HTTPS (`hyper` 1 + `rustls` 0.23 with `ring`, `tokio-rustls`; self-signed certificate from `rcgen`); clients pin the host key or the certificate ([Q29](decisions.md)) | Decided (M2) |
 | Config | `serde` + `serde-saphyr` 2 (YAML, duplicate keys refused) + `serde_path_to_error` (errors name the field) | Decided (M1): `serde_yaml` is deprecated |
-| CLI | `clap` (derive) | Proposed |
+| CLI | `clap` 4 (derive, env) | Decided (M2) |
 | Errors | `thiserror` in library crates, `anyhow` only in binaries | Decided (M0) |
-| Secrets in memory | `zeroize` / `secrecy` | Proposed |
+| Secrets in memory | `zeroize` (decided in M2); `secrecy` | Proposed |
 | Logging | `tracing` (the audit log is separate and never goes through it) | Proposed |
 | Secure Enclave (local mode) | Swift + CryptoKit, key blob under the `_writd` user | Decided (M0 spike, [Q33](decisions.md)); how `writd` calls it is settled in M7.5 |
 | Tests | `proptest` for policy properties, `tempfile`, real `git` and `ssh-keygen` binaries | Decided (M1) |

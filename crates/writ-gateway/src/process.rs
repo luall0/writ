@@ -1,11 +1,17 @@
 //! Running an accepted command over an SSH channel.
 
 use std::process::Stdio;
+use std::sync::Arc;
 
 use russh::Channel;
 use russh::server::Msg;
+use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use writ_approval::Service;
+use writ_core::caller::CallerFacts;
+use writ_core::config::Operation;
 use writ_crypto::sshsig;
+use writ_proto::{ApiError, MAX_BODY};
 
 use crate::handler::Identity;
 use crate::hook::PushContext;
@@ -17,10 +23,29 @@ const MAX_SIGN_INPUT: u64 = 16 * 1024 * 1024;
 pub(crate) async fn run(
     gateway: Gateway,
     identity: Identity,
+    facts: CallerFacts,
     command: Command,
     git_protocol: Option<String>,
     channel: Channel<Msg>,
 ) {
+    let cert = match (&identity, &command) {
+        (_, Command::Writ(writ)) => {
+            return run_writ(gateway, identity, facts, writ.clone(), channel).await;
+        }
+        (Identity::Lease(cert), _) => cert.clone(),
+        _ => return refuse(channel, "command not allowed here".into()).await,
+    };
+    // The lease may have ended since the connection was authenticated: check it again, with
+    // the operation the command needs (the service logs the outcome).
+    let operation = match &command {
+        Command::UploadPack { .. } => Operation::Fetch,
+        Command::ReceivePack { .. } => Operation::Push,
+        Command::Sign { .. } | Command::Writ(_) => Operation::CommitSign,
+    };
+    let lease = match gateway.service().authorize(&cert, &facts, Some(operation)) {
+        Ok(lease) => lease,
+        Err(denial) => return refuse(channel, denial.to_string()).await,
+    };
     match command {
         Command::UploadPack { repo } => {
             let Some(path) = repo_path(&gateway, &repo) else {
@@ -34,9 +59,11 @@ pub(crate) async fn run(
             let Some(path) = repo_path(&gateway, &repo) else {
                 return refuse(channel, format!("unknown repo {repo}")).await;
             };
-            let token = writ_crypto::keys::random_hex(16);
+            let Ok(token) = writ_crypto::keys::random_hex(16) else {
+                return refuse(channel, "internal error".into()).await;
+            };
             let context = PushContext {
-                lease: identity.lease.clone(),
+                lease: lease.id.to_string(),
                 repo: repo.clone(),
             };
             let registered = match gateway.shared.pushes.lock() {
@@ -65,7 +92,139 @@ pub(crate) async fn run(
             }
         }
         Command::Sign { namespace } => sign(&gateway, &namespace, channel).await,
+        Command::Writ(_) => {}
     }
+}
+
+/// Runs a lease or approval command: a JSON reply on stdout, the reason on stderr if it
+/// failed, exit status 0 or 1.
+async fn run_writ(
+    gateway: Gateway,
+    identity: Identity,
+    facts: CallerFacts,
+    command: writ_proto::Command,
+    channel: Channel<Msg>,
+) {
+    use writ_proto::Command as W;
+    let (mut rx, tx) = channel.split();
+    let service = gateway.service().clone();
+    let result = match (command, identity) {
+        (W::Request, Identity::SessionKey(key)) => match read_body(&mut rx).await {
+            Ok(body) => encoded(blocking(move || service.submit(&key, &body, &facts)).await),
+            Err(e) => encoded::<()>(Err(e)),
+        },
+        (W::Wait { id }, Identity::SessionKey(key)) => encoded(service.wait(&id, &key).await),
+        (approval, Identity::Approver) if approval.is_approval() => {
+            let body = if approval_has_body(&approval) {
+                match read_body(&mut rx).await {
+                    Ok(body) => body,
+                    Err(e) => return reply(tx, encoded::<()>(Err(e))).await,
+                }
+            } else {
+                Vec::new()
+            };
+            approval_reply(service, facts, approval, body).await
+        }
+        _ => encoded::<()>(Err(ApiError::new("command not allowed here"))),
+    };
+    reply(tx, result).await;
+}
+
+/// Writes a reply on the channel: stdout, the reason on stderr, the exit status.
+async fn reply(tx: russh::ChannelWriteHalf<Msg>, (stdout, failure): (Vec<u8>, Option<String>)) {
+    let _ = tx.data_bytes(stdout).await;
+    let code = match failure {
+        Some(reason) => {
+            let _ = tx
+                .extended_data_bytes(1, format!("writ: {reason}\n").into_bytes())
+                .await;
+            1
+        }
+        None => 0,
+    };
+    finish(&tx, code).await;
+}
+
+/// Whether an approval command reads a JSON body.
+pub(crate) fn approval_has_body(command: &writ_proto::Command) -> bool {
+    use writ_proto::Command as W;
+    matches!(
+        command,
+        W::Approve { .. } | W::Refuse { .. } | W::Revoke { .. }
+    )
+}
+
+/// Runs an approval command, the same over SSH and HTTPS: the reply bytes, and the failure
+/// to report. `body` is the command's JSON body (empty when it has none).
+pub(crate) async fn approval_reply(
+    service: Arc<Service>,
+    facts: CallerFacts,
+    command: writ_proto::Command,
+    body: Vec<u8>,
+) -> (Vec<u8>, Option<String>) {
+    use writ_proto::Command as W;
+    let empty = body.iter().all(u8::is_ascii_whitespace);
+    match command {
+        W::Info => encoded(Ok(service.info())),
+        W::List { all } => encoded(blocking(move || service.list(all)).await),
+        W::Show { id } => encoded(blocking(move || service.show(&id)).await),
+        W::Approve { id } => match writ_proto::decode_body(&body) {
+            Ok(request) => encoded(blocking(move || service.approve(&id, &request, &facts)).await),
+            Err(e) => encoded::<()>(Err(e)),
+        },
+        W::Refuse { id } => match writ_proto::decode_body(&body) {
+            Ok(request) => encoded(blocking(move || service.refuse(&id, &request, &facts)).await),
+            Err(e) => encoded::<()>(Err(e)),
+        },
+        W::Revoke { id } => {
+            let request = if empty {
+                Ok(writ_proto::RevokeRequest::default())
+            } else {
+                writ_proto::decode_body(&body)
+            };
+            match request {
+                Ok(request) => {
+                    encoded(blocking(move || service.revoke(&id, &request, &facts)).await)
+                }
+                Err(e) => encoded::<()>(Err(e)),
+            }
+        }
+        W::Request | W::Wait { .. } => {
+            encoded::<()>(Err(ApiError::new("command not allowed here")))
+        }
+    }
+}
+
+/// The reply bytes, and the failure to show on stderr.
+pub(crate) fn encoded<T: Serialize>(result: Result<T, ApiError>) -> (Vec<u8>, Option<String>) {
+    let failure = result.as_ref().err().map(ToString::to_string);
+    (writ_proto::encode_reply(&result), failure)
+}
+
+/// Runs a service call (SQLite, fsync) off the async threads.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .unwrap_or_else(|_| Err(ApiError::new("internal error in the daemon")))
+}
+
+/// Reads the command's body (stdin, until EOF), at most [`MAX_BODY`] bytes.
+async fn read_body(rx: &mut russh::ChannelReadHalf) -> Result<Vec<u8>, ApiError> {
+    let mut body = Vec::new();
+    let limit = u64::try_from(MAX_BODY).unwrap_or(u64::MAX);
+    rx.make_reader()
+        .take(limit + 1)
+        .read_to_end(&mut body)
+        .await
+        .map_err(|e| ApiError::new(format!("cannot read the request: {e}")))?;
+    if body.len() > MAX_BODY {
+        return Err(ApiError::new(format!(
+            "the request is larger than {MAX_BODY} bytes"
+        )));
+    }
+    Ok(body)
 }
 
 /// Fails the command with a reason the agent sees on stderr.

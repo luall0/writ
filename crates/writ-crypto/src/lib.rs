@@ -5,9 +5,11 @@
 //! the exact bytes to sign, a key signs them, and [`sshsig::assemble`] wraps the raw
 //! signature. Where the key lives is not this crate's business.
 
+pub mod allowed_signers;
 pub mod ca;
 pub mod keys;
 pub mod sshsig;
+pub mod tls;
 
 pub use ssh_key;
 
@@ -26,6 +28,12 @@ pub enum Error {
     BadSignature,
     #[error(transparent)]
     Certificate(#[from] ca::CertificateError),
+    #[error("the system's random source failed")]
+    Random,
+    #[error("{0}")]
+    AllowedSigners(String),
+    #[error("{0}")]
+    Tls(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

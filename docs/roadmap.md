@@ -20,7 +20,7 @@ an unchanged core.
 |---|---|---|
 | M0 | [Protocol spike](history/m0-protocol-spike.md) ✅ | Go for the gateway (certificates, git, daemon-signed commits, agent-held approval keys); local mode's signer: CryptoKit Secure Enclave key under a `_writd` user |
 | M1 | [Lease model and policy core](history/m1-lease-model-and-policy-core.md) ✅ | `writ-core`: tickets, templates, registry, narrowing, lifecycle, decisions; store and audit log |
-| M2 | [Ticket flow](#m2--ticket-flow-request-sign-refuse-revoke) | `writ request` / `sign` / `refuse` / `revoke` / `ls`, certificates, ntfy |
+| M2 | [Ticket flow](history/m2-ticket-flow.md) ✅ | `writ request` / `sign` / `refuse` / `revoke` / `ls`, certificates, the approval API over SSH and HTTPS, notifications (Telegram) |
 | M3 | [Signed commits](#m3--signed-commits) | `writ-sign`, the sign command, the ledger, `writ init` |
 | M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only forges |
@@ -48,35 +48,10 @@ caller checks, decisions) and `writ-store` (leases, ledger, audit log).
 
 ## M2 — Ticket flow: request, sign, refuse, revoke
 
-[Flows § 1](flows.md#1-ticket-submit-review-sign-or-refuse) and
-[§ 5](flows.md#5-revoke--expire) end to end, against a local `writd` with software keys
-(unsealed dev keystore, test only). Settles [Q29](decisions.md#open-questions).
-
-- `writ-platform`: the `Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnlock` and
-  `Notifier` traits, with their contract test suites and fakes, and one portable
-  implementation each (TCP, network attestor, no-op watcher, passphrase unlock, ntfy).
-  `writd/src/platform.rs` builds them from the config
-  ([Platform interfaces](architecture/platform.md)).
-- `writd` serving the gateway's lease commands and the approval API.
-- `writ request` (session key generation, ticket file in, waits for the decision), `writ ls`,
-  `writ revoke`.
-- `writ sign` as the [trusted display](architecture/approvals.md#writ-sign-the-trusted-display)
-  (control sequences neutralized, diff vs previous revision), signing through the
-  `ssh-agent` socket of Secretive; narrowing flags; `writ refuse` with feedback.
-- Certificates issued on approval, valid until `expires_at`; revocation through the deny list.
-- ntfy notification when a ticket waits.
-
-Acceptance:
-- [ ] A ticket outside every template is rejected before reaching me, with the reason.
-- [ ] Signed with Secretive → the agent side receives the lease and a certificate the gateway
-      accepts; refused → the agent side receives my feedback, and revision n+1 shows it.
-- [ ] A signature by a key not in `approvers`, under another namespace, or over different
-      bytes is refused; a narrowed ticket that widens anything is refused.
-- [ ] After `writ revoke` or expiry, the certificate is refused on the next connection and
-      open sessions are dropped.
-- [ ] Every grant, refusal, revocation and denial is in the audit log.
-- [ ] The gateway, the policy and the approval API only see the platform traits: their tests
-      run on the fakes, and no `#[cfg(target_os)]` exists outside `writd/src/platform.rs`.
+**Done.** Moved to [history/m2-ticket-flow.md](history/m2-ticket-flow.md): the platform
+traits with their portable implementations, fakes and contract suites; the approval service;
+the approval API over SSH and HTTPS (each optional); `writ request` / `wait` / `ls` / `sign` /
+`refuse` / `revoke`; certificates and revocation; Telegram notifications.
 
 ## M3 — Signed commits
 
@@ -228,15 +203,17 @@ Acceptance:
 LAN or VPN.
 
 - `deploy/Dockerfile` (non-root, minimal image) and `deploy/compose.yaml` with the two
-  volumes and two ports.
-- ntfy for sealed restarts, waiting tickets, denials and violations.
+  volumes, the gateway's port and the approval transports in use (SSH, HTTPS).
+- Notifications (the configured `Notifier`) for sealed restarts, denials and violations
+  (waiting tickets already notify since M2).
 - Backup guidance for the ledger and the audit log.
 
 Acceptance:
 - [ ] `docker compose up` on the homelab → sealed → `writ unseal` from the Mac → agents on a
       VM and on the Mac both work under their own leases at the same time.
 - [ ] A container restart notifies me and fails closed until unsealed.
-- [ ] Only ports 2222 and 8443 are exposed; the process runs as non-root.
+- [ ] Only port 2222 and the approval transports in use (2223 SSH, 8443 HTTPS) are exposed;
+      the process runs as non-root.
 - [ ] Detached is only the detached [configuration preset](architecture/platform.md#configuration-presets)
       and packaging: no change to the core crates beyond bug fixes.
 

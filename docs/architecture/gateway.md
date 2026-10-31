@@ -8,12 +8,23 @@ Code: `crates/writ-gateway` (SSH server), `crates/writ-git` (mirrors, quarantine
 
 ## Gateway (SSH server)
 
-The single entry point for agents. Authenticates with **SSH user certificates** issued by the
-daemon itself for each lease (see [Identity](identity.md#session-identity)). It exposes:
-- **git** `upload-pack` (fetch) and `receive-pack` (push) for leased repos, so a plain
-  `git fetch/push writ` works
-- **sign** command used by the `writ-sign` shim (full commit/tag object in, armored SSHSIG out)
-- **lease** commands (request, status, release) for the CLI and harness
+The single entry point to the daemon. It serves connections from any `Transport`, with what
+the `CallerAttestor` says about each caller (a caller it can't attest is turned away), and
+each listener has a role:
+
+| Listener (role) | SSH user and authentication | Commands |
+|---|---|---|
+| agents | `git` + an **SSH user certificate** issued by the daemon for an active lease ([Identity](identity.md#session-identity)) | **git** `upload-pack` (fetch) and `receive-pack` (push), so a plain `git fetch/push writ` works; **sign** for the `writ-sign` shim (full commit object in, armored SSHSIG out) |
+| agents | `writ` + a plain key: the session key of a ticket | **lease** commands: `writ request` (submit the ticket on stdin), `writ wait <id>` |
+| approvals (SSH) | any user, any key (the connection grants nothing) | the approval API: `writ info`, `ls`, `show`, `approve`, `refuse`, `revoke` ([Approvals](approvals.md#reaching-the-daemon)) |
+| approvals (HTTPS) | none: TLS 1.3, the daemon's pinned self-signed certificate | the same API as `GET`/`POST` routes (`crates/writ-gateway/src/https.rs`) |
+
+A certificate is checked twice: when it is presented (CA, validity, deny list, principal
+`git`, then the approval service finds its single active lease and checks the caller,
+logged as `connect`) and before each command, with the operation the command needs (fetch,
+push, commit_sign). When a lease ends (revoked, expired, exhausted), the gateway drops every
+open session of its certificate. Replies of `writ` commands are one JSON line on stdout
+(`writ_proto`), with the reason on stderr when they fail.
 
 Every request goes through the [policy engine](policy-and-state.md#policy-engine) before
 anything else happens. Git itself is not reimplemented: the daemon shells out to

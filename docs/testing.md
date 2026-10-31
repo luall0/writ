@@ -11,12 +11,19 @@ Run everything with `make test`; lint, format and dependency-direction checks wi
 | `writ-git` | Commit parsing against objects made by real `git` (signed, unsigned, merge, odd encodings, trailers). Quarantine: a pack's new commits found exactly; size bound enforced; quarantine removed on every path. |
 | `writ-gateway` | In-process server with a temporary CA and temporary repositories, driven by real `git` and `ssh`: fetch, push, sign, lease commands, each denial with its message. |
 | `writ-signer` | The software backend against the `Signer` contract tests (shared, so later backends run the same ones); sealed keystore unreadable without the passphrase. |
+| `writ-approval` | The approval service on the platform fakes (`RecordingNotifier`, `FakeWatcher`) and a manual clock: rejection before the approver, approval and certificate, every approval that must be refused (unknown key, other namespace, other bytes, widening, non-canonical bytes), narrowing, refusal and revision, revocation, `decisions: signed` and `open`, expiry, session binding, deny list across a restart, audit log without secrets. |
 | `writ-platform*` | One contract suite per interface (`Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnlock`, `Notifier`), run by every implementation, portable or platform-only. Fakes for each, used by the core crates' tests, so the core is tested without any real platform. Platform-only suites run on their OS (`cfg`-gated). |
 | Clients | `writ sign`'s display neutralizes control sequences; `writ-sign` forwards verify calls to `ssh-keygen` and prints denial reasons; `writ init` writes exactly the documented config. |
 | End to end | A test forge (Forgejo or Gitea in Docker) for upstream: the M4+ acceptance scenarios scripted. Not part of `make test` (needs Docker): `make e2e`. |
 
 End-to-end tests (`crates/writd/tests/`) run the real `git` and `ssh` against an in-process
-gateway and need the workspace binaries built: `make test` builds them first.
+gateway (`spike.rs`) or the real `writd` binary with the real `writ` CLI, approver signatures
+from `ssh-keygen` through a throwaway `ssh-agent` and a fake Telegram Bot API
+(`ticket_flow.rs`). They need the workspace binaries built: `make test` builds them first.
+The gateway's own tests (`crates/writ-gateway/tests/`) run on the fakes only: an in-memory
+transport, a fake attestor, an in-process SSH client and an in-process HTTPS client pinning
+the certificate. The end-to-end tests approve over SSH in one scenario and over HTTPS in the
+others.
 
 Every crate except the binaries is testable without network or Docker. Tests never touch the
 user's real `~/.ssh`, git config or ssh-agent (except `make test-agent`, run by hand): they set `HOME`, `GIT_CONFIG_GLOBAL` and

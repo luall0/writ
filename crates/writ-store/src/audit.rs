@@ -34,6 +34,9 @@ pub enum EventKind {
     Expire,
     Exhaust,
     Close,
+    /// A session certificate presented to the gateway (allowed: it stands for an active
+    /// lease; denied: refused, with the reason).
+    Connect,
     Sign,
     Push,
     Fetch,

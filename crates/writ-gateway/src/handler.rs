@@ -1,49 +1,46 @@
-//! One SSH connection: certificate authentication, then exec requests.
+//! One SSH connection: authentication by role, then exec requests.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use russh::server::{Auth, ChannelOpenHandle, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId};
+use writ_core::caller::CallerFacts;
+use writ_core::policy::CertIdentity;
 use writ_crypto::ca::validate_user_certificate;
-use writ_crypto::ssh_key::Certificate;
+use writ_crypto::ssh_key::{Certificate, HashAlg, PublicKey};
 
-use crate::{Command, Error, Gateway, process};
+use crate::{CLIENT_USER, Command, Error, Gateway, LEASE_USER, Role, process};
 
-/// Who is on the other end, once their certificate was accepted.
+/// Who is on the other end, once authenticated.
 #[derive(Debug, Clone)]
-pub(crate) struct Identity {
-    /// The certificate's key id: the lease id.
-    pub lease: String,
-    pub serial: u64,
-}
-
-pub(crate) struct Server(pub Gateway);
-
-impl russh::server::Server for Server {
-    type Handler = Connection;
-
-    fn new_client(&mut self, _peer: Option<SocketAddr>) -> Connection {
-        Connection::new(self.0.clone())
-    }
-
-    fn handle_session_error(&mut self, error: Error) {
-        eprintln!("writ gateway: session error: {error}");
-    }
+pub(crate) enum Identity {
+    /// A lease holder: a valid certificate for an active lease.
+    Lease(CertIdentity),
+    /// A client submitting or waiting on a ticket: the key is its session key.
+    SessionKey(PublicKey),
+    /// A client of the approval API.
+    Approver,
 }
 
 pub(crate) struct Connection {
     gateway: Gateway,
+    role: Role,
+    /// What the transport and the attestor say about the caller.
+    facts: CallerFacts,
+    number: u64,
     identity: Option<Identity>,
     channels: HashMap<ChannelId, Channel<Msg>>,
     git_protocol: Option<String>,
 }
 
 impl Connection {
-    pub(crate) fn new(gateway: Gateway) -> Self {
+    pub(crate) fn new(gateway: Gateway, role: Role, facts: CallerFacts) -> Self {
+        let number = gateway.connection_number();
         Self {
             gateway,
+            role,
+            facts,
+            number,
             identity: None,
             channels: HashMap::new(),
             git_protocol: None,
@@ -51,16 +48,34 @@ impl Connection {
     }
 }
 
+impl Drop for Connection {
+    fn drop(&mut self) {
+        if let Some(Identity::Lease(cert)) = &self.identity {
+            self.gateway.unregister_session(cert.serial, self.number);
+        }
+    }
+}
+
 impl russh::server::Handler for Connection {
     type Error = Error;
 
-    /// Plain keys are never accepted: only certificates issued for a lease.
+    /// Plain keys: the session key of a ticket (agents, user `writ`), or anyone on the
+    /// approval API. Lease holders always use a certificate.
     async fn auth_publickey(
         &mut self,
-        _user: &str,
-        _key: VerifiedPublicKey<'_>,
+        user: &str,
+        key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, Error> {
-        Ok(Auth::reject())
+        self.identity = match (self.role, user) {
+            (Role::Agents, CLIENT_USER) => Some(Identity::SessionKey(key.public_key.clone())),
+            (Role::Approvals, _) => Some(Identity::Approver),
+            _ => None,
+        };
+        Ok(if self.identity.is_some() {
+            Auth::Accept
+        } else {
+            Auth::reject()
+        })
     }
 
     async fn auth_openssh_certificate(
@@ -68,27 +83,61 @@ impl russh::server::Handler for Connection {
         user: &str,
         certificate: &Certificate,
     ) -> Result<Auth, Error> {
-        let Some(revoked) = self.gateway.revoked_snapshot() else {
-            return Ok(Auth::reject());
+        if self.role == Role::Approvals {
+            self.identity = Some(Identity::Approver);
+            return Ok(Auth::Accept);
+        }
+        let service = self.gateway.service();
+        let serial = certificate.serial();
+        let refused = |reason: String| {
+            service.certificate_refused(serial, certificate.key_id(), &reason, &self.facts);
+            Ok(Auth::reject())
         };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(u64::MAX);
-        let authorities = &self.gateway.shared.config.authorities;
-        match validate_user_certificate(certificate, authorities, &revoked, user, now) {
-            Ok(()) => {
-                self.identity = Some(Identity {
-                    lease: certificate.key_id().to_owned(),
-                    serial: certificate.serial(),
-                });
+        if user != LEASE_USER {
+            return refused(format!(
+                "lease holders connect as {LEASE_USER}, not {user:?}"
+            ));
+        }
+        let revoked = if service.is_revoked(serial) {
+            std::iter::once(serial).collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let authorities = &self.gateway.shared.authorities;
+        if let Err(reason) =
+            validate_user_certificate(certificate, authorities, &revoked, user, service.now_unix())
+        {
+            return refused(reason.to_string());
+        }
+        let cert = CertIdentity {
+            key_id: certificate.key_id().to_owned(),
+            serial,
+            session_key: match certificate
+                .public_key()
+                .fingerprint(HashAlg::Sha256)
+                .to_string()
+                .parse()
+            {
+                Ok(fingerprint) => fingerprint,
+                Err(_) => return refused("unreadable session key".to_owned()),
+            },
+        };
+        // The service logs the outcome (event `connect`).
+        match service.authorize(&cert, &self.facts, None) {
+            Ok(_) => {
+                self.identity = Some(Identity::Lease(cert));
                 Ok(Auth::Accept)
             }
-            Err(reason) => {
-                eprintln!("writ gateway: refused certificate: {reason}");
-                Ok(Auth::reject())
-            }
+            Err(_) => Ok(Auth::reject()),
         }
+    }
+
+    async fn auth_succeeded(&mut self, session: &mut Session) -> Result<(), Error> {
+        if let Some(Identity::Lease(cert)) = &self.identity {
+            self.gateway
+                .register_session(cert.serial, self.number, session.handle());
+        }
+        Ok(())
     }
 
     async fn channel_open_session(
@@ -135,27 +184,34 @@ impl russh::server::Handler for Connection {
             return Ok(());
         };
         session.channel_success(channel_id)?;
-        let identity = match &self.identity {
-            Some(identity) if !self.gateway.is_revoked(identity.serial) => identity.clone(),
-            _ => {
-                tokio::spawn(process::refuse(channel, "lease revoked".into()));
-                return Ok(());
-            }
+        let Some(identity) = self.identity.clone() else {
+            tokio::spawn(process::refuse(channel, "not authenticated".into()));
+            return Ok(());
         };
-        let Some(command) = Command::parse(data) else {
+        let command = Command::parse(data);
+        let allowed = match (&identity, &command) {
+            (Identity::Lease(_), Some(Command::UploadPack { .. }))
+            | (Identity::Lease(_), Some(Command::ReceivePack { .. }))
+            | (Identity::Lease(_), Some(Command::Sign { .. })) => true,
+            (Identity::SessionKey(_), Some(Command::Writ(writ))) => !writ.is_approval(),
+            (Identity::Approver, Some(Command::Writ(writ))) => writ.is_approval(),
+            _ => false,
+        };
+        let Some(command) = command.filter(|_| allowed) else {
             let shown = String::from_utf8_lossy(data)
                 .chars()
                 .take(80)
                 .collect::<String>();
             tokio::spawn(process::refuse(
                 channel,
-                format!("command not allowed: {}", shown.escape_debug()),
+                format!("command not allowed here: {}", shown.escape_debug()),
             ));
             return Ok(());
         };
         tokio::spawn(process::run(
             self.gateway.clone(),
             identity,
+            self.facts.clone(),
             command,
             self.git_protocol.clone(),
             channel,

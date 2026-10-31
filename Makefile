@@ -1,4 +1,4 @@
-.PHONY: check test test-agent fmt run
+.PHONY: check test test-agent fmt run dev-client
 
 # Lint, format check, dependency directions.
 check:
@@ -22,6 +22,16 @@ test-agent:
 fmt:
 	cargo fmt --all
 
-# M0 spike: the gateway with test keys in dev/data (gitignored).
+# The development daemon on dev/writd.yaml (test keys in dev/data, approver key in
+# dev/approvers, both gitignored).
 run:
-	cargo run -p writd -- spike dev/data 127.0.0.1:2222
+	cargo run -p writd -- run dev/writd.yaml
+
+# Pins the development daemon's host key and TLS certificate for the client
+# (dev/data/client/known_hosts and tls_pins; see docs/guides/manual-checks.md).
+dev-client:
+	@mkdir -p dev/data/client
+	@host=$$(cargo run -q -p writd -- host-key dev/writd.yaml) && \
+		printf '[127.0.0.1]:2222 %s\n[127.0.0.1]:2223 %s\n' "$$host" "$$host" > dev/data/client/known_hosts
+	@echo "[127.0.0.1]:8443 $$(cargo run -q -p writd -- tls-fingerprint dev/writd.yaml)" > dev/data/client/tls_pins
+	@echo "pinned in dev/data/client/known_hosts and dev/data/client/tls_pins"

@@ -17,6 +17,10 @@ use writ_core::ticket::{Ticket, TicketRequest};
 use writ_core::units::Timestamp;
 use writ_store::{Counter, LedgerEntry, Store, StoreError};
 
+/// Stand-ins: the store keeps these as text and never parses them.
+const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIStandInSessionKey";
+const CERT: &str = "ssh-ed25519-cert-v01@openssh.com AAAAStandInCertificate";
+
 const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 
 const REQUEST: &str = r#"
@@ -84,10 +88,10 @@ fn ticket(n: u64, yaml: &str, amends: Option<&Lease>) -> Ticket {
 /// Submits and activates ticket `n` in the store, with certificate serial `n`.
 fn active_lease(store: &Store, n: u64) -> Lease {
     let ticket = ticket(n, REQUEST, None);
-    store.insert_pending(&ticket, t(0)).unwrap();
+    store.insert_pending(&ticket, KEY, t(0)).unwrap();
     let record = store.ticket(&ticket.id).unwrap().unwrap();
     let lease = lease::activate(&config(), &record, ticket, approval(), n, t(10)).unwrap();
-    store.activate(&lease, t(10)).unwrap();
+    store.activate(&lease, CERT, t(10)).unwrap();
     lease
 }
 
@@ -121,9 +125,9 @@ fn leases_and_ledger_survive_a_reopen() {
             .ledger_append(&entry(2, &lease.id, "omega-code"))
             .unwrap();
         let pending = ticket(2, REQUEST, None);
-        store.insert_pending(&pending, t(0)).unwrap();
+        store.insert_pending(&pending, KEY, t(0)).unwrap();
         let refused = ticket(3, REQUEST, None);
-        store.insert_pending(&refused, t(0)).unwrap();
+        store.insert_pending(&refused, KEY, t(0)).unwrap();
         store.refuse(&refused.id, "split it", t(5)).unwrap();
         (lease, pending, refused)
     };
@@ -167,12 +171,12 @@ fn leases_and_ledger_survive_a_reopen() {
 fn a_narrowed_lease_is_stored_as_signed() {
     let store = Store::open_in_memory().unwrap();
     let submitted = ticket(1, REQUEST, None);
-    store.insert_pending(&submitted, t(0)).unwrap();
+    store.insert_pending(&submitted, KEY, t(0)).unwrap();
     let mut signed = submitted.clone();
     signed.limits.max_signatures = 1;
     let record = store.ticket(&submitted.id).unwrap().unwrap();
     let lease = lease::activate(&config(), &record, signed.clone(), approval(), 1, t(5)).unwrap();
-    store.activate(&lease, t(5)).unwrap();
+    store.activate(&lease, CERT, t(5)).unwrap();
     assert_eq!(store.lease(&submitted.id).unwrap().unwrap().ticket, signed);
 }
 
@@ -182,7 +186,7 @@ fn transitions_are_compare_and_set() {
     let lease = active_lease(&store, 1);
     // Activating twice: the second sees it is no longer pending.
     assert!(matches!(
-        store.activate(&lease, t(11)),
+        store.activate(&lease, CERT, t(11)),
         Err(StoreError::Conflict { .. })
     ));
     // A transition from the wrong state.
@@ -222,7 +226,7 @@ fn transitions_are_compare_and_set() {
     // The same id twice.
     let again = ticket(1, REQUEST, None);
     assert!(matches!(
-        store.insert_pending(&again, t(16)),
+        store.insert_pending(&again, KEY, t(16)),
         Err(StoreError::Duplicate(_))
     ));
 }
@@ -271,7 +275,7 @@ fn counters_never_go_over_the_limit() {
     assert!(!store.consume(&lease.id, Counter::Fetch, 0, t(51)).unwrap());
     // Nor from a pending ticket.
     let pending = ticket(2, REQUEST, None);
-    store.insert_pending(&pending, t(0)).unwrap();
+    store.insert_pending(&pending, KEY, t(0)).unwrap();
     assert!(
         !store
             .consume(&pending.id, Counter::Fetch, 0, t(52))
@@ -341,7 +345,7 @@ fn an_amendment_replaces_the_terms_in_force() {
         .replace("[omega-code]", "[omega-code, homelab-scripts]")
         .replace("  task:", &format!("  amends: {}\n  task:", lease.id));
     let amendment = ticket(2, &amended_yaml, Some(&lease));
-    store.insert_pending(&amendment, t(40)).unwrap();
+    store.insert_pending(&amendment, KEY, t(40)).unwrap();
     let record = store.ticket(&amendment.id).unwrap().unwrap();
     let (updated, applied) = lease::apply_amendment(
         &config(),
@@ -376,7 +380,7 @@ fn an_amendment_of_an_ended_lease_changes_nothing() {
     let lease = active_lease(&store, 1);
     let amended_yaml = REQUEST.replace("  task:", &format!("  amends: {}\n  task:", lease.id));
     let amendment = ticket(2, &amended_yaml, Some(&lease));
-    store.insert_pending(&amendment, t(40)).unwrap();
+    store.insert_pending(&amendment, KEY, t(40)).unwrap();
     let record = store.ticket(&amendment.id).unwrap().unwrap();
     let (updated, applied) = lease::apply_amendment(
         &config(),
@@ -469,10 +473,64 @@ fn a_newer_schema_is_refused() {
     drop(Store::open(&path).unwrap());
     rusqlite::Connection::open(&path)
         .unwrap()
-        .pragma_update(None, "user_version", 2)
+        .pragma_update(None, "user_version", 3)
         .unwrap();
     assert!(matches!(
         Store::open(&path),
-        Err(StoreError::SchemaTooNew(2))
+        Err(StoreError::SchemaTooNew(3))
     ));
+}
+
+#[test]
+fn keeps_the_session_key_and_the_certificate() {
+    let store = Store::open_in_memory().unwrap();
+    let lease = active_lease(&store, 1);
+    assert_eq!(
+        store.session_pubkey(&lease.id).unwrap().as_deref(),
+        Some(KEY)
+    );
+    assert_eq!(store.certificate(&lease.id).unwrap().as_deref(), Some(CERT));
+    assert_eq!(store.session_pubkey(&id(99)).unwrap(), None);
+    assert_eq!(store.count(State::Active).unwrap(), 1);
+    assert_eq!(store.count(State::Pending).unwrap(), 0);
+    assert_eq!(store.all_tickets().unwrap().len(), 1);
+}
+
+#[test]
+fn a_version_1_database_is_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("writ.db");
+    {
+        // The M1 schema, with one pending ticket.
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tickets (id TEXT PRIMARY KEY, canonical BLOB NOT NULL, state TEXT NOT NULL,
+                 lease_id TEXT NOT NULL, feedback TEXT, approver TEXT, namespace TEXT, sshsig TEXT,
+                 cert_serial INTEGER UNIQUE, current_ticket TEXT REFERENCES tickets(id),
+                 signatures INTEGER NOT NULL DEFAULT 0, pushes INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL) STRICT;
+             CREATE TABLE ops (lease_id TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
+             CREATE TABLE ledger (commit_id TEXT NOT NULL, lease_id TEXT NOT NULL, repo TEXT NOT NULL,
+                 key_id TEXT NOT NULL, signed_at INTEGER NOT NULL,
+                 PRIMARY KEY (commit_id, lease_id, repo)) STRICT;
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        let pending = ticket(1, REQUEST, None);
+        conn.execute(
+            "INSERT INTO tickets (id, canonical, state, lease_id, created_at, updated_at)
+             VALUES (?1, ?2, 'pending', ?1, 0, 0)",
+            rusqlite::params![pending.id.as_str(), pending.canonical_bytes().unwrap()],
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let pending = store.tickets(State::Pending).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(store.session_pubkey(&pending[0].ticket.id).unwrap(), None);
+    let version: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
 }

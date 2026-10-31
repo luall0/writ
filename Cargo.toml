@@ -22,8 +22,19 @@ writ-core = { path = "crates/writ-core" }
 writ-crypto = { path = "crates/writ-crypto" }
 writ-gateway = { path = "crates/writ-gateway" }
 writ-store = { path = "crates/writ-store" }
+writ-platform = { path = "crates/writ-platform" }
+writ-proto = { path = "crates/writ-proto" }
+writ-approval = { path = "crates/writ-approval" }
 
+age = { version = "0.11.2", default-features = false }
 anyhow = "1.0.104"
+base64ct = { version = "1.8.3", features = ["alloc"] }
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem", "crypto"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
 globset = { version = "0.4.21", default-features = false }
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 proptest = "1.12.0"
@@ -35,7 +46,11 @@ serde_path_to_error = "0.1.20"
 russh = { version = "0.65.0", default-features = false, features = ["flate2", "ring"] }
 # Pinned to the exact version russh uses, so certificates and keys are the same types.
 ssh-key = { version = "=0.7.0-rc.11", features = ["alloc", "std", "ed25519", "p256", "getrandom"] }
+sha2 = "0.10.9"
 signature = "3.0.0"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "sync", "time", "fs"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "sync", "time", "fs", "signal"] }
+ureq = "3.5.0"
+zeroize = { version = "1.9.1", features = ["zeroize_derive"] }

@@ -6,13 +6,22 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+writ-approval.workspace = true
+writ-core.workspace = true
 writ-crypto.workspace = true
 writ-gateway.workspace = true
+writ-platform.workspace = true
+writ-proto.workspace = true
+writ-store.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 ssh-key.workspace = true
 tokio.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
+writ-platform = { workspace = true, features = ["testing"] }
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

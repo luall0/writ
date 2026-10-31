@@ -126,7 +126,10 @@ fn sign_through_agent(socket: &Path, key: &PublicKey, namespace: &str, msg: &[u8
 
 /// What any approval key must satisfy, whatever agent holds it.
 fn agent_signature_verifies(socket: &Path, key: &PublicKey) {
-    let msg = format!("writ test ticket {}\n", writ_crypto::keys::random_hex(16));
+    let msg = format!(
+        "writ test ticket {}\n",
+        writ_crypto::keys::random_hex(16).unwrap()
+    );
     let armored = sign_through_agent(socket, key, "writ-approval", msg.as_bytes());
     let allowed = vec![key.clone()];
 

@@ -1,0 +1,18 @@
+# The development daemon (`make run`): test keys and test repos only.
+# Before the first run, put your approval public key in dev/approvers (gitignored):
+#   echo "me $(cat ~/path/to/approval-key.pub)" > dev/approvers
+state_dir: data                  # dev/data, gitignored: leases, audit log, repos, keys
+policy: policy.yaml
+approvers: approvers
+decisions: signed                # signed | open (refusals and revocations)
+keystore: { dev: data/keys }     # unencrypted, refused by release builds (sealed keystore: M5)
+transports:
+  agents: [{ tcp: "127.0.0.1:2222" }]
+  approvals:                     # the approval API; [] disables one, not both
+    ssh: [{ tcp: "127.0.0.1:2223" }]
+    https: [{ tcp: "127.0.0.1:8443" }]   # pin `writd tls-fingerprint dev/writd.yaml` in ~/.writ/tls_pins
+attestor: network
+session_watcher: none
+notifiers: []
+# notifiers:
+#   - telegram: { token_file: telegram-token, chat_id: "123456789" }   # token file mode 0600, gitignored

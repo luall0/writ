@@ -28,6 +28,7 @@ guarantee below must be covered by at least one test that tries to break it
 | Approver keys | Secretive (v1), YubiKey, own SE app later | Sign approvals, admin changes and unsealing; listed in the daemon's `approvers` file |
 | Keystore passphrase (v1) | My head / password manager | Needed with an approver signature to unseal |
 | Leases, ledger, audit log | Daemon (SQLite + JSONL) | Must survive an incident for review |
+| Notifier credentials (Telegram bot token) | Daemon, a `0600` file (sealed keystore from M5) | Lets anyone send messages as the bot. Never in an error, `Debug` output or log line |
 
 ## Trust boundaries
 
@@ -64,7 +65,8 @@ See [Signer and sealing](architecture/signer.md).
 
 ### 4. Approvals: approver signatures
 Approvals are SSHSIGs (namespace `writ-approval`) by registered approver keys over the
-**exact lease content**. A notification click alone is never an approval. Admin changes
+**exact lease content**, sent over the approval listener (SSH or HTTPS), whose SSH host key or TLS certificate the
+client pins ([Q29](decisions.md)). A notification click alone is never an approval. Admin changes
 (approvers, templates, repo registry) and unsealing require a signed approval too.
 
 With Secretive, the Touch ID prompt doesn't show what is signed: `writ sign` on the Mac is the
@@ -119,3 +121,5 @@ See [macOS Secure Enclave](architecture/macos-secure-enclave.md).
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | Hardware unseal recipients later |
 | `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |
+| With `decisions: open`, anything that reaches the approval listener can refuse pending tickets or revoke leases | Opt-in (the default is `signed`); denial of service only, never a grant | Firewall the approval listener to the approver's Mac, or keep `decisions: signed` |
+| Notifications go through a third party (Telegram): ticket titles and ids leave the network | Titles are short, neutralized, and nothing in a notification grants anything | Another `Notifier` (self-hosted, native macOS) |

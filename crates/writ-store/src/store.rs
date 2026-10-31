@@ -2,7 +2,9 @@
 //!
 //! One row per ticket. A lease is the row of its first ticket: it holds the lease's state,
 //! certificate serial and counters, and points (`current_ticket`) at the row whose signed
-//! terms are in force (itself, or the last applied amendment).
+//! terms are in force (itself, or the last applied amendment). Each row also keeps the
+//! session public key it was submitted with (the ticket only holds its fingerprint), and a
+//! lease's row the certificate issued for it.
 
 use std::path::Path;
 
@@ -15,7 +17,7 @@ use writ_core::units::Timestamp;
 
 use crate::{Result, StoreError};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// How long a write waits for another connection's transaction before failing.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -53,6 +55,13 @@ CREATE TABLE ledger (
 ) STRICT;
 CREATE INDEX ledger_lease ON ledger(lease_id);
 ";
+
+/// Migrations, in order: `MIGRATIONS[n]` takes version `n + 1` to `n + 2`.
+const MIGRATIONS: [&str; 1] = [
+    // 2: the session public key of each ticket, the certificate of each lease.
+    "ALTER TABLE tickets ADD COLUMN session_pubkey TEXT;
+     ALTER TABLE tickets ADD COLUMN certificate TEXT;",
+];
 
 /// A counted operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,32 +114,46 @@ impl Store {
         // WAL in a file; an in-memory database keeps its own mode.
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        match version {
-            0 => {
-                let tx = conn.unchecked_transaction()?;
+        if version > SCHEMA_VERSION {
+            return Err(StoreError::SchemaTooNew(version));
+        }
+        if version < SCHEMA_VERSION {
+            let tx = conn.unchecked_transaction()?;
+            if version == 0 {
                 tx.execute_batch(SCHEMA)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-                tx.commit()?;
             }
-            SCHEMA_VERSION => {}
-            newer => return Err(StoreError::SchemaTooNew(newer)),
+            for migration in MIGRATIONS
+                .iter()
+                .skip(usize::try_from(version.max(1) - 1).unwrap_or(0))
+            {
+                tx.execute_batch(migration)?;
+            }
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.commit()?;
         }
         Ok(Self { conn })
     }
 
-    /// Stores a freshly submitted ticket (`pending`).
-    pub fn insert_pending(&self, ticket: &Ticket, now: Timestamp) -> Result<()> {
+    /// Stores a freshly submitted ticket (`pending`), with the session public key it was
+    /// submitted with (OpenSSH text; its fingerprint is the ticket's `subject.session_key`).
+    pub fn insert_pending(
+        &self,
+        ticket: &Ticket,
+        session_pubkey: &str,
+        now: Timestamp,
+    ) -> Result<()> {
         let bytes = ticket
             .canonical_bytes()
             .map_err(|e| corrupt(ticket.id.as_str(), e))?;
         let inserted = self.conn.execute(
-            "INSERT INTO tickets (id, canonical, state, lease_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO tickets (id, canonical, state, lease_id, session_pubkey, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) ON CONFLICT (id) DO NOTHING",
             params![
                 ticket.id.as_str(),
                 bytes,
                 State::Pending.as_str(),
                 ticket.lease_id().as_str(),
+                session_pubkey,
                 now.unix()
             ],
         )?;
@@ -152,6 +175,53 @@ impl Store {
             .optional()?
             .map(RawRecord::decode)
             .transpose()
+    }
+
+    /// The session public key a ticket was submitted with.
+    pub fn session_pubkey(&self, id: &TicketId) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT session_pubkey FROM tickets WHERE id = ?1",
+                [id.as_str()],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// The certificate issued for a lease.
+    pub fn certificate(&self, id: &TicketId) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT certificate FROM tickets WHERE id = ?1 AND cert_serial IS NOT NULL",
+                [id.as_str()],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Every ticket, oldest first.
+    pub fn all_tickets(&self) -> Result<Vec<TicketRecord>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, canonical, state, feedback, approver, namespace, sshsig
+             FROM tickets ORDER BY id",
+        )?;
+        let rows = statement.query_map([], raw_record)?;
+        rows.map(|row| row.map_err(StoreError::from).and_then(RawRecord::decode))
+            .collect()
+    }
+
+    /// How many tickets are in a state.
+    pub fn count(&self, state: State) -> Result<usize> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tickets WHERE state = ?1",
+            [state.as_str()],
+            |r| r.get(0),
+        )?;
+        usize::try_from(n).map_err(|_| corrupt("tickets", "count out of range"))
     }
 
     /// Every ticket in a state, oldest first.
@@ -197,8 +267,8 @@ impl Store {
     }
 
     /// Records a new lease: its pending ticket becomes active with the signed terms, the
-    /// approval and the certificate serial.
-    pub fn activate(&self, lease: &Lease, now: Timestamp) -> Result<()> {
+    /// approval, the certificate serial and the certificate (OpenSSH text).
+    pub fn activate(&self, lease: &Lease, certificate: &str, now: Timestamp) -> Result<()> {
         if lease.state != State::Active || lease.ticket.id != lease.id {
             return Err(corrupt(lease.id.as_str(), "not a new active lease"));
         }
@@ -208,7 +278,8 @@ impl Store {
             .map_err(|e| corrupt(lease.id.as_str(), e))?;
         let changed = self.conn.execute(
             "UPDATE tickets SET state = ?2, canonical = ?3, approver = ?4, namespace = ?5,
-                 sshsig = ?6, cert_serial = ?7, current_ticket = id, updated_at = ?8
+                 sshsig = ?6, cert_serial = ?7, current_ticket = id, updated_at = ?8,
+                 certificate = ?10
              WHERE id = ?1 AND state = ?9",
             params![
                 lease.id.as_str(),
@@ -219,7 +290,8 @@ impl Store {
                 lease.approval.sshsig,
                 serial_to_sql(lease.cert_serial)?,
                 now.unix(),
-                State::Pending.as_str()
+                State::Pending.as_str(),
+                certificate
             ],
         )?;
         self.expect_changed(changed, &lease.id, State::Pending)

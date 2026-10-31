@@ -18,6 +18,16 @@ clients make the workflow pleasant, the daemon makes it safe.
 Code: `crates/writ-cli` (`writ`), `crates/writ-sign` (`writ-sign`), `skill/writ/` (the
 skill). The approver side of the CLI is described in [Approvals](approvals.md).
 
+`writ` reads its settings from flags or environment variables: `WRIT_URL` (agents' listener,
+`ssh://host:port` or `unix:<path>`), `WRIT_APPROVAL_URL` (approval listener: `https://host:port`, `ssh://host:port` or `unix:<path>`),
+`WRIT_APPROVAL_KEY` (the approval key's public half, default `~/.writ/approver.pub`),
+`WRIT_APPROVAL_AGENT` (its agent socket, default `SSH_AUTH_SOCK`), `WRIT_HOME` (default
+`~/.writ`), `WRIT_KNOWN_HOSTS` (default `~/.writ/known_hosts`, where the daemon's host key
+is pinned; `writd host-key` prints it) and `WRIT_TLS_PINS` (default `~/.writ/tls_pins`, lines
+`[host]:port SHA256:…` pinning the HTTPS certificate; `writd tls-fingerprint` prints it). It never reads `~/.ssh` or uses the user's ssh-agent
+for connections: it would offer personal keys to the daemon. Exit statuses: 0 done, 1 error,
+3 rejected by policy, 4 refused, 5 expired or withdrawn, 6 not signed (`writ sign` answered no).
+
 Denial reasons from the daemon reach the agent unchanged: `writ-sign` prints them on stderr
 before exiting 1, and git shows the gateway's rejection message after a push.
 

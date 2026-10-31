@@ -3,6 +3,8 @@
 
 # Local dev daemon data (test keys, mirrors, leases)
 /dev/data/
+/dev/approvers
+/dev/telegram-token
 
 # Editors and OS
 .DS_Store

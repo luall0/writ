@@ -1,4 +1,5 @@
-//! Commands an agent may run through the gateway. Anything else is refused.
+//! Commands a client may run through the gateway. Anything else is refused. Which identity
+//! may run which command is decided by the connection handler.
 
 /// A parsed exec request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,12 +10,17 @@ pub enum Command {
     ReceivePack { repo: String },
     /// `writ-sign <namespace>`: sign the object sent on stdin.
     Sign { namespace: String },
+    /// `writ …`: a lease or approval command (`writ_proto::Command`).
+    Writ(writ_proto::Command),
 }
 
 impl Command {
     /// Parses the command line of an SSH exec request.
     pub fn parse(line: &[u8]) -> Option<Self> {
         let line = std::str::from_utf8(line).ok()?;
+        if line.starts_with("writ ") {
+            return writ_proto::Command::parse(line).map(Self::Writ);
+        }
         let (program, arg) = line.split_once(' ')?;
         match program {
             "git-upload-pack" => Some(Self::UploadPack {
@@ -72,6 +78,10 @@ mod tests {
                 namespace: "git".into()
             })
         );
+        assert_eq!(
+            Command::parse(b"writ ls --all"),
+            Some(Command::Writ(writ_proto::Command::List { all: true }))
+        );
     }
 
     #[test]
@@ -85,6 +95,8 @@ mod tests {
             b"git-upload-pack 'demo'\\''.git'",
             b"git-upload-pack ''",
             b"writ-sign writ-approval",
+            b"writ ls -l",
+            b"writ request extra",
             b"git-upload-pack",
             b"\xff\xfe",
         ] {

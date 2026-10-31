@@ -55,11 +55,11 @@ concurrent requests can't both take the last signature.
 
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
-Tables (`writ_store::Store`, schema version in `PRAGMA user_version`; a newer one is refused):
+Tables (`writ_store::Store`, schema version in `PRAGMA user_version`, now 2; an older one is migrated in one transaction, a newer one is refused):
 
 | Table | Holds |
 |---|---|
-| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, and `current_ticket`: the row whose terms are in force (itself, or the last applied amendment) |
+| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with (schema 2). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, and `current_ticket`: the row whose terms are in force (itself, or the last applied amendment), and the certificate issued for it (schema 2) |
 | `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s) |
 | `ledger` | `(commit, lease, repo)` → signer key id, time. Signing the same commit again for the same lease and repo keeps the first entry |
 
@@ -83,7 +83,7 @@ caller ([Identity](identity.md#local-mode-process-chain-checks)).
 ```
 
 Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`,
-`refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `sign`, `push`, `fetch`, `admin`,
+`refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `connect` (a session certificate presented to the gateway), `sign`, `push`, `fetch`, `admin`,
 `seal`, `unseal`), `result` (`allowed`, `denied`, `done`), `lease`, `ticket`, `cert`,
 `approver`, `repo`, `commit`, `refs`, `committer`, `code`, `reason`, `warnings`,
 `source_addr`, `process_chain`.

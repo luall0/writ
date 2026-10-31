@@ -18,16 +18,18 @@ a YubiKey) means writing an implementation of an existing interface and register
 | `CallerAttestor` | What the network or the kernel says about the caller, as `CallerFacts` | Network (source address); macOS process chain (local mode) | Linux process chain |
 | `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS (local mode) | Linux |
 | `KeystoreUnlock` | How the keystore's data key is recovered at unseal | Passphrase + approver signature | age plugin recipients (Secure Enclave, YubiKey), recovery recipient |
-| `Notifier` | How I'm told something is waiting or went wrong | ntfy | Native macOS notifications, approver apps |
+| `Notifier` | How I'm told something is waiting or went wrong | Telegram (Bot API) | Native macOS notifications, approver apps, any other sink |
 
-Shapes (to settle in code, kept in sync here):
+Shapes (as in `crates/writ-platform`, kept in sync here; the traits are used as trait objects, so `accept` returns a boxed future):
 
 ```rust
 /// How clients reach the daemon. Every transport carries the same SSH protocol:
 /// only the byte stream and what is known about its peer differ.
 pub trait Transport: Send + Sync {
     /// Waits for the next client connection.
-    async fn accept(&self) -> Result<Connection>;
+    fn accept(&self) -> BoxFuture<'_, Result<Connection>>;
+    /// Where it listens, for logs (`tcp 127.0.0.1:2222`).
+    fn describe(&self) -> String;
 }
 
 pub struct Connection {
@@ -43,11 +45,14 @@ pub trait CallerAttestor: Send + Sync {
 }
 
 /// Calls back once when a process ends (kqueue `NOTE_EXIT` on macOS, a pidfd on Linux).
+/// Dropping the handle cancels the watch; an implementation that can't watch returns
+/// `Unsupported` for every call.
 pub trait SessionWatcher: Send + Sync {
-    fn watch(&self, process: &ProcessRef, on_exit: Box<dyn FnOnce() + Send>) -> Result<WatchHandle>;
+    fn watch(&self, process: &ProcessRef, on_exit: OnExit) -> Result<WatchHandle>;
 }
 
-/// Recovers the keystore's data key at unseal time.
+/// Recovers the keystore's data key at unseal time. The approver signature that comes with
+/// an unseal is verified by the daemon before this is asked.
 pub trait KeystoreUnlock: Send + Sync {
     fn unlock(&self, request: &UnsealRequest) -> Result<DataKey>;
 }
@@ -99,14 +104,15 @@ and the same code identity if the constraint names one (`writ_core::caller::chec
 | Crate | Holds |
 |---|---|
 | `writ-core` | `CallerFacts`, `ProcessRef` and the caller checks (pure) |
-| `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, ntfy, passphrase unlock), and fakes for tests behind a `testing` feature |
+| `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, Telegram notifier, passphrase unlock), and, behind a `testing` feature, fakes of each trait and the contract suites (`writ_platform::contract`) every implementation runs |
 | `writ-signer` | The `Signer` trait, the software backend, cross-platform hardware backends behind Cargo features (YubiKey) |
 | `writ-platform-macos` | Everything macOS-only: Unix socket transport extras, process chain attestor (libproc, code signature), kqueue watcher, the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and later `KeystoreUnlock` |
 | `writ-platform-linux` | Linux-only implementations (later: `SO_PEERCRED` + `/proc` attestor, pidfd watcher, TPM) |
 | `writd` | `platform.rs`: builds the set of implementations from the configuration and the target OS. The **only** place outside the platform crates with `#[cfg(target_os = …)]` |
 
 The Unix socket transport itself is portable (Unix), so it lives in `writ-platform`; what is
-read from its peer is the attestor's job.
+read from its peer is the attestor's job. A transport only carries bytes: the gateway speaks
+SSH on it, or TLS and HTTP for the HTTPS approval API, and attests the caller either way.
 
 ## Rules
 
@@ -127,23 +133,33 @@ read from its peer is the attestor's job.
 
 ```yaml
 # detached (Docker on Linux)
-transports: [{ tcp: "0.0.0.0:2222" }]
+transports:
+  agents: [{ tcp: "0.0.0.0:2222" }]
+  approvals:                             # each optional, not both; firewall them to the approver's Mac
+    ssh: [{ tcp: "0.0.0.0:2223" }]
+    https: [{ tcp: "0.0.0.0:8443" }]
 attestor: network
 session_watcher: none
 signer: { software: /var/lib/writ/keys }
 unlock: passphrase
-notifiers: [{ ntfy: https://ntfy.home/writ }]
+notifiers: [{ telegram: { token_file: /var/lib/writ/keys/telegram-token, chat_id: "123456789" } }]
 ```
 
 ```yaml
 # local (native on the Mac)
-transports: [{ unix: ~/Library/Application Support/Writ/writd.sock }]
+transports:
+  agents: [{ unix: ~/Library/Application Support/Writ/writd.sock }]
+  approvals:
+    ssh: [{ unix: ~/Library/Application Support/Writ/approvals.sock }]
 attestor: macos_process_chain
 session_watcher: macos
 signer: { software: /var/db/writ/keys }   # se-cryptokit from M7.5 (key blob there, _writd only)
 unlock: passphrase
-notifiers: [{ ntfy: https://ntfy.home/writ }]
+notifiers: [{ telegram: { token_file: /var/db/writ/keys/telegram-token, chat_id: "123456789" } }]
 ```
+
+The full file (`writd.yaml`: state directory, policy, approvers, `decisions`, keystore) is
+described in `crates/writd/src/config.rs`; `dev/writd.yaml` is the development one.
 
 Asking for an implementation the build doesn't have (e.g. `macos_process_chain` on Linux) is
 a startup error, never a silent fallback.

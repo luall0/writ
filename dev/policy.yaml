@@ -1,0 +1,18 @@
+# The development policy: one throwaway repo, one template.
+repos:
+  demo:
+    upstream: ssh://git@forge.invalid/demo.git
+    upstream_credential: upstream-dev-01
+    protected_refs: ["refs/heads/main", "refs/tags/*"]
+templates:
+  feature-branch:
+    repos: [demo]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ.invalid"]
+    signing_key: agent-dev-01
+    max_ttl: 4h
+    max_signatures: 50
+    max_pushes: 30
+    max_ops_per_minute: 20
+    max_push_size: 50MB

@@ -1,5 +1,7 @@
 //! M0 spike, end to end: real `git` and `ssh` against the gateway, with session certificates,
-//! the pre-receive callback and commits signed by the daemon through `writ-sign`.
+//! the pre-receive callback and commits signed by the daemon through `writ-sign`. Since M2
+//! every certificate comes from a lease: a ticket submitted to the approval service and
+//! signed by a (generated) approver key.
 //!
 //! Needs the workspace binaries built (`make test` does it). Never touches the user's
 //! `~/.ssh`, git configuration or ssh-agent.
@@ -10,14 +12,59 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
 
 use tempfile::TempDir;
+use writ_approval::{Platform, Service, ServiceConfig, SystemClock};
+use writ_core::caller::CallerFacts;
+use writ_core::config::PolicyConfig;
+use writ_core::lease::APPROVAL_NAMESPACE;
+use writ_core::names::TicketId;
+use writ_core::signed::Revocation;
+use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::ca::{CertificateAuthority, CertificateRequest};
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey};
-use writ_gateway::{Gateway, GatewayConfig};
+use writ_crypto::sshsig;
+use writ_gateway::{Gateway, GatewayConfig, Role};
+use writ_platform::testing::{FakeAttestor, RecordingNotifier};
+use writ_platform::transport::TcpTransport;
+use writ_platform::watch::NoSessionWatcher;
+use writ_platform::{BoxFuture, Connection, PeerInfo, Transport};
+use writ_proto::{ApproveRequest, Decision, Decisions, RevokeRequest};
+use writ_store::{AuditLog, Store};
 
 const WRITD: &str = env!("CARGO_BIN_EXE_writd");
+
+const POLICY: &str = r#"
+repos:
+  demo:
+    upstream: ssh://git@forge.invalid/demo.git
+    upstream_credential: upstream-01
+    protected_refs: ["refs/heads/main", "refs/tags/*"]
+templates:
+  spike:
+    repos: [demo]
+    operations: [fetch, commit_sign, push]
+    branches: ["*"]
+    committer_emails: ["agent@writ"]
+    signing_key: agent-01
+    max_ttl: 1h
+    max_signatures: 100
+    max_pushes: 100
+    max_ops_per_minute: 1000
+    max_push_size: 50MB
+"#;
+
+const TICKET: &str = r#"
+scope:
+  repos: [demo]
+  operations: [fetch, commit_sign, push]
+  branches: ["agent/*"]
+ticket:
+  title: Spike
+  task: Exercise the gateway
+"#;
 
 fn writ_sign() -> PathBuf {
     let path = Path::new(WRITD).with_file_name("writ-sign");
@@ -46,13 +93,35 @@ enum Listen {
     Unix,
 }
 
+/// A Unix socket transport for this test (the real one comes with local mode, M7).
+struct UnixTransport(tokio::net::UnixListener);
+
+impl Transport for UnixTransport {
+    fn accept(&self) -> BoxFuture<'_, writ_platform::Result<Connection>> {
+        Box::pin(async move {
+            let (stream, _) = self.0.accept().await?;
+            Ok(Connection {
+                stream: Box::new(stream),
+                peer: PeerInfo::Memory {
+                    label: "unix (test)".into(),
+                },
+            })
+        })
+    }
+
+    fn describe(&self) -> String {
+        "unix (test)".into()
+    }
+}
+
 /// A gateway on a temporary state directory, and a client environment to talk to it.
 struct Spike {
     dir: TempDir,
-    /// Keeps the gateway running for the test.
-    _runtime: tokio::runtime::Runtime,
-    gateway: Gateway,
+    runtime: tokio::runtime::Runtime,
+    service: Arc<Service>,
+    /// The same key as the service's CA, to forge certificates without a lease.
     ca: CertificateAuthority,
+    approver: PrivateKey,
     agent_key: PrivateKey,
     /// `ssh://git@…` base URL of the gateway.
     url: String,
@@ -74,22 +143,44 @@ impl Spike {
         )
         .unwrap();
 
-        let ca = CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap());
+        let ca_key = generate(KeyKind::Ed25519).unwrap();
         let host_key = generate(KeyKind::Ed25519).unwrap();
         let agent_key = generate(agent_kind).unwrap();
+        let approver = generate(KeyKind::Ed25519).unwrap();
         let host_public = host_key.public_key().to_openssh().unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
+        let service = Service::new(
+            ServiceConfig {
+                policy: PolicyConfig::from_yaml(POLICY).unwrap(),
+                approvers: vec![AllowedSigner {
+                    principals: "me".into(),
+                    key: approver.public_key().clone(),
+                }],
+                decisions: Decisions::Signed,
+                max_pending: 20,
+            },
+            CertificateAuthority::new(ca_key.clone()),
+            Store::open(&root.join("leases.db")).unwrap(),
+            AuditLog::open(&root.join("audit.jsonl")).unwrap(),
+            Platform {
+                notifier: Arc::new(RecordingNotifier::new()),
+                watcher: Arc::new(NoSessionWatcher::new()),
+                clock: Arc::new(SystemClock),
+            },
+        )
+        .unwrap();
         let config = GatewayConfig {
             host_key,
-            authorities: vec![ca.fingerprint()],
             repos_root: root.join("repos"),
             signing_key: agent_key.clone(),
             hook_program: PathBuf::from(WRITD),
             state_dir: root.join("run"),
             protected_refs: vec!["refs/heads/main".into(), "refs/tags/*".into()],
         };
-        let gateway = runtime.block_on(Gateway::start(config)).unwrap();
+        let gateway = runtime
+            .block_on(Gateway::start(config, service.clone()))
+            .unwrap();
 
         let known_hosts = root.join("known_hosts");
         let (url, ssh_target, host) = match listen {
@@ -98,8 +189,10 @@ impl Spike {
                     .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
                     .unwrap();
                 let port = listener.local_addr().unwrap().port();
+                let transport = Arc::new(TcpTransport::from_listener(listener));
+                let attestor = Arc::new(writ_platform::attest::NetworkAttestor::new());
                 let g = gateway.clone();
-                runtime.spawn(async move { g.serve_tcp(listener).await });
+                runtime.spawn(async move { g.serve(transport, attestor, Role::Agents).await });
                 (
                     format!("ssh://git@127.0.0.1:{port}"),
                     String::new(),
@@ -112,8 +205,10 @@ impl Spike {
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::bind(&socket).unwrap()
                 };
+                let transport = Arc::new(UnixTransport(listener));
+                let attestor = Arc::new(FakeAttestor::fixed(CallerFacts::default()));
                 let g = gateway.clone();
-                runtime.spawn(async move { g.serve_unix(listener).await });
+                runtime.spawn(async move { g.serve(transport, attestor, Role::Agents).await });
                 (
                     "ssh://git@writ-local".to_owned(),
                     format!(
@@ -128,14 +223,15 @@ impl Spike {
 
         let spike = Self {
             dir,
-            _runtime: runtime,
-            gateway,
-            ca,
+            runtime,
+            service,
+            ca: CertificateAuthority::new(ca_key),
+            approver,
             agent_key,
             url,
             ssh_target,
         };
-        spike.session("session", 1, 0, now() + 3600);
+        spike.session("session");
         spike
     }
 
@@ -143,16 +239,67 @@ impl Spike {
         self.dir.path()
     }
 
-    /// Writes a session key and a certificate for it (`keys/<name>`, `keys/<name>-cert.pub`).
-    fn session(&self, name: &str, serial: u64, valid_after: u64, valid_before: u64) -> PathBuf {
-        self.session_from(&self.ca, name, serial, valid_after, valid_before)
+    /// A lease for a fresh session key, signed by the approver: writes `keys/<name>` and
+    /// `keys/<name>-cert.pub`, returns the lease id.
+    fn session(&self, name: &str) -> TicketId {
+        let key = generate(KeyKind::Ed25519).unwrap();
+        let facts = CallerFacts::default();
+        let submitted = self
+            .service
+            .submit(key.public_key(), TICKET.as_bytes(), &facts)
+            .unwrap();
+        let signature = sshsig::sign(
+            &self.approver,
+            APPROVAL_NAMESPACE,
+            submitted.canonical.as_bytes(),
+        )
+        .unwrap();
+        self.service
+            .approve(
+                &submitted.id,
+                &ApproveRequest {
+                    signed: submitted.canonical.clone(),
+                    signature,
+                },
+                &facts,
+            )
+            .unwrap();
+        let decision = self
+            .runtime
+            .block_on(self.service.wait(&submitted.id, key.public_key()))
+            .unwrap();
+        let Decision::Active { certificate, .. } = decision else {
+            panic!("expected an active lease, got {decision:?}");
+        };
+        write_secret(&self.root().join("keys").join(name), &key);
+        fs::write(
+            self.root().join("keys").join(format!("{name}-cert.pub")),
+            certificate,
+        )
+        .unwrap();
+        submitted.id
     }
 
-    fn session_from(
+    /// Revokes a lease with a signed revocation.
+    fn revoke(&self, id: &TicketId) {
+        let document = Revocation::new(id.clone()).canonical_bytes().unwrap();
+        let signature = sshsig::sign(&self.approver, APPROVAL_NAMESPACE, &document).unwrap();
+        self.service
+            .revoke(
+                id,
+                &RevokeRequest {
+                    signature: Some(signature),
+                },
+                &CallerFacts::default(),
+            )
+            .unwrap();
+    }
+
+    /// A certificate made directly by `ca`, for no lease.
+    fn forged_session(
         &self,
         ca: &CertificateAuthority,
         name: &str,
-        serial: u64,
         valid_after: u64,
         valid_before: u64,
     ) -> PathBuf {
@@ -162,8 +309,8 @@ impl Spike {
         let cert = ca
             .issue(&CertificateRequest {
                 subject: key.public_key(),
-                serial,
-                key_id: "wrt_spike",
+                serial: 77,
+                key_id: "wrt_01JD8X0000000000000000000",
                 principals: &["git"],
                 valid_after,
                 valid_before,
@@ -331,22 +478,29 @@ fn only_valid_session_certificates_get_in() {
     assert!(ls_remote(&key("session"), true).status.success());
 
     let other_ca = CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap());
-    spike.session_from(&other_ca, "foreign", 2, 0, now() + 3600);
+    spike.forged_session(&other_ca, "foreign", 0, now() + 3600);
     assert!(
         !ls_remote(&key("foreign"), true).status.success(),
         "unknown CA"
     );
 
-    spike.session("expired", 3, 0, now() - 10);
+    spike.forged_session(&spike.ca, "expired", 0, now() - 10);
     assert!(
         !ls_remote(&key("expired"), true).status.success(),
         "expired"
     );
 
-    spike.session("early", 4, now() + 600, now() + 3600);
+    spike.forged_session(&spike.ca, "early", now() + 600, now() + 3600);
     assert!(
         !ls_remote(&key("early"), true).status.success(),
         "not valid yet"
+    );
+
+    // Our own CA, valid dates, but no lease behind it: refused.
+    spike.forged_session(&spike.ca, "leaseless", 0, now() + 3600);
+    assert!(
+        !ls_remote(&key("leaseless"), true).status.success(),
+        "no lease"
     );
 
     assert!(
@@ -354,9 +508,9 @@ fn only_valid_session_certificates_get_in() {
         "plain key"
     );
 
-    spike.session("revoked", 5, 0, now() + 3600);
+    let lease = spike.session("revoked");
     assert!(ls_remote(&key("revoked"), true).status.success());
-    spike.gateway.revoke(5);
+    spike.revoke(&lease);
     assert!(
         !ls_remote(&key("revoked"), true).status.success(),
         "revoked"
@@ -416,7 +570,8 @@ fn signed_commit_verifies(agent_kind: KeyKind) {
     );
 
     // No valid certificate, no signature.
-    spike.gateway.revoke(1);
+    let leases = spike.service.list(false).unwrap();
+    spike.revoke(&leases.tickets[0].id);
     let out = spike.git(
         &work,
         &["commit", "-q", "-S", "--allow-empty", "-m", "refused"],

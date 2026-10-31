@@ -12,6 +12,12 @@ FORBIDDEN = {
                  "writ-platform-macos", "writ-platform-linux"},
     "writ-sign": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
                   "writ-platform-macos", "writ-platform-linux"},
+    # Messages only: shared by clients and the daemon.
+    "writ-proto": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
+                   "writ-platform", "writ-platform-macos", "writ-platform-linux", "writ-crypto"},
+    # Platform traits and implementations: below every core crate but writ-core.
+    "writ-platform": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
+                      "writ-cli", "writ-git"},
 }
 CORE = {"writ-core", "writ-store", "writ-git", "writ-gateway", "writ-approval"}
 PLATFORM_ONLY = {"writ-platform-macos", "writ-platform-linux"}

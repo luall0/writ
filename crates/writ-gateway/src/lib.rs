@@ -1,25 +1,50 @@
-//! The SSH gateway: the single entry point for agents. It authenticates daemon-issued
-//! session certificates and serves git fetch/push and commit signing.
+//! The SSH gateway: the single entry point to the daemon. Every transport carries the same
+//! SSH protocol; each listener has a [`Role`]:
 //!
-//! M0 spike: the policy is a fixed list of protected refs and the signing key is held in
-//! memory. Leases, the policy engine and the `Signer` interface replace both from M1–M3.
+//! - [`Role::Agents`]: user `git` with a session certificate issued for an active lease (git
+//!   fetch/push, `writ-sign git`); user `writ` with a plain key, the session key of a ticket
+//!   being submitted (`writ request`, `writ wait`).
+//! - [`Role::Approvals`]: the approval API (`writ info`, `ls`, `show`, `approve`, `refuse`,
+//!   `revoke`). Any key gets in: an approval is an SSHSIG checked by the approval service,
+//!   never the connection itself. The same API is also served over HTTPS
+//!   ([`Gateway::serve_https`], [`https`]).
+//!
+//! The gateway only sees the platform traits ([`Transport`], [`CallerAttestor`]): connections
+//! come from a transport, what is known about the caller from an attestor. Leases, tickets
+//! and the deny list are the approval service's ([`writ_approval::Service`]); when a lease
+//! ends, the gateway drops its open sessions.
+//!
+//! Until M3 and M4, signing uses a key held in memory and pushes are only checked against a
+//! fixed list of protected refs (the M0 spike), for any active lease that allows the
+//! operation.
 
 mod command;
 mod handler;
 pub mod hook;
+pub mod https;
 mod process;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use russh::server::Server as _;
-use tokio::net::{TcpListener, UnixListener};
-use writ_crypto::ssh_key::{Fingerprint, PrivateKey};
+use russh::Disconnect;
+use tokio::net::UnixListener;
+use tokio::sync::broadcast::error::RecvError;
+use writ_approval::Service;
+use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
+use writ_platform::{CallerAttestor, Transport};
 
 pub use command::Command;
+pub use https::TlsIdentity;
+
+/// The SSH user of lease holders (certificates are issued for it).
+pub const LEASE_USER: &str = writ_approval::PRINCIPAL;
+/// The SSH user of clients with a plain key: ticket submission, the approval API.
+pub const CLIENT_USER: &str = "writ";
 
 /// Errors from the gateway.
 #[derive(Debug, thiserror::Error)]
@@ -28,21 +53,30 @@ pub enum Error {
     Ssh(#[from] russh::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Platform(#[from] writ_platform::PlatformError),
     #[error("invalid configuration: {0}")]
     Config(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// What a listener serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Agents: git, signing, ticket submission.
+    Agents,
+    /// The approver: the approval API.
+    Approvals,
+}
+
 /// What the gateway needs to run.
 pub struct GatewayConfig {
-    /// The gateway's SSH host key.
+    /// The gateway's SSH host key (clients pin it).
     pub host_key: PrivateKey,
-    /// Certificate authorities whose user certificates are accepted.
-    pub authorities: Vec<Fingerprint>,
-    /// Directory holding one bare repository per registered repo (`<name>.git`).
+    /// Directory holding one bare repository per repo (`<name>.git`).
     pub repos_root: PathBuf,
-    /// Key used for the `writ-sign` command (M0: in memory; the `Signer` interface from M3).
+    /// Key used for the `writ-sign` command (in memory until the `Signer` interface, M3).
     pub signing_key: PrivateKey,
     /// Program git's pre-receive hook runs, as `<program> hook pre-receive`.
     pub hook_program: PathBuf,
@@ -60,17 +94,22 @@ pub struct Gateway {
 
 struct Shared {
     config: GatewayConfig,
+    service: Arc<Service>,
+    authorities: Vec<Fingerprint>,
     ssh: Arc<russh::server::Config>,
-    revoked: RwLock<HashSet<u64>>,
     /// Pushes in progress, by the token handed to their pre-receive hook.
     pushes: Mutex<HashMap<String, hook::PushContext>>,
+    /// Open sessions of lease holders, by certificate serial, then connection number.
+    sessions: Mutex<HashMap<u64, HashMap<u64, russh::server::Handle>>>,
+    next_connection: AtomicU64,
     hooks_dir: PathBuf,
     hook_socket: PathBuf,
 }
 
 impl Gateway {
-    /// Prepares the state directory and starts the hook server.
-    pub async fn start(config: GatewayConfig) -> Result<Self> {
+    /// Prepares the state directory, starts the hook server and the task that drops the
+    /// sessions of leases that end.
+    pub async fn start(config: GatewayConfig, service: Arc<Service>) -> Result<Self> {
         std::fs::create_dir_all(&config.state_dir)?;
         std::fs::set_permissions(&config.state_dir, std::fs::Permissions::from_mode(0o700))?;
         let hooks_dir = config.state_dir.join("hooks");
@@ -98,66 +137,166 @@ impl Gateway {
             inactivity_timeout: Some(Duration::from_secs(3600)),
             ..Default::default()
         });
+        let authorities = vec![service.ca_public_key().fingerprint(HashAlg::Sha256)];
+        let revocations = service.subscribe_revocations();
         let gateway = Self {
             shared: Arc::new(Shared {
                 config,
+                service,
+                authorities,
                 ssh,
-                revoked: RwLock::new(HashSet::new()),
                 pushes: Mutex::new(HashMap::new()),
+                sessions: Mutex::new(HashMap::new()),
+                next_connection: AtomicU64::new(1),
                 hooks_dir,
                 hook_socket,
             }),
         };
         tokio::spawn(hook::serve(gateway.clone(), hook_listener));
+        tokio::spawn(drop_revoked_sessions(gateway.clone(), revocations));
         Ok(gateway)
     }
 
-    /// Refuses certificates with this serial from now on.
-    pub fn revoke(&self, serial: u64) {
-        if let Ok(mut revoked) = self.shared.revoked.write() {
-            revoked.insert(serial);
-        }
+    pub fn service(&self) -> &Arc<Service> {
+        &self.shared.service
     }
 
-    /// Serves SSH connections from a TCP listener until it fails.
-    pub async fn serve_tcp(&self, listener: TcpListener) -> Result<()> {
-        let mut server = handler::Server(self.clone());
-        server
-            .run_on_socket(self.shared.ssh.clone(), &listener)
-            .await?;
-        Ok(())
-    }
-
-    /// Serves SSH connections from a Unix socket: same protocol, another transport.
-    pub async fn serve_unix(&self, listener: UnixListener) -> Result<()> {
+    /// Serves SSH connections from a transport, with what `attestor` says about each caller,
+    /// until the transport fails. A caller the attestor can't attest is turned away.
+    pub async fn serve(
+        &self,
+        transport: Arc<dyn Transport>,
+        attestor: Arc<dyn CallerAttestor>,
+        role: Role,
+    ) -> Result<()> {
         loop {
-            let (stream, _) = listener.accept().await?;
-            let handler = handler::Connection::new(self.clone());
+            let connection = transport.accept().await?;
+            let facts = match attestor.attest(&connection.peer) {
+                Ok(facts) => facts,
+                Err(e) => {
+                    eprintln!("writ gateway: connection turned away: {e}");
+                    continue;
+                }
+            };
+            let handler = handler::Connection::new(self.clone(), role, facts);
             let ssh = self.shared.ssh.clone();
             tokio::spawn(async move {
-                match russh::server::run_stream(ssh, stream, handler).await {
+                match russh::server::run_stream(ssh, connection.stream, handler).await {
                     Ok(session) => {
-                        if let Err(e) = session.await {
+                        if let Err(e) = session.await
+                            && !client_went_away(&e)
+                        {
                             eprintln!("writ gateway: session ended with an error: {e}");
                         }
                     }
+                    Err(e) if client_went_away(&e) => {}
                     Err(e) => eprintln!("writ gateway: connection failed: {e}"),
                 }
             });
         }
     }
 
-    fn is_revoked(&self, serial: u64) -> bool {
-        // A poisoned lock fails closed.
-        self.shared
-            .revoked
-            .read()
-            .map(|r| r.contains(&serial))
-            .unwrap_or(true)
+    fn connection_number(&self) -> u64 {
+        self.shared.next_connection.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn revoked_snapshot(&self) -> Option<HashSet<u64>> {
-        self.shared.revoked.read().ok().map(|r| r.clone())
+    fn register_session(&self, serial: u64, connection: u64, handle: russh::server::Handle) {
+        if let Ok(mut sessions) = self.shared.sessions.lock() {
+            sessions
+                .entry(serial)
+                .or_default()
+                .insert(connection, handle);
+        }
+        // Revoked between authentication and now: drop it like the others.
+        if self.shared.service.is_revoked(serial) {
+            self.drop_sessions(serial);
+        }
+    }
+
+    fn unregister_session(&self, serial: u64, connection: u64) {
+        if let Ok(mut sessions) = self.shared.sessions.lock()
+            && let Some(by_connection) = sessions.get_mut(&serial)
+        {
+            by_connection.remove(&connection);
+            if by_connection.is_empty() {
+                sessions.remove(&serial);
+            }
+        }
+    }
+
+    /// Disconnects every open session of a certificate.
+    fn drop_sessions(&self, serial: u64) {
+        let handles: Vec<russh::server::Handle> = match self.shared.sessions.lock() {
+            Ok(mut sessions) => sessions
+                .remove(&serial)
+                .map(|by_connection| by_connection.into_values().collect())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        for handle in handles {
+            tokio::spawn(async move {
+                let _ = handle
+                    .disconnect(
+                        Disconnect::ByApplication,
+                        "writ: the lease ended".to_owned(),
+                        "en".to_owned(),
+                    )
+                    .await;
+            });
+        }
+    }
+
+    /// Open sessions per certificate serial (for tests and logs).
+    pub fn open_sessions(&self, serial: u64) -> usize {
+        self.shared
+            .sessions
+            .lock()
+            .map(|s| s.get(&serial).map_or(0, HashMap::len))
+            .unwrap_or(0)
+    }
+}
+
+/// Whether an error only says the client went away: it disconnected, or the connection was
+/// closed, reset or cut mid-packet (a killed process, a lost network). That is how
+/// connections end, not a fault of the daemon, so it isn't logged as an error.
+fn client_went_away(error: &Error) -> bool {
+    use std::io::ErrorKind;
+    let io = match error {
+        Error::Ssh(russh::Error::Disconnect) => return true,
+        Error::Ssh(russh::Error::IO(e)) | Error::Io(e) => e,
+        _ => return false,
+    };
+    matches!(
+        io.kind(),
+        ErrorKind::UnexpectedEof
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::BrokenPipe
+    )
+}
+
+/// Drops the open sessions of every lease that ends. If notices were missed, every session
+/// whose certificate is on the deny list is dropped.
+async fn drop_revoked_sessions(
+    gateway: Gateway,
+    mut revocations: tokio::sync::broadcast::Receiver<u64>,
+) {
+    loop {
+        match revocations.recv().await {
+            Ok(serial) => gateway.drop_sessions(serial),
+            Err(RecvError::Lagged(_)) => {
+                let serials: Vec<u64> = match gateway.shared.sessions.lock() {
+                    Ok(sessions) => sessions.keys().copied().collect(),
+                    Err(_) => Vec::new(),
+                };
+                for serial in serials {
+                    if gateway.shared.service.is_revoked(serial) {
+                        gateway.drop_sessions(serial);
+                    }
+                }
+            }
+            Err(RecvError::Closed) => return,
+        }
     }
 }
 
@@ -174,4 +313,31 @@ fn write_hook_script(hooks_dir: &Path, program: &Path) -> Result<()> {
     )?;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_client_going_away_is_not_an_error() {
+        use std::io::{Error as Io, ErrorKind};
+        for kind in [
+            ErrorKind::UnexpectedEof,
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::BrokenPipe,
+        ] {
+            assert!(client_went_away(&Error::Ssh(russh::Error::IO(Io::from(
+                kind
+            )))));
+            assert!(client_went_away(&Error::Io(Io::from(kind))));
+        }
+        assert!(client_went_away(&Error::Ssh(russh::Error::Disconnect)));
+        assert!(!client_went_away(&Error::Ssh(russh::Error::IO(Io::from(
+            ErrorKind::PermissionDenied
+        )))));
+        assert!(!client_went_away(&Error::Config("bad".into())));
+        assert!(!client_went_away(&Error::Ssh(russh::Error::WrongServerSig)));
+    }
 }

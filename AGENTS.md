@@ -39,7 +39,9 @@ gets its page (the template there) written up to its plan before any code.
 | Git remote on agent hosts | `writ` |
 | Agent host session files | `~/.writ/sessions/<lease>/` (`current` → active one) |
 | Daemon data (container) | `/var/lib/writ/` (keystore in `/var/lib/writ/keys/`) |
-| Ports (detached) | `2222` gateway (SSH), `8443` approval API (HTTPS) |
+| Ports (detached) | `2222` gateway (SSH, agents), `2223` approval API (SSH), `8443` approval API (HTTPS); each approval transport can be disabled, not both |
+| SSH users | `git` (lease holders, with a certificate), `writ` (ticket submission and the approval API, with a plain key) |
+| Client files | `~/.writ/known_hosts` (the daemon's pinned host key), `~/.writ/tls_pins` (its pinned TLS certificate), `~/.writ/approver.pub` |
 | Env vars | `WRIT_*` |
 | Agent skill | `skill/writ/SKILL.md` |
 
@@ -112,8 +114,9 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Lint, format check, dependency directions | `make check` |
 | Tests | `make test` |
 | Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
+| Pin the development daemon for the client (`dev/data/client/`), before the [manual checks](docs/guides/manual-checks.md) | `make dev-client` |
 | Format | `make fmt` |
-| Run the M0 spike gateway with test keys in `dev/data` (`writd spike-cert dev/data <key.pub> <cert>` issues a session certificate) | `make run` |
+| Run the development daemon on `dev/writd.yaml` (test keys in `dev/data`, your approval public key in `dev/approvers`; `writd host-key dev/writd.yaml` / `writd tls-fingerprint dev/writd.yaml` print what to pin) | `make run` |
 | End-to-end scenarios against the test forge (Docker, from M4) | `make e2e` |
 | Build the Docker image (from M8) | `make docker` |
 | Add a dependency | add its version to `[workspace.dependencies]` in the root `Cargo.toml`, then `dep.workspace = true` in the crate |

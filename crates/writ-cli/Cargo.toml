@@ -1,0 +1,32 @@
+[package]
+name = "writ-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "writ"
+path = "src/main.rs"
+
+[dependencies]
+writ-core.workspace = true
+writ-crypto.workspace = true
+writ-proto.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+russh.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

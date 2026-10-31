@@ -22,7 +22,7 @@ sequenceDiagram
     A->>A: revise ticket, resubmit
   else fits a template
     D->>D: state = pending
-    D-->>Me: ntfy: "ticket waiting" (also printed by the agent)
+    D-->>Me: notification: "ticket waiting" (also printed by the agent)
     Me->>AP: writ sign
     AP->>D: fetch canonical ticket
     AP->>Me: shows ticket: task, plan, scope, limits, template, diff vs previous revision
@@ -45,6 +45,16 @@ sequenceDiagram
 
 When a harness (e.g. Omega Code) requests the lease on the agent's behalf, it plays the
 `writ request` part and writes the key, certificate and git config itself.
+
+On the wire (M2): `writ request` connects to the agents' listener as user `writ` with the new
+session key and runs `writ request` (the ticket file on stdin); the key it authenticated with
+becomes `subject.session_key`. It then runs `writ wait <id>` on the same connection, which
+returns once I decide: the lease (canonical bytes) and the certificate, the feedback, or
+`expired` / `revoked`. Only that session key can wait on the ticket. The session lands in
+`~/.writ/sessions/<lease>/` (`key`, `key.pub`, `key-cert.pub`, `ticket.json`, `lease.json`),
+with `current` pointing at it. `writ request` exits 0 when granted, 3 when rejected by
+policy, 4 when refused, 5 when the ticket expired or was withdrawn. `writ sign` and
+`writ refuse` reach the approval listener ([Approvals](architecture/approvals.md#reaching-the-daemon)).
 
 ## 2. Signed commit
 
@@ -137,9 +147,13 @@ credentials, even read-only ones.
 ## 5. Revoke / expire
 
 - `writ revoke <id>`, menu bar, phone → lease `revoked`, certificate added to the deny list,
-  open sessions dropped
+  open sessions dropped (the gateway disconnects every SSH session of that certificate). With
+  `decisions: signed`, the revocation is an SSHSIG over a `writ-revocation/1` document. On a
+  pending ticket, `writ revoke` withdraws it.
 - TTL reached → `expired`; every counted operation used up → `exhausted` (never with
-  `fetch`, [lease model](lease-model.md#lifecycle)); notify
+  `fetch`, [lease model](lease-model.md#lifecycle)); notify. The daemon checks every second
+  and before every request; the certificate itself ends at `expires_at`, and open sessions
+  are dropped like on a revocation. A pending ticket not signed by `expires_at` expires too.
 - Local mode: session root process exits → `revoked`
 - Violation with `on_violation: revoke_lease` → revoked + notify
 
@@ -170,7 +184,7 @@ sequenceDiagram
   participant SC as Secretive
   actor Me
   D->>D: start sealed (only unseal endpoint served)
-  D-->>Me: ntfy: "writd restarted, sealed"
+  D-->>Me: notification: "writd restarted, sealed"
   Me->>U: writ unseal
   U->>Me: keystore passphrase prompt
   U->>SC: sign unseal request (namespace writ-approval)

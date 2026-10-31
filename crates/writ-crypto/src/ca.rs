@@ -3,8 +3,6 @@
 use std::collections::HashSet;
 
 use ssh_key::certificate::{Builder, CertType};
-use ssh_key::getrandom::SysRng;
-use ssh_key::rand_core::UnwrapErr;
 use ssh_key::{Certificate, Fingerprint, HashAlg, PrivateKey, PublicKey};
 
 use crate::Result;
@@ -59,8 +57,9 @@ impl CertificateAuthority {
     }
 
     pub fn issue(&self, request: &CertificateRequest<'_>) -> Result<Certificate> {
-        let mut builder = Builder::new_with_random_nonce(
-            &mut UnwrapErr(SysRng),
+        let nonce: [u8; Builder::RECOMMENDED_NONCE_SIZE] = crate::keys::random_array()?;
+        let mut builder = Builder::new(
+            nonce.to_vec(),
             request.subject.key_data().clone(),
             request.valid_after,
             request.valid_before,

@@ -1,0 +1,11 @@
+# A ticket that fits dev/policy.yaml: `writ request dev/ticket.yaml`.
+scope:
+  repos: [demo]
+  operations: [fetch, commit_sign, push]
+  branches: ["agent/manual-check"]
+ticket:
+  title: Manual check with Secretive
+  task: Check that an approval signed through Secretive (Touch ID) is accepted
+  plan: ["Submit the ticket", "Sign it with Touch ID", "Receive the lease"]
+limits:
+  ttl: 30m

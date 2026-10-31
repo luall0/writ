@@ -51,3 +51,5 @@ conventions, hard rules and commands, and points here for details.
 - [Testing](testing.md): what to test in each crate, guarantee tests.
 - [Project initialization](guides/initialization.md): one-time bootstrap of the Cargo
   workspace (run only on an empty repo).
+- [Manual checks](guides/manual-checks.md): the checks that need a person (Touch ID with
+  Secretive), step by step against the development daemon.

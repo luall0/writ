@@ -7,6 +7,7 @@
 //! - [`lease`]: the lifecycle, approvals, amendments.
 //! - [`caller`]: caller facts and the lease's caller constraint.
 //! - [`policy`]: the decisions for signing, pushing and fetching.
+//! - [`signed`]: the refusal and revocation documents an approver may sign.
 //!
 //! See docs/lease-model.md and docs/architecture/policy-and-state.md.
 
@@ -18,5 +19,6 @@ pub mod names;
 pub mod narrow;
 pub mod pattern;
 pub mod policy;
+pub mod signed;
 pub mod ticket;
 pub mod units;
