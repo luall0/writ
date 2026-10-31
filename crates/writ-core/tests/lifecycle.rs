@@ -1,6 +1,13 @@
 //! Submission and template fit, narrowing, the lifecycle state machine and amendments.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 mod common;
 

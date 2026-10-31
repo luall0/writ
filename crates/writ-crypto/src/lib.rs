@@ -7,6 +7,10 @@
 //! the exact bytes to sign, a key signs them, and [`sshsig::assemble`] wraps the raw
 //! signature. Where the key lives is not this crate's business.
 
+// This crate parses untrusted input and computes limits: every arithmetic operation is
+// checked, saturating, or allowed with the reason it can't overflow.
+#![deny(clippy::arithmetic_side_effects)]
+
 pub mod allowed_signers;
 pub mod ca;
 pub mod keys;

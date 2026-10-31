@@ -1,0 +1,43 @@
+# CI: `make ci`, the one definition of green, on Linux. macOS-only code is tested by the same
+# target in the pre-push hook on the Mac (`make hooks`). No third-party action is used: the
+# repository is fetched with git and the job's read-only token, so nothing outside this repo
+# and GitHub's runner image runs here.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch the commit
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          git -c "http.extraHeader=Authorization: basic ${auth}" fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: cargo-deny (pinned)
+        run: cargo install --locked cargo-deny --version 0.20.2
+
+      - name: Tools the integration tests use
+        run: |
+          command -v nc || sudo apt-get install -y netcat-openbsd
+          git --version
+          ssh -V
+
+      - name: make ci
+        run: make ci

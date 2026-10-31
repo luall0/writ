@@ -2,7 +2,14 @@
 //! one guarantee with the decisions alone. The end-to-end halves (real git, real ssh, the
 //! daemon running) come with the milestones that wire them (M2–M4).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 mod common;
 

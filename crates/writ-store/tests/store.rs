@@ -1,7 +1,14 @@
 //! The lease store and ledger: state across a reopen, compare-and-set transitions, atomic
 //! counters, strict decoding of what is stored.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::path::Path;
 use std::sync::Arc;

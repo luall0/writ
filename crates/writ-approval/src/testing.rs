@@ -3,7 +3,14 @@
 //!
 //! Panics on any failure: it only ever runs in tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

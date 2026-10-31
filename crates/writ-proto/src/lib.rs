@@ -16,6 +16,10 @@
 //! ([`encode_reply`], [`decode_reply`]). Tickets travel as their canonical bytes in a string,
 //! so a client can decode them strictly (`Ticket::from_canonical`) and sign exactly them.
 
+// This crate parses untrusted input and computes limits: every arithmetic operation is
+// checked, saturating, or allowed with the reason it can't overflow.
+#![deny(clippy::arithmetic_side_effects)]
+
 mod command;
 mod envelope;
 mod messages;

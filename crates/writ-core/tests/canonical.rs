@@ -1,7 +1,14 @@
 //! The canonical encoding of a ticket: the bytes an approval signs. Pinned by fixtures in
 //! tests/fixtures/; any field change changes the bytes; only canonical bytes decode.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 mod common;
 

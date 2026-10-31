@@ -1,7 +1,14 @@
 //! Every keystore unlock, real and fake, through the unlock contract, and the passphrase
 //! file's own guarantees.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::path::Path;
 

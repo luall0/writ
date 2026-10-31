@@ -105,7 +105,7 @@ mod tests {
             format!("{A} {B} refs/heads/a..b"),
             format!("{A} {B} refs/heads/x "),
             format!("{A}  {B} refs/heads/x"),
-            format!("{} {B} refs/heads/x", &A[..39]),
+            format!("{} {B} refs/heads/x", A.get(..39).unwrap()),
             format!("{A} {B}"),
             String::new(),
         ] {

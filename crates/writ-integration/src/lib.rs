@@ -14,7 +14,14 @@
 //!
 //! This crate only runs in tests, so it panics on any failure (with a message).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 pub mod agent;
 pub mod binaries;

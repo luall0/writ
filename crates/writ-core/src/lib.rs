@@ -15,6 +15,10 @@
 //!
 //! See docs/lease-model.md and docs/architecture/policy-and-state.md.
 
+// This crate parses untrusted input and computes limits: every arithmetic operation is
+// checked, saturating, or allowed with the reason it can't overflow.
+#![deny(clippy::arithmetic_side_effects)]
+
 pub mod caller;
 pub mod canonical;
 pub mod config;

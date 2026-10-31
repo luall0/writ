@@ -19,13 +19,15 @@ use anyhow::{Context, bail};
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let is_sign = args.len() >= 2 && args[0] == "-Y" && args[1] == "sign";
-    if !is_sign {
-        let error = Command::new("ssh-keygen").args(&args).exec();
-        eprintln!("writ-sign: cannot run ssh-keygen: {error}");
-        return ExitCode::FAILURE;
-    }
-    match sign(&args[2..]) {
+    let rest = match args.as_slice() {
+        [y, sign, rest @ ..] if y == "-Y" && sign == "sign" => rest,
+        _ => {
+            let error = Command::new("ssh-keygen").args(&args).exec();
+            eprintln!("writ-sign: cannot run ssh-keygen: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match sign(rest) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("writ-sign: {e:#}");

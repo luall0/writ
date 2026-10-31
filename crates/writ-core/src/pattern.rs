@@ -105,10 +105,10 @@ enum Glob1 {
 
 impl Glob1 {
     fn parse(value: &str) -> Result<Self, &'static str> {
-        match value.find('*') {
-            None => Ok(Self::Exact(value.to_owned())),
-            Some(i) if i == value.len() - 1 => Ok(Self::Prefix(value[..i].to_owned())),
-            Some(_) => Err("'*' is only allowed once, at the end"),
+        match value.strip_suffix('*') {
+            None if !value.contains('*') => Ok(Self::Exact(value.to_owned())),
+            Some(prefix) if !prefix.contains('*') => Ok(Self::Prefix(prefix.to_owned())),
+            _ => Err("'*' is only allowed once, at the end"),
         }
     }
 

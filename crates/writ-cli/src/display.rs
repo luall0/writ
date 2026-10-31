@@ -64,7 +64,7 @@ pub fn block(text: &str, indent: &str, full: bool) -> String {
         lines.len().min(MAX_BLOCK_LINES)
     };
     let mut out = String::new();
-    for line in &lines[..shown] {
+    for line in lines.iter().take(shown) {
         let _ = writeln!(out, "{indent}{GUTTER}{}", clean(line));
     }
     if shown < lines.len() {

@@ -1,6 +1,13 @@
 //! The audit log: one JSON line per event, only ever appended, never a secret.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::fs;
 use std::path::PathBuf;

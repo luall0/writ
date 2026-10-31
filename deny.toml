@@ -1,0 +1,48 @@
+# cargo-deny (`make check`): what may enter the dependency graph. See docs/security.md.
+
+[graph]
+# The graph as it ships: no feature beyond the defaults each manifest asks for.
+all-features = false
+
+[advisories]
+version = 2
+# Every RustSec advisory is a failure; one accepted on purpose is listed here, with its
+# reason, in the same change as the decision log row.
+ignore = [
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 (unmaintained): compile time only, inside age's i18n-embed-fl proc macro; no runtime code; no upgrade without leaving age" },
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml (unmaintained): compile time only, read by age's i18n-embed macros (i18n-config); no runtime code; no upgrade without leaving age" },
+]
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    { crate = "openssl", reason = "TLS is rustls with ring" },
+    { crate = "openssl-sys", reason = "TLS is rustls with ring" },
+    { crate = "native-tls", reason = "TLS is rustls with ring" },
+    { crate = "rsa", reason = "RSA keys are not accepted; the crate has a known timing side channel (Marvin)" },
+    { crate = "tracing-log", reason = "a log bridge would print ureq's URLs, which hold the bot token, at trace level" },
+    { crate = "env_logger", reason = "logging goes through tracing only (writd installs the one subscriber)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

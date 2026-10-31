@@ -6,7 +6,7 @@ later approver apps.
 
 | Layer | Choice | Status |
 |---|---|---|
-| Language | Rust stable, edition 2024, Cargo workspace | Decided |
+| Language | Rust 1.99.1 (pinned), edition 2024, Cargo workspace | Decided |
 | SSH server and client | `russh` 0.65, `ring` backend, without `flate2` (no compression); the gateway lists its algorithms explicitly (mlkem768x25519 or curve25519 with strict kex, chacha20-poly1305 or aes256-gcm, Ed25519 and P-256 keys) | Decided (M0: certificate auth, TCP and Unix socket; algorithms M2.6) |
 | SSH keys, certificates, SSHSIG | `ssh-key` =0.7.0-rc.11 (the exact version russh pins) | Decided (M0: SSHSIG both ways with OpenSSH, ed25519 and P-256) |
 | Git | Shell out to `git` (`upload-pack`, `receive-pack`, `index-pack`, `rev-list`); parse commit objects in Rust | Decided |
@@ -46,8 +46,14 @@ Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versi
 
 ## Version pinning
 
-- Rust toolchain from **rustup**, pinned by `rust-toolchain.toml` (`stable` with `rustfmt`
-  and `clippy`).
+- Rust toolchain from **rustup**, pinned to an exact version by `rust-toolchain.toml`
+  (`1.99.1` with `rustfmt` and `clippy`); moving it is a change of its own.
+- Every build is `--locked`: what is built is `Cargo.lock`, never a fresh resolution.
+- `cargo-deny` 0.20.2 (`make check`, `deny.toml`): RustSec advisories and yanked crates
+  refused (two compile-time-only ones accepted, each with its reason), crates.io as the only
+  source, a license allow-list, banned crates (`openssl`, `native-tls`, `rsa`, `log`
+  bridges). Installed with `cargo install --locked cargo-deny --version 0.20.2`.
+- Release builds keep overflow checks (`[profile.release] overflow-checks = true`).
 - Dependency versions declared once in the root `Cargo.toml` (`[workspace.dependencies]`);
   crates use `dep.workspace = true`.
 - `Cargo.lock` is committed (binaries).

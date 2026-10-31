@@ -2,7 +2,14 @@
 //! `writ-crypto` makes, `ssh-keygen` accepts, and the other way around (including signatures
 //! made through an `ssh-agent`, the way approvers sign).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::collections::HashSet;
 use std::fs;

@@ -86,9 +86,11 @@ records every commit signed per lease. Use these words in code, logs and docs.
    seal/unseal writes one audit line ([audit log](docs/architecture/policy-and-state.md#audit-log)).
 10. **Forge-agnostic.** No forge-specific API in the core path (GitHub, Gitea, Forgejo… are
     reached through plain git over SSH or HTTPS).
-11. **Rust:** no `unwrap()` / `expect()` / `panic!` outside tests; `thiserror` in library
-    crates, `anyhow` only in binaries; `unsafe` denied except in a dedicated module with a
-    `SAFETY` comment. `writ-core` stays pure (no I/O).
+11. **Rust:** no `unwrap()` / `expect()` / `panic!`, unchecked indexing, slicing or
+    truncating casts outside tests (clippy denies them; `arithmetic_side_effects` too in
+    `writ-core`, `writ-crypto`, `writ-proto`); `thiserror` in library crates, `anyhow` only in
+    binaries; `unsafe` denied except in a dedicated module with a `SAFETY` comment.
+    `writ-core` stays pure (no I/O).
 12. **Every guarantee has a test** that tries to break it ([guarantee tests](docs/testing.md#guarantee-tests)).
     A change that weakens a guarantee or adds a residual risk updates the
     [threat model](docs/threat-model.md) in the same change, and needs the user's go-ahead.
@@ -110,8 +112,8 @@ records every commit signed per lease. Use these words in code, logs and docs.
 
 ## Definition of done
 
-`make check` passes, `make test` passes (unit and integration tests, and both property-test
-passes), and the milestone's acceptance items touched by the change were exercised for real:
+`make ci` passes (`make check`, then `make test`: unit and integration tests, and both
+property-test passes), and the milestone's acceptance items touched by the change were exercised for real:
 as integration scenarios in `crates/writ-integration` (real `git`, real `ssh`, the daemon
 running), plus the [manual checks](docs/guides/manual-checks.md) for what needs a human
 (Touch ID). State in your summary what you ran.
@@ -122,12 +124,14 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 
 | Task | Command |
 |---|---|
-| Lint, format check, dependency directions, source rules, doc links | `make check` |
+| Everything CI runs (`check` then `test`); the `pre-push` hook runs it | `make ci` |
+| Lint, format check, dependency directions, source rules, doc links, no test-only feature in the binaries, `cargo deny` | `make check` |
 | Tests: unit and integration, property tests with the fixed seed and a random one | `make test` |
 | Property tests with one seed (replay a failure) | `make test-props SEED=<number\|random>` |
 | Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
 | Pin the development daemon for the client (`dev/data/client/`), before the [manual checks](docs/guides/manual-checks.md) | `make dev-client` |
 | Format | `make fmt` |
+| Install the git hooks (`pre-push` runs `make ci`) | `make hooks` |
 | Run the development daemon on `dev/writd.yaml` (test keys in `dev/data`, your approval public key in `dev/approvers`; `writd host-key dev/writd.yaml` / `writd tls-fingerprint dev/writd.yaml` print what to pin) | `make run` |
 | End-to-end scenarios against the test forge (Docker, from M4) | `make e2e` |
 | Build the Docker image (from M8) | `make docker` |

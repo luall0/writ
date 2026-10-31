@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The unencrypted dev keystore (tests and development only). Even with it, a release build
+# refuses it; without it, any build does. Never enabled in a shipped build.
+dev-keystore = []
+
 [dependencies]
 writ-approval.workspace = true
 writ-core.workspace = true

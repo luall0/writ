@@ -149,7 +149,7 @@ fn validate_ticket_id(value: &str) -> Result<(), &'static str> {
         return Err("must be wrt_ followed by a 26-character ULID");
     }
     // 26 characters carry 130 bits; a ULID is 128, so the first character is at most 7.
-    if ulid.as_bytes()[0] > b'7' {
+    if ulid.as_bytes().first().is_none_or(|&first| first > b'7') {
         return Err("ULID out of range");
     }
     Ok(())
@@ -185,6 +185,8 @@ fn validate_fingerprint(value: &str) -> Result<(), &'static str> {
 impl TicketId {
     /// Builds an id from its ULID parts: milliseconds since the epoch (48 bits) and 80 random
     /// bits. The daemon supplies both; this crate reads no clock and no randomness.
+    // The shifts are bounded by the loops (i < 10, i < 26): every one stays below 128 bits.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn from_parts(unix_ms: u64, random: [u8; 10]) -> Self {
         let mut value: u128 = u128::from(unix_ms & 0xFFFF_FFFF_FFFF) << 80;
         for (i, byte) in random.iter().enumerate() {
@@ -193,8 +195,9 @@ impl TicketId {
         let mut text = String::with_capacity(30);
         text.push_str("wrt_");
         for i in (0..26).rev() {
-            let index = ((value >> (5 * i)) & 0x1F) as usize;
-            text.push(char::from(CROCKFORD[index]));
+            // Masked to 5 bits: always an index into the 32-character alphabet.
+            let index = usize::from(u8::try_from((value >> (5 * i)) & 0x1F).unwrap_or(0));
+            text.push(char::from(CROCKFORD.get(index).copied().unwrap_or(b'0')));
         }
         Self(text)
     }

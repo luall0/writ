@@ -2,7 +2,14 @@
 //! allowed or denied with its code. (The `direct_ssh` rows are checked from M10, the LLM
 //! plan check is in the backlog.)
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 mod common;
 

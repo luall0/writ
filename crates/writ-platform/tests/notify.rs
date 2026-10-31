@@ -1,7 +1,14 @@
 //! Every notifier, real and fake, through the notifier contract, and Telegram's own
 //! guarantees (the token never leaks, the exact request, validation of every setting).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

@@ -109,15 +109,27 @@ impl TryRng for FallibleRng {
     }
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> core::result::Result<(), Self::Error> {
-        let available = Self::SIZE - self.used;
-        if dst.len() > available {
+        let end = self
+            .used
+            .checked_add(dst.len())
+            .filter(|&end| end <= Self::SIZE);
+        let Some(end) = end else {
             self.exhausted = true;
             dst.fill(0);
             return Ok(());
+        };
+        match self.buf.get_mut(self.used..end) {
+            Some(taken) => {
+                dst.copy_from_slice(taken);
+                taken.fill(0);
+                self.used = end;
+            }
+            // Can't happen (the length was checked); fails like an exhausted source.
+            None => {
+                self.exhausted = true;
+                dst.fill(0);
+            }
         }
-        dst.copy_from_slice(&self.buf[self.used..self.used + dst.len()]);
-        self.buf[self.used..self.used + dst.len()].fill(0);
-        self.used += dst.len();
         Ok(())
     }
 }

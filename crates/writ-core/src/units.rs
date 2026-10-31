@@ -60,7 +60,8 @@ impl Timestamp {
 
     /// Seconds from `self` to `later` (negative if `later` is before `self`).
     pub fn seconds_until(self, later: Timestamp) -> i64 {
-        later.0 - self.0
+        // Both are within 1970..=9999, so this never saturates; it would not wrap if it did.
+        later.0.saturating_sub(self.0)
     }
 }
 
@@ -81,13 +82,14 @@ impl FromStr for Timestamp {
         let invalid = || UnitError::Timestamp(text.to_owned());
         // Cheap shape check first: jiff accepts more forms than the one we allow.
         let bytes = text.as_bytes();
+        let at = |i: usize, b: u8| bytes.get(i) == Some(&b);
         let shape_ok = bytes.len() == 20
-            && bytes[4] == b'-'
-            && bytes[7] == b'-'
-            && bytes[10] == b'T'
-            && bytes[13] == b':'
-            && bytes[16] == b':'
-            && bytes[19] == b'Z';
+            && at(4, b'-')
+            && at(7, b'-')
+            && at(10, b'T')
+            && at(13, b':')
+            && at(16, b':')
+            && at(19, b'Z');
         if !shape_ok {
             return Err(invalid());
         }
@@ -258,8 +260,10 @@ fn split_number(text: &str) -> Option<(u64, &str)> {
     if end == 0 || end > 19 {
         return None;
     }
-    let number = text[..end].parse().ok()?;
-    Some((number, &text[end..]))
+    // `end` is the index of an ASCII digit's successor: a char boundary, so `split_at_checked`
+    // always succeeds; it would return `None` rather than panic if it didn't.
+    let (digits, unit) = text.split_at_checked(end)?;
+    Some((digits.parse().ok()?, unit))
 }
 
 #[cfg(test)]

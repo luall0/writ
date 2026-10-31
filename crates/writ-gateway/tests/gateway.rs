@@ -3,7 +3,14 @@
 //! Who may run what on which listener, the whole ticket flow over the protocol, open sessions
 //! dropped when a lease is revoked, and the audit line of everything the gateway turns away.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -79,7 +79,7 @@ cargo new --bin crates/writ-sign
 | Target | Runs |
 |---|---|
 | `make check` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the dependency-direction check (`tool/check-deps.py`, over `cargo metadata`: see [dependency directions](../architecture/overview.md#dependency-directions)) |
-| `make test` | `cargo build --workspace --bins`, then `cargo test --workspace` (end-to-end tests run the binaries) |
+| `make test` | The shipped binaries built on their own (`-p writd -p writ-cli -p writ-sign`, in `target/bins`), then `cargo test --workspace` (the integration tests run those binaries); everything `--locked`. Since M2.6: `make ci` runs `check` then `test`, and `make check` also runs `cargo deny` and the source, feature and guarantee checks (see the [Makefile](../../Makefile)) |
 | `make fmt` | `cargo fmt --all` |
 | `make run` | `writd` with the dev config in `dev/` (test keys and test repos only) |
 | `make e2e` | End-to-end scenarios against the test forge in Docker (from M4) |

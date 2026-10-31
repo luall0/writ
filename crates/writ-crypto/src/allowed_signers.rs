@@ -57,7 +57,7 @@ pub fn parse(text: &str, namespace: &str) -> Result<Vec<AllowedSigner>> {
             continue;
         }
         let fail = |why: &str| CryptoError::AllowedSigners {
-            line: index + 1,
+            line: index.saturating_add(1),
             why: why.to_owned(),
         };
         let mut fields = line.split_whitespace();
@@ -118,8 +118,9 @@ fn split_options(options: &str) -> std::result::Result<Vec<(&str, Option<&str>)>
         match c {
             '"' => quoted = !quoted,
             ',' if !quoted => {
-                parts.push(&options[start..i]);
-                start = i + 1;
+                // Boundaries come from char_indices; a miss would be an empty option, refused.
+                parts.push(options.get(start..i).unwrap_or_default());
+                start = i.saturating_add(1);
             }
             _ => {}
         }
@@ -127,7 +128,7 @@ fn split_options(options: &str) -> std::result::Result<Vec<(&str, Option<&str>)>
     if quoted {
         return Err("unterminated quote in the options".to_owned());
     }
-    parts.push(&options[start..]);
+    parts.push(options.get(start..).unwrap_or_default());
     parts
         .into_iter()
         .map(|option| {

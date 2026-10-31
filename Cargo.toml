@@ -16,6 +16,15 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 dbg_macro = "deny"
+# A panic on hostile input is a denial of service: index, slice and cast only where the
+# bound is checked, with `.get()`, or with an `#[allow]` that says why it can't fail.
+indexing_slicing = "deny"
+string_slice = "deny"
+cast_possible_truncation = "deny"
+
+[profile.release]
+# An overflow is a crash, never a wrapped value in a limit or a counter.
+overflow-checks = true
 
 [workspace.dependencies]
 writ-core = { path = "crates/writ-core" }

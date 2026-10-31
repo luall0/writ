@@ -78,10 +78,13 @@ fn dev_key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
 pub fn keys(config: &Config) -> anyhow::Result<Keys> {
     match &config.keystore {
         KeystoreConfig::Dev(dir) => {
-            if !cfg!(debug_assertions) {
+            // Both: an explicit build feature, and a debug build. A release build, or one
+            // without the feature, refuses plaintext keys whatever its profile says.
+            if !(cfg!(feature = "dev-keystore") && cfg!(debug_assertions)) {
                 bail!(
-                    "keystore.dev holds unencrypted keys for tests and development; a release \
-                     build refuses it (the sealed keystore comes in M5)"
+                    "keystore.dev holds unencrypted keys for tests and development: only a \
+                     debug build with the dev-keystore feature takes it (the sealed keystore \
+                     comes in M5)"
                 );
             }
             private_dir(dir)?;

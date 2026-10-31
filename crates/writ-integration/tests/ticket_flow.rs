@@ -4,7 +4,14 @@
 //! the notifications. The approval API is used over SSH in one scenario and over HTTPS (pinned
 //! certificate) in the others.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

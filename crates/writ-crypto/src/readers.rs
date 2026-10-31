@@ -48,7 +48,7 @@ pub fn parse(text: &str) -> Result<Vec<Reader>> {
     let (mut names, mut keys) = (BTreeSet::new(), BTreeSet::new());
     for (number, line) in text.lines().enumerate() {
         let error = |why: &str| CryptoError::Readers {
-            line: number + 1,
+            line: number.saturating_add(1),
             why: why.to_owned(),
         };
         let line = line.trim();

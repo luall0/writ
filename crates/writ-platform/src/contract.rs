@@ -12,7 +12,14 @@
 //! | [`KeystoreUnlock`] | [`keystore_unlock`], or [`keystore_unlock_passphrase`] |
 //! | [`Notifier`] | [`notifier`] and [`notifier_unreachable`] |
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
 
 use std::collections::HashMap;
 use std::sync::Arc;

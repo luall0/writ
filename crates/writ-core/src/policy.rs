@@ -496,7 +496,10 @@ fn list_paths(paths: &[&str]) -> String {
     let shown: Vec<&str> = paths.iter().take(PATHS_SHOWN).copied().collect();
     let mut text = shown.join(", ");
     if paths.len() > PATHS_SHOWN {
-        text.push_str(&format!(" and {} more", paths.len() - PATHS_SHOWN));
+        text.push_str(&format!(
+            " and {} more",
+            paths.len().saturating_sub(PATHS_SHOWN)
+        ));
     }
     text
 }

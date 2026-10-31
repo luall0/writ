@@ -81,7 +81,16 @@ The integration scenarios (`crates/writ-integration/tests/`) run the real `git` 
 against an in-process gateway (`gateway_git.rs`), the real `writd` binary with the real `writ`
 CLI, approver signatures from `ssh-keygen` through a throwaway `ssh-agent` and a fake
 Telegram Bot API (`ticket_flow.rs`), and the OpenSSH tools against `writ-crypto`
-(`interop.rs`). They need the workspace binaries built: `make test` builds them first.
+(`interop.rs`). They run the binaries as they ship: `make test` builds them first on their
+own (`-p writd -p writ-cli -p writ-sign`, in `target/bins`, `writd` with the `dev-keystore`
+feature the tests need) and names the directory in `WRIT_BIN_DIR`, so no `testing` feature
+of another crate is compiled into the `writd` under test (`tool/check-features.py` checks the
+shipped graph in `make check`).
+
+`make ci` (`make check` then `make test`) is the one definition of green: GitHub Actions runs
+it on Linux for every push and pull request (`.github/workflows/ci.yml`, no third-party
+action), and the `pre-push` hook (`make hooks`) runs it on the Mac, where macOS-only code is
+tested.
 The gateway's own tests (`crates/writ-gateway/tests/`) run on the fakes only: an in-memory
 transport, a fake attestor, an in-process SSH client and an in-process HTTPS client pinning
 the certificate. The end-to-end tests approve over SSH in one scenario and over HTTPS in the

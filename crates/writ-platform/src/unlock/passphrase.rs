@@ -40,8 +40,10 @@ impl PassphraseUnlock {
         Self::enroll_inner(wrapped_path.into(), passphrase, key, None)
     }
 
-    /// [`Self::enroll`] with the scrypt work factor `N = 2^log_n` (1 to 63). **For tests
-    /// only**: a low work factor makes the passphrase cheap to brute-force.
+    /// [`Self::enroll`] with the scrypt work factor `N = 2^log_n` (1 to 63). Behind the
+    /// `testing` feature: a low work factor makes the passphrase cheap to brute-force, so no
+    /// production build can reach it.
+    #[cfg(feature = "testing")]
     pub fn enroll_with_work_factor(
         wrapped_path: impl Into<PathBuf>,
         passphrase: &Passphrase,
@@ -142,7 +144,7 @@ impl KeystoreUnlock for PassphraseUnlock {
         let mut plaintext = Zeroizing::new([0u8; 33]);
         let mut len = 0;
         while len < plaintext.len() {
-            match reader.read(&mut plaintext[len..]) {
+            match reader.read(plaintext.get_mut(len..).unwrap_or_default()) {
                 Ok(0) => break,
                 Ok(n) => len += n,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -156,7 +158,8 @@ impl KeystoreUnlock for PassphraseUnlock {
             )));
         }
         let mut key = DataKey(Zeroizing::new([0u8; 32]));
-        key.0.copy_from_slice(&plaintext[..32]);
+        key.0
+            .copy_from_slice(plaintext.get(..32).ok_or_else(corrupted)?);
         Ok(key)
     }
 }
