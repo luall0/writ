@@ -63,6 +63,9 @@ in the same change that implements them; questions to settle go under
 | 2026-10-31 | — | **The gateway logs what it turns away on its own (M2.5):** callers the attestor can't attest (`connect`), commands it doesn't serve (`command`, new event), unknown repos, repos outside the lease, refused ref updates and signatures. | Hard rule 9: every deny writes one line, not only the service's lease decisions. |
 | 2026-10-31 | — | **Revisions are not bound to a session (M2.5):** any session may revise a refused ticket; `writ request` makes a new session key for every ticket that isn't an amendment. | The feedback carried into the revision is the approver's own text to the agent, not a secret, and Writ has one user; amendments stay bound to the lease's session because they change a lease in force. |
 | 2026-10-31 | — | **Fetch and push only on the lease's repos (M2.5):** the gateway refuses a repo that isn't in `scope.repos` before running git, in addition to the M0 protected-ref check (now per repo, from the registry). | The lease names its repos; M4 adds the full push checks on top. |
+| 2026-10-31 | — | **Logs through `tracing` (M2.5):** library crates emit `tracing` events (lowercase message, structured fields) and never print; `writd` installs the subscriber (stderr, `WRIT_LOG`, `info` by default). `make check` refuses print macros in library code. | One way to log, filterable, and kept apart from the audit log, which records decisions and never goes through it. |
+| 2026-10-31 | — | **Typed errors, named after their crate (M2.5):** `CryptoError`, `GatewayError`, `StoreError`, `PlatformError`, `ServiceError` (the approval service, converted to the wire `ApiError` only at the gateway, where internal causes are logged and never sent); causes kept as `#[source]`, not flattened into strings. | `writd` imports several crates' errors at once; a bare `Error` needs renaming at every use. Typed variants let tests match the error, not its text. |
+| 2026-10-31 | — | **`Clock` is a platform interface (M2.5):** time comes from `writ_platform::Clock` (the system clock, or `FakeClock` in tests), with a contract suite like every other seam. | Every expiry, rate window and certificate validity depends on it; tests move it by hand instead of sleeping. |
 
 ## Open questions
 
@@ -70,5 +73,5 @@ To settle before (or while) building the milestone named in each row.
 
 | ID | Question | Needed by |
 |---|---|---|
-| Q28 | Confirm the remaining **proposed crates** in [Stack](stack.md) when the milestone that needs each starts. `russh`, `ssh-key`, `tokio`, `thiserror`, `anyhow` were confirmed in [M0](history/m0-protocol-spike.md); `rusqlite`, `serde-saphyr`, `proptest`, `jiff`, `globset` in [M1](history/m1-lease-model-and-policy-core.md); `clap`, `age` 0.11, `ureq`, `zeroize`, `rustls`, `hyper`, `rcgen` in [M2](history/m2-ticket-flow.md). Left: `tracing`, `secrecy`. | M3–M5 |
+| Q28 | Confirm the remaining **proposed crates** in [Stack](stack.md) when the milestone that needs each starts. `russh`, `ssh-key`, `tokio`, `thiserror`, `anyhow` were confirmed in [M0](history/m0-protocol-spike.md); `rusqlite`, `serde-saphyr`, `proptest`, `jiff`, `globset` in [M1](history/m1-lease-model-and-policy-core.md); `clap`, `age` 0.11, `ureq`, `zeroize`, `rustls`, `hyper`, `rcgen` in [M2](history/m2-ticket-flow.md); `tracing` in M2.5. Left: `secrecy`. | M3–M5 |
 

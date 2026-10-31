@@ -258,7 +258,7 @@ impl AuditLog {
                 "the audit log was broken by the test",
             )));
         }
-        let mut line = serde_json::to_vec(event).map_err(|e| StoreError::Encode(e.to_string()))?;
+        let mut line = serde_json::to_vec(event)?;
         line.push(b'\n');
         // One write of the whole line: with O_APPEND, it lands after everything already there.
         self.file.write_all(&line)?;
@@ -268,7 +268,9 @@ impl AuditLog {
 }
 
 /// A coarse scan for things that must never be in the log: private keys, SSH signatures,
-/// public key blobs, tokens. Used by the tests over everything the log holds.
+/// public key blobs, tokens. Used by the tests over everything the log holds (feature
+/// `testing`).
+#[cfg(feature = "testing")]
 pub fn looks_secret(text: &str) -> bool {
     const MARKERS: [&str; 9] = [
         "PRIVATE KEY",

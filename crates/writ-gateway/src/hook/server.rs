@@ -16,7 +16,7 @@ pub(crate) async fn serve(gateway: Gateway, listener: UnixListener) {
                 tokio::spawn(answer(gateway.clone(), stream));
             }
             Err(e) => {
-                eprintln!("writ gateway: hook socket failed: {e}");
+                tracing::error!(error = %e, "hook socket failed");
                 return;
             }
         }
@@ -119,11 +119,11 @@ fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
             context: Some(Box::new(context)),
         });
     }
-    eprintln!(
-        "writ gateway: push accepted for lease {} on {}: {} ref(s)",
-        context.cert.key_id,
-        context.repo,
-        updates.len()
+    tracing::info!(
+        lease = %context.cert.key_id,
+        repo = %context.repo,
+        refs = updates.len(),
+        "push accepted"
     );
     Ok(())
 }

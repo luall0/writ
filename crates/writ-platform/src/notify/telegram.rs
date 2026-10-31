@@ -59,7 +59,7 @@ impl BotToken {
         let file = std::fs::File::open(path).map_err(unreadable)?;
         // Checked on the open file, so the file read is the one checked.
         let metadata = file.metadata().map_err(unreadable)?;
-        check_private(path, &metadata)?;
+        crate::fs::check_private(path, &metadata)?;
         // Capacity above the read limit: the buffer never grows, so no copy is left behind.
         let mut contents = Zeroizing::new(Vec::with_capacity(MAX_TOKEN_FILE_LEN as usize + 64));
         file.take(MAX_TOKEN_FILE_LEN + 1)
@@ -94,20 +94,6 @@ impl std::fmt::Debug for BotToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("BotToken(<redacted>)")
     }
-}
-
-/// Refuses a file readable or writable by group or others.
-fn check_private(path: &Path, metadata: &std::fs::Metadata) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = metadata.permissions().mode();
-    if mode & 0o077 != 0 {
-        return Err(PlatformError::Config(format!(
-            "{} is accessible by group or others (mode {:o}); make it 0600",
-            path.display(),
-            mode & 0o777
-        )));
-    }
-    Ok(())
 }
 
 /// Where a Telegram message goes: a numeric chat id or a public `@channel`.

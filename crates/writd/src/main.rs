@@ -109,7 +109,7 @@ fn spawn_listeners(
 ) -> tokio::task::JoinSet<writ_gateway::Result<()>> {
     let mut servers = tokio::task::JoinSet::new();
     for transport in &platform.approvals_https {
-        println!("writd: Approvals (HTTPS) on {}", transport.describe());
+        tracing::info!(listener = %transport.describe(), "approval API (HTTPS)");
         let (gateway, transport, attestor, tls) = (
             gateway.clone(),
             transport.clone(),
@@ -123,7 +123,7 @@ fn spawn_listeners(
         (Role::Approvals, &platform.approvals_ssh),
     ] {
         for transport in transports {
-            println!("writd: {role:?} on {}", transport.describe());
+            tracing::info!(listener = %transport.describe(), ?role, "SSH");
             let (gateway, transport, attestor) = (
                 gateway.clone(),
                 transport.clone(),
@@ -147,7 +147,20 @@ fn spawn_sweeper(service: Arc<Service>) {
     });
 }
 
+/// Logs go to stderr; `WRIT_LOG` filters them (`info` by default, e.g. `WRIT_LOG=debug`).
+/// They are diagnostics only: decisions are in the audit log, which never goes through them.
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("WRIT_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .try_init();
+}
+
 fn run(path: &Path) -> anyhow::Result<()> {
+    init_logging();
     let config = Config::load(path)?;
     let (policy, approvers) = load_policy(&config)?;
     let keys = keystore::keys(&config)?;
@@ -191,24 +204,23 @@ fn run(path: &Path) -> anyhow::Result<()> {
         )
         .await?;
 
-        println!("writd: host key {host_public}");
-        println!("writd: TLS fingerprint {}", tls.fingerprint());
+        tracing::info!(host_key = %host_public, tls_fingerprint = %tls.fingerprint(), "started");
         for approver in &approvers {
-            println!(
-                "writd: approver {} ({})",
-                approver.fingerprint(),
-                approver.principals
+            tracing::info!(
+                fingerprint = %approver.fingerprint(),
+                principals = %approver.principals,
+                "approver"
             );
         }
-        println!("writd: decisions {:?}", config.decisions);
+        tracing::info!(decisions = ?config.decisions, "decisions");
         if platform.unlock.is_some() {
-            println!("writd: keystore unlock configured (used by the sealed start, M5)");
+            tracing::info!("keystore unlock configured (used by the sealed start, M5)");
         }
         let mut servers = spawn_listeners(&gateway, &platform, &tls);
         spawn_sweeper(service);
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                println!("writd: stopping");
+                tracing::info!("stopping");
                 Ok(())
             }
             Some(result) = servers.join_next() => match result {

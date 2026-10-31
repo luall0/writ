@@ -1,10 +1,11 @@
 .PHONY: check test test-agent fmt run dev-client
 
-# Lint, format check, dependency directions.
+# Lint, format check, dependency directions, source rules, doc links.
 check:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	python3 -I tool/check-deps.py
+	python3 -I tool/check-rules.py
 	python3 -I tool/check-links.py
 
 # The end-to-end tests run the workspace binaries (writd, writ-sign), so build them first.

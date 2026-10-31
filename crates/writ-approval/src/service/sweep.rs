@@ -3,10 +3,10 @@
 use writ_core::lease::{self, State};
 use writ_core::names::TicketId;
 use writ_core::units::Timestamp;
-use writ_proto::ApiError;
 use writ_store::{AuditEvent, EventKind, Outcome};
 
 use super::{Inner, Service, internal};
+use crate::ServiceError;
 
 impl Service {
     /// Expires pending tickets and leases past `expires_at`, and exhausted leases. Called by
@@ -17,11 +17,15 @@ impl Service {
         match self.sweep_locked(&mut inner, now) {
             Ok(true) => self.changed.notify_waiters(),
             Ok(false) => {}
-            Err(e) => eprintln!("writd: sweep failed: {e}"),
+            Err(e) => tracing::error!(error = %e.detail(), "sweep failed"),
         }
     }
 
-    pub(super) fn sweep_locked(&self, inner: &mut Inner, now: Timestamp) -> Result<bool, ApiError> {
+    pub(super) fn sweep_locked(
+        &self,
+        inner: &mut Inner,
+        now: Timestamp,
+    ) -> Result<bool, ServiceError> {
         let mut changed = false;
         for record in inner.store.tickets(State::Pending).map_err(internal)? {
             if let Some(next) = lease::pending_due(&record, now) {
@@ -77,7 +81,7 @@ impl Service {
             .store
             .transition(lease_id, State::Active, State::Revoked, now)
         {
-            eprintln!("writd: cannot revoke {lease_id} after its session ended: {e}");
+            tracing::error!(lease = %lease_id, error = %e, "cannot revoke a lease after its session ended");
             return;
         }
         inner.watches.remove(lease_id);

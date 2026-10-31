@@ -9,9 +9,9 @@ import sys
 FORBIDDEN = {
     "writ-core": "*",  # no internal dependency at all
     "writ-cli": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
-                 "writ-platform-macos", "writ-platform-linux"},
+                 "writ-platform", "writ-platform-macos", "writ-platform-linux"},
     "writ-sign": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
-                  "writ-platform-macos", "writ-platform-linux"},
+                  "writ-platform", "writ-platform-macos", "writ-platform-linux"},
     # Messages only: shared by clients and the daemon.
     "writ-proto": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
                    "writ-platform", "writ-platform-macos", "writ-platform-linux", "writ-crypto"},

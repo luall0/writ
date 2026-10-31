@@ -12,29 +12,18 @@ use std::time::Duration;
 use russh::ChannelMsg;
 use russh::client::{self, Handle};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use writ_approval::{Service, ServiceConfig, ServicePlatform};
+use writ_approval::testing::{TestServiceBuilder, sign_approval, sign_revocation};
 use writ_core::caller::CallerFacts;
 use writ_core::canonical::Canonical;
-use writ_core::config::PolicyConfig;
-use writ_core::lease::APPROVAL_NAMESPACE;
-use writ_core::signed::Revocation;
-use writ_crypto::allowed_signers::AllowedSigner;
-use writ_crypto::ca::CertificateAuthority;
+use writ_core::ticket::Ticket;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Certificate, PrivateKey};
-use writ_crypto::sshsig;
 use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_platform::PeerInfo;
 use writ_platform::clock::system::SystemClock;
-use writ_platform::testing::{
-    FakeAttestor, FakeConnector, FakeTransport, FakeWatcher, RecordingNotifier,
-};
-use writ_proto::{
-    Ack, ApiError, ApproveRequest, Command, Decision, Decisions, Info, Listing, RevokeRequest,
-    Submitted,
-};
-use writ_store::{AuditLog, Store};
+use writ_platform::testing::{FakeAttestor, FakeConnector, FakeTransport};
+use writ_proto::{Ack, ApiError, Command, Decision, Decisions, Info, Listing, Submitted};
 
 const POLICY: &str = r#"
 repos:
@@ -97,27 +86,12 @@ fn peer() -> PeerInfo {
 impl Daemon {
     async fn start(attestor: FakeAttestor) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let approver = generate(KeyKind::Ed25519).unwrap();
-        let service = Service::new(
-            ServiceConfig {
-                policy: PolicyConfig::from_yaml(POLICY).unwrap(),
-                approvers: vec![AllowedSigner {
-                    principals: "me".into(),
-                    key: approver.public_key().clone(),
-                }],
-                decisions: Decisions::Signed,
-                max_pending: 20,
-            },
-            CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap()),
-            Store::open(&dir.path().join("leases.db")).unwrap(),
-            AuditLog::open(&dir.path().join("audit.jsonl")).unwrap(),
-            ServicePlatform {
-                notifier: Arc::new(RecordingNotifier::new()),
-                watcher: Arc::new(FakeWatcher::new()),
-                clock: Arc::new(SystemClock),
-            },
-        )
-        .unwrap();
+        // Real time: the certificates are checked by the SSH layer too.
+        let test = TestServiceBuilder::new(POLICY)
+            .clock(Arc::new(SystemClock))
+            .build(dir.path());
+        let approver = test.approver.clone();
+        let service = test.service.clone();
         let gateway = Gateway::start(
             GatewayConfig {
                 host_key: generate(KeyKind::Ed25519).unwrap(),
@@ -253,15 +227,8 @@ async fn lease(daemon: &Daemon) -> (PrivateKey, Certificate) {
     )
     .await
     .unwrap();
-    let request = ApproveRequest {
-        signature: sshsig::sign(
-            &daemon.approver,
-            APPROVAL_NAMESPACE,
-            submitted.canonical.as_bytes(),
-        )
-        .unwrap(),
-        signed: submitted.canonical.clone(),
-    };
+    let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+    let request = sign_approval(&daemon.approver, &ticket);
     let _: Ack = call(
         &approver,
         Command::Approve {
@@ -407,7 +374,10 @@ async fn git_runs_only_on_the_lease_repos_and_every_refusal_is_logged() {
     // The lease has no push: the service denies it before any repo is looked at.
     let (_, err, status) = exec(&holder, "git-receive-pack 'demo.git'", b"").await;
     assert_eq!(status, Some(1));
-    assert!(err.contains("operation push is not in the lease"), "{err}");
+    assert!(
+        err.contains(&format!("outside ticket {id}: push not allowed")),
+        "{err}"
+    );
     // In the lease, but no repository on disk.
     let (_, err, status) = exec(&holder, "git-upload-pack 'demo.git'", b"").await;
     assert_eq!(status, Some(1));
@@ -459,10 +429,7 @@ async fn revoking_drops_open_sessions_and_refuses_the_next_connection() {
     .await
     .unwrap();
     let id: writ_core::names::TicketId = cert.key_id().parse().unwrap();
-    let document = Revocation::new(id.clone()).canonical_bytes().unwrap();
-    let request = RevokeRequest {
-        signature: Some(sshsig::sign(&daemon.approver, APPROVAL_NAMESPACE, &document).unwrap()),
-    };
+    let request = sign_revocation(&daemon.approver, &id);
     let _: Ack = call(
         &approver,
         Command::Revoke { id },
@@ -594,15 +561,8 @@ async fn the_approval_api_works_the_same_over_https() {
             .contains("requires an approver signature")
     );
 
-    let request = ApproveRequest {
-        signature: sshsig::sign(
-            &daemon.approver,
-            APPROVAL_NAMESPACE,
-            submitted.canonical.as_bytes(),
-        )
-        .unwrap(),
-        signed: submitted.canonical.clone(),
-    };
+    let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+    let request = sign_approval(&daemon.approver, &ticket);
     let (status, ack) = https_call::<Ack>(
         &daemon,
         Command::Approve {

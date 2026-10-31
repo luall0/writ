@@ -78,7 +78,7 @@ impl PassphraseUnlock {
         writer.write_all(key.as_bytes())?;
         writer.finish()?;
 
-        let mut file = create_new_private(&wrapped_path).map_err(|e| {
+        let mut file = crate::fs::create_new_private_file(&wrapped_path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::AlreadyExists {
                 PlatformError::Config(format!(
                     "{} already exists; refusing to overwrite a wrapped key",
@@ -175,14 +175,4 @@ impl KeystoreUnlock for PassphraseUnlock {
 /// The passphrase as age wants it. The copy is moved into a zeroizing secret box.
 fn secret(passphrase: &Passphrase) -> SecretString {
     SecretString::from(passphrase.expose().to_owned())
-}
-
-/// A new file only the daemon can read (mode 0600); fails if it exists.
-fn create_new_private(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
 }

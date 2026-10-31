@@ -11,8 +11,8 @@ mod audit;
 mod store;
 
 #[cfg(feature = "testing")]
-pub use audit::AuditBreaker;
-pub use audit::{AuditEvent, AuditLog, EventKind, Outcome, looks_secret};
+pub use audit::{AuditBreaker, looks_secret};
+pub use audit::{AuditEvent, AuditLog, EventKind, Outcome};
 pub use store::{Counter, LedgerEntry, Store};
 
 use writ_core::lease::{LifecycleError, State};
@@ -23,7 +23,8 @@ use writ_core::names::TicketId;
 pub enum StoreError {
     #[error("database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("audit log error: {0}")]
+    /// Reading or writing a file (the audit log, the database's).
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("corrupt record {id}: {why}")]
     Corrupt { id: String, why: String },
@@ -38,7 +39,7 @@ pub enum StoreError {
     #[error("the database schema is version {0}, newer than this writd")]
     SchemaTooNew(i64),
     #[error("can't encode an audit event: {0}")]
-    Encode(String),
+    Encode(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;

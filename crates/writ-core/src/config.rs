@@ -124,7 +124,7 @@ fn default_paths_check() -> PathsCheck {
 /// The registry and the templates, as written by the admin, before cross-checks.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RawPolicyConfig {
+struct RawPolicyConfig {
     pub repos: BTreeMap<RepoName, RepoEntry>,
     pub templates: BTreeMap<TemplateName, Template>,
 }
@@ -144,7 +144,7 @@ impl PolicyConfig {
     }
 
     /// Cross-checks a parsed document.
-    pub fn validate(raw: RawPolicyConfig) -> Result<Self, FieldError> {
+    fn validate(raw: RawPolicyConfig) -> Result<Self, FieldError> {
         for (name, repo) in &raw.repos {
             validate_repo(name, repo)?;
         }

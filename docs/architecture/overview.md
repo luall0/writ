@@ -131,5 +131,6 @@ Crate names are a starting point; settle them in M0 and update this page.
   ([Platform interfaces](platform.md#rules)).
 - Only `writd` wires crates together, picks the implementations and reads configuration.
 
-These rules are checked by `make check` once the workspace exists (a script over
-`cargo metadata`).
+These rules are checked by `make check`: `tool/check-deps.py` (dependency directions, over
+`cargo metadata`) and `tool/check-rules.py` (no `#[cfg(target_os)]` outside the platform
+crates, no print macros in library crates, no `mod.rs`).

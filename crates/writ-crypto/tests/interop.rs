@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use writ_crypto::ca::{CertificateAuthority, CertificateError, CertificateRequest};
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey, PublicKey};
-use writ_crypto::{Error, ca, sshsig};
+use writ_crypto::{CryptoError, ca, sshsig};
 
 const MSG: &[u8] =
     b"tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 0 +0000\n\nmsg\n";
@@ -89,16 +89,16 @@ fn ssh_keygen_signatures_verify_in_rust() {
 
         assert!(matches!(
             sshsig::verify(&allowed, "git", MSG, &armored),
-            Err(Error::Namespace { .. })
+            Err(CryptoError::Namespace { .. })
         ));
         assert!(matches!(
             sshsig::verify(&allowed, "writ-approval", b"other bytes", &armored),
-            Err(Error::BadSignature)
+            Err(CryptoError::BadSignature)
         ));
         let stranger = vec![generate(kind).unwrap().public_key().clone()];
         assert!(matches!(
             sshsig::verify(&stranger, "writ-approval", MSG, &armored),
-            Err(Error::UnknownSigner(_))
+            Err(CryptoError::UnknownSigner(_))
         ));
     }
 }
@@ -136,11 +136,11 @@ fn agent_signature_verifies(socket: &Path, key: &PublicKey) {
     sshsig::verify(&allowed, "writ-approval", msg.as_bytes(), &armored).unwrap();
     assert!(matches!(
         sshsig::verify(&allowed, "git", msg.as_bytes(), &armored),
-        Err(Error::Namespace { .. })
+        Err(CryptoError::Namespace { .. })
     ));
     assert!(matches!(
         sshsig::verify(&allowed, "writ-approval", b"other bytes", &armored),
-        Err(Error::BadSignature)
+        Err(CryptoError::BadSignature)
     ));
 }
 

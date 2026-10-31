@@ -24,10 +24,10 @@ use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::ssh_key::{HashAlg, PublicKey};
 use writ_platform::{Clock, Notifier, SessionWatcher, WatchHandle};
-use writ_proto::{ApiError, Decisions, Info};
+use writ_proto::{Decisions, Info};
 use writ_store::{AuditEvent, AuditLog, Outcome, Store};
 
-use crate::Error;
+use crate::ServiceError;
 use writ_core::canonical::Canonical;
 
 /// How far back a certificate's validity starts, for clocks a little behind the daemon's.
@@ -82,7 +82,7 @@ struct Inner {
 
 impl Inner {
     /// The ticket `id`; one that doesn't exist is a "does not exist" error.
-    fn record(&self, id: &TicketId) -> Result<TicketRecord, ApiError> {
+    fn record(&self, id: &TicketId) -> Result<TicketRecord, ServiceError> {
         self.store
             .ticket(id)
             .map_err(internal)?
@@ -90,21 +90,20 @@ impl Inner {
     }
 }
 
-fn internal(e: impl std::fmt::Display) -> ApiError {
-    eprintln!("writd: internal error: {e}");
-    ApiError::new("internal error in the daemon (see its log)")
+fn internal(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> ServiceError {
+    ServiceError::internal(e)
 }
 
-fn not_found(id: &TicketId) -> ApiError {
-    ApiError::new(format!("ticket {id} does not exist"))
+fn not_found(id: &TicketId) -> ServiceError {
+    ServiceError::NotFound(id.clone())
 }
 
-fn canonical_text(ticket: &Ticket) -> Result<String, ApiError> {
+fn canonical_text(ticket: &Ticket) -> Result<String, ServiceError> {
     let bytes = ticket.canonical_bytes().map_err(internal)?;
     String::from_utf8(bytes).map_err(internal)
 }
 
-fn fingerprint(key: &PublicKey) -> Result<KeyFingerprint, ApiError> {
+fn fingerprint(key: &PublicKey) -> Result<KeyFingerprint, ServiceError> {
     key.fingerprint(HashAlg::Sha256)
         .to_string()
         .parse()
@@ -120,7 +119,7 @@ impl Service {
         store: Store,
         audit: AuditLog,
         platform: ServicePlatform,
-    ) -> Result<Arc<Self>, Error> {
+    ) -> Result<Arc<Self>, ServiceError> {
         let mut revoked = HashSet::new();
         for state in [
             State::Revoked,
@@ -128,7 +127,13 @@ impl Service {
             State::Closed,
             State::Exhausted,
         ] {
-            revoked.extend(store.leases(state)?.into_iter().map(|l| l.cert_serial));
+            revoked.extend(
+                store
+                    .leases(state)
+                    .map_err(internal)?
+                    .into_iter()
+                    .map(|l| l.cert_serial),
+            );
         }
         let approver_keys = config.approvers.iter().map(|a| a.key.clone()).collect();
         let (revocations, _) = broadcast::channel(256);
@@ -164,7 +169,7 @@ impl Service {
     }
 
     /// Now, by the service's clock.
-    pub fn now(&self) -> Result<Timestamp, ApiError> {
+    pub(crate) fn now(&self) -> Result<Timestamp, ServiceError> {
         let seconds = i64::try_from(self.clock.now_ms() / 1000).map_err(internal)?;
         Timestamp::from_unix(seconds).map_err(internal)
     }
@@ -174,7 +179,7 @@ impl Service {
         self.clock.now_ms() / 1000
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Inner>, ApiError> {
+    fn lock(&self) -> Result<MutexGuard<'_, Inner>, ServiceError> {
         // A poisoned lock fails closed: nothing can be trusted about the state.
         self.inner
             .lock()
@@ -183,25 +188,22 @@ impl Service {
 
     /// What every request starts with: now, the state lock, and a sweep (so nothing past its
     /// time is acted on).
-    fn begin(&self) -> Result<(Timestamp, MutexGuard<'_, Inner>), ApiError> {
+    fn begin(&self) -> Result<(Timestamp, MutexGuard<'_, Inner>), ServiceError> {
         let now = self.now()?;
         let mut inner = self.lock()?;
         self.sweep_locked(&mut inner, now)?;
         Ok((now, inner))
     }
 
-    fn log(inner: &mut Inner, event: &AuditEvent) -> Result<(), ApiError> {
-        inner.audit.append(event).map_err(|e| {
-            eprintln!("writd: cannot write the audit log: {e}");
-            ApiError::new("the audit log can't be written; nothing was done")
-        })
+    fn log(inner: &mut Inner, event: &AuditEvent) -> Result<(), ServiceError> {
+        inner.audit.append(event).map_err(ServiceError::AuditLog)
     }
 
     /// Logs a denial, or a change the daemon makes on its own (an expiry). What it records
     /// happens whatever becomes of the log line: a denial is denied anyway.
     fn log_best_effort(inner: &mut Inner, event: &AuditEvent) {
         if let Err(e) = inner.audit.append(event) {
-            eprintln!("writd: cannot write the audit log: {e}");
+            tracing::error!(error = %e, "cannot write the audit log");
         }
     }
 
@@ -210,13 +212,13 @@ impl Service {
     fn logged<T>(
         inner: &mut Inner,
         event: AuditEvent,
-        change: impl FnOnce(&mut Inner) -> Result<T, ApiError>,
-    ) -> Result<T, ApiError> {
+        change: impl FnOnce(&mut Inner) -> Result<T, ServiceError>,
+    ) -> Result<T, ServiceError> {
         Self::log(inner, &event)?;
         change(inner).inspect_err(|e| {
             let mut failed = event;
             failed.result = Outcome::Denied;
-            failed.reason = Some(format!("not applied: {}", e.message));
+            failed.reason = Some(format!("not applied: {e}"));
             Self::log_best_effort(inner, &failed);
         })
     }
@@ -226,7 +228,7 @@ impl Service {
             Ok(mut revoked) => {
                 revoked.insert(serial);
             }
-            Err(_) => eprintln!("writd: the deny list lock is poisoned"),
+            Err(_) => tracing::error!(serial, "the deny list lock is poisoned"),
         }
         let _ = self.revocations.send(serial);
     }

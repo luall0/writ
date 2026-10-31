@@ -53,7 +53,7 @@ pub use writ_proto::{CLIENT_USER, LEASE_USER};
 
 /// Errors from the gateway.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum GatewayError {
     #[error(transparent)]
     Ssh(#[from] russh::Error),
     #[error(transparent)]
@@ -64,7 +64,7 @@ pub enum Error {
     Config(String),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, GatewayError>;
 
 /// What a listener serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,15 +113,14 @@ impl Gateway {
     /// Prepares the state directory, starts the hook server and the task that drops the
     /// sessions of leases that end.
     pub async fn start(config: GatewayConfig, service: Arc<Service>) -> Result<Self> {
-        std::fs::create_dir_all(&config.state_dir)?;
-        std::fs::set_permissions(&config.state_dir, std::fs::Permissions::from_mode(0o700))?;
+        writ_platform::fs::create_private_dir(&config.state_dir)?;
         let hooks_dir = config.state_dir.join("hooks");
         write_hook_script(&hooks_dir, &config.hook_program)?;
         let hook_socket = config.state_dir.join("hook.sock");
         // sockaddr_un holds 104 bytes on macOS (108 on Linux), terminator included.
         let length = hook_socket.as_os_str().len();
         if length > 103 {
-            return Err(Error::Config(format!(
+            return Err(GatewayError::Config(format!(
                 "hook socket path {} is {length} bytes, more than a Unix socket allows (103): \
                  use a shorter state directory",
                 hook_socket.display()
@@ -210,11 +209,11 @@ impl Gateway {
                         if let Err(e) = session.await
                             && !client_went_away(&e)
                         {
-                            eprintln!("writ gateway: session ended with an error: {e}");
+                            tracing::warn!(error = %e, "session ended with an error");
                         }
                     }
                     Err(e) if client_went_away(&e) => {}
-                    Err(e) => eprintln!("writ gateway: connection failed: {e}"),
+                    Err(e) => tracing::warn!(error = %e, "connection failed"),
                 }
             });
         }
@@ -232,9 +231,10 @@ impl Gateway {
             match attestor.attest(&connection.peer) {
                 Ok(facts) => return Ok((connection, facts)),
                 Err(e) => {
-                    eprintln!(
-                        "writ gateway: connection turned away on {}: {e}",
-                        transport.describe()
+                    tracing::warn!(
+                        listener = %transport.describe(),
+                        error = %e,
+                        "connection turned away"
                     );
                     self.turned_away(&connection.peer, &e).await;
                 }
@@ -318,11 +318,11 @@ impl Gateway {
 /// Whether an error only says the client went away: it disconnected, or the connection was
 /// closed, reset or cut mid-packet (a killed process, a lost network). That is how
 /// connections end, not a fault of the daemon, so it isn't logged as an error.
-fn client_went_away(error: &Error) -> bool {
+fn client_went_away(error: &GatewayError) -> bool {
     use std::io::ErrorKind;
     let io = match error {
-        Error::Ssh(russh::Error::Disconnect) => return true,
-        Error::Ssh(russh::Error::IO(e)) | Error::Io(e) => e,
+        GatewayError::Ssh(russh::Error::Disconnect) => return true,
+        GatewayError::Ssh(russh::Error::IO(e)) | GatewayError::Io(e) => e,
         _ => return false,
     };
     matches!(
@@ -363,7 +363,7 @@ fn write_hook_script(hooks_dir: &Path, program: &Path) -> Result<()> {
     let program = program
         .to_str()
         .filter(|p| !p.contains('\''))
-        .ok_or_else(|| Error::Config(format!("unusable hook program path {program:?}")))?;
+        .ok_or_else(|| GatewayError::Config(format!("unusable hook program path {program:?}")))?;
     std::fs::create_dir_all(hooks_dir)?;
     let script = hooks_dir.join("pre-receive");
     std::fs::write(
@@ -387,16 +387,20 @@ mod tests {
             ErrorKind::ConnectionAborted,
             ErrorKind::BrokenPipe,
         ] {
-            assert!(client_went_away(&Error::Ssh(russh::Error::IO(Io::from(
-                kind
-            )))));
-            assert!(client_went_away(&Error::Io(Io::from(kind))));
+            assert!(client_went_away(&GatewayError::Ssh(russh::Error::IO(
+                Io::from(kind)
+            ))));
+            assert!(client_went_away(&GatewayError::Io(Io::from(kind))));
         }
-        assert!(client_went_away(&Error::Ssh(russh::Error::Disconnect)));
-        assert!(!client_went_away(&Error::Ssh(russh::Error::IO(Io::from(
-            ErrorKind::PermissionDenied
-        )))));
-        assert!(!client_went_away(&Error::Config("bad".into())));
-        assert!(!client_went_away(&Error::Ssh(russh::Error::WrongServerSig)));
+        assert!(client_went_away(&GatewayError::Ssh(
+            russh::Error::Disconnect
+        )));
+        assert!(!client_went_away(&GatewayError::Ssh(russh::Error::IO(
+            Io::from(ErrorKind::PermissionDenied)
+        ))));
+        assert!(!client_went_away(&GatewayError::Config("bad".into())));
+        assert!(!client_went_away(&GatewayError::Ssh(
+            russh::Error::WrongServerSig
+        )));
     }
 }

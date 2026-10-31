@@ -17,7 +17,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::{Error, Result};
+use crate::{CryptoError, Result};
 
 /// The only application protocol spoken over the approval API's TLS.
 const ALPN: &[u8] = b"http/1.1";
@@ -45,7 +45,7 @@ impl std::fmt::Debug for SelfSigned {
 /// Generates a self-signed certificate (ECDSA P-256) for the approval API.
 pub fn generate_self_signed() -> Result<SelfSigned> {
     let certified = rcgen::generate_simple_self_signed(vec!["writd".to_owned()])
-        .map_err(|e| Error::Tls(format!("cannot generate the TLS certificate: {e}")))?;
+        .map_err(CryptoError::CertificateGeneration)?;
     Ok(SelfSigned {
         cert_pem: certified.cert.pem(),
         key_pem: Zeroizing::new(certified.signing_key.serialize_pem()),
@@ -84,16 +84,14 @@ impl TlsIdentity {
     /// Reads a PEM certificate and its PEM private key.
     pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self> {
         let cert = CertificateDer::from_pem_slice(cert_pem.as_bytes())
-            .map_err(|_| Error::Tls("invalid TLS certificate".to_owned()))?;
+            .map_err(|_| CryptoError::Pem("certificate"))?;
         let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
-            .map_err(|_| Error::Tls("invalid TLS private key".to_owned()))?;
+            .map_err(|_| CryptoError::Pem("private key"))?;
         let fingerprint = fingerprint(&cert);
         let mut config = rustls::ServerConfig::builder_with_provider(provider())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|e| Error::Tls(e.to_string()))?
+            .with_protocol_versions(&[&rustls::version::TLS13])?
             .with_no_client_auth()
-            .with_single_cert(vec![cert], key)
-            .map_err(|e| Error::Tls(e.to_string()))?;
+            .with_single_cert(vec![cert], key)?;
         config.alpn_protocols = vec![ALPN.to_vec()];
         Ok(Self {
             config: Arc::new(config),
@@ -118,8 +116,7 @@ impl TlsIdentity {
 pub fn pinned_client_config(fingerprint: &str) -> Result<rustls::ClientConfig> {
     let provider = provider();
     let mut config = rustls::ClientConfig::builder_with_provider(provider.clone())
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|e| Error::Tls(e.to_string()))?
+        .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(Pinned {
             fingerprint: fingerprint.to_owned(),

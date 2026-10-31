@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Test support (a service on the fakes, approver signatures), for the tests of this crate
+# and of others.
+testing = ["dep:serde_json", "writ-platform/testing", "writ-store/testing"]
+
 [dependencies]
 writ-core.workspace = true
 writ-crypto.workspace = true
@@ -13,8 +18,12 @@ writ-proto.workspace = true
 writ-store.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+serde_json = { workspace = true, optional = true }
+tracing.workspace = true
 
 [dev-dependencies]
+# The tests use the test support: always build it with `testing`.
+writ-approval = { workspace = true, features = ["testing"] }
 writ-platform = { workspace = true, features = ["testing"] }
 writ-store = { workspace = true, features = ["testing"] }
 serde_json.workspace = true

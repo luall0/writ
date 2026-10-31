@@ -12,7 +12,7 @@ use writ_crypto::ssh_key::{Certificate, HashAlg, PublicKey};
 
 use crate::channel::refuse;
 use crate::command::{Command, LeaseCommand};
-use crate::{CLIENT_USER, Error, Gateway, LEASE_USER, Role, api, exec};
+use crate::{CLIENT_USER, Gateway, GatewayError, LEASE_USER, Role, api, exec};
 
 /// Who is on the other end, once authenticated.
 #[derive(Debug, Clone)]
@@ -97,7 +97,7 @@ impl Drop for Connection {
 }
 
 impl russh::server::Handler for Connection {
-    type Error = Error;
+    type Error = GatewayError;
 
     /// Plain keys: the session key of a ticket (agents, user `writ`), or anyone on the
     /// approval API. Lease holders always use a certificate.
@@ -105,7 +105,7 @@ impl russh::server::Handler for Connection {
         &mut self,
         user: &str,
         key: VerifiedPublicKey<'_>,
-    ) -> Result<Auth, Error> {
+    ) -> Result<Auth, GatewayError> {
         self.identity = match (self.role, user) {
             (Role::Agents, CLIENT_USER) => Some(Identity::SessionKey(key.public_key.clone())),
             (Role::Approvals, _) => Some(Identity::Approver),
@@ -122,7 +122,7 @@ impl russh::server::Handler for Connection {
         &mut self,
         user: &str,
         certificate: &Certificate,
-    ) -> Result<Auth, Error> {
+    ) -> Result<Auth, GatewayError> {
         if self.role == Role::Approvals {
             self.identity = Some(Identity::Approver);
             return Ok(Auth::Accept);
@@ -152,7 +152,7 @@ impl russh::server::Handler for Connection {
         }
     }
 
-    async fn auth_succeeded(&mut self, session: &mut Session) -> Result<(), Error> {
+    async fn auth_succeeded(&mut self, session: &mut Session) -> Result<(), GatewayError> {
         if let Some(Identity::Lease(cert)) = &self.identity {
             self.gateway
                 .register_session(cert.serial, self.number, session.handle());
@@ -165,7 +165,7 @@ impl russh::server::Handler for Connection {
         channel: Channel<Msg>,
         reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GatewayError> {
         if self.identity.is_some() {
             self.channels.insert(channel.id(), channel);
             reply.accept().await;
@@ -180,7 +180,7 @@ impl russh::server::Handler for Connection {
         name: &str,
         value: &str,
         session: &mut Session,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GatewayError> {
         let valid = value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '=' | ':' | '.'));
@@ -198,7 +198,7 @@ impl russh::server::Handler for Connection {
         channel_id: ChannelId,
         data: &[u8],
         session: &mut Session,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GatewayError> {
         let Some(channel) = self.channels.remove(&channel_id) else {
             session.channel_failure(channel_id)?;
             return Ok(());

@@ -60,7 +60,7 @@ impl Gateway {
                     .serve_connection(TokioIo::new(tls), service)
                     .await;
                 if let Err(e) = served {
-                    eprintln!("writ gateway: HTTPS connection ended with an error: {e}");
+                    tracing::warn!(error = %e, "HTTPS connection ended with an error");
                 }
             });
         }

@@ -5,7 +5,7 @@ use signature::Signer as _;
 use ssh_key::public::KeyData;
 use ssh_key::{HashAlg, LineEnding, PrivateKey, PublicKey, Signature, SshSig};
 
-use crate::{Error, Result};
+use crate::{CryptoError, Result};
 
 /// Hash algorithm used for every signature Writ makes (the one `ssh-keygen` uses).
 pub const HASH_ALG: HashAlg = HashAlg::Sha512;
@@ -24,7 +24,9 @@ pub fn assemble(public_key: &KeyData, namespace: &str, signature: Signature) -> 
 /// Signs `msg` with a key held in memory (software backend).
 pub fn sign(key: &PrivateKey, namespace: &str, msg: &[u8]) -> Result<String> {
     let data = signed_data(namespace, msg)?;
-    let signature = key.try_sign(&data).map_err(|_| Error::SigningFailed)?;
+    let signature = key
+        .try_sign(&data)
+        .map_err(|_| CryptoError::SigningFailed)?;
     assemble(key.public_key().key_data(), namespace, signature)
 }
 
@@ -38,7 +40,7 @@ pub fn verify<'a>(
 ) -> Result<&'a PublicKey> {
     let sig = SshSig::from_pem(armored)?;
     if sig.namespace() != namespace {
-        return Err(Error::Namespace {
+        return Err(CryptoError::Namespace {
             expected: namespace.to_owned(),
             found: sig.namespace().to_owned(),
         });
@@ -47,7 +49,7 @@ pub fn verify<'a>(
         .iter()
         .find(|key| key.key_data() == sig.public_key())
         .ok_or_else(|| {
-            Error::UnknownSigner(
+            CryptoError::UnknownSigner(
                 PublicKey::from(sig.public_key().clone())
                     .fingerprint(HashAlg::Sha256)
                     .to_string(),
@@ -55,6 +57,6 @@ pub fn verify<'a>(
         })?;
     signer
         .verify(namespace, msg, &sig)
-        .map_err(|_| Error::BadSignature)?;
+        .map_err(|_| CryptoError::BadSignature)?;
     Ok(signer)
 }

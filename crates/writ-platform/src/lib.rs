@@ -23,6 +23,7 @@
 
 pub mod attest;
 pub mod clock;
+pub mod fs;
 pub mod notify;
 pub mod transport;
 pub mod unlock;

@@ -113,14 +113,20 @@ pub enum LifecycleError {
     UnknownState(String),
     #[error(transparent)]
     Narrowing(#[from] narrow::NarrowingError),
-    #[error("the signed ticket doesn't fit its template: {}", .0.join("; "))]
-    Fit(Vec<String>),
+    #[error("the signed ticket doesn't fit its template: {0}")]
+    Fit(#[from] fit::FitError),
     #[error("the approval's namespace is {0:?}, not {APPROVAL_NAMESPACE:?}")]
     Namespace(String),
     #[error("the ticket expired before it was signed")]
     ExpiredBeforeApproval,
-    #[error("{0}")]
-    Amendment(String),
+    #[error("an amendment is applied to its lease, not activated")]
+    ActivatingAmendment,
+    #[error("ticket {ticket} does not amend lease {lease}")]
+    AmendsAnotherLease { ticket: TicketId, lease: TicketId },
+    #[error("lease {0} is no longer active")]
+    LeaseNotActive(TicketId),
+    #[error("an amendment must keep the lease's session key")]
+    SessionKeyChanged,
 }
 
 /// Checks a transition.
@@ -211,9 +217,7 @@ pub fn activate(
 ) -> Result<Lease, LifecycleError> {
     transition(record.state, State::Active)?;
     if record.ticket.text.amends.is_some() {
-        return Err(LifecycleError::Amendment(
-            "an amendment is applied to its lease, not activated".to_owned(),
-        ));
+        return Err(LifecycleError::ActivatingAmendment);
     }
     check_approval(config, &record.ticket, &signed, &approval, now)?;
     Ok(Lease {
@@ -237,21 +241,16 @@ pub fn apply_amendment(
 ) -> Result<(Lease, TicketRecord), LifecycleError> {
     transition(amendment.state, State::Applied)?;
     if amendment.ticket.text.amends.as_ref() != Some(&lease.id) {
-        return Err(LifecycleError::Amendment(format!(
-            "ticket {} does not amend lease {}",
-            amendment.ticket.id, lease.id
-        )));
+        return Err(LifecycleError::AmendsAnotherLease {
+            ticket: amendment.ticket.id.clone(),
+            lease: lease.id.clone(),
+        });
     }
     if lease.state != State::Active || now >= lease.ticket.limits.expires_at {
-        return Err(LifecycleError::Amendment(format!(
-            "lease {} is no longer active",
-            lease.id
-        )));
+        return Err(LifecycleError::LeaseNotActive(lease.id.clone()));
     }
     if signed.subject.session_key != lease.ticket.subject.session_key {
-        return Err(LifecycleError::Amendment(
-            "an amendment must keep the lease's session key".to_owned(),
-        ));
+        return Err(LifecycleError::SessionKeyChanged);
     }
     check_approval(config, &amendment.ticket, &signed, &approval, now)?;
     let applied = TicketRecord {
@@ -279,7 +278,7 @@ fn check_approval(
         return Err(LifecycleError::Namespace(approval.namespace.clone()));
     }
     narrow::check(submitted, signed)?;
-    fit::fits(config, signed).map_err(LifecycleError::Fit)?;
+    fit::fits(config, signed)?;
     if now >= signed.limits.expires_at {
         return Err(LifecycleError::ExpiredBeforeApproval);
     }

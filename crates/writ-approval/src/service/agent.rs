@@ -12,10 +12,11 @@ use writ_core::units::Timestamp;
 use writ_crypto::keys;
 use writ_crypto::ssh_key::PublicKey;
 use writ_platform::{Notification, Priority};
-use writ_proto::{ApiError, Decision, Submitted};
+use writ_proto::{Decision, Submitted};
 use writ_store::{AuditEvent, EventKind, Outcome};
 
 use super::{Inner, Service, WAIT_RECHECK, canonical_text, fingerprint, internal, not_found};
+use crate::ServiceError;
 
 impl Service {
     /// Submits a ticket file sent with `session_key` (the key the connection authenticated
@@ -26,14 +27,10 @@ impl Service {
         session_key: &PublicKey,
         text: &[u8],
         caller: &CallerFacts,
-    ) -> Result<Submitted, ApiError> {
+    ) -> Result<Submitted, ServiceError> {
         let (now, mut inner) = self.begin()?;
-        let reject = |inner: &mut Inner, error: ApiError| {
-            let reason = if error.reasons.is_empty() {
-                error.message.clone()
-            } else {
-                error.reasons.join("; ")
-            };
+        let reject = |inner: &mut Inner, error: ServiceError| {
+            let reason = error.reason_text();
             let event = AuditEvent::new(now, EventKind::Submit, Outcome::Denied)
                 .caller(caller)
                 .reason(reason);
@@ -42,14 +39,17 @@ impl Service {
         };
 
         let Ok(text) = std::str::from_utf8(text) else {
-            return reject(&mut inner, ApiError::new("the ticket file is not UTF-8"));
+            return reject(
+                &mut inner,
+                ServiceError::refused("the ticket file is not UTF-8"),
+            );
         };
         let request = match TicketRequest::from_yaml(text) {
             Ok(request) => request,
             Err(e) => {
                 return reject(
                     &mut inner,
-                    ApiError::with_reasons("ticket rejected", vec![e.to_string()]),
+                    ServiceError::rejected("ticket rejected", vec![e.to_string()]),
                 );
             }
         };
@@ -57,7 +57,7 @@ impl Service {
         if waiting >= self.config.max_pending {
             return reject(
                 &mut inner,
-                ApiError::new(format!(
+                ServiceError::refused(format!(
                     "{waiting} tickets are already waiting for the approver; try again later"
                 )),
             );
@@ -83,7 +83,7 @@ impl Service {
             Err(rejection) => {
                 return reject(
                     &mut inner,
-                    ApiError::with_reasons("ticket rejected", rejection.reasons),
+                    ServiceError::rejected("ticket rejected", rejection.reasons),
                 );
             }
         };
@@ -126,7 +126,7 @@ impl Service {
         let notifier = Arc::clone(&self.notifier);
         std::thread::spawn(move || {
             if let Err(e) = notifier.notify(&notification) {
-                eprintln!("writd: notification failed: {e}");
+                tracing::warn!(error = %e, "notification failed");
             }
         });
     }
@@ -134,7 +134,11 @@ impl Service {
     /// Waits until the ticket is decided. Only the session that submitted it (same key) can
     /// wait on it; to anyone else it doesn't exist.
     /// The store is read on a blocking thread, never on the runtime's.
-    pub async fn wait(&self, id: &TicketId, session_key: &PublicKey) -> Result<Decision, ApiError> {
+    pub async fn wait(
+        &self,
+        id: &TicketId,
+        session_key: &PublicKey,
+    ) -> Result<Decision, ServiceError> {
         let fingerprint = fingerprint(session_key)?;
         let service = self
             .me
@@ -170,13 +174,13 @@ impl Service {
         &self,
         id: &TicketId,
         session_key: &KeyFingerprint,
-    ) -> Result<Result<Decision, Timestamp>, ApiError> {
+    ) -> Result<Result<Decision, Timestamp>, ServiceError> {
         let (_, inner) = self.begin()?;
         let record = match inner.store.ticket(id).map_err(internal)? {
             Some(record) if &record.ticket.subject.session_key == session_key => record,
             _ => return Err(not_found(id)),
         };
-        let lease_terms = |inner: &Inner, lease: &TicketId| -> Result<Lease, ApiError> {
+        let lease_terms = |inner: &Inner, lease: &TicketId| -> Result<Lease, ServiceError> {
             inner
                 .store
                 .lease(lease)

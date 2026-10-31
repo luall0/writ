@@ -98,7 +98,7 @@ pub(crate) async fn run(
             match git::spawn(cmd) {
                 Ok(child) => git::bridge(child, channel).await,
                 Err(reason) => {
-                    eprintln!("writ gateway: {reason}");
+                    tracing::error!(%reason, "cannot run git");
                     refuse(channel, refusing.deny(reason, Some(repo)).await).await;
                 }
             }

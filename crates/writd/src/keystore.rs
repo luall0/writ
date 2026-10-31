@@ -1,7 +1,6 @@
 //! The daemon's keys. Until the sealed keystore (M5), a dev keystore only: plain key files in
 //! a private directory, generated on first start, refused by a release build.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use anyhow::{Context, bail};
@@ -13,10 +12,8 @@ use crate::config::{Config, KeystoreConfig};
 
 /// Creates a directory (and its parents) only the daemon can enter (0700).
 pub fn private_dir(path: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(path).with_context(|| format!("cannot create {}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("cannot make {} private", path.display()))?;
-    Ok(())
+    writ_platform::fs::create_private_dir(path)
+        .with_context(|| format!("cannot create {} as a private directory", path.display()))
 }
 
 /// The daemon's keys. M2: plain files in a dev keystore, generated on first start.
@@ -59,14 +56,10 @@ fn dev_tls(dir: &Path) -> anyhow::Result<TlsIdentity> {
 
 /// Creates a new file only the daemon can read (0600); fails if it exists.
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let mut file = std::fs::OpenOptions::new();
-    std::os::unix::fs::OpenOptionsExt::mode(file.write(true).create_new(true), 0o600);
-    let mut file = file
-        .open(path)
+    let mut file = writ_platform::fs::create_new_private_file(path)
         .with_context(|| format!("cannot create {}", path.display()))?;
     std::io::Write::write_all(&mut file, bytes)
-        .with_context(|| format!("cannot write {}", path.display()))?;
-    Ok(())
+        .with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// The dev keystore's key `name`, generated on first start.
@@ -105,6 +98,8 @@ pub fn keys(config: &Config) -> anyhow::Result<Keys> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     #[test]

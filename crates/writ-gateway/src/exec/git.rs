@@ -139,7 +139,7 @@ pub(super) async fn bridge(mut child: Child, channel: Channel<Msg>) {
     };
     let (out, err) = tokio::join!(out, err);
     if let Err(e) = out.and(err) {
-        eprintln!("writ gateway: channel write failed: {e}");
+        tracing::warn!(error = %e, "channel write failed");
     }
     let code = match child.wait().await {
         Ok(status) => status

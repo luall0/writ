@@ -8,7 +8,7 @@ use ssh_key::getrandom::SysRng;
 use ssh_key::rand_core::{TryCryptoRng, TryRng};
 use ssh_key::{Algorithm, EcdsaCurve, PrivateKey};
 
-use crate::{Error, Result};
+use crate::{CryptoError, Result};
 
 /// Key algorithms Writ generates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,8 +29,8 @@ impl KeyKind {
 }
 
 /// Fills `buf` from the system's random source.
-pub fn fill_random(buf: &mut [u8]) -> Result<()> {
-    SysRng.try_fill_bytes(buf).map_err(|_| Error::Random)
+pub(crate) fn fill_random(buf: &mut [u8]) -> Result<()> {
+    SysRng.try_fill_bytes(buf).map_err(|_| CryptoError::Random)
 }
 
 /// `N` random bytes from the system's random source.
@@ -55,7 +55,7 @@ pub fn random_hex(bytes: usize) -> Result<String> {
 
 /// Generates a new private key from the system's random source.
 pub fn generate(kind: KeyKind) -> Result<PrivateKey> {
-    with_rng(|rng| PrivateKey::random(rng, kind.algorithm()).map_err(Error::from))
+    with_rng(|rng| PrivateKey::random(rng, kind.algorithm()).map_err(CryptoError::from))
 }
 
 /// Runs `f` with a random generator holding bytes already fetched from the system. If `f`
@@ -64,7 +64,7 @@ pub(crate) fn with_rng<T>(f: impl FnOnce(&mut FallibleRng) -> Result<T>) -> Resu
     let mut rng = FallibleRng::new()?;
     let result = f(&mut rng);
     if rng.exhausted {
-        return Err(Error::Random);
+        return Err(CryptoError::Random);
     }
     result
 }
@@ -148,6 +148,6 @@ mod tests {
             rng.try_fill_bytes(&mut big).ok();
             Ok(big)
         });
-        assert!(matches!(result, Err(Error::Random)));
+        assert!(matches!(result, Err(CryptoError::Random)));
     }
 }

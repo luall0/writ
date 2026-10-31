@@ -13,18 +13,19 @@ use writ_crypto::ssh_key::{HashAlg, PublicKey};
 use writ_crypto::{keys, sshsig};
 use writ_platform::WatchHandle;
 use writ_proto::{
-    Ack, ApiError, ApproveRequest, Decisions, Listing, Previous, RefuseRequest, Relation,
-    RevokeRequest, Shown, Summary,
+    Ack, ApproveRequest, Decisions, Listing, Previous, RefuseRequest, Relation, RevokeRequest,
+    Shown, Summary,
 };
 use writ_store::{AuditEvent, EventKind, Outcome};
 
 use super::{CLOCK_SKEW_SECONDS, Inner, Service, canonical_text, fingerprint, internal};
 use crate::PRINCIPAL;
+use crate::ServiceError;
 use writ_core::canonical::Canonical;
 
 impl Service {
     /// Pending tickets and active leases, or every ticket.
-    pub fn list(&self, all: bool) -> Result<Listing, ApiError> {
+    pub fn list(&self, all: bool) -> Result<Listing, ServiceError> {
         let (_, inner) = self.begin()?;
         let records = if all {
             inner.store.all_tickets().map_err(internal)?
@@ -40,7 +41,7 @@ impl Service {
     }
 
     /// A ticket's canonical bytes, and what it follows (for the diff).
-    pub fn show(&self, id: &TicketId) -> Result<Shown, ApiError> {
+    pub fn show(&self, id: &TicketId) -> Result<Shown, ServiceError> {
         let (_, inner) = self.begin()?;
         let record = inner.record(id)?;
         let previous = if let Some(lease) = &record.ticket.text.amends {
@@ -48,7 +49,7 @@ impl Service {
                 .store
                 .lease(lease)
                 .map_err(internal)?
-                .map(|lease| -> Result<Previous, ApiError> {
+                .map(|lease| -> Result<Previous, ServiceError> {
                     Ok(Previous {
                         relation: Relation::Amends,
                         canonical: canonical_text(&lease.ticket)?,
@@ -64,7 +65,7 @@ impl Service {
                 .store
                 .ticket(revised)
                 .map_err(internal)?
-                .map(|r| -> Result<Previous, ApiError> {
+                .map(|r| -> Result<Previous, ServiceError> {
                     Ok(Previous {
                         relation: Relation::Revises,
                         canonical: canonical_text(&r.ticket)?,
@@ -85,18 +86,18 @@ impl Service {
     fn verify_approver(&self, signed: &[u8], signature: &str) -> Result<KeyFingerprint, String> {
         let key = sshsig::verify(&self.approver_keys, APPROVAL_NAMESPACE, signed, signature)
             .map_err(|e| match e {
-                writ_crypto::Error::Namespace { found, .. } => {
+                writ_crypto::CryptoError::Namespace { found, .. } => {
                     format!("the signature is in namespace {found:?}, not {APPROVAL_NAMESPACE:?}")
                 }
-                writ_crypto::Error::UnknownSigner(fp) => {
+                writ_crypto::CryptoError::UnknownSigner(fp) => {
                     format!("the signature is by {fp}, which is not in approvers")
                 }
-                writ_crypto::Error::BadSignature => {
+                writ_crypto::CryptoError::BadSignature => {
                     "the signature does not match the signed bytes".to_owned()
                 }
                 e => format!("unreadable signature: {e}"),
             })?;
-        fingerprint(key).map_err(|e| e.message)
+        fingerprint(key).map_err(|e| e.to_string())
     }
 
     /// Accepts an approval: an approver's SSHSIG over the canonical bytes of the submitted
@@ -108,7 +109,7 @@ impl Service {
         id: &TicketId,
         request: &ApproveRequest,
         caller: &CallerFacts,
-    ) -> Result<Ack, ApiError> {
+    ) -> Result<Ack, ServiceError> {
         let (now, mut inner) = self.begin()?;
         let record = inner.record(id)?;
         // An amendment's approval is logged as `amend`, a new lease's as `grant`.
@@ -166,7 +167,7 @@ impl Service {
         inner: &mut Inner,
         lease_id: &TicketId,
         approving: Approving<'_>,
-    ) -> Result<State, ApiError> {
+    ) -> Result<State, ServiceError> {
         let Approving {
             record,
             signed,
@@ -206,7 +207,11 @@ impl Service {
     }
 
     /// An approved ticket becomes an active lease, with a certificate for its session key.
-    fn grant_lease(&self, inner: &mut Inner, approving: Approving<'_>) -> Result<State, ApiError> {
+    fn grant_lease(
+        &self,
+        inner: &mut Inner,
+        approving: Approving<'_>,
+    ) -> Result<State, ServiceError> {
         let Approving {
             record,
             signed,
@@ -329,7 +334,7 @@ impl Service {
         id: &TicketId,
         request: &RefuseRequest,
         caller: &CallerFacts,
-    ) -> Result<Ack, ApiError> {
+    ) -> Result<Ack, ServiceError> {
         let (now, mut inner) = self.begin()?;
         let record = inner.record(id)?;
         let denied = Denied::new(
@@ -390,7 +395,7 @@ impl Service {
         id: &TicketId,
         request: &RevokeRequest,
         caller: &CallerFacts,
-    ) -> Result<Ack, ApiError> {
+    ) -> Result<Ack, ServiceError> {
         let (now, mut inner) = self.begin()?;
         let record = inner.record(id)?;
         let denied = Denied::new(
@@ -481,10 +486,10 @@ impl Denied {
     }
 
     /// Logs the denial with its reason and returns the error.
-    fn deny<T>(&self, inner: &mut Inner, reason: impl Into<String>) -> Result<T, ApiError> {
+    fn deny<T>(&self, inner: &mut Inner, reason: impl Into<String>) -> Result<T, ServiceError> {
         let reason = reason.into();
         Service::log_best_effort(inner, &self.event.clone().reason(reason.clone()));
-        Err(ApiError::new(format!("{}: {reason}", self.prefix)))
+        Err(ServiceError::refused(format!("{}: {reason}", self.prefix)))
     }
 }
 

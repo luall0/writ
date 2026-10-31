@@ -8,7 +8,7 @@ use russh::server::Msg;
 use russh::{Channel, ChannelReadHalf};
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
-use writ_approval::Service;
+use writ_approval::{Service, ServiceError};
 use writ_core::caller::CallerFacts;
 use writ_crypto::ssh_key::PublicKey;
 use writ_proto::{ApiError, Command, MAX_BODY};
@@ -32,7 +32,7 @@ pub(crate) async fn run_agent(
             Ok(body) => encoded(blocking(move || service.submit(&key, &body, &facts)).await),
             Err(e) => encoded::<()>(Err(e)),
         },
-        Command::Wait { id } => encoded(service.wait(&id, &key).await),
+        Command::Wait { id } => encoded(served(service.wait(&id, &key).await)),
         // The handler routes only agent commands here.
         _ => encoded::<()>(Err(ApiError::new("command not allowed here"))),
     };
@@ -115,11 +115,23 @@ pub(crate) fn encoded<T: Serialize>(result: Result<T, ApiError>) -> (Vec<u8>, Op
 
 /// Runs a service call (SQLite, fsync) off the async threads.
 async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
+    f: impl FnOnce() -> Result<T, ServiceError> + Send + 'static,
 ) -> Result<T, ApiError> {
-    tokio::task::spawn_blocking(f)
+    let result = tokio::task::spawn_blocking(f)
         .await
-        .unwrap_or_else(|_| Err(ApiError::new("internal error in the daemon")))
+        .unwrap_or_else(|e| Err(ServiceError::internal(e)));
+    served(result)
+}
+
+/// What the client sees of a service result. An internal cause is logged here, the client
+/// gets only "internal error".
+fn served<T>(result: Result<T, ServiceError>) -> Result<T, ApiError> {
+    result.map_err(|error| {
+        if matches!(error, ServiceError::Internal(_) | ServiceError::AuditLog(_)) {
+            tracing::error!(error = %error.detail(), "request failed inside the daemon");
+        }
+        ApiError::from(error)
+    })
 }
 
 /// Reads the command's body (stdin, until EOF), at most [`MAX_BODY`] bytes.

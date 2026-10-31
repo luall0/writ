@@ -37,11 +37,20 @@ impl Rejection {
     }
 }
 
+/// Why a complete ticket doesn't fit its template or the registry, with every reason.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}", .reasons.join("; "))]
+pub struct FitError {
+    pub reasons: Vec<String>,
+}
+
 /// Checks that a complete ticket fits its template and the registry. Used at submission, at
 /// approval (on the signed ticket) and on every request (against the current config).
-pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), Vec<String>> {
+pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
     let Some(template) = config.template(&ticket.template) else {
-        return Err(vec![format!("template {} does not exist", ticket.template)]);
+        return Err(FitError {
+            reasons: vec![format!("template {} does not exist", ticket.template)],
+        });
     };
     let mut reasons = Vec::new();
     let scope = &ticket.scope;
@@ -125,7 +134,7 @@ pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), Vec<String>> {
     if reasons.is_empty() {
         Ok(())
     } else {
-        Err(reasons)
+        Err(FitError { reasons })
     }
 }
 
@@ -257,7 +266,7 @@ pub fn submit(
         )?;
         match fits(config, &ticket) {
             Ok(()) => fitting.push(ticket),
-            Err(why) => reasons.push(format!("{name}: {}", why.join(", "))),
+            Err(why) => reasons.push(format!("{name}: {why}")),
         }
     }
     match fitting.len() {

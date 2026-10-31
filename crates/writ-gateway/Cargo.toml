@@ -19,9 +19,11 @@ serde.workspace = true
 ssh-key.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 tokio-rustls.workspace = true
 
 [dev-dependencies]
+writ-approval = { workspace = true, features = ["testing"] }
 rustls.workspace = true
 writ-platform = { workspace = true, features = ["testing"] }
 writ-store.workspace = true

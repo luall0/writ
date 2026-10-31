@@ -1,5 +1,6 @@
-//! SSH cryptography for Writ: SSHSIG signatures (commit signing, approvals) and the SSH
-//! certificate authority that turns an approved lease into a session certificate.
+//! Cryptography for Writ: SSHSIG signatures (commit signing, approvals), the SSH certificate
+//! authority that turns an approved lease into a session certificate, the approvers file,
+//! keys and randomness, and the approval API's pinned TLS.
 //!
 //! Signing is split the way the `Signer` interface needs it: [`sshsig::signed_data`] builds
 //! the exact bytes to sign, a key signs them, and [`sshsig::assemble`] wraps the raw
@@ -13,9 +14,9 @@ pub mod tls;
 
 pub use ssh_key;
 
-/// Errors from this crate.
+/// Errors from this crate. Messages name what failed and never hold key material.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum CryptoError {
     #[error("ssh key error: {0}")]
     Key(#[from] ssh_key::Error),
     #[error("signature namespace is {found:?}, expected {expected:?}")]
@@ -26,14 +27,18 @@ pub enum Error {
     SigningFailed,
     #[error("signature does not match the signed data")]
     BadSignature,
-    #[error(transparent)]
-    Certificate(#[from] ca::CertificateError),
     #[error("the system's random source failed")]
     Random,
-    #[error("{0}")]
-    AllowedSigners(String),
-    #[error("{0}")]
-    Tls(String),
+    /// A line of an `allowed_signers` file that can't be read or honored.
+    #[error("line {line}: {why}")]
+    AllowedSigners { line: usize, why: String },
+    /// A PEM block that isn't the expected certificate or key.
+    #[error("invalid TLS {0}")]
+    Pem(&'static str),
+    #[error("TLS: {0}")]
+    Tls(#[from] rustls::Error),
+    #[error("cannot generate the TLS certificate: {0}")]
+    CertificateGeneration(#[from] rcgen::Error),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, CryptoError>;

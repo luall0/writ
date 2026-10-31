@@ -50,7 +50,8 @@ impl Store {
         Self::init(Connection::open(path)?)
     }
 
-    /// A database in memory, for tests.
+    /// A database in memory, for tests (feature `testing`).
+    #[cfg(feature = "testing")]
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }

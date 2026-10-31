@@ -22,7 +22,7 @@ later approver apps.
 | CLI | `clap` 4 (derive, env) | Decided (M2) |
 | Errors | `thiserror` in library crates, `anyhow` only in binaries | Decided (M0) |
 | Secrets in memory | `zeroize` (decided in M2); `secrecy` | Proposed |
-| Logging | `tracing` (the audit log is separate and never goes through it) | Proposed |
+| Logging | `tracing` 0.1 in every library crate, `tracing-subscriber` 0.3 (`fmt`, `env-filter`) installed by `writd` only, to stderr, filtered by `WRIT_LOG`; the audit log is separate and never goes through it | Decided (M2.5) |
 | Secure Enclave (local mode) | Swift + CryptoKit, key blob under the `_writd` user | Decided (M0 spike, [Q33](decisions.md)); how `writd` calls it is settled in M7.5 |
 | Tests | `proptest` for policy properties, `tempfile`, real `git` and `ssh-keygen` binaries | Decided (M1) |
 | Time | `jiff` (no default features): RFC 3339 for timestamps; the policy never reads a clock | Decided (M1) |

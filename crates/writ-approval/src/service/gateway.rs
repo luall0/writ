@@ -28,28 +28,19 @@ impl Service {
         };
         let (now, mut inner) = self
             .begin()
-            .map_err(|e| fail(DenyCode::Invalid, e.message))?;
+            .map_err(|e| fail(DenyCode::Invalid, e.to_string()))?;
         let kind = match operation {
             None => EventKind::Connect,
             Some(Operation::CommitSign) => EventKind::Sign,
             Some(Operation::Push) => EventKind::Push,
             Some(Operation::Fetch) => EventKind::Fetch,
         };
-        let decision =
-            Self::lease_for(&mut inner, cert, caller, now).and_then(|lease| match operation {
-                Some(op) if !lease.ticket.allows(op) => Err(Denial {
-                    code: DenyCode::Operation,
-                    reason: format!(
-                        "outside ticket {}: operation {op} is not in the lease",
-                        lease.id
-                    ),
-                    hint: Some(format!(
-                        "If needed, submit an amendment (ticket.amends: {})",
-                        lease.id
-                    )),
-                }),
-                _ => Ok(lease),
-            });
+        let decision = Self::lease_for(&mut inner, cert, caller, now).and_then(|lease| {
+            if let Some(operation) = operation {
+                policy::check_operation(&lease, operation)?;
+            }
+            Ok(lease)
+        });
         let mut event = AuditEvent::new(
             now,
             kind,
@@ -67,7 +58,7 @@ impl Service {
         match decision {
             Ok(lease) => {
                 if let Err(e) = Self::log(&mut inner, &event) {
-                    return Err(fail(DenyCode::Invalid, e.message));
+                    return Err(fail(DenyCode::Invalid, e.to_string()));
                 }
                 Ok(lease)
             }
@@ -92,7 +83,7 @@ impl Service {
         let id: TicketId = cert.key_id.parse().map_err(|_| no_lease())?;
         let found = inner.store.lease(&id).map_err(|e| Denial {
             code: DenyCode::Invalid,
-            reason: internal(e).message,
+            reason: internal(e).to_string(),
             hint: None,
         })?;
         let lease = policy::resolve_lease(found.iter(), cert)?.clone();

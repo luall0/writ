@@ -51,6 +51,8 @@ signature = "3.0.0"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "env-filter"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "sync", "time", "fs", "signal"] }
 ureq = "3.5.0"
 zeroize = { version = "1.9.1", features = ["zeroize_derive"] }

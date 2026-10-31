@@ -3,7 +3,7 @@
 //! ever used, and only its public half is ever handed to ssh-keygen, so the private key stays
 //! in the agent (hard rule 8).
 
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 
@@ -24,9 +24,12 @@ impl Signer {
     /// An SSHSIG over `message` in the `writ-approval` namespace, made by the agent.
     pub fn sign(&self, message: &[u8]) -> anyhow::Result<String> {
         let dir = std::env::temp_dir().join(format!("writ-sign-{}", random_hex(8)?));
-        std::fs::create_dir(&dir).context("cannot create a temporary directory")?;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("cannot make {} private", dir.display()))?;
+        // Made 0700 as it is created: no window where another user could enter it, and it
+        // fails if anything already sits at that path.
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .with_context(|| format!("cannot create {}", dir.display()))?;
         let result = (|| {
             // ssh-keygen signs with a private key file directly when given one: only ever
             // hand it a public key, checked and copied here, so the private half has to be

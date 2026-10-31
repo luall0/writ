@@ -18,8 +18,12 @@
 //! result to the store and logs every grant, refusal, revocation and denial. It only sees the
 //! platform traits ([`Notifier`], [`SessionWatcher`]), so its tests run on the fakes.
 
+mod error;
 mod service;
+#[cfg(feature = "testing")]
+pub mod testing;
 
+pub use error::ServiceError;
 pub use service::{GatewayDenial, Service, ServiceConfig, ServicePlatform};
 pub use writ_store::EventKind;
 
@@ -28,14 +32,3 @@ pub const PRINCIPAL: &str = writ_proto::LEASE_USER;
 
 /// How many tickets may wait for the approver at once; more are rejected.
 pub const DEFAULT_MAX_PENDING: usize = 20;
-
-/// Errors that stop the service from starting.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Store(#[from] writ_store::StoreError),
-    #[error("the clock is out of range")]
-    Clock,
-}
-
-pub use writ_platform::{Notifier, SessionWatcher};

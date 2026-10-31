@@ -1,0 +1,194 @@
+//! Test support (feature `testing`): a service on the platform fakes, and the approver's
+//! signatures, so every crate's tests build them the same way.
+//!
+//! Panics on any failure: it only ever runs in tests.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use writ_core::canonical::Canonical;
+use writ_core::config::PolicyConfig;
+use writ_core::lease::APPROVAL_NAMESPACE;
+use writ_core::names::TicketId;
+use writ_core::signed::{Refusal, Revocation};
+use writ_core::ticket::Ticket;
+use writ_crypto::allowed_signers::AllowedSigner;
+use writ_crypto::ca::CertificateAuthority;
+use writ_crypto::keys::{KeyKind, generate};
+use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
+use writ_crypto::sshsig;
+use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier};
+use writ_platform::{Clock, Notifier, SessionWatcher};
+use writ_proto::{ApproveRequest, Decisions, RefuseRequest, RevokeRequest};
+use writ_store::{AuditBreaker, AuditLog, Store};
+
+use crate::{Service, ServiceConfig, ServicePlatform};
+
+/// The time a [`TestService`] starts at by default: 2027-01-15T08:00:00Z.
+pub const START: u64 = 1_800_000_000;
+
+/// How to build a [`TestService`]. Defaults: `decisions: signed`, 20 pending tickets at most,
+/// a fake watcher, a recording notifier, a fake clock at [`START`].
+pub struct TestServiceBuilder {
+    policy: PolicyConfig,
+    decisions: Decisions,
+    max_pending: usize,
+    watcher: Arc<dyn SessionWatcher>,
+    notifier: Arc<dyn Notifier>,
+    clock: Arc<dyn Clock>,
+}
+
+impl TestServiceBuilder {
+    pub fn new(policy_yaml: &str) -> Self {
+        Self {
+            policy: PolicyConfig::from_yaml(policy_yaml).expect("the test policy parses"),
+            decisions: Decisions::Signed,
+            max_pending: 20,
+            watcher: Arc::new(FakeWatcher::new()),
+            notifier: Arc::new(RecordingNotifier::new()),
+            clock: Arc::new(FakeClock::at_unix(START)),
+        }
+    }
+
+    pub fn decisions(mut self, decisions: Decisions) -> Self {
+        self.decisions = decisions;
+        self
+    }
+
+    pub fn max_pending(mut self, max_pending: usize) -> Self {
+        self.max_pending = max_pending;
+        self
+    }
+
+    pub fn watcher(mut self, watcher: Arc<dyn SessionWatcher>) -> Self {
+        self.watcher = watcher;
+        self
+    }
+
+    pub fn notifier(mut self, notifier: Arc<dyn Notifier>) -> Self {
+        self.notifier = notifier;
+        self
+    }
+
+    pub fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Starts the service with its store and audit log in `dir`, and one approver key.
+    pub fn build(self, dir: &Path) -> TestService {
+        let approver = generate(KeyKind::Ed25519).unwrap();
+        let ca_key = generate(KeyKind::Ed25519).unwrap();
+        let ca_fingerprint = ca_key.public_key().fingerprint(HashAlg::Sha256);
+        let audit_path = dir.join("audit.jsonl");
+        let (audit, audit_breaker) = AuditLog::open_breakable(&audit_path).unwrap();
+        let service = Service::new(
+            ServiceConfig {
+                policy: self.policy,
+                approvers: vec![AllowedSigner {
+                    principals: "me".into(),
+                    key: approver.public_key().clone(),
+                }],
+                decisions: self.decisions,
+                max_pending: self.max_pending,
+            },
+            CertificateAuthority::new(ca_key),
+            Store::open(&dir.join("leases.db")).unwrap(),
+            audit,
+            ServicePlatform {
+                notifier: self.notifier,
+                watcher: self.watcher,
+                clock: self.clock,
+            },
+        )
+        .unwrap();
+        TestService {
+            service,
+            approver,
+            ca_fingerprint,
+            audit_breaker,
+            audit_path,
+        }
+    }
+}
+
+/// A running service and what tests need around it.
+pub struct TestService {
+    pub service: Arc<Service>,
+    /// The one key in `approvers`.
+    pub approver: PrivateKey,
+    /// The fingerprint of the CA that issues session certificates.
+    pub ca_fingerprint: Fingerprint,
+    /// Makes the audit log fail, to check that nothing changes without its line.
+    pub audit_breaker: AuditBreaker,
+    pub audit_path: PathBuf,
+}
+
+impl TestService {
+    /// Every audit log line, parsed.
+    pub fn audit(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(&self.audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// The audit lines with this event and result.
+    pub fn events(&self, event: &str, result: &str) -> Vec<serde_json::Value> {
+        self.audit()
+            .into_iter()
+            .filter(|e| e["event"] == event && e["result"] == result)
+            .collect()
+    }
+
+    /// An approval of `ticket` (signed exactly as given) by the approver.
+    pub fn approval(&self, ticket: &Ticket) -> ApproveRequest {
+        sign_approval(&self.approver, ticket)
+    }
+
+    /// A signed refusal of `id` by the approver.
+    pub fn refusal(&self, id: &TicketId, feedback: &str) -> RefuseRequest {
+        sign_refusal(&self.approver, id, feedback)
+    }
+
+    /// A signed revocation of `id` by the approver.
+    pub fn revocation(&self, id: &TicketId) -> RevokeRequest {
+        sign_revocation(&self.approver, id)
+    }
+}
+
+/// An approval of `ticket`'s canonical bytes by `approver` (namespace `writ-approval`).
+pub fn sign_approval(approver: &PrivateKey, ticket: &Ticket) -> ApproveRequest {
+    sign_approval_in(approver, ticket, APPROVAL_NAMESPACE)
+}
+
+/// The same, in any namespace (to check that other namespaces are refused).
+pub fn sign_approval_in(approver: &PrivateKey, ticket: &Ticket, namespace: &str) -> ApproveRequest {
+    let bytes = ticket.canonical_bytes().unwrap();
+    ApproveRequest {
+        signature: sshsig::sign(approver, namespace, &bytes).unwrap(),
+        signed: String::from_utf8(bytes).unwrap(),
+    }
+}
+
+/// A refusal of `id` with `feedback`, signed by `approver`.
+pub fn sign_refusal(approver: &PrivateKey, id: &TicketId, feedback: &str) -> RefuseRequest {
+    let document = Refusal::new(id.clone(), feedback.to_owned())
+        .canonical_bytes()
+        .unwrap();
+    RefuseRequest {
+        feedback: feedback.to_owned(),
+        signature: Some(sshsig::sign(approver, APPROVAL_NAMESPACE, &document).unwrap()),
+    }
+}
+
+/// A revocation of `id`, signed by `approver`.
+pub fn sign_revocation(approver: &PrivateKey, id: &TicketId) -> RevokeRequest {
+    let document = Revocation::new(id.clone()).canonical_bytes().unwrap();
+    RevokeRequest {
+        signature: Some(sshsig::sign(approver, APPROVAL_NAMESPACE, &document).unwrap()),
+    }
+}

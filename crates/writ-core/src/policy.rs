@@ -149,6 +149,20 @@ fn outside(lease: &TicketId, code: DenyCode, what: impl fmt::Display) -> Denial 
     }
 }
 
+/// Whether the lease allows `operation`; outside it, an out-of-scope denial with the
+/// amendment hint.
+pub fn check_operation(lease: &Lease, operation: Operation) -> Result<(), Denial> {
+    if lease.ticket.allows(operation) {
+        Ok(())
+    } else {
+        Err(outside(
+            &lease.id,
+            DenyCode::Operation,
+            format_args!("{operation} not allowed"),
+        ))
+    }
+}
+
 /// An allowed request, possibly with warnings for the activity report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Allowed {
@@ -287,13 +301,7 @@ fn admit<'a>(
     }
     caller::check(lease.ticket.subject.caller.as_ref(), ctx.caller)
         .map_err(|e| deny(DenyCode::Caller, e.to_string()))?;
-    if !lease.ticket.allows(operation) {
-        return Err(outside(
-            id,
-            DenyCode::Operation,
-            format_args!("{operation} not allowed"),
-        ));
-    }
+    check_operation(lease, operation)?;
     if !lease.ticket.scope.repos.contains(repo) {
         return Err(outside(
             id,
@@ -314,9 +322,8 @@ fn admit<'a>(
         deny(
             DenyCode::Config,
             format!(
-                "lease {id} no longer fits template {}: {}",
-                lease.ticket.template,
-                why.join("; ")
+                "lease {id} no longer fits template {}: {why}",
+                lease.ticket.template
             ),
         )
     })?;

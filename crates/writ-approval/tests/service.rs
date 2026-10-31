@@ -8,28 +8,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use writ_approval::{Service, ServiceConfig, ServicePlatform};
+use writ_approval::ServiceError;
+use writ_approval::testing::{START, TestService, TestServiceBuilder, sign_approval_in};
 use writ_core::caller::{CallerFacts, ProcessRef};
 use writ_core::canonical::Canonical;
-use writ_core::config::PolicyConfig;
 use writ_core::lease::{APPROVAL_NAMESPACE, State};
 use writ_core::names::TicketId;
 use writ_core::policy::{CertIdentity, DenyCode};
-use writ_core::signed::{Refusal, Revocation};
+use writ_core::signed::Refusal;
 use writ_core::ticket::Operation;
 use writ_core::ticket::Ticket;
 use writ_core::units::Timestamp;
-use writ_crypto::allowed_signers::AllowedSigner;
-use writ_crypto::ca::{CertificateAuthority, validate_user_certificate};
+use writ_crypto::ca::validate_user_certificate;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Certificate, HashAlg, PrivateKey};
 use writ_crypto::sshsig;
 use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier};
 use writ_proto::{ApproveRequest, Decision, Decisions, RefuseRequest, Relation, RevokeRequest};
-use writ_store::{AuditBreaker, AuditLog, Store, looks_secret};
+use writ_store::looks_secret;
 
 const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
-const START: u64 = 1_800_000_000;
 
 const REQUEST: &str = r#"
 template: feature-branch
@@ -48,13 +46,19 @@ limits:
 
 struct Harness {
     dir: tempfile::TempDir,
-    service: Arc<Service>,
+    test: TestService,
     clock: Arc<FakeClock>,
     notifier: RecordingNotifier,
     watcher: FakeWatcher,
-    approver: PrivateKey,
-    ca_fingerprint: writ_crypto::ssh_key::Fingerprint,
-    audit_breaker: AuditBreaker,
+}
+
+/// The service, the approver, the CA fingerprint and the audit log, as in every crate's tests.
+impl std::ops::Deref for Harness {
+    type Target = TestService;
+
+    fn deref(&self) -> &TestService {
+        &self.test
+    }
 }
 
 fn facts() -> CallerFacts {
@@ -71,58 +75,26 @@ impl Harness {
 
     fn with(decisions: Decisions, watcher: FakeWatcher, max_pending: usize) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let approver = generate(KeyKind::Ed25519).unwrap();
-        let ca_key = generate(KeyKind::Ed25519).unwrap();
-        let ca_fingerprint = ca_key.public_key().fingerprint(HashAlg::Sha256);
         let clock = Arc::new(FakeClock::at_unix(START));
         let notifier = RecordingNotifier::new();
-        let (audit, audit_breaker) =
-            AuditLog::open_breakable(&dir.path().join("audit.jsonl")).unwrap();
-        let service = Service::new(
-            ServiceConfig {
-                policy: PolicyConfig::from_yaml(POLICY).unwrap(),
-                approvers: vec![AllowedSigner {
-                    principals: "me".into(),
-                    key: approver.public_key().clone(),
-                }],
-                decisions,
-                max_pending,
-            },
-            CertificateAuthority::new(ca_key),
-            Store::open(&dir.path().join("leases.db")).unwrap(),
-            audit,
-            ServicePlatform {
-                notifier: Arc::new(notifier.clone()),
-                watcher: Arc::new(watcher.clone()),
-                clock: clock.clone(),
-            },
-        )
-        .unwrap();
+        let test = TestServiceBuilder::new(POLICY)
+            .decisions(decisions)
+            .max_pending(max_pending)
+            .watcher(Arc::new(watcher.clone()))
+            .notifier(Arc::new(notifier.clone()))
+            .clock(clock.clone())
+            .build(dir.path());
         Self {
             dir,
-            service,
+            test,
             clock,
             notifier,
             watcher,
-            approver,
-            ca_fingerprint,
-            audit_breaker,
         }
     }
 
-    fn audit(&self) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(self.dir.path().join("audit.jsonl"))
-            .unwrap()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect()
-    }
-
     fn events(&self, event: &str, result: &str) -> usize {
-        self.audit()
-            .iter()
-            .filter(|e| e["event"] == event && e["result"] == result)
-            .count()
+        self.test.events(event, result).len()
     }
 
     /// Submits a request with a fresh session key.
@@ -139,10 +111,10 @@ impl Harness {
     }
 
     fn signed(&self, ticket: &Ticket) -> ApproveRequest {
-        sign_with(&self.approver, ticket, APPROVAL_NAMESPACE)
+        self.approval(ticket)
     }
 
-    fn approve(&self, ticket: &Ticket) -> Result<State, writ_proto::ApiError> {
+    fn approve(&self, ticket: &Ticket) -> Result<State, ServiceError> {
         self.service
             .approve(&ticket.id, &self.signed(ticket), &facts())
             .map(|ack| ack.state)
@@ -159,22 +131,13 @@ impl Harness {
         sshsig::sign(&self.approver, APPROVAL_NAMESPACE, bytes).unwrap()
     }
 
-    fn refuse_signed(&self, id: &TicketId, feedback: &str) -> Result<State, writ_proto::ApiError> {
-        let doc = Refusal::new(id.clone(), feedback.into())
-            .canonical_bytes()
-            .unwrap();
-        let request = RefuseRequest {
-            feedback: feedback.into(),
-            signature: Some(self.sign_doc(&doc)),
-        };
+    fn refuse_signed(&self, id: &TicketId, feedback: &str) -> Result<State, ServiceError> {
+        let request = self.refusal(id, feedback);
         self.service.refuse(id, &request, &facts()).map(|a| a.state)
     }
 
-    fn revoke_signed(&self, id: &TicketId) -> Result<State, writ_proto::ApiError> {
-        let doc = Revocation::new(id.clone()).canonical_bytes().unwrap();
-        let request = RevokeRequest {
-            signature: Some(self.sign_doc(&doc)),
-        };
+    fn revoke_signed(&self, id: &TicketId) -> Result<State, ServiceError> {
+        let request = self.revocation(id);
         self.service.revoke(id, &request, &facts()).map(|a| a.state)
     }
 
@@ -190,14 +153,6 @@ impl Harness {
             key,
             Certificate::from_openssh(&certificate).unwrap(),
         )
-    }
-}
-
-fn sign_with(key: &PrivateKey, ticket: &Ticket, namespace: &str) -> ApproveRequest {
-    let bytes = ticket.canonical_bytes().unwrap();
-    ApproveRequest {
-        signature: sshsig::sign(key, namespace, &bytes).unwrap(),
-        signed: String::from_utf8(bytes).unwrap(),
     }
 }
 
@@ -235,14 +190,18 @@ fn a_ticket_outside_every_template_is_rejected_before_reaching_the_approver() {
         .submit(key.public_key(), outside.as_bytes(), &facts())
         .unwrap_err();
     assert!(
-        error.reasons.iter().any(|r| r.contains("branch main")),
-        "{error}"
+        matches!(&error, ServiceError::Refused { reasons, .. }
+            if reasons.iter().any(|r| r.contains("branch main"))),
+        "{error:?}"
     );
     let unparsable = h
         .service
         .submit(key.public_key(), b"scope: {repos: [x]", &facts())
         .unwrap_err();
-    assert_eq!(unparsable.message, "ticket rejected");
+    assert!(
+        matches!(&unparsable, ServiceError::Refused { message, .. } if message == "ticket rejected"),
+        "{unparsable:?}"
+    );
     assert!(h.service.list(true).unwrap().tickets.is_empty());
     assert_eq!(h.events("submit", "denied"), 2);
     std::thread::sleep(Duration::from_millis(50));
@@ -313,12 +272,12 @@ fn approvals_by_other_keys_namespaces_or_bytes_and_widenings_are_refused() {
     let cases = [
         (
             "a key not in approvers",
-            sign_with(&stranger, &ticket, APPROVAL_NAMESPACE),
+            sign_approval_in(&stranger, &ticket, APPROVAL_NAMESPACE),
             "not in approvers",
         ),
         (
             "another namespace",
-            sign_with(&h.approver, &ticket, "git"),
+            sign_approval_in(&h.approver, &ticket, "git"),
             "namespace",
         ),
         ("other bytes", other_bytes, "does not match"),
@@ -330,7 +289,10 @@ fn approvals_by_other_keys_namespaces_or_bytes_and_widenings_are_refused() {
             .service
             .approve(&ticket.id, &request, &facts())
             .unwrap_err();
-        assert!(error.message.contains(expected), "{case}: {error}");
+        assert!(
+            matches!(&error, ServiceError::Refused { message, .. } if message.contains(expected)),
+            "{case}: {error:?}"
+        );
         assert_eq!(
             h.service.show(&ticket.id).unwrap().state,
             State::Pending,
@@ -533,7 +495,10 @@ fn only_the_submitting_session_can_wait() {
         .unwrap()
         .block_on(h.service.wait(&ticket.id, other.public_key()))
         .unwrap_err();
-    assert!(error.message.contains("does not exist"));
+    assert!(
+        matches!(&error, ServiceError::NotFound(id) if id == &ticket.id),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -569,7 +534,10 @@ fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
     let unwatched = Harness::with(Decisions::Signed, FakeWatcher::unsupported(), 20);
     let (ticket, _) = unwatched.submit(BOUND);
     let error = unwatched.approve(&ticket).unwrap_err();
-    assert!(error.message.contains("can't watch"), "{error}");
+    assert!(
+        matches!(&error, ServiceError::Refused { message, .. } if message.contains("can't watch")),
+        "{error:?}"
+    );
 
     let h = Harness::new(Decisions::Signed);
     let (ticket, key) = h.submit(BOUND);
@@ -613,7 +581,10 @@ fn too_many_waiting_tickets_are_turned_away() {
         .service
         .submit(key.public_key(), REQUEST.as_bytes(), &facts())
         .unwrap_err();
-    assert!(error.message.contains("already waiting"), "{error}");
+    assert!(
+        matches!(&error, ServiceError::Refused { message, .. } if message.contains("already waiting")),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -621,25 +592,11 @@ fn the_deny_list_survives_a_restart() {
     let h = Harness::new(Decisions::Signed);
     let (ticket, _key, cert) = h.lease();
     h.revoke_signed(&ticket.id).unwrap();
-    let dir = h.dir.path().to_owned();
-    let restarted = Service::new(
-        ServiceConfig {
-            policy: PolicyConfig::from_yaml(POLICY).unwrap(),
-            approvers: vec![],
-            decisions: Decisions::Signed,
-            max_pending: 20,
-        },
-        CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap()),
-        Store::open(&dir.join("leases.db")).unwrap(),
-        AuditLog::open(&dir.join("audit.jsonl")).unwrap(),
-        ServicePlatform {
-            notifier: Arc::new(RecordingNotifier::new()),
-            watcher: Arc::new(FakeWatcher::new()),
-            clock: h.clock.clone(),
-        },
-    )
-    .unwrap();
-    assert!(restarted.is_revoked(cert.serial()));
+    // Another service on the same store, with another CA and approver.
+    let restarted = TestServiceBuilder::new(POLICY)
+        .clock(h.clock.clone())
+        .build(h.dir.path());
+    assert!(restarted.service.is_revoked(cert.serial()));
 }
 
 #[test]
@@ -649,7 +606,7 @@ fn the_audit_log_holds_every_decision_and_no_secret() {
     let (refused, _) = h.submit(REQUEST);
     h.refuse_signed(&refused.id, "no").unwrap();
     h.revoke_signed(&ticket.id).unwrap();
-    let text = std::fs::read_to_string(h.dir.path().join("audit.jsonl")).unwrap();
+    let text = std::fs::read_to_string(&h.audit_path).unwrap();
     assert!(!looks_secret(&text), "{text}");
     for (event, result) in [
         ("submit", "allowed"),
@@ -686,8 +643,9 @@ fn nothing_changes_without_its_audit_line() {
         .service
         .submit(key.public_key(), REQUEST.as_bytes(), &facts())
         .unwrap_err();
+    assert!(matches!(error, ServiceError::AuditLog(_)), "{error:?}");
     assert_eq!(
-        error.message,
+        error.to_string(),
         "the audit log can't be written; nothing was done"
     );
     assert!(h.service.list(true).unwrap().tickets.is_empty());
@@ -780,12 +738,15 @@ fn a_refused_amendment_approval_is_logged_as_amend() {
         .unwrap();
     let amendment = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
     let other = generate(KeyKind::Ed25519).unwrap();
-    let forged = sign_with(&other, &amendment, APPROVAL_NAMESPACE);
+    let forged = sign_approval_in(&other, &amendment, APPROVAL_NAMESPACE);
     let error = h
         .service
         .approve(&amendment.id, &forged, &facts())
         .unwrap_err();
-    assert!(error.message.contains("not in approvers"), "{error}");
+    assert!(
+        matches!(&error, ServiceError::Refused { message, .. } if message.contains("not in approvers")),
+        "{error:?}"
+    );
     assert_eq!(h.events("amend", "denied"), 1);
     assert_eq!(h.events("grant", "denied"), 0);
     assert_eq!(h.approve(&amendment).unwrap(), State::Applied);

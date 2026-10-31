@@ -8,7 +8,7 @@
 
 use ssh_key::{HashAlg, PublicKey};
 
-use crate::{Error, Result};
+use crate::{CryptoError, Result};
 
 /// One approver key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +43,10 @@ pub fn parse(text: &str, namespace: &str) -> Result<Vec<AllowedSigner>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let fail = |why: &str| Error::AllowedSigners(format!("line {}: {why}", index + 1));
+        let fail = |why: &str| CryptoError::AllowedSigners {
+            line: index + 1,
+            why: why.to_owned(),
+        };
         let mut fields = line.split_whitespace();
         let principals = fields.next().ok_or_else(|| fail("empty line"))?;
         let mut next = fields.next().ok_or_else(|| fail("missing key"))?;
