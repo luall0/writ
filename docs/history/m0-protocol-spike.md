@@ -56,7 +56,7 @@ Acceptance checklist, all must pass:
 - [x] **Secure Enclave signer without a paid Apple account**
       ([macOS Secure Enclave](../architecture/macos-secure-enclave.md)): a small test program in
       `spikes/secure-enclave/` (Swift, outside the Cargo workspace; archived in commit
-      `7c69eff`) runs the checks of each
+      `3485f40`) runs the checks of each
       plan, in the doc's order, stopping at the first that passes:
   - [x] Plan A, Xcode Personal Team + keychain access group: every check in its list.
     *Works (the capability, launch, key creation, signing with no prompt in 6–7 ms) but
@@ -138,8 +138,8 @@ Acceptance checklist, all must pass:
   binary): `make test` builds them first.
 
 - Secure Enclave spike, archived in git and removed from the tree: `git show
-  7c69eff:spikes/secure-enclave/README.md` (and the rest of `spikes/secure-enclave/` at
-  `7c69eff`): the Plan A Xcode project, the `se-cryptokit` tool, the `_writd` install and
+  3485f40:spikes/secure-enclave/README.md` (and the rest of `spikes/secure-enclave/` at
+  `3485f40`): the Plan A Xcode project, the `se-cryptokit` tool, the `_writd` install and
   uninstall scripts. M7 and M7.5 start from them.
 
 ## Secure Enclave results

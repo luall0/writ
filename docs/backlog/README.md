@@ -87,7 +87,7 @@ Same, on the server's TPM 2.0 (P-256), keys bound to that machine.
 The `se-keychain` backend of [macOS Secure Enclave](../architecture/macos-secure-enclave.md):
 a Secure Enclave key in the data protection keychain under a keychain access group, once the
 Apple Developer Program is paid. The M0 spike built it with a free Personal Team (the Xcode
-project is archived in commit `7c69eff`, `spikes/secure-enclave/keychain-app/`); what it found:
+project is archived in commit `3485f40`, `spikes/secure-enclave/keychain-app/`); what it found:
 
 - Works: the capability, launching with the profile, key creation and signing with no
   prompt (6–7 ms); code without the entitlement is refused (`-34018`), an ad-hoc binary
