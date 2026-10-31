@@ -1,6 +1,6 @@
 //! Template fit and ticket submission.
 //!
-//! Every ticket must fit a template ([Q14](../../docs/decisions.md)): [`fits`] says whether a
+//! Every ticket must fit a template (Q14 in `docs/decisions.md`): [`fits`] says whether a
 //! complete ticket stays within its template and the registry, with every reason when it
 //! doesn't. [`submit`] completes an agent's [`TicketRequest`] into a [`Ticket`], picking the
 //! template, or rejects it before it reaches the approver.
@@ -296,7 +296,7 @@ fn check_links(
     match (&request.ticket.amends, submission.amends) {
         (None, None) => {}
         (Some(id), Some(lease)) if &lease.id == id => {
-            if lease.state != State::Active || submission.now >= lease.ticket.limits.expires_at {
+            if !lease.is_in_force(submission.now) {
                 return Err(Rejection::one(format!(
                     "ticket {id} can't be amended: its lease is not active"
                 )));

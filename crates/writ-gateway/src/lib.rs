@@ -47,6 +47,7 @@ use writ_core::ticket::Operation;
 use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
 use writ_platform::{CallerAttestor, Connection, PeerInfo, Transport};
 
+pub use exec::MAX_SIGN_INPUT;
 pub use hook::run_pre_receive;
 
 pub use writ_proto::{CLIENT_USER, LEASE_USER};

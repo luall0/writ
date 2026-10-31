@@ -79,10 +79,11 @@ flowchart LR
 | Clients | `writ` CLI, agent skill, `writ-sign`, `writ try`, harness | [clients.md](clients.md) |
 | Deployment | Docker compose, network exposure, host hardening | [deployment.md](deployment.md) |
 
-## Repository layout (planned)
+## Repository layout
 
-Created by the [initialization guide](../guides/initialization.md) and filled milestone by
-milestone ([Roadmap](../roadmap.md)). One Cargo workspace:
+One Cargo workspace. Each crate has a `README.md` saying what it does and what it doesn't;
+the code conventions (module layout, errors, logging, tests) are in
+`docs/conventions.md` (M2.5).
 
 ```
 Cargo.toml              workspace root (members, shared lints, shared dependency versions)
@@ -90,38 +91,49 @@ rust-toolchain.toml
 Makefile
 crates/
   writ-core/            lease model: registry, templates, tickets, canonical encoding,
-                        template fit, narrowing, lifecycle, caller facts, policy decisions.
-                        Pure: no I/O.
-  writ-proto/           messages between clients and the daemon (lease commands, sign)
-  writ-crypto/          SSHSIG build/verify, approval verification, the SSH CA (certificates, KRL)
+                        template fit, narrowing, lifecycle, caller facts, policy decisions,
+                        text neutralization. Pure: no I/O.
+  writ-proto/           messages between clients and the daemon (commands, replies, bodies)
+  writ-crypto/          SSHSIG build/verify, the SSH CA (certificates), approvers file,
+                        keys and randomness, the approval API's pinned TLS
   writ-platform/        platform traits (Transport, CallerAttestor, SessionWatcher,
-                        KeystoreUnlock, Notifier), portable implementations, test fakes
-  writ-platform-macos/  macOS-only implementations (process chain, kqueue, Secure Enclave)
-  writ-platform-linux/  Linux-only implementations (later)
-  writ-signer/          `Signer` trait + backends (software first; feature-gated hardware later)
+                        KeystoreUnlock, Notifier, Clock), portable implementations, private
+                        files, fakes and contract suites (feature `testing`)
   writ-store/           SQLite lease store + ledger, JSONL audit log
-  writ-git/             commit parsing, pack quarantine, mirrors, upstream push (shells out to `git`)
-  writ-gateway/         russh server: git upload/receive-pack, sign, lease commands, proxy
-  writ-approval/        approval API (tickets waiting, approvals, refusals, admin changes, unseal)
-  writd/                the daemon binary: config, sealing, wiring of the crates above
+  writ-gateway/         russh server: git upload/receive-pack, sign, lease commands, the
+                        approval API over SSH and HTTPS
+  writ-approval/        the approval service: tickets, approvals, refusals, revocations,
+                        the lease a certificate stands for (admin changes and unseal: M5)
+  writd/                the daemon binary: config, keystore, wiring of the crates above
   writ-cli/             the `writ` binary
   writ-sign/            the `writ-sign` shim
-skill/writ/SKILL.md     the agent skill (ticket workflow)
-spikes/                 throwaway spike code, outside the Cargo workspace; removed once its
-                        results are in docs/history/ (archived in git)
-deploy/                 Dockerfile, compose.yaml
+  writ-integration/     test-only: the crates working together, through the binaries
+tool/                   check scripts run by `make check`
+dev/                    the development daemon's configuration
 docs/
 ```
 
-Crate names are a starting point; settle them in M0 and update this page.
+Planned, created by the milestone that needs them:
+
+```
+crates/
+  writ-signer/          `Signer` trait + backends (M3)
+  writ-git/             commit parsing, pack quarantine, mirrors, upstream push (M3, M4)
+  writ-platform-macos/  macOS-only implementations (process chain, kqueue, Secure Enclave; M7)
+  writ-platform-linux/  Linux-only implementations (later)
+skill/writ/SKILL.md     the agent skill (M6)
+deploy/                 Dockerfile, compose.yaml (M8)
+spikes/                 throwaway spike code, outside the workspace, removed once done
+```
 
 ### Dependency directions
 
 - `writ-core` depends on nothing internal. It holds every decision that can be made without
   I/O, so the policy is testable as plain functions.
 - **Clients never contain policy.** `writ-cli` and `writ-sign` may depend on `writ-core`
-  (types, display, canonical encoding for signing) and `writ-proto`, but never on
-  `writ-store`, `writ-signer`, `writ-gateway`, `writ-approval` or `writd`. A check they make
+  (types, display, canonical encoding for signing), `writ-proto` and `writ-crypto` (keys,
+  approval signatures, the pinned TLS), but never on `writ-store`, `writ-signer`,
+  `writ-gateway`, `writ-approval`, `writ-platform*` or `writd`. A check they make
   is a convenience; the daemon checks again.
 - Only `writ-signer` and the platform crates know key backends. Every other crate goes
   through the `Signer` trait.

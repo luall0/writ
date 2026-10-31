@@ -67,7 +67,7 @@ const OMEGA: &str = "/Applications/Omega Code.app/Contents/MacOS/omega";
 
 /// The test policy with a wider feature-branch (force push allowed, two emails, paths
 /// denied), so that only the narrowing check can refuse those widenings.
-fn config() -> PolicyConfig {
+fn wide_config() -> PolicyConfig {
     let policy = POLICY.replacen(
         "    committer_emails: [\"user+agent@example.org\"]\n    signing_key: agent-ed25519-01\n    max_ttl: 4h",
         "    force_push: true\n    committer_emails: [\"user+agent@example.org\", \"user+fix@example.org\"]\n    signing_key: agent-ed25519-01\n    max_ttl: 4h",
@@ -75,18 +75,24 @@ fn config() -> PolicyConfig {
     )
     .replacen("    paths_check: warn\n", "    paths_check: deny\n", 1);
     let config = PolicyConfig::from_yaml(&policy).unwrap();
+    // Both edits must have applied, or the properties below test less than they claim.
+    let template = config.template(&"feature-branch".parse().unwrap()).unwrap();
+    assert!(template.force_push, "force_push edit not applied");
+    assert_eq!(
+        template.committer_emails.len(),
+        2,
+        "emails edit not applied"
+    );
     assert!(
-        config
-            .template(&"feature-branch".parse().unwrap())
-            .unwrap()
-            .force_push
+        policy.contains("    paths_check: deny\n") && !policy.contains("    paths_check: warn\n"),
+        "paths_check edit not applied"
     );
     config
 }
 
-/// Submits with the property policy.
-fn submitted(yaml: &str) -> Ticket {
-    fit::submit(&config(), &common::request(yaml), &submission(1)).unwrap()
+/// Submits with the wider policy.
+fn wide_submitted(yaml: &str) -> Ticket {
+    fit::submit(&wide_config(), &common::request(yaml), &submission(1)).unwrap()
 }
 
 fn parse_all<T: std::str::FromStr>(items: Vec<&str>) -> Vec<T>
@@ -135,7 +141,7 @@ fn up_to(cap: u64, beyond: u64) -> impl Strategy<Value = Option<u64>> {
 
 /// A ticket request, biased toward one template's values so that many fit.
 fn arb_request() -> impl Strategy<Value = TicketRequest> {
-    let config = config();
+    let config = wide_config();
     let names: Vec<String> = config.templates().keys().map(|n| n.to_string()).collect();
     (select(names), any::<bool>()).prop_flat_map(move |(name, named)| {
         let template = config.template(&name.parse().unwrap()).unwrap().clone();
@@ -204,14 +210,14 @@ fn arb_request() -> impl Strategy<Value = TicketRequest> {
 /// A request that fits a template, completed into a ticket.
 fn arb_ticket() -> impl Strategy<Value = Ticket> {
     arb_request().prop_filter_map("fits no template", |request| {
-        fit::submit(&config(), &request, &submission(1)).ok()
+        fit::submit(&wide_config(), &request, &submission(1)).ok()
     })
 }
 
 /// A ticket the approver might sign instead: one or two parts changed, with values near the
 /// template's range. Many are wider than submitted; the narrowing check must refuse those.
 fn arb_signed(submitted: Ticket) -> impl Strategy<Value = Ticket> {
-    let config = config();
+    let config = wide_config();
     let template = config.template(&submitted.template).unwrap().clone();
     let repos: Vec<String> = template.repos.iter().map(|r| r.to_string()).collect();
     let emails: Vec<String> = template
@@ -594,7 +600,7 @@ proptest! {
         random in prop::collection::vec(arb_facts(), 8),
     ) {
         let requests: Vec<Facts> = probes.into_iter().chain(random).collect();
-        let config = config();
+        let config = wide_config();
         if narrow::check(&submitted, &signed).is_err() {
             // Refused: and the daemon would not activate it either.
             let record = TicketRecord::pending(submitted.clone());
@@ -621,7 +627,7 @@ proptest! {
         request in arb_request(),
         requests in prop::collection::vec(arb_facts(), 16),
     ) {
-        let config = config();
+        let config = wide_config();
         let Ok(ticket) = fit::submit(&config, &request, &submission(1)) else {
             return Ok(());
         };
@@ -673,7 +679,7 @@ proptest! {
         ticket in arb_ticket(),
         widen in 0usize..8,
     ) {
-        let config = config();
+        let config = wide_config();
         let template = config.template(&ticket.template).unwrap().clone();
         let mut wide = ticket.clone();
         match widen {
@@ -749,8 +755,8 @@ proptest! {
         limits in (0u32..6, 0u32..6, 1u32..6),
         steps in prop::collection::vec((0u8..3, 0i64..40), 1..80),
     ) {
-        let config = config();
-        let mut ticket = submitted(REQUEST);
+        let config = wide_config();
+        let mut ticket = wide_submitted(REQUEST);
         ticket.limits.max_signatures = limits.0;
         ticket.limits.max_pushes = limits.1;
         ticket.limits.max_ops_per_minute = limits.2;
@@ -791,7 +797,7 @@ fn the_generators_reach_both_outcomes() {
     // Guard against vacuous properties: some random requests fit, some don't, and some
     // narrowed tickets are accepted.
     let mut runner = proptest::test_runner::TestRunner::deterministic();
-    let config = config();
+    let config = wide_config();
     let (mut fit_count, mut rejected) = (0, 0);
     for _ in 0..2000 {
         let request = arb_request().new_tree(&mut runner).unwrap().current();

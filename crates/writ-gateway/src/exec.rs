@@ -5,6 +5,8 @@
 mod git;
 mod sign;
 
+pub use sign::MAX_SIGN_INPUT;
+
 use russh::Channel;
 use russh::server::Msg;
 use writ_approval::GatewayDenial;

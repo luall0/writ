@@ -18,12 +18,14 @@ use writ_core::units::Timestamp;
 pub const GUTTER: &str = "│ ";
 
 /// Agent text made safe for one line of the terminal: every hidden character as `\u{…}`
-/// (newlines included).
+/// (newlines included), and `\` as `\\`, so a typed `\u{1b}` can't pass for an escaped one.
 pub fn clean(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         if is_hidden_char(c) {
             let _ = write!(out, "\\u{{{:x}}}", u32::from(c));
+        } else if c == '\\' {
+            out.push_str("\\\\");
         } else {
             out.push(c);
         }
@@ -40,9 +42,10 @@ pub fn block(text: &str, indent: &str) -> String {
     out
 }
 
-/// Items joined by `, `, or `(none)`.
+/// Items joined by `, `, or `(none)`. Each item is [`clean`]ed: names validated by
+/// `writ-core` can still hold characters a terminal would act on (an email's bidi control).
 pub fn list(items: impl IntoIterator<Item = impl ToString>) -> String {
-    let items: Vec<String> = items.into_iter().map(|i| i.to_string()).collect();
+    let items: Vec<String> = items.into_iter().map(|i| clean(&i.to_string())).collect();
     if items.is_empty() {
         "(none)".to_owned()
     } else {
@@ -98,92 +101,150 @@ pub fn duration(seconds: i64) -> String {
     }
 }
 
-/// The ticket's fields as `(label, value)` pairs, values already cleaned: what the diffs
-/// compare.
-pub fn fields(ticket: &Ticket) -> Vec<(&'static str, String)> {
+/// A field of a ticket, as `writ sign` shows it and diffs compare it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Template,
+    ExpiresAt,
+    SessionKey,
+    OriginHint,
+    Caller,
+    Repos,
+    Operations,
+    Branches,
+    ForcePush,
+    CommitterEmails,
+    SigningKey,
+    MaxSignatures,
+    MaxPushes,
+    MaxOpsPerMinute,
+    MaxPushSize,
+    OnViolation,
+    Title,
+    Task,
+    Plan,
+    ExpectedPaths,
+}
+
+impl Field {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Template => "template",
+            Self::ExpiresAt => "expires at",
+            Self::SessionKey => "session key",
+            Self::OriginHint => "origin hint",
+            Self::Caller => "caller",
+            Self::Repos => "repos",
+            Self::Operations => "operations",
+            Self::Branches => "branches",
+            Self::ForcePush => "force push",
+            Self::CommitterEmails => "committer emails",
+            Self::SigningKey => "signing key",
+            Self::MaxSignatures => "max signatures",
+            Self::MaxPushes => "max pushes",
+            Self::MaxOpsPerMinute => "max ops per minute",
+            Self::MaxPushSize => "max push size",
+            Self::OnViolation => "on violation",
+            Self::Title => "title",
+            Self::Task => "task",
+            Self::Plan => "plan",
+            Self::ExpectedPaths => "expected paths",
+        }
+    }
+}
+
+/// One field's value, already [`clean`]ed (one line).
+pub fn field(ticket: &Ticket, field: Field) -> String {
     let scope = &ticket.scope;
     let limits = &ticket.limits;
     let text = &ticket.text;
-    let caller = match &ticket.subject.caller {
-        None => "(none)".to_owned(),
-        Some(c) => {
-            let p = &c.descends_from;
-            let identity = p.code_identity.as_ref().map_or(String::new(), |i| {
+    match field {
+        Field::Template => clean(ticket.template.as_str()),
+        Field::ExpiresAt => limits.expires_at.to_string(),
+        Field::SessionKey => clean(ticket.subject.session_key.as_str()),
+        Field::OriginHint => clean(ticket.subject.origin_hint.as_deref().unwrap_or("(none)")),
+        Field::Caller => match &ticket.subject.caller {
+            None => "(none)".to_owned(),
+            Some(c) => {
+                let p = &c.descends_from;
+                let identity = p.code_identity.as_ref().map_or(String::new(), |i| {
+                    format!(
+                        ", signed {} team {}",
+                        clean(&i.signing_id),
+                        clean(i.team_id.as_deref().unwrap_or("(none)"))
+                    )
+                });
                 format!(
-                    ", signed {} team {}",
-                    clean(&i.signing_id),
-                    clean(i.team_id.as_deref().unwrap_or("(none)"))
+                    "descends from {} (pid {}, generation {}{identity})",
+                    clean(&p.executable),
+                    p.pid,
+                    p.generation
                 )
-            });
-            format!(
-                "descends from {} (pid {}, generation {}{identity})",
-                clean(&p.executable),
-                p.pid,
-                p.generation
-            )
-        }
-    };
-    vec![
-        ("template", ticket.template.to_string()),
-        ("expires at", limits.expires_at.to_string()),
-        ("session key", ticket.subject.session_key.to_string()),
-        (
-            "origin hint",
-            clean(ticket.subject.origin_hint.as_deref().unwrap_or("(none)")),
-        ),
-        ("caller", caller),
-        ("repos", list(&scope.repos)),
-        ("operations", list(&scope.operations)),
-        ("branches", list(&scope.branches)),
-        (
-            "force push",
-            if scope.force_push { "yes" } else { "no" }.to_owned(),
-        ),
-        ("committer emails", list(&scope.committer_emails)),
-        (
-            "signing key",
-            scope
-                .signing_key
-                .as_ref()
-                .map_or("(none)".to_owned(), ToString::to_string),
-        ),
-        ("max signatures", limits.max_signatures.to_string()),
-        ("max pushes", limits.max_pushes.to_string()),
-        ("max ops per minute", limits.max_ops_per_minute.to_string()),
-        ("max push size", limits.max_push_size.to_string()),
-        (
-            "on violation",
-            match ticket.on_violation {
-                OnViolation::DenyAndNotify => "deny and notify",
-                OnViolation::RevokeLease => "revoke the lease",
             }
-            .to_owned(),
-        ),
-        ("title", clean(&text.title)),
-        ("task", clean(&text.task)),
-        (
-            "plan",
-            text.plan
-                .iter()
-                .enumerate()
-                .map(|(i, step)| format!("{}. {}", i + 1, clean(step)))
-                .collect::<Vec<_>>()
-                .join(" / "),
-        ),
-        (
-            "expected paths",
-            list(text.expected_paths.iter().map(|p| clean(p.as_str()))),
-        ),
-    ]
+        },
+        Field::Repos => list(&scope.repos),
+        Field::Operations => list(&scope.operations),
+        Field::Branches => list(&scope.branches),
+        Field::ForcePush => if scope.force_push { "yes" } else { "no" }.to_owned(),
+        Field::CommitterEmails => list(&scope.committer_emails),
+        Field::SigningKey => scope
+            .signing_key
+            .as_ref()
+            .map_or("(none)".to_owned(), |k| clean(k.as_str())),
+        Field::MaxSignatures => limits.max_signatures.to_string(),
+        Field::MaxPushes => limits.max_pushes.to_string(),
+        Field::MaxOpsPerMinute => limits.max_ops_per_minute.to_string(),
+        Field::MaxPushSize => limits.max_push_size.to_string(),
+        Field::OnViolation => match ticket.on_violation {
+            OnViolation::DenyAndNotify => "deny and notify",
+            OnViolation::RevokeLease => "revoke the lease",
+        }
+        .to_owned(),
+        Field::Title => clean(&text.title),
+        Field::Task => clean(&text.task),
+        Field::Plan => text
+            .plan
+            .iter()
+            .enumerate()
+            .map(|(i, step)| format!("{}. {}", i + 1, clean(step)))
+            .collect::<Vec<_>>()
+            .join(" / "),
+        Field::ExpectedPaths => list(text.expected_paths.iter().map(|p| p.as_str())),
+    }
 }
+
+/// Every field, in display order.
+pub const FIELDS: [Field; 20] = [
+    Field::Template,
+    Field::ExpiresAt,
+    Field::SessionKey,
+    Field::OriginHint,
+    Field::Caller,
+    Field::Repos,
+    Field::Operations,
+    Field::Branches,
+    Field::ForcePush,
+    Field::CommitterEmails,
+    Field::SigningKey,
+    Field::MaxSignatures,
+    Field::MaxPushes,
+    Field::MaxOpsPerMinute,
+    Field::MaxPushSize,
+    Field::OnViolation,
+    Field::Title,
+    Field::Task,
+    Field::Plan,
+    Field::ExpectedPaths,
+];
 
 /// The fields that differ between two tickets: `(label, before, after)`.
 pub fn diff(before: &Ticket, after: &Ticket) -> Vec<(&'static str, String, String)> {
-    fields(before)
+    FIELDS
         .into_iter()
-        .zip(fields(after))
-        .filter(|((_, a), (_, b))| a != b)
-        .map(|((label, a), (_, b))| (label, a, b))
+        .filter_map(|f| {
+            let (a, b) = (field(before, f), field(after, f));
+            (a != b).then(|| (f.label(), a, b))
+        })
         .collect()
 }
 
@@ -214,16 +275,12 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp) -> String {
     if let Some(revised) = &t.revises {
         let _ = writeln!(out, "  revises ticket {revised}");
     }
-    let all = fields(ticket);
-    let value = |label: &str| {
-        all.iter()
-            .find(|(l, _)| *l == label)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default()
+    let row = |out: &mut String, f: Field| {
+        let _ = writeln!(out, "  {:<18} {}", f.label(), field(ticket, f));
     };
     out.push_str("\nWho\n");
-    for label in ["session key", "caller"] {
-        let _ = writeln!(out, "  {label:<18} {}", value(label));
+    for f in [Field::SessionKey, Field::Caller] {
+        row(&mut out, f);
     }
     let _ = writeln!(out, "  origin hint (the agent's claim, not checked):");
     out.push_str(&block(
@@ -231,25 +288,25 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp) -> String {
         "    ",
     ));
     out.push_str("\nScope (enforced)\n");
-    for label in [
-        "repos",
-        "operations",
-        "branches",
-        "force push",
-        "committer emails",
-        "signing key",
+    for f in [
+        Field::Repos,
+        Field::Operations,
+        Field::Branches,
+        Field::ForcePush,
+        Field::CommitterEmails,
+        Field::SigningKey,
     ] {
-        let _ = writeln!(out, "  {label:<18} {}", value(label));
+        row(&mut out, f);
     }
     out.push_str("\nLimits (enforced)\n");
-    for label in [
-        "max signatures",
-        "max pushes",
-        "max ops per minute",
-        "max push size",
-        "on violation",
+    for f in [
+        Field::MaxSignatures,
+        Field::MaxPushes,
+        Field::MaxOpsPerMinute,
+        Field::MaxPushSize,
+        Field::OnViolation,
     ] {
-        let _ = writeln!(out, "  {label:<18} {}", value(label));
+        row(&mut out, f);
     }
     out.push_str("\nWritten by the agent (untrusted, shown as written)\n");
     out.push_str("  title\n");
@@ -264,7 +321,7 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp) -> String {
         out.push_str(&block(&format!("{}. {step}", i + 1), "    "));
     }
     out.push_str("  expected paths\n");
-    out.push_str(&block(&value("expected paths"), "    "));
+    out.push_str(&block(&field(ticket, Field::ExpectedPaths), "    "));
     if let Some(feedback) = &t.previous_feedback {
         let _ = writeln!(
             out,
@@ -306,6 +363,50 @@ mod tests {
         );
         assert_eq!(clean("\u{9b}31m"), "\\u{9b}31m");
         assert_eq!(clean("del\u{7f}"), "del\\u{7f}");
+        // A typed escape is not an escape.
+        assert_eq!(clean("\\u{1b}"), "\\\\u{1b}");
+        assert_ne!(clean("\\u{1b}"), clean("\u{1b}"));
+    }
+
+    #[test]
+    fn a_hostile_ticket_shows_nothing_a_terminal_would_act_on() {
+        use writ_core::canonical::Canonical;
+        const FULL: &[u8] = include_bytes!("../../writ-core/tests/fixtures/ticket-full.json");
+        let mut t = Ticket::from_canonical(FULL).unwrap();
+        let hostile = "x\u{1b}[2J\u{202e}y\u{200b}\r\nScope (enforced)\n  repos  everything\u{9b}";
+        t.text.title = hostile.to_owned();
+        t.text.task = hostile.to_owned();
+        t.text.plan = vec![hostile.to_owned(), hostile.to_owned()];
+        t.text.previous_feedback = Some(hostile.to_owned());
+        t.subject.origin_hint = Some(hostile.to_owned());
+        if let Some(caller) = &mut t.subject.caller {
+            caller.descends_from.executable = hostile.to_owned();
+        }
+        let now = t.created_at;
+        let mut shown = ticket(&t, State::Pending, now);
+        shown.push_str(&changes(
+            "diff",
+            &diff(&Ticket::from_canonical(FULL).unwrap(), &t),
+        ));
+        for c in shown.chars() {
+            assert!(
+                c == '\n' || !is_hidden_char(c),
+                "{c:?} reached the terminal"
+            );
+        }
+        // Agent text never starts a line of its own: a forged section header is behind the
+        // gutter or inside a field, never at the start of a line.
+        for line in shown.lines() {
+            assert!(
+                !line.starts_with("Scope (enforced)") || !line.contains("everything"),
+                "{line:?}"
+            );
+            assert!(
+                !line.trim_start().starts_with("repos  everything"),
+                "{line:?}"
+            );
+        }
+        assert!(shown.contains("\\u{1b}[2J"), "escaped, still visible");
     }
 
     #[test]

@@ -36,9 +36,11 @@ impl Signer {
             // in the agent.
             let public = approval_public_key(&self.key)?;
             let key = dir.join("approval.pub");
-            std::fs::write(&key, public)?;
+            std::fs::write(&key, public)
+                .with_context(|| format!("cannot write {}", key.display()))?;
             let file = dir.join("message");
-            std::fs::write(&file, message)?;
+            std::fs::write(&file, message)
+                .with_context(|| format!("cannot write {}", file.display()))?;
             let mut command = Process::new("ssh-keygen");
             command
                 .args(["-Y", "sign", "-n", APPROVAL_NAMESPACE, "-f"])

@@ -93,6 +93,7 @@ pub struct Previous {
     pub canonical: String,
 }
 
+/// How a ticket follows the one shown with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Relation {

@@ -149,6 +149,13 @@ impl Ticket {
         self.text.amends.as_ref().unwrap_or(&self.id)
     }
 
+    /// Whether `now` is at or past `expires_at`: from that second on, the ticket (or the lease
+    /// it became) grants nothing.
+    pub fn is_expired(&self, now: Timestamp) -> bool {
+        now >= self.limits.expires_at
+    }
+
+    /// Whether the scope includes `operation`.
     pub fn allows(&self, operation: Operation) -> bool {
         self.scope.operations.contains(&operation)
     }
@@ -174,6 +181,7 @@ pub struct TicketRequest {
     pub on_violation: OnViolation,
 }
 
+/// What the agent asks the lease to allow (`scope:` in the ticket file).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestScope {
@@ -188,6 +196,8 @@ pub struct RequestScope {
     pub committer_emails: Vec<Email>,
 }
 
+/// The agent's words and the links to other tickets (`ticket:` in the ticket file). Shown to
+/// the approver, never read by the policy (except `expected_paths`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestText {
@@ -229,6 +239,23 @@ impl TicketRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ticket_expires_at_its_expires_at_second() {
+        use crate::canonical::Canonical;
+        let ticket =
+            Ticket::from_canonical(include_bytes!("../tests/fixtures/ticket-full.json")).unwrap();
+        let end = ticket.limits.expires_at;
+        assert!(
+            !ticket.is_expired(end.saturating_sub_seconds(1)),
+            "one second before"
+        );
+        assert!(ticket.is_expired(end), "at expires_at");
+        assert!(
+            ticket.is_expired(end.saturating_sub_seconds(-1)),
+            "one second after"
+        );
+    }
 
     #[test]
     fn operation_names_are_the_same_everywhere() {

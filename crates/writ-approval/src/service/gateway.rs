@@ -94,7 +94,7 @@ impl Service {
                 hint: None,
             });
         }
-        if now >= lease.ticket.limits.expires_at {
+        if lease.ticket.is_expired(now) {
             return Err(Denial {
                 code: DenyCode::Expired,
                 reason: format!("lease {} has expired", lease.id),

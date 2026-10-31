@@ -1,6 +1,6 @@
 //! Messages between clients and the daemon.
 //!
-//! Everything travels over the daemon's SSH protocol ([Q16](../../docs/decisions.md)): a
+//! Everything travels over the daemon's SSH protocol (Q16 in `docs/decisions.md`): a
 //! client opens a session channel, runs one command (an SSH exec request), writes a body on
 //! stdin, and reads one JSON reply on stdout. The exit status is 0 when the command did what
 //! was asked, 1 otherwise; on failure the daemon also writes `writ: <reason>` on stderr, for

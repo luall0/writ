@@ -630,3 +630,42 @@ async fn https_turns_away_a_caller_the_attestor_cannot_attest() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn bodies_are_read_up_to_their_limit_and_refused_past_it() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let agent = Daemon::with_key(&daemon.agents, "writ", &key)
+        .await
+        .unwrap();
+    let too_large = format!("the request is larger than {} bytes", writ_proto::MAX_BODY);
+    // At the limit: read whole, then judged as a ticket (not YAML here).
+    let at_limit = vec![b'#'; writ_proto::MAX_BODY];
+    let (_, err, status) = exec(&agent, "writ request", &at_limit).await;
+    assert_eq!(status, Some(1));
+    assert!(!err.contains(&too_large), "{err}");
+    assert!(err.contains("ticket"), "{err}");
+    // One byte over: refused for its size.
+    let over = vec![b'#'; writ_proto::MAX_BODY + 1];
+    let (_, err, status) = exec(&agent, "writ request", &over).await;
+    assert_eq!(status, Some(1));
+    assert!(err.contains(&too_large), "{err}");
+
+    let (key, cert) = lease(&daemon).await;
+    let holder = Daemon::with_cert(&daemon.agents, &key, &cert)
+        .await
+        .unwrap();
+    let limit = usize::try_from(writ_gateway::MAX_SIGN_INPUT).unwrap();
+    let (out, err, status) = exec(&holder, "writ-sign git", &vec![b'x'; limit]).await;
+    assert_eq!(status, Some(0), "{err}");
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .starts_with("-----BEGIN SSH SIGNATURE-----")
+    );
+    let (out, err, status) = exec(&holder, "writ-sign git", &vec![b'x'; limit + 1]).await;
+    assert_eq!(status, Some(1));
+    assert!(out.is_empty());
+    assert!(err.contains("object too large to sign"), "{err}");
+    assert_eq!(daemon.audit("sign", "denied").len(), 1);
+}

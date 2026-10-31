@@ -28,30 +28,57 @@ pub const RATE_WINDOW_SECONDS: i64 = 60;
 const PATHS_SHOWN: usize = 5;
 
 /// Why a request was denied, in a few stable categories (for the audit log and the
-/// violation policy).
+/// violation policy). Each code's text ([`DenyCode::as_str`]) is the audit log's `code` and
+/// never changes; [`DenyCode::is_violation`] says which ones are the agent overstepping its
+/// ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DenyCode {
+    /// No lease matches the certificate (`no_lease`).
     NoLease,
+    /// More than one lease matches: deny rather than pick (`ambiguous_lease`).
     AmbiguousLease,
+    /// The lease is pending, refused, revoked, closed… anything but active (`not_active`).
     NotActive,
+    /// The lease is past `expires_at` (`expired`).
     Expired,
+    /// Every signature and push the lease allows is used (`exhausted`).
     Exhausted,
+    /// The caller doesn't meet the lease's caller constraint (`caller`).
     Caller,
+    /// The operation is not in the lease (`operation`, a violation).
     Operation,
+    /// The repo is not in the lease (`repo`, a violation).
     Repo,
+    /// The lease no longer fits the configuration: its template or repo changed (`config`).
     Config,
+    /// The push mode is not allowed for the repo (`push_mode`, a violation).
     PushMode,
+    /// Only commits are signed: not a tag, tree or blob (`object_type`, a violation).
     ObjectType,
+    /// The committer email is not in the lease (`committer`, a violation).
     Committer,
+    /// The `Writ:` trailer is missing or names another lease (`ticket_link`, a violation).
     TicketLink,
+    /// The commit touches paths outside `expected_paths` with `paths_check: deny` (`paths`,
+    /// a violation).
     Paths,
+    /// The ref is not a branch the lease allows (`ref`, a violation).
     Ref,
+    /// The ref is protected in the repo registry (`protected_ref`, a violation).
     ProtectedRef,
+    /// A deletion or non-fast-forward without `force_push` (`force_push`, a violation).
     ForcePush,
+    /// A pushed commit was not signed under this lease for this repo (`unsigned`, a
+    /// violation).
     Unsigned,
+    /// The push is over `max_push_size` (`size`, a violation).
     Size,
+    /// A count limit is reached: signatures or pushes (`limit`).
     Limit,
+    /// Over `max_ops_per_minute` (`rate`).
     Rate,
+    /// The request itself is malformed, or the daemon can't decide (an internal fault): fail
+    /// closed (`invalid`).
     Invalid,
 }
 
@@ -76,6 +103,7 @@ impl DenyCode {
         )
     }
 
+    /// The code as the audit log writes it (`no_lease`, `protected_ref`, …).
     pub fn as_str(self) -> &'static str {
         match self {
             DenyCode::NoLease => "no_lease",
@@ -293,7 +321,7 @@ fn admit<'a>(
         }
         other => return Err(deny(DenyCode::NotActive, format!("lease {id} is {other}"))),
     }
-    if ctx.now >= lease.ticket.limits.expires_at {
+    if lease.ticket.is_expired(ctx.now) {
         return Err(deny(DenyCode::Expired, format!("lease {id} expired")));
     }
     if is_exhausted(&lease.ticket, ctx.usage) {

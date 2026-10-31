@@ -14,7 +14,7 @@ use crate::ticket::Operation;
 use crate::units::{ByteSize, Duration};
 use crate::yaml::{FieldError, parse_yaml};
 
-/// How pushes to a repo reach upstream ([gateway.md](../../docs/architecture/gateway.md)).
+/// How pushes to a repo reach upstream (`docs/architecture/gateway.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PushMode {

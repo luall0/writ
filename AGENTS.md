@@ -31,7 +31,7 @@ gets its page (the template there) written up to its plan before any code.
 | Daemon binary / Docker image | `writd` / `writ/writd` |
 | CLI binary | `writ` (crate `writ-cli`) |
 | git signing shim (`gpg.ssh.program`) | `writ-sign` |
-| Crates | `writ-<part>` under `crates/` ([layout](docs/architecture/overview.md#repository-layout-planned)); platform-only code in `writ-platform-<os>` |
+| Crates | `writ-<part>` under `crates/` ([layout](docs/architecture/overview.md#repository-layout)); platform-only code in `writ-platform-<os>` |
 | Lease / ticket ids | `wrt_` + ULID (e.g. `wrt_01JD8X…`) |
 | Approval SSHSIG namespace | `writ-approval` |
 | Commit trailer (`ticket_link: trailer`) | `Writ: wrt_…` |

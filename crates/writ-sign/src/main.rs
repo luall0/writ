@@ -108,8 +108,9 @@ fn parse_url(url: &str) -> anyhow::Result<(String, Option<String>)> {
 fn sign(args: &[OsString]) -> anyhow::Result<()> {
     let request = parse(args)?;
     let object = std::fs::read(&request.file)
-        .with_context(|| format!("reading {}", request.file.display()))?;
-    let url = git_config("writ.url").context("git config writ.url is not set (run writ init)")?;
+        .with_context(|| format!("cannot read {}", request.file.display()))?;
+    let url = git_config("writ.url")
+        .context("git config writ.url is not set: the repo is not set up for Writ")?;
     let (destination, port) = parse_url(&url)?;
     let ssh = ssh_command(
         std::env::var("GIT_SSH_COMMAND").ok(),
@@ -140,7 +141,12 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
     check_signature(&out.stdout)?;
     let mut sig_path = request.file.into_os_string();
     sig_path.push(".sig");
-    std::fs::write(&sig_path, &out.stdout).context("cannot write the signature")?;
+    std::fs::write(&sig_path, &out.stdout).with_context(|| {
+        format!(
+            "cannot write the signature to {}",
+            std::path::Path::new(&sig_path).display()
+        )
+    })?;
     Ok(())
 }
 

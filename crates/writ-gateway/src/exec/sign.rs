@@ -8,7 +8,7 @@ use writ_crypto::sshsig;
 use crate::Gateway;
 
 /// Largest object accepted for signing.
-pub(crate) const MAX_SIGN_INPUT: u64 = 16 * 1024 * 1024;
+pub const MAX_SIGN_INPUT: u64 = 16 * 1024 * 1024;
 
 /// The armored SSHSIG over the object read from the channel, or why it can't be signed.
 pub(super) async fn sign(

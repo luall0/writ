@@ -218,7 +218,9 @@ pub async fn sign(
                     "Sign this ticket with {}? [y]es / [n]o / [r]efuse: ",
                     signer.key.display()
                 );
-                std::io::stdout().flush()?;
+                std::io::stdout()
+                    .flush()
+                    .context("cannot write to the terminal")?;
                 read_line()?.to_ascii_lowercase()
             };
             match answer.as_str() {

@@ -186,6 +186,13 @@ pub struct Lease {
     pub cert_serial: u64,
 }
 
+impl Lease {
+    /// Whether the lease grants anything at `now`: active and not past `expires_at`.
+    pub fn is_in_force(&self, now: Timestamp) -> bool {
+        self.state == State::Active && !self.ticket.is_expired(now)
+    }
+}
+
 /// What a lease has used so far, gathered by the daemon from the store.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
@@ -246,7 +253,7 @@ pub fn apply_amendment(
             lease: lease.id.clone(),
         });
     }
-    if lease.state != State::Active || now >= lease.ticket.limits.expires_at {
+    if !lease.is_in_force(now) {
         return Err(LifecycleError::LeaseNotActive(lease.id.clone()));
     }
     if signed.subject.session_key != lease.ticket.subject.session_key {
@@ -279,7 +286,7 @@ fn check_approval(
     }
     narrow::check(submitted, signed)?;
     fit::fits(config, signed)?;
-    if now >= signed.limits.expires_at {
+    if signed.is_expired(now) {
         return Err(LifecycleError::ExpiredBeforeApproval);
     }
     Ok(())
@@ -303,7 +310,7 @@ pub fn due_transition(lease: &Lease, usage: &Usage, now: Timestamp) -> Option<St
     if lease.state != State::Active {
         return None;
     }
-    if now >= lease.ticket.limits.expires_at {
+    if lease.ticket.is_expired(now) {
         Some(State::Expired)
     } else if is_exhausted(&lease.ticket, usage) {
         Some(State::Exhausted)
@@ -314,6 +321,5 @@ pub fn due_transition(lease: &Lease, usage: &Usage, now: Timestamp) -> Option<St
 
 /// A pending ticket whose `expires_at` passed can no longer be signed.
 pub fn pending_due(record: &TicketRecord, now: Timestamp) -> Option<State> {
-    (record.state == State::Pending && now >= record.ticket.limits.expires_at)
-        .then_some(State::Expired)
+    (record.state == State::Pending && record.ticket.is_expired(now)).then_some(State::Expired)
 }

@@ -1,8 +1,7 @@
 //! The approval service: tickets from submission to decision, and the leases they become.
 //!
 //! [`Service`] holds the lease store, the audit log and the certificate authority, and serves
-//! both sides of [Flows § 1](../../docs/flows.md#1-ticket-submit-review-sign-or-refuse) and
-//! [§ 5](../../docs/flows.md#5-revoke--expire):
+//! both sides of `docs/flows.md` § 1 and § 5:
 //!
 //! - the agent's: [`Service::submit`] (a ticket file and the session key it was sent with) and
 //!   [`Service::wait`] (the decision, with the lease and its certificate once signed);

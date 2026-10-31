@@ -62,7 +62,7 @@ components = ["rustfmt", "clippy"]
 ## 3. Create the crates
 
 Start with what M0 needs and add the others when a milestone needs them, following the
-[planned layout](../architecture/overview.md#repository-layout-planned):
+[planned layout](../architecture/overview.md#repository-layout):
 
 ```bash
 cargo new --lib crates/writ-core
