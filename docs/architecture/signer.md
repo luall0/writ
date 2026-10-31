@@ -31,6 +31,12 @@ pub trait Signer: Send + Sync {
 The same interface also holds the **upstream credentials** (the SSH key the daemon uses to
 push to forges), so those can move to a YubiKey too.
 
+And, from M5, the **HTTPS approval API's TLS key** (P-256): rustls signs each handshake through
+a small adapter that asks the `Signer` for a raw signature and DER-encodes it, and the
+self-signed certificate is made the same way. Its backend is a config choice like any key's
+(software by default, the Secure Enclave from M7.5); a new key means a new certificate, so
+approvers re-pin it once.
+
 v1 ships the software backend; the others are in the [backlog](../backlog/README.md) (and
 the Secure Enclave in local mode, `se-cryptokit`, in
 [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac)).

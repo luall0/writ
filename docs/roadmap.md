@@ -119,6 +119,17 @@ Acceptance:
 - `writd` starts sealed and serves only the unseal endpoint; `writ unseal` sends the
   passphrase and an unseal SSHSIG; active leases reloaded after unsealing.
 - Admin changes (approvers, templates, repo registry) only through signed approvals, logged.
+- The HTTPS approval API's TLS key behind the `Signer`, like every other key: it lives in the
+  keystore under a key id (`tls-01`), the self-signed certificate is made by signing through
+  the `Signer`, and rustls signs handshakes through a small adapter (its signing-key trait
+  asking the `Signer`, which returns the raw signature; the adapter DER-encodes it). The
+  software backend (the `p256` crate, wiped on drop) is the default; a hardware backend is a
+  config choice (M7.5). Handshake signatures run off the async threads if the backend is slow.
+- Process hardening for every secret the daemon holds in memory (keys, tokens, the data key,
+  the TLS key): no core dumps, no debugger attach, secret memory locked out of swap. OS
+  calls, so behind a platform interface with its contract suite (hard rule 4), applied at
+  startup before any secret is loaded; a platform that can't apply one says so in the log
+  and the threat model.
 
 Acceptance:
 - [ ] While sealed, every request fails closed with "daemon sealed".
@@ -127,6 +138,12 @@ Acceptance:
 - [ ] The keys volume alone reveals no key (checked by inspecting it at rest).
 - [ ] A restart keeps active leases working after unseal; their certificates still expire on time.
 - [ ] An unsigned or wrongly signed admin change is refused; a signed one applies and is logged.
+- [ ] The TLS key is only in the keystore and the `Signer`: no PEM key file, no copy outside
+      the `Signer`; HTTPS approvals work as in M2, with the certificate pinned from
+      `writd tls-fingerprint`.
+- [ ] The running daemon leaves no core dump when it crashes, refuses a debugger attaching
+      to it (`lldb -p`, `gdb -p` as the same user), and its secret pages are locked (checked
+      on macOS and on Linux).
 
 ## M6 — Agent skill, amendments and close
 
@@ -188,8 +205,10 @@ Secure Enclave key whose blob lives in `_writd`'s directory. A `Signer` implemen
 `writ-platform-macos` calling a small Swift component (CryptoKit has no C or Rust API) and a
 config value; nothing else changes.
 
-- The backend, and key creation for it (agent signing keys, optionally the upstream
-  credential).
+- The backend, and key creation for it (agent signing keys, the HTTPS approval API's TLS key,
+  optionally the upstream credential). The Secure Enclave does P-256, the TLS certificate's
+  curve. Moving the TLS key to it makes a new key, so a new certificate: approvers re-pin it
+  once (`writd tls-fingerprint`).
 - The Swift component and how `writd` calls it (linked in, or a helper process), built from
   the `Makefile`.
 - A corrupted or foreign blob refused cleanly: CryptoKit crashes the process on one (M0), so
@@ -202,6 +221,8 @@ Acceptance:
 - [ ] With the real daemon: signing needs no prompt, works after a reboot and with the screen
       locked; another process, and my user, can't find or use the key.
 - [ ] Commits signed with it verify with `git verify-commit`, as in M3.
+- [ ] With the TLS key in the Secure Enclave, HTTPS approvals work after re-pinning, and the
+      old pin is refused.
 - [ ] Going back to the software backend is a config change only.
 - [ ] A corrupted blob is refused with a reason and the daemon keeps running.
 
