@@ -14,3 +14,6 @@
 
 # Swift spikes
 .build/
+
+# Xcode per-user state
+xcuserdata/
