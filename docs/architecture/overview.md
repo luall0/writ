@@ -83,7 +83,7 @@ flowchart LR
 
 One Cargo workspace. Each crate has a `README.md` saying what it does and what it doesn't;
 the code conventions (module layout, errors, logging, tests) are in
-`docs/conventions.md` (M2.5).
+[conventions.md](../conventions.md).
 
 ```
 Cargo.toml              workspace root (members, shared lints, shared dependency versions)

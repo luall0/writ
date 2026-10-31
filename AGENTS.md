@@ -91,6 +91,11 @@ records every commit signed per lease. Use these words in code, logs and docs.
 12. **Every guarantee has a test** that tries to break it ([guarantee tests](docs/testing.md#guarantee-tests)).
     A change that weakens a guarantee or adds a residual risk updates the
     [threat model](docs/threat-model.md) in the same change, and needs the user's go-ahead.
+    **Tests are hardened** ([rules](docs/testing.md#hardened-tests)): deterministic (never
+    `sleep` then assert, wait on a signal; no real clock where a fake fits; no fixed ports;
+    property tests seeded) and adversarial (a denial asserts its exact code or error variant,
+    never just `is_err()`; every limit tested on both sides; hostile input where input is
+    untrusted). A test that can pass by luck is a bug.
 13. **Respect the [non-goals](docs/product.md#non-goals)** (no GPG, no tag signing, no generic
     secret proxying, no multi-user) unless explicitly asked.
 14. **English everywhere** in code, comments, logs, messages and commits.
@@ -98,12 +103,17 @@ records every commit signed per lease. Use these words in code, logs and docs.
     architecture updates the matching page in `docs/` in the same change. A new decision gets a
     row at the end of the [decision log](docs/decisions.md); a new question goes under its open
     questions.
+16. **Follow the [code conventions](docs/conventions.md)** (crate and module layout,
+    interfaces and their implementations, errors, secrets, logging, visibility, tests). If a
+    convention has to change, change the page in the same change.
 
 ## Definition of done
 
-`make check` passes, `make test` passes, and the milestone's acceptance items touched by the
-change were exercised for real (real `git`, real `ssh`, the daemon running). State in your
-summary what you ran.
+`make check` passes, `make test` passes (unit and integration tests, and both property-test
+passes), and the milestone's acceptance items touched by the change were exercised for real:
+as integration scenarios in `crates/writ-integration` (real `git`, real `ssh`, the daemon
+running), plus the [manual checks](docs/guides/manual-checks.md) for what needs a human
+(Touch ID). State in your summary what you ran.
 
 ## Commands
 
@@ -111,8 +121,9 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 
 | Task | Command |
 |---|---|
-| Lint, format check, dependency directions | `make check` |
-| Tests | `make test` |
+| Lint, format check, dependency directions, source rules, doc links | `make check` |
+| Tests: unit and integration, property tests with the fixed seed and a random one | `make test` |
+| Property tests with one seed (replay a failure) | `make test-props SEED=<number\|random>` |
 | Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
 | Pin the development daemon for the client (`dev/data/client/`), before the [manual checks](docs/guides/manual-checks.md) | `make dev-client` |
 | Format | `make fmt` |
@@ -145,5 +156,6 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | `writ` CLI, `writ-sign`, the agent skill, `writ try`, agent host git config | [docs/architecture/clients.md](docs/architecture/clients.md) |
 | Docker, compose, network exposure, host hardening, launchd | [docs/architecture/deployment.md](docs/architecture/deployment.md) |
 | Crates, external tool versions, pinning | [docs/stack.md](docs/stack.md) |
-| Tests, fixtures, guarantee tests | [docs/testing.md](docs/testing.md) |
+| Tests: levels, hardening rules, fixtures, guarantee tests, property-test seeds | [docs/testing.md](docs/testing.md) |
+| Code conventions: crates, modules, errors, secrets, logging, docs | [docs/conventions.md](docs/conventions.md) |
 | Bootstrapping an empty repo | [docs/guides/initialization.md](docs/guides/initialization.md) |

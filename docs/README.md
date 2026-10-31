@@ -25,8 +25,8 @@ conventions, hard rules and commands, and points here for details.
   `direct_ssh`), fetch, revoke, out-of-ticket, close, sealed startup.
 
 ## Architecture
-- [Overview](architecture/overview.md): deployment modes, component map, planned repository
-  layout and dependency directions.
+- [Overview](architecture/overview.md): deployment modes, component map, repository layout
+  and dependency directions.
 - [Gateway, mirrors and upstream](architecture/gateway.md): SSH gateway, mirrors, upstream
   pusher, push modes, URL rewrite.
 - [Policy, state and audit](architecture/policy-and-state.md): policy engine, lease store and
@@ -48,7 +48,10 @@ conventions, hard rules and commands, and points here for details.
 
 ## Engineering
 - [Stack](stack.md): technology choices (decided and proposed), external tools, pinning.
-- [Testing](testing.md): what to test in each crate, guarantee tests.
+- [Testing](testing.md): the three levels (unit, integration, end to end), the hardened-test
+  rules, property-test seeds, what to test in each crate, guarantee tests.
+- [Code conventions](conventions.md): crate and module layout, interfaces and their
+  implementations, errors, secrets, logging, visibility, docs.
 - [Project initialization](guides/initialization.md): one-time bootstrap of the Cargo
   workspace (run only on an empty repo).
 - [Manual checks](guides/manual-checks.md): the checks that need a person (Touch ID with
