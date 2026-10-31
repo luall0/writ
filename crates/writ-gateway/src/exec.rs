@@ -94,7 +94,11 @@ pub(crate) async fn run(
                 _ => None,
             };
             let cmd = match &push {
-                Some(push) => push.receive_pack(&path, git_protocol),
+                Some(push) => push.receive_pack(
+                    &path,
+                    git_protocol,
+                    lease.ticket.limits.max_push_size.bytes(),
+                ),
                 None => git::upload_pack(&path, git_protocol),
             };
             match git::spawn(cmd) {

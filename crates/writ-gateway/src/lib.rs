@@ -145,6 +145,7 @@ impl Gateway {
 
         let ssh = Arc::new(russh::server::Config {
             methods: russh::MethodSet::from(&[russh::MethodKind::PublicKey][..]),
+            preferred: preferred_algorithms(),
             keys: vec![config.host_key.clone()],
             auth_rejection_time: Duration::from_millis(300),
             auth_rejection_time_initial: Some(Duration::ZERO),
@@ -315,17 +316,26 @@ impl Gateway {
         self.shared.next_connection.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn register_session(&self, serial: u64, connection: u64, handle: russh::server::Handle) {
-        if let Ok(mut sessions) = self.shared.sessions.lock() {
-            sessions
-                .entry(serial)
-                .or_default()
-                .insert(connection, handle);
-        }
+    /// Tracks a lease holder's session so a revocation can drop it. Fails closed: a session
+    /// that can't be tracked (a poisoned table) is refused, since nothing could drop it.
+    fn register_session(
+        &self,
+        serial: u64,
+        connection: u64,
+        handle: russh::server::Handle,
+    ) -> Result<()> {
+        self.shared
+            .sessions
+            .lock()
+            .map_err(|_| GatewayError::Config("the session table is poisoned".to_owned()))?
+            .entry(serial)
+            .or_default()
+            .insert(connection, handle);
         // Revoked between authentication and now: drop it like the others.
         if self.shared.service.is_revoked(serial) {
             self.drop_sessions(serial);
         }
+        Ok(())
     }
 
     fn unregister_session(&self, serial: u64, connection: u64) {
@@ -341,17 +351,23 @@ impl Gateway {
 
     /// Disconnects every open session of a certificate, and forgets its pushes in progress
     /// (their hook is then refused as an unknown push).
+    ///
+    /// A reduction of privilege: a poisoned table is still used (its handles are dropped),
+    /// never skipped.
     fn drop_sessions(&self, serial: u64) {
-        if let Ok(mut pushes) = self.shared.pushes.lock() {
-            pushes.retain(|_, push| push.cert.serial != serial);
-        }
-        let handles: Vec<russh::server::Handle> = match self.shared.sessions.lock() {
-            Ok(mut sessions) => sessions
-                .remove(&serial)
-                .map(|by_connection| by_connection.into_values().collect())
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
+        self.shared
+            .pushes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, push| push.cert.serial != serial);
+        let handles: Vec<russh::server::Handle> = self
+            .shared
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&serial)
+            .map(|by_connection| by_connection.into_values().collect())
+            .unwrap_or_default();
         for handle in handles {
             tokio::spawn(async move {
                 let _ = handle
@@ -372,6 +388,38 @@ impl Gateway {
             .lock()
             .map(|s| s.get(&serial).map_or(0, HashMap::len))
             .unwrap_or(0)
+    }
+}
+
+/// The SSH algorithms the gateway speaks, stated here rather than left to russh's defaults:
+/// post-quantum hybrid or X25519 key exchange (with strict kex), AEAD ciphers only, Ed25519
+/// and ECDSA P-256 keys (host, session, reader), no compression, no SHA-1 anywhere.
+fn preferred_algorithms() -> russh::Preferred {
+    use std::borrow::Cow;
+    use writ_crypto::ssh_key::{Algorithm, EcdsaCurve};
+    const KEX: &[russh::kex::Name] = &[
+        russh::kex::MLKEM768X25519_SHA256,
+        russh::kex::CURVE25519,
+        russh::kex::EXTENSION_SUPPORT_AS_SERVER,
+        russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER,
+    ];
+    const CIPHERS: &[russh::cipher::Name] =
+        &[russh::cipher::CHACHA20_POLY1305, russh::cipher::AES_256_GCM];
+    const MACS: &[russh::mac::Name] = &[russh::mac::HMAC_SHA512_ETM, russh::mac::HMAC_SHA256_ETM];
+    const COMPRESSION: &[russh::compression::Name] = &[russh::compression::NONE];
+    const KEYS: &[Algorithm] = &[
+        Algorithm::Ed25519,
+        Algorithm::Ecdsa {
+            curve: EcdsaCurve::NistP256,
+        },
+    ];
+    russh::Preferred {
+        kex: Cow::Borrowed(KEX),
+        key: Cow::Borrowed(KEYS),
+        cipher: Cow::Borrowed(CIPHERS),
+        mac: Cow::Borrowed(MACS),
+        compression: Cow::Borrowed(COMPRESSION),
+        ..russh::Preferred::DEFAULT
     }
 }
 
@@ -415,10 +463,14 @@ async fn drop_revoked_sessions(
         match revocations.recv().await {
             Ok(serial) => gateway.drop_sessions(serial),
             Err(RecvError::Lagged(_)) => {
-                let serials: Vec<u64> = match gateway.shared.sessions.lock() {
-                    Ok(sessions) => sessions.keys().copied().collect(),
-                    Err(_) => Vec::new(),
-                };
+                let serials: Vec<u64> = gateway
+                    .shared
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .keys()
+                    .copied()
+                    .collect();
                 for serial in serials {
                     if gateway.shared.service.is_revoked(serial) {
                         gateway.drop_sessions(serial);

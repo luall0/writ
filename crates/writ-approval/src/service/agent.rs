@@ -10,7 +10,7 @@ use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::ticket::{Ticket, TicketRequest};
 use writ_core::units::Timestamp;
 use writ_crypto::keys;
-use writ_crypto::ssh_key::PublicKey;
+use writ_crypto::ssh_key::{Algorithm, EcdsaCurve, PublicKey};
 use writ_platform::{Notification, Priority};
 use writ_proto::{Decision, Submitted};
 use writ_store::{AuditEvent, EventKind, Outcome};
@@ -42,6 +42,23 @@ impl Service {
             Err(error)
         };
 
+        // Decided here, not by which algorithms the SSH library happens to verify: a session
+        // key is made by `writ` (Ed25519) or a Secure Enclave (P-256).
+        let algorithm = session_key.algorithm();
+        if !matches!(
+            algorithm,
+            Algorithm::Ed25519
+                | Algorithm::Ecdsa {
+                    curve: EcdsaCurve::NistP256
+                }
+        ) {
+            return reject(
+                &mut inner,
+                ServiceError::refused(format!(
+                    "the session key is {algorithm}: it must be ssh-ed25519 or ecdsa-sha2-nistp256"
+                )),
+            );
+        }
         let Ok(text) = std::str::from_utf8(text) else {
             return reject(
                 &mut inner,

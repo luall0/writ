@@ -28,8 +28,16 @@ denial before authentication (a source not allowed, no free slot, a key not in `
 a refused certificate) writes one audit line per source and minute, with the count of the
 others; text the peer chose (a certificate's key id) is cut to 64 characters.
 
+The SSH algorithms are listed by the gateway, never left to the library's defaults:
+mlkem768x25519-sha256 or curve25519-sha256 key exchange with strict kex, chacha20-poly1305
+or aes256-gcm, Ed25519 and ECDSA P-256 keys (host, session and reader keys), no compression
+(RFC 4253 `zlib` would decompress before authentication), nothing with SHA-1. `git
+receive-pack` runs with `receive.fsckObjects` and `transfer.fsckObjects` (a malformed object,
+a `.git` or `.gitmodules` trick, never lands in a repository other leases fetch from) and
+`receive.maxInputSize` set to the lease's `max_push_size`.
+
 A certificate is checked twice: when it is presented (CA, validity, deny list, principal
-`git`, then the approval service finds its single active lease and checks the caller,
+`git`, no critical option, then the approval service finds its single active lease and checks the caller,
 logged as `connect`) and before each command, with the operation the command needs (fetch,
 push, commit_sign). When a lease ends (revoked, expired, exhausted), the gateway drops every
 open session of its certificate. Replies of `writ` commands are one JSON line on stdout

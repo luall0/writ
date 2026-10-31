@@ -51,16 +51,23 @@ impl<'a> Push<'a> {
     }
 
     /// `git receive-pack` on the repository at `path`, with the gateway's pre-receive hook,
-    /// which asks the daemon about the ref updates with this push's token.
+    /// which asks the daemon about the ref updates with this push's token. Every object is
+    /// checked (`fsck`: malformed objects, `.git` or `.gitmodules` tricks never land in a
+    /// repository other leases fetch from), and the pack is refused past `max_bytes`.
     pub(super) fn receive_pack(
         &self,
         path: &Path,
         git_protocol: Option<String>,
+        max_bytes: u64,
     ) -> tokio::process::Command {
         let shared = &self.gateway.shared;
         let mut cmd = git(git_protocol);
         cmd.arg("-c")
             .arg(format!("core.hooksPath={}", shared.hooks_dir.display()))
+            .args(["-c", "receive.fsckObjects=true"])
+            .args(["-c", "transfer.fsckObjects=true"])
+            .arg("-c")
+            .arg(format!("receive.maxInputSize={max_bytes}"))
             .arg("receive-pack")
             .arg(path)
             .env("WRIT_HOOK_SOCKET", &shared.hook_socket)

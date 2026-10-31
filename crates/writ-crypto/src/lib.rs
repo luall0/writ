@@ -29,6 +29,10 @@ pub enum CryptoError {
     SigningFailed,
     #[error("signature does not match the signed data")]
     BadSignature,
+    /// A security-key (`sk-*`) signature made without the user-presence flag: the key was not
+    /// touched, so malware could have signed without the approver.
+    #[error("the security key signed without user presence (no touch)")]
+    NoUserPresence,
     #[error("the system's random source failed")]
     Random,
     /// A line of an `allowed_signers` file that can't be read or honored.

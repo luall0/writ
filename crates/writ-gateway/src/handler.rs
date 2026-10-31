@@ -197,7 +197,7 @@ impl russh::server::Handler for Connection {
         self.authenticated.store(true, Ordering::Release);
         if let Some(Identity::Lease(cert)) = &self.identity {
             self.gateway
-                .register_session(cert.serial, self.number, session.handle());
+                .register_session(cert.serial, self.number, session.handle())?;
         }
         Ok(())
     }

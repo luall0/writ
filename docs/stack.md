@@ -7,7 +7,7 @@ later approver apps.
 | Layer | Choice | Status |
 |---|---|---|
 | Language | Rust stable, edition 2024, Cargo workspace | Decided |
-| SSH server and client | `russh` 0.65, `ring` backend | Decided (M0: certificate auth, TCP and Unix socket) |
+| SSH server and client | `russh` 0.65, `ring` backend, without `flate2` (no compression); the gateway lists its algorithms explicitly (mlkem768x25519 or curve25519 with strict kex, chacha20-poly1305 or aes256-gcm, Ed25519 and P-256 keys) | Decided (M0: certificate auth, TCP and Unix socket; algorithms M2.6) |
 | SSH keys, certificates, SSHSIG | `ssh-key` =0.7.0-rc.11 (the exact version russh pins) | Decided (M0: SSHSIG both ways with OpenSSH, ed25519 and P-256) |
 | Git | Shell out to `git` (`upload-pack`, `receive-pack`, `index-pack`, `rev-list`); parse commit objects in Rust | Decided |
 | Leases + ledger | SQLite | Decided |

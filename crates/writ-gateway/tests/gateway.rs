@@ -424,6 +424,33 @@ async fn one_connection_holds_at_most_four_channels() {
     assert!(reopened.is_ok(), "the closed channel's slot came back");
 }
 
+#[tokio::test]
+async fn only_the_listed_ssh_algorithms_are_spoken() {
+    use std::borrow::Cow;
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let with = |preferred: russh::Preferred| async {
+        let stream = daemon.agents.connect(peer()).await.unwrap();
+        let config = client::Config {
+            preferred,
+            ..Default::default()
+        };
+        client::connect_stream(Arc::new(config), stream, Accept).await
+    };
+    // The client's defaults meet the gateway's list.
+    assert!(with(russh::Preferred::DEFAULT).await.is_ok());
+    // A cipher or key exchange the gateway doesn't list: no session.
+    let ctr = russh::Preferred {
+        cipher: Cow::Borrowed(&[russh::cipher::AES_128_CTR]),
+        ..russh::Preferred::DEFAULT
+    };
+    assert!(with(ctr).await.is_err(), "aes128-ctr");
+    let dh = russh::Preferred {
+        kex: Cow::Borrowed(&[russh::kex::DH_G14_SHA256]),
+        ..russh::Preferred::DEFAULT
+    };
+    assert!(with(dh).await.is_err(), "diffie-hellman-group14-sha256");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_connection_that_never_authenticates_is_closed() {
     use tokio::io::AsyncReadExt;

@@ -69,6 +69,63 @@ fn fetch_and_push_through_the_gateway() {
 }
 
 #[test]
+fn malformed_objects_never_land() {
+    let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
+    gateway.seed_repo();
+    let work = gateway.clone("work");
+    // A tree with a `.GIT` entry (git's own directory, under another case): fsck's
+    // hasDotgit, the family of checkout CVEs. Made with plumbing, which doesn't check.
+    let blob = gateway.git_ok(&work, &["hash-object", "-w", "README"]);
+    let listing = format!("100644 blob {}\t.GIT\n", blob.trim());
+    let mktree = Command::new("git")
+        .args(["mktree"])
+        .current_dir(&work)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", gateway.root().join("gitconfig"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write as _;
+    let mut child = mktree;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(listing.as_bytes())
+        .unwrap();
+    let tree = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+    assert_eq!(tree.trim().len(), 40, "mktree made the tree");
+    let commit = gateway.git_ok(
+        &work,
+        &["commit-tree", tree.trim(), "-p", "HEAD", "-m", "bad"],
+    );
+    let out = gateway.git(
+        &work,
+        &[
+            "push",
+            "origin",
+            &format!("{}:refs/heads/agent/bad", commit.trim()),
+        ],
+    );
+    assert!(!out.status.success(), "a malformed tree was accepted");
+    assert!(stderr(&out).contains("hasDotgit"), "{}", stderr(&out));
+    assert_eq!(
+        gateway.bare_ref("refs/heads/agent/bad"),
+        None,
+        "nothing landed"
+    );
+    // A good commit still goes through, on the same connection setup.
+    fs::write(work.join("feature"), "x\n").unwrap();
+    gateway.git_ok(&work, &["add", "feature"]);
+    gateway.git_ok(&work, &["commit", "-q", "-m", "feature"]);
+    gateway.git_ok(
+        &work,
+        &["push", "-q", "origin", "HEAD:refs/heads/agent/good"],
+    );
+}
+
+#[test]
 fn only_valid_session_certificates_get_in() {
     let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
     gateway.seed_repo();

@@ -915,6 +915,27 @@ fn a_slow_notifier_never_queues_without_bound() {
 }
 
 #[test]
+fn a_session_key_is_ed25519_or_p256() {
+    let h = Harness::new(Decisions::Signed);
+    let p256 = generate(KeyKind::P256).unwrap();
+    h.service
+        .submit(p256.public_key(), REQUEST.as_bytes(), &facts())
+        .unwrap();
+    // A throwaway P-384 public key, made by ssh-keygen for this test (no private half kept).
+    let p384 = writ_crypto::ssh_key::PublicKey::from_openssh(
+        "ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBIhnxfvj+u7EF\
+         RXssN2rQZohx2pWI+XiNzjnSMq4bByNKtDaffJYic8mEAkPqQU/aks8oEeBWCO869LX2G6xqmNUZ86iX+mUmI\
+         EtiEStNWoL1F719qPYG0HjGq6ncl13Sg==",
+    )
+    .unwrap();
+    refused_with(
+        h.service.submit(&p384, REQUEST.as_bytes(), &facts()),
+        "it must be ssh-ed25519 or ecdsa-sha2-nistp256",
+    );
+    assert_eq!(h.events("submit", "denied"), 1, "logged");
+}
+
+#[test]
 fn the_deny_list_survives_a_restart() {
     let h = Harness::new(Decisions::Signed);
     let (ticket, _key, cert) = h.lease();

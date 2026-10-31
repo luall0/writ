@@ -16,6 +16,10 @@ file (same format as git's `allowed_signers`) ([Q20](../decisions.md)).
 | Own Mac Secure Enclave app | Same SSHSIG format, own UI showing the lease | Later |
 | iPhone app (Secure Enclave + Face ID) | Same SSHSIG format | Later |
 
+- An approver key is Ed25519 or ECDSA P-256, or their security-key forms (`sk-…`); any other
+  type in `approvers` fails the file at startup. A security-key signature must carry the
+  user-presence flag (the key was touched), as sshd requires by default: a credential made
+  `no-touch-required` is refused. A repeated option in `approvers` is refused.
 - The daemon only verifies signatures; it never cares which tool produced them. Swapping
   Secretive for our own signer later is just adding a key to `approvers`.
 - Use a **dedicated approval key** in Secretive, with "require authentication" on, and never

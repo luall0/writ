@@ -22,6 +22,10 @@ pub enum CertificateError {
     Revoked(u64),
     #[error("certificate is not valid for user {0:?}")]
     WrongPrincipal(String),
+    /// A critical option the gateway doesn't enforce. PROTOCOL.certkeys: a server must refuse
+    /// a certificate with one it doesn't recognize; the daemon's CA never sets any.
+    #[error("certificate has a critical option the gateway doesn't enforce: {0:?}")]
+    CriticalOption(String),
 }
 
 /// What a certificate is issued for.
@@ -103,5 +107,54 @@ pub fn validate_user_certificate(
     if !cert.valid_principals().iter().any(|p| p == user) {
         return Err(CertificateError::WrongPrincipal(user.to_owned()));
     }
+    if let Some(name) = cert.critical_options().keys().next() {
+        return Err(CertificateError::CriticalOption(name.clone()));
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::{KeyKind, generate};
+
+    #[test]
+    fn a_certificate_with_a_critical_option_is_refused() {
+        let ca = generate(KeyKind::Ed25519).unwrap();
+        let subject = generate(KeyKind::Ed25519).unwrap();
+        let issue = |option: Option<(&str, &str)>| {
+            let mut builder = Builder::new(
+                vec![7; 32],
+                subject.public_key().key_data().clone(),
+                10,
+                100,
+            )
+            .unwrap();
+            builder
+                .serial(1)
+                .unwrap()
+                .cert_type(CertType::User)
+                .unwrap();
+            builder
+                .key_id("wrt_x")
+                .unwrap()
+                .valid_principal("git")
+                .unwrap();
+            if let Some((name, value)) = option {
+                builder.critical_option(name, value).unwrap();
+            }
+            builder.sign(&ca).unwrap()
+        };
+        let authorities = [ca.public_key().fingerprint(HashAlg::Sha256)];
+        let check = |cert: &Certificate| {
+            validate_user_certificate(cert, &authorities, |_| false, "git", 50)
+        };
+        assert_eq!(check(&issue(None)), Ok(()));
+        for name in ["source-address", "force-command", "verify-required"] {
+            assert_eq!(
+                check(&issue(Some((name, "x")))),
+                Err(CertificateError::CriticalOption(name.to_owned()))
+            );
+        }
+    }
 }

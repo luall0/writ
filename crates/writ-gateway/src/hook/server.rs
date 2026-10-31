@@ -308,6 +308,65 @@ ticket:
             assert_eq!(denied.len(), 1);
             assert_eq!(denied[0]["code"], "not_active");
         }
+
+        #[tokio::test]
+        async fn a_poisoned_table_never_keeps_a_revoked_push() {
+            let dir = tempfile::tempdir().unwrap();
+            let test = TestServiceBuilder::new(POLICY)
+                .clock(Arc::new(SystemClock))
+                .build(dir.path());
+            let gateway = Gateway::start(
+                GatewayConfig {
+                    host_key: generate(KeyKind::Ed25519).unwrap(),
+                    repos_root: dir.path().join("repos"),
+                    signing_key: generate(KeyKind::Ed25519).unwrap(),
+                    hook_program: PathBuf::from("/bin/false"),
+                    state_dir: dir.path().join("run"),
+                    readers: Vec::new(),
+                },
+                test.service.clone(),
+            )
+            .await
+            .unwrap();
+            let key = generate(KeyKind::Ed25519).unwrap();
+            let cert = CertIdentity {
+                key_id: "wrt_01JD8X0000000000000000000A".to_owned(),
+                serial: 7,
+                session_key: key
+                    .public_key()
+                    .fingerprint(HashAlg::Sha256)
+                    .to_string()
+                    .parse()
+                    .unwrap(),
+            };
+            gateway.shared.pushes.lock().unwrap().insert(
+                "tok".to_owned(),
+                PushContext {
+                    cert,
+                    repo: "demo".parse().unwrap(),
+                    caller: CallerFacts::default(),
+                },
+            );
+            // A panic while holding the tables poisons them.
+            let poisoner = gateway.clone();
+            let _ = std::thread::spawn(move || {
+                let _pushes = poisoner.shared.pushes.lock().unwrap();
+                let _sessions = poisoner.shared.sessions.lock().unwrap();
+                panic!("poison");
+            })
+            .join();
+            assert!(gateway.shared.pushes.is_poisoned());
+            gateway.drop_sessions(7);
+            let pushes = gateway
+                .shared
+                .pushes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                pushes.is_empty(),
+                "the revoked lease's push is forgotten anyway"
+            );
+        }
     }
 
     async fn read(bytes: Vec<u8>) -> Result<Vec<u8>, &'static str> {
