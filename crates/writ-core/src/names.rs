@@ -117,15 +117,18 @@ fn validate_plain_name(value: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// An enforced identity the approver reads on screen: printable ASCII only, so neither a
+/// look-alike letter (a Cyrillic `а`) nor an invisible character can make one address pass
+/// for another.
 fn validate_email(value: &str) -> Result<(), &'static str> {
     if value.is_empty() || value.len() > 254 {
         return Err("must be 1 to 254 characters");
     }
-    if value
-        .chars()
-        .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '"' | ','))
-    {
-        return Err("no spaces, control characters, '<', '>', '\"' or ','");
+    if !value.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err("printable ASCII only: no spaces, control or non-ASCII characters");
+    }
+    if value.contains(['<', '>', '"', ',']) {
+        return Err("no '<', '>', '\"' or ','");
     }
     match value.split_once('@') {
         Some((local, domain))
@@ -214,9 +217,31 @@ mod tests {
     #[test]
     fn emails() {
         assert!("user+agent@example.org".parse::<Email>().is_ok());
-        for bad in ["", "x", "@x", "x@", "a@b@c", "a b@c", "<a@b>", "a@b\n"] {
-            assert!(bad.parse::<Email>().is_err(), "{bad:?}");
+        let ascii = "printable ASCII only";
+        for (bad, why) in [
+            ("", "1 to 254 characters"),
+            ("x", "local@domain"),
+            ("@x", "local@domain"),
+            ("x@", "local@domain"),
+            ("a@b@c", "local@domain"),
+            ("a b@c", ascii),
+            ("<a@b>", "no '<'"),
+            ("a@b\n", ascii),
+            // Look-alikes and invisibles in an enforced identity.
+            ("user@gm\u{430}il.com", ascii),
+            ("user@gmail.com\u{202e}", ascii),
+            ("user@gmail.com\u{e0041}", ascii),
+            ("us\u{200b}er@gmail.com", ascii),
+            ("\u{e9}lise@example.org", ascii),
+        ] {
+            let error = bad.parse::<Email>().unwrap_err().to_string();
+            assert!(error.contains(why), "{bad:?}: {error}");
         }
+        // At the length limit.
+        let long = format!("{}@b.c", "a".repeat(250));
+        assert_eq!(long.len(), 254);
+        assert!(long.parse::<Email>().is_ok());
+        assert!(format!("a{long}").parse::<Email>().is_err());
     }
 
     #[test]

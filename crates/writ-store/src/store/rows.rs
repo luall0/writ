@@ -12,7 +12,7 @@ use crate::{Result, StoreError};
 
 /// The columns [`raw_record`] reads, in order.
 pub(super) const RECORD_COLUMNS: &str =
-    "id, canonical, state, feedback, approver, namespace, sshsig";
+    "id, canonical, state, feedback, approver, namespace, sshsig, feedback_by";
 
 pub(super) fn corrupt(id: &str, why: impl std::fmt::Display) -> StoreError {
     StoreError::Corrupt {
@@ -30,6 +30,7 @@ pub(super) struct RawRecord {
     canonical: Vec<u8>,
     state: String,
     feedback: Option<String>,
+    feedback_by: Option<String>,
     approval: RawApproval,
 }
 
@@ -64,6 +65,7 @@ pub(super) fn raw_record(row: &Row<'_>) -> rusqlite::Result<RawRecord> {
         canonical: row.get(1)?,
         state: row.get(2)?,
         feedback: row.get(3)?,
+        feedback_by: row.get(7)?,
         approval: RawApproval {
             approver: row.get(4)?,
             namespace: row.get(5)?,
@@ -83,6 +85,11 @@ impl RawRecord {
             ticket,
             state,
             feedback: self.feedback,
+            feedback_by: self
+                .feedback_by
+                .map(|f| f.parse())
+                .transpose()
+                .map_err(|e| corrupt(&self.id, e))?,
             approval: self.approval.decode(&self.id)?,
         })
     }

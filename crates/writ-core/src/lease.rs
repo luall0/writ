@@ -127,6 +127,10 @@ pub enum LifecycleError {
     LeaseNotActive(TicketId),
     #[error("an amendment must keep the lease's session key")]
     SessionKeyChanged,
+    #[error("the feedback is empty")]
+    FeedbackEmpty,
+    #[error("the feedback is longer than {max} characters", max = crate::signed::MAX_FEEDBACK_CHARS)]
+    FeedbackTooLong,
     /// The session process the lease is bound to (`subject.caller`) is part of what the
     /// daemon watches to revoke it: an amendment can't drop, add or move it.
     #[error("an amendment must keep the lease's subject (session key and process)")]
@@ -161,6 +165,9 @@ pub struct TicketRecord {
     pub state: State,
     /// The approver's feedback, once refused.
     pub feedback: Option<String>,
+    /// Who signed the refusal. `None`: nobody (a daemon with `decisions: open`), so the
+    /// feedback may not be the approver's words, and is labeled so wherever it goes.
+    pub feedback_by: Option<KeyFingerprint>,
     /// Once approved.
     pub approval: Option<Approval>,
 }
@@ -172,6 +179,7 @@ impl TicketRecord {
             ticket,
             state: State::Pending,
             feedback: None,
+            feedback_by: None,
             approval: None,
         }
     }
@@ -206,12 +214,30 @@ pub struct Usage {
     pub ops_last_minute: u32,
 }
 
-/// Refuses a pending ticket with the approver's feedback.
-pub fn refuse(record: &TicketRecord, feedback: String) -> Result<TicketRecord, LifecycleError> {
+/// Feedback a refusal may carry: not blank, at most
+/// [`MAX_FEEDBACK_CHARS`](crate::signed::MAX_FEEDBACK_CHARS) characters.
+pub fn check_feedback(feedback: &str) -> Result<(), LifecycleError> {
+    if feedback.trim().is_empty() {
+        return Err(LifecycleError::FeedbackEmpty);
+    }
+    if feedback.chars().count() > crate::signed::MAX_FEEDBACK_CHARS {
+        return Err(LifecycleError::FeedbackTooLong);
+    }
+    Ok(())
+}
+
+/// Refuses a pending ticket with feedback, signed by the approver `by` (or by nobody).
+pub fn refuse(
+    record: &TicketRecord,
+    feedback: String,
+    by: Option<KeyFingerprint>,
+) -> Result<TicketRecord, LifecycleError> {
     transition(record.state, State::Refused)?;
+    check_feedback(&feedback)?;
     Ok(TicketRecord {
         state: State::Refused,
         feedback: Some(feedback),
+        feedback_by: by,
         ..record.clone()
     })
 }
@@ -271,6 +297,7 @@ pub fn apply_amendment(
         ticket: signed.clone(),
         state: State::Applied,
         feedback: None,
+        feedback_by: None,
         approval: Some(approval.clone()),
     };
     let updated = Lease {

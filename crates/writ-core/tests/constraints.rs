@@ -248,6 +248,22 @@ fn destination_ref_and_protected_refs() {
             |_, r| r.updates = vec![update("refs/tags/v1")],
             Some(DenyCode::ProtectedRef),
         ),
+        // On a case-insensitive file system (APFS) these are main's own ref file.
+        (
+            "protected main, in another case",
+            |_, r| r.updates = vec![update("refs/heads/MAIN")],
+            Some(DenyCode::ProtectedRef),
+        ),
+        (
+            "protected main, one letter in another case",
+            |_, r| r.updates = vec![update("refs/heads/Main")],
+            Some(DenyCode::ProtectedRef),
+        ),
+        (
+            "protected tag, prefix in another case",
+            |_, r| r.updates = vec![update("refs/TAGS/v1")],
+            Some(DenyCode::ProtectedRef),
+        ),
         (
             "other branch under agent/",
             |_, r| r.updates = vec![update("refs/heads/agent/other")],

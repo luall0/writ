@@ -87,7 +87,9 @@ grant anything. Whether it needs a signature is the daemon's `decisions` setting
 - `signed` (default): an SSHSIG over the canonical `writ-refusal/1` document (ticket id and
   feedback), one Touch ID. Revocations the same, over `writ-revocation/1`.
 - `open`: any reader may refuse or revoke without a signature; a signature that is given is
-  still checked. A residual risk (denial of service only,
+  still checked. The daemon records who signed a refusal: an unsigned one reaches the agent
+  labeled as such (`writ wait` says the feedback may not be the approver's words), and its
+  feedback enters the revision as `[not signed by an approver] …`. A residual risk (denial of service only,
   [threat model](../threat-model.md#residual-risks-v1)).
 
 The feedback goes back to the agent and is shown next to its next revision, labeled as

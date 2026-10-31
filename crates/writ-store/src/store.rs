@@ -19,7 +19,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 use writ_core::lease::{self, Lease, State, TicketRecord, Usage};
-use writ_core::names::TicketId;
+use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::policy::RATE_WINDOW_SECONDS;
 use writ_core::ticket::Ticket;
 use writ_core::units::Timestamp;
@@ -162,17 +162,24 @@ impl Store {
     }
 
     /// Refuses a pending ticket with feedback.
-    pub fn refuse(&self, id: &TicketId, feedback: &str, now: Timestamp) -> Result<()> {
+    pub fn refuse(
+        &self,
+        id: &TicketId,
+        feedback: &str,
+        by: Option<&KeyFingerprint>,
+        now: Timestamp,
+    ) -> Result<()> {
         lease::transition(State::Pending, State::Refused)?;
         let changed = self.conn.execute(
-            "UPDATE tickets SET state = ?2, feedback = ?3, updated_at = ?4
+            "UPDATE tickets SET state = ?2, feedback = ?3, updated_at = ?4, feedback_by = ?6
              WHERE id = ?1 AND state = ?5",
             params![
                 id.as_str(),
                 State::Refused.as_str(),
                 feedback,
                 now.unix(),
-                State::Pending.as_str()
+                State::Pending.as_str(),
+                by.map(KeyFingerprint::as_str)
             ],
         )?;
         self.expect_changed(changed, id, State::Pending)

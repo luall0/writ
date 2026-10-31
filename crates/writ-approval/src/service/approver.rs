@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use writ_core::caller::{CallerFacts, ProcessRef};
 use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, State, TicketRecord};
 use writ_core::names::{KeyFingerprint, TicketId};
-use writ_core::signed::{MAX_FEEDBACK_CHARS, Refusal, Revocation};
+use writ_core::signed::{Refusal, Revocation};
 use writ_core::ticket::Ticket;
 use writ_core::units::Timestamp;
 use writ_crypto::ca::CertificateRequest;
@@ -350,15 +350,8 @@ impl Service {
                 .caller(caller),
             "refusal not accepted",
         );
-        let feedback = request.feedback.trim();
-        if feedback.is_empty() {
-            return denied.deny(&mut inner, "the feedback is empty");
-        }
-        if request.feedback.chars().count() > MAX_FEEDBACK_CHARS {
-            return denied.deny(
-                &mut inner,
-                format!("the feedback is longer than {MAX_FEEDBACK_CHARS} characters"),
-            );
+        if let Err(e) = lease::check_feedback(&request.feedback) {
+            return denied.deny(&mut inner, e.to_string());
         }
         let document = Refusal::new(id.clone(), request.feedback.clone())
             .canonical_bytes()
@@ -383,7 +376,7 @@ impl Service {
         Self::logged(&mut inner, event, |inner| {
             inner
                 .store
-                .refuse(id, &request.feedback, now)
+                .refuse(id, &request.feedback, approver.as_ref(), now)
                 .map_err(internal)
         })?;
         drop(inner);

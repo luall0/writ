@@ -129,7 +129,12 @@ fn leases_and_ledger_survive_a_reopen() {
         store.insert_pending(&pending, KEY, t(0)).unwrap();
         let refused = ticket(3, REQUEST, None);
         store.insert_pending(&refused, KEY, t(0)).unwrap();
-        store.refuse(&refused.id, "split it", t(5)).unwrap();
+        store
+            .refuse(&refused.id, "split it", Some(&fp('A')), t(5))
+            .unwrap();
+        let open = ticket(4, REQUEST, None);
+        store.insert_pending(&open, KEY, t(0)).unwrap();
+        store.refuse(&open.id, "anyone", None, t(5)).unwrap();
         (lease, pending, refused)
     };
     let store = Store::open(&path).unwrap();
@@ -161,6 +166,9 @@ fn leases_and_ledger_survive_a_reopen() {
         (refused.state, refused.feedback.as_deref()),
         (State::Refused, Some("split it"))
     );
+    assert_eq!(refused.feedback_by, Some(fp('A')), "who signed the refusal");
+    let open = store.ticket(&id(4)).unwrap().unwrap();
+    assert_eq!(open.feedback_by, None, "a refusal nobody signed");
     assert_eq!(store.tickets(State::Pending).unwrap().len(), 1);
     assert!(
         store.lease(&pending.id).unwrap().is_none(),
@@ -228,7 +236,7 @@ fn transitions_are_compare_and_set() {
     ));
     // Refusing a lease, or twice.
     assert!(matches!(
-        store.refuse(&lease.id, "no", t(15)),
+        store.refuse(&lease.id, "no", None, t(15)),
         Err(StoreError::Conflict {
             expected: State::Pending,
             ..
@@ -508,11 +516,11 @@ fn a_newer_schema_is_refused() {
     drop(Store::open(&path).unwrap());
     rusqlite::Connection::open(&path)
         .unwrap()
-        .pragma_update(None, "user_version", 3)
+        .pragma_update(None, "user_version", 4)
         .unwrap();
     assert!(matches!(
         Store::open(&path),
-        Err(StoreError::SchemaTooNew(3))
+        Err(StoreError::SchemaTooNew(4))
     ));
 }
 
@@ -583,9 +591,10 @@ fn a_version_1_database_is_migrated() {
     let pending = store.tickets(State::Pending).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(store.session_pubkey(&pending[0].ticket.id).unwrap(), None);
+    assert_eq!(pending[0].feedback_by, None);
     let version: i64 = rusqlite::Connection::open(&path)
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }

@@ -5,7 +5,7 @@
 //! process ancestor can never be used over TCP.
 
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -68,15 +68,25 @@ pub enum CallerError {
         pid: u32,
         generation: u64,
     },
-    #[error("invalid caller constraint: the executable must be an absolute path")]
-    InvalidConstraint,
+    /// The constraint can't be honored as written: the reason.
+    #[error("invalid caller constraint: {0}")]
+    InvalidConstraint(&'static str),
 }
+
+/// The longest executable path a constraint may name.
+pub const MAX_EXECUTABLE_BYTES: usize = 1024;
+/// The longest code signing identifier (`com.example.agent`).
+pub const MAX_SIGNING_ID_CHARS: usize = 255;
+/// The longest team identifier (ten characters on Apple platforms).
+pub const MAX_TEAM_ID_CHARS: usize = 64;
 
 impl ProcessMatch {
     fn matches(&self, process: &ProcessRef) -> bool {
         process.pid == self.pid
             && process.generation == self.generation
-            && process.executable.as_path() == Path::new(&self.executable)
+            // Compared as written, byte for byte: `Path`'s comparison normalizes (`/usr//bin/`
+            // equals `/usr/bin`), and a security check never compares loosely.
+            && process.executable.to_str() == Some(self.executable.as_str())
             && match &self.code_identity {
                 None => true,
                 Some(required) => process.code_identity.as_ref() == Some(required),
@@ -85,13 +95,49 @@ impl ProcessMatch {
 }
 
 impl CallerConstraint {
-    /// Fails if the executable path isn't absolute.
+    /// The executable must be a normalized absolute path (no empty, `.` or `..` component,
+    /// no trailing `/`) of at most [`MAX_EXECUTABLE_BYTES`], and every field shown to the
+    /// approver is bounded and free of hidden characters (the agent writes it).
     pub fn validate(&self) -> Result<(), CallerError> {
-        if self.descends_from.executable.starts_with('/') {
-            Ok(())
-        } else {
-            Err(CallerError::InvalidConstraint)
+        let invalid = CallerError::InvalidConstraint;
+        let executable = &self.descends_from.executable;
+        let Some(relative) = executable.strip_prefix('/') else {
+            return Err(invalid("the executable must be an absolute path"));
+        };
+        if executable.len() > MAX_EXECUTABLE_BYTES {
+            return Err(invalid("the executable path is too long"));
         }
+        let normalized = !relative.is_empty()
+            && relative
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..");
+        if !normalized {
+            return Err(invalid(
+                "the executable path must be normalized (no //, ., .. or trailing /)",
+            ));
+        }
+        let hidden = |text: &str| text.chars().any(crate::text::is_hidden_char);
+        if hidden(executable) {
+            return Err(invalid("the executable path holds hidden characters"));
+        }
+        if let Some(identity) = &self.descends_from.code_identity {
+            if identity.signing_id.is_empty()
+                || identity.signing_id.chars().count() > MAX_SIGNING_ID_CHARS
+                || hidden(&identity.signing_id)
+            {
+                return Err(invalid(
+                    "the signing id must be 1 to 255 characters, none hidden",
+                ));
+            }
+            if let Some(team) = &identity.team_id
+                && (team.is_empty() || team.chars().count() > MAX_TEAM_ID_CHARS || hidden(team))
+            {
+                return Err(invalid(
+                    "the team id must be 1 to 64 characters, none hidden",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -118,5 +164,117 @@ pub fn check(
             pid: m.pid,
             generation: m.generation,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn constraint(executable: &str) -> CallerConstraint {
+        CallerConstraint {
+            descends_from: ProcessMatch {
+                executable: executable.to_owned(),
+                pid: 10,
+                generation: 1,
+                code_identity: None,
+            },
+        }
+    }
+
+    fn reason(c: &CallerConstraint) -> &'static str {
+        match c.validate() {
+            Err(CallerError::InvalidConstraint(why)) => why,
+            other => panic!("expected an invalid constraint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_executable_is_a_normalized_bounded_path() {
+        assert_eq!(constraint("/usr/local/bin/agent").validate(), Ok(()));
+        for (path, why) in [
+            ("agent", "the executable must be an absolute path"),
+            ("/", "must be normalized"),
+            ("/usr//bin/agent", "must be normalized"),
+            ("/usr/./bin/agent", "must be normalized"),
+            ("/usr/bin/../agent", "must be normalized"),
+            ("/usr/bin/agent/", "must be normalized"),
+            ("/usr/bin/age\u{202e}nt", "hidden characters"),
+            ("/usr/bin/agent\u{e0041}", "hidden characters"),
+        ] {
+            assert!(reason(&constraint(path)).contains(why), "{path:?}");
+        }
+        // The length limit, both sides.
+        let at = format!("/{}", "a".repeat(MAX_EXECUTABLE_BYTES - 1));
+        assert_eq!(constraint(&at).validate(), Ok(()));
+        let over = format!("/{}", "a".repeat(MAX_EXECUTABLE_BYTES));
+        assert_eq!(
+            reason(&constraint(&over)),
+            "the executable path is too long"
+        );
+    }
+
+    #[test]
+    fn code_identities_are_bounded() {
+        let with = |signing_id: &str, team_id: Option<&str>| {
+            let mut c = constraint("/usr/bin/agent");
+            c.descends_from.code_identity = Some(CodeIdentity {
+                signing_id: signing_id.to_owned(),
+                team_id: team_id.map(str::to_owned),
+            });
+            c
+        };
+        assert_eq!(
+            with("com.example.agent", Some("ABCDE12345")).validate(),
+            Ok(())
+        );
+        assert_eq!(
+            with(&"s".repeat(MAX_SIGNING_ID_CHARS), None).validate(),
+            Ok(())
+        );
+        for c in [
+            with("", None),
+            with(&"s".repeat(MAX_SIGNING_ID_CHARS + 1), None),
+            with("com.\u{200b}example", None),
+        ] {
+            assert!(reason(&c).starts_with("the signing id"), "{c:?}");
+        }
+        for c in [
+            with("x", Some("")),
+            with("x", Some(&"t".repeat(MAX_TEAM_ID_CHARS + 1))),
+            with("x", Some("T\u{202e}")),
+        ] {
+            assert!(reason(&c).starts_with("the team id"), "{c:?}");
+        }
+        assert_eq!(
+            with("x", Some(&"t".repeat(MAX_TEAM_ID_CHARS))).validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn the_executable_is_compared_as_written() {
+        let process = |executable: &str| ProcessRef {
+            pid: 10,
+            generation: 1,
+            executable: PathBuf::from(executable),
+            code_identity: None,
+        };
+        let c = constraint("/usr/bin/agent");
+        let facts = |executable: &str| CallerFacts {
+            source_addr: None,
+            process_chain: Some(vec![process(executable)]),
+        };
+        assert_eq!(check(Some(&c), &facts("/usr/bin/agent")), Ok(()));
+        // `Path` would call these equal; the check doesn't.
+        for other in ["/usr//bin/agent", "/usr/bin/./agent", "/usr/bin/agent/"] {
+            assert!(
+                matches!(
+                    check(Some(&c), &facts(other)),
+                    Err(CallerError::NotDescendant { .. })
+                ),
+                "{other}"
+            );
+        }
     }
 }

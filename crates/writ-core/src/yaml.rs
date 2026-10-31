@@ -22,10 +22,44 @@ impl FieldError {
     }
 }
 
-/// Parses YAML into `T`, reporting the path of the failing field.
+/// The largest YAML document parsed: a ticket arrives in at most `MAX_BODY` (256 KiB), and a
+/// policy or a daemon configuration is a few kilobytes.
+pub const MAX_YAML_BYTES: usize = 1 << 20;
+
+/// The parser's options, the same for every document (tickets from agents, the policy, the
+/// daemon's configuration): no anchors, aliases or merge keys (a ticket is plain data, and an
+/// alias multiplies what a small request costs to parse), no duplicate keys, `true`/`false`
+/// only as booleans, one document, and bounded size, depth and node count. Library defaults
+/// are never relied on for any of this.
+fn options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        budget: serde_saphyr::budget! {
+            max_reader_input_bytes: Some(MAX_YAML_BYTES),
+            max_total_scalar_bytes: MAX_YAML_BYTES,
+            max_aliases: 0,
+            max_anchors: 0,
+            max_merge_keys: 0,
+            max_documents: 1,
+            max_depth: 32,
+            max_nodes: 50_000,
+        },
+        merge_keys: serde_saphyr::MergeKeyPolicy::Error,
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+        strict_booleans: true,
+    }
+}
+
+/// Parses YAML into `T` with the hardened [`options`], reporting the path of the failing
+/// field.
 pub fn parse_yaml<T: DeserializeOwned>(text: &str) -> Result<T, FieldError> {
+    if text.len() > MAX_YAML_BYTES {
+        return Err(FieldError::at(
+            ".",
+            format!("the document is larger than {MAX_YAML_BYTES} bytes"),
+        ));
+    }
     let mut failed_at: Option<String> = None;
-    let result = serde_saphyr::with_deserializer_from_str(text, |de| {
+    let result = serde_saphyr::with_deserializer_from_str_with_options(text, options(), |de| {
         serde_path_to_error::deserialize::<_, T>(de).map_err(|e| {
             failed_at = Some(e.path().to_string());
             e.into_inner()
@@ -38,4 +72,75 @@ pub fn parse_yaml<T: DeserializeOwned>(text: &str) -> Result<T, FieldError> {
         let message = first.strip_prefix("error: ").unwrap_or(first).to_owned();
         FieldError::at(failed_at.unwrap_or_else(|| ".".to_owned()), message)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct Doc {
+        title: String,
+        #[serde(default)]
+        plan: Vec<String>,
+        #[serde(default)]
+        flag: bool,
+    }
+
+    fn refused(text: &str) -> String {
+        match parse_yaml::<Doc>(text) {
+            Ok(doc) => panic!("accepted {text:?} as {doc:?}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn plain_data_is_read() {
+        let doc: Doc = parse_yaml("title: t\nplan: [a, b]\nflag: true\n").unwrap();
+        assert_eq!(doc.plan, ["a", "b"]);
+        assert!(doc.flag);
+    }
+
+    #[test]
+    fn anchors_aliases_and_merge_keys_are_refused() {
+        // An alias multiplies what a small request costs to parse: refused at the anchor,
+        // since a ticket is plain data and needs none.
+        for text in ["title: &t x\nplan: [*t, *t, *t]\n", "title: &t x\n"] {
+            let error = refused(text);
+            assert!(
+                error.contains("budget breached: Anchors"),
+                "{text:?}: {error}"
+            );
+        }
+        let error = refused("<<: {title: x}\n");
+        assert!(error.contains("YAML merge keys are not allowed"), "{error}");
+    }
+
+    #[test]
+    fn one_document_and_strict_booleans() {
+        let error = refused("title: a\n---\ntitle: b\n");
+        assert!(error.contains("budget breached: Documents"), "{error}");
+        // YAML 1.1 booleans are not booleans.
+        for word in ["yes", "on", "y", "no"] {
+            let error = refused(&format!("title: t\nflag: {word}\n"));
+            assert!(error.starts_with("flag: "), "{word}: {error}");
+            assert!(error.contains("invalid boolean"), "{word}: {error}");
+        }
+        let error = refused("title: a\ntitle: b\n");
+        assert!(error.contains("duplicate mapping key: title"), "{error}");
+    }
+
+    #[test]
+    fn a_document_over_the_limit_is_refused_before_parsing() {
+        let at_limit = format!("title: {}\n", "x".repeat(MAX_YAML_BYTES - 8));
+        assert_eq!(at_limit.len(), MAX_YAML_BYTES);
+        assert!(parse_yaml::<Doc>(&at_limit).is_ok());
+        let over = format!("title: {}\n", "x".repeat(MAX_YAML_BYTES - 7));
+        assert_eq!(
+            refused(&over),
+            format!(".: the document is larger than {MAX_YAML_BYTES} bytes")
+        );
+    }
 }

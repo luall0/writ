@@ -125,11 +125,12 @@ mod tests {
 
         let decision = Decision::Refused {
             feedback: "no".into(),
+            signed_by: None,
         };
         let bytes = encode_reply(&Ok::<_, ApiError>(decision.clone()));
         assert_eq!(
             bytes,
-            b"{\"ok\":{\"status\":\"refused\",\"feedback\":\"no\"}}\n"
+            b"{\"ok\":{\"status\":\"refused\",\"feedback\":\"no\",\"signed_by\":null}}\n"
         );
         assert_eq!(decode_reply::<Decision>(&bytes), Ok(decision));
     }

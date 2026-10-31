@@ -174,20 +174,43 @@ impl PolicyConfig {
     }
 }
 
+/// Checks an upstream URL: `ssh://` or `https://`, printable ASCII, a host, no password in
+/// it (credentials live in the keystore, never in a URL that ends up in logs), and no user or
+/// host starting with `-` (which `ssh` would read as an option).
+fn check_upstream(upstream: &str) -> Result<(), &'static str> {
+    let rest = upstream
+        .strip_prefix("ssh://")
+        .or_else(|| upstream.strip_prefix("https://"))
+        .ok_or("must be an ssh:// or https:// URL")?;
+    if !upstream.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err("printable ASCII only, no spaces");
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    let (userinfo, host) = match authority.rsplit_once('@') {
+        Some((userinfo, host)) => (Some(userinfo), host),
+        None => (None, authority),
+    };
+    if let Some(userinfo) = userinfo {
+        if userinfo.contains(':') {
+            return Err("must not hold a password (credentials go in the keystore)");
+        }
+        if userinfo.is_empty() || userinfo.starts_with('-') {
+            return Err("the user must not be empty or start with '-'");
+        }
+    }
+    let hostname = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => host.split(':').next().unwrap_or_default(),
+    };
+    if hostname.is_empty() || hostname.starts_with('-') {
+        return Err("the host must not be empty or start with '-'");
+    }
+    Ok(())
+}
+
 fn validate_repo(name: &RepoName, repo: &RepoEntry) -> Result<(), FieldError> {
     let at = |field: &str| format!("repos.{name}.{field}");
-    let upstream = repo.upstream.as_str();
-    let scheme_ok = upstream.starts_with("ssh://") || upstream.starts_with("https://");
-    if !scheme_ok
-        || upstream
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control())
-    {
-        return Err(FieldError::at(
-            at("upstream"),
-            "must be an ssh:// or https:// URL, with no spaces",
-        ));
-    }
+    check_upstream(repo.upstream.as_str()).map_err(|why| FieldError::at(at("upstream"), why))?;
     if repo.push_modes.is_empty() {
         return Err(FieldError::at(
             at("push_modes"),
@@ -208,6 +231,16 @@ fn validate_repo(name: &RepoName, repo: &RepoEntry) -> Result<(), FieldError> {
             at("direct_ssh.hosts"),
             "must list at least one host",
         )),
+        Some(direct)
+            if direct.hosts.iter().any(|h| {
+                h.is_empty() || h.starts_with('-') || !h.bytes().all(|b| b.is_ascii_graphic())
+            }) =>
+        {
+            Err(FieldError::at(
+                at("direct_ssh.hosts"),
+                "each host is printable ASCII, not empty, not starting with '-'",
+            ))
+        }
         _ => Ok(()),
     }
 }
@@ -272,4 +305,30 @@ fn validate_template(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_upstream;
+
+    #[test]
+    fn upstream_urls_with_and_without_a_user_and_port() {
+        for good in [
+            "ssh://git@github.com/user/repo.git",
+            "ssh://git@[2001:db8::1]:2222/repo.git",
+            "ssh://forge.lan:2222/repo.git",
+            "https://github.com/user/repo.git",
+            "https://bot@codeberg.org/user/repo.git",
+        ] {
+            assert_eq!(check_upstream(good), Ok(()), "{good}");
+        }
+        assert_eq!(
+            check_upstream("ssh://[-x]/repo.git"),
+            Err("the host must not be empty or start with '-'")
+        );
+        assert_eq!(
+            check_upstream("https://@github.com/x.git"),
+            Err("the user must not be empty or start with '-'")
+        );
+    }
 }

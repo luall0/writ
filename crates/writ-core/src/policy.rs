@@ -539,7 +539,7 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
         if !seen.insert(name.clone()) {
             return Err(deny(DenyCode::Invalid, format!("{name} is updated twice")));
         }
-        if entry.protected_refs.iter().any(|p| p.matches(&name)) {
+        if entry.protected_refs.iter().any(|p| p.protects(&name)) {
             return Err(deny(
                 DenyCode::ProtectedRef,
                 format!("{name} is protected in repo {}", request.repo),

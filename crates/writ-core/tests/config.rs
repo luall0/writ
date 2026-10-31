@@ -9,6 +9,8 @@ use writ_core::config::{PathsCheck, PolicyConfig, PushMode, TicketLink};
 use writ_core::ticket::Operation;
 use writ_core::ticket::TicketRequest;
 
+const UPSTREAM: &str = "ssh://git@github.com/user/omega-code.git";
+
 #[test]
 fn the_test_policy_parses_with_defaults() {
     let config = config();
@@ -170,7 +172,45 @@ fn errors_name_the_field() {
                 "http://github.com/user/omega-code.git",
                 1,
             ),
-            "repos.omega-code.upstream: ",
+            "repos.omega-code.upstream: must be an ssh:// or https:// URL",
+        ),
+        (
+            "a password in the upstream URL",
+            POLICY.replacen(
+                UPSTREAM,
+                "https://user:ghp_secret@github.com/user/omega-code.git",
+                1,
+            ),
+            "repos.omega-code.upstream: must not hold a password",
+        ),
+        (
+            "an upstream host read as an ssh option",
+            POLICY.replacen(UPSTREAM, "ssh://-oProxyCommand=sh/omega-code.git", 1),
+            "repos.omega-code.upstream: the host must not be empty or start with '-'",
+        ),
+        (
+            "an upstream user read as an ssh option",
+            POLICY.replacen(
+                UPSTREAM,
+                "ssh://-oProxyCommand=sh@github.com/omega-code.git",
+                1,
+            ),
+            "repos.omega-code.upstream: the user must not be empty or start with '-'",
+        ),
+        (
+            "no upstream host",
+            POLICY.replacen(UPSTREAM, "ssh://git@/omega-code.git", 1),
+            "repos.omega-code.upstream: the host must not be empty",
+        ),
+        (
+            "a space in the upstream",
+            POLICY.replacen(UPSTREAM, "ssh://git@github.com/omega code.git", 1),
+            "repos.omega-code.upstream: printable ASCII only",
+        ),
+        (
+            "a direct_ssh host read as an ssh option",
+            POLICY.replacen("hosts: [github.com]", "hosts: [\"-oProxyCommand=sh\"]", 1),
+            "repos.dotfiles.direct_ssh.hosts: each host",
         ),
         (
             "direct_ssh without its section",

@@ -119,6 +119,16 @@ impl Glob1 {
         }
     }
 
+    /// [`Glob1::matches`], ignoring ASCII case (ref names are ASCII).
+    fn matches_ignoring_case(&self, name: &str) -> bool {
+        match self {
+            Self::Exact(exact) => name.eq_ignore_ascii_case(exact),
+            Self::Prefix(prefix) => name
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix)),
+        }
+    }
+
     /// Every name matched by `other` is matched by `self`.
     fn covers(&self, other: &Glob1) -> bool {
         match (self, other) {
@@ -218,6 +228,13 @@ impl BranchPattern {
 impl RefPattern {
     pub fn matches(&self, name: &RefName) -> bool {
         self.0.matches(name.as_str())
+    }
+
+    /// Whether this protected-ref pattern protects `name`: matched **ignoring case**. On a
+    /// case-insensitive file system (APFS, local mode's mirrors) `refs/heads/MAIN` and
+    /// `refs/heads/main` are the same loose ref file, so an update of one moves the other.
+    pub fn protects(&self, name: &RefName) -> bool {
+        self.0.matches_ignoring_case(name.as_str())
     }
 }
 

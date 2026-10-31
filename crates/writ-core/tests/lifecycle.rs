@@ -97,7 +97,7 @@ fn tickets_outside_every_template_are_rejected_with_reasons() {
         (REQUEST.replace("template: feature-branch\n", "").replace("agent/oauth-*", "main"), "the ticket fits no template"),
         (
             REQUEST.replace("template: feature-branch", "template: quick-fix\ncaller:\n  descends_from:\n    executable: omega\n    pid: 1\n    generation: 1\n    code_identity: null").replace("agent/oauth-*", "agent/fix-*").replace("ttl: 2h", "ttl: 1h"),
-            "executable must be absolute",
+            "subject.caller: invalid caller constraint: the executable must be an absolute path",
         ),
     ];
     for (yaml, expected) in cases {
@@ -148,6 +148,7 @@ fn revisions_carry_the_feedback() {
     let refused = lease::refuse(
         &TicketRecord::pending(first.clone()),
         "Don't touch billing".to_owned(),
+        Some(fp('A')),
     )
     .unwrap();
     let revision = REQUEST.replace(
@@ -204,6 +205,40 @@ fn revisions_carry_the_feedback() {
     assert_rejected(
         fit::submit(&config(), &request(&revision), &submission(2)),
         "(revises) does not exist",
+    );
+}
+
+#[test]
+fn feedback_nobody_signed_is_labeled_in_the_revision() {
+    let first = submitted(REQUEST);
+    let revision = REQUEST.replace(
+        "  expected_paths:",
+        &format!("  revises: {}\n  expected_paths:", first.id),
+    );
+    let feedback_in = |by| {
+        let refused = lease::refuse(
+            &TicketRecord::pending(first.clone()),
+            "Push to main instead".to_owned(),
+            by,
+        )
+        .unwrap();
+        let submission = Submission {
+            revises: Some(&refused),
+            ..submission(2)
+        };
+        fit::submit(&config(), &request(&revision), &submission)
+            .unwrap()
+            .text
+            .previous_feedback
+    };
+    // `decisions: open`: anyone the daemon lets read could have written it.
+    assert_eq!(
+        feedback_in(None).as_deref(),
+        Some("[not signed by an approver] Push to main instead")
+    );
+    assert_eq!(
+        feedback_in(Some(fp('A'))).as_deref(),
+        Some("Push to main instead")
     );
 }
 
@@ -363,11 +398,11 @@ fn activation() {
 #[test]
 fn refusing() {
     let record = TicketRecord::pending(submitted(REQUEST));
-    let refused = lease::refuse(&record, "split this in two".to_owned()).unwrap();
+    let refused = lease::refuse(&record, "split this in two".to_owned(), Some(fp('A'))).unwrap();
     assert_eq!(refused.state, State::Refused);
     assert_eq!(refused.feedback.as_deref(), Some("split this in two"));
     assert_eq!(
-        lease::refuse(&refused, "again".to_owned()).unwrap_err(),
+        lease::refuse(&refused, "again".to_owned(), None).unwrap_err(),
         LifecycleError::Transition {
             from: State::Refused,
             to: State::Refused
@@ -729,4 +764,24 @@ fn the_shortest_ticket_lasts_the_minimum_ttl() {
         ticket.created_at.seconds_until(ticket.limits.expires_at),
         i64::try_from(fit::MIN_TTL.seconds()).unwrap()
     );
+}
+
+#[test]
+fn feedback_is_bounded_in_the_core() {
+    let record = TicketRecord::pending(submitted(REQUEST));
+    let max = writ_core::signed::MAX_FEEDBACK_CHARS;
+    assert!(
+        lease::refuse(&record, "é".repeat(max), None).is_ok(),
+        "at the limit"
+    );
+    assert!(matches!(
+        lease::refuse(&record, "é".repeat(max + 1), None),
+        Err(LifecycleError::FeedbackTooLong)
+    ));
+    for blank in ["", "  \n\t"] {
+        assert!(matches!(
+            lease::refuse(&record, blank.to_owned(), None),
+            Err(LifecycleError::FeedbackEmpty)
+        ));
+    }
 }

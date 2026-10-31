@@ -24,6 +24,8 @@ pub const MAX_PLAN_STEPS: usize = 50;
 pub const MAX_PLAN_STEP_CHARS: usize = 500;
 pub const MAX_EXPECTED_PATHS: usize = 100;
 pub const MAX_ORIGIN_HINT_CHARS: usize = 100;
+/// What precedes feedback from a refusal nobody signed, in a revision's `previous_feedback`.
+pub const UNSIGNED_FEEDBACK: &str = "[not signed by an approver] ";
 /// The shortest lease a ticket may ask for. A pending ticket holds one of the approver's
 /// waiting slots until it expires: a 1-second ticket would free its slot every second, and
 /// let one submitter notify the approver without end. (The approver may still narrow a lease
@@ -134,9 +136,9 @@ pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
     check_limits(ticket, template, &mut reasons);
     check_text(ticket, template, &mut reasons);
     if let Some(caller) = &ticket.subject.caller
-        && caller.validate().is_err()
+        && let Err(e) = caller.validate()
     {
-        reasons.push("subject.caller.descends_from.executable must be absolute".to_owned());
+        reasons.push(format!("subject.caller: {e}"));
     }
 
     if reasons.is_empty() {
@@ -357,7 +359,16 @@ fn check_links(
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| Rejection::one("too many revisions"))?;
-            Ok((revision, previous.feedback.clone()))
+            // Feedback nobody signed (`decisions: open`) is labeled by the daemon, so neither
+            // the agent nor the approver takes it for the approver's words.
+            let feedback = previous
+                .feedback
+                .as_ref()
+                .map(|f| match previous.feedback_by {
+                    Some(_) => f.clone(),
+                    None => format!("{UNSIGNED_FEEDBACK}{f}"),
+                });
+            Ok((revision, feedback))
         }
         (Some(id), _) => Err(Rejection::one(format!(
             "ticket {id} (revises) does not exist"

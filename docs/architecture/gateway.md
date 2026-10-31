@@ -57,7 +57,7 @@ expiry, caller, the push operation, the repo still in the lease): a lease revoke
 while the pack was coming in moves no ref, and revoking a lease forgets its pushes in
 progress. Input the daemon can't read whole (over 1 MiB, cut short,
 not UTF-8, a line that isn't a ref update) is refused, never decided on in part. Until M4, the
-check is the repo's own `protected_refs` from the registry. Every refusal is logged (event
+check is the repo's own `protected_refs` from the registry, matched ignoring case. Every refusal is logged (event
 `push`, denied, with the refs) before the hook is answered. On a refusal git drops the
 quarantine and shows the agent `remote: writ: <reason>`. The commit checks against the ledger (M4) run at the same point,
 on the quarantined objects. Any failure to reach the daemon refuses the push.

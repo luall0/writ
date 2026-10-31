@@ -68,7 +68,7 @@ pub(crate) fn check_ref_updates(
 ) -> Result<(), String> {
     match updates
         .iter()
-        .find(|u| protected.iter().any(|p| p.matches(&u.name)))
+        .find(|u| protected.iter().any(|p| p.protects(&u.name)))
     {
         Some(update) => Err(format!("{} is protected", update.name)),
         None => Ok(()),
@@ -138,8 +138,11 @@ mod tests {
             check(&["refs/heads/agent/x", "refs/heads/main"]),
             Err("refs/heads/main is protected".into())
         );
-        // Exact patterns match exactly.
+        // Exact patterns match exactly, but never by case alone: on APFS `MAIN` is `main`.
         assert_eq!(check(&["refs/heads/mainline", "refs/heads/main/x"]), Ok(()));
+        for name in ["refs/heads/Main", "refs/heads/MAIN", "refs/TAGS/v1"] {
+            assert_eq!(check(&[name]), Err(format!("{name} is protected")));
+        }
         assert_eq!(
             check_ref_updates(&[update("refs/heads/main")], &BTreeSet::new()),
             Ok(())

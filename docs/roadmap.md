@@ -117,6 +117,10 @@ forge (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
 - Upstream pusher with the upstream credential from the `Signer`; mirror refs updated only
   after upstream accepted; upstream rejections relayed to the agent.
 - `writ init` writes the [URL rewrite](architecture/gateway.md#url-rewrite).
+- From the M2.6 security review: mirrors use the reftable ref format (no loose ref files to
+  collide by case on APFS), and an update whose name differs only in case from an existing
+  ref is refused; `receive.fsckObjects` stays on; decide and consume a push under one store
+  transaction, with the rate window and expiry checked there too.
 
 Acceptance:
 - [ ] `git push origin agent/x` from a wired repo reaches the forge; `git fetch` works through

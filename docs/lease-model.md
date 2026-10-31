@@ -101,7 +101,13 @@ every reason sent back to the agent. Config errors name the field
   and one trailing `*` (`agent/*`, `agent/fix-*`, `*`), which matches any rest, `/` included.
   Nothing else (no `*` in the middle, no `**`), so whether one pattern is within another is
   exact: `agent/*` covers `agent/fix-*`, which covers `agent/fix-login`.
-- **Protected refs** (`protected_refs`) are full refs with the same syntax (`refs/tags/*`).
+- **Protected refs** (`protected_refs`) are full refs with the same syntax (`refs/tags/*`),
+  matched **ignoring case**: on a case-insensitive file system (APFS, local mode's mirrors)
+  `refs/heads/MAIN` is `refs/heads/main`'s own ref file.
+- **Committer emails** are printable ASCII only, so a look-alike letter or an invisible
+  character can't make one address pass for another on the approver's screen.
+- **A caller constraint** names a normalized absolute executable path (no `//`, `.`, `..` or
+  trailing `/`, at most 1024 bytes), compared byte for byte; its code identity is bounded.
 - **Expected paths** (`expected_paths`) are globs over repository paths: `*` and `?` stay
   inside one directory, `**` crosses them.
 - Durations: a number and one unit, `s`, `m`, `h` or `d` (`90s`, `4h`). Sizes: bytes, or a
@@ -146,7 +152,8 @@ plan 50 one-line steps of 500, 100 expected paths).
 What the approver signs, and once signed, the lease's terms. The daemon fills `id`,
 `created_at`, `subject.session_key` (from the key sent with the request), the template's
 committer emails and signing key, `limits.expires_at = created_at + ttl` (so time spent
-waiting for my signature counts), every omitted limit, `revision` and `previous_feedback`.
+waiting for my signature counts), every omitted limit, `revision` and `previous_feedback`
+(prefixed `[not signed by an approver]` when the refusal was unsigned, with `decisions: open`).
 A ticket asks for at least 5 minutes (`ttl`, and a template's `max_ttl`): a pending ticket
 holds one of the approver's waiting slots until it expires. The approver may still narrow a
 lease below that when signing. One session key has at most 2 tickets waiting, one source

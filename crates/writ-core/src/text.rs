@@ -4,22 +4,26 @@
 //! Every place that shows agent text uses [`is_hidden_char`]: `writ sign` escapes these
 //! characters visibly, notifications drop them ([`strip`]).
 
-/// Whether `c` could move the cursor, recolor, hide or reorder text: control characters (C0,
-/// DEL, C1, newlines included), bidi controls, invisible format characters and line
-/// separators.
+mod hidden;
+
+/// Whether `c` could move the cursor, recolor, hide or reorder text, or render as nothing:
+/// controls (C0, DEL, C1, newlines included), format characters (bidi controls, zero-width
+/// characters, tags), private-use and unassigned code points, line and paragraph separators,
+/// and every default-ignorable character (variation selectors, fillers). The table is
+/// generated from Unicode ([`hidden`], `tool/gen-hidden-chars.py`), never written by hand.
 pub fn is_hidden_char(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{061C}'                  // Arabic letter mark
-            | '\u{180E}'                // Mongolian vowel separator
-            | '\u{200B}'..='\u{200F}'   // zero-width spaces and joiners, LRM, RLM
-            | '\u{2028}'..='\u{2029}'   // line and paragraph separators
-            | '\u{202A}'..='\u{202E}'   // bidi embeddings and overrides
-            | '\u{2060}'..='\u{2064}'   // word joiner and invisible operators
-            | '\u{2066}'..='\u{2069}'   // bidi isolates
-            | '\u{FEFF}' // zero-width no-break space (BOM)
-        )
+    let code = u32::from(c);
+    hidden::HIDDEN
+        .binary_search_by(|&(lo, hi)| {
+            if hi < code {
+                std::cmp::Ordering::Less
+            } else if lo > code {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 /// Whether a newline is kept by [`strip`].
@@ -56,11 +60,62 @@ mod tests {
         }
         // The neighbours of each range stay visible.
         for c in [
-            ' ', 'a', '~', '\u{a0}', '\u{061B}', '\u{180D}', '\u{200A}', '\u{2010}', '\u{2027}',
-            '\u{202F}', '\u{205F}', '\u{2065}', '\u{206A}', '\u{FEFE}', '\u{FF00}', 'é', '中',
-            '🙂',
+            ' ', 'a', '~', '\u{a0}', '\u{061B}', '\u{180A}', '\u{200A}', '\u{2010}', '\u{2027}',
+            '\u{202F}', '\u{205F}', '\u{FEFC}', '\u{FF01}', 'é', '中', '🙂', '\u{3000}',
         ] {
             assert!(!is_hidden_char(c), "{:?} must stay visible", c);
+        }
+    }
+
+    #[test]
+    fn invisible_characters_found_by_the_review_are_hidden() {
+        for c in [
+            '\u{00AD}',   // soft hyphen
+            '\u{034F}',   // combining grapheme joiner
+            '\u{0600}',   // Arabic number sign (format)
+            '\u{115F}',   // Hangul choseong filler
+            '\u{3164}',   // Hangul filler
+            '\u{180B}',   // Mongolian free variation selector
+            '\u{206A}',   // inhibit symmetric swapping (deprecated format)
+            '\u{206F}',   // nominal digit shapes
+            '\u{FE00}',   // variation selector 1
+            '\u{FE0F}',   // variation selector 16
+            '\u{FFF9}',   // interlinear annotation anchor
+            '\u{FFFB}',   // interlinear annotation terminator
+            '\u{1D173}',  // musical symbol begin beam
+            '\u{E0001}',  // language tag
+            '\u{E0041}',  // tag Latin capital A: "ASCII smuggling"
+            '\u{E007F}',  // cancel tag
+            '\u{E0100}',  // variation selector 17
+            '\u{E000}',   // private use
+            '\u{F8FF}',   // private use (the Apple logo on a Mac)
+            '\u{10FFFF}', // a noncharacter, unassigned
+            '\u{2065}',   // unassigned, in the middle of the bidi controls
+        ] {
+            assert!(is_hidden_char(c), "{:?} must be hidden", c);
+        }
+    }
+
+    #[test]
+    fn the_generated_table_is_sorted_and_disjoint() {
+        let mut last: Option<u32> = None;
+        for &(lo, hi) in hidden::HIDDEN {
+            assert!(lo <= hi, "{lo:x}..{hi:x}");
+            if let Some(last) = last {
+                assert!(
+                    lo > last + 1,
+                    "{lo:x} touches or overlaps the previous range"
+                );
+            }
+            last = Some(hi);
+        }
+        // Every control is in it: the derivation includes what char::is_control knows.
+        for code in 0..=0x10FFFFu32 {
+            if let Some(c) = char::from_u32(code)
+                && c.is_control()
+            {
+                assert!(is_hidden_char(c), "{c:?}");
+            }
         }
     }
 

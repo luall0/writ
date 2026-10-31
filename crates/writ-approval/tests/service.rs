@@ -382,7 +382,15 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
     assert_eq!(
         h.wait(&ticket.id, &key),
         Decision::Refused {
-            feedback: "Don't touch billing".into()
+            feedback: "Don't touch billing".into(),
+            signed_by: Some(
+                h.approver
+                    .public_key()
+                    .fingerprint(HashAlg::Sha256)
+                    .to_string()
+                    .parse()
+                    .unwrap()
+            ),
         }
     );
     refused_with(h.approve(&ticket), "is refused, not pending");
@@ -487,8 +495,10 @@ fn open_decisions_need_no_signature_but_check_one_given() {
     h.service.refuse(&pending.id, &open, &facts()).unwrap();
     assert_eq!(
         h.wait(&pending.id, &key),
+        // `decisions: open`, no signature: the agent is told nobody signed it.
         Decision::Refused {
-            feedback: "no".into()
+            feedback: "no".into(),
+            signed_by: None,
         }
     );
     let (ticket, _, cert) = h.lease();

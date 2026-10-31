@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use writ_core::lease::State;
-use writ_core::names::{RepoName, TemplateName, TicketId};
+use writ_core::names::{KeyFingerprint, RepoName, TemplateName, TicketId};
 use writ_core::units::Timestamp;
 
 /// Reply to [`Command::Request`]: the ticket is waiting for the approver.
@@ -23,8 +23,12 @@ pub enum Decision {
     Active { lease: String, certificate: String },
     /// A signed amendment, now the terms of its lease (the certificate doesn't change).
     Applied { lease: String },
-    /// Refused, with the approver's feedback.
-    Refused { feedback: String },
+    /// Refused, with feedback, and who signed the refusal: `None` when nobody did (a daemon
+    /// with `decisions: open`), so the feedback may not be the approver's.
+    Refused {
+        feedback: String,
+        signed_by: Option<KeyFingerprint>,
+    },
     /// Not signed before `expires_at`.
     Expired,
     /// Withdrawn, or the lease was revoked before the wait.

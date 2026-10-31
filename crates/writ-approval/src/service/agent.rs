@@ -281,6 +281,7 @@ impl Service {
             }
             State::Refused => Decision::Refused {
                 feedback: record.feedback.unwrap_or_default(),
+                signed_by: record.feedback_by,
             },
             State::Expired => Decision::Expired,
             State::Revoked => Decision::Revoked,

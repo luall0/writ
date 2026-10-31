@@ -175,8 +175,20 @@ async fn decide(
             print_narrowing(submitted, &terms);
             Ok(Exit::Ok)
         }
-        Decision::Refused { feedback } => {
-            println!("Ticket {id} was refused. The approver's feedback:");
+        Decision::Refused {
+            feedback,
+            signed_by,
+        } => {
+            match signed_by {
+                Some(approver) => println!(
+                    "Ticket {id} was refused. The approver's feedback (signed by {approver}):"
+                ),
+                // `decisions: open`: anyone the daemon lets read could have written it.
+                None => println!(
+                    "Ticket {id} was refused without an approver's signature: the feedback below \
+                     may not be the approver's words."
+                ),
+            }
             print!("{}", display::block(&feedback, "  ", true));
             println!("Revise the ticket and submit it again with `ticket.revises: {id}`.");
             Ok(Exit::Refused)
