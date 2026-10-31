@@ -75,6 +75,7 @@ mod tests {
             home: home.to_owned(),
             known_hosts: home.join("known_hosts"),
             tls_pins: home.join("tls_pins"),
+            reader: home.join("reader"),
         }
     }
 

@@ -210,10 +210,16 @@ fn revocation_and_expiry_drop_sessions_and_refuse_the_certificate() {
         "a revoked certificate got in"
     );
 
-    // Expiry: the same, when expires_at passes.
-    let request = daemon.request("short", &ticket("", "4s"));
+    // Expiry: the same, when expires_at passes. A ticket asks for at least 5 minutes; the
+    // approver may narrow it below that when signing.
+    let request = daemon.request("short", &ticket("", "1h"));
     let short = request.id.clone();
-    assert!(daemon.run(&["sign", &short, "--yes"], "").status.success());
+    assert!(
+        daemon
+            .run(&["sign", &short, "--yes", "--ttl", "4s"], "")
+            .status
+            .success()
+    );
     assert!(request.finish().0.success());
     let session = daemon.session(&short);
     let mut open = daemon

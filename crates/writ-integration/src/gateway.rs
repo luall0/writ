@@ -13,6 +13,7 @@ use writ_approval::testing::{TestServiceBuilder, sign_approval, sign_revocation}
 use writ_core::caller::CallerFacts;
 use writ_core::canonical::Canonical;
 use writ_core::names::TicketId;
+use writ_core::net::Sources;
 use writ_core::ticket::Ticket;
 use writ_crypto::ca::{CertificateAuthority, CertificateRequest};
 use writ_crypto::keys::{KeyKind, generate};
@@ -132,6 +133,8 @@ impl GitGateway {
             signing_key: agent_key.clone(),
             hook_program: bin("writd"),
             state_dir: root.join("run"),
+            // No approval listener here: the service is driven directly.
+            readers: Vec::new(),
         };
         let gateway = runtime
             .block_on(Gateway::start(config, service.clone()))
@@ -147,7 +150,9 @@ impl GitGateway {
                 let transport = Arc::new(TcpTransport::from_listener(listener));
                 let attestor = Arc::new(writ_platform::attest::network::NetworkAttestor::new());
                 let g = gateway.clone();
-                runtime.spawn(async move { g.serve(transport, attestor, Role::Agents).await });
+                let local = Sources::Only(vec!["127.0.0.1".parse().unwrap()]);
+                runtime
+                    .spawn(async move { g.serve(transport, attestor, Role::Agents, local).await });
                 (
                     format!("ssh://git@127.0.0.1:{port}"),
                     String::new(),
@@ -163,7 +168,10 @@ impl GitGateway {
                 let transport = Arc::new(UnixTransport(listener));
                 let attestor = Arc::new(FakeAttestor::fixed(CallerFacts::default()));
                 let g = gateway.clone();
-                runtime.spawn(async move { g.serve(transport, attestor, Role::Agents).await });
+                runtime.spawn(async move {
+                    g.serve(transport, attestor, Role::Agents, Sources::Any)
+                        .await
+                });
                 (
                     "ssh://git@writ-local".to_owned(),
                     format!(

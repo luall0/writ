@@ -4,8 +4,9 @@
 //!
 //! Connections come from a [`Transport`] and their callers are attested, like the SSH
 //! listeners. TLS 1.3 only, with the daemon's self-signed certificate
-//! ([`writ_crypto::tls::TlsIdentity`]), which clients pin by its SHA-256 fingerprint; no client authentication, since the connection grants nothing
-//! (approvals are SSHSIGs checked by the approval service). Routes: see
+//! ([`writ_crypto::tls::TlsIdentity`]), which clients pin by its SHA-256 fingerprint, and a
+//! client certificate for a reader key (mutual TLS): only readers reach the API, as over SSH.
+//! Approvals are still SSHSIGs checked by the approval service. Routes: see
 //! [`writ_proto::Command::http_route`].
 
 use std::sync::Arc;
@@ -16,12 +17,13 @@ use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use writ_core::caller::CallerFacts;
+use writ_core::net::Sources;
 use writ_crypto::tls::TlsIdentity;
 use writ_platform::{CallerAttestor, Transport};
 use writ_proto::{ApiError, MAX_BODY};
 
 use crate::api::{approval_has_body, approval_reply, encoded};
-use crate::{Gateway, Result};
+use crate::{Gateway, Result, limits};
 
 /// How long a client has to finish the TLS handshake, and to send its request headers.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -33,12 +35,20 @@ impl Gateway {
         transport: Arc<dyn Transport>,
         attestor: Arc<dyn CallerAttestor>,
         identity: Arc<TlsIdentity>,
+        sources: Sources,
     ) -> Result<()> {
-        let acceptor = tokio_rustls::TlsAcceptor::from(identity.server_config());
+        let server_config = identity
+            .server_config(&self.shared.config.readers)
+            .map_err(|e| crate::GatewayError::Config(format!("TLS: {e}")))?;
+        let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+        let slots = limits::Slots::new();
         loop {
-            let (connection, facts) = self.accept_attested(&*transport, &*attestor).await?;
+            let (connection, facts, slot) = self
+                .accept_attested(&*transport, &*attestor, &sources, &slots)
+                .await?;
             let (gateway, acceptor) = (self.clone(), acceptor.clone());
             tokio::spawn(async move {
+                let _slot = slot;
                 let tls = match tokio::time::timeout(
                     HANDSHAKE_TIMEOUT,
                     acceptor.accept(connection.stream),
@@ -100,12 +110,23 @@ async fn handle(
         return error(StatusCode::NOT_FOUND, "no such endpoint");
     };
     let body = if approval_has_body(&command) {
-        match Limited::new(request.into_body(), MAX_BODY).collect().await {
-            Ok(collected) => collected.to_bytes().to_vec(),
-            Err(_) => {
+        let collected = tokio::time::timeout(
+            limits::BODY_DEADLINE,
+            Limited::new(request.into_body(), MAX_BODY).collect(),
+        )
+        .await;
+        match collected {
+            Ok(Ok(collected)) => collected.to_bytes().to_vec(),
+            Ok(Err(_)) => {
                 return error(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     &format!("the request is larger than {MAX_BODY} bytes"),
+                );
+            }
+            Err(_) => {
+                return error(
+                    StatusCode::REQUEST_TIMEOUT,
+                    "the request body took too long to arrive",
                 );
             }
         }

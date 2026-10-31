@@ -147,9 +147,9 @@ SSH on it, or TLS and HTTP for the HTTPS approval API, and attests the caller ei
 ```yaml
 # detached (Docker on Linux)
 transports:
-  agents: [{ tcp: "0.0.0.0:2222" }]
-  approvals:                             # each optional, not both; firewall them to the approver's Mac
-    ssh: [{ tcp: "0.0.0.0:2223" }]
+  agents: [{ tcp: "0.0.0.0:2222", allow: ["10.0.0.0/24"] }]   # the agent hosts (required on TCP)
+  approvals:                             # each optional, not both; readers only
+    ssh: [{ tcp: "0.0.0.0:2223", allow: ["10.0.0.5"] }]       # optional: the approver's Mac
     https: [{ tcp: "0.0.0.0:8443" }]
 attestor: network
 session_watcher: none

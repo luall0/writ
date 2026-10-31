@@ -29,7 +29,7 @@ use crate::{Exit, Paths};
 use writ_core::canonical::Canonical;
 
 async fn connect(paths: &Paths, url: &str) -> anyhow::Result<Approvals> {
-    Approvals::connect(url, &paths.known_hosts, &paths.tls_pins).await
+    Approvals::connect(paths, url).await
 }
 
 fn now() -> anyhow::Result<Timestamp> {

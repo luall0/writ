@@ -129,12 +129,14 @@ impl Store {
             .flatten())
     }
 
-    /// Every ticket, oldest first.
-    pub fn all_tickets(&self) -> Result<Vec<TicketRecord>> {
-        let mut statement = self
-            .conn
-            .prepare(&format!("SELECT {RECORD_COLUMNS} FROM tickets ORDER BY id"))?;
-        let rows = statement.query_map([], raw_record)?;
+    /// The `limit` most recent tickets (ids are time-ordered), oldest first.
+    pub fn recent_tickets(&self, limit: usize) -> Result<Vec<TicketRecord>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT * FROM (SELECT {RECORD_COLUMNS} FROM tickets ORDER BY id DESC LIMIT ?1) \
+             ORDER BY id"
+        ))?;
+        let rows = statement.query_map([limit], raw_record)?;
         rows.map(|row| row.map_err(StoreError::from).and_then(RawRecord::decode))
             .collect()
     }

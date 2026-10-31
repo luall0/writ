@@ -299,21 +299,28 @@ pub enum Approvals {
 
 impl Approvals {
     /// Connects to the approval listener at `url`, checking the daemon against its pin
-    /// (`known_hosts` for SSH, `tls_pins` for HTTPS). Over SSH it authenticates with a
-    /// throwaway key: the connection grants nothing.
-    pub async fn connect(url: &str, known_hosts: &Path, tls_pins: &Path) -> anyhow::Result<Self> {
+    /// (`known_hosts` for SSH, `tls_pins` for HTTPS), with the reader key: SSH authentication,
+    /// or the HTTPS client certificate. The daemon lets only its readers in.
+    pub async fn connect(paths: &crate::Paths, url: &str) -> anyhow::Result<Self> {
         let endpoint = Endpoint::parse(url)?;
+        let reader = crate::reader::load(&paths.reader)?;
         match &endpoint {
             Endpoint::Https { host, port } => {
-                let pin = crate::https::pinned_fingerprint(tls_pins, &endpoint.known_hosts_name())?;
-                Ok(Self::Https(crate::https::Client::new(host, *port, pin)?))
+                let name = endpoint.known_hosts_name();
+                let pin = crate::https::pinned_fingerprint(&paths.tls_pins, &name)?;
+                Ok(Self::Https(crate::https::Client::new(
+                    host, *port, pin, &reader,
+                )?))
             }
-            _ => {
-                let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519)?;
-                Ok(Self::Ssh(
-                    Session::connect(&endpoint, known_hosts, writ_proto::CLIENT_USER, key).await?,
-                ))
-            }
+            _ => Ok(Self::Ssh(
+                Session::connect(
+                    &endpoint,
+                    &paths.known_hosts,
+                    writ_proto::CLIENT_USER,
+                    reader,
+                )
+                .await?,
+            )),
         }
     }
 

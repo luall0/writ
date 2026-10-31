@@ -1,6 +1,7 @@
 //! Cryptography for Writ: SSHSIG signatures (commit signing, approvals), the SSH certificate
 //! authority that turns an approved lease into a session certificate, the approvers file,
-//! keys and randomness, and the approval API's pinned TLS.
+//! the readers file (who may use the approval API), keys and randomness, and the approval
+//! API's pinned TLS.
 //!
 //! Signing is split the way the `Signer` interface needs it: [`sshsig::signed_data`] builds
 //! the exact bytes to sign, a key signs them, and [`sshsig::assemble`] wraps the raw
@@ -9,6 +10,7 @@
 pub mod allowed_signers;
 pub mod ca;
 pub mod keys;
+pub mod readers;
 pub mod sshsig;
 pub mod tls;
 
@@ -32,6 +34,9 @@ pub enum CryptoError {
     /// A line of an `allowed_signers` file that can't be read or honored.
     #[error("line {line}: {why}")]
     AllowedSigners { line: usize, why: String },
+    /// A line of a `readers` file that can't be read or honored.
+    #[error("line {line}: {why}")]
+    Readers { line: usize, why: String },
     /// A PEM block that isn't the expected certificate or key.
     #[error("invalid TLS {0}")]
     Pem(&'static str),

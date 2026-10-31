@@ -259,8 +259,11 @@ fn validate_template(
             "required with commit_sign",
         ));
     }
-    if template.max_ttl.seconds() == 0 {
-        return Err(FieldError::at(at("max_ttl"), "must be longer than 0s"));
+    if template.max_ttl < crate::fit::MIN_TTL {
+        return Err(FieldError::at(
+            at("max_ttl"),
+            format!("must be at least {}", crate::fit::MIN_TTL),
+        ));
     }
     if template.max_ops_per_minute == 0 {
         return Err(FieldError::at(

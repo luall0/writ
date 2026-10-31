@@ -4,6 +4,7 @@
 # Local dev daemon data (test keys, mirrors, leases)
 /dev/data/
 /dev/approvers
+/dev/readers
 /dev/telegram-token
 
 # Editors and OS

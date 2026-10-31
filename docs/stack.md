@@ -17,7 +17,7 @@ later approver apps.
 | Async runtime | `tokio` | Decided (M0) |
 | SQLite access | `rusqlite` 0.41 (bundled SQLite) | Decided (M1) |
 | age | `age` 0.11 (0.12 pulls `ml-kem` 0.2, whose `kem` pre-release conflicts with russh 0.65's) | Decided (M2) |
-| Approval API | The gateway's SSH protocol on its own listener (`russh`), and HTTPS (`hyper` 1 + `rustls` 0.23 with `ring`, `tokio-rustls`; self-signed certificate from `rcgen`); clients pin the host key or the certificate ([Q29](decisions.md)) | Decided (M2) |
+| Approval API | The gateway's SSH protocol on its own listener (`russh`), and HTTPS (`hyper` 1 + `rustls` 0.23 with `ring`, `tokio-rustls`; self-signed certificate from `rcgen`); clients pin the host key or the certificate ([Q29](decisions.md)); reader keys as client certificates, parsed with `rustls-webpki` 0.103 (rustls's own parser, no new code in the tree) | Decided (M2; readers M2.6) |
 | Config | `serde` + `serde-saphyr` 2 (YAML, duplicate keys refused) + `serde_path_to_error` (errors name the field) | Decided (M1): `serde_yaml` is deprecated |
 | CLI | `clap` 4 (derive, env) | Decided (M2) |
 | Errors | `thiserror` in library crates, `anyhow` only in binaries | Decided (M0) |

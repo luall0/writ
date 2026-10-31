@@ -5,9 +5,13 @@
 //!   fetch/push, `writ-sign git`); user `writ` with a plain key, the session key of a ticket
 //!   being submitted (`writ request`, `writ wait`).
 //! - [`Role::Approvals`]: the approval API (`writ info`, `ls`, `show`, `approve`, `refuse`,
-//!   `revoke`). Any key gets in: an approval is an SSHSIG checked by the approval service,
-//!   never the connection itself. The same API is also served over HTTPS
-//!   ([`Gateway::serve_https`], [`https`]).
+//!   `revoke`), for the keys in the `readers` file only (reads would otherwise show every
+//!   ticket to anyone). An approval is still an SSHSIG checked by the approval service, never
+//!   the connection itself. The same API is also served over HTTPS, where the reader key is
+//!   the client certificate ([`Gateway::serve_https`], [`https`]).
+//!
+//! Every listener bounds what a peer can make it hold ([`limits`]) and accepts only the
+//! [`Sources`] it is configured with.
 //!
 //! The gateway only sees the platform traits ([`Transport`], [`CallerAttestor`]): connections
 //! come from a transport, what is known about the caller from an attestor. Leases, tickets
@@ -28,11 +32,12 @@ mod exec;
 mod handler;
 mod hook;
 mod https;
+mod limits;
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,8 +47,10 @@ use tokio::sync::broadcast::error::RecvError;
 use writ_approval::{EventKind, GatewayDenial, Service};
 use writ_core::caller::CallerFacts;
 use writ_core::lease::Lease;
+use writ_core::net::Sources;
 use writ_core::policy::{CertIdentity, Denial, DenyCode};
 use writ_core::ticket::Operation;
+use writ_crypto::readers::Reader;
 use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
 use writ_platform::{CallerAttestor, Connection, PeerInfo, Transport};
 
@@ -88,6 +95,8 @@ pub struct GatewayConfig {
     pub hook_program: PathBuf,
     /// Private directory for the gateway's own files (hooks, the hook socket).
     pub state_dir: PathBuf,
+    /// The keys that may use the approval API (`readers` file).
+    pub readers: Vec<Reader>,
 }
 
 /// A running gateway, shared by every connection.
@@ -108,6 +117,8 @@ struct Shared {
     next_connection: AtomicU64,
     hooks_dir: PathBuf,
     hook_socket: PathBuf,
+    /// Denials before authentication, coalesced per source.
+    throttle: limits::DenialThrottle,
 }
 
 impl Gateway {
@@ -137,7 +148,8 @@ impl Gateway {
             keys: vec![config.host_key.clone()],
             auth_rejection_time: Duration::from_millis(300),
             auth_rejection_time_initial: Some(Duration::ZERO),
-            inactivity_timeout: Some(Duration::from_secs(3600)),
+            max_auth_attempts: 6,
+            inactivity_timeout: Some(limits::INACTIVITY_TIMEOUT),
             ..Default::default()
         });
         let authorities = vec![service.ca_public_key().fingerprint(HashAlg::Sha256)];
@@ -153,6 +165,7 @@ impl Gateway {
                 next_connection: AtomicU64::new(1),
                 hooks_dir,
                 hook_socket,
+                throttle: limits::DenialThrottle::new(),
             }),
         };
         tokio::spawn(hook::serve(gateway.clone(), hook_listener));
@@ -193,67 +206,109 @@ impl Gateway {
     }
 
     /// Serves SSH connections from a transport, with what `attestor` says about each caller,
-    /// until the transport fails. A caller the attestor can't attest is turned away.
+    /// until the transport fails. A caller the attestor can't attest, or from a source the
+    /// listener doesn't accept, is turned away.
     pub async fn serve(
         &self,
         transport: Arc<dyn Transport>,
         attestor: Arc<dyn CallerAttestor>,
         role: Role,
+        sources: Sources,
     ) -> Result<()> {
+        let slots = limits::Slots::new();
         loop {
-            let (connection, facts) = self.accept_attested(&*transport, &*attestor).await?;
-            let handler = handler::Connection::new(self.clone(), role, facts);
+            let (connection, facts, slot) = self
+                .accept_attested(&*transport, &*attestor, &sources, &slots)
+                .await?;
+            let authenticated = Arc::new(AtomicBool::new(false));
+            let handler =
+                handler::Connection::new(self.clone(), role, facts, authenticated.clone());
             let ssh = self.shared.ssh.clone();
             tokio::spawn(async move {
-                match russh::server::run_stream(ssh, connection.stream, handler).await {
-                    Ok(session) => {
-                        if let Err(e) = session.await
-                            && !client_went_away(&e)
-                        {
-                            tracing::warn!(error = %e, "session ended with an error");
-                        }
+                let _slot = slot;
+                let started = tokio::time::timeout(
+                    limits::AUTH_DEADLINE,
+                    russh::server::run_stream(ssh, connection.stream, handler),
+                )
+                .await;
+                let session = match started {
+                    Err(_) => return,
+                    Ok(Err(e)) if client_went_away(&e) => return,
+                    Ok(Err(e)) => return tracing::warn!(error = %e, "connection failed"),
+                    Ok(Ok(session)) => session,
+                };
+                // Not authenticated in time: disconnected.
+                let handle = session.handle();
+                let deadline = tokio::spawn(async move {
+                    tokio::time::sleep(limits::AUTH_DEADLINE).await;
+                    if !authenticated.load(Ordering::Acquire) {
+                        let _ = handle
+                            .disconnect(
+                                Disconnect::ByApplication,
+                                "writ: authentication took too long".to_owned(),
+                                "en".to_owned(),
+                            )
+                            .await;
                     }
-                    Err(e) if client_went_away(&e) => {}
-                    Err(e) => tracing::warn!(error = %e, "connection failed"),
+                });
+                if let Err(e) = session.await
+                    && !client_went_away(&e)
+                {
+                    tracing::warn!(error = %e, "session ended with an error");
                 }
+                deadline.abort();
             });
         }
     }
 
-    /// The next connection whose caller the attestor can attest, with its facts. Others are
-    /// logged and dropped.
+    /// The next connection whose caller the attestor can attest, from a source the listener
+    /// accepts, with a free connection slot. Others are logged (coalesced) and dropped.
     async fn accept_attested(
         &self,
         transport: &dyn Transport,
         attestor: &dyn CallerAttestor,
-    ) -> Result<(Connection, CallerFacts)> {
+        sources: &Sources,
+        slots: &limits::Slots,
+    ) -> Result<(Connection, CallerFacts, limits::Slot)> {
         loop {
             let connection = transport.accept().await?;
-            match attestor.attest(&connection.peer) {
-                Ok(facts) => return Ok((connection, facts)),
+            let facts = match attestor.attest(&connection.peer) {
+                Ok(facts) => facts,
                 Err(e) => {
                     tracing::warn!(
                         listener = %transport.describe(),
                         error = %e,
                         "connection turned away"
                     );
-                    self.turned_away(&connection.peer, &e).await;
+                    let caller = peer_facts(&connection.peer);
+                    self.turned_away(caller, "attest", format!("caller turned away: {e}"))
+                        .await;
+                    continue;
+                }
+            };
+            if !sources.allows(facts.source_addr) {
+                let reason = "caller turned away: its address is not allowed on this listener";
+                self.turned_away(facts, "source", reason.to_owned()).await;
+                continue;
+            }
+            match slots.take(facts.source_addr) {
+                Ok(slot) => return Ok((connection, facts, slot)),
+                Err(reason) => {
+                    let reason = format!("caller turned away: {reason}");
+                    self.turned_away(facts, "slots", reason).await;
                 }
             }
         }
     }
 
-    /// Logs a caller the attestor couldn't attest (event `connect`, denied).
-    async fn turned_away(&self, peer: &PeerInfo, error: &writ_platform::PlatformError) {
-        let caller = match peer {
-            PeerInfo::Tcp { remote } => CallerFacts {
-                source_addr: Some(remote.ip()),
-                process_chain: None,
-            },
-            _ => CallerFacts::default(),
-        };
-        let denial = GatewayDenial::new(EventKind::Connect, format!("caller turned away: {error}"));
-        self.log_denial(denial, caller).await;
+    /// Logs a connection turned away before authentication (event `connect`, denied),
+    /// coalesced per source and `kind`.
+    async fn turned_away(&self, caller: CallerFacts, kind: &'static str, reason: String) {
+        if let Some(suppressed) = self.shared.throttle.admit(caller.source_addr, kind) {
+            let reason = limits::with_suppressed(reason, suppressed);
+            let denial = GatewayDenial::new(EventKind::Connect, reason);
+            self.log_denial(denial, caller).await;
+        }
     }
 
     fn connection_number(&self) -> u64 {
@@ -317,6 +372,17 @@ impl Gateway {
             .lock()
             .map(|s| s.get(&serial).map_or(0, HashMap::len))
             .unwrap_or(0)
+    }
+}
+
+/// What the transport alone says about a caller the attestor turned away.
+fn peer_facts(peer: &PeerInfo) -> CallerFacts {
+    match peer {
+        PeerInfo::Tcp { remote } => CallerFacts {
+            source_addr: Some(remote.ip()),
+            process_chain: None,
+        },
+        _ => CallerFacts::default(),
     }
 }
 

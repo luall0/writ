@@ -404,7 +404,7 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
             assert!(
                 reasons
                     .iter()
-                    .any(|r| r.contains("can't be revised from another session")),
+                    .any(|r| r.contains("(revises) does not exist")),
                 "{reasons:?}"
             );
             assert!(
@@ -742,6 +742,166 @@ fn too_many_waiting_tickets_are_turned_away() {
         matches!(&error, ServiceError::Refused { message, .. } if message.contains("already waiting")),
         "{error:?}"
     );
+}
+
+fn from(source: &str) -> CallerFacts {
+    CallerFacts {
+        source_addr: Some(source.parse().unwrap()),
+        process_chain: None,
+    }
+}
+
+#[test]
+fn one_session_has_at_most_two_tickets_waiting() {
+    let h = Harness::new(Decisions::Signed);
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let submit = |source: &str| {
+        h.service
+            .submit(key.public_key(), REQUEST.as_bytes(), &from(source))
+    };
+    submit("192.0.2.1").unwrap();
+    submit("192.0.2.2").unwrap();
+    // The same key from another address is the same session.
+    refused_with(
+        submit("192.0.2.3"),
+        "this session already has 2 tickets waiting for the approver",
+    );
+    // Another session isn't held back.
+    let other = generate(KeyKind::Ed25519).unwrap();
+    h.service
+        .submit(other.public_key(), REQUEST.as_bytes(), &from("192.0.2.3"))
+        .unwrap();
+}
+
+#[test]
+fn one_address_submits_at_most_ten_tickets_a_minute() {
+    let h = Harness::with(Decisions::Signed, FakeWatcher::new(), 100);
+    let submit = |source: &str| {
+        let key = generate(KeyKind::Ed25519).unwrap();
+        h.service
+            .submit(key.public_key(), REQUEST.as_bytes(), &from(source))
+    };
+    // Rejected tickets count too: the rate bounds what one address writes to the audit log.
+    let bad = generate(KeyKind::Ed25519).unwrap();
+    refused_with(
+        h.service
+            .submit(bad.public_key(), b"not: [yaml", &from("192.0.2.1")),
+        "ticket rejected",
+    );
+    for _ in 1..10 {
+        submit("192.0.2.1").unwrap();
+    }
+    let lines = h.events("submit", "denied");
+    for _ in 0..3 {
+        refused_with(
+            submit("192.0.2.1"),
+            "more than 10 submissions a minute from this address; try again later",
+        );
+    }
+    assert_eq!(
+        h.events("submit", "denied"),
+        lines + 1,
+        "one line for the burst"
+    );
+    // Another address has its own rate.
+    submit("192.0.2.2").unwrap();
+    // A minute after the first, one slot frees; the burst's count is logged with it.
+    h.clock.advance(59);
+    refused_with(submit("192.0.2.1"), "more than 10 submissions a minute");
+    h.clock.advance(1);
+    submit("192.0.2.1").unwrap();
+    let denied = h.test.events("submit", "denied");
+    assert_eq!(
+        denied.last().unwrap()["reason"],
+        "3 more submissions from this address were refused over the rate"
+    );
+}
+
+/// A notifier that holds the worker inside `notify` until released.
+struct Gated {
+    state: std::sync::Mutex<(bool, bool, Vec<String>)>,
+    changed: std::sync::Condvar,
+}
+
+impl Gated {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: std::sync::Mutex::new((false, false, Vec::new())),
+            changed: std::sync::Condvar::new(),
+        })
+    }
+
+    /// Waits until the worker is inside `notify`.
+    fn wait_entered(&self) {
+        let state = self.state.lock().unwrap();
+        let (_state, timeout) = self
+            .changed
+            .wait_timeout_while(state, WAIT_LIMIT, |s| !s.0)
+            .unwrap();
+        assert!(!timeout.timed_out(), "the worker never called the notifier");
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap().1 = true;
+        self.changed.notify_all();
+    }
+
+    fn wait_for(&self, count: usize) -> Vec<String> {
+        let state = self.state.lock().unwrap();
+        let (state, timeout) = self
+            .changed
+            .wait_timeout_while(state, WAIT_LIMIT, |s| s.2.len() < count)
+            .unwrap();
+        assert!(!timeout.timed_out(), "only {} notifications", state.2.len());
+        state.2.clone()
+    }
+}
+
+impl writ_platform::Notifier for Gated {
+    fn notify(&self, notification: &writ_platform::Notification) -> writ_platform::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        state.0 = true;
+        self.changed.notify_all();
+        while !state.1 {
+            state = self.changed.wait(state).unwrap();
+        }
+        state.2.push(notification.title.clone());
+        self.changed.notify_all();
+        Ok(())
+    }
+}
+
+#[test]
+fn a_slow_notifier_never_queues_without_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let gated = Gated::new();
+    let test = TestServiceBuilder::new(POLICY)
+        .max_pending(100)
+        .notifier(gated.clone())
+        .clock(Arc::new(FakeClock::at_unix(START)))
+        .build(dir.path());
+    let submit = |n: usize| {
+        let key = generate(KeyKind::Ed25519).unwrap();
+        test.service
+            .submit(
+                key.public_key(),
+                REQUEST.as_bytes(),
+                &from(&format!("192.0.2.{n}")),
+            )
+            .unwrap();
+    };
+    submit(0);
+    gated.wait_entered();
+    // One in delivery, 32 queued, 7 counted.
+    for n in 1..=39 {
+        submit(n);
+    }
+    gated.release();
+    let titles = gated.wait_for(34);
+    assert_eq!(titles.len(), 34);
+    assert!(titles[0].starts_with("Ticket waiting"));
+    assert_eq!(titles[1], "7 more notifications were dropped");
+    assert!(titles[2..].iter().all(|t| t.starts_with("Ticket waiting")));
 }
 
 #[test]

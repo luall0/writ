@@ -5,12 +5,14 @@
 //! state_dir: data                    # leases.db, audit.jsonl, repos/, run/
 //! policy: policy.yaml                # repo registry and templates
 //! approvers: approvers               # allowed_signers format
+//! readers: readers                   # who may use the approval API (`writ reader`)
 //! decisions: signed                  # signed | open: refusals and revocations
 //! keystore: { dev: data/keys }       # M2: unsealed dev keystore, test only
 //! transports:
-//!   agents: [{ tcp: "127.0.0.1:2222" }]
+//!   agents:                          # TCP: `allow` is required (`0.0.0.0/0` for anyone)
+//!     - { tcp: "0.0.0.0:2222", allow: ["10.0.0.0/24"] }
 //!   approvals:                       # each may be omitted or [] (disabled), not both
-//!     ssh: [{ tcp: "127.0.0.1:2223" }]
+//!     ssh: [{ tcp: "127.0.0.1:2223" }]          # `allow` optional: readers only anyway
 //!     https: [{ tcp: "127.0.0.1:8443" }]
 //! attestor: network
 //! session_watcher: none
@@ -23,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::Deserialize;
+use writ_core::net::{IpRange, Sources};
 use writ_proto::Decisions;
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +34,8 @@ pub struct Config {
     pub state_dir: PathBuf,
     pub policy: PathBuf,
     pub approvers: PathBuf,
+    /// The keys that may use the approval API: the `readers` file.
+    pub readers: PathBuf,
     #[serde(default)]
     pub decisions: Decisions,
     #[serde(default = "default_max_pending")]
@@ -75,11 +80,46 @@ pub struct ApprovalTransports {
     pub https: Vec<TransportConfig>,
 }
 
+/// One listener: a TCP address or a Unix socket, and the addresses it accepts connections
+/// from.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum TransportConfig {
-    Tcp(String),
-    Unix(PathBuf),
+#[serde(deny_unknown_fields)]
+pub struct TransportConfig {
+    #[serde(default)]
+    pub tcp: Option<String>,
+    #[serde(default)]
+    pub unix: Option<PathBuf>,
+    /// Source addresses allowed to connect (TCP only). Required on the agents' TCP
+    /// listeners: anyone who reaches one could submit tickets (`0.0.0.0/0` must be written
+    /// out to allow that).
+    #[serde(default)]
+    pub allow: Option<Vec<IpRange>>,
+}
+
+impl TransportConfig {
+    /// Who may connect to this listener.
+    pub fn sources(&self) -> Sources {
+        match &self.allow {
+            Some(ranges) => Sources::Only(ranges.clone()),
+            None => Sources::Any,
+        }
+    }
+
+    /// Exactly one of `tcp` and `unix`; `allow` only with `tcp`, and never empty.
+    fn check(&self, at: &str) -> Result<(), String> {
+        match (&self.tcp, &self.unix, &self.allow) {
+            (Some(_), Some(_), _) | (None, None, _) => {
+                Err(format!("{at}: needs exactly one of tcp and unix"))
+            }
+            (None, Some(_), Some(_)) => Err(format!(
+                "{at}.allow: only for tcp (a Unix socket is guarded by its mode and the attestor)"
+            )),
+            (_, _, Some(ranges)) if ranges.is_empty() => Err(format!(
+                "{at}.allow: empty (nobody could connect); list addresses, or 0.0.0.0/0 for anyone"
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +179,7 @@ impl Config {
         resolve(&mut config.state_dir);
         resolve(&mut config.policy);
         resolve(&mut config.approvers);
+        resolve(&mut config.readers);
         match &mut config.keystore {
             KeystoreConfig::Dev(dir) => resolve(dir),
         }
@@ -157,8 +198,30 @@ impl Config {
             .chain(transports.approvals.ssh.iter_mut())
             .chain(transports.approvals.https.iter_mut())
         {
-            if let TransportConfig::Unix(socket) = transport {
+            if let Some(socket) = &mut transport.unix {
                 resolve(socket);
+            }
+        }
+        let fail = |why: String| anyhow::anyhow!("{}: {why}", path.display());
+        let listeners = [
+            ("transports.agents", &config.transports.agents),
+            ("transports.approvals.ssh", &config.transports.approvals.ssh),
+            (
+                "transports.approvals.https",
+                &config.transports.approvals.https,
+            ),
+        ];
+        for (name, list) in listeners {
+            for (i, transport) in list.iter().enumerate() {
+                transport.check(&format!("{name}[{i}]")).map_err(fail)?;
+            }
+        }
+        for (i, agents) in config.transports.agents.iter().enumerate() {
+            if agents.tcp.is_some() && agents.allow.is_none() {
+                return Err(fail(format!(
+                    "transports.agents[{i}].allow: required on a TCP listener (who may submit \
+                     tickets); list the agents' addresses, or 0.0.0.0/0 for anyone"
+                )));
             }
         }
         if config.transports.agents.is_empty() {
@@ -191,8 +254,8 @@ mod tests {
     }
 
     const MINIMAL: &str = "state_dir: data\npolicy: policy.yaml\napprovers: approvers\n\
-        keystore: { dev: keys }\n\
-        transports: { agents: [{ tcp: \"127.0.0.1:0\" }], approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] } }\n\
+        readers: readers\nkeystore: { dev: keys }\n\
+        transports: { agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }], approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] } }\n\
         attestor: network\nsession_watcher: none\n";
 
     #[test]
@@ -201,7 +264,70 @@ mod tests {
         assert_eq!(config.decisions, Decisions::Signed);
         assert_eq!(config.max_pending, writ_approval::DEFAULT_MAX_PENDING);
         assert!(config.state_dir.is_absolute());
+        assert!(config.readers.is_absolute());
         assert!(config.notifiers.is_empty());
+        let agents = &config.transports.agents[0];
+        assert_eq!(
+            agents.sources(),
+            Sources::Only(vec!["127.0.0.1".parse().unwrap()])
+        );
+        assert_eq!(config.transports.approvals.ssh[0].sources(), Sources::Any);
+    }
+
+    #[test]
+    fn a_tcp_agents_listener_names_who_may_connect() {
+        let agents = "agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }]";
+        for (replacement, expected) in [
+            (
+                "agents: [{ tcp: \"127.0.0.1:0\" }]",
+                "transports.agents[0].allow: required on a TCP listener",
+            ),
+            (
+                "agents: [{ tcp: \"127.0.0.1:0\", allow: [] }]",
+                "transports.agents[0].allow: empty",
+            ),
+            (
+                "agents: [{ tcp: \"127.0.0.1:0\", allow: [10.0.0.1/24] }]",
+                "host bits set",
+            ),
+            (
+                "agents: [{ tcp: \"127.0.0.1:0\", unix: /tmp/x.sock, allow: [127.0.0.1] }]",
+                "transports.agents[0]: needs exactly one of tcp and unix",
+            ),
+            (
+                "agents: [{ allow: [127.0.0.1] }]",
+                "transports.agents[0]: needs exactly one of tcp and unix",
+            ),
+            (
+                "agents: [{ unix: /tmp/x.sock, allow: [127.0.0.1] }]",
+                "transports.agents[0].allow: only for tcp",
+            ),
+        ] {
+            let e = load(&MINIMAL.replace(agents, replacement))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(expected), "{replacement}: {e}");
+        }
+        // Anyone, written out.
+        let open = load(&MINIMAL.replace(
+            agents,
+            "agents: [{ tcp: \"127.0.0.1:0\", allow: [0.0.0.0/0, \"::/0\"] }]",
+        ))
+        .unwrap();
+        assert!(
+            open.transports.agents[0]
+                .sources()
+                .allows(Some("203.0.113.9".parse().unwrap()))
+        );
+        // A Unix socket needs no list.
+        let local = load(&MINIMAL.replace(agents, "agents: [{ unix: run/agents.sock }]")).unwrap();
+        assert!(
+            local.transports.agents[0]
+                .unix
+                .as_ref()
+                .unwrap()
+                .is_absolute()
+        );
     }
 
     #[test]

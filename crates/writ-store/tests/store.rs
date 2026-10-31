@@ -528,7 +528,27 @@ fn keeps_the_session_key_and_the_certificate() {
     assert_eq!(store.session_pubkey(&id(99)).unwrap(), None);
     assert_eq!(store.count(State::Active).unwrap(), 1);
     assert_eq!(store.count(State::Pending).unwrap(), 0);
-    assert_eq!(store.all_tickets().unwrap().len(), 1);
+    assert_eq!(store.recent_tickets(10).unwrap().len(), 1);
+}
+
+#[test]
+fn a_listing_holds_the_most_recent_tickets_only() {
+    let store = Store::open_in_memory().unwrap();
+    for n in 1..=5 {
+        active_lease(&store, n);
+    }
+    let ids = |limit| -> Vec<TicketId> {
+        store
+            .recent_tickets(limit)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.ticket.id)
+            .collect()
+    };
+    assert_eq!(ids(3), [id(3), id(4), id(5)], "the newest, oldest first");
+    assert_eq!(ids(5), [id(1), id(2), id(3), id(4), id(5)]);
+    assert_eq!(ids(6).len(), 5);
+    assert!(ids(0).is_empty());
 }
 
 #[test]

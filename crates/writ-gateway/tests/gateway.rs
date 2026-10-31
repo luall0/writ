@@ -14,6 +14,7 @@ use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use writ_approval::testing::{TestServiceBuilder, sign_approval, sign_revocation};
 use writ_core::caller::CallerFacts;
 use writ_core::canonical::Canonical;
+use writ_core::net::Sources;
 use writ_core::ticket::Ticket;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Certificate, PrivateKey};
@@ -74,6 +75,8 @@ struct Daemon {
     /// The pin of the HTTPS approval API's certificate.
     pin: String,
     approver: PrivateKey,
+    /// The key in the daemon's `readers`: the only one the approval API lets in.
+    reader: PrivateKey,
 }
 
 fn peer() -> PeerInfo {
@@ -84,7 +87,18 @@ fn peer() -> PeerInfo {
 
 impl Daemon {
     async fn start(attestor: FakeAttestor) -> Self {
+        Self::start_with(attestor, Sources::Any).await
+    }
+
+    /// With `agents` as the sources the agents listener accepts.
+    async fn start_with(attestor: FakeAttestor, agents_sources: Sources) -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let reader = generate(KeyKind::Ed25519).unwrap();
+        let readers = writ_crypto::readers::parse(&format!(
+            "test {}",
+            reader.public_key().to_openssh().unwrap()
+        ))
+        .unwrap();
         // The system clock: russh checks a certificate's validity window against it itself,
         // so the service must issue certificates valid now. Nothing here waits on time.
         let test = TestServiceBuilder::new(POLICY)
@@ -99,6 +113,7 @@ impl Daemon {
                 signing_key: generate(KeyKind::Ed25519).unwrap(),
                 hook_program: PathBuf::from("/bin/false"),
                 state_dir: dir.path().join("run"),
+                readers,
             },
             service,
         )
@@ -111,15 +126,18 @@ impl Daemon {
         let pin = identity.fingerprint().to_owned();
         let (https_transport, https) = FakeTransport::new();
         let (g, a) = (gateway.clone(), attestor.clone());
-        tokio::spawn(async move { g.serve_https(Arc::new(https_transport), a, identity).await });
+        tokio::spawn(async move {
+            g.serve_https(Arc::new(https_transport), a, identity, Sources::Any)
+                .await
+        });
         let (agent_transport, agents) = FakeTransport::new();
         let (approval_transport, approvals) = FakeTransport::new();
-        for (transport, role) in [
-            (agent_transport, Role::Agents),
-            (approval_transport, Role::Approvals),
+        for (transport, role, sources) in [
+            (agent_transport, Role::Agents, agents_sources),
+            (approval_transport, Role::Approvals, Sources::Any),
         ] {
             let (g, a) = (gateway.clone(), attestor.clone());
-            tokio::spawn(async move { g.serve(Arc::new(transport), a, role).await });
+            tokio::spawn(async move { g.serve(Arc::new(transport), a, role, sources).await });
         }
         Self {
             dir,
@@ -129,6 +147,7 @@ impl Daemon {
             https,
             pin,
             approver,
+            reader,
         }
     }
 
@@ -220,13 +239,9 @@ async fn lease(daemon: &Daemon) -> (PrivateKey, Certificate) {
     let submitted: Submitted = call(&agent, Command::Request, TICKET.as_bytes())
         .await
         .unwrap();
-    let approver = Daemon::with_key(
-        &daemon.approvals,
-        "writ",
-        &generate(KeyKind::Ed25519).unwrap(),
-    )
-    .await
-    .unwrap();
+    let approver = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
+        .await
+        .unwrap();
     let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
     let request = sign_approval(&daemon.approver, &ticket);
     let _: Ack = call(
@@ -256,13 +271,9 @@ async fn the_ticket_flow_runs_over_the_protocol() {
         holder.is_some(),
         "the certificate of an active lease gets in"
     );
-    let approver = Daemon::with_key(
-        &daemon.approvals,
-        "writ",
-        &generate(KeyKind::Ed25519).unwrap(),
-    )
-    .await
-    .unwrap();
+    let approver = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
+        .await
+        .unwrap();
     let info: Info = call(&approver, Command::Info, b"").await.unwrap();
     assert_eq!(info.decisions, Decisions::Signed);
     let listing: Listing = call(&approver, Command::List { all: false }, b"")
@@ -306,13 +317,9 @@ async fn each_identity_runs_only_its_own_commands() {
         assert_eq!(status, Some(1), "lease holder ran {line}");
         assert!(err.contains("not allowed"), "{line}: {err}");
     }
-    let approver = Daemon::with_key(
-        &daemon.approvals,
-        "writ",
-        &generate(KeyKind::Ed25519).unwrap(),
-    )
-    .await
-    .unwrap();
+    let approver = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
+        .await
+        .unwrap();
     for line in [
         "writ request",
         &format!("writ wait {id}"),
@@ -323,12 +330,114 @@ async fn each_identity_runs_only_its_own_commands() {
         assert_eq!(status, Some(1), "approver ran {line}");
         assert!(err.contains("not allowed"), "{line}: {err}");
     }
-    // A certificate on the approval listener grants nothing more than any key.
-    let on_approvals = Daemon::with_cert(&daemon.approvals, &key, &cert)
+    // A certificate on the approval listener gets nowhere: only reader keys get in.
+    assert!(
+        Daemon::with_cert(&daemon.approvals, &key, &cert)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn only_reader_keys_reach_the_approval_api() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let stranger = generate(KeyKind::Ed25519).unwrap();
+    // Neither as `writ` nor as any other user.
+    for user in ["writ", "git", "root"] {
+        assert!(
+            Daemon::with_key(&daemon.approvals, user, &stranger)
+                .await
+                .is_none(),
+            "{user}"
+        );
+    }
+    let reader = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
         .await
         .unwrap();
-    let (_, _, status) = exec(&on_approvals, "writ-sign git", b"x").await;
-    assert_eq!(status, Some(1));
+    let listing: Result<Listing, ApiError> = call(&reader, Command::List { all: true }, b"").await;
+    assert!(listing.unwrap().tickets.is_empty());
+    // The refusals are logged, coalesced: one line for the burst from this caller.
+    let lines = daemon.audit("connect", "denied");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["reason"], "key refused: not in readers");
+}
+
+#[tokio::test]
+async fn the_agents_listener_turns_away_other_sources() {
+    let allowed: std::net::IpAddr = "10.0.0.7".parse().unwrap();
+    let facts = |addr: &str| CallerFacts {
+        source_addr: Some(addr.parse().unwrap()),
+        process_chain: None,
+    };
+    let only = Sources::Only(vec!["10.0.0.0/24".parse().unwrap()]);
+    let outside = Daemon::start_with(FakeAttestor::fixed(facts("10.0.1.7")), only.clone()).await;
+    let stream = outside.agents.connect(peer()).await.unwrap();
+    let connected =
+        client::connect_stream(Arc::new(client::Config::default()), stream, Accept).await;
+    assert!(connected.is_err(), "no SSH session from outside the list");
+    let lines = outside.audit("connect", "denied");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        lines[0]["reason"],
+        "caller turned away: its address is not allowed on this listener"
+    );
+    assert_eq!(lines[0]["source_addr"], "10.0.1.7");
+
+    // From inside the list, the same request goes through.
+    let inside = Daemon::start_with(FakeAttestor::fixed(facts(&allowed.to_string())), only).await;
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let agent = Daemon::with_key(&inside.agents, "writ", &key)
+        .await
+        .unwrap();
+    let submitted: Result<Submitted, ApiError> =
+        call(&agent, Command::Request, TICKET.as_bytes()).await;
+    assert!(submitted.is_ok(), "{submitted:?}");
+}
+
+#[tokio::test]
+async fn one_connection_holds_at_most_four_channels() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let agent = Daemon::with_key(&daemon.agents, "writ", &key)
+        .await
+        .unwrap();
+    let mut open = Vec::new();
+    for _ in 0..4 {
+        open.push(agent.channel_open_session().await.unwrap());
+    }
+    assert!(
+        agent.channel_open_session().await.is_err(),
+        "a fifth channel is refused"
+    );
+    // A channel closed gives its slot back. The server frees it with no signal the client
+    // can see, so the open is retried until it passes, within the test deadline.
+    open.pop().unwrap().close().await.unwrap();
+    let reopened = tokio::time::timeout(writ_platform::testing::WAIT_LIMIT, async {
+        loop {
+            if let Ok(channel) = agent.channel_open_session().await {
+                return channel;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(reopened.is_ok(), "the closed channel's slot came back");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_never_authenticates_is_closed() {
+    use tokio::io::AsyncReadExt;
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    // A peer that opens a connection and never speaks SSH: closed after the deadline (paused
+    // time runs ahead while everything waits).
+    let mut stream = daemon.agents.connect(peer()).await.unwrap();
+    let mut seen = Vec::new();
+    let read = stream.read_to_end(&mut seen).await;
+    assert!(read.is_ok(), "{read:?}");
+    assert!(
+        seen.starts_with(b"SSH-2.0-"),
+        "the server's id, then the close"
+    );
 }
 
 #[tokio::test]
@@ -419,13 +528,9 @@ async fn revoking_drops_open_sessions_and_refuses_the_next_connection() {
     })
     .await;
 
-    let approver = Daemon::with_key(
-        &daemon.approvals,
-        "writ",
-        &generate(KeyKind::Ed25519).unwrap(),
-    )
-    .await
-    .unwrap();
+    let approver = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
+        .await
+        .unwrap();
     let id: writ_core::names::TicketId = cert.key_id().parse().unwrap();
     let request = sign_revocation(&daemon.approver, &id);
     let _: Ack = call(
@@ -455,9 +560,21 @@ async fn https(
     path: &str,
     body: Vec<u8>,
 ) -> Result<(u16, Vec<u8>), String> {
+    https_as(daemon, pin, &daemon.reader, method, path, body).await
+}
+
+/// [`https`] with `reader` as the client certificate's key.
+async fn https_as(
+    daemon: &Daemon,
+    pin: &str,
+    reader: &PrivateKey,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
+) -> Result<(u16, Vec<u8>), String> {
     use http_body_util::BodyExt;
-    // The client side the CLI uses: exactly the pinned certificate.
-    let config = writ_crypto::tls::pinned_client_config(pin).unwrap();
+    // The client side the CLI uses: exactly the pinned certificate, and the reader key.
+    let config = writ_crypto::tls::pinned_client_config(pin, reader).unwrap();
     let stream = daemon
         .https
         .connect(peer())
@@ -597,6 +714,27 @@ async fn https_serves_only_the_approval_routes_and_bounds_bodies() {
     .await
     .unwrap();
     assert_eq!(status, 413);
+}
+
+#[tokio::test]
+async fn https_turns_away_a_key_not_in_readers() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let stranger = generate(KeyKind::Ed25519).unwrap();
+    let refused = https_as(
+        &daemon,
+        &daemon.pin,
+        &stranger,
+        "GET",
+        "/v1/info",
+        Vec::new(),
+    )
+    .await;
+    assert!(refused.is_err(), "{refused:?}");
+    // The reader gets in, on the same listener.
+    let (status, _) = https(&daemon, &daemon.pin, "GET", "/v1/info", Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(status, 200);
 }
 
 #[tokio::test]

@@ -66,7 +66,7 @@ See [Signer and sealing](architecture/signer.md).
 ### 4. Approvals: approver signatures
 Approvals are SSHSIGs (namespace `writ-approval`) by registered approver keys over the
 **exact lease content**, sent over the approval listener (SSH or HTTPS), whose SSH host key or TLS certificate the
-client pins ([Q29](decisions.md)). A notification click alone is never an approval. Admin changes
+client pins ([Q29](decisions.md)), and which lets in only the keys in its `readers` file. A notification click alone is never an approval. Admin changes
 (approvers, templates, repo registry) and unsealing require a signed approval too.
 
 With Secretive, the Touch ID prompt doesn't show what is signed: `writ sign` on the Mac is the
@@ -121,6 +121,8 @@ See [macOS Secure Enclave](architecture/macos-secure-enclave.md).
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | Hardware unseal recipients later |
 | `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |
-| With `decisions: open`, anything that reaches the approval listener can refuse pending tickets or revoke leases | Opt-in (the default is `signed`); denial of service only, never a grant | Firewall the approval listener to the approver's Mac, or keep `decisions: signed` |
+| With `decisions: open`, any reader can refuse pending tickets or revoke leases without a signature | Opt-in (the default is `signed`); only keys in `readers` reach the approval API; denial of service only, never a grant | Keep `decisions: signed` |
+| Any caller from an address in the agents' `allow` list can submit tickets (a new agent has no identity yet) | The list is required; submissions are bounded (2 waiting per session key, 10 a minute per address, `max_pending` in all, at least 5 minutes each), notifications are bounded and coalesced, and nothing is granted without the approver's signature | Per-host agent keys registered with the daemon (backlog) |
+| A denial before authentication (a source not allowed, no free connection slot, a key not in `readers`, a refused certificate) is coalesced: one audit line per source and minute, with the count of the others | Every denial is still counted; a flood can't fill the disk and turn the audit log into a way to block revocations | — |
 | Notifications go through a third party (Telegram): ticket titles and ids leave the network | Titles are short, neutralized, and nothing in a notification grants anything | Another `Notifier` (self-hosted, native macOS) |
 | The HTTPS approval API's TLS private key sits in rustls's memory for the daemon's life, not zeroized (rustls and ring don't wipe keys) | The daemon holds it in no other copy; the key only authenticates the daemon to approver clients, which pin it, and grants nothing | M5: the TLS key behind the `Signer` (software backend, wiped on drop) and process hardening (no core dumps, no debugger attach, secrets locked out of swap); M7.5: the TLS key in the Secure Enclave, a config choice |

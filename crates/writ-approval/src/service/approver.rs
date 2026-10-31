@@ -23,12 +23,16 @@ use crate::PRINCIPAL;
 use crate::ServiceError;
 use writ_core::canonical::Canonical;
 
+/// The most tickets `writ ls --all` returns: the most recent ones (the audit log holds the
+/// whole history), so a listing never loads an unbounded table under the state lock.
+pub const MAX_LISTED: usize = 200;
+
 impl Service {
-    /// Pending tickets and active leases, or every ticket.
+    /// Pending tickets and active leases, or the [`MAX_LISTED`] most recent tickets.
     pub fn list(&self, all: bool) -> Result<Listing, ServiceError> {
         let (_, inner) = self.begin()?;
         let records = if all {
-            inner.store.all_tickets().map_err(internal)?
+            inner.store.recent_tickets(MAX_LISTED).map_err(internal)?
         } else {
             let mut records = inner.store.tickets(State::Pending).map_err(internal)?;
             records.extend(inner.store.tickets(State::Active).map_err(internal)?);

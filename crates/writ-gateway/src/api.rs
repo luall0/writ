@@ -134,14 +134,15 @@ fn served<T>(result: Result<T, ServiceError>) -> Result<T, ApiError> {
     })
 }
 
-/// Reads the command's body (stdin, until EOF), at most [`MAX_BODY`] bytes.
+/// Reads the command's body (stdin, until EOF), at most [`MAX_BODY`] bytes, within
+/// [`limits::BODY_DEADLINE`].
 async fn read_body(rx: &mut ChannelReadHalf) -> Result<Vec<u8>, ApiError> {
     let mut body = Vec::new();
     let limit = u64::try_from(MAX_BODY).unwrap_or(u64::MAX);
-    rx.make_reader()
-        .take(limit + 1)
-        .read_to_end(&mut body)
+    let mut reader = rx.make_reader().take(limit + 1);
+    tokio::time::timeout(crate::limits::BODY_DEADLINE, reader.read_to_end(&mut body))
         .await
+        .map_err(|_| ApiError::new("the request body took too long to arrive"))?
         .map_err(|e| ApiError::new(format!("cannot read the request: {e}")))?;
     if body.len() > MAX_BODY {
         return Err(ApiError::new(format!(

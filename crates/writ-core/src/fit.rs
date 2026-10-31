@@ -12,7 +12,7 @@ use crate::lease::{Lease, State, TicketRecord};
 use crate::names::{KeyFingerprint, TemplateName, TicketId};
 use crate::ticket::Operation;
 use crate::ticket::{Limits, Scope, Subject, Ticket, TicketKind, TicketRequest, TicketText};
-use crate::units::Timestamp;
+use crate::units::{Duration, Timestamp};
 
 /// Bounds on the agent-written text, so a ticket stays reviewable.
 pub const MAX_TITLE_CHARS: usize = 200;
@@ -21,6 +21,11 @@ pub const MAX_PLAN_STEPS: usize = 50;
 pub const MAX_PLAN_STEP_CHARS: usize = 500;
 pub const MAX_EXPECTED_PATHS: usize = 100;
 pub const MAX_ORIGIN_HINT_CHARS: usize = 100;
+/// The shortest lease a ticket may ask for. A pending ticket holds one of the approver's
+/// waiting slots until it expires: a 1-second ticket would free its slot every second, and
+/// let one submitter notify the approver without end. (The approver may still narrow a lease
+/// below it when signing.)
+pub const MIN_TTL: Duration = Duration::from_seconds(5 * 60);
 
 /// A ticket the daemon won't put in front of the approver, with every reason.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -295,15 +300,14 @@ fn check_links(
 ) -> Result<(u32, Option<String>), Rejection> {
     match (&request.ticket.amends, submission.amends) {
         (None, None) => {}
-        (Some(id), Some(lease)) if &lease.id == id => {
+        // The session first: to another session the lease doesn't exist, whatever its state
+        // (answering "not active" would tell it what became of someone else's lease).
+        (Some(id), Some(lease))
+            if &lease.id == id && lease.ticket.subject.session_key == submission.session_key =>
+        {
             if !lease.is_in_force(submission.now) {
                 return Err(Rejection::one(format!(
                     "ticket {id} can't be amended: its lease is not active"
-                )));
-            }
-            if lease.ticket.subject.session_key != submission.session_key {
-                return Err(Rejection::one(format!(
-                    "ticket {id} can't be amended from another session"
                 )));
             }
         }
@@ -316,16 +320,15 @@ fn check_links(
     }
     match (&request.ticket.revises, submission.revises) {
         (None, None) => Ok((1, None)),
-        (Some(id), Some(previous)) if &previous.ticket.id == id => {
+        // Like an amendment: only the session the feedback was written for sees the ticket;
+        // to any other, it doesn't exist, whatever its state.
+        (Some(id), Some(previous))
+            if &previous.ticket.id == id
+                && previous.ticket.subject.session_key == submission.session_key =>
+        {
             if previous.state != State::Refused {
                 return Err(Rejection::one(format!(
                     "ticket {id} can't be revised: it was not refused"
-                )));
-            }
-            // Like an amendment: only the session the feedback was written for gets it.
-            if previous.ticket.subject.session_key != submission.session_key {
-                return Err(Rejection::one(format!(
-                    "ticket {id} can't be revised from another session"
                 )));
             }
             if previous.ticket.text.amends != request.ticket.amends {
@@ -368,6 +371,11 @@ fn build(
     };
     let limits = &request.limits;
     let ttl = limits.ttl.unwrap_or(template.max_ttl);
+    if ttl < MIN_TTL {
+        return Err(Rejection::one(format!(
+            "limits.ttl is {ttl}, under the minimum of {MIN_TTL}"
+        )));
+    }
     let expires_at = submission
         .now
         .checked_add(ttl)

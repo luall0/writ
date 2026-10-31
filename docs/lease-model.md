@@ -146,6 +146,10 @@ What the approver signs, and once signed, the lease's terms. The daemon fills `i
 `created_at`, `subject.session_key` (from the key sent with the request), the template's
 committer emails and signing key, `limits.expires_at = created_at + ttl` (so time spent
 waiting for my signature counts), every omitted limit, `revision` and `previous_feedback`.
+A ticket asks for at least 5 minutes (`ttl`, and a template's `max_ttl`): a pending ticket
+holds one of the approver's waiting slots until it expires. The approver may still narrow a
+lease below that when signing. One session key has at most 2 tickets waiting, one source
+address submits at most 10 tickets a minute, and the daemon at most `max_pending` (20).
 
 ```yaml
 kind: writ-ticket/1              # the format: an approval can't be read as anything else

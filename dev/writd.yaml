@@ -4,10 +4,11 @@
 state_dir: data                  # dev/data, gitignored: leases, audit log, repos, keys
 policy: policy.yaml
 approvers: approvers
+readers: readers                 # dev/readers, gitignored: written by `make dev-client`
 decisions: signed                # signed | open (refusals and revocations)
 keystore: { dev: data/keys }     # unencrypted, refused by release builds (sealed keystore: M5)
 transports:
-  agents: [{ tcp: "127.0.0.1:2222" }]
+  agents: [{ tcp: "127.0.0.1:2222", allow: [127.0.0.1] }]   # who may connect (required on TCP)
   approvals:                     # the approval API; [] disables one, not both
     ssh: [{ tcp: "127.0.0.1:2223" }]
     https: [{ tcp: "127.0.0.1:8443" }]   # pin `writd tls-fingerprint dev/writd.yaml` in ~/.writ/tls_pins

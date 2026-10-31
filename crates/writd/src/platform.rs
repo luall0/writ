@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use anyhow::bail;
+use writ_core::net::Sources;
 use writ_platform::attest::network::NetworkAttestor;
 use writ_platform::notify::Notifiers;
 use writ_platform::notify::telegram::{BotToken, TelegramNotifier};
@@ -18,13 +19,16 @@ use crate::config::{
     AttestorConfig, Config, NotifierConfig, TransportConfig, UnlockConfig, WatcherConfig,
 };
 
+/// A listener and who may connect to it.
+pub type Listener = (Arc<dyn Transport>, Sources);
+
 /// The implementations the daemon runs with.
 pub struct Platform {
-    pub agents: Vec<Arc<dyn Transport>>,
+    pub agents: Vec<Listener>,
     /// The approval API over SSH.
-    pub approvals_ssh: Vec<Arc<dyn Transport>>,
+    pub approvals_ssh: Vec<Listener>,
     /// The approval API over HTTPS.
-    pub approvals_https: Vec<Arc<dyn Transport>>,
+    pub approvals_https: Vec<Listener>,
     pub attestor: Arc<dyn CallerAttestor>,
     pub watcher: Arc<dyn SessionWatcher>,
     /// Built now, used by the sealed start (M5).
@@ -32,29 +36,31 @@ pub struct Platform {
     pub notifier: Arc<dyn Notifier>,
 }
 
-async fn transport(config: &TransportConfig) -> anyhow::Result<Arc<dyn Transport>> {
-    match config {
-        TransportConfig::Tcp(addr) => Ok(Arc::new(TcpTransport::bind(addr).await?)),
-        TransportConfig::Unix(socket) => bail!(
+async fn listener(config: &TransportConfig) -> anyhow::Result<Listener> {
+    let transport: Arc<dyn Transport> = match (&config.tcp, &config.unix) {
+        (Some(addr), None) => Arc::new(TcpTransport::bind(addr).await?),
+        (None, Some(socket)) => bail!(
             "transport unix ({}): Unix sockets come with local mode (M7) and are not in this build",
             socket.display()
         ),
+        // Refused when the configuration is loaded; refused here too.
+        _ => bail!("a transport needs exactly one of tcp and unix"),
+    };
+    Ok((transport, config.sources()))
+}
+
+async fn listeners(configs: &[TransportConfig]) -> anyhow::Result<Vec<Listener>> {
+    let mut built = Vec::new();
+    for config in configs {
+        built.push(listener(config).await?);
     }
+    Ok(built)
 }
 
 pub async fn build(config: &Config) -> anyhow::Result<Platform> {
-    let mut agents = Vec::new();
-    for t in &config.transports.agents {
-        agents.push(transport(t).await?);
-    }
-    let mut approvals_ssh = Vec::new();
-    for t in &config.transports.approvals.ssh {
-        approvals_ssh.push(transport(t).await?);
-    }
-    let mut approvals_https = Vec::new();
-    for t in &config.transports.approvals.https {
-        approvals_https.push(transport(t).await?);
-    }
+    let agents = listeners(&config.transports.agents).await?;
+    let approvals_ssh = listeners(&config.transports.approvals.ssh).await?;
+    let approvals_https = listeners(&config.transports.approvals.https).await?;
     let attestor: Arc<dyn CallerAttestor> = match config.attestor {
         AttestorConfig::Network => Arc::new(NetworkAttestor::new()),
         AttestorConfig::MacosProcessChain => {

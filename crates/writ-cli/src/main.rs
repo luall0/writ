@@ -1,8 +1,9 @@
 //! `writ`, the Writ CLI.
 //!
 //! Agent side: `writ request <ticket.yaml>` (submit and wait), `writ wait <id>`.
-//! Approver side: `writ ls`, `writ sign [<id>]` (the trusted display, then an SSHSIG through
-//! the approver's ssh-agent), `writ refuse <id>`, `writ revoke <id>`.
+//! Approver side: `writ reader` (the key this machine uses on the approval API), `writ ls`,
+//! `writ sign [<id>]` (the trusted display, then an SSHSIG through the approver's
+//! ssh-agent), `writ refuse <id>`, `writ revoke <id>`.
 //!
 //! The client is untrusted: every check it makes is a convenience, the daemon checks again.
 //! It never reads the user's `~/.ssh`: the daemon's host key is pinned in
@@ -13,6 +14,7 @@ mod approver;
 mod client;
 mod display;
 mod https;
+mod reader;
 mod session;
 
 use std::path::PathBuf;
@@ -43,6 +45,8 @@ pub struct Paths {
     pub known_hosts: PathBuf,
     /// Pins of the daemon's TLS certificate (HTTPS approval API).
     pub tls_pins: PathBuf,
+    /// The reader key, for the approval API.
+    pub reader: PathBuf,
 }
 
 #[derive(Parser)]
@@ -62,6 +66,9 @@ struct Cli {
     /// (default: <home>/tls_pins).
     #[arg(long, env = "WRIT_TLS_PINS", global = true)]
     tls_pins: Option<PathBuf>,
+    /// The reader key used on the approval API (default: <home>/reader).
+    #[arg(long, env = "WRIT_READER", global = true)]
+    reader: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -109,6 +116,13 @@ enum Commands {
         lease: Option<TicketId>,
         #[command(flatten)]
         url: AgentUrl,
+    },
+    /// Print this machine's reader key line for the daemon's `readers` file (the key is made
+    /// on first use).
+    Reader {
+        /// The name the daemon logs for this reader.
+        #[arg(default_value = "approver")]
+        name: String,
     },
     /// List tickets waiting and active leases.
     Ls {
@@ -169,10 +183,12 @@ fn paths(cli: &Cli) -> anyhow::Result<Paths> {
         .tls_pins
         .clone()
         .unwrap_or_else(|| home.join("tls_pins"));
+    let reader = cli.reader.clone().unwrap_or_else(|| home.join("reader"));
     Ok(Paths {
         home,
         known_hosts,
         tls_pins,
+        reader,
     })
 }
 
@@ -194,6 +210,11 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         }
         Commands::Wait { id, lease, url } => {
             agent::wait(&paths, &url.url, id, lease.as_ref()).await
+        }
+        Commands::Reader { name } => {
+            session::create_private_dir(&paths.home)?;
+            println!("{}", reader::ensure(&paths.reader, name)?);
+            Ok(Exit::Ok)
         }
         Commands::Ls { all, url } => approver::list(&paths, &url.url, *all).await,
         Commands::Sign {

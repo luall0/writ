@@ -11,6 +11,8 @@ The cryptography Writ needs, on top of `ssh-key` and `rustls`.
   (authority, validity window, principal, deny list).
 - **The approvers file** (`allowed_signers`): git's `allowed_signers` format; every option is
   honored or refused, never ignored.
+- **The readers file** (`readers`): the Ed25519 keys that may use the approval API, over SSH
+  and as HTTPS client certificates (mutual TLS, checked in `tls`).
 - **Keys and randomness** (`keys`): key generation and random bytes that fail instead of
   panicking.
 - **The approval API's TLS** (`tls`): the self-signed certificate, its pin, the server

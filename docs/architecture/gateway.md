@@ -16,8 +16,17 @@ each listener has a role:
 |---|---|---|
 | agents | `git` + an **SSH user certificate** issued by the daemon for an active lease ([Identity](identity.md#session-identity)) | **git** `upload-pack` (fetch) and `receive-pack` (push), so a plain `git fetch/push writ` works; **sign** for the `writ-sign` shim (full commit object in, armored SSHSIG out) |
 | agents | `writ` + a plain key: the session key of a ticket | **lease** commands: `writ request` (submit the ticket on stdin), `writ wait <id>` |
-| approvals (SSH) | any user, any key (the connection grants nothing) | the approval API: `writ info`, `ls`, `show`, `approve`, `refuse`, `revoke` ([Approvals](approvals.md#reaching-the-daemon)) |
-| approvals (HTTPS) | none: TLS 1.3, the daemon's pinned self-signed certificate | the same API as `GET`/`POST` routes (`crates/writ-gateway/src/https.rs`) |
+| approvals (SSH) | any user, a key listed in the daemon's `readers` file (a certificate is refused) | the approval API: `writ info`, `ls`, `show`, `approve`, `refuse`, `revoke` ([Approvals](approvals.md#reaching-the-daemon)) |
+| approvals (HTTPS) | mutual TLS 1.3: the daemon's pinned self-signed certificate, and a client certificate for a key in `readers` | the same API as `GET`/`POST` routes (`crates/writ-gateway/src/https.rs`) |
+
+Each listener accepts connections only from its configured sources (`allow` in
+`writd.yaml`, required on the agents' TCP listeners), and bounds what any peer can make it
+hold (`crates/writ-gateway/src/limits.rs`): 256 open connections per listener and 16 per
+source address, 20 seconds to authenticate (or to finish the TLS handshake), 4 channels at
+once per SSH connection, 30 seconds to send a request body, 10 minutes without traffic. A
+denial before authentication (a source not allowed, no free slot, a key not in `readers`,
+a refused certificate) writes one audit line per source and minute, with the count of the
+others; text the peer chose (a certificate's key id) is cut to 64 characters.
 
 A certificate is checked twice: when it is presented (CA, validity, deny list, principal
 `git`, then the approval service finds its single active lease and checks the caller,

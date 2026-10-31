@@ -137,7 +137,12 @@ fn errors_name_the_field() {
         (
             "zero ttl",
             POLICY.replacen("max_ttl: 4h", "max_ttl: 0s", 1),
-            "templates.feature-branch.max_ttl: must be longer than 0s",
+            "templates.feature-branch.max_ttl: must be at least 5m",
+        ),
+        (
+            "ttl under the minimum",
+            POLICY.replacen("max_ttl: 4h", "max_ttl: 299s", 1),
+            "templates.feature-branch.max_ttl: must be at least 5m",
         ),
         (
             "zero rate",

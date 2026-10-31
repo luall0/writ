@@ -94,13 +94,26 @@ impl Daemon {
         fs::write(root.join("policy.yaml"), policy).unwrap();
         fs::create_dir_all(root.join("home")).unwrap();
         write_secret(&root.join("telegram-token"), TOKEN.as_bytes());
+        // The approver's reader key, made by the real `writ reader`, listed in `readers`.
+        let reader = Command::new(bin("writ"))
+            .args(["reader", "test-mac"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", root.join("home"))
+            .env("WRIT_HOME", root.join("writ"))
+            .output()
+            .unwrap();
+        assert!(reader.status.success(), "writ reader: {reader:?}");
+        let line = String::from_utf8(reader.stdout).unwrap();
+        assert!(line.starts_with("test-mac ssh-ed25519 "), "{line}");
+        fs::write(root.join("readers"), line).unwrap();
         let telegram = FakeTelegram::start();
         fs::write(
             root.join("writd.yaml"),
             format!(
-                "state_dir: s\npolicy: policy.yaml\napprovers: approvers\ndecisions: signed\n\
-                 keystore: {{ dev: s/keys }}\n\
-                 transports:\n  agents: [{{ tcp: \"127.0.0.1:0\" }}]\n  \
+                "state_dir: s\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
+                 decisions: signed\nkeystore: {{ dev: s/keys }}\n\
+                 transports:\n  agents: [{{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }}]\n  \
                  approvals:\n    ssh: [{{ tcp: \"127.0.0.1:0\" }}]\n    \
                  https: [{{ tcp: \"127.0.0.1:0\" }}]\n\
                  attestor: network\nsession_watcher: none\n\

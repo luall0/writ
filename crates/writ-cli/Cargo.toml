@@ -23,6 +23,7 @@ rustls.workspace = true
 serde.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

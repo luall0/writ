@@ -54,8 +54,13 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(host: &str, port: u16, fingerprint: String) -> anyhow::Result<Self> {
-        let config = writ_crypto::tls::pinned_client_config(&fingerprint)?;
+    pub fn new(
+        host: &str,
+        port: u16,
+        fingerprint: String,
+        reader: &writ_crypto::ssh_key::PrivateKey,
+    ) -> anyhow::Result<Self> {
+        let config = writ_crypto::tls::pinned_client_config(&fingerprint, reader)?;
         Ok(Self {
             host: host.to_owned(),
             port,

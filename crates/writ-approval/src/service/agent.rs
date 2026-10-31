@@ -15,7 +15,10 @@ use writ_platform::{Notification, Priority};
 use writ_proto::{Decision, Submitted};
 use writ_store::{AuditEvent, EventKind, Outcome};
 
-use super::{Inner, Service, WAIT_RECHECK, canonical_text, fingerprint, internal, not_found};
+use super::{
+    Inner, MAX_PENDING_PER_SESSION, MAX_SUBMISSIONS_PER_MINUTE, MAX_TRACKED_SOURCES, Service,
+    WAIT_RECHECK, canonical_text, fingerprint, internal, not_found,
+};
 use crate::ServiceError;
 
 impl Service {
@@ -29,6 +32,7 @@ impl Service {
         caller: &CallerFacts,
     ) -> Result<Submitted, ServiceError> {
         let (now, mut inner) = self.begin()?;
+        Self::within_rate(&mut inner, caller, now)?;
         let reject = |inner: &mut Inner, error: ServiceError| {
             let reason = error.reason_text();
             let event = AuditEvent::new(now, EventKind::Submit, Outcome::Denied)
@@ -62,6 +66,22 @@ impl Service {
                 )),
             );
         }
+        let session = fingerprint(session_key)?;
+        let mine = inner
+            .store
+            .tickets(State::Pending)
+            .map_err(internal)?
+            .iter()
+            .filter(|r| r.ticket.subject.session_key == session)
+            .count();
+        if mine >= MAX_PENDING_PER_SESSION {
+            return reject(
+                &mut inner,
+                ServiceError::refused(format!(
+                    "this session already has {mine} tickets waiting for the approver"
+                )),
+            );
+        }
         let amends = match &request.ticket.amends {
             Some(id) => inner.store.lease(id).map_err(internal)?,
             None => None,
@@ -74,7 +94,7 @@ impl Service {
         let submission = Submission {
             id: TicketId::from_parts(self.clock.now_ms(), random),
             now,
-            session_key: fingerprint(session_key)?,
+            session_key: session,
             amends: amends.as_ref(),
             revises: revises.as_ref(),
         };
@@ -107,8 +127,59 @@ impl Service {
         })
     }
 
+    /// Counts a submission from the caller's source address against
+    /// [`MAX_SUBMISSIONS_PER_MINUTE`]. Over the rate, it is refused; only the first refusal
+    /// of a burst is logged, and the count of the others with the next submission that
+    /// passes, so a flood can't fill the audit log.
+    fn within_rate(
+        inner: &mut Inner,
+        caller: &CallerFacts,
+        now: Timestamp,
+    ) -> Result<(), ServiceError> {
+        let source = caller.source_addr;
+        if inner.submissions.len() >= MAX_TRACKED_SOURCES
+            && !inner.submissions.contains_key(&source)
+        {
+            inner.submissions.clear();
+        }
+        let window = inner.submissions.entry(source).or_default();
+        while window
+            .times
+            .front()
+            .is_some_and(|t| t.seconds_until(now) >= 60)
+        {
+            window.times.pop_front();
+        }
+        let event = |reason: String| {
+            AuditEvent::new(now, EventKind::Submit, Outcome::Denied)
+                .caller(caller)
+                .reason(reason)
+        };
+        if window.times.len() >= MAX_SUBMISSIONS_PER_MINUTE {
+            let first = window.refused == 0;
+            window.refused += 1;
+            let reason = format!(
+                "more than {MAX_SUBMISSIONS_PER_MINUTE} submissions a minute from this address"
+            );
+            if first {
+                Self::log_best_effort(inner, &event(reason.clone()));
+            }
+            return Err(ServiceError::refused(format!("{reason}; try again later")));
+        }
+        window.times.push_back(now);
+        let refused = std::mem::take(&mut window.refused);
+        if refused > 1 {
+            let reason = format!(
+                "{} more submissions from this address were refused over the rate",
+                refused - 1
+            );
+            Self::log_best_effort(inner, &event(reason));
+        }
+        Ok(())
+    }
+
     /// Tells the approver a ticket waits: queued for the notification worker, so the request
-    /// never waits on the sink. A failure is only logged.
+    /// never waits on the sink. A failure is only logged; a full queue counts it.
     fn notify_waiting(&self, ticket: &Ticket) {
         let kind = if ticket.text.amends.is_some() {
             "Amendment"
@@ -124,9 +195,11 @@ impl Service {
             priority: Priority::Default,
             tags: vec!["writ".to_owned(), "ticket".to_owned()],
         };
-        if let Ok(outbox) = self.notifications.lock() {
-            // The worker only stops with the service; a send can't fail before that.
-            let _ = outbox.send(notification);
+        if let Ok(outbox) = self.notifications.lock()
+            && outbox.try_send(notification).is_err()
+        {
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         }
     }
 

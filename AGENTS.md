@@ -40,8 +40,9 @@ gets its page (the template there) written up to its plan before any code.
 | Agent host session files | `~/.writ/sessions/<lease>/` (`current` → active one) |
 | Daemon data (container) | `/var/lib/writ/` (keystore in `/var/lib/writ/keys/`) |
 | Ports (detached) | `2222` gateway (SSH, agents), `2223` approval API (SSH), `8443` approval API (HTTPS); each approval transport can be disabled, not both |
-| SSH users | `git` (lease holders, with a certificate), `writ` (ticket submission and the approval API, with a plain key) |
-| Client files | `~/.writ/known_hosts` (the daemon's pinned host key), `~/.writ/tls_pins` (its pinned TLS certificate), `~/.writ/approver.pub` |
+| SSH users | `git` (lease holders, with a certificate), `writ` (ticket submission with a session key; the approval API with a reader key) |
+| Client files | `~/.writ/known_hosts` (the daemon's pinned host key), `~/.writ/tls_pins` (its pinned TLS certificate), `~/.writ/approver.pub`, `~/.writ/reader` (the reader key) |
+| Daemon files granting access | `approvers` (who may sign), `readers` (who may use the approval API) |
 | Env vars | `WRIT_*` |
 | Agent skill | `skill/writ/SKILL.md` |
 

@@ -1,9 +1,12 @@
 //! One SSH connection: authentication by role, then exec requests.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use russh::server::{Auth, ChannelOpenHandle, Msg, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use writ_approval::{EventKind, GatewayDenial};
 use writ_core::caller::CallerFacts;
 use writ_core::policy::CertIdentity;
@@ -12,6 +15,7 @@ use writ_crypto::ssh_key::{Certificate, HashAlg, PublicKey};
 
 use crate::channel::refuse;
 use crate::command::{Command, LeaseCommand};
+use crate::limits::{self, MAX_CHANNELS, MAX_LOGGED_TEXT};
 use crate::{CLIENT_USER, Gateway, GatewayError, LEASE_USER, Role, api, exec};
 
 /// Who is on the other end, once authenticated.
@@ -21,7 +25,7 @@ pub(crate) enum Identity {
     Lease(CertIdentity),
     /// A client submitting or waiting on a ticket: the key is its session key.
     SessionKey(PublicKey),
-    /// A client of the approval API.
+    /// A client of the approval API: a key in the `readers` file.
     Approver,
 }
 
@@ -32,12 +36,22 @@ pub(crate) struct Connection {
     facts: CallerFacts,
     number: u64,
     identity: Option<Identity>,
-    channels: HashMap<ChannelId, Channel<Msg>>,
+    /// Channels opened and not yet running a command, each holding one of the connection's
+    /// [`MAX_CHANNELS`] slots (a running command keeps its slot until it ends).
+    channels: HashMap<ChannelId, (Channel<Msg>, OwnedSemaphorePermit)>,
+    channel_slots: Arc<Semaphore>,
     git_protocol: Option<String>,
+    /// Set once authenticated: the gateway disconnects a connection that isn't in time.
+    authenticated: Arc<AtomicBool>,
 }
 
 impl Connection {
-    pub(crate) fn new(gateway: Gateway, role: Role, facts: CallerFacts) -> Self {
+    pub(crate) fn new(
+        gateway: Gateway,
+        role: Role,
+        facts: CallerFacts,
+        authenticated: Arc<AtomicBool>,
+    ) -> Self {
         let number = gateway.connection_number();
         Self {
             gateway,
@@ -46,8 +60,27 @@ impl Connection {
             number,
             identity: None,
             channels: HashMap::new(),
+            channel_slots: Arc::new(Semaphore::new(MAX_CHANNELS)),
             git_protocol: None,
+            authenticated,
         }
+    }
+
+    /// Logs a refusal before authentication (event `connect`), coalesced per source.
+    async fn refused(&self, kind: &'static str, reason: String, cert: Option<&Certificate>) {
+        let source = self.facts.source_addr;
+        let Some(suppressed) = self.gateway.shared.throttle.admit(source, kind) else {
+            return;
+        };
+        let mut denial = GatewayDenial::new(
+            EventKind::Connect,
+            limits::with_suppressed(reason, suppressed),
+        );
+        if let Some(cert) = cert {
+            denial.serial = Some(cert.serial());
+            denial.key_id = Some(limits::shown(cert.key_id(), MAX_LOGGED_TEXT));
+        }
+        self.gateway.log_denial(denial, self.facts.clone()).await;
     }
 }
 
@@ -99,7 +132,7 @@ impl Drop for Connection {
 impl russh::server::Handler for Connection {
     type Error = GatewayError;
 
-    /// Plain keys: the session key of a ticket (agents, user `writ`), or anyone on the
+    /// Plain keys: the session key of a ticket (agents, user `writ`), or a reader key on the
     /// approval API. Lease holders always use a certificate.
     async fn auth_publickey(
         &mut self,
@@ -108,7 +141,16 @@ impl russh::server::Handler for Connection {
     ) -> Result<Auth, GatewayError> {
         self.identity = match (self.role, user) {
             (Role::Agents, CLIENT_USER) => Some(Identity::SessionKey(key.public_key.clone())),
-            (Role::Approvals, _) => Some(Identity::Approver),
+            (Role::Approvals, _) => {
+                let readers = &self.gateway.shared.config.readers;
+                if writ_crypto::readers::find(readers, key.public_key).is_some() {
+                    Some(Identity::Approver)
+                } else {
+                    let reason = "key refused: not in readers".to_owned();
+                    self.refused("reader", reason, None).await;
+                    None
+                }
+            }
             _ => None,
         };
         Ok(if self.identity.is_some() {
@@ -124,10 +166,11 @@ impl russh::server::Handler for Connection {
         certificate: &Certificate,
     ) -> Result<Auth, GatewayError> {
         if self.role == Role::Approvals {
-            self.identity = Some(Identity::Approver);
-            return Ok(Auth::Accept);
+            // Only reader keys, as plain keys, reach the approval API.
+            let reason = "certificate refused: the approval API takes reader keys".to_owned();
+            self.refused("reader", reason, Some(certificate)).await;
+            return Ok(Auth::reject());
         }
-        let serial = certificate.serial();
         match self.check_certificate(user, certificate) {
             Ok(cert) => {
                 // The service logs the outcome (event `connect`).
@@ -140,19 +183,18 @@ impl russh::server::Handler for Connection {
                 }
             }
             Err(reason) => {
-                let mut denial = GatewayDenial::new(
-                    EventKind::Connect,
-                    format!("certificate refused: {reason}"),
+                let reason = format!(
+                    "certificate refused: {}",
+                    limits::shown(&reason, 4 * MAX_LOGGED_TEXT)
                 );
-                denial.serial = Some(serial);
-                denial.key_id = Some(certificate.key_id().to_owned());
-                self.gateway.log_denial(denial, self.facts.clone()).await;
+                self.refused("certificate", reason, Some(certificate)).await;
                 Ok(Auth::reject())
             }
         }
     }
 
     async fn auth_succeeded(&mut self, session: &mut Session) -> Result<(), GatewayError> {
+        self.authenticated.store(true, Ordering::Release);
         if let Some(Identity::Lease(cert)) = &self.identity {
             self.gateway
                 .register_session(cert.serial, self.number, session.handle());
@@ -166,10 +208,24 @@ impl russh::server::Handler for Connection {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), GatewayError> {
-        if self.identity.is_some() {
-            self.channels.insert(channel.id(), channel);
+        if self.identity.is_none() {
+            return Ok(());
+        }
+        // Past the cap the open is refused (the reply is dropped unanswered: a failure).
+        if let Ok(permit) = self.channel_slots.clone().try_acquire_owned() {
+            self.channels.insert(channel.id(), (channel, permit));
             reply.accept().await;
         }
+        Ok(())
+    }
+
+    /// A channel closed before running anything gives its slot back.
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), GatewayError> {
+        self.channels.remove(&channel);
         Ok(())
     }
 
@@ -199,7 +255,7 @@ impl russh::server::Handler for Connection {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), GatewayError> {
-        let Some(channel) = self.channels.remove(&channel_id) else {
+        let Some((channel, permit)) = self.channels.remove(&channel_id) else {
             session.channel_failure(channel_id)?;
             return Ok(());
         };
@@ -209,20 +265,22 @@ impl russh::server::Handler for Connection {
         match route(identity, Command::parse(data)) {
             Ok(Route::Lease(cert, command)) => {
                 let git_protocol = self.git_protocol.clone();
-                tokio::spawn(exec::run(
-                    gateway,
-                    cert,
-                    facts,
-                    command,
-                    git_protocol,
-                    channel,
-                ));
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    exec::run(gateway, cert, facts, command, git_protocol, channel).await;
+                });
             }
             Ok(Route::Agent(key, command)) => {
-                tokio::spawn(api::run_agent(gateway, key, facts, command, channel));
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    api::run_agent(gateway, key, facts, command, channel).await;
+                });
             }
             Ok(Route::Approval(command)) => {
-                tokio::spawn(api::run_approval(gateway, facts, command, channel));
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    api::run_approval(gateway, facts, command, channel).await;
+                });
             }
             Err(cert) => {
                 let shown = String::from_utf8_lossy(data)
@@ -235,6 +293,7 @@ impl russh::server::Handler for Connection {
                     denial = denial.cert(cert);
                 }
                 tokio::spawn(async move {
+                    let _permit = permit;
                     gateway.log_denial(denial, facts).await;
                     refuse(channel, reason).await;
                 });

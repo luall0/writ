@@ -87,7 +87,8 @@ fn tickets_outside_every_template_are_rejected_with_reasons() {
         (REQUEST.replace("template: feature-branch", "template: nope"), "template nope does not exist"),
         (REQUEST.replace("title: Add OAuth login", "title: \"  \""), "ticket.title is empty"),
         (REQUEST.replace("title: Add OAuth login", &format!("title: {}", "x".repeat(201))), "ticket.title is too long"),
-        (REQUEST.replace("ttl: 2h", "ttl: 0s"), "limits.expires_at must be after created_at"),
+        (REQUEST.replace("ttl: 2h", "ttl: 0s"), "limits.ttl is 0s, under the minimum of 5m"),
+        (REQUEST.replace("ttl: 2h", "ttl: 299s"), "limits.ttl is 299s, under the minimum of 5m"),
         (REQUEST.replace("ttl: 2h", "ttl: 99999999d"), "limits.ttl is too long"),
         (REQUEST.replace("template: feature-branch\n", "").replace("agent/oauth-*", "main"), "the ticket fits no template"),
         (
@@ -170,7 +171,20 @@ fn revisions_carry_the_feedback() {
     };
     assert_rejected(
         fit::submit(&config(), &request(&revision), &other_session),
-        "can't be revised from another session",
+        "(revises) does not exist",
+    );
+    // Whatever the ticket's state: to another session it doesn't exist (no state oracle).
+    let pending_elsewhere = TicketRecord::pending(first.clone());
+    assert_rejected(
+        fit::submit(
+            &config(),
+            &request(&revision),
+            &Submission {
+                revises: Some(&pending_elsewhere),
+                ..other_session.clone()
+            },
+        ),
+        "(revises) does not exist",
     );
 
     // Only a refused ticket can be revised, and only if the store found it.
@@ -210,10 +224,22 @@ fn amendments_need_an_active_lease_from_the_same_session() {
     };
     assert_rejected(
         fit::submit(&config(), &request(&amendment), &other_session),
-        "can't be amended from another session",
+        "(amends) does not exist",
     );
     let mut revoked = lease.clone();
     revoked.state = State::Revoked;
+    // Whatever the lease's state: to another session it doesn't exist (no state oracle).
+    assert_rejected(
+        fit::submit(
+            &config(),
+            &request(&amendment),
+            &Submission {
+                amends: Some(&revoked),
+                ..other_session.clone()
+            },
+        ),
+        "(amends) does not exist",
+    );
     let gone = Submission {
         amends: Some(&revoked),
         ..ok.clone()
@@ -674,4 +700,19 @@ fn assert_rejected(result: Result<writ_core::ticket::Ticket, fit::Rejection>, ex
             rejection.reasons
         ),
     }
+}
+
+#[test]
+fn the_shortest_ticket_lasts_the_minimum_ttl() {
+    // One second under is refused (above); exactly the minimum is accepted.
+    let ticket = fit::submit(
+        &config(),
+        &request(&REQUEST.replace("ttl: 2h", "ttl: 300s")),
+        &submission(1),
+    )
+    .unwrap();
+    assert_eq!(
+        ticket.created_at.seconds_until(ticket.limits.expires_at),
+        i64::try_from(fit::MIN_TTL.seconds()).unwrap()
+    );
 }

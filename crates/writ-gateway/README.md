@@ -7,8 +7,11 @@ approval API over HTTPS.
 
 - **Connections** (`lib`, `handler`): accepted from a platform `Transport`, the caller attested
   by a `CallerAttestor`; authentication by role (a session certificate for a lease, a plain
-  session key for ticket submission, any key on the approval listener); one routing function
-  decides who may run what (`handler::route`).
+  session key for ticket submission, a reader key on the approval listener); one routing
+  function decides who may run what (`handler::route`).
+- **Limits** (`limits`): connections per listener and per source, the authentication
+  deadline, channels per connection, body deadlines, coalesced denials before
+  authentication; the listener's allowed sources.
 - **The agent and approval commands** (`api`): the same over SSH and HTTPS (`https`).
 - **Lease holders' commands** (`exec`): `git upload-pack` / `receive-pack` on the lease's repos
   (`exec/git`, with a clean environment) and `writ-sign` (`exec/sign`).

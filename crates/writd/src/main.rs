@@ -25,6 +25,7 @@ use writ_core::config::PolicyConfig;
 use writ_core::lease::APPROVAL_NAMESPACE;
 use writ_crypto::allowed_signers::{self, AllowedSigner};
 use writ_crypto::ca::CertificateAuthority;
+use writ_crypto::readers::{self, Reader};
 use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_platform::clock::system::SystemClock;
@@ -101,6 +102,22 @@ fn load_policy(config: &Config) -> anyhow::Result<(PolicyConfig, Vec<AllowedSign
     Ok((policy, approvers))
 }
 
+/// The keys that may use the approval API. None at all is a startup error: nobody could
+/// list, show or approve anything.
+fn load_readers(config: &Config) -> anyhow::Result<Vec<Reader>> {
+    let text = std::fs::read_to_string(&config.readers)
+        .with_context(|| format!("cannot read {}", config.readers.display()))?;
+    let readers =
+        readers::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", config.readers.display()))?;
+    if readers.is_empty() {
+        bail!(
+            "{}: no reader key: nobody could use the approval API (add the line `writ reader` prints)",
+            config.readers.display()
+        );
+    }
+    Ok(readers)
+}
+
 /// Starts every listener the platform built; returns them as a set to wait on.
 fn spawn_listeners(
     gateway: &Gateway,
@@ -108,28 +125,30 @@ fn spawn_listeners(
     tls: &Arc<TlsIdentity>,
 ) -> tokio::task::JoinSet<writ_gateway::Result<()>> {
     let mut servers = tokio::task::JoinSet::new();
-    for transport in &platform.approvals_https {
-        tracing::info!(listener = %transport.describe(), "approval API (HTTPS)");
-        let (gateway, transport, attestor, tls) = (
+    for (transport, sources) in &platform.approvals_https {
+        tracing::info!(listener = %transport.describe(), ?sources, "approval API (HTTPS)");
+        let (gateway, transport, attestor, tls, sources) = (
             gateway.clone(),
             transport.clone(),
             platform.attestor.clone(),
             tls.clone(),
+            sources.clone(),
         );
-        servers.spawn(async move { gateway.serve_https(transport, attestor, tls).await });
+        servers.spawn(async move { gateway.serve_https(transport, attestor, tls, sources).await });
     }
-    for (role, transports) in [
+    for (role, listeners) in [
         (Role::Agents, &platform.agents),
         (Role::Approvals, &platform.approvals_ssh),
     ] {
-        for transport in transports {
-            tracing::info!(listener = %transport.describe(), ?role, "SSH");
-            let (gateway, transport, attestor) = (
+        for (transport, sources) in listeners {
+            tracing::info!(listener = %transport.describe(), ?role, ?sources, "SSH");
+            let (gateway, transport, attestor, sources) = (
                 gateway.clone(),
                 transport.clone(),
                 platform.attestor.clone(),
+                sources.clone(),
             );
-            servers.spawn(async move { gateway.serve(transport, attestor, role).await });
+            servers.spawn(async move { gateway.serve(transport, attestor, role, sources).await });
         }
     }
     servers
@@ -163,6 +182,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
     init_logging();
     let config = Config::load(path)?;
     let (policy, approvers) = load_policy(&config)?;
+    let readers = load_readers(&config)?;
     let keys = keystore::keys(&config)?;
     keystore::private_dir(&config.state_dir)?;
     let repos = config.state_dir.join("repos");
@@ -199,6 +219,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
                 signing_key: keys.agent,
                 hook_program: std::env::current_exe()?,
                 state_dir: config.state_dir.join("run"),
+                readers: readers.clone(),
             },
             service.clone(),
         )
@@ -210,6 +231,13 @@ fn run(path: &Path) -> anyhow::Result<()> {
                 fingerprint = %approver.fingerprint(),
                 principals = %approver.principals,
                 "approver"
+            );
+        }
+        for reader in &readers {
+            tracing::info!(
+                name = %reader.name,
+                fingerprint = %reader.key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+                "reader"
             );
         }
         tracing::info!(decisions = ?config.decisions, "decisions");

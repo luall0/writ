@@ -42,10 +42,12 @@ run:
 	cargo run -p writd -- run dev/writd.yaml
 
 # Pins the development daemon's host key and TLS certificate for the client
-# (dev/data/client/known_hosts and tls_pins; see docs/guides/manual-checks.md).
+# (dev/data/client/known_hosts and tls_pins), and lists the client's reader key in
+# dev/readers (see docs/guides/manual-checks.md).
 dev-client:
 	@mkdir -p dev/data/client
+	@WRIT_HOME=dev/data/client cargo run -q -p writ-cli -- reader dev > dev/readers
 	@host=$$(cargo run -q -p writd -- host-key dev/writd.yaml) && \
 		printf '[127.0.0.1]:2222 %s\n[127.0.0.1]:2223 %s\n' "$$host" "$$host" > dev/data/client/known_hosts
 	@echo "[127.0.0.1]:8443 $$(cargo run -q -p writd -- tls-fingerprint dev/writd.yaml)" > dev/data/client/tls_pins
-	@echo "pinned in dev/data/client/known_hosts and dev/data/client/tls_pins"
+	@echo "pinned in dev/data/client/known_hosts and dev/data/client/tls_pins; reader key in dev/readers"

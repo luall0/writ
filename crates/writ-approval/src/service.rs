@@ -11,6 +11,8 @@ mod sweep;
 pub use gateway::GatewayDenial;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Duration;
 
@@ -35,6 +37,19 @@ const CLOCK_SKEW_SECONDS: i64 = 60;
 
 /// The longest a waiting client sleeps before checking again.
 const WAIT_RECHECK: Duration = Duration::from_secs(30);
+
+/// Tickets one session key may have waiting at once (a ticket, or an amendment of its lease,
+/// and one more).
+pub const MAX_PENDING_PER_SESSION: usize = 2;
+
+/// Submissions one source address may make per minute, whatever becomes of them.
+pub const MAX_SUBMISSIONS_PER_MINUTE: usize = 10;
+
+/// Notifications waiting for the worker; past it they are counted and reported as one.
+const MAX_QUEUED_NOTIFICATIONS: usize = 32;
+
+/// Sources tracked for the submission rate; past it the table starts over.
+const MAX_TRACKED_SOURCES: usize = 4096;
 
 /// The most audit lines kept in memory while the log can't be written (a reduction of
 /// privilege applied anyway, a denial). Past it, lines are counted as lost and reported.
@@ -72,29 +87,57 @@ pub struct Service {
     /// Serials just revoked or expired: the gateway drops their open sessions.
     revocations: broadcast::Sender<u64>,
     /// Notifications for the worker thread ([`notification_worker`]), delivered one at a
-    /// time in the order they were queued.
-    notifications: Mutex<std::sync::mpsc::Sender<Notification>>,
+    /// time in the order they were queued. Bounded: past [`MAX_QUEUED_NOTIFICATIONS`] they
+    /// are counted in `dropped`, and the worker reports the count.
+    notifications: Mutex<std::sync::mpsc::SyncSender<Notification>>,
+    dropped: Arc<AtomicU64>,
     watcher: Arc<dyn SessionWatcher>,
     clock: Arc<dyn Clock>,
     me: Weak<Service>,
 }
 
 /// Delivers queued notifications one at a time, in order, until the service is dropped: one
-/// thread however many tickets arrive, and a slow sink never holds a request.
+/// thread however many tickets arrive, and a slow sink never holds a request. After each
+/// one, the notifications dropped while the queue was full are reported as one.
 fn notification_worker(
     notifier: Arc<dyn Notifier>,
-) -> std::io::Result<std::sync::mpsc::Sender<Notification>> {
-    let (outbox, inbox) = std::sync::mpsc::channel::<Notification>();
+    dropped: Arc<AtomicU64>,
+) -> std::io::Result<std::sync::mpsc::SyncSender<Notification>> {
+    let (outbox, inbox) = std::sync::mpsc::sync_channel::<Notification>(MAX_QUEUED_NOTIFICATIONS);
     std::thread::Builder::new()
         .name("writ-notify".to_owned())
         .spawn(move || {
             for notification in inbox {
-                if let Err(e) = notifier.notify(&notification) {
-                    tracing::warn!(error = %e, "notification failed");
+                deliver(&*notifier, &notification);
+                let missed = dropped.swap(0, Ordering::AcqRel);
+                if missed > 0 {
+                    deliver(
+                        &*notifier,
+                        &Notification {
+                            title: format!("{missed} more notifications were dropped"),
+                            message: "Too many at once. To see what waits: writ ls".to_owned(),
+                            priority: writ_platform::Priority::Default,
+                            tags: vec!["writ".to_owned()],
+                        },
+                    );
                 }
             }
         })?;
     Ok(outbox)
+}
+
+fn deliver(notifier: &dyn Notifier, notification: &Notification) {
+    if let Err(e) = notifier.notify(notification) {
+        tracing::warn!(error = %e, "notification failed");
+    }
+}
+
+/// Recent submissions from one source address.
+#[derive(Default)]
+struct SubmitWindow {
+    times: VecDeque<Timestamp>,
+    /// Submissions refused over the rate since the last one logged.
+    refused: u64,
 }
 
 struct Inner {
@@ -106,6 +149,8 @@ struct Inner {
     unlogged: VecDeque<AuditEvent>,
     /// Lines dropped because [`MAX_UNLOGGED`] was reached.
     lost: u64,
+    /// Submissions per source address in the last minute.
+    submissions: HashMap<Option<IpAddr>, SubmitWindow>,
 }
 
 impl Inner {
@@ -163,7 +208,8 @@ impl Service {
                     .map(|l| l.cert_serial),
             );
         }
-        let outbox = notification_worker(platform.notifier).map_err(internal)?;
+        let dropped = Arc::new(AtomicU64::new(0));
+        let outbox = notification_worker(platform.notifier, dropped.clone()).map_err(internal)?;
         let approver_keys = config.approvers.iter().map(|a| a.key.clone()).collect();
         let (revocations, _) = broadcast::channel(256);
         let service = Arc::new_cyclic(|me| Self {
@@ -176,11 +222,13 @@ impl Service {
                 watches: HashMap::new(),
                 unlogged: VecDeque::new(),
                 lost: 0,
+                submissions: HashMap::new(),
             }),
             revoked: RwLock::new(revoked),
             changed: Notify::new(),
             revocations,
             notifications: Mutex::new(outbox),
+            dropped,
             watcher: platform.watcher,
             clock: platform.clock,
             me: me.clone(),

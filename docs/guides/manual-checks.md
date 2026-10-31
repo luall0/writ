@@ -27,7 +27,8 @@ echo "me $(cat dev/data/client/approver.pub)" > dev/approvers
 Both stay out of git (`dev/data/` and `dev/approvers` are ignored). Never put a private key
 there: only the public line.
 
-**2. Pin the daemon** (host key for SSH, certificate fingerprint for HTTPS):
+**2. Pin the daemon** (host key for SSH, certificate fingerprint for HTTPS), and make the
+client's reader key, listed in `dev/readers` (only readers reach the approval API):
 
 ```sh
 make dev-client

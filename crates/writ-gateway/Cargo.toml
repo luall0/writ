@@ -30,6 +30,8 @@ writ-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+# Paused time: deadlines and coalescing windows are tested without waiting.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
