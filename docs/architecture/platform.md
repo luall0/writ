@@ -93,7 +93,7 @@ difference between modes, as far as the policy is concerned.
 | `writ-core` | `CallerFacts`, `ProcessRef` and the caller checks (pure) |
 | `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, ntfy, passphrase unlock), and fakes for tests behind a `testing` feature |
 | `writ-signer` | The `Signer` trait, the software backend, cross-platform hardware backends behind Cargo features (YubiKey) |
-| `writ-platform-macos` | Everything macOS-only: Unix socket transport extras, process chain attestor (libproc, code signature), kqueue watcher, later the Secure Enclave `Signer` and `KeystoreUnlock` |
+| `writ-platform-macos` | Everything macOS-only: Unix socket transport extras, process chain attestor (libproc, code signature), kqueue watcher, the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and later `KeystoreUnlock` |
 | `writ-platform-linux` | Linux-only implementations (later: `SO_PEERCRED` + `/proc` attestor, pidfd watcher, TPM) |
 | `writd` | `platform.rs`: builds the set of implementations from the configuration and the target OS. The **only** place outside the platform crates with `#[cfg(target_os = …)]` |
 
@@ -132,7 +132,7 @@ notifiers: [{ ntfy: https://ntfy.home/writ }]
 transports: [{ unix: ~/Library/Application Support/Writ/writd.sock }]
 attestor: macos_process_chain
 session_watcher: macos
-signer: { software: ~/Library/Application Support/Writ/keys }   # or secure_enclave (Q27)
+signer: { software: /var/db/writ/keys }   # se-keychain or se-cryptokit from M7.5
 unlock: passphrase
 notifiers: [{ ntfy: https://ntfy.home/writ }]
 ```

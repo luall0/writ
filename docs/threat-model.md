@@ -80,6 +80,14 @@ ledger and audit log, YubiKey backend as soon as practical.
 
 See [Deployment](architecture/deployment.md).
 
+### 6. Local mode: the daemon vs my own user
+In local mode, agents run as my user. A daemon running as my user can't keep its keys from
+them: they could read its files, use a Secure Enclave key blob, or attach to the process. So
+the local daemon is isolated from my user, by an access group bound to its code signature
+(Plan A) or by a dedicated macOS user (Plans B and D). Root stays out of scope.
+
+See [macOS Secure Enclave](architecture/macos-secure-enclave.md).
+
 ## What Writ guarantees
 
 - ✅ Agents never get forge credentials or signing keys
@@ -108,4 +116,5 @@ See [Deployment](architecture/deployment.md).
 | Daemon is a single point of failure | Fail closed is the right behavior | Local mode as fallback |
 | Upstream keys have account-wide access | Forges don't scope personal SSH keys per repo | Repo registry + `protected_refs` enforced by the daemon; keys on YubiKey; deploy keys or bot accounts later |
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | Hardware unseal recipients later |
+| `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |

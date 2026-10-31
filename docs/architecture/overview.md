@@ -107,6 +107,7 @@ crates/
   writ-cli/             the `writ` binary
   writ-sign/            the `writ-sign` shim
 skill/writ/SKILL.md     the agent skill (ticket workflow)
+spikes/                 throwaway spike code outside the Cargo workspace (M0 Secure Enclave)
 deploy/                 Dockerfile, compose.yaml
 docs/
 ```

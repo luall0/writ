@@ -37,6 +37,9 @@ The daemon host is the crown jewel: it holds agent keys, upstream credentials an
 ## Local (Mac)
 
 The same `writd`, built natively, listening on a Unix socket (with
-[process chain checks](identity.md#local-mode-process-chain-checks)) and started by launchd:
+[process chain checks](identity.md#local-mode-process-chain-checks)) and started by launchd,
+isolated from my user: a LaunchDaemon under a dedicated `_writd` user, or an app bundle whose
+keys are bound to its code signature, as the M0 spike decides
+([macOS Secure Enclave](macos-secure-enclave.md)). It is
 the local [configuration preset](platform.md#configuration-presets), with the macOS
 implementations plugged in. Built in [M7](../roadmap.md#m7--local-mode-on-the-mac).

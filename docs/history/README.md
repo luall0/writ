@@ -11,4 +11,4 @@ starts in the [backlog](../backlog/README.md) and its pages move here when done,
 
 | # | Item | What it brought |
 |---|---|---|
-| | *Nothing built yet. Start with [M0](../roadmap.md#m0--protocol-spike-gono-go).* | |
+| | *Nothing done yet: [M0](../roadmap.md#m0--protocol-spike-gono-go) is in progress.* | |

@@ -77,7 +77,8 @@ records every commit signed per lease. Use these words in code, logs and docs.
    signature. Sign at commit time, verify against the ledger at push time.
 8. **Never touch personal keys.** Writ never reads, uses or lists Secretive's keys except the
    dedicated approval key, through `ssh-keygen -Y sign` in `writ sign` / `writ unseal`. Tests
-   never use the real `~/.ssh`, git config or Secretive.
+   never use the real `~/.ssh`, git config or ssh-agent (only `make test-agent`, run by hand),
+   and the repo never stores fixtures made from a real key.
 9. **Everything is logged.** Every allow, deny, grant, refusal, revocation, admin change and
    seal/unseal writes one audit line ([audit log](docs/architecture/policy-and-state.md#audit-log)).
 10. **Forge-agnostic.** No forge-specific API in the core path (GitHub, Gitea, Forgejo… are
@@ -104,15 +105,15 @@ summary what you ran.
 
 ## Commands
 
-Created in M0 by the [initialization guide](docs/guides/initialization.md#4-makefile); until
-then, none of these exist.
+From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/guides/initialization.md#4-makefile)).
 
 | Task | Command |
 |---|---|
 | Lint, format check, dependency directions | `make check` |
 | Tests | `make test` |
+| Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
 | Format | `make fmt` |
-| Run the daemon with the dev config (test keys and repos only) | `make run` |
+| Run the M0 spike gateway with test keys in `dev/data` (`writd spike-cert dev/data <key.pub> <cert>` issues a session certificate) | `make run` |
 | End-to-end scenarios against the test forge (Docker, from M4) | `make e2e` |
 | Build the Docker image (from M8) | `make docker` |
 | Add a dependency | add its version to `[workspace.dependencies]` in the root `Cargo.toml`, then `dep.workspace = true` in the crate |
@@ -135,6 +136,7 @@ then, none of these exist.
 | Policy engine, SQLite store, ledger, audit log (`writ-core`, `writ-store`) | [docs/architecture/policy-and-state.md](docs/architecture/policy-and-state.md) |
 | Modes as configuration, platform traits, macOS/Linux implementations (`writ-platform*`, `writd/src/platform.rs`) | [docs/architecture/platform.md](docs/architecture/platform.md) |
 | `Signer` trait, key backends, keystore, sealed start (`writ-signer`) | [docs/architecture/signer.md](docs/architecture/signer.md) |
+| Secure Enclave on the Mac without a paid Apple account, the local daemon isolated from my user | [docs/architecture/macos-secure-enclave.md](docs/architecture/macos-secure-enclave.md) |
 | Approver signatures, `writ sign` display, refusing, narrowing (`writ-approval`, `writ-crypto`) | [docs/architecture/approvals.md](docs/architecture/approvals.md) |
 | Session keys, certificates, revocation, local mode process chain | [docs/architecture/identity.md](docs/architecture/identity.md) |
 | `writ` CLI, `writ-sign`, the agent skill, `writ try`, agent host git config | [docs/architecture/clients.md](docs/architecture/clients.md) |

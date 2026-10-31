@@ -1,0 +1,19 @@
+[package]
+name = "writd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+writ-crypto.workspace = true
+writ-gateway.workspace = true
+anyhow.workspace = true
+ssh-key.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

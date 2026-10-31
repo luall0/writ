@@ -58,7 +58,6 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [HTTP credential proxy (v2)](http-credential-proxy.md) | Credentials | feature | L | idea, sketched |
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
-| [Secure Enclave signer backend](#secure-enclave-signer-backend) | Signers | feature | M | idea (see Q27) |
 | [Hardware unseal recipients](#hardware-unseal-recipients) | Sealing | feature | M | idea |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
@@ -74,17 +73,13 @@ The commits, each leaving Writ working. Added when the idea is picked.
 
 Agent keys and upstream credentials on a YubiKey (P-256, P-384, ed25519 on recent firmware),
 touch policy `never`, USB passthrough to the container. Removes the main v1 residual risk:
-software keys extractable on the daemon host ([Signer](../architecture/signer.md)).
+software keys extractable on the daemon host ([Signer](../architecture/signer.md)). Built in
+[M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac) instead if the M0 spike falls back
+to Plan D for local mode. The Secure Enclave signer itself is on the roadmap (M7.5).
 
 ### TPM signer backend
 
 Same, on the server's TPM 2.0 (P-256), keys bound to that machine.
-
-### Secure Enclave signer backend
-
-Agent keys in the Mac's Secure Enclave for local mode. Needs a code-signed native component
-(Swift or Rust + Security framework). Whether it is part of v1 is
-[Q27](../decisions.md#open-questions).
 
 ## Sealing
 

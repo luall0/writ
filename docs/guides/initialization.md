@@ -46,8 +46,10 @@ dbg_macro = "deny"
 # every dependency version lives here; crates use `dep.workspace = true`
 ```
 
-Each crate's `Cargo.toml` has `[lints] workspace = true`. Tests may allow `unwrap_used` /
-`expect_used` with `#[cfg_attr(test, allow(...))]` or in `tests/`.
+Each crate's `Cargo.toml` has `[lints] workspace = true` (`cargo new` inside the workspace
+already adds it). A root `clippy.toml` allows `unwrap`, `expect` and `panic` in unit tests
+(`allow-unwrap-in-tests` and friends); integration test files under `tests/` start with
+`#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]` for their helpers.
 
 `rust-toolchain.toml`:
 
@@ -76,8 +78,8 @@ cargo new --bin crates/writ-sign
 
 | Target | Runs |
 |---|---|
-| `make check` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the dependency-direction check (`tool/check-deps`, over `cargo metadata`: see [dependency directions](../architecture/overview.md#dependency-directions)) |
-| `make test` | `cargo test --workspace` |
+| `make check` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the dependency-direction check (`tool/check-deps.py`, over `cargo metadata`: see [dependency directions](../architecture/overview.md#dependency-directions)) |
+| `make test` | `cargo build --workspace --bins`, then `cargo test --workspace` (end-to-end tests run the binaries) |
 | `make fmt` | `cargo fmt --all` |
 | `make run` | `writd` with the dev config in `dev/` (test keys and test repos only) |
 | `make e2e` | End-to-end scenarios against the test forge in Docker (from M4) |

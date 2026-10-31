@@ -10,7 +10,7 @@ clients make the workflow pleasant, the daemon makes it safe.
 | `writ` CLI | `request`, `sign`, `refuse`, `close`, `ls`, `revoke`, `unseal`, `init` (wires a repo's remote, URL rewrite and signing config) |
 | Agent skill | Teaches the agent the ticket workflow: think through the scope before coding, write a ticket (task, plan, repos, branches, limits, template), submit it with `writ request`, wait for my decision; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; when done, `writ close` with a summary. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine |
 | `writ try` | Borrowed from secrets-dispatcher: sets up a temporary local daemon and wires one repo, then restores everything on Ctrl-C. `--dry-run` lists every change first |
-| `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon; `-Y verify` / `find-principals` → real `ssh-keygen` |
+| `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git` command, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, `core.sshCommand`, `ssh`); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen` |
 | Session agent (optional) | Holds the session key; on a Mac it can live in the Secure Enclave (no Touch ID) so it can't be copied |
 | Harness integration | Omega Code requests a lease when an agent session starts and wires the repo's git config |
 | Approvers | v1: `writ sign` + Secretive. Later: own Mac SE app, iPhone app |
@@ -27,6 +27,8 @@ before exiting 1, and git shows the gateway's rejection message after a push.
 # .git/config (written by `writ init` or the harness)
 [remote "writ"]
     url = ssh://git@writ.home:2222/omega-code
+[writ]
+    url = ssh://git@writ.home:2222      # where writ-sign sends objects to sign
 [gpg]
     format = ssh
 [gpg "ssh"]

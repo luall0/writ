@@ -19,6 +19,20 @@ Every request goes through the [policy engine](policy-and-state.md#policy-engine
 anything else happens. Git itself is not reimplemented: the daemon shells out to
 `git upload-pack` / `git receive-pack` / `git index-pack` against its own repositories.
 
+Anything else is refused with a reason on stderr. Repos are plain names (`omega-code.git`),
+never paths; only `GIT_PROTOCOL` is taken from the client's environment.
+
+## Push checks in git's quarantine
+
+`git receive-pack` keeps the pushed objects in a quarantine directory and runs the
+pre-receive hook before any ref moves ([Q31](../decisions.md)). The gateway starts it with
+`core.hooksPath` set to its own hooks directory; the hook (`writd hook pre-receive`) only
+forwards the ref updates and a per-push token to the daemon over a private Unix socket in
+its state directory. The daemon looks the token up (which lease, which repo), decides, and
+answers `ok` or `deny <reason>`. On a refusal git drops the quarantine and shows the agent
+`remote: writ: <reason>`. The commit checks against the ledger (M4) run at the same point,
+on the quarantined objects. Any failure to reach the daemon refuses the push.
+
 ## Repo mirrors
 
 One bare mirror per registered repo. Used to serve fetches, receive pushes into a quarantine,

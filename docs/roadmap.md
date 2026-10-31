@@ -18,7 +18,7 @@ an unchanged core.
 
 | # | Milestone | What it brings |
 |---|---|---|
-| M0 | [Protocol spike](#m0--protocol-spike-gono-go) | Go/no-go: git over a russh gateway with certificates, SSHSIGs git and Secretive accept |
+| M0 | [Protocol spike](#m0--protocol-spike-gono-go) | Go for the gateway (certificates, git, daemon-signed commits, agent-held approval keys); which Secure Enclave signer local mode can have for free |
 | M1 | [Lease model and policy core](#m1--lease-model-and-policy-core) | `writ-core`: tickets, templates, registry, narrowing, lifecycle, decisions; store and audit log |
 | M2 | [Ticket flow](#m2--ticket-flow-request-sign-refuse-revoke) | `writ request` / `sign` / `refuse` / `revoke` / `ls`, certificates, ntfy |
 | M3 | [Signed commits](#m3--signed-commits) | `writ-sign`, the sign command, the ledger, `writ init` |
@@ -26,7 +26,8 @@ an unchanged core.
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only forges |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
-| M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, launchd, `writ try` |
+| M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
+| M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts |
 | M9 | [`proxy` push mode](#m9--proxy-push-mode) | Relayed pushes with the same checks, no mirror |
 | M10 | [`direct_ssh` push mode](#m10--direct_ssh-push-mode) | Lent per-lease ssh-agent socket with a deploy key |
@@ -35,27 +36,123 @@ After M10, new work comes from the [backlog](backlog/README.md).
 
 ## M0 — Protocol spike (go/no-go)
 
-Answer the questions that could change the stack before writing the real daemon. Throwaway
-code is fine, but it lives in the workspace created by the
+Answer the questions that could change the stack or the design before writing the real
+daemon: the SSH, SSHSIG and git pieces of the gateway (done: **go**), and which Secure Enclave
+signer local mode can have without a paid Apple Developer account (to do). Throwaway code is
+fine, but it lives in the workspace created by the
 [initialization guide](guides/initialization.md), and `make check` / `make test` exist.
-Settles [Q28](decisions.md#open-questions).
 
 Acceptance checklist, all must pass:
-- [ ] A russh server with an in-memory CA accepts a key + user certificate it issued, and
+- [x] A russh server with an in-memory CA accepts a key + user certificate it issued, and
       refuses: an unknown CA, an expired certificate, a revoked serial, a plain key.
-- [ ] Through that server, plain `git clone`, `git fetch` and `git push` work against a local
+  *`crates/writd/tests/spike.rs` `only_valid_session_certificates_get_in`, with real `ssh`:
+  also refuses a certificate not valid yet. Unit checks in
+  `crates/writ-crypto/tests/interop.rs` `certificates_are_issued_and_checked` (wrong
+  principal too).*
+- [x] Through that server, plain `git clone`, `git fetch` and `git push` work against a local
       bare repository (shelling out to `git upload-pack` / `git receive-pack`), with
       `core.sshCommand` pointing at the key and certificate.
-- [ ] The server can read the ref update lines of a push and reject it with a message that
+  *`fetch_and_push_through_the_gateway`. Protocol v2 works (`GIT_PROTOCOL` is the only
+  environment variable taken from the client). Also checked by hand with the `writd spike`
+  binary and a key + certificate from `writd spike-cert`.*
+- [x] The server can read the ref update lines of a push and reject it with a message that
       git shows to the user.
-- [ ] A commit signed with an SSHSIG built in Rust (ed25519 and P-256 software keys) passes
+  *Through git's pre-receive hook, called back into the daemon (see Decisions). Git shows
+  `remote: writ: refs/heads/main is protected` and `! [remote rejected] HEAD -> main
+  (pre-receive hook declined)`; the bare repo's refs are unchanged.*
+- [x] A commit signed with an SSHSIG built in Rust (ed25519 and P-256 software keys) passes
       `git verify-commit` with an `allowed_signers` file.
-- [ ] A shim set as `gpg.ssh.program` receives git's `-Y sign` call and returns a signature
+  *`ed25519_…` and `p256_commits_signed_by_the_daemon_verify_with_git`: `Good "git" signature
+  for agent@writ`. Also `rust_signatures_verify_with_ssh_keygen` (`ssh-keygen -Y verify`).*
+- [x] A shim set as `gpg.ssh.program` receives git's `-Y sign` call and returns a signature
       git accepts; `-Y verify` is forwarded to the real `ssh-keygen`.
-- [ ] Rust verifies an SSHSIG made by a **Secretive** key (`ssh-keygen -Y sign -n
-      writ-approval`, ECDSA P-256) and rejects the same signature under another namespace or
-      over other bytes.
-- [ ] Results and versions (git, OpenSSH, crates) written in the milestone's history page.
+  *`writ-sign` sends the object over the gateway's `writ-sign git` command. `git
+  verify-commit` in the same tests goes through the shim's forwarding. With a revoked
+  certificate, `git commit -S` fails with `writ-sign: the daemon refused to sign`.*
+- [x] Rust verifies an SSHSIG made through an **ssh-agent** (`ssh-keygen -Y sign -n
+      writ-approval` with only the public key, the way approvers sign) and rejects the same
+      signature under another namespace or over other bytes.
+  *`agent_held_keys_sign_approvals_rust_verifies` runs in `make test` against a throwaway
+  `ssh-agent` with generated ed25519 and P-256 keys. With a hardware-backed key in your own
+  agent (Secure Enclave, YubiKey…): `make test-agent KEY=<public key .pub>
+  [AGENT=<socket>]`, which signs a fresh random message and keeps nothing. Run by hand on
+  2026-10-31 with a Secure Enclave P-256 key: passes. Nothing of the user's key is stored in
+  the repo.*
+- [x] The same SSH protocol works over a Unix socket (added in M0 for local mode, M7).
+  *`the_same_protocol_works_over_a_unix_socket`: `russh::server::run_stream` on a
+  `UnixStream`, the client through `ProxyCommand='nc -U …'`; clone, push and the protected
+  ref refusal all work.*
+- [x] Results and versions written here.
+- [ ] **Secure Enclave signer without a paid Apple account**
+      ([macOS Secure Enclave](architecture/macos-secure-enclave.md)): a small test program in
+      `spikes/secure-enclave/` (Swift, outside the Cargo workspace) runs the checks of each
+      plan, in the doc's order, stopping at the first that passes:
+  - [ ] Plan A, Xcode Personal Team + keychain access group: every check in its list.
+  - [ ] If A fails: Plan B, CryptoKit key + dedicated `_writd` user: every check in its list,
+        including the keybag question (role account, or hidden standard user).
+  - [ ] If A and B fail: Plan D's YubiKey PIN caching per PC/SC session.
+  - [ ] The result recorded: the backend for [M7.5](#m75--secure-enclave-signer-on-the-mac)
+        and how the daemon runs in [M7](#m7--local-mode-on-the-mac) (app bundle or dedicated
+        user), in the [decision log](decisions.md) (settles Q27); the doc's status, its ⚠️
+        marks and its "What doesn't work" list updated.
+
+### What was done so far
+
+- Cargo workspace per the [initialization guide](guides/initialization.md): `writ-core`
+  (empty until M1), `writ-crypto`, `writ-gateway`, `writd`, `writ-sign`; `Makefile`
+  (`check`, `test`, `fmt`, `run`), `tool/check-deps.py` for the dependency directions,
+  `clippy.toml` allowing `unwrap`/`expect`/`panic` in tests.
+- `writ-crypto`: SSHSIG split into `signed_data` → raw signature → `assemble`, the shape the
+  `Signer` interface needs; the certificate authority and `validate_user_certificate` with
+  one error per reason.
+- `writ-gateway`: certificate-only authentication, an allow-list of exec commands
+  (`git-upload-pack '<repo>'`, `git-receive-pack '<repo>'`, `writ-sign git`), repo names
+  never paths, refused commands answered with a reason on stderr, TCP and Unix socket
+  listeners.
+- `writd spike <state> <addr|unix:path>` and `writd spike-cert` for trying it by hand (test
+  keys only); `writd hook pre-receive` for git's hook.
+- `writ-sign`: finds the daemon from `git config writ.url` and the SSH command git uses
+  (`GIT_SSH_COMMAND`, `core.sshCommand`, `ssh`).
+- `make check` and `make test` pass: 16 tests and one opt-in (unit, `ssh-keygen` and `ssh-agent` interop, 5 end-to-end with
+  real `git` and `ssh`, about 4 s). About 2,000 lines of Rust.
+
+### Versions
+
+| | Version |
+|---|---|
+| git | 2.54.0 (Apple Git-157) |
+| OpenSSH | 10.5p1 |
+| Rust | 1.99.1 |
+| russh | 0.65.0, `ring` backend (default features off) |
+| ssh-key | 0.7.0-rc.11, pinned exactly because russh pins it: same `Certificate` and key types |
+| tokio | 1.54.1 |
+
+### Decisions
+
+- **Push checks run in git's own quarantine.** `git receive-pack` stores the pushed objects
+  in a quarantine and runs the pre-receive hook before any ref moves. The gateway runs it
+  with `core.hooksPath` pointing at its own hook, which forwards the ref updates and a
+  per-push token to the daemon over a private Unix socket (in the 0700 state directory); the
+  daemon decides, and git drops the quarantine on refusal. This gives `gateway` mode the
+  quarantine of the design without reimplementing receive-pack's protocol, and the later
+  ledger check can walk the new commits there (`git rev-list <new> --not --all`). Recorded as
+  [Q31](decisions.md). `proxy` mode (M9) still needs its own pack handling.
+- **The shim reaches the daemon with git's own SSH command** and a new `writ.url` git
+  setting, so commit signing uses the same key, certificate and known hosts as fetch and push.
+- **Crates:** `tokio`, `thiserror`, `anyhow` decided; the other proposed crates are decided
+  when the milestone that needs them starts ([Q28](decisions.md#open-questions)).
+
+### Findings
+
+- **Unix socket paths are short** (104 bytes on macOS with the terminator). The hook socket
+  lives in the state directory, so a deep state directory failed with an unclear error;
+  `Gateway::start` now refuses it with a clear message. Keep it in mind for local mode's
+  client socket (`~/Library/Application Support/Writ/writd.sock` fits).
+- `ssh-key` is a release candidate, pinned by russh. Upgrading russh will move it too.
+- `UnwrapErr(SysRng)` panics if the system random source fails; acceptable (nothing can be
+  signed safely then), noted for the review of M1.
+- Integration tests need the workspace binaries built (`writ-sign` is another package's
+  binary): `make test` builds them first.
 
 ## M1 — Lease model and policy core
 
@@ -206,14 +303,19 @@ Acceptance:
 [Deployment modes](architecture/overview.md#deployment-modes),
 [process chain checks](architecture/identity.md#local-mode-process-chain-checks). This
 milestone only **adds implementations** of existing interfaces and the local
-[configuration preset](architecture/platform.md#configuration-presets). Depends on
-[Q27](decisions.md#open-questions) (Secure Enclave signer now or later).
+[configuration preset](architecture/platform.md#configuration-presets). Signer: the software
+backend; the Secure Enclave comes in M7.5. How the daemon runs comes from the M0 Secure
+Enclave spike ([macOS Secure Enclave](architecture/macos-secure-enclave.md)).
 
 - Unix socket `Transport` (portable Unix, in `writ-platform`).
 - `writ-platform-macos`: process chain `CallerAttestor` (executable path and code signature,
   pid + pidversion), kqueue `SessionWatcher`; the full chain in the audit log.
 - Leases bound to a session (`caller.descends_from`), revoked when its root process exits.
-- launchd plist; `writ try` with `--dry-run`, restoring everything on Ctrl-C.
+- **A daemon isolated from my user**, as the M0 spike decided: a LaunchDaemon running as a
+  dedicated `_writd` user (Plans B and D), or an app bundle whose keys are bound to its code
+  signature (Plan A). The agents' socket sits in a directory my user can reach; the daemon's
+  files don't.
+- `writ try` with `--dry-run`, restoring everything on Ctrl-C.
 
 Acceptance:
 - [ ] **The graft test:** no change in `writ-core`, `writ-store`, `writ-git`, `writ-gateway`,
@@ -226,6 +328,32 @@ Acceptance:
       process name or arguments, and refuses every TCP caller.
 - [ ] Quitting the session's root process revokes the lease.
 - [ ] `writ try` leaves the repo and the machine exactly as before after Ctrl-C.
+- [ ] My user (so any agent) can't read the daemon's keystore or attach to the daemon
+      (`cat` and `lldb -p` refused), and the daemon starts again after a reboot.
+
+## M7.5 — Secure Enclave signer on the Mac
+
+Non-exportable agent keys in local mode: the backend the M0 spike picked
+([macOS Secure Enclave](architecture/macos-secure-enclave.md#signer-backends-this-maps-to)),
+`se-keychain` (Plan A) or `se-cryptokit` (Plan B), or `yubikey-piv` if both failed (Plan D).
+A `Signer` implementation in `writ-platform-macos` (calling the Swift component if the spike
+needed one) and a config value; nothing else changes.
+
+- The backend, and key creation for it (agent signing keys, optionally the upstream
+  credential).
+- The packaging the plan needs (embedded provisioning profile for Plan A, the `_writd` user's
+  key directory for Plan B), done from the `Makefile`.
+
+Acceptance:
+- [ ] **The graft test:** only the new `Signer` implementation, `writd`'s wiring and config
+      change.
+- [ ] It passes the `Signer` contract suite, like the software backend.
+- [ ] With the real daemon: signing needs no prompt, works after a reboot and with the screen
+      locked; another process, and my user, can't find or use the key.
+- [ ] Commits signed with it verify with `git verify-commit`, as in M3.
+- [ ] Going back to the software backend is a config change only.
+- [ ] For Plan A: what happens when the provisioning profile expires is known and documented
+      (and fails closed).
 
 ## M8 — Detached deployment
 
