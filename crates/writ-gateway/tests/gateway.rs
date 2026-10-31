@@ -12,8 +12,9 @@ use std::time::Duration;
 use russh::ChannelMsg;
 use russh::client::{self, Handle};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use writ_approval::{Platform, Service, ServiceConfig, SystemClock};
+use writ_approval::{Service, ServiceConfig, ServicePlatform};
 use writ_core::caller::CallerFacts;
+use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
 use writ_core::lease::APPROVAL_NAMESPACE;
 use writ_core::signed::Revocation;
@@ -22,8 +23,10 @@ use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Certificate, PrivateKey};
 use writ_crypto::sshsig;
-use writ_gateway::{Gateway, GatewayConfig, Role, TlsIdentity};
+use writ_crypto::tls::TlsIdentity;
+use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_platform::PeerInfo;
+use writ_platform::clock::system::SystemClock;
 use writ_platform::testing::{
     FakeAttestor, FakeConnector, FakeTransport, FakeWatcher, RecordingNotifier,
 };
@@ -108,7 +111,7 @@ impl Daemon {
             CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap()),
             Store::open(&dir.path().join("leases.db")).unwrap(),
             AuditLog::open(&dir.path().join("audit.jsonl")).unwrap(),
-            Platform {
+            ServicePlatform {
                 notifier: Arc::new(RecordingNotifier::new()),
                 watcher: Arc::new(FakeWatcher::new()),
                 clock: Arc::new(SystemClock),
@@ -485,46 +488,6 @@ async fn revoking_drops_open_sessions_and_refuses_the_next_connection() {
 
 // ----- HTTPS ----------------------------------------------------------------------------
 
-/// Accepts only the certificate with this fingerprint.
-#[derive(Debug)]
-struct PinnedCert(String, Arc<rustls::crypto::CryptoProvider>);
-
-impl rustls::client::danger::ServerCertVerifier for PinnedCert {
-    fn verify_server_cert(
-        &self,
-        end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _: &[rustls::pki_types::CertificateDer<'_>],
-        _: &rustls::pki_types::ServerName<'_>,
-        _: &[u8],
-        _: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        if writ_crypto::tls::fingerprint(end_entity) == self.0 {
-            Ok(rustls::client::danger::ServerCertVerified::assertion())
-        } else {
-            Err(rustls::Error::General("pin mismatch".into()))
-        }
-    }
-    fn verify_tls12_signature(
-        &self,
-        m: &[u8],
-        c: &rustls::pki_types::CertificateDer<'_>,
-        d: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(m, c, d, &self.1.signature_verification_algorithms)
-    }
-    fn verify_tls13_signature(
-        &self,
-        m: &[u8],
-        c: &rustls::pki_types::CertificateDer<'_>,
-        d: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(m, c, d, &self.1.signature_verification_algorithms)
-    }
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.1.signature_verification_algorithms.supported_schemes()
-    }
-}
-
 /// One HTTPS request to the daemon's approval API: (status, body). Errors if TLS fails.
 async fn https(
     daemon: &Daemon,
@@ -534,13 +497,8 @@ async fn https(
     body: Vec<u8>,
 ) -> Result<(u16, Vec<u8>), String> {
     use http_body_util::BodyExt;
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider.clone())
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .unwrap()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinnedCert(pin.to_owned(), provider)))
-        .with_no_client_auth();
+    // The client side the CLI uses: exactly the pinned certificate.
+    let config = writ_crypto::tls::pinned_client_config(pin).unwrap();
     let stream = daemon
         .https
         .connect(peer())
@@ -696,7 +654,10 @@ async fn https_clients_refuse_another_certificate() {
     let error = https(&daemon, &other, "GET", "/v1/info", Vec::new())
         .await
         .unwrap_err();
-    assert!(error.contains("pin mismatch"), "{error}");
+    assert!(
+        error.contains("doesn't match the pinned fingerprint"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

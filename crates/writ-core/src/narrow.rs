@@ -30,7 +30,7 @@ pub fn check(submitted: &Ticket, signed: &Ticket) -> Result<(), NarrowingError> 
         "scope.signing_key",
         submitted.scope.signing_key == signed.scope.signing_key,
     );
-    let (a, b) = (&submitted.ticket, &signed.ticket);
+    let (a, b) = (&submitted.text, &signed.text);
     same("ticket.title", a.title == b.title);
     same("ticket.task", a.task == b.task);
     same("ticket.plan", a.plan == b.plan);
@@ -62,10 +62,7 @@ pub fn check(submitted: &Ticket, signed: &Ticket) -> Result<(), NarrowingError> 
     }
 
     // An empty expected_paths turns the path check off, so emptying it widens.
-    let (a, b) = (
-        &submitted.ticket.expected_paths,
-        &signed.ticket.expected_paths,
-    );
+    let (a, b) = (&submitted.text.expected_paths, &signed.text.expected_paths);
     if !a.is_empty() {
         if b.is_empty() {
             reasons.push("ticket.expected_paths emptied (turns the path check off)".to_owned());

@@ -1,12 +1,15 @@
-//! How clients reach the daemon. Every transport carries the same SSH protocol: only the byte
-//! stream and what is known about its peer differ.
+//! How clients reach the daemon: the [`Transport`] interface. Every transport carries the
+//! same SSH protocol: only the byte stream and what is known about its peer differ.
+//!
+//! Portable implementation: [`tcp::TcpTransport`].
+
+pub mod tcp;
 
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpListener;
 
 use crate::Result;
 
@@ -55,47 +58,4 @@ pub trait Transport: Send + Sync {
     fn accept(&self) -> BoxFuture<'_, Result<Connection>>;
     /// Where it listens, for logs (`tcp 127.0.0.1:2222`).
     fn describe(&self) -> String;
-}
-
-/// TCP: the detached mode's transport.
-pub struct TcpTransport {
-    listener: TcpListener,
-}
-
-impl TcpTransport {
-    /// Listens on `addr` (`0.0.0.0:2222`, `127.0.0.1:0`).
-    pub async fn bind(addr: &str) -> Result<Self> {
-        Ok(Self {
-            listener: TcpListener::bind(addr).await?,
-        })
-    }
-
-    pub fn from_listener(listener: TcpListener) -> Self {
-        Self { listener }
-    }
-
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.listener.local_addr()?)
-    }
-}
-
-impl Transport for TcpTransport {
-    fn accept(&self) -> BoxFuture<'_, Result<Connection>> {
-        Box::pin(async move {
-            let (stream, remote) = self.listener.accept().await?;
-            // Small request/response exchanges: don't wait to fill packets.
-            let _ = stream.set_nodelay(true);
-            Ok(Connection {
-                stream: Box::new(stream),
-                peer: PeerInfo::Tcp { remote },
-            })
-        })
-    }
-
-    fn describe(&self) -> String {
-        match self.listener.local_addr() {
-            Ok(addr) => format!("tcp {addr}"),
-            Err(_) => "tcp".to_owned(),
-        }
-    }
 }

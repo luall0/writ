@@ -233,6 +233,16 @@ impl Session {
         let _ = tokio::time::timeout(Duration::from_secs(2), self.handle).await;
     }
 
+    /// Runs `work` on the session, then closes it, whatever `work` returned.
+    pub async fn run<T>(
+        self,
+        work: impl AsyncFnOnce(&Self) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let result = work(&self).await;
+        self.close().await;
+        result
+    }
+
     /// Runs one exec command with `body` on stdin.
     pub async fn exec(&self, line: &str, body: &[u8]) -> anyhow::Result<Output> {
         let mut channel = self
@@ -301,7 +311,7 @@ impl Approvals {
             _ => {
                 let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519)?;
                 Ok(Self::Ssh(
-                    Session::connect(&endpoint, known_hosts, "writ", key).await?,
+                    Session::connect(&endpoint, known_hosts, writ_proto::CLIENT_USER, key).await?,
                 ))
             }
         }
@@ -312,6 +322,16 @@ impl Approvals {
         if let Self::Ssh(session) = self {
             session.close().await;
         }
+    }
+
+    /// Runs `work` on the connection, then closes it, whatever `work` returned.
+    pub async fn run<T>(
+        self,
+        work: impl AsyncFnOnce(&Self) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let result = work(&self).await;
+        self.close().await;
+        result
     }
 
     pub async fn call<T: DeserializeOwned>(

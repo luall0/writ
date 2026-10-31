@@ -13,6 +13,7 @@ mod approver;
 mod client;
 mod display;
 mod https;
+mod session;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

@@ -19,7 +19,7 @@ use proptest::prelude::*;
 use proptest::sample::{select, subsequence};
 use proptest::strategy::ValueTree;
 use writ_core::caller::{CallerConstraint, CallerFacts, ProcessMatch, ProcessRef};
-use writ_core::config::{Operation, PolicyConfig, PushMode};
+use writ_core::config::{PolicyConfig, PushMode};
 use writ_core::fit;
 use writ_core::lease::{self, Lease, State, TicketRecord, Usage};
 use writ_core::narrow;
@@ -27,6 +27,7 @@ use writ_core::policy::{
     self, CertIdentity, Context, DenyCode, FetchRequest, LedgerRef, ObjectKind, PushRequest,
     PushedCommit, RefUpdate, SignRequest,
 };
+use writ_core::ticket::Operation;
 use writ_core::ticket::{
     Limits, OnViolation, RequestLimits, RequestScope, RequestText, Ticket, TicketRequest,
 };
@@ -241,7 +242,7 @@ fn arb_signed(submitted: Ticket) -> impl Strategy<Value = Ticket> {
                 2 => t.scope.branches = parse_all(v.2.clone()).into_iter().collect(),
                 3 => t.scope.force_push = !t.scope.force_push,
                 4 => t.scope.committer_emails = v.3.iter().map(|e| e.parse().unwrap()).collect(),
-                5 => t.ticket.expected_paths = parse_all(v.4.clone()).into_iter().collect(),
+                5 => t.text.expected_paths = parse_all(v.4.clone()).into_iter().collect(),
                 6 => {
                     t.limits.expires_at =
                         Timestamp::from_unix(t.limits.expires_at.unix() + v.5).unwrap()
@@ -432,10 +433,10 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
     emails.push("user@example.org".to_owned());
     // A file inside each expected path of either ticket, and one outside them all.
     let mut touched: Vec<String> = a
-        .ticket
+        .text
         .expected_paths
         .iter()
-        .chain(&b.ticket.expected_paths)
+        .chain(&b.text.expected_paths)
         .map(|p| p.as_str().replace("**", "deep/x.rs").replace('*', "x"))
         .collect();
     let max_inside = touched.len().min(2);

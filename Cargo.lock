@@ -3754,7 +3754,6 @@ dependencies = [
  "russh",
  "rustls",
  "serde",
- "serde_json",
  "tempfile",
  "tokio",
  "tokio-rustls",
@@ -3783,6 +3782,7 @@ version = "0.0.0"
 dependencies = [
  "base64ct",
  "rcgen",
+ "rustls",
  "sha2 0.10.9",
  "signature",
  "ssh-key",
@@ -3836,7 +3836,6 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "writ-core",
 ]
 

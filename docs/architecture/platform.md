@@ -19,6 +19,7 @@ a YubiKey) means writing an implementation of an existing interface and register
 | `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS (local mode) | Linux |
 | `KeystoreUnlock` | How the keystore's data key is recovered at unseal | Passphrase + approver signature | age plugin recipients (Secure Enclave, YubiKey), recovery recipient |
 | `Notifier` | How I'm told something is waiting or went wrong | Telegram (Bot API) | Native macOS notifications, approver apps, any other sink |
+| `Clock` | What time it is: every expiry, rate window and certificate validity | The system clock | — |
 
 Shapes (as in `crates/writ-platform`, kept in sync here; the traits are used as trait objects, so `accept` returns a boxed future):
 
@@ -61,7 +62,16 @@ pub trait KeystoreUnlock: Send + Sync {
 pub trait Notifier: Send + Sync {
     fn notify(&self, notification: &Notification) -> Result<()>;
 }
+
+/// Milliseconds since the Unix epoch.
+pub trait Clock: Send + Sync {
+    fn now_ms(&self) -> u64;
+}
 ```
+
+In the crate, each interface is a module holding the trait and the types it uses
+(`notify.rs`), and each implementation a file in that module's directory
+(`notify/telegram.rs`).
 
 ## Caller facts and the policy
 
@@ -104,7 +114,7 @@ and the same code identity if the constraint names one (`writ_core::caller::chec
 | Crate | Holds |
 |---|---|
 | `writ-core` | `CallerFacts`, `ProcessRef` and the caller checks (pure) |
-| `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, Telegram notifier, passphrase unlock), and, behind a `testing` feature, fakes of each trait and the contract suites (`writ_platform::contract`) every implementation runs |
+| `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, Telegram notifier, passphrase unlock, system clock), and, behind a `testing` feature, fakes of each trait and the contract suites (`writ_platform::contract`) every implementation runs |
 | `writ-signer` | The `Signer` trait, the software backend, cross-platform hardware backends behind Cargo features (YubiKey) |
 | `writ-platform-macos` | Everything macOS-only: Unix socket transport extras, process chain attestor (libproc, code signature), kqueue watcher, the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and later `KeystoreUnlock` |
 | `writ-platform-linux` | Linux-only implementations (later: `SO_PEERCRED` + `/proc` attestor, pidfd watcher, TPM) |

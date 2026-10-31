@@ -8,13 +8,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use writ_approval::{ManualClock, Platform, Service, ServiceConfig};
+use writ_approval::{Service, ServiceConfig, ServicePlatform};
 use writ_core::caller::{CallerFacts, ProcessRef};
-use writ_core::config::{Operation, PolicyConfig};
+use writ_core::canonical::Canonical;
+use writ_core::config::PolicyConfig;
 use writ_core::lease::{APPROVAL_NAMESPACE, State};
 use writ_core::names::TicketId;
 use writ_core::policy::{CertIdentity, DenyCode};
 use writ_core::signed::{Refusal, Revocation};
+use writ_core::ticket::Operation;
 use writ_core::ticket::Ticket;
 use writ_core::units::Timestamp;
 use writ_crypto::allowed_signers::AllowedSigner;
@@ -22,7 +24,7 @@ use writ_crypto::ca::{CertificateAuthority, validate_user_certificate};
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Certificate, HashAlg, PrivateKey};
 use writ_crypto::sshsig;
-use writ_platform::testing::{FakeWatcher, RecordingNotifier};
+use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier};
 use writ_proto::{ApproveRequest, Decision, Decisions, RefuseRequest, Relation, RevokeRequest};
 use writ_store::{AuditBreaker, AuditLog, Store, looks_secret};
 
@@ -47,7 +49,7 @@ limits:
 struct Harness {
     dir: tempfile::TempDir,
     service: Arc<Service>,
-    clock: Arc<ManualClock>,
+    clock: Arc<FakeClock>,
     notifier: RecordingNotifier,
     watcher: FakeWatcher,
     approver: PrivateKey,
@@ -72,7 +74,7 @@ impl Harness {
         let approver = generate(KeyKind::Ed25519).unwrap();
         let ca_key = generate(KeyKind::Ed25519).unwrap();
         let ca_fingerprint = ca_key.public_key().fingerprint(HashAlg::Sha256);
-        let clock = Arc::new(ManualClock::at_unix(START));
+        let clock = Arc::new(FakeClock::at_unix(START));
         let notifier = RecordingNotifier::new();
         let (audit, audit_breaker) =
             AuditLog::open_breakable(&dir.path().join("audit.jsonl")).unwrap();
@@ -89,7 +91,7 @@ impl Harness {
             CertificateAuthority::new(ca_key),
             Store::open(&dir.path().join("leases.db")).unwrap(),
             audit,
-            Platform {
+            ServicePlatform {
                 notifier: Arc::new(notifier.clone()),
                 watcher: Arc::new(watcher.clone()),
                 clock: clock.clone(),
@@ -254,7 +256,7 @@ fn a_ticket_outside_every_template_is_rejected_before_reaching_the_approver() {
 fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
     let h = Harness::new(Decisions::Signed);
     let (ticket, key) = h.submit(REQUEST);
-    assert_eq!(ticket.ticket.revision, 1);
+    assert_eq!(ticket.text.revision, 1);
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
     eventually(|| h.notifier.notifications().len() == 1);
     let notification = &h.notifier.notifications()[0];
@@ -276,7 +278,7 @@ fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
     validate_user_certificate(
         &cert,
         std::slice::from_ref(&h.ca_fingerprint),
-        &Default::default(),
+        |_| false,
         "git",
         START,
     )
@@ -418,9 +420,9 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
         ),
     );
     let (revised, _) = h.submit(&revision);
-    assert_eq!(revised.ticket.revision, 2);
+    assert_eq!(revised.text.revision, 2);
     assert_eq!(
-        revised.ticket.previous_feedback.as_deref(),
+        revised.text.previous_feedback.as_deref(),
         Some("Don't touch billing")
     );
     let shown = h.service.show(&revised.id).unwrap();
@@ -630,7 +632,7 @@ fn the_deny_list_survives_a_restart() {
         CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap()),
         Store::open(&dir.join("leases.db")).unwrap(),
         AuditLog::open(&dir.join("audit.jsonl")).unwrap(),
-        Platform {
+        ServicePlatform {
             notifier: Arc::new(RecordingNotifier::new()),
             watcher: Arc::new(FakeWatcher::new()),
             clock: h.clock.clone(),

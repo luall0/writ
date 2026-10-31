@@ -13,13 +13,12 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::caller::{self, CallerFacts};
-use crate::config::{
-    Operation, PathsCheck, PolicyConfig, PushMode, RepoEntry, Template, TicketLink,
-};
+use crate::config::{PathsCheck, PolicyConfig, PushMode, RepoEntry, Template, TicketLink};
 use crate::fit;
 use crate::lease::{Lease, State, Usage, is_exhausted};
 use crate::names::{CommitId, KeyFingerprint, RepoName, TicketId};
 use crate::pattern::{PathSet, RefName};
+use crate::ticket::Operation;
 use crate::units::Timestamp;
 
 /// The window of `max_ops_per_minute`.
@@ -412,7 +411,7 @@ fn check_paths(
     request: &SignRequest,
     allowed: &mut Allowed,
 ) -> Result<(), Denial> {
-    let expected = &ctx.lease.ticket.ticket.expected_paths;
+    let expected = &ctx.lease.ticket.text.expected_paths;
     if template.paths_check == PathsCheck::Off || expected.is_empty() {
         return Ok(());
     }

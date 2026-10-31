@@ -1,7 +1,5 @@
 //! The daemon's SSH certificate authority: one user certificate per approved lease.
 
-use std::collections::HashSet;
-
 use ssh_key::certificate::{Builder, CertType};
 use ssh_key::{Certificate, Fingerprint, HashAlg, PrivateKey, PublicKey};
 
@@ -75,11 +73,12 @@ impl CertificateAuthority {
     }
 }
 
-/// Checks a user certificate presented to the gateway. Every check must pass.
+/// Checks a user certificate presented to the gateway. Every check must pass; `is_revoked`
+/// says whether a serial is on the deny list.
 pub fn validate_user_certificate(
     cert: &Certificate,
     authorities: &[Fingerprint],
-    revoked: &HashSet<u64>,
+    is_revoked: impl Fn(u64) -> bool,
     user: &str,
     now: u64,
 ) -> std::result::Result<(), CertificateError> {
@@ -98,7 +97,7 @@ pub fn validate_user_certificate(
     if now >= cert.valid_before() {
         return Err(CertificateError::Expired);
     }
-    if revoked.contains(&cert.serial()) {
+    if is_revoked(cert.serial()) {
         return Err(CertificateError::Revoked(cert.serial()));
     }
     if !cert.valid_principals().iter().any(|p| p == user) {

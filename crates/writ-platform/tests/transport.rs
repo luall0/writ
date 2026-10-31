@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpStream;
 use writ_platform::contract::{self, Connected};
 use writ_platform::testing::FakeTransport;
-use writ_platform::transport::TcpTransport;
+use writ_platform::transport::tcp::TcpTransport;
 use writ_platform::{AsyncStream, BoxFuture, PeerInfo, Transport};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

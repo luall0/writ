@@ -21,11 +21,13 @@
 //! Every request the gateway turns away on its own is logged through
 //! [`Service::gateway_denied`]; the lease decisions are logged by the service itself.
 
+mod api;
+mod channel;
 mod command;
+mod exec;
 mod handler;
-pub mod hook;
-pub mod https;
-mod process;
+mod hook;
+mod https;
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
@@ -39,19 +41,15 @@ use tokio::net::UnixListener;
 use tokio::sync::broadcast::error::RecvError;
 use writ_approval::{EventKind, GatewayDenial, Service};
 use writ_core::caller::CallerFacts;
-use writ_core::config::Operation;
 use writ_core::lease::Lease;
 use writ_core::policy::{CertIdentity, Denial, DenyCode};
+use writ_core::ticket::Operation;
 use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
-use writ_platform::{CallerAttestor, PeerInfo, Transport};
+use writ_platform::{CallerAttestor, Connection, PeerInfo, Transport};
 
-pub use command::Command;
-pub use https::TlsIdentity;
+pub use hook::run_pre_receive;
 
-/// The SSH user of lease holders (certificates are issued for it).
-pub const LEASE_USER: &str = writ_approval::PRINCIPAL;
-/// The SSH user of clients with a plain key: ticket submission, the approval API.
-pub const CLIENT_USER: &str = "writ";
+pub use writ_proto::{CLIENT_USER, LEASE_USER};
 
 /// Errors from the gateway.
 #[derive(Debug, thiserror::Error)]
@@ -203,15 +201,7 @@ impl Gateway {
         role: Role,
     ) -> Result<()> {
         loop {
-            let connection = transport.accept().await?;
-            let facts = match attestor.attest(&connection.peer) {
-                Ok(facts) => facts,
-                Err(e) => {
-                    eprintln!("writ gateway: connection turned away: {e}");
-                    self.turned_away(&connection.peer, &e).await;
-                    continue;
-                }
-            };
+            let (connection, facts) = self.accept_attested(&*transport, &*attestor).await?;
             let handler = handler::Connection::new(self.clone(), role, facts);
             let ssh = self.shared.ssh.clone();
             tokio::spawn(async move {
@@ -227,6 +217,28 @@ impl Gateway {
                     Err(e) => eprintln!("writ gateway: connection failed: {e}"),
                 }
             });
+        }
+    }
+
+    /// The next connection whose caller the attestor can attest, with its facts. Others are
+    /// logged and dropped.
+    async fn accept_attested(
+        &self,
+        transport: &dyn Transport,
+        attestor: &dyn CallerAttestor,
+    ) -> Result<(Connection, CallerFacts)> {
+        loop {
+            let connection = transport.accept().await?;
+            match attestor.attest(&connection.peer) {
+                Ok(facts) => return Ok((connection, facts)),
+                Err(e) => {
+                    eprintln!(
+                        "writ gateway: connection turned away on {}: {e}",
+                        transport.describe()
+                    );
+                    self.turned_away(&connection.peer, &e).await;
+                }
+            }
         }
     }
 

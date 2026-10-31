@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use writ_platform::contract;
-use writ_platform::notify::{BotToken, Notifiers, TelegramNotifier};
+use writ_platform::notify::Notifiers;
+use writ_platform::notify::telegram::{BotToken, TelegramNotifier};
 use writ_platform::testing::RecordingNotifier;
 use writ_platform::{Notification, Notifier, PlatformError, Priority};
 

@@ -15,8 +15,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Operation, PolicyConfig};
+use crate::config::PolicyConfig;
 use crate::names::{KeyFingerprint, TicketId};
+use crate::ticket::Operation;
 use crate::ticket::Ticket;
 use crate::units::Timestamp;
 use crate::{fit, narrow};
@@ -209,7 +210,7 @@ pub fn activate(
     now: Timestamp,
 ) -> Result<Lease, LifecycleError> {
     transition(record.state, State::Active)?;
-    if record.ticket.ticket.amends.is_some() {
+    if record.ticket.text.amends.is_some() {
         return Err(LifecycleError::Amendment(
             "an amendment is applied to its lease, not activated".to_owned(),
         ));
@@ -235,7 +236,7 @@ pub fn apply_amendment(
     now: Timestamp,
 ) -> Result<(Lease, TicketRecord), LifecycleError> {
     transition(amendment.state, State::Applied)?;
-    if amendment.ticket.ticket.amends.as_ref() != Some(&lease.id) {
+    if amendment.ticket.text.amends.as_ref() != Some(&lease.id) {
         return Err(LifecycleError::Amendment(format!(
             "ticket {} does not amend lease {}",
             amendment.ticket.id, lease.id

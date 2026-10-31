@@ -10,35 +10,19 @@
 use std::fmt::Write as _;
 
 use writ_core::lease::State;
+use writ_core::text::is_hidden_char;
 use writ_core::ticket::{OnViolation, Ticket};
 use writ_core::units::Timestamp;
 
 /// The gutter in front of every line of agent-written text.
 pub const GUTTER: &str = "│ ";
 
-/// Whether a character must be shown escaped: controls (C0, DEL, C1), bidi controls,
-/// invisible format characters and line separators.
-fn is_hidden(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{061C}'
-                | '\u{180E}'
-                | '\u{200B}'..='\u{200F}'
-                | '\u{2028}'..='\u{2029}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
-                | '\u{FEFF}'
-        )
-}
-
 /// Agent text made safe for one line of the terminal: every hidden character as `\u{…}`
 /// (newlines included).
 pub fn clean(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        if is_hidden(c) {
+        if is_hidden_char(c) {
             let _ = write!(out, "\\u{{{:x}}}", u32::from(c));
         } else {
             out.push(c);
@@ -56,13 +40,49 @@ pub fn block(text: &str, indent: &str) -> String {
     out
 }
 
-fn list(items: impl IntoIterator<Item = impl ToString>) -> String {
+/// Items joined by `, `, or `(none)`.
+pub fn list(items: impl IntoIterator<Item = impl ToString>) -> String {
     let items: Vec<String> = items.into_iter().map(|i| i.to_string()).collect();
     if items.is_empty() {
         "(none)".to_owned()
     } else {
         items.join(", ")
     }
+}
+
+/// `writ ls`: one line per ticket (id, state, revision, template, time left, repos), then its
+/// title behind the gutter.
+pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
+    let mut out = String::new();
+    for t in &listing.tickets {
+        let left = match t.state {
+            State::Pending | State::Active => {
+                format!("{} left", duration(now.seconds_until(t.expires_at)))
+            }
+            _ => String::new(),
+        };
+        let lease = if t.lease != t.id {
+            format!(" (amends {})", t.lease)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "{}  {:<9} r{}  {:<14} {:<10} {}{lease}",
+            t.id,
+            t.state.to_string(),
+            t.revision,
+            t.template.to_string(),
+            left,
+            t.repos
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        let _ = writeln!(out, "    {GUTTER}{}", clean(&t.title));
+    }
+    out
 }
 
 /// `2h05m`, `45s`.
@@ -83,7 +103,7 @@ pub fn duration(seconds: i64) -> String {
 pub fn fields(ticket: &Ticket) -> Vec<(&'static str, String)> {
     let scope = &ticket.scope;
     let limits = &ticket.limits;
-    let text = &ticket.ticket;
+    let text = &ticket.text;
     let caller = match &ticket.subject.caller {
         None => "(none)".to_owned(),
         Some(c) => {
@@ -170,7 +190,7 @@ pub fn diff(before: &Ticket, after: &Ticket) -> Vec<(&'static str, String, Strin
 /// The full display of a ticket waiting for a signature.
 pub fn ticket(ticket: &Ticket, state: State, now: Timestamp) -> String {
     let mut out = String::new();
-    let t = &ticket.ticket;
+    let t = &ticket.text;
     let kind = if t.amends.is_some() {
         "Amendment"
     } else {

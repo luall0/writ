@@ -128,7 +128,7 @@ impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read {}", path.display()))?;
-        let mut config: Config = writ_core::config::parse_yaml(&text)
+        let mut config: Config = writ_core::yaml::parse_yaml(&text)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
         let base = path.parent().unwrap_or(Path::new("."));
         let resolve = |p: &mut PathBuf| {

@@ -1,13 +1,19 @@
 //! Platform interfaces: everything that depends on the OS, the hardware or the deployment,
 //! behind small traits with implementations picked at startup by `writd/src/platform.rs`.
 //!
+//! Each interface has its module (the trait and the types it uses), and each implementation a
+//! file in that module's directory:
+//!
 //! | Trait | Portable implementation here |
 //! |---|---|
-//! | [`Transport`] | [`transport::TcpTransport`] |
-//! | [`CallerAttestor`] | [`attest::NetworkAttestor`] |
-//! | [`SessionWatcher`] | [`watch::NoSessionWatcher`] |
-//! | [`KeystoreUnlock`] | [`unlock::PassphraseUnlock`] |
-//! | [`Notifier`] | [`notify::TelegramNotifier`] (and [`notify::Notifiers`], a list of them) |
+//! | [`Clock`] | [`clock::system::SystemClock`] |
+//! | [`Transport`] | [`transport::tcp::TcpTransport`] |
+//! | [`CallerAttestor`] | [`attest::network::NetworkAttestor`] |
+//! | [`SessionWatcher`] | [`watch::none::NoSessionWatcher`] |
+//! | [`KeystoreUnlock`] | [`unlock::passphrase::PassphraseUnlock`] |
+//! | [`Notifier`] | [`notify::telegram::TelegramNotifier`] (and [`notify::Notifiers`], a list of them) |
+//!
+//! Platform-only implementations live in `writ-platform-<os>` crates, laid out the same way.
 //!
 //! With the `testing` feature: a fake of each trait ([`testing`]) for the core crates' tests,
 //! and the contract suite every implementation must pass ([`contract`]).
@@ -16,6 +22,7 @@
 //! [`PlatformError::Unsupported`]; it never invents one. See docs/architecture/platform.md.
 
 pub mod attest;
+pub mod clock;
 pub mod notify;
 pub mod transport;
 pub mod unlock;
@@ -27,6 +34,7 @@ pub mod contract;
 pub mod testing;
 
 pub use attest::CallerAttestor;
+pub use clock::Clock;
 pub use notify::{Notification, Notifier, Priority};
 pub use transport::{AsyncStream, BoxFuture, Connection, PeerInfo, Transport};
 pub use unlock::{DataKey, KeystoreUnlock, Passphrase, UnsealRequest};

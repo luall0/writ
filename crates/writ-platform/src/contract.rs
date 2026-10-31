@@ -5,6 +5,7 @@
 //!
 //! | Interface | Suite |
 //! |---|---|
+//! | [`Clock`] | [`clock`] |
 //! | [`Transport`] | [`transport`] (async) |
 //! | [`CallerAttestor`] | [`attestor`] |
 //! | [`SessionWatcher`] | [`session_watcher`] |
@@ -22,8 +23,8 @@ use tokio::sync::mpsc;
 use writ_core::caller::{CallerFacts, ProcessRef};
 
 use crate::{
-    AsyncStream, BoxFuture, CallerAttestor, KeystoreUnlock, Notification, Notifier, Passphrase,
-    PeerInfo, PlatformError, Priority, SessionWatcher, Transport, UnsealRequest,
+    AsyncStream, BoxFuture, CallerAttestor, Clock, KeystoreUnlock, Notification, Notifier,
+    Passphrase, PeerInfo, PlatformError, Priority, SessionWatcher, Transport, UnsealRequest,
 };
 
 /// How long a step may take before the suite fails instead of hanging.
@@ -32,6 +33,59 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the suite waits to be confident a callback won't come.
 const QUIET_PERIOD: Duration = Duration::from_millis(300);
+
+// ----- Clock -----
+
+/// 2020-01-01T00:00:00Z, in milliseconds: no clock the daemon runs on reads earlier.
+const CLOCK_FLOOR_MS: u64 = 1_577_836_800_000;
+
+/// The [`Clock`] contract.
+///
+/// - it reads after 2020-01-01 (a clock that doesn't know the date would make every lease
+///   look unexpired) and within the range a `Timestamp` holds;
+/// - it never runs backwards between reads in a row;
+/// - with `advance` (a clock the test moves), moving it by `n` seconds moves the reading by
+///   exactly `n * 1000` milliseconds, and nothing else moves it.
+pub fn clock<C: Clock + ?Sized>(clock: &C, advance: Option<&dyn Fn(u64)>) {
+    let first = clock.now_ms();
+    assert!(
+        first >= CLOCK_FLOOR_MS,
+        "the clock reads {first} ms, before 2020-01-01"
+    );
+    assert!(
+        i64::try_from(first / 1000).is_ok(),
+        "the clock reads {first} ms, out of range"
+    );
+    let mut previous = first;
+    for _ in 0..1000 {
+        let now = clock.now_ms();
+        assert!(
+            now >= previous,
+            "the clock ran backwards: {previous} then {now}"
+        );
+        previous = now;
+    }
+    if let Some(advance) = advance {
+        let before = clock.now_ms();
+        assert_eq!(
+            clock.now_ms(),
+            before,
+            "a clock moved by hand moved by itself"
+        );
+        advance(90);
+        assert_eq!(
+            clock.now_ms(),
+            before + 90_000,
+            "advance(90) must add 90 s exactly"
+        );
+        advance(0);
+        assert_eq!(
+            clock.now_ms(),
+            before + 90_000,
+            "advance(0) must not move it"
+        );
+    }
+}
 
 // ----- Transport -----
 
@@ -675,7 +729,7 @@ pub fn notifier<N: Notifier + ?Sized>(notifier: &N, received: impl Fn() -> Vec<N
         for c in text.chars() {
             let allowed_newline = field == "message" && c == '\n';
             assert!(
-                allowed_newline || !crate::notify::is_forbidden_char(c),
+                allowed_newline || !writ_core::text::is_hidden_char(c),
                 "{field}: {c:?} must never arrive (got {text:?})"
             );
         }

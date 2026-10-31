@@ -5,7 +5,7 @@
 use std::net::SocketAddr;
 
 use writ_core::caller::{CallerFacts, CodeIdentity, ProcessRef};
-use writ_platform::attest::NetworkAttestor;
+use writ_platform::attest::network::NetworkAttestor;
 use writ_platform::contract;
 use writ_platform::testing::FakeAttestor;
 use writ_platform::{CallerAttestor, PeerInfo, PlatformError};

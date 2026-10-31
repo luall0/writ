@@ -1,9 +1,14 @@
 //! A notice when a session's root process exits, to revoke its lease: the [`SessionWatcher`]
-//! interface and [`NoSessionWatcher`], for platforms that can't watch processes.
+//! interface and its [`WatchHandle`].
+//!
+//! Portable implementation: [`none::NoSessionWatcher`], for platforms that can't watch
+//! processes.
+
+pub mod none;
 
 use writ_core::caller::ProcessRef;
 
-use crate::{PlatformError, Result};
+use crate::Result;
 
 /// Called once when the watched process ends.
 pub type OnExit = Box<dyn FnOnce() + Send + 'static>;
@@ -43,22 +48,5 @@ impl Drop for WatchHandle {
 impl std::fmt::Debug for WatchHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("WatchHandle")
-    }
-}
-
-/// The detached mode's watcher: a container can't see the agent's processes, so every watch is
-/// [`PlatformError::Unsupported`] and no callback is ever called.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoSessionWatcher;
-
-impl NoSessionWatcher {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl SessionWatcher for NoSessionWatcher {
-    fn watch(&self, _process: &ProcessRef, _on_exit: OnExit) -> Result<WatchHandle> {
-        Err(PlatformError::Unsupported("session watching"))
     }
 }

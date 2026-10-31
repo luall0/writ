@@ -1,30 +1,19 @@
 //! The other documents an approver may sign, besides tickets: a refusal and a revocation,
 //! required when the daemon's `decisions` setting is `signed`.
 //!
-//! Like a ticket, each has canonical bytes (compact JSON, fields in declared order, `kind`
-//! first) and decodes only from exactly those bytes. The `kind` keeps one signed document from
+//! Like a ticket, each is a [`Canonical`] document: canonical bytes, `kind` first, decoded only
+//! from exactly those bytes. The `kind` keeps one signed document from
 //! ever being read as another: a refusal can't pass for an approval, nor a revocation for a
 //! refusal. Replaying one only repeats it (refusing a refused ticket, revoking a revoked
 //! lease), which changes nothing.
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::canonical::Canonical;
 use crate::names::TicketId;
 
 /// The longest feedback a refusal may carry.
 pub const MAX_FEEDBACK_CHARS: usize = 4_000;
-
-/// Errors from encoding or decoding a signed document.
-#[derive(Debug, thiserror::Error)]
-pub enum SignedError {
-    #[error("not a canonical {kind}: {why}")]
-    Decode { kind: &'static str, why: String },
-    #[error("not a canonical {0}: the bytes are valid but not in canonical form")]
-    NotCanonical(&'static str),
-    #[error("can't encode the {kind}: {why}")]
-    Encode { kind: &'static str, why: String },
-}
 
 /// Only `"writ-refusal/1"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -59,9 +48,11 @@ pub struct Revocation {
     pub id: TicketId,
 }
 
-impl Refusal {
+impl Canonical for Refusal {
     const KIND: &'static str = "writ-refusal/1";
+}
 
+impl Refusal {
     pub fn new(ticket: TicketId, feedback: String) -> Self {
         Self {
             kind: RefusalKind::V1,
@@ -69,55 +60,19 @@ impl Refusal {
             feedback,
         }
     }
+}
 
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, SignedError> {
-        encode(self, Self::KIND)
-    }
-
-    pub fn from_canonical(bytes: &[u8]) -> Result<Self, SignedError> {
-        decode(bytes, Self::KIND, Self::canonical_bytes)
-    }
+impl Canonical for Revocation {
+    const KIND: &'static str = "writ-revocation/1";
 }
 
 impl Revocation {
-    const KIND: &'static str = "writ-revocation/1";
-
     pub fn new(id: TicketId) -> Self {
         Self {
             kind: RevocationKind::V1,
             id,
         }
     }
-
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, SignedError> {
-        encode(self, Self::KIND)
-    }
-
-    pub fn from_canonical(bytes: &[u8]) -> Result<Self, SignedError> {
-        decode(bytes, Self::KIND, Self::canonical_bytes)
-    }
-}
-
-fn encode<T: Serialize>(value: &T, kind: &'static str) -> Result<Vec<u8>, SignedError> {
-    serde_json::to_vec(value).map_err(|e| SignedError::Encode {
-        kind,
-        why: e.to_string(),
-    })
-}
-
-fn decode<T: DeserializeOwned>(
-    bytes: &[u8],
-    kind: &'static str,
-    reencode: impl Fn(&T) -> Result<Vec<u8>, SignedError>,
-) -> Result<T, SignedError> {
-    let value: T = serde_json::from_slice(bytes).map_err(|e| SignedError::Decode {
-        kind,
-        why: e.to_string(),
-    })?;
-    if reencode(&value)? != bytes {
-        return Err(SignedError::NotCanonical(kind));
-    }
-    Ok(value)
 }
 
 #[cfg(test)]
@@ -126,6 +81,16 @@ mod tests {
 
     fn id(n: u8) -> TicketId {
         TicketId::from_parts(1_800_000_000_000, [n; 10])
+    }
+
+    #[test]
+    fn each_kind_matches_its_serde_name() {
+        let refusal = Refusal::new(id(1), String::new())
+            .canonical_bytes()
+            .unwrap();
+        assert!(refusal.starts_with(format!(r#"{{"kind":"{}""#, Refusal::KIND).as_bytes()));
+        let revocation = Revocation::new(id(1)).canonical_bytes().unwrap();
+        assert!(revocation.starts_with(format!(r#"{{"kind":"{}""#, Revocation::KIND).as_bytes()));
     }
 
     #[test]

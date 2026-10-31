@@ -8,7 +8,7 @@ use std::path::Path;
 
 use writ_platform::contract;
 use writ_platform::testing::FakeUnlock;
-use writ_platform::unlock::PassphraseUnlock;
+use writ_platform::unlock::passphrase::PassphraseUnlock;
 use writ_platform::{DataKey, KeystoreUnlock, Passphrase, PlatformError, UnsealRequest};
 
 const PASSPHRASE: &str = "correct horse battery staple";

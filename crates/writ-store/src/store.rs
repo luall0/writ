@@ -5,63 +5,30 @@
 //! terms are in force (itself, or the last applied amendment). Each row also keeps the
 //! session public key it was submitted with (the ticket only holds its fingerprint), and a
 //! lease's row the certificate issued for it.
+//!
+//! [`schema`] creates and migrates the tables, [`rows`] decodes rows strictly (fail closed:
+//! a row that doesn't decode is an error), [`ledger`] holds the signed commits.
+
+mod ledger;
+mod rows;
+mod schema;
+
+pub use ledger::LedgerEntry;
 
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
-use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, State, TicketRecord, Usage};
-use writ_core::names::{CommitId, KeyId, RepoName, TicketId};
+use rusqlite::{Connection, OptionalExtension, params};
+use writ_core::lease::{self, Lease, State, TicketRecord, Usage};
+use writ_core::names::TicketId;
 use writ_core::policy::RATE_WINDOW_SECONDS;
 use writ_core::ticket::Ticket;
 use writ_core::units::Timestamp;
 
+use self::rows::{
+    RECORD_COLUMNS, RawLease, RawRecord, corrupt, lease_query, raw_lease, raw_record, serial_to_sql,
+};
 use crate::{Result, StoreError};
-
-const SCHEMA_VERSION: i64 = 2;
-
-/// How long a write waits for another connection's transaction before failing.
-const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-const SCHEMA: &str = "
-CREATE TABLE tickets (
-    id             TEXT PRIMARY KEY,
-    canonical      BLOB NOT NULL,
-    state          TEXT NOT NULL,
-    lease_id       TEXT NOT NULL,
-    feedback       TEXT,
-    approver       TEXT,
-    namespace      TEXT,
-    sshsig         TEXT,
-    cert_serial    INTEGER UNIQUE,
-    current_ticket TEXT REFERENCES tickets(id),
-    signatures     INTEGER NOT NULL DEFAULT 0 CHECK (signatures >= 0),
-    pushes         INTEGER NOT NULL DEFAULT 0 CHECK (pushes >= 0),
-    created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL
-) STRICT;
-CREATE INDEX tickets_state ON tickets(state);
-CREATE TABLE ops (
-    lease_id TEXT NOT NULL REFERENCES tickets(id),
-    at       INTEGER NOT NULL
-) STRICT;
-CREATE INDEX ops_lease_at ON ops(lease_id, at);
-CREATE TABLE ledger (
-    commit_id TEXT NOT NULL,
-    lease_id  TEXT NOT NULL REFERENCES tickets(id),
-    repo      TEXT NOT NULL,
-    key_id    TEXT NOT NULL,
-    signed_at INTEGER NOT NULL,
-    PRIMARY KEY (commit_id, lease_id, repo)
-) STRICT;
-CREATE INDEX ledger_lease ON ledger(lease_id);
-";
-
-/// Migrations, in order: `MIGRATIONS[n]` takes version `n + 1` to `n + 2`.
-const MIGRATIONS: [&str; 1] = [
-    // 2: the session public key of each ticket, the certificate of each lease.
-    "ALTER TABLE tickets ADD COLUMN session_pubkey TEXT;
-     ALTER TABLE tickets ADD COLUMN certificate TEXT;",
-];
+use writ_core::canonical::Canonical;
 
 /// A counted operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,28 +39,9 @@ pub enum Counter {
     Fetch,
 }
 
-/// One commit signed under a lease.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LedgerEntry {
-    pub commit: CommitId,
-    pub lease: TicketId,
-    /// The repo the commit was signed for.
-    pub repo: RepoName,
-    /// The signer key that signed it.
-    pub key: KeyId,
-    pub signed_at: Timestamp,
-}
-
 /// The lease store and ledger.
 pub struct Store {
     conn: Connection,
-}
-
-fn corrupt(id: &str, why: impl std::fmt::Display) -> StoreError {
-    StoreError::Corrupt {
-        id: id.to_owned(),
-        why: why.to_string(),
-    }
 }
 
 impl Store {
@@ -108,29 +56,7 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self> {
-        conn.busy_timeout(BUSY_TIMEOUT)?;
-        conn.pragma_update(None, "foreign_keys", true)?;
-        conn.pragma_update(None, "synchronous", "FULL")?;
-        // WAL in a file; an in-memory database keeps its own mode.
-        let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > SCHEMA_VERSION {
-            return Err(StoreError::SchemaTooNew(version));
-        }
-        if version < SCHEMA_VERSION {
-            let tx = conn.unchecked_transaction()?;
-            if version == 0 {
-                tx.execute_batch(SCHEMA)?;
-            }
-            for migration in MIGRATIONS
-                .iter()
-                .skip(usize::try_from(version.max(1) - 1).unwrap_or(0))
-            {
-                tx.execute_batch(migration)?;
-            }
-            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            tx.commit()?;
-        }
+        schema::prepare(&conn)?;
         Ok(Self { conn })
     }
 
@@ -167,8 +93,7 @@ impl Store {
     pub fn ticket(&self, id: &TicketId) -> Result<Option<TicketRecord>> {
         self.conn
             .query_row(
-                "SELECT id, canonical, state, feedback, approver, namespace, sshsig
-                 FROM tickets WHERE id = ?1",
+                &format!("SELECT {RECORD_COLUMNS} FROM tickets WHERE id = ?1"),
                 [id.as_str()],
                 raw_record,
             )
@@ -205,10 +130,9 @@ impl Store {
 
     /// Every ticket, oldest first.
     pub fn all_tickets(&self) -> Result<Vec<TicketRecord>> {
-        let mut statement = self.conn.prepare(
-            "SELECT id, canonical, state, feedback, approver, namespace, sshsig
-             FROM tickets ORDER BY id",
-        )?;
+        let mut statement = self
+            .conn
+            .prepare(&format!("SELECT {RECORD_COLUMNS} FROM tickets ORDER BY id"))?;
         let rows = statement.query_map([], raw_record)?;
         rows.map(|row| row.map_err(StoreError::from).and_then(RawRecord::decode))
             .collect()
@@ -226,10 +150,9 @@ impl Store {
 
     /// Every ticket in a state, oldest first.
     pub fn tickets(&self, state: State) -> Result<Vec<TicketRecord>> {
-        let mut statement = self.conn.prepare(
-            "SELECT id, canonical, state, feedback, approver, namespace, sshsig
-             FROM tickets WHERE state = ?1 ORDER BY id",
-        )?;
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {RECORD_COLUMNS} FROM tickets WHERE state = ?1 ORDER BY id"
+        ))?;
         let rows = statement.query_map([state.as_str()], raw_record)?;
         rows.map(|row| row.map_err(StoreError::from).and_then(RawRecord::decode))
             .collect()
@@ -311,7 +234,7 @@ impl Store {
             .as_ref()
             .ok_or_else(|| corrupt(amendment.id.as_str(), "applied without an approval"))?;
         if applied.state != State::Applied
-            || amendment.ticket.amends.as_ref() != Some(&lease.id)
+            || amendment.text.amends.as_ref() != Some(&lease.id)
             || lease.ticket != *amendment
         {
             return Err(corrupt(
@@ -442,61 +365,6 @@ impl Store {
         Ok(true)
     }
 
-    /// Records a signed commit. Recording the same commit, lease and repo again keeps the
-    /// first entry.
-    pub fn ledger_append(&self, entry: &LedgerEntry) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO ledger (commit_id, lease_id, repo, key_id, signed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
-            params![
-                entry.commit.as_str(),
-                entry.lease.as_str(),
-                entry.repo.as_str(),
-                entry.key.as_str(),
-                entry.signed_at.unix()
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// Every ledger entry for a commit.
-    pub fn ledger_entries(&self, commit: &CommitId) -> Result<Vec<LedgerEntry>> {
-        self.ledger_where("commit_id = ?1", commit.as_str())
-    }
-
-    /// Every commit signed under a lease, in signing order.
-    pub fn ledger_for_lease(&self, lease: &TicketId) -> Result<Vec<LedgerEntry>> {
-        self.ledger_where("lease_id = ?1", lease.as_str())
-    }
-
-    fn ledger_where(&self, condition: &str, value: &str) -> Result<Vec<LedgerEntry>> {
-        let mut statement = self.conn.prepare(&format!(
-            "SELECT commit_id, lease_id, repo, key_id, signed_at FROM ledger
-             WHERE {condition} ORDER BY signed_at, rowid"
-        ))?;
-        let rows = statement.query_map([value], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (commit, lease, repo, key, at) = row?;
-            let bad = |e: &dyn std::fmt::Display| corrupt(&commit, format!("ledger: {e}"));
-            Ok(LedgerEntry {
-                commit: commit.parse().map_err(|e| bad(&e))?,
-                lease: lease.parse().map_err(|e| bad(&e))?,
-                repo: repo.parse().map_err(|e| bad(&e))?,
-                key: key.parse().map_err(|e| bad(&e))?,
-                signed_at: Timestamp::from_unix(at).map_err(|e| bad(&e))?,
-            })
-        })
-        .collect()
-    }
-
     fn expect_changed(&self, changed: usize, id: &TicketId, expected: State) -> Result<()> {
         match changed {
             1 => Ok(()),
@@ -517,130 +385,5 @@ impl Store {
             })
             .optional()?
             .is_some())
-    }
-}
-
-fn serial_to_sql(serial: u64) -> Result<i64> {
-    i64::try_from(serial).map_err(|_| corrupt("certificate", "serial out of range"))
-}
-
-struct RawRecord {
-    id: String,
-    canonical: Vec<u8>,
-    state: String,
-    feedback: Option<String>,
-    approval: RawApproval,
-}
-
-struct RawApproval {
-    approver: Option<String>,
-    namespace: Option<String>,
-    sshsig: Option<String>,
-}
-
-impl RawApproval {
-    fn decode(self, id: &str) -> Result<Option<Approval>> {
-        match (self.approver, self.namespace, self.sshsig) {
-            (None, None, None) => Ok(None),
-            (Some(approver), Some(namespace), Some(sshsig)) => {
-                if namespace != APPROVAL_NAMESPACE {
-                    return Err(corrupt(id, "approval under another namespace"));
-                }
-                Ok(Some(Approval {
-                    approver: approver.parse().map_err(|e| corrupt(id, e))?,
-                    namespace,
-                    sshsig,
-                }))
-            }
-            _ => Err(corrupt(id, "incomplete approval")),
-        }
-    }
-}
-
-fn raw_record(row: &Row<'_>) -> rusqlite::Result<RawRecord> {
-    Ok(RawRecord {
-        id: row.get(0)?,
-        canonical: row.get(1)?,
-        state: row.get(2)?,
-        feedback: row.get(3)?,
-        approval: RawApproval {
-            approver: row.get(4)?,
-            namespace: row.get(5)?,
-            sshsig: row.get(6)?,
-        },
-    })
-}
-
-impl RawRecord {
-    fn decode(self) -> Result<TicketRecord> {
-        let ticket = Ticket::from_canonical(&self.canonical).map_err(|e| corrupt(&self.id, e))?;
-        if ticket.id.as_str() != self.id {
-            return Err(corrupt(&self.id, "the stored ticket has another id"));
-        }
-        let state: State = self.state.parse().map_err(|e| corrupt(&self.id, e))?;
-        Ok(TicketRecord {
-            ticket,
-            state,
-            feedback: self.feedback,
-            approval: self.approval.decode(&self.id)?,
-        })
-    }
-}
-
-/// The lease row `l` joined with the row of its terms in force `c`.
-fn lease_query(condition: &str) -> String {
-    format!(
-        "SELECT l.id, l.state, l.cert_serial, c.id, c.canonical, c.approver, c.namespace, c.sshsig
-         FROM tickets l JOIN tickets c ON c.id = l.current_ticket
-         WHERE {condition} AND l.cert_serial IS NOT NULL ORDER BY l.id"
-    )
-}
-
-struct RawLease {
-    id: String,
-    state: String,
-    cert_serial: i64,
-    current_id: String,
-    canonical: Vec<u8>,
-    approval: RawApproval,
-}
-
-fn raw_lease(row: &Row<'_>) -> rusqlite::Result<RawLease> {
-    Ok(RawLease {
-        id: row.get(0)?,
-        state: row.get(1)?,
-        cert_serial: row.get(2)?,
-        current_id: row.get(3)?,
-        canonical: row.get(4)?,
-        approval: RawApproval {
-            approver: row.get(5)?,
-            namespace: row.get(6)?,
-            sshsig: row.get(7)?,
-        },
-    })
-}
-
-impl RawLease {
-    fn decode(self) -> Result<Lease> {
-        let id: TicketId = self.id.parse().map_err(|e| corrupt(&self.id, e))?;
-        let ticket = Ticket::from_canonical(&self.canonical).map_err(|e| corrupt(&self.id, e))?;
-        if ticket.id.as_str() != self.current_id || ticket.lease_id() != &id {
-            return Err(corrupt(&self.id, "terms in force belong to another lease"));
-        }
-        let state: State = self.state.parse().map_err(|e| corrupt(&self.id, e))?;
-        if matches!(state, State::Pending | State::Refused | State::Applied) {
-            return Err(corrupt(&self.id, format!("a lease can't be {state}")));
-        }
-        let approval = self
-            .approval
-            .decode(&self.id)?
-            .ok_or_else(|| corrupt(&self.id, "a lease without an approval"))?;
-        Ok(Lease {
-            id,
-            ticket,
-            approval,
-            state,
-            cert_serial: u64::try_from(self.cert_serial).map_err(|e| corrupt(&self.id, e))?,
-        })
     }
 }

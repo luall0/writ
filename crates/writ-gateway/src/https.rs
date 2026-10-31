@@ -3,8 +3,8 @@
 //! here.
 //!
 //! Connections come from a [`Transport`] and their callers are attested, like the SSH
-//! listeners. TLS 1.3 only, with the daemon's self-signed certificate, which clients pin by
-//! its SHA-256 fingerprint; no client authentication, since the connection grants nothing
+//! listeners. TLS 1.3 only, with the daemon's self-signed certificate
+//! ([`writ_crypto::tls::TlsIdentity`]), which clients pin by its SHA-256 fingerprint; no client authentication, since the connection grants nothing
 //! (approvals are SSHSIGs checked by the approval service). Routes: see
 //! [`writ_proto::Command::http_route`].
 
@@ -15,65 +15,16 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use writ_core::caller::CallerFacts;
+use writ_crypto::tls::TlsIdentity;
 use writ_platform::{CallerAttestor, Transport};
 use writ_proto::{ApiError, MAX_BODY};
 
-use crate::process::{approval_has_body, approval_reply, encoded};
-use crate::{Error, Gateway, Result};
+use crate::api::{approval_has_body, approval_reply, encoded};
+use crate::{Gateway, Result};
 
 /// How long a client has to finish the TLS handshake, and to send its request headers.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The approval API's TLS server configuration (certificate and key), and the fingerprint
-/// clients pin.
-///
-/// The private key is moved straight into rustls when the identity is made: no other copy is
-/// kept (rustls holds it for the daemon's life, without zeroizing it: see the threat model's
-/// residual risks).
-pub struct TlsIdentity {
-    config: Arc<rustls::ServerConfig>,
-    fingerprint: String,
-}
-
-impl std::fmt::Debug for TlsIdentity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TlsIdentity")
-            .field("fingerprint", &self.fingerprint)
-            .finish_non_exhaustive()
-    }
-}
-
-impl TlsIdentity {
-    /// Reads a PEM certificate and its PEM private key. TLS 1.3 only, ALPN `http/1.1`.
-    pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self> {
-        let bad = |what: &str| Error::Config(format!("invalid TLS {what}"));
-        let cert =
-            CertificateDer::from_pem_slice(cert_pem.as_bytes()).map_err(|_| bad("certificate"))?;
-        let key =
-            PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).map_err(|_| bad("private key"))?;
-        let fingerprint = writ_crypto::tls::fingerprint(&cert);
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let mut config = rustls::ServerConfig::builder_with_provider(provider)
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|e| Error::Config(format!("TLS: {e}")))?
-            .with_no_client_auth()
-            .with_single_cert(vec![cert], key)
-            .map_err(|e| Error::Config(format!("TLS: {e}")))?;
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Ok(Self {
-            config: Arc::new(config),
-            fingerprint,
-        })
-    }
-
-    /// The pin clients check: `SHA256:<base64>` of the certificate.
-    pub fn fingerprint(&self) -> &str {
-        &self.fingerprint
-    }
-}
 
 impl Gateway {
     /// Serves the approval API over HTTPS from a transport, until the transport fails.
@@ -83,17 +34,9 @@ impl Gateway {
         attestor: Arc<dyn CallerAttestor>,
         identity: Arc<TlsIdentity>,
     ) -> Result<()> {
-        let acceptor = tokio_rustls::TlsAcceptor::from(identity.config.clone());
+        let acceptor = tokio_rustls::TlsAcceptor::from(identity.server_config());
         loop {
-            let connection = transport.accept().await?;
-            let facts = match attestor.attest(&connection.peer) {
-                Ok(facts) => facts,
-                Err(e) => {
-                    eprintln!("writ gateway: HTTPS connection turned away: {e}");
-                    self.turned_away(&connection.peer, &e).await;
-                    continue;
-                }
-            };
+            let (connection, facts) = self.accept_attested(&*transport, &*attestor).await?;
             let (gateway, acceptor) = (self.clone(), acceptor.clone());
             tokio::spawn(async move {
                 let tls = match tokio::time::timeout(

@@ -6,11 +6,12 @@
 use std::sync::Arc;
 
 use anyhow::bail;
-use writ_platform::attest::NetworkAttestor;
-use writ_platform::notify::{BotToken, Notifiers, TelegramNotifier};
-use writ_platform::transport::TcpTransport;
-use writ_platform::unlock::PassphraseUnlock;
-use writ_platform::watch::NoSessionWatcher;
+use writ_platform::attest::network::NetworkAttestor;
+use writ_platform::notify::Notifiers;
+use writ_platform::notify::telegram::{BotToken, TelegramNotifier};
+use writ_platform::transport::tcp::TcpTransport;
+use writ_platform::unlock::passphrase::PassphraseUnlock;
+use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{CallerAttestor, KeystoreUnlock, Notifier, SessionWatcher, Transport};
 
 use crate::config::{

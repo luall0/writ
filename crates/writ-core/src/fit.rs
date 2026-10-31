@@ -7,9 +7,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::config::{Operation, PolicyConfig, PushMode, Template};
+use crate::config::{PolicyConfig, PushMode, Template};
 use crate::lease::{Lease, State, TicketRecord};
 use crate::names::{KeyFingerprint, TemplateName, TicketId};
+use crate::ticket::Operation;
 use crate::ticket::{Limits, Scope, Subject, Ticket, TicketKind, TicketRequest, TicketText};
 use crate::units::Timestamp;
 
@@ -180,7 +181,7 @@ fn check_limits(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>)
 }
 
 fn check_text(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {
-    let text = &ticket.ticket;
+    let text = &ticket.text;
     let mut bound = |name: &str, len: usize, max: usize| {
         if len > max {
             reasons.push(format!("{name} is too long ({len}, at most {max})"));
@@ -312,14 +313,14 @@ fn check_links(
                     "ticket {id} can't be revised: it was not refused"
                 )));
             }
-            if previous.ticket.ticket.amends != request.ticket.amends {
+            if previous.ticket.text.amends != request.ticket.amends {
                 return Err(Rejection::one(format!(
                     "a revision of {id} must amend the same lease as {id}"
                 )));
             }
             let revision = previous
                 .ticket
-                .ticket
+                .text
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| Rejection::one("too many revisions"))?;
@@ -378,7 +379,7 @@ fn build(
                 None
             },
         },
-        ticket: TicketText {
+        text: TicketText {
             title: request.ticket.title.clone(),
             task: request.ticket.task.clone(),
             plan: request.ticket.plan.clone(),

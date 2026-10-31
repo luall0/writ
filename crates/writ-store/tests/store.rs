@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
+use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
 use writ_core::fit::{self, Submission};
 use writ_core::lease::{

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use writ_core::caller::ProcessRef;
 use writ_platform::contract::{self, WatcherKind};
 use writ_platform::testing::FakeWatcher;
-use writ_platform::watch::NoSessionWatcher;
+use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{PlatformError, SessionWatcher};
 
 fn process(pid: u32, generation: u64) -> ProcessRef {

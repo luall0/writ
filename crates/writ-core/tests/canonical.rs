@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 
 use common::*;
 use writ_core::caller::{CallerConstraint, CodeIdentity, ProcessMatch};
-use writ_core::config::Operation;
+use writ_core::canonical::Canonical;
+use writ_core::ticket::Operation;
 use writ_core::ticket::{OnViolation, Ticket};
 use writ_core::units::ByteSize;
 
@@ -31,11 +32,11 @@ fn full() -> Ticket {
             }),
         },
     });
-    ticket.ticket.title = "Add OAuth login \"v2\" — é\u{1b}[2J".to_owned();
-    ticket.ticket.amends = Some(ticket_id(10));
-    ticket.ticket.revises = Some(ticket_id(11));
-    ticket.ticket.revision = 2;
-    ticket.ticket.previous_feedback = Some("Don't touch billing".to_owned());
+    ticket.text.title = "Add OAuth login \"v2\" — é\u{1b}[2J".to_owned();
+    ticket.text.amends = Some(ticket_id(10));
+    ticket.text.revises = Some(ticket_id(11));
+    ticket.text.revision = 2;
+    ticket.text.previous_feedback = Some("Don't touch billing".to_owned());
     ticket.on_violation = OnViolation::RevokeLease;
     ticket
 }
@@ -61,7 +62,7 @@ limits:
 
 #[test]
 fn fixtures_are_stable() {
-    // Regenerate by hand only when the format changes on purpose (and bump TICKET_KIND).
+    // Regenerate by hand only when the format changes on purpose (and bump `Ticket::KIND`).
     if std::env::var_os("WRIT_WRITE_FIXTURES").is_some() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
         std::fs::write(
@@ -89,6 +90,11 @@ fn fixtures_are_stable() {
 #[test]
 fn the_format_starts_with_its_kind() {
     assert!(FULL.starts_with(br#"{"kind":"writ-ticket/1","id":"wrt_"#));
+    assert_eq!(
+        Ticket::KIND,
+        "writ-ticket/1",
+        "KIND is the serde name of the marker"
+    );
 }
 
 #[test]
@@ -163,18 +169,18 @@ fn every_field_change_changes_the_bytes() {
         ("scope.signing_key", |t| {
             t.scope.signing_key = Some("agent-ed25519-02".parse().unwrap())
         }),
-        ("ticket.title", |t| t.ticket.title.push(' ')),
-        ("ticket.task", |t| t.ticket.task.push('.')),
-        ("ticket.plan step", |t| t.ticket.plan[0].push('!')),
-        ("ticket.plan order", |t| t.ticket.plan.swap(0, 1)),
+        ("ticket.title", |t| t.text.title.push(' ')),
+        ("ticket.task", |t| t.text.task.push('.')),
+        ("ticket.plan step", |t| t.text.plan[0].push('!')),
+        ("ticket.plan order", |t| t.text.plan.swap(0, 1)),
         ("ticket.expected_paths", |t| {
-            t.ticket.expected_paths.insert("docs/**".parse().unwrap());
+            t.text.expected_paths.insert("docs/**".parse().unwrap());
         }),
-        ("ticket.amends", |t| t.ticket.amends = None),
-        ("ticket.revises", |t| t.ticket.revises = Some(ticket_id(12))),
-        ("ticket.revision", |t| t.ticket.revision = 3),
+        ("ticket.amends", |t| t.text.amends = None),
+        ("ticket.revises", |t| t.text.revises = Some(ticket_id(12))),
+        ("ticket.revision", |t| t.text.revision = 3),
         ("ticket.previous_feedback", |t| {
-            t.ticket.previous_feedback = None
+            t.text.previous_feedback = None
         }),
         ("limits.expires_at", |t| t.limits.expires_at = later(100)),
         ("limits.max_signatures", |t| t.limits.max_signatures += 1),

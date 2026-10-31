@@ -9,6 +9,7 @@
 //! | [`FakeWatcher`] | a [`SessionWatcher`] whose processes the test starts and ends |
 //! | [`FakeUnlock`] | a [`KeystoreUnlock`] with a known passphrase and key |
 //! | [`RecordingNotifier`] | a [`Notifier`] that records what it delivers, or always fails |
+//! | [`FakeClock`] | a [`Clock`] moved by hand |
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -20,8 +21,8 @@ use zeroize::Zeroizing;
 
 use crate::contract::ProcessDriver;
 use crate::{
-    BoxFuture, CallerAttestor, Connection, DataKey, KeystoreUnlock, Notification, Notifier, OnExit,
-    PeerInfo, PlatformError, Result, SessionWatcher, Transport, UnsealRequest, WatchHandle,
+    BoxFuture, CallerAttestor, Clock, Connection, DataKey, KeystoreUnlock, Notification, Notifier,
+    OnExit, PeerInfo, PlatformError, Result, SessionWatcher, Transport, UnsealRequest, WatchHandle,
 };
 
 /// Each in-memory connection can buffer this much in each direction.
@@ -135,7 +136,7 @@ impl FakeAttestor {
         Self::with_mode(AttestorMode::Failing)
     }
 
-    /// Like [`crate::attest::NetworkAttestor`] (a TCP peer's source address, never a process
+    /// Like [`crate::attest::network::NetworkAttestor`] (a TCP peer's source address, never a process
     /// chain), and also accepts [`PeerInfo::Memory`] with no facts at all. Fails for other
     /// peers.
     pub fn network_like() -> Self {
@@ -236,7 +237,7 @@ impl FakeWatcher {
         }
     }
 
-    /// A watcher that, like [`crate::watch::NoSessionWatcher`], can't watch anything.
+    /// A watcher that, like [`crate::watch::none::NoSessionWatcher`], can't watch anything.
     pub fn unsupported() -> Self {
         Self { state: None }
     }
@@ -419,5 +420,37 @@ impl Notifier for RecordingNotifier {
         }
         lock(&self.delivered).push(notification.neutralized());
         Ok(())
+    }
+}
+
+/// A [`Clock`] moved by hand: time passes only when the test says so.
+#[derive(Debug, Default)]
+pub struct FakeClock(std::sync::atomic::AtomicU64);
+
+impl FakeClock {
+    /// Stopped at `seconds` after the Unix epoch.
+    pub fn at_unix(seconds: u64) -> Self {
+        Self(std::sync::atomic::AtomicU64::new(
+            seconds.saturating_mul(1000),
+        ))
+    }
+
+    /// Moves time forward by `seconds` (saturating, never wrapping).
+    pub fn advance(&self, seconds: u64) {
+        let step = seconds.saturating_mul(1000);
+        let ordering = std::sync::atomic::Ordering::SeqCst;
+        let mut current = self.0.load(ordering);
+        while let Err(actual) =
+            self.0
+                .compare_exchange_weak(current, current.saturating_add(step), ordering, ordering)
+        {
+            current = actual;
+        }
+    }
+}
+
+impl Clock for FakeClock {
+    fn now_ms(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
     }
 }

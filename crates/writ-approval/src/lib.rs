@@ -20,13 +20,11 @@
 
 mod service;
 
-pub use service::{
-    Clock, GatewayDenial, ManualClock, Platform, Service, ServiceConfig, SystemClock,
-};
+pub use service::{GatewayDenial, Service, ServiceConfig, ServicePlatform};
 pub use writ_store::EventKind;
 
-/// The SSH user a session certificate is valid for (`ssh://git@host`).
-pub const PRINCIPAL: &str = "git";
+/// The SSH user a session certificate is valid for ([`writ_proto::LEASE_USER`]).
+pub const PRINCIPAL: &str = writ_proto::LEASE_USER;
 
 /// How many tickets may wait for the approver at once; more are rejected.
 pub const DEFAULT_MAX_PENDING: usize = 20;

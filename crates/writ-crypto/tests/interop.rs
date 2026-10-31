@@ -235,8 +235,9 @@ fn certificates_are_issued_and_checked() {
     };
     let trusted = [authority.fingerprint()];
     let revoked: HashSet<u64> = [7].into_iter().collect();
-    let check =
-        |cert, user, now| ca::validate_user_certificate(cert, &trusted, &revoked, user, now);
+    let check = |cert, user, now| {
+        ca::validate_user_certificate(cert, &trusted, |s| revoked.contains(&s), user, now)
+    };
 
     let cert = issue(1, 1000, 2000);
     assert_eq!(cert.key_id(), "wrt_test");

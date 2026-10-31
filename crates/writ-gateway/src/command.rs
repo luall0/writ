@@ -1,41 +1,71 @@
 //! Commands a client may run through the gateway. Anything else is refused. Which identity
 //! may run which command is decided by the connection handler.
 
+use writ_approval::EventKind;
 use writ_core::names::RepoName;
+use writ_core::ticket::Operation;
 
 /// A parsed exec request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
+pub(crate) enum Command {
+    /// A lease holder's command: git or signing.
+    Lease(LeaseCommand),
+    /// `writ …`: an agent or approval command (`writ_proto::Command`).
+    Writ(writ_proto::Command),
+}
+
+/// What only a lease holder may run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LeaseCommand {
     /// `git-upload-pack '<repo>.git'`: fetch.
     UploadPack { repo: RepoName },
     /// `git-receive-pack '<repo>.git'`: push.
     ReceivePack { repo: RepoName },
     /// `writ-sign <namespace>`: sign the object sent on stdin.
     Sign { namespace: String },
-    /// `writ …`: a lease or approval command (`writ_proto::Command`).
-    Writ(writ_proto::Command),
+}
+
+impl LeaseCommand {
+    /// The lease operation it needs.
+    pub(crate) fn operation(&self) -> Operation {
+        match self {
+            Self::UploadPack { .. } => Operation::Fetch,
+            Self::ReceivePack { .. } => Operation::Push,
+            Self::Sign { .. } => Operation::CommitSign,
+        }
+    }
+
+    /// The audit event it is logged under.
+    pub(crate) fn event(&self) -> EventKind {
+        match self {
+            Self::UploadPack { .. } => EventKind::Fetch,
+            Self::ReceivePack { .. } => EventKind::Push,
+            Self::Sign { .. } => EventKind::Sign,
+        }
+    }
 }
 
 impl Command {
     /// Parses the command line of an SSH exec request.
-    pub fn parse(line: &[u8]) -> Option<Self> {
+    pub(crate) fn parse(line: &[u8]) -> Option<Self> {
         let line = std::str::from_utf8(line).ok()?;
         if line.starts_with("writ ") {
             return writ_proto::Command::parse(line).map(Self::Writ);
         }
         let (program, arg) = line.split_once(' ')?;
-        match program {
-            "git-upload-pack" => Some(Self::UploadPack {
+        let command = match program {
+            "git-upload-pack" => LeaseCommand::UploadPack {
                 repo: repo_name(unquote(arg)?)?,
-            }),
-            "git-receive-pack" => Some(Self::ReceivePack {
+            },
+            "git-receive-pack" => LeaseCommand::ReceivePack {
                 repo: repo_name(unquote(arg)?)?,
-            }),
-            "writ-sign" if arg == "git" => Some(Self::Sign {
+            },
+            "writ-sign" if arg == "git" => LeaseCommand::Sign {
                 namespace: arg.to_owned(),
-            }),
-            _ => None,
-        }
+            },
+            _ => return None,
+        };
+        Some(Self::Lease(command))
     }
 }
 
@@ -67,18 +97,20 @@ mod tests {
         ] {
             assert_eq!(
                 Command::parse(line),
-                Some(Command::UploadPack { repo: demo.clone() })
+                Some(Command::Lease(LeaseCommand::UploadPack {
+                    repo: demo.clone()
+                }))
             );
         }
         assert_eq!(
             Command::parse(b"git-receive-pack 'demo.git'"),
-            Some(Command::ReceivePack { repo: demo })
+            Some(Command::Lease(LeaseCommand::ReceivePack { repo: demo }))
         );
         assert_eq!(
             Command::parse(b"writ-sign git"),
-            Some(Command::Sign {
+            Some(Command::Lease(LeaseCommand::Sign {
                 namespace: "git".into()
-            })
+            }))
         );
         assert_eq!(
             Command::parse(b"writ ls --all"),

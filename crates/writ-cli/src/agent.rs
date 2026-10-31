@@ -8,50 +8,22 @@
 //! `<home>/sessions/current` points at it.
 
 use std::fs;
-use std::io::Write as _;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use writ_core::names::TicketId;
 use writ_core::ticket::{Ticket, TicketRequest};
 use writ_crypto::keys::{KeyKind, generate};
-use writ_crypto::ssh_key::{LineEnding, PrivateKey};
-use writ_proto::{Command, Decision, Submitted};
+use writ_crypto::ssh_key::LineEnding;
+use writ_proto::{CLIENT_USER, Command, Decision, Submitted};
 
 use crate::client::{Endpoint, Session};
 use crate::display;
+use crate::session::{
+    create_private_dir, load_key, point_current, session_dir, write_file, write_private,
+};
 use crate::{Exit, Paths};
-
-/// The SSH user for ticket submission (a plain key, no certificate).
-const CLIENT_USER: &str = "writ";
-
-fn session_dir(paths: &Paths, id: &TicketId) -> PathBuf {
-    paths.home.join("sessions").join(id.as_str())
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
-    file.write_all(bytes)?;
-    Ok(())
-}
-
-fn create_private_dir(path: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("cannot create {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-
-fn load_key(path: &Path) -> anyhow::Result<PrivateKey> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
-    Ok(PrivateKey::from_openssh(text)?)
-}
+use writ_core::canonical::Canonical;
 
 /// Submits a ticket file and, unless `no_wait`, waits for the decision.
 pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> anyhow::Result<Exit> {
@@ -75,51 +47,51 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> an
     };
     let endpoint = Endpoint::parse(url)?;
     let session = Session::connect(&endpoint, &paths.known_hosts, CLIENT_USER, key.clone()).await?;
-    let result: anyhow::Result<Exit> = async {
-        let submitted: Submitted = match session.call(&Command::Request, text.as_bytes()).await? {
-            Ok(submitted) => submitted,
-            Err(error) => {
-                eprintln!("writ: {}", error.message);
-                for reason in &error.reasons {
-                    eprintln!("  - {reason}");
-                }
-                return Ok(Exit::Rejected);
+    session
+        .run(async |session| {
+            let submitted: Submitted =
+                match session.call(&Command::Request, text.as_bytes()).await? {
+                    Ok(submitted) => submitted,
+                    Err(error) => {
+                        eprintln!("writ: {}", error.message);
+                        for reason in &error.reasons {
+                            eprintln!("  - {reason}");
+                        }
+                        return Ok(Exit::Rejected);
+                    }
+                };
+            let ticket = Ticket::from_canonical(submitted.canonical.as_bytes())
+                .context("the daemon sent a ticket that isn't canonical")?;
+            let dir = match &ticket.text.amends {
+                Some(lease) => session_dir(paths, lease),
+                None => session_dir(paths, &submitted.id),
+            };
+            if new_session {
+                create_private_dir(&dir)?;
+                write_private(&dir.join("key"), key.to_openssh(LineEnding::LF)?.as_bytes())?;
+                write_file(&dir.join("key.pub"), key.public_key().to_openssh()? + "\n")?;
             }
-        };
-        let ticket = Ticket::from_canonical(submitted.canonical.as_bytes())
-            .context("the daemon sent a ticket that isn't canonical")?;
-        let dir = match &ticket.ticket.amends {
-            Some(lease) => session_dir(paths, lease),
-            None => session_dir(paths, &submitted.id),
-        };
-        if new_session {
-            create_private_dir(&dir)?;
-            write_private(&dir.join("key"), key.to_openssh(LineEnding::LF)?.as_bytes())?;
-            fs::write(dir.join("key.pub"), key.public_key().to_openssh()? + "\n")?;
-        }
-        fs::write(
-            dir.join(format!("{}.json", submitted.id)),
-            &submitted.canonical,
-        )?;
-        if new_session {
-            fs::write(dir.join("ticket.json"), &submitted.canonical)?;
-        }
-        println!(
-            "Ticket {} submitted (template {}, revision {}, expires {}).",
-            submitted.id, ticket.template, ticket.ticket.revision, ticket.limits.expires_at
-        );
-        println!(
-            "Waiting for the approver: `writ sign {}` on the approver's machine.",
-            submitted.id
-        );
-        if no_wait {
-            return Ok(Exit::Ok);
-        }
-        decide(paths, &session, &submitted.id, &dir, Some(&ticket)).await
-    }
-    .await;
-    session.close().await;
-    result
+            write_file(
+                &dir.join(format!("{}.json", submitted.id)),
+                &submitted.canonical,
+            )?;
+            if new_session {
+                write_file(&dir.join("ticket.json"), &submitted.canonical)?;
+            }
+            println!(
+                "Ticket {} submitted (template {}, revision {}, expires {}).",
+                submitted.id, ticket.template, ticket.text.revision, ticket.limits.expires_at
+            );
+            println!(
+                "Waiting for the approver: `writ sign {}` on the approver's machine.",
+                submitted.id
+            );
+            if no_wait {
+                return Ok(Exit::Ok);
+            }
+            decide(paths, session, &submitted.id, &dir, Some(&ticket)).await
+        })
+        .await
 }
 
 /// Waits for a ticket submitted earlier from this host.
@@ -140,11 +112,10 @@ pub async fn wait(
         .ok()
         .and_then(|bytes| Ticket::from_canonical(&bytes).ok());
     let endpoint = Endpoint::parse(url)?;
-    let session = Session::connect(&endpoint, &paths.known_hosts, CLIENT_USER, key).await?;
-    let result: anyhow::Result<Exit> =
-        async { decide(paths, &session, id, &dir, submitted.as_ref()).await }.await;
-    session.close().await;
-    result
+    Session::connect(&endpoint, &paths.known_hosts, CLIENT_USER, key)
+        .await?
+        .run(async |session| decide(paths, session, id, &dir, submitted.as_ref()).await)
+        .await
 }
 
 async fn decide(
@@ -154,42 +125,25 @@ async fn decide(
     dir: &Path,
     submitted: Option<&Ticket>,
 ) -> anyhow::Result<Exit> {
-    let decision: Decision = match session.call(&Command::Wait { id: id.clone() }, b"").await? {
-        Ok(decision) => decision,
-        Err(error) => bail!("{error}"),
-    };
+    let decision: Decision = session
+        .call(&Command::Wait { id: id.clone() }, b"")
+        .await??;
     match decision {
         Decision::Active { lease, certificate } => {
             let terms = Ticket::from_canonical(lease.as_bytes())
                 .context("the daemon sent a lease that isn't canonical")?;
-            fs::write(
-                dir.join("key-cert.pub"),
+            write_file(
+                &dir.join("key-cert.pub"),
                 certificate.trim_end().to_owned() + "\n",
             )?;
-            fs::write(dir.join("lease.json"), &lease)?;
+            write_file(&dir.join("lease.json"), &lease)?;
             point_current(paths, id)?;
             println!(
                 "Lease {id} granted until {}: {} on {}, branches {}.",
                 terms.limits.expires_at,
-                display::fields(&terms)
-                    .into_iter()
-                    .find(|(l, _)| *l == "operations")
-                    .map(|(_, v)| v)
-                    .unwrap_or_default(),
-                terms
-                    .scope
-                    .repos
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                terms
-                    .scope
-                    .branches
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                display::list(&terms.scope.operations),
+                display::list(&terms.scope.repos),
+                display::list(&terms.scope.branches),
             );
             print_narrowing(submitted, &terms);
             println!("Session files: {}", dir.display());
@@ -198,7 +152,7 @@ async fn decide(
         Decision::Applied { lease } => {
             let terms = Ticket::from_canonical(lease.as_bytes())
                 .context("the daemon sent a lease that isn't canonical")?;
-            fs::write(dir.join("lease.json"), &lease)?;
+            write_file(&dir.join("lease.json"), &lease)?;
             println!(
                 "Amendment {id} signed: lease {} now runs under its terms (until {}).",
                 terms.lease_id(),
@@ -237,14 +191,4 @@ fn print_narrowing(submitted: Option<&Ticket>, terms: &Ticket) {
             display::changes("The approver narrowed the ticket:", &changes)
         );
     }
-}
-
-/// Points `<home>/sessions/current` at a lease's session, replacing the link atomically.
-fn point_current(paths: &Paths, id: &TicketId) -> anyhow::Result<()> {
-    let sessions = paths.home.join("sessions");
-    let temporary = sessions.join(format!(".current-{id}"));
-    let _ = fs::remove_file(&temporary);
-    std::os::unix::fs::symlink(id.as_str(), &temporary)?;
-    fs::rename(&temporary, sessions.join("current"))?;
-    Ok(())
 }

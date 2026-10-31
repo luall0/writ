@@ -15,8 +15,9 @@ use std::process::{Command, Output};
 use std::sync::Arc;
 
 use tempfile::TempDir;
-use writ_approval::{Platform, Service, ServiceConfig, SystemClock};
+use writ_approval::{Service, ServiceConfig, ServicePlatform};
 use writ_core::caller::CallerFacts;
+use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
 use writ_core::lease::APPROVAL_NAMESPACE;
 use writ_core::names::TicketId;
@@ -27,9 +28,10 @@ use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey};
 use writ_crypto::sshsig;
 use writ_gateway::{Gateway, GatewayConfig, Role};
+use writ_platform::clock::system::SystemClock;
 use writ_platform::testing::{FakeAttestor, RecordingNotifier};
-use writ_platform::transport::TcpTransport;
-use writ_platform::watch::NoSessionWatcher;
+use writ_platform::transport::tcp::TcpTransport;
+use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{BoxFuture, Connection, PeerInfo, Transport};
 use writ_proto::{ApproveRequest, Decision, Decisions, RevokeRequest};
 use writ_store::{AuditLog, Store};
@@ -163,7 +165,7 @@ impl Spike {
             CertificateAuthority::new(ca_key.clone()),
             Store::open(&root.join("leases.db")).unwrap(),
             AuditLog::open(&root.join("audit.jsonl")).unwrap(),
-            Platform {
+            ServicePlatform {
                 notifier: Arc::new(RecordingNotifier::new()),
                 watcher: Arc::new(NoSessionWatcher::new()),
                 clock: Arc::new(SystemClock),
@@ -189,7 +191,7 @@ impl Spike {
                     .unwrap();
                 let port = listener.local_addr().unwrap().port();
                 let transport = Arc::new(TcpTransport::from_listener(listener));
-                let attestor = Arc::new(writ_platform::attest::NetworkAttestor::new());
+                let attestor = Arc::new(writ_platform::attest::network::NetworkAttestor::new());
                 let g = gateway.clone();
                 runtime.spawn(async move { g.serve(transport, attestor, Role::Agents).await });
                 (

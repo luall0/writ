@@ -5,7 +5,8 @@
 mod common;
 
 use common::*;
-use writ_core::config::{Operation, PathsCheck, PolicyConfig, PushMode, TicketLink};
+use writ_core::config::{PathsCheck, PolicyConfig, PushMode, TicketLink};
+use writ_core::ticket::Operation;
 use writ_core::ticket::TicketRequest;
 
 #[test]

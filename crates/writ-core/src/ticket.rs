@@ -3,38 +3,22 @@
 //!
 //! # Canonical encoding
 //!
-//! A ticket's canonical bytes are compact JSON (no whitespace) with the fields in the order
-//! declared below, set-like lists sorted and deduplicated, absent values as `null`, sizes in
-//! bytes and timestamps as `YYYY-MM-DDTHH:MM:SSZ`. The first field, `"kind":"writ-ticket/1"`,
-//! names the format, so a ticket approval can't be mistaken for any other signed document.
-//! [`Ticket::from_canonical`] only accepts bytes that re-encode to exactly themselves.
-//! Fixtures in `tests/fixtures/` pin the format.
+//! A ticket is a [`Canonical`] document of kind `writ-ticket/1`: its fields in the order
+//! declared below, sizes in bytes and timestamps as `YYYY-MM-DDTHH:MM:SSZ`. Fixtures in
+//! `tests/fixtures/` pin the format.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
 use crate::caller::CallerConstraint;
-use crate::config::{ConfigError, Operation, parse_yaml};
+use crate::canonical::Canonical;
 use crate::names::{Email, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
 use crate::pattern::{BranchPattern, PathPattern};
 use crate::units::{ByteSize, Duration, Timestamp};
+use crate::yaml::{FieldError, parse_yaml};
 
-/// The format name at the start of every canonical ticket.
-pub const TICKET_KIND: &str = "writ-ticket/1";
-
-/// Errors from encoding or decoding canonical bytes.
-#[derive(Debug, thiserror::Error)]
-pub enum TicketError {
-    #[error("not a canonical ticket: {0}")]
-    Decode(String),
-    #[error("not a canonical ticket: the bytes are valid but not in canonical form")]
-    NotCanonical,
-    #[error("can't encode the ticket: {0}")]
-    Encode(String),
-}
-
-/// The format marker; only `"writ-ticket/1"` is accepted.
+/// The format marker; only `"writ-ticket/1"` ([`Ticket::KIND`]) is accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TicketKind {
     #[default]
@@ -52,7 +36,9 @@ pub struct Ticket {
     pub template: TemplateName,
     pub subject: Subject,
     pub scope: Scope,
-    pub ticket: TicketText,
+    /// The agent's words and the links between tickets (`ticket` in the canonical bytes).
+    #[serde(rename = "ticket")]
+    pub text: TicketText,
     pub limits: Limits,
     pub on_violation: OnViolation,
 }
@@ -67,6 +53,37 @@ pub struct Subject {
     pub origin_hint: Option<String>,
     /// A caller constraint checked against [`crate::caller::CallerFacts`].
     pub caller: Option<CallerConstraint>,
+}
+
+/// An operation a ticket can ask for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operation {
+    Fetch,
+    CommitSign,
+    Push,
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Fetch => "fetch",
+            Self::CommitSign => "commit_sign",
+            Self::Push => "push",
+        })
+    }
+}
+
+impl std::str::FromStr for Operation {
+    type Err = String;
+
+    /// The names of [`Operation`]'s `Display` (and of the ticket's YAML).
+    fn from_str(text: &str) -> Result<Self, String> {
+        [Self::Fetch, Self::CommitSign, Self::Push]
+            .into_iter()
+            .find(|op| op.to_string() == text)
+            .ok_or_else(|| format!("unknown operation {text:?} (fetch, commit_sign, push)"))
+    }
 }
 
 /// What the lease allows.
@@ -122,26 +139,14 @@ pub enum OnViolation {
     RevokeLease,
 }
 
+impl Canonical for Ticket {
+    const KIND: &'static str = "writ-ticket/1";
+}
+
 impl Ticket {
-    /// The canonical bytes: what `writ sign` signs and the daemon verifies.
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, TicketError> {
-        serde_json::to_vec(self).map_err(|e| TicketError::Encode(e.to_string()))
-    }
-
-    /// Decodes canonical bytes, refusing anything that isn't exactly canonical (other key
-    /// order, whitespace, unsorted or duplicate set entries, unknown fields, other kinds).
-    pub fn from_canonical(bytes: &[u8]) -> Result<Self, TicketError> {
-        let ticket: Ticket =
-            serde_json::from_slice(bytes).map_err(|e| TicketError::Decode(e.to_string()))?;
-        if ticket.canonical_bytes()? != bytes {
-            return Err(TicketError::NotCanonical);
-        }
-        Ok(ticket)
-    }
-
     /// The lease this ticket belongs to once signed: the amended lease, or itself.
     pub fn lease_id(&self) -> &TicketId {
-        self.ticket.amends.as_ref().unwrap_or(&self.id)
+        self.text.amends.as_ref().unwrap_or(&self.id)
     }
 
     pub fn allows(&self, operation: Operation) -> bool {
@@ -216,7 +221,28 @@ pub struct RequestLimits {
 
 impl TicketRequest {
     /// Parses a ticket file. Errors name the field.
-    pub fn from_yaml(text: &str) -> Result<Self, ConfigError> {
+    pub fn from_yaml(text: &str) -> Result<Self, FieldError> {
         parse_yaml(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_names_are_the_same_everywhere() {
+        for op in [Operation::Fetch, Operation::CommitSign, Operation::Push] {
+            let serde = serde_json::to_string(&op).unwrap();
+            assert_eq!(serde, format!("\"{op}\""), "Display matches serde");
+            assert_eq!(
+                op.to_string().parse::<Operation>(),
+                Ok(op),
+                "FromStr reads Display"
+            );
+        }
+        for bad in ["", "Fetch", "commit-sign", "push ", "sign"] {
+            assert!(bad.parse::<Operation>().is_err(), "{bad:?}");
+        }
     }
 }

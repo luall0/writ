@@ -7,10 +7,10 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::*;
-use writ_core::config::Operation;
 use writ_core::fit::{self, Submission};
 use writ_core::lease::{self, LifecycleError, State, TicketRecord, Usage};
 use writ_core::narrow;
+use writ_core::ticket::Operation;
 use writ_core::ticket::{OnViolation, Ticket};
 use writ_core::units::ByteSize;
 
@@ -29,7 +29,7 @@ fn a_submitted_ticket_is_complete() {
     assert_eq!(ticket.created_at, t0());
     assert_eq!(ticket.limits.expires_at, later(2 * 3600));
     assert_eq!(ticket.subject.session_key, fp('S'));
-    assert_eq!(ticket.ticket.revision, 1);
+    assert_eq!(ticket.text.revision, 1);
     // Filled from the template: committer emails, signing key.
     assert_eq!(ticket.scope.committer_emails.len(), 1);
     assert_eq!(
@@ -154,10 +154,10 @@ fn revisions_carry_the_feedback() {
         ..submission(2)
     };
     let second = fit::submit(&config(), &request(&revision), &with_previous).unwrap();
-    assert_eq!(second.ticket.revision, 2);
-    assert_eq!(second.ticket.revises.as_ref(), Some(&first.id));
+    assert_eq!(second.text.revision, 2);
+    assert_eq!(second.text.revises.as_ref(), Some(&first.id));
     assert_eq!(
-        second.ticket.previous_feedback.as_deref(),
+        second.text.previous_feedback.as_deref(),
         Some("Don't touch billing")
     );
 
@@ -292,7 +292,7 @@ fn activation() {
     ));
     // An amendment is applied, never activated.
     let mut amendment = ticket.clone();
-    amendment.ticket.amends = Some(ticket_id(77));
+    amendment.text.amends = Some(ticket_id(77));
     let record = TicketRecord::pending(amendment.clone());
     assert!(lease::activate(&config(), &record, amendment, approval(), 9, later(5)).is_err());
 }
@@ -379,7 +379,7 @@ fn narrowing_accepts_only_narrower_tickets() {
             t.limits.max_push_size = ByteSize::from_bytes(1);
         }),
         ("fewer expected paths", |t| {
-            t.ticket
+            t.text
                 .expected_paths
                 .remove(&"tests/auth/**".parse().unwrap());
         }),
@@ -421,11 +421,9 @@ fn narrowing_accepts_only_narrower_tickets() {
         ("bigger pushes", |t| {
             t.limits.max_push_size = ByteSize::from_bytes(2_000_000)
         }),
-        ("expected paths emptied", |t| {
-            t.ticket.expected_paths.clear()
-        }),
+        ("expected paths emptied", |t| t.text.expected_paths.clear()),
         ("expected path added", |t| {
-            t.ticket.expected_paths.insert("src/**".parse().unwrap());
+            t.text.expected_paths.insert("src/**".parse().unwrap());
         }),
         ("another session key", |t| t.subject.session_key = fp('Q')),
         ("origin hint changed", |t| {
@@ -435,14 +433,10 @@ fn narrowing_accepts_only_narrower_tickets() {
             t.template = "quick-fix".parse().unwrap()
         }),
         ("other id", |t| t.id = ticket_id(2)),
-        ("other text", |t| {
-            t.ticket.title = "Something else".to_owned()
-        }),
-        ("other plan", |t| {
-            t.ticket.plan.push("And billing".to_owned())
-        }),
+        ("other text", |t| t.text.title = "Something else".to_owned()),
+        ("other plan", |t| t.text.plan.push("And billing".to_owned())),
         ("other signing key", |t| t.scope.signing_key = None),
-        ("now amends", |t| t.ticket.amends = Some(ticket_id(3))),
+        ("now amends", |t| t.text.amends = Some(ticket_id(3))),
         ("earlier creation", |t| t.created_at = later(-60)),
     ];
     for (name, change) in wider {
@@ -462,10 +456,7 @@ fn narrowing_from_no_expected_paths_may_add_some() {
         "",
     ));
     let mut signed = without.clone();
-    signed
-        .ticket
-        .expected_paths
-        .insert("src/**".parse().unwrap());
+    signed.text.expected_paths.insert("src/**".parse().unwrap());
     assert!(narrow::check(&without, &signed).is_ok());
 }
 

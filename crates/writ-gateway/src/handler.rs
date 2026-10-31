@@ -10,7 +10,9 @@ use writ_core::policy::CertIdentity;
 use writ_crypto::ca::validate_user_certificate;
 use writ_crypto::ssh_key::{Certificate, HashAlg, PublicKey};
 
-use crate::{CLIENT_USER, Command, Error, Gateway, LEASE_USER, Role, process};
+use crate::channel::refuse;
+use crate::command::{Command, LeaseCommand};
+use crate::{CLIENT_USER, Error, Gateway, LEASE_USER, Role, api, exec};
 
 /// Who is on the other end, once authenticated.
 #[derive(Debug, Clone)]
@@ -64,15 +66,10 @@ impl Connection {
         }
         let service = self.gateway.service();
         let serial = certificate.serial();
-        let revoked = if service.is_revoked(serial) {
-            std::iter::once(serial).collect()
-        } else {
-            std::collections::HashSet::new()
-        };
         validate_user_certificate(
             certificate,
             &self.gateway.shared.authorities,
-            &revoked,
+            |serial| service.is_revoked(serial),
             user,
             service.now_unix(),
         )
@@ -207,44 +204,161 @@ impl russh::server::Handler for Connection {
             return Ok(());
         };
         session.channel_success(channel_id)?;
-        let Some(identity) = self.identity.clone() else {
-            tokio::spawn(process::refuse(channel, "not authenticated".into()));
-            return Ok(());
-        };
-        let command = Command::parse(data);
-        let allowed = match (&identity, &command) {
-            (Identity::Lease(_), Some(Command::UploadPack { .. }))
-            | (Identity::Lease(_), Some(Command::ReceivePack { .. }))
-            | (Identity::Lease(_), Some(Command::Sign { .. })) => true,
-            (Identity::SessionKey(_), Some(Command::Writ(writ))) => !writ.is_approval(),
-            (Identity::Approver, Some(Command::Writ(writ))) => writ.is_approval(),
-            _ => false,
-        };
-        let Some(command) = command.filter(|_| allowed) else {
-            let shown = String::from_utf8_lossy(data)
-                .chars()
-                .take(80)
-                .collect::<String>();
-            let reason = format!("command not allowed here: {}", shown.escape_debug());
-            let mut denial = GatewayDenial::new(EventKind::Command, reason.clone());
-            if let Identity::Lease(cert) = &identity {
-                denial = denial.cert(cert);
+        let identity = self.identity.clone();
+        let (gateway, facts) = (self.gateway.clone(), self.facts.clone());
+        match route(identity, Command::parse(data)) {
+            Ok(Route::Lease(cert, command)) => {
+                let git_protocol = self.git_protocol.clone();
+                tokio::spawn(exec::run(
+                    gateway,
+                    cert,
+                    facts,
+                    command,
+                    git_protocol,
+                    channel,
+                ));
             }
-            let (gateway, facts) = (self.gateway.clone(), self.facts.clone());
-            tokio::spawn(async move {
-                gateway.log_denial(denial, facts).await;
-                process::refuse(channel, reason).await;
-            });
-            return Ok(());
-        };
-        tokio::spawn(process::run(
-            self.gateway.clone(),
-            identity,
-            self.facts.clone(),
-            command,
-            self.git_protocol.clone(),
-            channel,
-        ));
+            Ok(Route::Agent(key, command)) => {
+                tokio::spawn(api::run_agent(gateway, key, facts, command, channel));
+            }
+            Ok(Route::Approval(command)) => {
+                tokio::spawn(api::run_approval(gateway, facts, command, channel));
+            }
+            Err(cert) => {
+                let shown = String::from_utf8_lossy(data)
+                    .chars()
+                    .take(80)
+                    .collect::<String>();
+                let reason = format!("command not allowed here: {}", shown.escape_debug());
+                let mut denial = GatewayDenial::new(EventKind::Command, reason.clone());
+                if let Some(cert) = &cert {
+                    denial = denial.cert(cert);
+                }
+                tokio::spawn(async move {
+                    gateway.log_denial(denial, facts).await;
+                    refuse(channel, reason).await;
+                });
+            }
+        }
         Ok(())
+    }
+}
+
+/// Where an exec request goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Route {
+    /// A lease holder's git or sign command.
+    Lease(CertIdentity, LeaseCommand),
+    /// An agent's `writ request` or `writ wait`, for its session key.
+    Agent(PublicKey, writ_proto::Command),
+    /// An approval command, on the approval listener.
+    Approval(writ_proto::Command),
+}
+
+/// Who may run what: the one place it is decided. Lease holders run git and `writ-sign`;
+/// session keys run `writ request` and `writ wait`; the approval listener runs the approval
+/// commands; nothing else runs. A refusal carries the certificate, if any, for the log.
+fn route(
+    identity: Option<Identity>,
+    command: Option<Command>,
+) -> Result<Route, Option<CertIdentity>> {
+    match (identity, command) {
+        (Some(Identity::Lease(cert)), Some(Command::Lease(command))) => {
+            Ok(Route::Lease(cert, command))
+        }
+        (Some(Identity::SessionKey(key)), Some(Command::Writ(writ))) if !writ.is_approval() => {
+            Ok(Route::Agent(key, writ))
+        }
+        (Some(Identity::Approver), Some(Command::Writ(writ))) if writ.is_approval() => {
+            Ok(Route::Approval(writ))
+        }
+        (Some(Identity::Lease(cert)), _) => Err(Some(cert)),
+        _ => Err(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use writ_crypto::keys::{KeyKind, generate};
+
+    use super::*;
+
+    fn writ(line: &str) -> Option<Command> {
+        Command::parse(line.as_bytes())
+    }
+
+    #[test]
+    fn each_identity_reaches_only_its_own_commands() {
+        let key = generate(KeyKind::Ed25519).unwrap().public_key().clone();
+        let cert = CertIdentity {
+            key_id: "wrt_01JD8X0000000000000000000A".into(),
+            serial: 7,
+            session_key: key
+                .fingerprint(HashAlg::Sha256)
+                .to_string()
+                .parse()
+                .unwrap(),
+        };
+        let id = "wrt_01JD8X0000000000000000000A";
+        let lease_lines = [
+            "git-upload-pack 'demo.git'",
+            "git-receive-pack 'demo.git'",
+            "writ-sign git",
+        ];
+        let agent_lines = ["writ request".to_owned(), format!("writ wait {id}")];
+        let approval_lines = [
+            "writ info".to_owned(),
+            "writ ls".to_owned(),
+            "writ ls --all".to_owned(),
+            format!("writ show {id}"),
+            format!("writ approve {id}"),
+            format!("writ refuse {id}"),
+            format!("writ revoke {id}"),
+        ];
+        let lease = Some(Identity::Lease(cert.clone()));
+        let session = Some(Identity::SessionKey(key.clone()));
+        let approver = Some(Identity::Approver);
+
+        for line in lease_lines {
+            assert!(
+                matches!(route(lease.clone(), writ(line)), Ok(Route::Lease(..))),
+                "{line}"
+            );
+            assert_eq!(route(session.clone(), writ(line)), Err(None), "{line}");
+            assert_eq!(route(approver.clone(), writ(line)), Err(None), "{line}");
+            assert_eq!(route(None, writ(line)), Err(None), "{line}");
+        }
+        for line in &agent_lines {
+            assert!(
+                matches!(route(session.clone(), writ(line)), Ok(Route::Agent(..))),
+                "{line}"
+            );
+            assert_eq!(
+                route(lease.clone(), writ(line)),
+                Err(Some(cert.clone())),
+                "{line}"
+            );
+            assert_eq!(route(approver.clone(), writ(line)), Err(None), "{line}");
+        }
+        for line in &approval_lines {
+            assert!(
+                matches!(route(approver.clone(), writ(line)), Ok(Route::Approval(..))),
+                "{line}"
+            );
+            assert_eq!(
+                route(lease.clone(), writ(line)),
+                Err(Some(cert.clone())),
+                "{line}"
+            );
+            assert_eq!(route(session.clone(), writ(line)), Err(None), "{line}");
+        }
+        // Unparsable commands go nowhere, whoever asks.
+        for identity in [lease.clone(), session, approver, None] {
+            let expected = match &identity {
+                Some(Identity::Lease(cert)) => Err(Some(cert.clone())),
+                _ => Err(None),
+            };
+            assert_eq!(route(identity, writ("sh -c id")), expected);
+        }
     }
 }
