@@ -37,6 +37,15 @@ triggering the signature; it is the trusted display
   sign` neutralizes terminal control sequences and other invisible characters so an agent
   can't hide or overwrite part of the ticket on screen. Warnings (e.g. `direct_ssh` with an
   account-wide key) are printed by `writ sign` itself, never taken from the ticket.
+- The display is bounded: each agent field shows at most 40 lines (runs of blank lines
+  collapsed), then how many more there are (`writ sign --full` shows everything). Expected
+  paths are shown under the enforced scope, one quoted item per line, and lists are quoted
+  so two different lists never read the same. The enforced terms (id, template, expiry,
+  repos, operations, branches, force push, emails, expected paths, limits) are repeated in a
+  short summary right before the prompt: no amount of agent text can push what gets signed
+  off the screen.
+- `writ sign --yes` (sign without asking) needs a named ticket: it never signs whichever
+  ticket happens to be the only one waiting.
 - It signs exactly the canonical bytes it displayed (fetched from the daemon, then decoded and
   re-encoded locally to check they match).
 

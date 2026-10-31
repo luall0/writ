@@ -83,14 +83,14 @@ fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
 }
 
 /// The approval policy (repo registry and templates) and the approver keys, from the files
-/// the configuration names. No approver key at all is a startup error.
+/// the configuration names (authority files: [`writ_platform::fs::read_authority`]). No
+/// approver key at all is a startup error.
 fn load_policy(config: &Config) -> anyhow::Result<(PolicyConfig, Vec<AllowedSigner>)> {
-    let policy_text = std::fs::read_to_string(&config.policy)
-        .with_context(|| format!("cannot read {}", config.policy.display()))?;
+    // Authority files: checked for owner, mode and links before they are believed.
+    let policy_text = writ_platform::fs::read_authority(&config.policy, "policy")?;
     let policy = PolicyConfig::from_yaml(&policy_text)
         .map_err(|e| anyhow::anyhow!("{}: {e}", config.policy.display()))?;
-    let approvers_text = std::fs::read_to_string(&config.approvers)
-        .with_context(|| format!("cannot read {}", config.approvers.display()))?;
+    let approvers_text = writ_platform::fs::read_authority(&config.approvers, "approvers file")?;
     let approvers = allowed_signers::parse(&approvers_text, APPROVAL_NAMESPACE)
         .map_err(|e| anyhow::anyhow!("{}: {e}", config.approvers.display()))?;
     if approvers.is_empty() {
@@ -105,8 +105,7 @@ fn load_policy(config: &Config) -> anyhow::Result<(PolicyConfig, Vec<AllowedSign
 /// The keys that may use the approval API. None at all is a startup error: nobody could
 /// list, show or approve anything.
 fn load_readers(config: &Config) -> anyhow::Result<Vec<Reader>> {
-    let text = std::fs::read_to_string(&config.readers)
-        .with_context(|| format!("cannot read {}", config.readers.display()))?;
+    let text = writ_platform::fs::read_authority(&config.readers, "readers file")?;
     let readers =
         readers::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", config.readers.display()))?;
     if readers.is_empty() {
@@ -258,4 +257,93 @@ fn run(path: &Path) -> anyhow::Result<()> {
             },
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// The development policy: a valid one, kept in the repo.
+    const POLICY: &str = include_str!("../../../dev/policy.yaml");
+
+    /// A configuration whose files are all in a temporary directory.
+    fn setup() -> (tempfile::TempDir, Config) {
+        let dir = tempfile::tempdir().unwrap();
+        let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+        let line = key.public_key().to_openssh().unwrap();
+        std::fs::write(dir.path().join("policy.yaml"), POLICY).unwrap();
+        std::fs::write(dir.path().join("approvers"), format!("me {line}\n")).unwrap();
+        std::fs::write(dir.path().join("readers"), format!("mac {line}\n")).unwrap();
+        let yaml = dir.path().join("writd.yaml");
+        std::fs::write(
+            &yaml,
+            "state_dir: data\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
+             keystore: { dev: keys }\n\
+             transports: { agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }], \
+             approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] } }\n\
+             attestor: network\nsession_watcher: none\n",
+        )
+        .unwrap();
+        let config = Config::load(&yaml).unwrap();
+        (dir, config)
+    }
+
+    fn chmod(path: &Path, bits: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
+    }
+
+    #[test]
+    fn files_that_grant_authority_are_refused_if_others_can_write_them() {
+        let (dir, config) = setup();
+        assert!(load_policy(&config).is_ok());
+        assert_eq!(load_readers(&config).unwrap().len(), 1);
+        type Load = fn(&Config) -> anyhow::Result<()>;
+        let policy: Load = |c| load_policy(c).map(|_| ());
+        let readers: Load = |c| load_readers(c).map(|_| ());
+        for (file, load) in [
+            ("approvers", policy),
+            ("policy.yaml", policy),
+            ("readers", readers),
+        ] {
+            let path = dir.path().join(file);
+            chmod(&path, 0o666);
+            let error = load(&config).unwrap_err().to_string();
+            assert!(
+                error.contains("can be written by group or others"),
+                "{file}: {error}"
+            );
+            chmod(&path, 0o644);
+            assert!(load(&config).is_ok(), "{file} at 0644");
+        }
+        let yaml = dir.path().join("writd.yaml");
+        chmod(&yaml, 0o664);
+        let error = Config::load(&yaml).unwrap_err().to_string();
+        assert!(
+            error.contains("can be written by group or others"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_approvers_file_behind_a_link_is_refused() {
+        let (dir, mut config) = setup();
+        let link = dir.path().join("approvers-link");
+        std::os::unix::fs::symlink(dir.path().join("approvers"), &link).unwrap();
+        config.approvers = link;
+        let error = load_policy(&config).unwrap_err().to_string();
+        assert!(
+            error.starts_with("invalid configuration: cannot read approvers file"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn no_reader_at_all_is_a_startup_error() {
+        let (dir, config) = setup();
+        std::fs::write(dir.path().join("readers"), "# nobody\n").unwrap();
+        let error = load_readers(&config).unwrap_err().to_string();
+        assert!(error.contains("no reader key"), "{error}");
+    }
 }

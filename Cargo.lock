@@ -3902,6 +3902,7 @@ name = "writ-platform"
 version = "0.0.0"
 dependencies = [
  "age",
+ "rustix",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

@@ -177,7 +177,7 @@ async fn decide(
         }
         Decision::Refused { feedback } => {
             println!("Ticket {id} was refused. The approver's feedback:");
-            print!("{}", display::block(&feedback, "  "));
+            print!("{}", display::block(&feedback, "  ", true));
             println!("Revise the ticket and submit it again with `ticket.revises: {id}`.");
             Ok(Exit::Refused)
         }

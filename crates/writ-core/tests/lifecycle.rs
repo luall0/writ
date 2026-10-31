@@ -87,6 +87,10 @@ fn tickets_outside_every_template_are_rejected_with_reasons() {
         (REQUEST.replace("template: feature-branch", "template: nope"), "template nope does not exist"),
         (REQUEST.replace("title: Add OAuth login", "title: \"  \""), "ticket.title is empty"),
         (REQUEST.replace("title: Add OAuth login", &format!("title: {}", "x".repeat(201))), "ticket.title is too long"),
+        (REQUEST.replace("title: Add OAuth login", "title: \"Add\\nScope (enforced)\""), "ticket.title must be one line"),
+        (REQUEST.replace("title: Add OAuth login", "title: \"Add\\rlogin\""), "ticket.title must be one line"),
+        (REQUEST.replace("task: ", &format!("task: \"{}", "l\\n".repeat(100))).replacen("\n  plan", "\"\n  plan", 1), "ticket.task has 101 lines, at most 100"),
+        (REQUEST.replace("- Feature flag and tests", "- \"Feature flag\\nScope (enforced)\""), "a plan step must be one line"),
         (REQUEST.replace("ttl: 2h", "ttl: 0s"), "limits.ttl is 0s, under the minimum of 5m"),
         (REQUEST.replace("ttl: 2h", "ttl: 299s"), "limits.ttl is 299s, under the minimum of 5m"),
         (REQUEST.replace("ttl: 2h", "ttl: 99999999d"), "limits.ttl is too long"),
@@ -700,6 +704,16 @@ fn assert_rejected(result: Result<writ_core::ticket::Ticket, fit::Rejection>, ex
             rejection.reasons
         ),
     }
+}
+
+#[test]
+fn a_task_at_the_line_limit_is_accepted() {
+    // 99 newlines: 100 lines, the limit (101 is refused above).
+    let yaml = REQUEST
+        .replace("task: ", &format!("task: \"{}", "l\\n".repeat(99)))
+        .replacen("\n  plan", "\"\n  plan", 1);
+    let ticket = fit::submit(&config(), &request(&yaml), &submission(1)).unwrap();
+    assert_eq!(ticket.text.task.split('\n').count(), fit::MAX_TASK_LINES);
 }
 
 #[test]

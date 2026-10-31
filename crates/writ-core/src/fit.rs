@@ -17,6 +17,9 @@ use crate::units::{Duration, Timestamp};
 /// Bounds on the agent-written text, so a ticket stays reviewable.
 pub const MAX_TITLE_CHARS: usize = 200;
 pub const MAX_TASK_CHARS: usize = 4_000;
+/// The most lines in the task: past it, agent text could bury the scope on the approver's
+/// screen (the display is bounded too).
+pub const MAX_TASK_LINES: usize = 100;
 pub const MAX_PLAN_STEPS: usize = 50;
 pub const MAX_PLAN_STEP_CHARS: usize = 500;
 pub const MAX_EXPECTED_PATHS: usize = 100;
@@ -214,6 +217,18 @@ fn check_text(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {
     );
     if let Some(hint) = &ticket.subject.origin_hint {
         bound("origin_hint", hint.chars().count(), MAX_ORIGIN_HINT_CHARS);
+    }
+    let task_lines = text.task.split('\n').count();
+    if task_lines > MAX_TASK_LINES {
+        reasons.push(format!(
+            "ticket.task has {task_lines} lines, at most {MAX_TASK_LINES}"
+        ));
+    }
+    if text.title.contains(['\n', '\r']) {
+        reasons.push("ticket.title must be one line".to_owned());
+    }
+    if text.plan.iter().any(|step| step.contains(['\n', '\r'])) {
+        reasons.push("a plan step must be one line".to_owned());
     }
     if text.title.trim().is_empty() {
         reasons.push("ticket.title is empty".to_owned());

@@ -138,7 +138,8 @@ on_violation: deny_and_notify    # optional
 ```
 
 A ticket that fits several templates must name one. Text is bounded so a ticket stays
-reviewable (title 200 characters, task 4,000, plan 50 steps of 500, 100 expected paths).
+reviewable (title 200 characters on one line, task 4,000 characters on at most 100 lines,
+plan 50 one-line steps of 500, 100 expected paths).
 
 ## The complete ticket
 

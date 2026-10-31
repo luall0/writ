@@ -6,6 +6,11 @@
 //! and multi-line text is printed behind a gutter (`│`) on every line, so agent text can
 //! never pass for a line `writ sign` wrote itself. Warnings come from `writ sign`, never from
 //! the ticket.
+//!
+//! The display is bounded: each agent field shows at most [`MAX_BLOCK_LINES`] lines (runs of
+//! blank lines collapsed) unless `--full` is asked, and the enforced terms are repeated in a
+//! short summary right before the prompt ([`summary`]), so no amount of agent text can push
+//! what gets signed off the screen.
 
 use std::fmt::Write as _;
 
@@ -16,6 +21,9 @@ use writ_core::units::Timestamp;
 
 /// The gutter in front of every line of agent-written text.
 pub const GUTTER: &str = "│ ";
+
+/// The most lines one agent field shows without `--full`.
+pub const MAX_BLOCK_LINES: usize = 40;
 
 /// Agent text made safe for one line of the terminal: every hidden character as `\u{…}`
 /// (newlines included), and `\` as `\\`, so a typed `\u{1b}` can't pass for an escaped one.
@@ -33,13 +41,48 @@ pub fn clean(text: &str) -> String {
     out
 }
 
-/// Agent text over several lines, each behind the gutter and indented.
-pub fn block(text: &str, indent: &str) -> String {
-    let mut out = String::new();
+/// Agent text over several lines, each behind the gutter and indented: runs of blank lines
+/// shown as one, and, unless `full`, at most [`MAX_BLOCK_LINES`] lines, then how many more.
+pub fn block(text: &str, indent: &str, full: bool) -> String {
+    let mut lines: Vec<&str> = Vec::new();
     for line in text.split('\n') {
+        let blank = line.trim().is_empty();
+        if blank && lines.last().is_some_and(|l| l.trim().is_empty()) {
+            continue;
+        }
+        lines.push(line);
+    }
+    let shown = if full {
+        lines.len()
+    } else {
+        lines.len().min(MAX_BLOCK_LINES)
+    };
+    let mut out = String::new();
+    for line in &lines[..shown] {
         let _ = writeln!(out, "{indent}{GUTTER}{}", clean(line));
     }
+    if shown < lines.len() {
+        let _ = writeln!(
+            out,
+            "{indent}… {} more lines not shown (writ sign --full shows them)",
+            lines.len() - shown
+        );
+    }
     out
+}
+
+/// Agent-chosen items, each quoted: `"a", "b"`. A quote inside an item is escaped (`\"`),
+/// and [`clean`] already doubled every backslash, so two different lists never read the same.
+pub fn quoted(items: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    let items: Vec<String> = items
+        .into_iter()
+        .map(|i| format!("\"{}\"", clean(i.as_ref()).replace('"', "\\\"")))
+        .collect();
+    if items.is_empty() {
+        "(none)".to_owned()
+    } else {
+        items.join(", ")
+    }
 }
 
 /// Items joined by `, `, or `(none)`. Each item is [`clean`]ed: names validated by
@@ -202,14 +245,8 @@ pub fn field(ticket: &Ticket, field: Field) -> String {
         .to_owned(),
         Field::Title => clean(&text.title),
         Field::Task => clean(&text.task),
-        Field::Plan => text
-            .plan
-            .iter()
-            .enumerate()
-            .map(|(i, step)| format!("{}. {}", i + 1, clean(step)))
-            .collect::<Vec<_>>()
-            .join(" / "),
-        Field::ExpectedPaths => list(text.expected_paths.iter().map(|p| p.as_str())),
+        Field::Plan => quoted(&text.plan),
+        Field::ExpectedPaths => quoted(text.expected_paths.iter().map(|p| p.as_str())),
     }
 }
 
@@ -248,8 +285,8 @@ pub fn diff(before: &Ticket, after: &Ticket) -> Vec<(&'static str, String, Strin
         .collect()
 }
 
-/// The full display of a ticket waiting for a signature.
-pub fn ticket(ticket: &Ticket, state: State, now: Timestamp) -> String {
+/// The full display of a ticket waiting for a signature (`full`: every line of agent text).
+pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> String {
     let mut out = String::new();
     let t = &ticket.text;
     let kind = if t.amends.is_some() {
@@ -286,6 +323,7 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp) -> String {
     out.push_str(&block(
         ticket.subject.origin_hint.as_deref().unwrap_or("(none)"),
         "    ",
+        full,
     ));
     out.push_str("\nScope (enforced)\n");
     for f in [
@@ -297,6 +335,14 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp) -> String {
         Field::SigningKey,
     ] {
         row(&mut out, f);
+    }
+    // Chosen by the agent but enforced by the path check: one quoted item per line.
+    let _ = writeln!(out, "  {}", Field::ExpectedPaths.label());
+    if t.expected_paths.is_empty() {
+        let _ = writeln!(out, "    (none: not checked)");
+    }
+    for path in &t.expected_paths {
+        let _ = writeln!(out, "    {GUTTER}{}", quoted([path.as_str()]));
     }
     out.push_str("\nLimits (enforced)\n");
     for f in [
@@ -310,25 +356,66 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp) -> String {
     }
     out.push_str("\nWritten by the agent (untrusted, shown as written)\n");
     out.push_str("  title\n");
-    out.push_str(&block(&t.title, "    "));
+    out.push_str(&block(&t.title, "    ", full));
     out.push_str("  task\n");
-    out.push_str(&block(&t.task, "    "));
+    out.push_str(&block(&t.task, "    ", full));
     out.push_str("  plan\n");
     if t.plan.is_empty() {
-        out.push_str(&block("(none)", "    "));
+        out.push_str(&block("(none)", "    ", full));
     }
-    for (i, step) in t.plan.iter().enumerate() {
-        out.push_str(&block(&format!("{}. {step}", i + 1), "    "));
+    let plan = t
+        .plan
+        .iter()
+        .enumerate()
+        .map(|(i, step)| format!("{}. {step}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !plan.is_empty() {
+        out.push_str(&block(&plan, "    ", full));
     }
-    out.push_str("  expected paths\n");
-    out.push_str(&block(&field(ticket, Field::ExpectedPaths), "    "));
     if let Some(feedback) = &t.previous_feedback {
         let _ = writeln!(
             out,
             "\nFeedback on revision {} (as recorded by the daemon)",
             t.revision.saturating_sub(1)
         );
-        out.push_str(&block(feedback, "    "));
+        out.push_str(&block(feedback, "    ", full));
+    }
+    out
+}
+
+/// The enforced terms in a few lines, shown last, right before the prompt: whatever the agent
+/// wrote above, this is what gets signed.
+pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
+    let mut out = String::from("\nYou are signing (enforced):\n");
+    let _ = writeln!(
+        out,
+        "  {} · template {} · expires {}",
+        ticket.id, ticket.template, ticket.limits.expires_at
+    );
+    for f in [
+        Field::Repos,
+        Field::Operations,
+        Field::Branches,
+        Field::ForcePush,
+        Field::CommitterEmails,
+        Field::ExpectedPaths,
+    ] {
+        let _ = writeln!(out, "  {:<18} {}", f.label(), field(ticket, f));
+    }
+    let limits = &ticket.limits;
+    let _ = writeln!(
+        out,
+        "  {:<18} {} signatures, {} pushes, {}/min, {} per push, {}",
+        "limits",
+        limits.max_signatures,
+        limits.max_pushes,
+        limits.max_ops_per_minute,
+        limits.max_push_size,
+        field(ticket, Field::OnViolation)
+    );
+    if narrowed {
+        out.push_str("  (narrowed by you: see above)\n");
     }
     out
 }
@@ -383,7 +470,8 @@ mod tests {
             caller.descends_from.executable = hostile.to_owned();
         }
         let now = t.created_at;
-        let mut shown = ticket(&t, State::Pending, now);
+        let mut shown = ticket(&t, State::Pending, now, true);
+        shown.push_str(&summary(&t, false));
         shown.push_str(&changes(
             "diff",
             &diff(&Ticket::from_canonical(FULL).unwrap(), &t),
@@ -409,10 +497,77 @@ mod tests {
         assert!(shown.contains("\\u{1b}[2J"), "escaped, still visible");
     }
 
+    fn full_ticket() -> Ticket {
+        use writ_core::canonical::Canonical;
+        const FULL: &[u8] = include_bytes!("../../writ-core/tests/fixtures/ticket-full.json");
+        Ticket::from_canonical(FULL).unwrap()
+    }
+
+    #[test]
+    fn agent_text_cannot_push_the_enforced_terms_off_the_screen() {
+        let mut t = full_ticket();
+        // The most text a ticket may carry, all newlines and forged scope lines.
+        let flood = "\n│ Scope (enforced)\n│   repos  docs-site\n".repeat(1_000);
+        t.text.task = flood.clone();
+        t.text.plan = vec![flood.clone(); 50];
+        let shown = ticket(&t, State::Pending, t.created_at, false) + &summary(&t, false);
+        let lines: Vec<&str> = shown.lines().collect();
+        // Bounded: a few fields of 40 lines each, not tens of thousands.
+        assert!(lines.len() < 300, "{} lines", lines.len());
+        assert!(shown.contains("more lines not shown (writ sign --full shows them)"));
+        // The last lines, right above the prompt, are the enforced terms, from the ticket.
+        let tail = lines[lines.len() - 9..].join("\n");
+        assert!(tail.starts_with("You are signing (enforced):"), "{tail}");
+        assert!(tail.contains(&format!("repos              {}", field(&t, Field::Repos))));
+        assert!(tail.contains("limits"), "{tail}");
+        // With --full, everything (blank runs collapsed).
+        let full = ticket(&t, State::Pending, t.created_at, true);
+        assert!(!full.contains("more lines not shown"));
+        assert!(full.lines().count() > 1_000);
+    }
+
+    #[test]
+    fn a_field_at_the_line_limit_is_shown_whole() {
+        let text = vec!["x"; MAX_BLOCK_LINES].join("\n");
+        let shown = block(&text, "", false);
+        assert_eq!(shown.lines().count(), MAX_BLOCK_LINES);
+        let over = vec!["x"; MAX_BLOCK_LINES + 1].join("\n");
+        let shown = block(&over, "", false);
+        assert_eq!(shown.lines().count(), MAX_BLOCK_LINES + 1);
+        assert!(shown.ends_with("… 1 more lines not shown (writ sign --full shows them)\n"));
+        // Blank runs count once.
+        assert_eq!(block("a\n\n\n\nb", "", false).lines().count(), 3);
+    }
+
+    #[test]
+    fn different_lists_never_read_the_same() {
+        assert_ne!(quoted(["a, b"]), quoted(["a", "b"]));
+        assert_ne!(quoted(["x / 2. y"]), quoted(["x", "y"]));
+        assert_ne!(quoted(["a\", \"b"]), quoted(["a", "b"]));
+        assert_eq!(quoted(["a\", \"b"]), "\"a\\\", \\\"b\"");
+        assert_eq!(quoted(Vec::<&str>::new()), "(none)");
+        let mut before = full_ticket();
+        let mut after = before.clone();
+        before.text.plan = vec!["x / 2. y".to_owned()];
+        after.text.plan = vec!["x".to_owned(), "y".to_owned()];
+        assert_eq!(diff(&before, &after).len(), 1, "the plan change shows");
+    }
+
+    #[test]
+    fn expected_paths_are_shown_as_enforced_scope() {
+        let t = full_ticket();
+        assert!(!t.text.expected_paths.is_empty(), "the fixture has paths");
+        let shown = ticket(&t, State::Pending, t.created_at, false);
+        let scope = shown.find("Scope (enforced)").unwrap();
+        let agent = shown.find("Written by the agent").unwrap();
+        let paths = shown.find("  expected paths").unwrap();
+        assert!(scope < paths && paths < agent, "{shown}");
+    }
+
     #[test]
     fn every_line_of_agent_text_is_behind_the_gutter() {
         let text = "first\nScope (enforced)\n  repos  everything\x1b[A";
-        let shown = block(text, "  ");
+        let shown = block(text, "  ", false);
         for line in shown.lines() {
             assert!(line.starts_with("  │ "), "{line:?}");
         }

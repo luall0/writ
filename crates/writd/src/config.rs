@@ -23,7 +23,6 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use serde::Deserialize;
 use writ_core::net::{IpRange, Sources};
 use writ_proto::Decisions;
@@ -166,8 +165,8 @@ pub struct TelegramConfig {
 impl Config {
     /// Reads the file and resolves relative paths against its directory.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
+        // Whoever can write it decides who may connect and which files grant authority.
+        let text = writ_platform::fs::read_authority(path, "configuration")?;
         let mut config: Config = writ_core::yaml::parse_yaml(&text)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
         let base = path.parent().unwrap_or(Path::new("."));

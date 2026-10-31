@@ -140,8 +140,8 @@ async fn fetch_reviewed(session: &Approvals, id: &TicketId) -> anyhow::Result<Re
 
 /// The trusted display of what is about to be signed: the ticket (narrowed), what changed
 /// since the ticket it follows, and what the approver narrowed.
-fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp) -> String {
-    let mut out = display::ticket(signed, reviewed.state, now);
+fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, full: bool) -> String {
+    let mut out = display::ticket(signed, reviewed.state, now, full);
     if let Some((relation, previous)) = &reviewed.previous {
         let title = match relation {
             Relation::Revises => format!(
@@ -162,6 +162,8 @@ fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp) -> String {
             &narrowed,
         ));
     }
+    // Last, right above the prompt: the terms that get signed, whatever the agent wrote.
+    out.push_str(&display::summary(signed, !narrowed.is_empty()));
     out
 }
 
@@ -196,13 +198,20 @@ async fn approve(
 }
 
 /// `writ sign`: shows the ticket, then signs it (narrowed if asked), refuses it, or not.
+/// How `writ sign` reviews: `yes` signs without asking (only with a named ticket), `full`
+/// shows every line of agent text.
+pub struct Review {
+    pub yes: bool,
+    pub full: bool,
+}
+
 pub async fn sign(
     paths: &Paths,
     url: &str,
     signer: &Signer,
     id: Option<TicketId>,
     narrowing: &Narrowing,
-    yes: bool,
+    review: &Review,
 ) -> anyhow::Result<Exit> {
     connect(paths, url)
         .await?
@@ -210,8 +219,8 @@ pub async fn sign(
             let id = pick_pending(session, id).await?;
             let reviewed = fetch_reviewed(session, &id).await?;
             let signed = narrowing.apply(&reviewed.submitted)?;
-            println!("{}", render(&reviewed, &signed, now()?));
-            let answer = if yes {
+            println!("{}", render(&reviewed, &signed, now()?, review.full));
+            let answer = if review.yes {
                 "y".to_owned()
             } else {
                 print!(

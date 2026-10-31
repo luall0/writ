@@ -22,6 +22,7 @@ later approver apps.
 | CLI | `clap` 4 (derive, env) | Decided (M2) |
 | Errors | `thiserror` in library crates, `anyhow` only in binaries | Decided (M0) |
 | Secrets in memory | `zeroize` (decided in M2); `secrecy` | Proposed |
+| Unix file checks | `rustix` 1.1 (`fs`, `process`): opening without following a link or blocking, the effective uid, for the private-file and authority-file checks (`writ_platform::fs`); safe wrappers, so no `unsafe` in the tree, and already a dependency of `tempfile` | Decided (M2.6) |
 | Logging | `tracing` 0.1 in every library crate, `tracing-subscriber` 0.3 (`fmt`, `env-filter`) installed by `writd` only, to stderr, filtered by `WRIT_LOG`; the audit log is separate and never goes through it | Decided (M2.5) |
 | Secure Enclave (local mode) | Swift + CryptoKit, key blob under the `_writd` user | Decided (M0 spike, [Q33](decisions.md)); how `writd` calls it is settled in M7.5 |
 | Tests | `proptest` for policy properties, `tempfile`, real `git` and `ssh-keygen` binaries | Decided (M1) |

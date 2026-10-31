@@ -12,6 +12,7 @@ testing = []
 [dependencies]
 writ-core.workspace = true
 age.workspace = true
+rustix.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

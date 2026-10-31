@@ -82,6 +82,14 @@ ledger and audit log, YubiKey backend as soon as practical.
 
 See [Deployment](architecture/deployment.md).
 
+### 5b. Files that grant authority
+`approvers` (who may sign), `readers` (who may use the approval API), the policy (repos and
+templates) and `writd.yaml` decide who may do what. Whoever can write one becomes an
+approver at the next start, which would bypass signed admin changes. The daemon refuses each
+unless it is a regular file (no link followed, never a FIFO) owned by the daemon's user and
+not writable by group or others; secrets (a bot token, a wrapped key) must also be readable
+by nobody else. From M5, changes to them go through signed admin changes.
+
 ### 6. Local mode: the daemon vs my own user
 In local mode, agents run as my user. A daemon running as my user can't keep its keys from
 them: they could read its files, use a Secure Enclave key blob, or attach to the process. So

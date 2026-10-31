@@ -138,9 +138,13 @@ enum Commands {
         id: Option<TicketId>,
         #[command(flatten)]
         narrowing: approver::Narrowing,
-        /// Sign without asking (the ticket is still shown first).
-        #[arg(long)]
+        /// Sign without asking (the ticket is still shown first). Only with a named ticket:
+        /// never whichever happens to be waiting.
+        #[arg(long, requires = "id")]
         yes: bool,
+        /// Show every line of the agent's text (by default, 40 lines per field).
+        #[arg(long)]
+        full: bool,
         #[command(flatten)]
         url: ApprovalUrl,
         #[command(flatten)]
@@ -221,16 +225,21 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             id,
             narrowing,
             yes,
+            full,
             url,
             signer: args,
         } => {
+            let review = approver::Review {
+                yes: *yes,
+                full: *full,
+            };
             approver::sign(
                 &paths,
                 &url.url,
                 &signer(&paths, args),
                 id.clone(),
                 narrowing,
-                *yes,
+                &review,
             )
             .await
         }
@@ -263,5 +272,35 @@ fn main() -> ExitCode {
             eprintln!("writ: {e:#}");
             ExitCode::from(Exit::Error as u8)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sign_yes_needs_a_named_ticket() {
+        // Never "whichever ticket happens to be waiting" without a look.
+        let error =
+            match Cli::try_parse_from(["writ", "sign", "--yes", "--approval-url", "ssh://h:1"]) {
+                Ok(_) => panic!("--yes without an id was accepted"),
+                Err(error) => error,
+            };
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let named = Cli::try_parse_from([
+            "writ",
+            "sign",
+            "wrt_01JD8X0000000000000000000A",
+            "--yes",
+            "--approval-url",
+            "ssh://h:1",
+        ]);
+        assert!(named.is_ok());
+        // Without --yes, no id is fine: the prompt asks.
+        assert!(Cli::try_parse_from(["writ", "sign", "--approval-url", "ssh://h:1"]).is_ok());
     }
 }

@@ -40,6 +40,9 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 globset = { version = "0.4.21", default-features = false }
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 proptest = "1.12.0"
+# Safe wrappers over the Unix calls the private-file checks need (open without following a
+# link, the effective uid); already in the tree (tempfile).
+rustix = { version = "1.1.6", default-features = false, features = ["fs", "process", "std"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = "2.0.0"
