@@ -12,7 +12,9 @@ runs `git` or touches a file (M3). Mirrors, quarantine and the upstream pusher j
   kind of object a signing request carries.
 - **Trailers** (`trailers`): found the way git finds them (`git interpret-trailers --parse`).
 - **Trees** (`tree`) and **touched paths** (`paths`): the paths a commit touches, computed from
-  the parent commits and trees `writ-sign` sends, each checked against its id; bounded walk.
+  the first parent commit and trees `writ-sign` sends, each checked against its id (a merge is
+  compared with its first parent); a walk bounded in entries, paths, depth, path length and
+  path bytes.
 - **The signed commit** (`signed`): the commit git writes once the signature is in it, and its
   id, which the ledger records.
 

@@ -127,19 +127,23 @@ impl Repo {
         Commit::parse(self.git_bytes(&["cat-file", "commit", commit])).unwrap()
     }
 
-    /// What git says the commit touches: the diff to its parent, every path of a root
-    /// commit, what differs from every parent of a merge.
+    /// What git says the commit touches: the diff to its first parent (a merge too), every
+    /// path of a root commit.
     fn git_touched(&self, commit: &str) -> Vec<String> {
-        let out = self.git(&[
+        let parents = self.git(&["log", "-1", "--format=%P", commit]);
+        let first_parent = parents.split_whitespace().next().map(str::to_owned);
+        let mut args = vec![
             "diff-tree",
             "-r",
-            "--root",
-            "-c",
             "--no-renames",
             "--name-only",
             "--no-commit-id",
-            commit,
-        ]);
+        ];
+        match &first_parent {
+            Some(parent) => args.extend([parent.as_str(), commit]),
+            None => args.extend(["--root", commit]),
+        }
+        let out = self.git(&args);
         let mut paths: Vec<String> = out.lines().map(str::to_owned).collect();
         paths.sort();
         paths.dedup();
@@ -201,7 +205,8 @@ fn touched_paths_are_git_s() {
         let empty = repo.commit("empty");
         assert_eq!(check_paths(&repo, &empty), Vec::<String>::new());
 
-        // A merge: only what differs from every parent (here, a conflict resolved by hand).
+        // A merge: what it brings into its branch, against its first parent (the side
+        // branch's new file, and a conflict resolved by hand).
         repo.git(&["checkout", "-q", "-b", "side", &change]);
         repo.write("src/auth/login.rs", "side\n");
         repo.write("side.txt", "s\n");
@@ -217,7 +222,10 @@ fn touched_paths_are_git_s() {
         repo.git(&["commit", "-q", "--no-edit"]);
         let merge = repo.head();
         assert_eq!(repo.parse(&merge).parents().len(), 2);
-        assert_eq!(check_paths(&repo, &merge), ["src/auth/login.rs"]);
+        assert_eq!(
+            check_paths(&repo, &merge),
+            ["side.txt", "src/auth/login.rs"]
+        );
     }
 }
 

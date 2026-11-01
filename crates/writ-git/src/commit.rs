@@ -8,8 +8,8 @@ use writ_core::policy::ObjectKind;
 use crate::object::{HashAlgo, ObjectError, ObjectId};
 use crate::trailers;
 
-/// The most parents a commit may have here (an octopus merge of a hundred branches): each
-/// one costs a tree comparison when its paths are computed.
+/// The most parents a commit may have here (an octopus merge of a hundred branches). Only
+/// the first one is compared for the touched paths, but each is parsed and kept.
 pub const MAX_PARENTS: usize = 100;
 
 /// Why the bytes are not a commit this daemon signs.

@@ -66,7 +66,7 @@ sequenceDiagram
   participant D as writd
   participant SG as Signer backend
   G->>S: -Y sign -n git -f key /tmp/obj
-  S->>S: parent commits + trees that differ (git cat-file, diff-tree)
+  S->>S: first parent commit + trees that differ (git cat-file, diff-tree)
   S->>D: writ-sign git <repo>: the commit + those objects, over SSH, session cert
   D->>D: objects read by the ids computed from their bytes → touched paths
   D->>D: cert → lease, object type, committer email,<br/>Writ trailer (if ticket_link = trailer), paths vs expected_paths, count, rate

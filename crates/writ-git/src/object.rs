@@ -117,7 +117,13 @@ pub struct ObjectId {
 impl ObjectId {
     /// From the raw bytes of a tree entry (their length is checked by the caller).
     pub(crate) fn from_raw(algo: HashAlgo, raw: &[u8]) -> Self {
-        let hex = raw.iter().map(|b| format!("{b:02x}")).collect();
+        // One allocation per id (a tree walk makes up to a million of them).
+        let mut hex = String::with_capacity(raw.len().saturating_mul(2));
+        for byte in raw {
+            for nibble in [byte >> 4, byte & 0x0f] {
+                hex.extend(char::from_digit(u32::from(nibble), 16));
+            }
+        }
         Self { algo, hex }
     }
 

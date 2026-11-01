@@ -5,8 +5,9 @@ The `writ-sign` shim: git's `gpg.ssh.program` on agent hosts.
 ## What it does
 
 - `-Y sign`: sends the object git wants signed to the daemon (`writ-sign git <repo>` over the
-  gateway, with the session certificate), with the parent commits and trees the daemon needs
-  to compute the paths it touches (`evidence`), and writes the armored signature where git
+  gateway, with the session certificate), with the first parent commit and the trees the
+  daemon needs to compute the paths it touches (`evidence`, read only while they fit in a
+  request), and writes the armored signature where git
   expects it, after checking it is one.
 - Everything else (`-Y verify`, `-Y find-principals`, …): the real `ssh-keygen`.
 - The daemon is `git config writ.url`, the repo `writ.repo`, reached with the SSH command git

@@ -1,11 +1,11 @@
 //! The objects the daemon needs to compute the paths a commit touches (`writ_git::paths`):
-//! its parent commits, its tree and its parents' trees, and every subtree that differs, read
-//! from the repository git is committing in. The daemon checks each one against the ids in
-//! the commit, so what is sent here is a convenience: sending less leaves the paths unknown
-//! (refused with `paths_check: deny`), sending something else is ignored.
+//! its first parent commit, its tree and that parent's tree, and every subtree that differs,
+//! read from the repository git is committing in. The daemon checks each one against the ids
+//! in the commit, so what is sent here is a convenience: sending less leaves the paths
+//! unknown (refused with `paths_check: deny`), sending something else is ignored.
 
 use std::collections::BTreeSet;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, bail};
@@ -18,32 +18,43 @@ fn budget(object: &[u8]) -> usize {
         .saturating_sub(64 * 1024)
 }
 
+/// Objects read from git, by id.
+type Objects = Vec<(String, Vec<u8>)>;
+
+/// What one object costs in a body: its bytes and its header line.
+fn cost(size: usize) -> usize {
+    size.saturating_add(32)
+}
+
 /// The evidence for `object`, or none when it isn't a commit or doesn't fit in a request.
 pub fn gather(object: &[u8]) -> anyhow::Result<Vec<(EvidenceKind, Vec<u8>)>> {
     let Some((tree, parents)) = headers(object) else {
         return Ok(Vec::new());
     };
+    let mut left = budget(object);
     let mut items = Vec::new();
     let mut trees = BTreeSet::from([tree.clone()]);
-    for (parent, content) in cat(&parents, "commit")? {
-        let parent_tree = headers(&content)
-            .map(|(t, _)| t)
-            .with_context(|| format!("parent {parent} has no tree"))?;
-        trees.insert(parent_tree.clone());
-        trees.extend(changed_trees(Some(&parent_tree), &tree)?);
-        items.push((EvidenceKind::Commit, content));
-    }
-    if parents.is_empty() {
-        trees.extend(changed_trees(None, &tree)?);
+    match parents.first() {
+        // A merge too: the daemon compares a commit with its first parent only.
+        Some(parent) => {
+            let Some(mut found) = cat(std::slice::from_ref(parent), "commit", &mut left)? else {
+                return Ok(Vec::new());
+            };
+            let (_, content) = found.pop().context("git gave no parent commit")?;
+            let parent_tree = headers(&content)
+                .map(|(t, _)| t)
+                .with_context(|| format!("parent {parent} has no tree"))?;
+            trees.insert(parent_tree.clone());
+            trees.extend(changed_trees(Some(&parent_tree), &tree)?);
+            items.push((EvidenceKind::Commit, content));
+        }
+        None => trees.extend(changed_trees(None, &tree)?),
     }
     let trees: Vec<String> = trees.into_iter().collect();
-    for (_, content) in cat(&trees, "tree")? {
-        items.push((EvidenceKind::Tree, content));
-    }
-    let size: usize = items.iter().map(|(_, c)| c.len().saturating_add(32)).sum();
-    if size > budget(object) {
+    let Some(found) = cat(&trees, "tree", &mut left)? else {
         return Ok(Vec::new());
-    }
+    };
+    items.extend(found.into_iter().map(|(_, c)| (EvidenceKind::Tree, c)));
     Ok(items)
 }
 
@@ -116,10 +127,12 @@ fn changed_trees(old: Option<&str>, new: &str) -> anyhow::Result<Vec<String>> {
     Ok(trees)
 }
 
-/// The content of each object (`git cat-file --batch`), checked to be of `kind`.
-fn cat(ids: &[String], kind: &str) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+/// The content of each object (`git cat-file --batch`), checked to be of `kind`; `None` once
+/// they would spend more than `left` (what they spend is taken from it), without reading the
+/// rest.
+fn cat(ids: &[String], kind: &str, left: &mut usize) -> anyhow::Result<Option<Objects>> {
     if ids.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Some(Vec::new()));
     }
     // PATH: the agent host's git, the one that called this shim.
     let mut child = Command::new("git")
@@ -132,7 +145,24 @@ fn cat(ids: &[String], kind: &str) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
     let mut stdin = child.stdin.take().context("no stdin")?;
     let request: String = ids.iter().map(|id| format!("{id}\n")).collect();
     let writer = std::thread::spawn(move || stdin.write_all(request.as_bytes()));
-    let mut reader = BufReader::new(child.stdout.take().context("no stdout")?);
+    let stdout = child.stdout.take().context("no stdout")?;
+    let read = read_batch(BufReader::new(stdout), ids, kind, left);
+    if !matches!(read, Ok(Some(_))) {
+        // Over the budget or failed: the rest isn't read.
+        let _ = child.kill();
+    }
+    let _ = writer.join();
+    let _ = child.wait();
+    read
+}
+
+/// The objects `git cat-file --batch` writes for `ids`, within `left`.
+fn read_batch(
+    mut reader: impl BufRead,
+    ids: &[String],
+    kind: &str,
+    left: &mut usize,
+) -> anyhow::Result<Option<Objects>> {
     let mut objects = Vec::new();
     for id in ids {
         let mut header = String::new();
@@ -145,14 +175,16 @@ fn cat(ids: &[String], kind: &str) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
             bail!("{id} is a {found}, not a {kind}");
         }
         let size: usize = size.parse().context("git cat-file gave no size")?;
+        match left.checked_sub(cost(size)) {
+            Some(rest) => *left = rest,
+            None => return Ok(None),
+        }
         let mut content = vec![0; size.saturating_add(1)];
         reader.read_exact(&mut content)?;
         content.pop();
         objects.push((id.clone(), content));
     }
-    let _ = writer.join();
-    let _ = child.wait();
-    Ok(objects)
+    Ok(Some(objects))
 }
 
 #[cfg(test)]
@@ -168,5 +200,27 @@ mod tests {
         );
         assert_eq!(headers(b"object aaa\ntype commit\n\nm"), None);
         assert_eq!(headers(b""), None);
+    }
+
+    #[test]
+    fn reading_stops_at_the_budget_on_both_sides() {
+        let batch = b"t1 tree 3\nabc\nt2 tree 2\nde\n";
+        let ids = ["t1".to_owned(), "t2".to_owned()];
+        let exact = cost(3) + cost(2);
+        let mut left = exact;
+        let read = read_batch(&batch[..], &ids, "tree", &mut left).unwrap();
+        assert_eq!(
+            read,
+            Some(vec![
+                ("t1".to_owned(), b"abc".to_vec()),
+                ("t2".to_owned(), b"de".to_vec())
+            ])
+        );
+        assert_eq!(left, 0);
+        let mut left = exact - 1;
+        assert_eq!(
+            read_batch(&batch[..], &ids, "tree", &mut left).unwrap(),
+            None
+        );
     }
 }

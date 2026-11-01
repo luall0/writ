@@ -331,9 +331,12 @@ revives a used-up lease.
 - `paths_check` (per template): compares files touched by each commit with `expected_paths`.
   `warn` signs and records a warning for the activity report (in the `sign` audit line);
   `deny` refuses to sign, also when the touched paths can't be computed. The daemon computes
-  them from the parent commits and trees `writ-sign` sends, each read only by the id computed
-  from its bytes: the paths that differ from the parent, every path of a root commit, and for
-  a merge the paths that differ from every parent (what the merge itself changed).
+  them from the first parent commit and the trees `writ-sign` sends, each read only by the id
+  computed from its bytes: the paths that differ from the first parent, a merge's too (what it
+  brings into its branch, including what comes from its other parents), and every path of a
+  root commit. Each commit is compared with its parent only: a parent's own changes are
+  checked when that parent is signed, which M4 enforces at push time (every new commit in the
+  ledger for this lease).
 - `on_violation: revoke_lease`: a violation (an out-of-scope denial, `DenyCode::is_violation`)
   revokes the lease, with the violation as the revocation's reason. With `deny_and_notify`
   (the default) the request is only denied.
