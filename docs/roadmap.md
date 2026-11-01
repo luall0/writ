@@ -104,6 +104,9 @@ forge (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
   collide by case on APFS), and an update whose name differs only in case from an existing
   ref is refused; `receive.fsckObjects` stays on; decide and consume a push under one store
   transaction, with the rate window and expiry checked there too.
+- From M3: each new commit's touched paths computed again from the objects git verified in
+  the quarantine (its own hashing and collision detection), and the push refused when they
+  differ from what was checked at signing; the ledger keeps what signing saw.
 
 Acceptance:
 - [ ] `git push origin agent/x` from a wired repo reaches the forge; `git fetch` works through

@@ -44,6 +44,14 @@ impl HashAlgo {
         }
     }
 
+    /// The policy's name for it.
+    pub fn object_format(self) -> writ_core::config::ObjectFormat {
+        match self {
+            HashAlgo::Sha1 => writ_core::config::ObjectFormat::Sha1,
+            HashAlgo::Sha256 => writ_core::config::ObjectFormat::Sha256,
+        }
+    }
+
     /// The header git puts a commit's signature in: `gpgsig`, or `gpgsig-sha256` in a
     /// SHA-256 repository.
     pub fn signature_header(self) -> &'static str {

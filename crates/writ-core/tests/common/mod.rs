@@ -2,7 +2,7 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use writ_core::caller::CallerFacts;
-use writ_core::config::{PolicyConfig, PushMode};
+use writ_core::config::{ObjectFormat, PolicyConfig, PushMode};
 use writ_core::fit::{self, Submission};
 use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, TicketRecord, Usage};
 use writ_core::names::{CommitId, KeyFingerprint, RepoName, TicketId};
@@ -148,6 +148,7 @@ pub fn sign_request(lease: &Lease) -> SignRequest {
     SignRequest {
         repo: repo("omega-code"),
         object: ObjectKind::Commit,
+        object_format: Some(ObjectFormat::Sha1),
         committer_email: AGENT_EMAIL.to_owned(),
         writ_trailers: vec![lease.id.to_string()],
         touched_paths: Some(vec!["src/auth/login.rs".to_owned()]),

@@ -13,7 +13,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::caller::{self, CallerFacts};
-use crate::config::{PathsCheck, PolicyConfig, PushMode, RepoEntry, Template, TicketLink};
+use crate::config::{
+    ObjectFormat, PathsCheck, PolicyConfig, PushMode, RepoEntry, Template, TicketLink,
+};
 use crate::fit;
 use crate::lease::{Lease, State, Usage, is_exhausted};
 use crate::names::{CommitId, KeyFingerprint, RepoName, TicketId};
@@ -57,6 +59,9 @@ pub enum DenyCode {
     ObjectType,
     /// The committer email is not in the lease (`committer`, a violation).
     Committer,
+    /// The commit's object format isn't its repo's (`object_format`). Not a violation: a
+    /// repository of the other format, never anything the ticket allowed.
+    ObjectFormat,
     /// The `Writ:` trailer is missing or names another lease (`ticket_link`, a violation).
     TicketLink,
     /// The commit touches paths outside `expected_paths` with `paths_check: deny` (`paths`,
@@ -117,6 +122,7 @@ impl DenyCode {
             DenyCode::Config => "config",
             DenyCode::PushMode => "push_mode",
             DenyCode::ObjectType => "object_type",
+            DenyCode::ObjectFormat => "object_format",
             DenyCode::Committer => "committer",
             DenyCode::TicketLink => "ticket_link",
             DenyCode::Paths => "paths",
@@ -256,6 +262,8 @@ pub struct SignRequest {
     /// the ledger; a push to another repo won't find the commit signed for it.
     pub repo: RepoName,
     pub object: ObjectKind,
+    /// The commit's object format (from the length of its ids); `None` when it isn't a commit.
+    pub object_format: Option<ObjectFormat>,
     /// The committer email from the commit object.
     pub committer_email: String,
     /// The values of every `Writ:` trailer in the commit message.
@@ -387,6 +395,18 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
         return Err(deny(
             DenyCode::ObjectType,
             "only commits are signed (no tags: releases stay a human act)",
+        ));
+    }
+    if request.object_format != Some(entry.object_format) {
+        let found = request
+            .object_format
+            .map_or("an unknown", ObjectFormat::as_str);
+        return Err(deny(
+            DenyCode::ObjectFormat,
+            format!(
+                "repo {} is {} (object_format in the registry), the commit is {found}",
+                request.repo, entry.object_format
+            ),
         ));
     }
     if lease.ticket.scope.signing_key.is_none() {

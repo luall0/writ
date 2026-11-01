@@ -77,9 +77,13 @@ impl std::ops::Deref for Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::with_policy(POLICY)
+    }
+
+    fn with_policy(policy: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(FakeClock::at_unix(START));
-        let test = TestServiceBuilder::new(POLICY)
+        let test = TestServiceBuilder::new(policy)
             .clock(clock.clone())
             .build(dir.path());
         let db = dir.path().join("leases.db");
@@ -157,7 +161,11 @@ struct Built {
 
 /// A commit on a one-file parent, changing `path`, by `email`, with `message`.
 fn build(path: &str, email: &str, message: &str) -> Built {
-    let algo = HashAlgo::Sha1;
+    build_in(HashAlgo::Sha1, path, email, message)
+}
+
+/// The same, in a repository of object format `algo`.
+fn build_in(algo: HashAlgo, path: &str, email: &str, message: &str) -> Built {
     let blob = |text: &str| algo.hash(ObjectType::Blob, text.as_bytes()).unwrap();
     // A tree from (name, mode, raw id) entries; paths with one `/` get a subtree.
     let tree = |entries: &[(&str, &str, Vec<u8>)]| {
@@ -172,7 +180,7 @@ fn build(path: &str, email: &str, message: &str) -> Built {
         (id, content)
     };
     let raw = |id: &writ_git::ObjectId| -> Vec<u8> {
-        (0..20)
+        (0..id.as_str().len() / 2)
             .map(|i| u8::from_str_radix(&id.as_str()[2 * i..2 * i + 2], 16).unwrap())
             .collect()
     };
@@ -213,6 +221,7 @@ fn signing(cert: &CertIdentity, built: &Built, repo: &str) -> Signing {
         request: SignRequest {
             repo: repo.parse().unwrap(),
             object: writ_core::policy::ObjectKind::Commit,
+            object_format: Some(built.commit.algo().object_format()),
             committer_email: built.commit.committer_email().to_owned(),
             writ_trailers: built.commit.writ_trailers(),
             touched_paths: touched(&built.commit, &evidence).ok(),
@@ -575,4 +584,39 @@ fn a_template_whose_key_the_signer_lacks_is_a_startup_error() {
     }
     let held = writ_signer::testing::software_signer(&["agent-ed25519-01"], KeyKind::P256);
     assert!(start(held).is_ok());
+}
+
+#[test]
+fn a_commit_is_signed_only_in_its_repo_s_object_format() {
+    // omega-code is a SHA-256 repository; homelab-scripts keeps the default, SHA-1.
+    let policy = POLICY.replacen(
+        "    ticket_link: trailer\n",
+        "    ticket_link: trailer\n    object_format: sha256\n",
+        1,
+    );
+    assert_ne!(policy, POLICY, "the fixture changed");
+    let h = Harness::with_policy(&policy);
+    let (lease, cert) = h.lease(FEATURE);
+    let message = trailer(&lease);
+    denied(
+        h.sign(&cert, &build("src/a.rs", EMAIL, &message), "omega-code"),
+        DenyCode::ObjectFormat,
+        "repo omega-code is sha256 (object_format in the registry), the commit is sha1",
+    );
+    let sha256 = build_in(HashAlgo::Sha256, "src/a.rs", EMAIL, &message);
+    let signed = h.sign(&cert, &sha256, "omega-code").unwrap();
+    assert_eq!(signed.commit.as_str().len(), 64);
+    let expected = writ_git::signed::signed_id(&sha256.commit, &signed.signature).unwrap();
+    assert_eq!(signed.commit.as_str(), expected.as_str());
+    denied(
+        h.sign(&cert, &sha256, "homelab-scripts"),
+        DenyCode::ObjectFormat,
+        "repo homelab-scripts is sha1 (object_format in the registry), the commit is sha256",
+    );
+    h.sign(
+        &cert,
+        &build("src/a.rs", EMAIL, "Change\n"),
+        "homelab-scripts",
+    )
+    .unwrap();
 }

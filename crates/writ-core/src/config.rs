@@ -45,6 +45,34 @@ pub enum TicketLink {
     LedgerOnly,
 }
 
+/// The hash a repository names its objects with. A repository's commits are signed only in
+/// its own format; SHA-1 is the default, since most remotes (GitHub among them) have only
+/// SHA-1 repositories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectFormat {
+    /// SHA-1 ids (40 hex characters), computed with collision detection.
+    #[default]
+    Sha1,
+    /// SHA-256 ids (64 hex characters).
+    Sha256,
+}
+
+impl ObjectFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ObjectFormat::Sha1 => "sha1",
+            ObjectFormat::Sha256 => "sha256",
+        }
+    }
+}
+
+impl fmt::Display for ObjectFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What to do when a commit touches files outside `expected_paths`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,6 +103,9 @@ pub struct RepoEntry {
     pub push_modes: BTreeSet<PushMode>,
     #[serde(default = "default_ticket_link")]
     pub ticket_link: TicketLink,
+    /// The repository's object format (`sha1`, the default, or `sha256`).
+    #[serde(default)]
+    pub object_format: ObjectFormat,
     #[serde(default)]
     pub direct_ssh: Option<DirectSsh>,
 }

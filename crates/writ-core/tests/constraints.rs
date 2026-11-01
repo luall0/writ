@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use common::*;
 use writ_core::caller::{CallerConstraint, CodeIdentity, ProcessMatch, ProcessRef};
-use writ_core::config::PushMode;
+use writ_core::config::{ObjectFormat, PushMode};
 use writ_core::lease::{Lease, State};
 use writ_core::policy::{
     self, CertIdentity, DenyCode, LedgerRef, ObjectKind, PushRequest, PushedCommit, RefUpdate,
@@ -540,6 +540,21 @@ fn committer_identity_and_object() {
             |_, r| r.object = ObjectKind::Blob,
             Some(DenyCode::ObjectType),
         ),
+        (
+            "anything else",
+            |_, r| r.object = ObjectKind::Other,
+            Some(DenyCode::ObjectType),
+        ),
+        (
+            "a SHA-256 commit for a SHA-1 repo",
+            |_, r| r.object_format = Some(ObjectFormat::Sha256),
+            Some(DenyCode::ObjectFormat),
+        ),
+        (
+            "a commit whose format is unknown",
+            |_, r| r.object_format = None,
+            Some(DenyCode::ObjectFormat),
+        ),
     ]);
 }
 
@@ -885,6 +900,7 @@ fn violations_are_out_of_scope_denials_only() {
         DenyCode::NoLease,
         DenyCode::Caller,
         DenyCode::Config,
+        DenyCode::ObjectFormat,
     ] {
         assert!(!code.is_violation(), "{code}");
     }

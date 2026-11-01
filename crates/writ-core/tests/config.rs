@@ -12,7 +12,7 @@
 mod common;
 
 use common::*;
-use writ_core::config::{PathsCheck, PolicyConfig, PushMode, TicketLink};
+use writ_core::config::{ObjectFormat, PathsCheck, PolicyConfig, PushMode, TicketLink};
 use writ_core::ticket::Operation;
 use writ_core::ticket::TicketRequest;
 
@@ -24,6 +24,17 @@ fn the_test_policy_parses_with_defaults() {
     let omega = config.repo(&repo("omega-code")).unwrap();
     assert_eq!(omega.protected_refs.len(), 2);
     assert_eq!(omega.ticket_link, TicketLink::Trailer);
+    assert_eq!(omega.object_format, ObjectFormat::Sha1, "the default");
+    let sha256 = PolicyConfig::from_yaml(&POLICY.replacen(
+        "ticket_link: trailer",
+        "ticket_link: trailer\n    object_format: sha256",
+        1,
+    ))
+    .unwrap();
+    assert_eq!(
+        sha256.repo(&repo("omega-code")).unwrap().object_format,
+        ObjectFormat::Sha256
+    );
     let dotfiles = config.repo(&repo("dotfiles")).unwrap();
     assert!(dotfiles.direct_ssh.is_some());
     let quick = config.template(&"quick-fix".parse().unwrap()).unwrap();
@@ -145,6 +156,15 @@ fn errors_name_the_field() {
             "unknown ticket link",
             POLICY.replacen("ticket_link: trailer", "ticket_link: footer", 1),
             "repos.omega-code.ticket_link: ",
+        ),
+        (
+            "unknown object format",
+            POLICY.replacen(
+                "ticket_link: trailer",
+                "ticket_link: trailer\n    object_format: sha3",
+                1,
+            ),
+            "repos.omega-code.object_format: ",
         ),
         (
             "duplicate key",

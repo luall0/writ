@@ -25,6 +25,7 @@ repos:
     protected_refs: ["refs/heads/main", "refs/tags/*"]   # never pushable by any lease
     push_modes: [gateway]                     # default
     ticket_link: trailer                      # trailer | notes | ledger_only
+    object_format: sha1                       # sha1 (default) | sha256: commits signed only in it
   homelab-scripts:
     upstream: ssh://git@forgejo.home/user/homelab-scripts.git
     upstream_credential: upstream-forgejo-01
@@ -43,7 +44,9 @@ repos:
       allow_account_wide: false               # refuse if the credential isn't repo-scoped
 ```
 
-Defaults: `protected_refs: []`, `push_modes: [gateway]`, `ticket_link: trailer`. The
+Defaults: `protected_refs: []`, `push_modes: [gateway]`, `ticket_link: trailer`,
+`object_format: sha1` (GitHub and most remotes have only SHA-1 repositories; a commit is
+signed only in its repo's format, so a SHA-256 repository never gets SHA-1 objects signed). The
 `direct_ssh` section is required with the `direct_ssh` push mode and refused without it.
 Repo names are unique ignoring case: a repo's mirror is `<name>.git`, and on a
 case-insensitive file system (local mode's APFS) `Demo` and `demo` would be one directory.

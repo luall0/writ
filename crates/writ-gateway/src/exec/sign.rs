@@ -83,6 +83,7 @@ fn parse(repo: &RepoName, input: SignInput) -> Result<(SignRequest, Option<Commi
         let request = SignRequest {
             repo: repo.clone(),
             object,
+            object_format: None,
             committer_email: String::new(),
             writ_trailers: Vec::new(),
             touched_paths: None,
@@ -106,6 +107,7 @@ fn parse(repo: &RepoName, input: SignInput) -> Result<(SignRequest, Option<Commi
     let request = SignRequest {
         repo: repo.clone(),
         object,
+        object_format: Some(commit.algo().object_format()),
         committer_email: commit.committer_email().to_owned(),
         writ_trailers: commit.writ_trailers(),
         touched_paths,

@@ -26,7 +26,7 @@ use proptest::prelude::*;
 use proptest::sample::{select, subsequence};
 use proptest::strategy::ValueTree;
 use writ_core::caller::{CallerConstraint, CallerFacts, ProcessMatch, ProcessRef};
-use writ_core::config::{PolicyConfig, PushMode};
+use writ_core::config::{ObjectFormat, PolicyConfig, PushMode};
 use writ_core::fit;
 use writ_core::lease::{self, Lease, LifecycleError, State, TicketRecord, Usage};
 use writ_core::narrow;
@@ -314,6 +314,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
             Op::Sign(SignRequest {
                 repo: repo(repo_name),
                 object,
+                object_format: Some(ObjectFormat::Sha1),
                 committer_email: email.to_owned(),
                 writ_trailers: trailers,
                 touched_paths: touched.map(|t| t.into_iter().map(str::to_owned).collect()),
@@ -518,6 +519,7 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
                     0 => Op::Sign(SignRequest {
                         repo: repo_name,
                         object: ObjectKind::Commit,
+                        object_format: Some(ObjectFormat::Sha1),
                         committer_email: email,
                         writ_trailers: vec![id.to_string()],
                         touched_paths: touched,
