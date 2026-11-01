@@ -100,7 +100,7 @@ project is archived in commit `3485f40`, `spikes/secure-enclave/keychain-app/`);
 - A Personal Team profile lasts 7 days; a paid account's lasts years, which is what makes
   removing the identity from this Mac practical.
 - The paid team ID likely differs from the Personal Team's: the access group changes, so the
-  keys are created again (agent keys re-registered on forges and in `allowed_signers`).
+  keys are created again (agent keys re-registered on remotes and in `allowed_signers`).
 
 Most of what it needs (SSHSIG conversion, the `Signer` contract suite, key creation) comes
 with the CryptoKit backend in [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac).

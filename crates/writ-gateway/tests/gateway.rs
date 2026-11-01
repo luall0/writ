@@ -35,10 +35,10 @@ use writ_proto::{Ack, ApiError, Command, Decision, Decisions, Info, Listing, Sub
 const POLICY: &str = r#"
 repos:
   demo:
-    upstream: ssh://git@forge.invalid/demo.git
+    upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
   other:
-    upstream: ssh://git@forge.invalid/other.git
+    upstream: ssh://git@remote.invalid/other.git
     upstream_credential: upstream-01
 templates:
   work:

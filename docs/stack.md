@@ -40,7 +40,7 @@ Settle each "Proposed" row when the milestone that needs it starts, and change i
 |---|---|---|
 | `git` | 2.34 (M0 ran 2.54) | SSH commit signing (`gpg.format = ssh`) |
 | OpenSSH (`ssh`, `ssh-keygen`) | 8.9 (M0 ran 10.5) | `-Y sign/verify`, certificates, `session-bind` (direct_ssh) |
-| Docker + compose | recent | Detached mode (M8), test forge (M4) |
+| Docker + compose | recent | Detached mode (M8), test remote (M4) |
 | Secretive | any | v1 approver key (Mac) |
 
 Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versions).

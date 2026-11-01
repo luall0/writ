@@ -11,7 +11,7 @@ guarantee below must be covered by at least one test that tries to break it
 | **Sloppy agent** | Does what it's asked but may commit/push to the wrong place, loop, push too much | ✅ Primary |
 | **Prompt-injected agent** | Steered by malicious content (repo file, issue, web page, dependency) into abusing its access. It also **writes its own ticket**, so it can ask for more than the task needs with a convincing plan | ✅ Primary: templates cap any ticket, whatever its wording |
 | **Malware on an agent host** | Code running next to the agent, can read the session key | ⚠️ Bounded by the lease |
-| **Network attacker** | Between agent hosts, daemon, forges, approvers | ✅ Authenticated transports only |
+| **Network attacker** | Between agent hosts, daemon, remotes, approvers | ✅ Authenticated transports only |
 | **Compromised approver key or Mac** | Can sign approvals | ⚠️ Bounded by templates (can't widen scope) |
 | **Attacker on the daemon host** | Root or access to the Docker volumes | ❌ v1 with software keys; mitigated by YubiKey/TPM later |
 | **Me** | Approves, reviews, revokes | Trusted |
@@ -22,7 +22,7 @@ guarantee below must be covered by at least one test that tries to break it
 |---|---|---|
 | My personal keys | Secretive (Secure Enclave) | **Never touched by Writ** |
 | Agent signing keys | Signer backend | Software (v1), YubiKey / SE / TPM later |
-| Upstream forge credentials | Daemon, behind the signer interface | SSH keys on my forge accounts: **account-wide access**, not per repo. Agents never see them |
+| Upstream remote credentials | Daemon, behind the signer interface | SSH keys on my remote accounts: **account-wide access**, not per repo. Agents never see them |
 | Repo mirrors | Daemon host | Personal projects only for now |
 | Session keys + certificates | Agent hosts | Short-lived, one per lease |
 | Approver keys | Secretive (v1), YubiKey, own SE app later | Sign approvals, admin changes and unsealing; listed in the daemon's `approvers` file |
@@ -114,7 +114,7 @@ Nothing reaches upstream before M4, which wires the push checks.
 
 | Guarantee | Tests that try to break it |
 |---|---|
-| ✅ Agents never get forge credentials or signing keys | `no_key_in_debug_or_errors`, `clients_never_see_an_internal_cause`, `errors_and_debug_never_contain_the_token`, `the_audit_log_holds_every_decision_and_no_secret`, `the_log_holds_no_secret` |
+| ✅ Agents never get remote credentials or signing keys | `no_key_in_debug_or_errors`, `clients_never_see_an_internal_cause`, `errors_and_debug_never_contain_the_token`, `the_audit_log_holds_every_decision_and_no_secret`, `the_log_holds_no_secret` |
 | ✅ No signature or push outside an active, approver-signed lease | `no_signature_or_push_outside_an_active_approver_signed_lease`, `a_ticket_outside_every_template_is_rejected_before_reaching_the_approver`, `a_narrowed_ticket_never_grants_more`, `a_lease_revoked_while_the_pack_comes_in_moves_no_ref`, `an_expired_or_revoked_lease_signs_nothing`, `no_lease_an_expired_or_a_revoked_one_says_why` |
 | ✅ Pushes only to allowed repos and refs, no force push unless allowed | `pushes_only_to_allowed_repos_and_refs_no_force_push_unless_allowed`, `destination_ref_and_protected_refs`, `fetch_and_push_through_the_gateway`, `git_runs_only_on_the_lease_repos_and_every_refusal_is_logged` |
 | ✅ Only commits signed under the same lease reach upstream | `only_commits_signed_under_the_same_lease_reach_upstream`, `malformed_objects_never_land` |
@@ -149,7 +149,7 @@ Nothing reaches upstream before M4, which wires the push checks.
 | SHA-1 repositories are the default (`object_format: sha1`, as on GitHub and most remotes): there, the paths a commit touches are read from objects the agent sends, identified by SHA-1 | Each object's id is computed with collision detection (git's own `sha1dc` algorithm), which refuses the known attack constructions; a new chosen-prefix collision would cost a lot and only change what the path check sees, within the lease (the signature's other checks don't use these objects); the ledger's commit id includes the daemon's signature, which the agent can't predict; git and the remote rest on the same ids. From M4, a push is refused unless the paths are the same when computed again from the objects git verified in the quarantine, so a forged tree never reaches upstream through `gateway` or `proxy` | `object_format: sha256` where the remote supports it |
 | Session key theft on an agent host | Bounded by lease scope and TTL | SE-held session keys, source pinning |
 | Daemon is a single point of failure | Fail closed is the right behavior | Local mode as fallback |
-| Upstream keys have account-wide access | Forges don't scope personal SSH keys per repo | Repo registry + `protected_refs` enforced by the daemon; keys on YubiKey; deploy keys or bot accounts later |
+| Upstream keys have account-wide access | Remotes don't scope personal SSH keys per repo | Repo registry + `protected_refs` enforced by the daemon; keys on YubiKey; deploy keys or bot accounts later |
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | Hardware unseal recipients later |
 | `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |

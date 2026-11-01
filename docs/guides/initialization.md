@@ -9,7 +9,7 @@ the first step of [M0](../roadmap.md#m0--protocol-spike-gono-go).
 rustup --version          # https://rustup.rs (not Homebrew Rust)
 git --version             # ≥ 2.34 (SSH commit signing)
 ssh -V                    # OpenSSH ≥ 8.9
-docker compose version    # for the test forge (M4) and detached mode (M8)
+docker compose version    # for the test remote (M4) and detached mode (M8)
 ```
 
 On the Mac: Secretive with a **dedicated approval key** ("require authentication" on), used
@@ -82,7 +82,7 @@ cargo new --bin crates/writ-sign
 | `make test` | The shipped binaries built on their own (`-p writd -p writ-cli -p writ-sign`, in `target/bins`), then `cargo test --workspace` (the integration tests run those binaries); everything `--locked`. Since M2.6: `make ci` runs `check` then `test`, and `make check` also runs `cargo deny` and the source, feature and guarantee checks (see the [Makefile](../../Makefile)) |
 | `make fmt` | `cargo fmt --all` |
 | `make run` | `writd` with the dev config in `dev/` (test keys and test repos only) |
-| `make e2e` | End-to-end scenarios against the test forge in Docker (from M4) |
+| `make e2e` | End-to-end scenarios against the test remote in Docker (from M4) |
 | `make docker` | Build the `writd` image (from M8) |
 
 Then update the commands table in [AGENTS.md](../../AGENTS.md#commands) so it matches.

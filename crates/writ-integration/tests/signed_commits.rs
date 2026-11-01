@@ -27,7 +27,7 @@ const SIGNING_FAILED: i32 = 128;
 const STRICT: &str = r#"
 repos:
   demo:
-    upstream: ssh://git@forge.invalid/demo.git
+    upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
     protected_refs: ["refs/heads/main", "refs/tags/*"]
 templates:

@@ -95,7 +95,7 @@ sequenceDiagram
   participant G as git (agent)
   participant D as writd gateway
   participant Q as Quarantine
-  participant F as Forge (upstream)
+  participant F as Remote (upstream)
   G->>D: git push writ agent/x (session cert)
   D->>Q: receive pack
   D->>D: checks: lease covers push + repo,<br/>ref matches agent/*, no force push,<br/>every new commit in ledger for this lease,<br/>size limits
@@ -124,29 +124,29 @@ The agent connects to the daemon (same URL rewrite).
 2. It buffers the pack into a temporary quarantine (bounded by `max_push_size`) and indexes it
    with `git index-pack`.
 3. It walks the new commits and checks each one against the ledger for this lease.
-4. Only then does it open its own SSH session to the forge and relay the ref updates and the
+4. Only then does it open its own SSH session to the remote and relay the ref updates and the
    pack.
-5. The quarantine is deleted; the forge's answer goes back to the agent. Any rejection shows
+5. The quarantine is deleted; the remote's answer goes back to the agent. Any rejection shows
    in the agent's terminal, as with `gateway`.
 
-To find which commits are "new" without a mirror, the daemon first asks the forge for its
+To find which commits are "new" without a mirror, the daemon first asks the remote for its
 current refs (the advertisement at the start of the upstream session), relays them to the
 agent, and uses them as the boundary.
 
 The daemon advertises the `no-thin` capability to the agent, so the pack is self-contained: it
-can be indexed and every commit object in it read without having the forge's objects locally.
+can be indexed and every commit object in it read without having the remote's objects locally.
 Commits in the pack are exactly the new commits to check.
 
 ### 3c. Push, `direct_ssh` mode
 At lease grant, the daemon also exposes a per-lease ssh-agent socket (reachable through the
 session channel) holding only the repo's deploy key. Each signature request is checked for
-host (`session-bind`), user, limits and TTL. The forge enforces the repo; nothing enforces
+host (`session-bind`), user, limits and TTL. The remote enforces the repo; nothing enforces
 refs.
 
 ## 4. Fetch
 
 `git fetch writ` → the daemon syncs its mirror from upstream if stale, then serves
-`upload-pack`. Requires a lease with `fetch` (or a read-only template). Agents never hold forge
+`upload-pack`. Requires a lease with `fetch` (or a read-only template). Agents never hold remote
 credentials, even read-only ones.
 
 ## 5. Revoke / expire

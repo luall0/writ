@@ -3,9 +3,10 @@
 Writ is a trust broker for AI agents. An agent drafts a **ticket** for its task (repos,
 branches, operations, limits, plan); I sign it with an approver key (Secretive, Touch ID), and
 the signed ticket becomes a scoped, time-boxed **lease**. The daemon `writd` holds the agent
-signing keys and the forge credentials, is the agents' git remote, checks every signature and
-push against the lease, and is the only thing that pushes upstream. Rust; detached mode
-(Docker on Linux) and local mode (native on the Mac), same protocol.
+signing keys and the credentials for the remotes (GitHub, Codeberg, Forgejo…), is the
+agents' git remote, checks every signature and push against the lease, and is the only thing
+that pushes upstream. Rust; detached mode (Docker on Linux) and local mode (native on the
+Mac), same protocol.
 
 Full documentation lives in [`docs/`](docs/README.md). This file holds what every agent must
 know before touching the repo.
@@ -59,7 +60,7 @@ records every commit signed per lease. Use these words in code, logs and docs.
 2. **Fail closed.** No matching lease, more than one, sealed daemon, unparsable input, an
    unexpected state or any error → deny with a reason. Never add a default-allow path, a
    "dev mode" bypass in release builds, or a fallback that skips a check.
-3. **Agents never hold forge credentials or signing keys.** No API, error message, log line or
+3. **Agents never hold remote credentials or signing keys.** No API, error message, log line or
    file written on an agent host may contain key material, tokens or the keystore passphrase.
    Secrets in memory are zeroized and never `Debug`-printed.
 4. **Platform-agnostic core** ([platform.md](docs/architecture/platform.md)). Anything that
@@ -84,7 +85,7 @@ records every commit signed per lease. Use these words in code, logs and docs.
    and the repo never stores fixtures made from a real key.
 9. **Everything is logged.** Every allow, deny, grant, refusal, revocation, admin change and
    seal/unseal writes one audit line ([audit log](docs/architecture/policy-and-state.md#audit-log)).
-10. **Forge-agnostic.** No forge-specific API in the core path (GitHub, Gitea, Forgejo… are
+10. **Remote-agnostic.** No remote-specific API in the core path (GitHub, Gitea, Forgejo… are
     reached through plain git over SSH or HTTPS).
 11. **Rust:** no `unwrap()` / `expect()` / `panic!`, unchecked indexing, slicing or
     truncating casts outside tests (clippy denies them; `arithmetic_side_effects` too in
@@ -140,7 +141,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Format | `make fmt` |
 | Install the git hooks (`pre-push` runs `make ci`) | `make hooks` |
 | Run the development daemon on `dev/writd.yaml` (test keys in `dev/data`, your approval public key in `dev/approvers`; `writd host-key dev/writd.yaml` / `writd tls-fingerprint dev/writd.yaml` print what to pin) | `make run` |
-| End-to-end scenarios against the test forge (Docker, from M4) | `make e2e` |
+| End-to-end scenarios against the test remote (Docker, from M4) | `make e2e` |
 | Build the Docker image (from M8) | `make docker` |
 | Add a dependency | add its version to `[workspace.dependencies]` in the root `Cargo.toml`, then `dep.workspace = true` in the crate |
 

@@ -32,7 +32,7 @@ use crate::binaries::bin;
 pub const POLICY: &str = r#"
 repos:
   demo:
-    upstream: ssh://git@forge.invalid/demo.git
+    upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
     protected_refs: ["refs/heads/main", "refs/tags/*"]
 templates:
@@ -91,7 +91,7 @@ pub struct GitGateway {
     pub dir: TempDir,
     pub runtime: tokio::runtime::Runtime,
     pub service: Arc<Service>,
-    /// The same key as the service's CA, to forge certificates without a lease.
+    /// The same key as the service's CA, to make certificates by hand, for no lease.
     pub ca: CertificateAuthority,
     pub approver: PrivateKey,
     /// The public key commits are signed with (the template's `signing_key`).

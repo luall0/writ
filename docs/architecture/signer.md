@@ -46,7 +46,7 @@ when verifying.
 | **ssh-agent** (any socket: Secretive, yubikey-agent, 1Password…) | Whatever the agent holds | Depends on what backs it | Lets the daemon reuse an existing agent. Caveat: if agents run as the same user and can reach that socket, they can bypass Writ; only safe when the socket is out of the agents' reach (other user, other host) |
 
 The same interface also holds the **upstream credentials** (the SSH key the daemon uses to
-push to forges), so those can move to a YubiKey too.
+push to remotes), so those can move to a YubiKey too.
 
 And, from M5, the **HTTPS approval API's TLS key** (P-256): rustls signs each handshake through
 a small adapter that asks the `Signer` for a raw signature and DER-encodes it, and the

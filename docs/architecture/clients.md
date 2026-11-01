@@ -98,7 +98,8 @@ offered), no prompt (`BatchMode`), and only the daemon's pinned host key (`known
 global file). `writ-sign` uses the same command (`GIT_SSH_COMMAND`, then `core.sshCommand`)
 and refuses to sign when neither is set: it never falls back to a plain `ssh`.
 
-Agents never get a remote pointing at the real forge with credentials. With `gateway` or
+Agents never get a git remote pointing at the real upstream (GitHub, Codeberg, Forgejo…)
+with credentials. With `gateway` or
 `proxy` push modes, `writ init` can also write the [URL rewrite](gateway.md#url-rewrite) so
 `origin` keeps working (in wrapper mode, passed the same way: `writ git push origin` goes
 through the daemon, the operator's `git push origin` doesn't).

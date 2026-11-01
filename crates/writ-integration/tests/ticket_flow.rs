@@ -28,7 +28,7 @@ use writ_store::looks_secret;
 const POLICY: &str = r#"
 repos:
   demo:
-    upstream: ssh://git@forge.invalid/demo.git
+    upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
     protected_refs: ["refs/heads/main"]
 templates:

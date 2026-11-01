@@ -36,8 +36,8 @@ If I refuse, I say why, and the agent revises its plan and submits a new ticket.
 **Templates**, written by me in advance, cap what any ticket can ask for.
 
 Agents can run anywhere (Mac, VMs, containers). They all talk to the same daemon. Agents
-**never hold forge credentials**: the daemon is their git remote and pushes upstream itself,
-to any forge (GitHub, Gitea, Forgejo…).
+**never hold remote credentials**: the daemon is their git remote and pushes upstream itself,
+to any remote (GitHub, Gitea, Forgejo…).
 
 The full schema of tickets, templates and the repo registry is in
 [Lease model](lease-model.md).
@@ -82,7 +82,7 @@ approval is bounded to what the agent keys can do.
 - Detached mode in Docker with a software signer; signer interface ready for YubiKey
 - Local mode on the Mac
 - SSH commit signing; push/fetch through the daemon's git gateway; upstream over SSH to any
-  forge
+  remote (GitHub, Codeberg, Forgejo, GitLab…)
 - Approvals signed by my approver keys (Secretive first, own Secure Enclave signer later)
 - Daemon starts sealed; unsealed with a passphrase + approver signature
 - Agents on any host that can reach the daemon
@@ -103,11 +103,11 @@ v1 does not do any of these; don't build them unless explicitly asked:
 ## Design principles
 
 1. **Policy lives in the daemon.** Clients, shims and harnesses are untrusted.
-2. **Agents never hold forge credentials.** Only the daemon pushes.
+2. **Agents never hold remote credentials.** Only the daemon pushes.
 3. **Keys sit behind a signer interface.** The daemon doesn't care where they live.
 4. **One human approval per ticket**, signed by a registered approver key (signer-agnostic),
    always within a template.
-5. **Forge-agnostic.** No reliance on forge-specific protections; they're optional defense in
+5. **Remote-agnostic.** No reliance on remote-specific protections; they're optional defense in
    depth.
 6. **Everything is logged; every lease is revocable instantly.**
 7. **Fail closed.** Daemon unreachable or lease unclear → deny.

@@ -7,7 +7,7 @@ its section moves to [`history/`](history/README.md) with notes on what was done
 
 Order rationale: prove the risky protocol pieces first (M0), then build the policy as a pure
 library (M1), then add one end-to-end capability per milestone (ticket → signing → pushing).
-Writ guards real credentials, so it is used only on **test repos and test forge accounts**
+Writ guards real credentials, so it is used only on **test repos and test remote accounts**
 until sealing and signed admin changes exist (M5); the first real task goes through Writ in M6.
 
 The core is platform-agnostic from the start ([Platform interfaces](architecture/platform.md)):
@@ -25,7 +25,7 @@ an unchanged core.
 | M2.6 | [Security checkup](history/m2.6-security-checkup.md) ✅ | The security review after M2.5 and its fixes; the [security conventions](security.md), their checks in `make check`, CI |
 | M3 | [Signed commits](history/m3-signed-commits.md) ✅ | `writ-sign`, the sign command through the `Signer`, touched paths from checked evidence, the ledger, `writ init` (wrapper mode), `object_format` |
 | M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
-| M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only forges |
+| M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only remotes |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
@@ -82,7 +82,7 @@ checks in `make check`, the guarantee registry.
 ## M4 — Gateway push and fetch
 
 [Flows § 3 and § 4](flows.md#3-push) in `gateway` mode, upstream over SSH, against a test
-forge (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
+remote (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
 
 - One bare mirror per registered repo; sync on fetch, on push and periodically.
 - Push into quarantine; checks: lease covers push and repo, ref matches the branches, protected
@@ -99,14 +99,14 @@ forge (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
   differ from what was checked at signing; the ledger keeps what signing saw.
 
 Acceptance:
-- [ ] `git push origin agent/x` from a wired repo reaches the forge; `git fetch` works through
-      the daemon; the agent host holds no forge credential.
+- [ ] `git push origin agent/x` from a wired repo reaches the remote; `git fetch` works through
+      the daemon; the agent host holds no remote credential.
 - [ ] Each is denied with a readable reason and nothing reaches upstream: a protected ref, a
       branch outside the lease, a force push, a commit not signed under this lease (including
       one signed under another lease), a pack over `max_push_size`, a fetch without `fetch`.
-- [ ] Upstream moved → the push is rejected with the forge's reason; fetch, rebase, re-sign
+- [ ] Upstream moved → the push is rejected with the remote's reason; fetch, rebase, re-sign
       and push again succeeds.
-- [ ] The mirror never holds refs the forge refused.
+- [ ] The mirror never holds refs the remote refused.
 
 ## M4.5 — HTTPS upstream
 

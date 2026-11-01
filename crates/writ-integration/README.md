@@ -16,7 +16,7 @@ external service. Nothing depends on this crate (checked).
 ## Scope
 
 - Local only: the real `git`, `ssh`, `ssh-keygen`, `ssh-agent`, `nc`, and the workspace
-  binaries (`make test` builds them first). Docker and real forges are the end-to-end level
+  binaries (`make test` builds them first). Docker and real remotes are the end-to-end level
   (`make e2e`, from M4).
 - Never the user's `~/.ssh`, git configuration or agent; what needs a human (Touch ID) is in
   the manual checks.

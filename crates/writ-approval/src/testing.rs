@@ -148,7 +148,7 @@ pub struct TestService {
     pub service: Arc<Service>,
     /// The one key in `approvers`.
     pub approver: PrivateKey,
-    /// The key of the CA that issues session certificates (to forge one without a lease).
+    /// The key of the CA that issues session certificates (to make one by hand, for no lease).
     pub ca_key: PrivateKey,
     /// The fingerprint of the CA that issues session certificates.
     pub ca_fingerprint: Fingerprint,

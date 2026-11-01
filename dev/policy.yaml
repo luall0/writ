@@ -1,7 +1,7 @@
 # The development policy: one throwaway repo, one template.
 repos:
   demo:
-    upstream: ssh://git@forge.invalid/demo.git
+    upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-dev-01
     protected_refs: ["refs/heads/main", "refs/tags/*"]
 templates:

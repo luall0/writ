@@ -37,7 +37,7 @@ repos:
     push_modes: [gateway]
   dotfiles:
     upstream: ssh://git@github.com/user/dotfiles.git
-    upstream_credential: deploy-dotfiles-01   # deploy key: the forge limits it to this repo
+    upstream_credential: deploy-dotfiles-01   # deploy key: the remote limits it to this repo
     push_modes: [direct_ssh]                  # agent pushes to GitHub itself
     direct_ssh:
       hosts: [github.com]
@@ -242,7 +242,7 @@ any field changes the bytes. A new format gets a new `kind`.
 | Destination ref, protected refs | Push commands received by the gateway / proxy | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
 | Force push | Ref update (old → new) | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
 | Pushed commits signed under this lease | Pack vs ledger | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
-| Repo (direct_ssh) | Forge, via a repo-scoped deploy key | 🟢 if deploy key · 🔴 account-wide otherwise |
+| Repo (direct_ssh) | Remote, via a repo-scoped deploy key | 🟢 if deploy key · 🔴 account-wide otherwise |
 | Push host (direct_ssh) | `session-bind` host key | 🟢 Strong |
 | Committer / author identity | Commit bytes parsed by the daemon | 🟢 Strong |
 | Caller = lease holder | Session certificate | 🟡 Strong-ish (bearer; bounded by scope + TTL) |

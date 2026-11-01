@@ -33,7 +33,7 @@ impl fmt::Display for PushMode {
     }
 }
 
-/// How a commit is linked to its ticket on the forge.
+/// How a commit is linked to its ticket on the remote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TicketLink {
@@ -361,7 +361,7 @@ mod tests {
         for good in [
             "ssh://git@github.com/user/repo.git",
             "ssh://git@[2001:db8::1]:2222/repo.git",
-            "ssh://forge.lan:2222/repo.git",
+            "ssh://remote.lan:2222/repo.git",
             "https://github.com/user/repo.git",
             "https://bot@codeberg.org/user/repo.git",
         ] {

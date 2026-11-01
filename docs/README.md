@@ -2,8 +2,9 @@
 
 Writ is a trust broker for AI agents. An agent drafts a ticket for its task (repos, branches,
 operations, limits); I sign it with an approver key, and the signed ticket becomes a scoped,
-time-boxed lease. The daemon `writd` holds the agent signing keys and the forge credentials,
-is the agents' git remote, and is the only thing allowed to push upstream.
+time-boxed lease. The daemon `writd` holds the agent signing keys and the credentials for
+the remotes (GitHub, Codeberg, Forgejo…), is the agents' git remote, and is the only thing
+allowed to push upstream.
 
 Agents working in this repo: start with [`AGENTS.md`](../AGENTS.md). It holds the naming
 conventions, hard rules and commands, and points here for details.
