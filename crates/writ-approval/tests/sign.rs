@@ -776,6 +776,60 @@ fn a_lease_s_denials_are_counted_past_sixty_lines_a_minute() {
 }
 
 #[test]
+fn a_lease_s_connections_are_counted_past_sixty_lines_a_minute() {
+    // M3.6 review's S2: a lease holder looping `ssh` can't grow the log faster than 60
+    // allowed connect lines a minute; the rest are counted, and the count logged. Each
+    // connection is still allowed.
+    let h = Harness::new();
+    let caller = CallerFacts::default();
+    let (lease, cert) = h.lease(FEATURE);
+    let (other, other_cert) = h.lease(FEATURE);
+    let lines_of = |id: &TicketId| {
+        h.events("connect", "allowed")
+            .into_iter()
+            .filter(|l| l["lease"] == id.as_str())
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..60 {
+        h.service.authorize(&cert, &caller, None).unwrap();
+    }
+    assert_eq!(
+        lines_of(&lease).len(),
+        60,
+        "every one of the first 60 is a line"
+    );
+    for _ in 0..5 {
+        assert!(
+            h.service.authorize(&cert, &caller, None).is_ok(),
+            "past the budget, still allowed"
+        );
+    }
+    assert_eq!(lines_of(&lease).len(), 60);
+    // Another lease, a denial, a command's own line: unaffected.
+    h.service.authorize(&other_cert, &caller, None).unwrap();
+    assert_eq!(lines_of(&other).len(), 1);
+    let outside: writ_core::names::RepoName = "dotfiles".parse().unwrap();
+    h.service.may_sign(&cert, &caller, &outside).unwrap_err();
+    assert_eq!(h.events("sign", "denied").len(), 1);
+    // One second short of the window, still counted; at the window, the count is written by
+    // the next sweep (here, any call), then lines resume.
+    h.clock.advance(59);
+    h.service.authorize(&cert, &caller, None).unwrap();
+    assert_eq!(lines_of(&lease).len(), 60);
+    h.clock.advance(1);
+    h.service.list(false).unwrap();
+    let lines = lines_of(&lease);
+    assert_eq!(lines.len(), 61);
+    let reason = lines[60]["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("6 more connections of this lease since"),
+        "{reason}"
+    );
+    h.service.authorize(&cert, &caller, None).unwrap();
+    assert_eq!(lines_of(&lease).len(), 62);
+}
+
+#[test]
 fn a_template_whose_key_the_signer_lacks_is_a_startup_error() {
     use writ_approval::{Service, ServiceConfig, ServiceError, ServicePlatform};
     use writ_crypto::allowed_signers::AllowedSigner;

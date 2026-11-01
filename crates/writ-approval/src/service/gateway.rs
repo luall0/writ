@@ -46,7 +46,12 @@ impl Service {
         let event = cert_event(now, kind, outcome, cert, caller);
         match decision {
             Ok(lease) => {
-                if let Err(e) = Self::log(&mut inner, &event) {
+                let logged = match operation {
+                    // A connection: coalesced per lease past its budget.
+                    None => Self::log_connection(&mut inner, &event),
+                    Some(_) => Self::log(&mut inner, &event),
+                };
+                if let Err(e) = logged {
                     return Err(Denial::new(DenyCode::Invalid, e.to_string()));
                 }
                 Ok(lease)

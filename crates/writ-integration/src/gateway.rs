@@ -366,7 +366,13 @@ impl GitGateway {
     }
 
     pub fn git_with(&self, ssh_command: &str, cwd: &Path, args: &[&str]) -> Output {
-        Command::new("git")
+        self.git_command(ssh_command, cwd, args).output().unwrap()
+    }
+
+    /// The git command [`GitGateway::git_with`] runs, to start in the background.
+    pub fn git_command(&self, ssh_command: &str, cwd: &Path, args: &[&str]) -> Command {
+        let mut command = Command::new("git");
+        command
             .args(args)
             .current_dir(cwd)
             .env_clear()
@@ -375,9 +381,8 @@ impl GitGateway {
             .env("GIT_CONFIG_GLOBAL", self.root().join("gitconfig"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_SSH_COMMAND", ssh_command)
-            .output()
-            .unwrap()
+            .env("GIT_SSH_COMMAND", ssh_command);
+        command
     }
 
     pub fn git(&self, cwd: &Path, args: &[&str]) -> Output {

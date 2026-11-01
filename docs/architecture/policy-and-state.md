@@ -116,8 +116,9 @@ Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit
 - Every text field is cut to 2,048 characters (`…`) when the line is written
   (`writ_store::MAX_FIELD_CHARS`), so what a request carries can't make a line large.
 - A lease's denials past 60 lines a minute are counted, not written one by one: the count is
-  a line of its own when the minute is over (`writ_approval` `service/denials.rs`). Denials
-  before authentication are coalesced the same way, per source, by the gateway.
+  a line of its own when the minute is over (`writ_approval` `service/coalesced.rs`); so are
+  its allowed connections (`connect`), on a budget of their own. Denials before
+  authentication are coalesced the same way, per source, by the gateway.
 - Allowed **and** denied operations are logged, including what the gateway turns away on its
   own (a caller the attestor can't attest, a command it doesn't serve, an unknown repo, a ref
   update or a signature it refuses).

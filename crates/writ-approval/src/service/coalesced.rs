@@ -1,12 +1,16 @@
-//! A lease holder's denials, coalesced past a budget (decision log, Q34): per lease, the
-//! first [`MAX_LINES`] denial lines of a [`WINDOW_SECONDS`] window are written; past it,
-//! denials are counted, and the count is written as one line per kind when the window is
-//! over (with the next line logged, or at the next sweep). Every denial is still denied, and
-//! counted in the log; a lease holder sending requests it knows are refused can't grow the
-//! log faster than this.
+//! A lease holder's lines, coalesced past a budget: per lease, the first [`MAX_LINES`] lines of
+//! a [`WINDOW_SECONDS`] window are written; past it, they are counted, and the count is written
+//! as one line per kind when the window is over (with the next line logged, or at the next
+//! sweep). Two budgets, each with its own windows ([`Coalesced`]):
+//!
+//! - **denials** (decision log, Q34): every denial is still denied, and counted in the log; a
+//!   lease holder sending requests it knows are refused can't grow the log faster than this;
+//! - **allowed connections** (M4, the M3.6 review's S2): a lease holder looping `ssh` can't
+//!   either; each command it then runs still has its own line (fetch, push, sign: those are
+//!   bounded by the lease's rate).
 //!
 //! The same rule as the gateway's for denials before authentication, on the service's clock.
-//! Allowed lines and reductions of privilege are never held back.
+//! Grants and reductions of privilege are never held back.
 
 use std::collections::HashMap;
 
@@ -14,7 +18,7 @@ use writ_core::names::TicketId;
 use writ_core::units::Timestamp;
 use writ_store::{AuditEvent, EventKind, Outcome};
 
-/// Denial lines written per lease and window; past it, denials are counted.
+/// Lines written per lease, budget and window; past it, they are counted.
 pub(super) const MAX_LINES: u32 = 60;
 
 /// The window, in seconds of the service's clock.
@@ -27,22 +31,60 @@ const MAX_TRACKED: usize = 4096;
 struct Window {
     started: Timestamp,
     lines: u32,
-    /// Denials counted, not written, by kind.
+    /// Lines counted, not written, by kind.
     counted: Vec<(EventKind, u64)>,
 }
 
-#[derive(Default)]
-pub(super) struct LeaseDenials {
+/// Which lines a budget counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Budget {
+    /// A lease's denials.
+    Denials,
+    /// A lease's allowed `connect` lines (a certificate presented and accepted).
+    Connections,
+}
+
+/// One budget's windows, per lease.
+pub(super) struct Coalesced {
+    budget: Budget,
     windows: HashMap<TicketId, Window>,
 }
 
-impl LeaseDenials {
-    /// Whether to write `event` now. Only a denial of a lease counts against its budget; one
-    /// past it is counted instead.
+impl Coalesced {
+    /// The budget of a lease's denials.
+    pub(super) fn denials() -> Self {
+        Self {
+            budget: Budget::Denials,
+            windows: HashMap::new(),
+        }
+    }
+
+    /// The budget of a lease's allowed connections.
+    pub(super) fn connections() -> Self {
+        Self {
+            budget: Budget::Connections,
+            windows: HashMap::new(),
+        }
+    }
+
+    fn counts(&self, event: &AuditEvent) -> bool {
+        match self.budget {
+            Budget::Denials => event.result == Outcome::Denied,
+            Budget::Connections => {
+                event.result == Outcome::Allowed && event.event == EventKind::Connect
+            }
+        }
+    }
+
+    /// Whether to write `event` now. Only a line of a lease that this budget counts counts
+    /// against it; one past it is counted instead.
     pub(super) fn admit(&mut self, event: &AuditEvent) -> bool {
-        let (Outcome::Denied, Some(lease)) = (event.result, &event.lease) else {
+        let Some(lease) = &event.lease else {
             return true;
         };
+        if !self.counts(event) {
+            return true;
+        }
         if let Some(window) = self.windows.get_mut(lease) {
             if window.lines < MAX_LINES {
                 window.lines = window.lines.saturating_add(1);
@@ -86,13 +128,17 @@ impl LeaseDenials {
                 continue;
             };
             for (kind, count) in window.counted {
+                let (what, outcome) = match self.budget {
+                    Budget::Denials => ("denials", Outcome::Denied),
+                    Budget::Connections => ("connections", Outcome::Allowed),
+                };
                 let reason = format!(
-                    "{count} more denials of this lease since {}, counted and not logged one \
+                    "{count} more {what} of this lease since {}, counted and not logged one \
                      by one (more than {MAX_LINES} in {WINDOW_SECONDS} seconds)",
                     window.started
                 );
                 lines.push(
-                    AuditEvent::new(now, kind, Outcome::Denied)
+                    AuditEvent::new(now, kind, outcome)
                         .lease(&lease)
                         .reason(reason),
                 );

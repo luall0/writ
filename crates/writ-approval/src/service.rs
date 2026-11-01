@@ -5,7 +5,7 @@
 
 mod agent;
 mod approver;
-mod denials;
+mod coalesced;
 mod gateway;
 mod push;
 mod sign;
@@ -155,7 +155,9 @@ struct Inner {
     /// The submission rates' windows.
     submissions: submissions::Submissions,
     /// Each lease's denial lines in the current window, and the denials counted past it.
-    denials: denials::LeaseDenials,
+    denials: coalesced::Coalesced,
+    /// Each lease's allowed `connect` lines in the current window, and those counted past it.
+    connections: coalesced::Coalesced,
     /// Signatures between their first and last phase ([`sign`]).
     signing: sign::InFlightSignatures,
 }
@@ -274,7 +276,8 @@ impl Service {
                 unlogged: VecDeque::new(),
                 lost: 0,
                 submissions,
-                denials: denials::LeaseDenials::default(),
+                denials: coalesced::Coalesced::denials(),
+                connections: coalesced::Coalesced::connections(),
                 signing: sign::InFlightSignatures::default(),
             }),
             revoked: RwLock::new(revoked),
@@ -357,8 +360,8 @@ impl Service {
     /// of the line (a denial is denied anyway, a revocation is never held back). A line the
     /// log can't take is kept and written first once it can.
     ///
-    /// A lease's denials past its budget are counted instead ([`denials`]), and the counts of
-    /// windows that are over written first.
+    /// A lease's denials past its budget are counted instead ([`coalesced`]), and the counts
+    /// of windows that are over written first.
     fn log_best_effort(inner: &mut Inner, event: &AuditEvent) {
         for counted in inner.denials.due(event.time) {
             Self::write_best_effort(inner, &counted);
@@ -368,12 +371,28 @@ impl Service {
         }
     }
 
-    /// Writes the counts of the denial windows over at `now` (from the sweep: a lease that
-    /// stopped sending requests still gets its count logged).
+    /// Writes the counts of the denial and connection windows over at `now` (from the sweep:
+    /// a lease that stopped sending requests still gets its count logged).
     fn log_counted_denials(inner: &mut Inner, now: Timestamp) {
         for counted in inner.denials.due(now) {
             Self::write_best_effort(inner, &counted);
         }
+        for counted in inner.connections.due(now) {
+            Self::write_best_effort(inner, &counted);
+        }
+    }
+
+    /// Logs a lease holder's allowed connection, unless past its budget ([`coalesced`]): then
+    /// it is counted, and the count written when the window is over. The counts of windows
+    /// already over are written first.
+    fn log_connection(inner: &mut Inner, event: &AuditEvent) -> Result<(), ServiceError> {
+        for counted in inner.connections.due(event.time) {
+            Self::write_best_effort(inner, &counted);
+        }
+        if inner.connections.admit(event) {
+            Self::log(inner, event)?;
+        }
+        Ok(())
     }
 
     fn write_best_effort(inner: &mut Inner, event: &AuditEvent) {

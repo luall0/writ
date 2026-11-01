@@ -136,7 +136,11 @@ A new input is added here in the same change.
   first.
 - **A lease holder's denials are coalesced** past 60 lines a minute per lease
   ([Q34](decisions.md)): still denied, counted, and the count written as one line per kind
-  when the minute is over; allowed lines and reductions of privilege are never held back.
+  when the minute is over. **So are its allowed connections** (`connect`, a certificate
+  accepted), past 60 a minute on their own budget (M4): a lease holder looping `ssh` can't grow
+  the log without bound, and each command it then runs still has its line (fetch, push and
+  sign are bounded by the lease's rate). Grants, the other allowed lines and reductions of
+  privilege are never held back.
 - **A per-source limit counts sources by group** (`writ_core::net::source_group`): an IPv6
   host holds a whole /64 and would otherwise be 2^64 sources.
 - **Every refusal is a line**, wherever it happens: a refused TLS handshake, a plain key for a
