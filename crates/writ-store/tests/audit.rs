@@ -16,7 +16,7 @@ use writ_core::caller::{CallerFacts, ProcessRef};
 use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::policy::{Denial, DenyCode};
 use writ_core::units::Timestamp;
-use writ_store::{AuditEvent, AuditLog, EventKind, Outcome, looks_secret};
+use writ_store::{AuditEvent, AuditLog, EventKind, MAX_FIELD_CHARS, Outcome, looks_secret};
 
 fn t(offset: i64) -> Timestamp {
     Timestamp::from_unix(1_793_455_331 + offset).unwrap()
@@ -152,6 +152,47 @@ fn one_json_line_per_event() {
             .unwrap()
             .contains("submit an amendment")
     );
+}
+
+#[test]
+fn every_text_in_a_line_is_bounded_on_both_sides() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let mut log = AuditLog::open(&path).unwrap();
+    let fits = "a".repeat(MAX_FIELD_CHARS);
+    let over = "b".repeat(1024 * 1024);
+    let event = |text: &str| {
+        let mut event = AuditEvent::new(t(0), EventKind::Sign, Outcome::Denied)
+            .committer(text)
+            .reason(text)
+            .refs([text.to_owned()])
+            .warnings([text.to_owned()]);
+        event.code = Some(text.to_owned());
+        event.process_chain = Some(vec![text.to_owned()]);
+        event
+    };
+    log.append(&event(&fits)).unwrap();
+    log.append(&event(&over)).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let cut = format!("{}…", "b".repeat(MAX_FIELD_CHARS));
+    for (line, expected) in lines.iter().zip([&fits, &cut]) {
+        for value in [
+            &line["committer"],
+            &line["code"],
+            &line["reason"],
+            &line["refs"][0],
+            &line["warnings"][0],
+            &line["process_chain"][0],
+        ] {
+            assert_eq!(value.as_str().unwrap(), expected.as_str());
+        }
+    }
+    // A megabyte in every field still makes a line of a few kilobytes.
+    assert!(text.lines().nth(1).unwrap().len() < 8 * (MAX_FIELD_CHARS + 16) + 256);
 }
 
 #[test]

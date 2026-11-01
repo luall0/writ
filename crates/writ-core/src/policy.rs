@@ -20,6 +20,7 @@ use crate::fit;
 use crate::lease::{Lease, State, Usage, is_exhausted};
 use crate::names::{CommitId, KeyFingerprint, RepoName, TicketId};
 use crate::pattern::{PathSet, RefName};
+use crate::text;
 use crate::ticket::Operation;
 use crate::units::Timestamp;
 
@@ -28,6 +29,11 @@ pub const RATE_WINDOW_SECONDS: i64 = 60;
 
 /// How many paths a denial or warning lists before "and N more".
 const PATHS_SHOWN: usize = 5;
+
+/// The most characters of one agent-supplied value (a committer email, a path) in a denial
+/// or a warning: past it, cut with `…`, so a request can't make a message or a log line
+/// large.
+const VALUE_SHOWN: usize = 256;
 
 /// Why a request was denied, in a few stable categories (for the audit log and the
 /// violation policy). Each code's text ([`DenyCode::as_str`]) is the audit log's `code` and
@@ -433,7 +439,10 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
         return Err(outside(
             id,
             DenyCode::Committer,
-            format_args!("committer email {:?} not allowed", request.committer_email),
+            format_args!(
+                "committer email {:?} not allowed",
+                text::shown(&request.committer_email, VALUE_SHOWN)
+            ),
         ));
     }
     if entry.ticket_link == TicketLink::Trailer {
@@ -523,7 +532,11 @@ fn check_paths(
 }
 
 fn list_paths(paths: &[&str]) -> String {
-    let shown: Vec<&str> = paths.iter().take(PATHS_SHOWN).copied().collect();
+    let shown: Vec<String> = paths
+        .iter()
+        .take(PATHS_SHOWN)
+        .map(|path| text::shown(path, VALUE_SHOWN))
+        .collect();
     let mut text = shown.join(", ");
     if paths.len() > PATHS_SHOWN {
         text.push_str(&format!(

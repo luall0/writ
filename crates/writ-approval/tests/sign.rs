@@ -545,6 +545,53 @@ fn a_violation_revokes_only_a_lease_that_asks_for_it() {
 }
 
 #[test]
+fn agent_text_stays_short_in_denials_warnings_and_the_log() {
+    let h = Harness::new();
+    let (lease, cert) = h.lease(FEATURE);
+    // A committer email of a megabyte: refused, shown cut in the reason and the line.
+    let huge = format!("{}@example.org", "x".repeat(1024 * 1024));
+    let denial = h
+        .sign(
+            &cert,
+            &build("src/a.rs", &huge, &trailer(&lease)),
+            "omega-code",
+        )
+        .unwrap_err();
+    assert_eq!(denial.code, DenyCode::Committer);
+    assert!(
+        denial.reason.contains(&format!("\"{}…\"", "x".repeat(256))),
+        "{denial}"
+    );
+    assert!(
+        denial.to_string().len() < 1024,
+        "{} bytes",
+        denial.to_string().len()
+    );
+    // A path of 4,000 bytes outside expected_paths (paths_check: warn): signed, the warning
+    // shows it cut.
+    let long = format!("docs/{}", "p".repeat(4000));
+    let signed = h
+        .sign(&cert, &build(&long, EMAIL, &trailer(&lease)), "omega-code")
+        .unwrap();
+    let shown: String = long.chars().take(256).collect();
+    assert_eq!(
+        signed.warnings,
+        [format!("files outside expected_paths: {shown}…")]
+    );
+    for line in h
+        .events("sign", "denied")
+        .iter()
+        .chain(&h.events("sign", "allowed"))
+    {
+        assert!(
+            line.to_string().len() < 8 * 1024,
+            "{} bytes",
+            line.to_string().len()
+        );
+    }
+}
+
+#[test]
 fn a_lease_that_cannot_sign_is_refused_before_its_request_is_read() {
     let h = Harness::new();
     let repo = |name: &str| name.parse::<writ_core::names::RepoName>().unwrap();

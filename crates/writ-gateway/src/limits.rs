@@ -36,14 +36,7 @@ const MAX_DENIAL_LINES: u32 = 60;
 const MAX_TRACKED_SOURCES: usize = 4096;
 
 /// `text` cut to `max` characters (with `…`), for what an unauthenticated peer chose.
-pub(crate) fn shown(text: &str, max: usize) -> String {
-    let mut chars = text.chars();
-    let mut out: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() {
-        out.push('…');
-    }
-    out
-}
+pub(crate) use writ_core::text::shown;
 
 /// The connection slots of one listener.
 pub(crate) struct Slots {

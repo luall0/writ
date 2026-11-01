@@ -19,6 +19,11 @@ use writ_core::units::Timestamp;
 
 use crate::Result;
 
+/// The most characters of one text in a line (a reason, a committer, a warning, a ref, a
+/// process): longer ones are cut, with `…`, when the line is written, so no request can make
+/// a line large, whoever built the event.
+pub const MAX_FIELD_CHARS: usize = 2048;
+
 /// What happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -174,6 +179,22 @@ impl AuditEvent {
         self
     }
 
+    /// The event with every text cut to [`MAX_FIELD_CHARS`].
+    fn bounded(&self) -> AuditEvent {
+        let cut = |text: &String| writ_core::text::shown(text, MAX_FIELD_CHARS);
+        let mut event = self.clone();
+        event.committer = event.committer.as_ref().map(cut);
+        event.code = event.code.as_ref().map(cut);
+        event.reason = event.reason.as_ref().map(cut);
+        event.refs = event.refs.iter().map(cut).collect();
+        event.warnings = event.warnings.iter().map(cut).collect();
+        event.process_chain = event
+            .process_chain
+            .as_ref()
+            .map(|chain| chain.iter().map(cut).collect());
+        event
+    }
+
     /// What the transport said about the caller.
     pub fn caller(mut self, facts: &CallerFacts) -> Self {
         self.source_addr = facts.source_addr;
@@ -289,7 +310,7 @@ impl AuditLog {
         if self.dirty {
             line.push('\n');
         }
-        line.push_str(&escape_hidden(&serde_json::to_string(event)?));
+        line.push_str(&escape_hidden(&serde_json::to_string(&event.bounded())?));
         line.push('\n');
         #[cfg(feature = "testing")]
         match self

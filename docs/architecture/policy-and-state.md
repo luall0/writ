@@ -96,6 +96,8 @@ Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit
 `approver`, `repo`, `commit`, `refs`, `committer`, `code`, `reason`, `warnings`,
 `source_addr`, `process_chain`.
 
+- Every text field is cut to 2,048 characters (`…`) when the line is written
+  (`writ_store::MAX_FIELD_CHARS`), so what a request carries can't make a line large.
 - Allowed **and** denied operations are logged, including what the gateway turns away on its
   own (a caller the attestor can't attest, a command it doesn't serve, an unknown repo, a ref
   update or a signature it refuses).

@@ -42,9 +42,29 @@ pub fn strip(text: &str, newlines: Newlines, max_chars: usize) -> String {
         .collect()
 }
 
+/// `text` cut to `max_chars` characters, with `…` when something was cut: for text from
+/// elsewhere (an agent, a peer) that goes in a message or a log line.
+pub fn shown(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let mut out: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shown_cuts_on_both_sides() {
+        assert_eq!(shown("abc", 3), "abc");
+        assert_eq!(shown("abcd", 3), "abc…");
+        assert_eq!(shown("éèê€", 2), "éè…");
+        assert_eq!(shown("", 0), "");
+        assert_eq!(shown("a", 0), "…");
+    }
 
     #[test]
     fn hides_every_character_that_can_disguise_text() {
