@@ -28,6 +28,32 @@ only for the bytes signed, and an unknown key is refused by name. The software b
 (`writ_signer::software::SoftwareSigner`) holds Ed25519 and P-256 keys moved in by whoever
 loaded them, wiped on drop, never printed.
 
+### The queue in front of a backend
+
+A backend may be slow, hold one session at a time, or hang (a Secure Enclave, a YubiKey, a
+device pulled out). The daemon never calls one directly: each use goes through a
+`QueuedSigner` (`writ_signer::queue`), a decorator that is itself a `Signer`, so the core
+doesn't change:
+
+- **one worker thread owns the backend** and signs one job at a time, in order (a device that
+  takes one session at a time is never asked for two);
+- **a bounded queue**: past its capacity, a signature is refused at once with
+  `SignerError::Busy`, so nothing piles up behind a stuck device;
+- **a deadline per job**: the caller gets `SignerError::Timeout` past it; a job whose caller
+  gave up is skipped (nothing is signed for nobody), and a late result is thrown away;
+- **`list_keys` and `capabilities` from a cache** filled at startup: they never wait behind
+  the device (the approval service lists keys to show the lease's public key).
+
+**One queue per use**: the agent keys (commit signatures) now; the TLS key (M5, maybe on the
+Secure Enclave in M7.5) and the upstream credential (M4) get their own, so a device stuck on
+commit signing can't take the HTTPS approval API (and revocation over HTTPS) down with it.
+`writd/src/platform.rs` builds them: the agent keys' queue holds 16 jobs with a 10 s deadline.
+
+The contract suite has a decorator section (`writ_signer::contract::queued_signer_contract`):
+behind a queue, a backend passes the whole contract, a full queue answers `Busy` at once, a
+backend held stuck (by `testing::GatedSigner`, released on a signal) answers `Timeout`, its keys
+are still listed, and an abandoned job is never signed. Every backend runs it.
+
 The daemon signs commits with `sshsig`, in git's namespace `git`, with the key the lease's
 template names (`signing_key`): templates' key ids are the signer's, and the daemon refuses to
 start when a template names a key its signer doesn't hold. Until the sealed keystore (M5),

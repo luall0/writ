@@ -6,12 +6,16 @@
 //!
 //! - [`software`]: keys held in memory, wiped on drop (the sealed keystore that holds them at
 //!   rest comes in M5).
+//! - [`queue`]: a decorator in front of any backend, so a slow or hung device never holds
+//!   up a caller past a deadline (one worker thread, a bounded queue).
 //! - Hardware backends (Secure Enclave in `writ-platform-macos`, YubiKey) implement the same
 //!   trait and run the same [`contract`] suite.
 //!
-//! With the `testing` feature: [`testing::FailingSigner`] (a backend that refuses on demand)
-//! and the [`contract`] suite every backend passes.
+//! With the `testing` feature: [`testing::FailingSigner`] (a backend that refuses on demand),
+//! [`testing::GatedSigner`] (one that blocks until the test releases it) and the [`contract`]
+//! suite every backend passes.
 
+pub mod queue;
 pub mod software;
 
 #[cfg(feature = "testing")]
@@ -35,6 +39,15 @@ pub enum SignerError {
     /// message: a backend's error could say more than a client should see.
     #[error("the signer failed to sign with key {0}")]
     Failed(KeyId),
+    /// Too many signatures already wait for the device ([`queue::QueuedSigner`]).
+    #[error("the signer is busy: too many signatures are waiting")]
+    Busy,
+    /// The device didn't sign before the deadline ([`queue::QueuedSigner`]).
+    #[error("the signer did not sign with key {0} in time")]
+    Timeout(KeyId),
+    /// The signer can't take a job: its worker couldn't start, or stopped.
+    #[error("the signer is unavailable")]
+    Unavailable,
 }
 
 /// A key a backend exposes: its id (what templates name in `signing_key`) and its public
@@ -67,6 +80,21 @@ pub trait Signer: Send + Sync {
     fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError>;
     /// What this backend can do.
     fn capabilities(&self) -> Capabilities;
+}
+
+/// A shared signer is a signer (a decorator can hold one the daemon or a test holds too).
+impl<S: Signer + ?Sized> Signer for std::sync::Arc<S> {
+    fn list_keys(&self) -> Result<Vec<KeyInfo>, SignerError> {
+        (**self).list_keys()
+    }
+
+    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError> {
+        (**self).sign(id, data)
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        (**self).capabilities()
+    }
 }
 
 /// The public key of `id`, from the signer's list.

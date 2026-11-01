@@ -1,5 +1,7 @@
 //! Test support (feature `testing`): a signer that fails on demand, to check that a backend
-//! failure is refused and logged, never turned into a signature.
+//! failure is refused and logged, never turned into a signature; and one that blocks each
+//! signature until the test releases it, to drive what happens while a device signs without
+//! ever sleeping.
 
 #![allow(
     clippy::unwrap_used,
@@ -10,7 +12,10 @@
     clippy::cast_possible_truncation
 )]
 
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 use writ_core::names::KeyId;
 use writ_crypto::keys::{KeyKind, generate};
@@ -57,6 +62,126 @@ impl<S: Signer> Signer for FailingSigner<S> {
         if self.failing.load(Ordering::SeqCst) {
             return Err(SignerError::Failed(id.clone()));
         }
+        self.inner.sign(id, data)
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+}
+
+/// How long a test waits for a signature to reach a [`GatedSigner`] before failing: a bound
+/// on a hang, never a pause (every wait ends on a signal well before it).
+const GATE_PATIENCE: Duration = Duration::from_secs(60);
+
+/// What a [`GatedSigner`] calls when a signature reaches its closed gate.
+pub type OnEnter = Box<dyn Fn(u64) + Send + Sync>;
+
+#[derive(Default)]
+struct Gate {
+    closed: bool,
+    /// Signatures that reached the gate so far (each call's number is its rank).
+    calls: u64,
+    /// Calls waiting at the gate that [`GatedSigner::wait_entered`] hasn't handed out yet.
+    unseen: VecDeque<u64>,
+    /// Calls let through one by one.
+    released: HashSet<u64>,
+}
+
+/// Wraps a signer; while the gate is closed, each signature waits until the test releases it
+/// (one call, or all by opening the gate). A test learns that a call is waiting from
+/// [`GatedSigner::wait_entered`] or an [`OnEnter`] callback: a signal, never a sleep.
+/// Dereferences to the wrapped signer.
+pub struct GatedSigner<S> {
+    inner: S,
+    gate: Mutex<Gate>,
+    changed: Condvar,
+    on_enter: Mutex<Option<OnEnter>>,
+}
+
+impl<S: Signer> GatedSigner<S> {
+    /// An open gate: signatures pass until [`GatedSigner::close`].
+    pub fn new(inner: S) -> Self {
+        Self {
+            inner,
+            gate: Mutex::new(Gate::default()),
+            changed: Condvar::new(),
+            on_enter: Mutex::new(None),
+        }
+    }
+
+    /// Signatures from now on wait at the gate.
+    pub fn close(&self) {
+        self.gate.lock().unwrap().closed = true;
+    }
+
+    /// Lets every waiting signature through, and the next ones.
+    pub fn open(&self) {
+        self.gate.lock().unwrap().closed = false;
+        self.changed.notify_all();
+    }
+
+    /// Lets the waiting call `call` through.
+    pub fn release(&self, call: u64) {
+        self.gate.lock().unwrap().released.insert(call);
+        self.changed.notify_all();
+    }
+
+    /// Waits until a signature is waiting at the closed gate, and returns its call number
+    /// (each one once). Panics if none comes within a minute: the test hangs otherwise.
+    pub fn wait_entered(&self) -> u64 {
+        let gate = self.gate.lock().unwrap();
+        let (mut gate, timeout) = self
+            .changed
+            .wait_timeout_while(gate, GATE_PATIENCE, |g| g.unseen.is_empty())
+            .unwrap();
+        assert!(!timeout.timed_out(), "no signature reached the gate");
+        gate.unseen.pop_front().unwrap()
+    }
+
+    /// Calls `on_enter` with its number when a signature reaches the closed gate (from the
+    /// signing thread, before it waits).
+    pub fn on_enter(&self, on_enter: OnEnter) {
+        *self.on_enter.lock().unwrap() = Some(on_enter);
+    }
+
+    /// How many signatures reached the gate (each one is let through, now or later).
+    pub fn calls(&self) -> u64 {
+        self.gate.lock().unwrap().calls
+    }
+}
+
+impl<S> std::ops::Deref for GatedSigner<S> {
+    type Target = S;
+    fn deref(&self) -> &S {
+        &self.inner
+    }
+}
+
+impl<S: Signer> Signer for GatedSigner<S> {
+    fn list_keys(&self) -> Result<Vec<KeyInfo>, SignerError> {
+        self.inner.list_keys()
+    }
+
+    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError> {
+        let mut gate = self.gate.lock().unwrap();
+        let call = gate.calls;
+        gate.calls += 1;
+        if gate.closed {
+            gate.unseen.push_back(call);
+            drop(gate);
+            self.changed.notify_all();
+            if let Some(on_enter) = &*self.on_enter.lock().unwrap() {
+                on_enter(call);
+            }
+            gate = self.gate.lock().unwrap();
+            gate = self
+                .changed
+                .wait_while(gate, |g| g.closed && !g.released.contains(&call))
+                .unwrap();
+            gate.released.remove(&call);
+        }
+        drop(gate);
         self.inner.sign(id, data)
     }
 

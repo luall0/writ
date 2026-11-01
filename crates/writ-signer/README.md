@@ -9,8 +9,12 @@ depends on the backend.
   builds what is signed), `capabilities`; `sshsig` builds an SSHSIG through any backend.
 - **The software backend** (`software`): Ed25519 and P-256 keys in memory, wiped on drop, moved
   in by whoever loaded them (the daemon's keystore); never printed.
-- With the `testing` feature: the contract suite every backend runs (`contract`) and a signer
-  that refuses on demand (`testing::FailingSigner`).
+- **The queue** (`queue`): `QueuedSigner`, a decorator in front of any backend: one worker
+  thread owns it, a bounded queue (`Busy` when full), a deadline per job (`Timeout`), the keys
+  listed from a cache filled at startup.
+- With the `testing` feature: the contract suite every backend runs (`contract`, with its
+  decorator section), a signer that refuses on demand (`testing::FailingSigner`) and one that
+  blocks each signature until the test releases it (`testing::GatedSigner`).
 
 ## Scope
 

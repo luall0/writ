@@ -1,5 +1,5 @@
-//! The software backend: the `Signer` contract, keys it refuses, and nothing of a key in its
-//! `Debug` or its errors.
+//! The software backend: the `Signer` contract (alone and behind a `QueuedSigner`), keys it
+//! refuses, and nothing of a key in its `Debug` or its errors.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,7 +13,8 @@
 use writ_core::names::KeyId;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::LineEnding;
-use writ_signer::contract::signer_contract;
+use writ_signer::contract::{queued_signer_contract, signer_contract};
+use writ_signer::queue::{QueueConfig, QueuedSigner};
 use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, software_signer};
 use writ_signer::{Signer, SignerError, sshsig};
@@ -35,6 +36,12 @@ fn the_software_backend_passes_the_contract() {
     assert_eq!(mixed.capabilities().algorithms.len(), 2);
     assert!(mixed.capabilities().exportable);
     assert!(!mixed.capabilities().needs_touch);
+}
+
+#[test]
+fn the_software_backend_passes_the_contract_behind_a_queue() {
+    queued_signer_contract(software_signer(&["agent-01"], KeyKind::Ed25519));
+    queued_signer_contract(software_signer(&["agent-p256", "other"], KeyKind::P256));
 }
 
 #[test]
@@ -77,6 +84,19 @@ fn no_key_in_debug_or_errors() {
     let signer = SoftwareSigner::new([(id("agent-01"), key)]).unwrap();
     let debug = format!("{signer:?}");
     assert_eq!(debug, r#"SoftwareSigner { keys: [KeyId("agent-01")] }"#);
+    let queued = QueuedSigner::new(
+        SoftwareSigner::new([(id("agent-02"), generate(KeyKind::Ed25519).unwrap())]).unwrap(),
+        QueueConfig {
+            name: "writ-sign-test".to_owned(),
+            capacity: 1,
+            deadline: std::time::Duration::from_secs(60),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        format!("{queued:?}"),
+        r#"QueuedSigner { keys: [KeyId("agent-02")], deadline: 60s, .. }"#
+    );
     let error = signer.sign(&id("other"), b"x").unwrap_err().to_string();
     assert_eq!(error, "the signer has no key other");
     for text in [&debug, &error] {

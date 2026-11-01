@@ -174,7 +174,8 @@ notifiers: [{ telegram: { token_file: /var/db/writ/keys/telegram-token, chat_id:
 The full file (`writd.yaml`: state directory, policy, approvers, `decisions`, keystore) is
 described in `crates/writd/src/config.rs`; `dev/writd.yaml` is the development one. Until the
 sealed keystore (M5) the `signer:` key isn't read: the build has the software backend only,
-which `writd/src/platform.rs` builds (`platform::signer`) from the keystore's keys.
+which `writd/src/platform.rs` builds (`platform::signer`) from the keystore's keys, behind
+its queue ([the queue in front of a backend](signer.md#the-queue-in-front-of-a-backend)).
 
 Asking for an implementation the build doesn't have (e.g. `macos_process_chain` on Linux) is
 a startup error, never a silent fallback.

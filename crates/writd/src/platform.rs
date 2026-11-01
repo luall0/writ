@@ -4,6 +4,7 @@
 //! build doesn't have is a startup error, never a silent fallback.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::bail;
 use writ_core::names::KeyId;
@@ -17,6 +18,7 @@ use writ_platform::unlock::passphrase::PassphraseUnlock;
 use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{CallerAttestor, KeystoreUnlock, Notifier, SessionWatcher, Transport};
 use writ_signer::Signer;
+use writ_signer::queue::{QueueConfig, QueuedSigner};
 use writ_signer::software::SoftwareSigner;
 
 use crate::config::{
@@ -40,11 +42,28 @@ pub struct Platform {
     pub notifier: Arc<dyn Notifier>,
 }
 
-/// The `Signer` holding the keys commits are signed with. This build has the software
+/// Commit signatures that may wait for the agent keys' backend while it signs one.
+const AGENT_KEYS_QUEUE: usize = 16;
+
+/// How long a commit signature waits for the agent keys' backend (a software key signs in
+/// microseconds, a hardware one in milliseconds: past this, the device is stuck).
+const AGENT_KEYS_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The `Signer` holding the keys commits are signed with, behind its own queue (one per use:
+/// the TLS key and the upstream credential get theirs). This build has the software
 /// backend only, so the configuration doesn't name one yet: the `signer:` key comes with the
 /// sealed keystore (M5), and hardware backends with their milestones (M7.5).
 pub fn signer(keys: Vec<(KeyId, PrivateKey)>) -> anyhow::Result<Arc<dyn Signer>> {
-    Ok(Arc::new(SoftwareSigner::new(keys)?))
+    let backend = SoftwareSigner::new(keys)?;
+    let queued = QueuedSigner::new(
+        backend,
+        QueueConfig {
+            name: "writ-sign-agent".to_owned(),
+            capacity: AGENT_KEYS_QUEUE,
+            deadline: AGENT_KEYS_DEADLINE,
+        },
+    )?;
+    Ok(Arc::new(queued))
 }
 
 async fn listener(config: &TransportConfig) -> anyhow::Result<Listener> {
