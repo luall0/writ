@@ -23,7 +23,8 @@ an unchanged core.
 | M2 | [Ticket flow](history/m2-ticket-flow.md) ✅ | `writ request` / `sign` / `refuse` / `revoke` / `ls`, certificates, the approval API over SSH and HTTPS, notifications (Telegram) |
 | M2.5 | [Code quality checkup](history/m2.5-code-quality-checkup.md) ✅ | The review after M2 and its fixes; module layout and conventions ([conventions.md](conventions.md)); hardened tests and the integration test crate |
 | M2.6 | [Security checkup](history/m2.6-security-checkup.md) ✅ | The security review after M2.5 and its fixes; the [security conventions](security.md), their checks in `make check`, CI |
-| M3 | [Signed commits](history/m3-signed-commits.md) ✅ | `writ-sign`, the sign command through the `Signer`, touched paths from checked evidence, the ledger, `writ init` (wrapper mode), `object_format` |
+| M3 | [Signed commits](history/m3-signed-commits.md) ✅ | `writ-sign`, the sign command through the `Signer`, touched paths from checked evidence, the ledger, `writ init` (wrapper mode), `object_format`; the review after M3 and its fixes |
+| M3.5 | [Signing outside the lock](#m35--signing-outside-the-lock) | `Service::sign` in three phases (the signer never runs under the state lock), the `QueuedSigner` in front of a backend |
 | M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only remotes |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
@@ -79,6 +80,50 @@ checks in `make check`, the guarantee registry.
 `writ-sign git <repo>`, `writ init` (wrapper mode by default: `writ git`, `writ exec`;
 `--whole-repo`; `--undo`), `object_format` per repo, the operator guide.
 
+## M3.5 — Signing outside the lock
+
+From the [review after M3](history/m3-signed-commits.md#the-review-after-m3) (finding F5).
+`Service::sign` calls the `Signer` while holding the service's state lock: harmless with the
+software backend, but a Secure Enclave, a YubiKey or a hung device would hold up every
+approval, wait, refusal and **revocation** while it signs. It lands before M4 (which adds
+network I/O and the upstream credential through the `Signer`) and must before M7: the M7 and
+M7.5 graft tests allow no change to `writ-approval` beyond bug fixes.
+
+- **`Service::sign` in three phases.** Under the lock: the lease, `decide_sign`, `consume`
+  (the count and the rate slot reserved); a denial logged there, a violation's certificate on
+  the deny list there. Without the lock: the signature, through the queue, with a deadline.
+  Under the lock again: the certificate not on the deny list, the lease still active and not
+  expired at that moment, then `signed_id`, the audit line, `ledger_append`, and only then
+  does the signature leave; otherwise it is discarded and the denial logged ("revoked while
+  signing"). A failed or discarded signature keeps its slot used (never given back: no
+  privilege added); a crash between phases uses a slot and grants nothing. One line per call
+  stays true.
+- **`QueuedSigner`**, a `Signer` decorator (a new implementation; the core unchanged): one
+  worker thread owns the backend (devices that aren't `Sync` or take one session at a time);
+  a bounded channel that answers `SignerError::Busy` at once when full; a deadline per job
+  (`SignerError::Timeout`; a late result is thrown away); `list_keys` from a cache filled at
+  startup (it must never wait behind the device). One queue per use, not per device: agent
+  keys, the TLS key (M5, maybe on the Secure Enclave in M7.5) and the upstream credential,
+  or a priority lane for the TLS key, so a hung device can't take the HTTPS approval API
+  (and revocation over HTTPS) down with commit signing.
+- Docs: decision log, `signer.md` (the decorator, `Busy` / `Timeout`, one queue per use),
+  `policy-and-state.md` and flows § 2 (the three phases), the threat model (a failed
+  signature still uses its slot).
+
+Acceptance:
+- [ ] With a signer that blocks until the test releases it (a signal, never a `sleep`): a
+      revocation completes while a signature is in flight, and that signature is then refused
+      with its exact code; approvals, `writ wait` and `writ ls` answer meanwhile.
+- [ ] A violation puts the certificate on the deny list before the lock is released: a second
+      request of the lease waiting on the lock is refused (`not_active`), and a revocation
+      whose recording fails still leaves the certificate refused.
+- [ ] The `Signer` contract suite gains the decorator section: a full queue refuses at once
+      with `Busy`; a backend that blocks returns `Timeout`; `list_keys` answers while the
+      backend is stuck. The software backend runs it behind a `QueuedSigner`.
+- [ ] Count and rate hold under concurrent requests (a property test over interleavings of
+      the phases): never more signatures than `max_signatures`, never more than the rate.
+- [ ] Every M3 acceptance scenario still passes unchanged.
+
 ## M4 — Gateway push and fetch
 
 [Flows § 3 and § 4](flows.md#3-push) in `gateway` mode, upstream over SSH, against a test
@@ -96,14 +141,24 @@ remote (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
   transaction, with the rate window and expiry checked there too.
 - From M3: each new commit's touched paths computed again from the objects git verified in
   the quarantine (its own hashing and collision detection), and the push refused when they
-  differ from what was checked at signing; the ledger keeps what signing saw.
+  differ from what was checked at signing; the ledger keeps what signing saw (a schema
+  migration: the sorted paths, or their digest and a "paths unknown or warned" flag).
+- From the review after M3: the quarantine walk reuses `writ_git::paths` (bounded in
+  entries, paths, depth, path length and bytes since the review); `receive.fsck.hasDotgit =
+  error` in every mirror (git only warns by default, and `receive.fsckObjects` then accepts
+  the push: checked with git 2.54), so a `.git` entry an agent hid by leaving its tree out of
+  the sign request never lands; each mirror created with its repo's `--object-format`, and the
+  first sync refuses a remote whose format isn't the registry's; no network I/O (upstream
+  push, mirror sync) under the service's state lock (M3.5's pattern).
 
 Acceptance:
 - [ ] `git push origin agent/x` from a wired repo reaches the remote; `git fetch` works through
       the daemon; the agent host holds no remote credential.
 - [ ] Each is denied with a readable reason and nothing reaches upstream: a protected ref, a
       branch outside the lease, a force push, a commit not signed under this lease (including
-      one signed under another lease), a pack over `max_push_size`, a fetch without `fetch`.
+      one signed under another lease, and an unsigned local commit under a signed one: a
+      signed commit's parent is checked when that parent is signed, so a made-up parent
+      never reaches upstream), a pack over `max_push_size`, a fetch without `fetch`.
 - [ ] Upstream moved → the push is rejected with the remote's reason; fetch, rebase, re-sign
       and push again succeeds.
 - [ ] The mirror never holds refs the remote refused.
