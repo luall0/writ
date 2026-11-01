@@ -41,7 +41,12 @@ These rules hold for every test, at every level.
     (nothing depends on their value); property tests are seeded (below).
 - **Adversarial.** A test tries to break the check, not to exercise it:
   - every denial asserts **its exact code or error variant** (`DenyCode::ProtectedRef`,
-    `ServiceError::AuditLog`, `LifecycleError::SessionKeyChanged`), never just `is_err()`;
+    `RefusalCode::Signature`, `LifecycleError::SessionKeyChanged`), or an exit status's exact
+    code, never just `is_err()` or `!success()`. Where the error really is opaque (a TLS or
+    SSH library's failure), the assertion says so in a `// any error: <why>` comment, and
+    `tool/check-rules.py` refuses a bare one;
+  - no sleep: a poll for something that gives no signal says what it polls in a
+    `// poll: <why>` comment (checked by `tool/check-rules.py`);
   - every limit is tested **on both sides**: one below allowed, at the limit denied (counts,
     sizes, expiry to the second, input lengths);
   - every allowed case next to its denials passes, so the denial is the check's doing and not
@@ -102,7 +107,9 @@ user's real `~/.ssh`, git config or ssh-agent (except `make test-agent`, run by 
 
 ## Guarantee tests
 
-Each line of [What Writ guarantees](threat-model.md#what-writ-guarantees) has a test that
-tries to break it, in `tests/guarantees/` (or the crate that owns it), named after the
-guarantee. When a new guarantee is added to the threat model, its test comes in the same
-change.
+Each line of [What Writ guarantees](threat-model.md#what-writ-guarantees) names the tests that
+try to break it (the guarantee registry), wherever they live: `writ-core/tests/guarantees.rs`
+at the policy level, then the service, the gateway and the integration scenarios.
+`tool/check-guarantees.py` (in `make check`) fails if a named test doesn't exist or is
+`#[ignore]`d, or if a guarantee has neither a test nor the milestone that brings one
+(`planned: M7.5`). When a guarantee is added, its tests come in the same change.

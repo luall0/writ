@@ -196,12 +196,17 @@ mod tests {
         // A link in its place is refused.
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&sub, &link).unwrap();
-        assert!(create_private_dir(&link).is_err(), "never through a link");
+        let error = create_private_dir(&link).unwrap_err().to_string();
+        assert!(error.ends_with("is not a directory (a link?)"), "{error}");
 
         let file = sub.join("key");
         create_new_private_file(&file).unwrap();
         assert_eq!(mode(&file), 0o600);
-        assert!(create_new_private_file(&file).is_err(), "never overwritten");
+        assert_eq!(
+            create_new_private_file(&file).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "never overwritten"
+        );
         let link = sub.join("link");
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(
@@ -300,7 +305,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let error = config_error(read_authority(&link, "policy"));
         assert!(error.starts_with("cannot read policy"), "{error}");
-        assert!(read_secret(&link, "token", 16).is_err());
+        assert!(config_error(read_secret(&link, "token", 16)).starts_with("cannot read token"));
 
         // A FIFO: refused at once, never waited on.
         let fifo = dir.path().join("fifo");

@@ -276,6 +276,15 @@ fn main() -> ExitCode {
     }
 }
 
+/// The message chain of an error a test expects; a success fails the test.
+#[cfg(test)]
+pub(crate) fn error_of<T>(result: anyhow::Result<T>) -> String {
+    match result {
+        Ok(_) => panic!("expected an error, got a success"),
+        Err(e) => format!("{e:#}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -369,7 +369,7 @@ mod tests {
         assert!(error.starts_with("cannot read"), "{error}");
         assert!(!error.contains("not pinned"), "{error}");
         // A directory can't be read as a file either.
-        assert!(read_pins(dir.path()).is_err());
+        assert!(crate::error_of(read_pins(dir.path())).starts_with("cannot read"));
     }
 
     #[test]
@@ -425,7 +425,11 @@ mod tests {
             "ssh://a:1:2",
             "https://git@host",
         ] {
-            assert!(Endpoint::parse(bad).is_err(), "{bad}");
+            let error = crate::error_of(Endpoint::parse(bad));
+            assert!(
+                error.starts_with("invalid ") && error.contains(bad),
+                "{bad}: {error}"
+            );
         }
         assert_eq!(
             Endpoint::parse("https://writ.home:8443").unwrap(),
@@ -438,8 +442,14 @@ mod tests {
             Endpoint::parse("https://writ.home").unwrap(),
             Endpoint::Https { port: 443, .. }
         ));
-        assert!(Endpoint::parse("https://me@writ.home").is_err());
-        assert!(Endpoint::parse("http://writ.home").is_err());
+        assert_eq!(
+            crate::error_of(Endpoint::parse("https://me@writ.home")),
+            "invalid endpoint https://me@writ.home: no user in an https URL"
+        );
+        assert!(
+            crate::error_of(Endpoint::parse("http://writ.home"))
+                .starts_with("invalid endpoint http://writ.home: use ssh://")
+        );
         assert_eq!(tcp("h", 2222).known_hosts_name(), "[h]:2222");
         assert_eq!(tcp("h", 22).known_hosts_name(), "h");
     }
@@ -455,7 +465,12 @@ mod tests {
             &pinned_host_key(&file, "[h]:2222").unwrap(),
             key.public_key()
         );
-        assert!(pinned_host_key(&file, "h").is_err());
-        assert!(pinned_host_key(&dir.path().join("missing"), "h").is_err());
+        for missing in [file.clone(), dir.path().join("missing")] {
+            let error = crate::error_of(pinned_host_key(&missing, "h"));
+            assert!(
+                error.starts_with("the daemon's host key for h is not pinned"),
+                "{error}"
+            );
+        }
     }
 }

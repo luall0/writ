@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use writ_approval::ServiceError;
 use writ_approval::testing::{START, TestService, TestServiceBuilder, sign_approval_in};
+use writ_approval::{RefusalCode, ServiceError};
 use writ_core::caller::{CallerFacts, ProcessRef};
 use writ_core::canonical::Canonical;
 use writ_core::lease::{APPROVAL_NAMESPACE, State};
@@ -163,10 +163,19 @@ impl Harness {
     }
 }
 
-/// Turned down, with a message containing `expected`.
-fn refused_with<T: std::fmt::Debug>(result: Result<T, ServiceError>, expected: &str) {
+/// Turned down with exactly this code, and a message containing `expected`.
+fn refused_as<T: std::fmt::Debug>(
+    result: Result<T, ServiceError>,
+    code: RefusalCode,
+    expected: &str,
+) {
     match result {
-        Err(ServiceError::Refused { message, .. }) => {
+        Err(ServiceError::Refused {
+            code: found,
+            message,
+            ..
+        }) => {
+            assert_eq!(found, code, "{message}");
             assert!(
                 message.contains(expected),
                 "{expected:?} not in {message:?}"
@@ -294,26 +303,37 @@ fn approvals_by_other_keys_namespaces_or_bytes_and_widenings_are_refused() {
         (
             "a key not in approvers",
             sign_approval_in(&stranger, &ticket, APPROVAL_NAMESPACE),
+            RefusalCode::Signature,
             "not in approvers",
         ),
         (
             "another namespace",
             sign_approval_in(&h.approver, &ticket, "git"),
+            RefusalCode::Signature,
             "namespace",
         ),
-        ("other bytes", other_bytes, "does not match"),
-        ("a widening", h.signed(&widened), "max_signatures raised"),
-        ("non-canonical bytes", not_canonical, "canonical"),
+        (
+            "other bytes",
+            other_bytes,
+            RefusalCode::Signature,
+            "does not match",
+        ),
+        (
+            "a widening",
+            h.signed(&widened),
+            RefusalCode::Lifecycle,
+            "max_signatures raised",
+        ),
+        (
+            "non-canonical bytes",
+            not_canonical,
+            RefusalCode::Signature,
+            "canonical",
+        ),
     ];
-    for (case, request, expected) in cases {
-        let error = h
-            .service
-            .approve(&ticket.id, &request, &facts())
-            .unwrap_err();
-        assert!(
-            matches!(&error, ServiceError::Refused { message, .. } if message.contains(expected)),
-            "{case}: {error:?}"
-        );
+    for (case, request, code, expected) in cases {
+        let error = h.service.approve(&ticket.id, &request, &facts());
+        refused_as(error, code, expected);
         assert_eq!(
             h.service.show(&ticket.id).unwrap().state,
             State::Pending,
@@ -366,8 +386,9 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
         feedback: "no".into(),
         signature: None,
     };
-    refused_with(
+    refused_as(
         h.service.refuse(&ticket.id, &unsigned, &facts()),
+        RefusalCode::Signature,
         "refusal not accepted: this daemon requires an approver signature",
     );
     let forged = RefuseRequest {
@@ -380,8 +401,9 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
             ),
         ),
     };
-    refused_with(
+    refused_as(
         h.service.refuse(&ticket.id, &forged, &facts()),
+        RefusalCode::Signature,
         "refusal not accepted: the signature does not match the signed bytes",
     );
     assert_eq!(h.events("refuse", "denied"), 2);
@@ -404,7 +426,11 @@ fn a_refusal_reaches_the_agent_and_the_next_revision_shows_it() {
             ),
         }
     );
-    refused_with(h.approve(&ticket), "is refused, not pending");
+    refused_as(
+        h.approve(&ticket),
+        RefusalCode::WrongState,
+        "is refused, not pending",
+    );
 
     let revision = REQUEST.replace(
         "  plan: [Add the callback route, Tests]",
@@ -461,9 +487,10 @@ fn a_revocation_puts_the_certificate_on_the_deny_list_and_announces_it() {
     let h = Harness::new(Decisions::Signed);
     let (ticket, _key, cert) = h.lease();
     let mut revocations = h.service.subscribe_revocations();
-    refused_with(
+    refused_as(
         h.service
             .revoke(&ticket.id, &RevokeRequest::default(), &facts()),
+        RefusalCode::Signature,
         "revocation not accepted: this daemon requires an approver signature",
     );
     assert_eq!(h.revoke_signed(&ticket.id).unwrap(), State::Revoked);
@@ -474,7 +501,11 @@ fn a_revocation_puts_the_certificate_on_the_deny_list_and_announces_it() {
         .authorize(&identity(&cert), &facts(), None)
         .unwrap_err();
     assert_eq!(denial.code, DenyCode::NotActive);
-    refused_with(h.revoke_signed(&ticket.id), "nothing to revoke");
+    refused_as(
+        h.revoke_signed(&ticket.id),
+        RefusalCode::WrongState,
+        "nothing to revoke",
+    );
     assert_eq!(h.events("revoke", "done"), 1);
     assert_eq!(h.events("revoke", "denied"), 2);
     assert_eq!(h.events("connect", "denied"), 1);
@@ -495,8 +526,9 @@ fn open_decisions_need_no_signature_but_check_one_given() {
             .unwrap(),
         ),
     };
-    refused_with(
+    refused_as(
         h.service.refuse(&pending.id, &bad, &facts()),
+        RefusalCode::Signature,
         "refusal not accepted: the signature",
     );
     let open = RefuseRequest {
@@ -523,8 +555,9 @@ fn open_decisions_need_no_signature_but_check_one_given() {
         signed: String::from_utf8(other.canonical_bytes().unwrap()).unwrap(),
         signature: String::new(),
     };
-    refused_with(
+    refused_as(
         h.service.approve(&other.id, &unsigned, &facts()),
+        RefusalCode::Signature,
         "approval refused: unreadable signature",
     );
 }
@@ -541,7 +574,11 @@ fn expiry_ends_pending_tickets_and_leases() {
     assert!(h.service.is_revoked(cert.serial()));
     assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Expired);
     assert_eq!(h.wait(&pending.id, &pending_key), Decision::Expired);
-    refused_with(h.approve(&pending), "is expired, not pending");
+    refused_as(
+        h.approve(&pending),
+        RefusalCode::WrongState,
+        "is expired, not pending",
+    );
     assert_eq!(h.events("expire", "done"), 2);
 }
 
@@ -572,6 +609,7 @@ fn waiting_returns_when_the_approver_decides() {
     // Pending: no decision to return, however long it waits (the bound only stops looking).
     let early = runtime
         .block_on(async { tokio::time::timeout(Duration::from_millis(50), &mut waiting).await });
+    // any error: a timeout's Elapsed is the only error `timeout` returns.
     assert!(early.is_err(), "returned before any decision: {early:?}");
     h.approve(&ticket).unwrap();
     // Woken by the decision itself, well before the 30 s re-check.
@@ -601,7 +639,7 @@ fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
     let (ticket, _) = unwatched.submit(BOUND);
     let error = unwatched.approve(&ticket).unwrap_err();
     assert!(
-        matches!(&error, ServiceError::Refused { message, .. } if message.contains("can't watch")),
+        matches!(&error, ServiceError::Refused { code: RefusalCode::Session, message, .. } if message.contains("can't watch")),
         "{error:?}"
     );
 
@@ -760,7 +798,7 @@ fn too_many_waiting_tickets_are_turned_away() {
         .submit(key.public_key(), REQUEST.as_bytes(), &facts())
         .unwrap_err();
     assert!(
-        matches!(&error, ServiceError::Refused { message, .. } if message.contains("already waiting")),
+        matches!(&error, ServiceError::Refused { code: RefusalCode::TooManyPending, message, .. } if message.contains("already waiting")),
         "{error:?}"
     );
 }
@@ -783,8 +821,9 @@ fn one_session_has_at_most_two_tickets_waiting() {
     submit("192.0.2.1").unwrap();
     submit("192.0.2.2").unwrap();
     // The same key from another address is the same session.
-    refused_with(
+    refused_as(
         submit("192.0.2.3"),
+        RefusalCode::TooManyPending,
         "this session already has 2 tickets waiting for the approver",
     );
     // Another session isn't held back.
@@ -804,9 +843,10 @@ fn one_address_submits_at_most_ten_tickets_a_minute() {
     };
     // Rejected tickets count too: the rate bounds what one address writes to the audit log.
     let bad = generate(KeyKind::Ed25519).unwrap();
-    refused_with(
+    refused_as(
         h.service
             .submit(bad.public_key(), b"not: [yaml", &from("192.0.2.1")),
+        RefusalCode::Rejected,
         "ticket rejected",
     );
     for _ in 1..10 {
@@ -814,8 +854,9 @@ fn one_address_submits_at_most_ten_tickets_a_minute() {
     }
     let lines = h.events("submit", "denied");
     for _ in 0..3 {
-        refused_with(
+        refused_as(
             submit("192.0.2.1"),
+            RefusalCode::RateLimited,
             "more than 10 submissions a minute from this address; try again later",
         );
     }
@@ -828,7 +869,11 @@ fn one_address_submits_at_most_ten_tickets_a_minute() {
     submit("192.0.2.2").unwrap();
     // A minute after the first, one slot frees; the burst's count is logged with it.
     h.clock.advance(59);
-    refused_with(submit("192.0.2.1"), "more than 10 submissions a minute");
+    refused_as(
+        submit("192.0.2.1"),
+        RefusalCode::RateLimited,
+        "more than 10 submissions a minute",
+    );
     h.clock.advance(1);
     submit("192.0.2.1").unwrap();
     let denied = h.test.events("submit", "denied");
@@ -939,8 +984,9 @@ fn a_session_key_is_ed25519_or_p256() {
          EtiEStNWoL1F719qPYG0HjGq6ncl13Sg==",
     )
     .unwrap();
-    refused_with(
+    refused_as(
         h.service.submit(&p384, REQUEST.as_bytes(), &facts()),
+        RefusalCode::SessionKey,
         "it must be ssh-ed25519 or ecdsa-sha2-nistp256",
     );
     assert_eq!(h.events("submit", "denied"), 1, "logged");
@@ -1173,7 +1219,7 @@ fn a_refused_amendment_approval_is_logged_as_amend() {
         .approve(&amendment.id, &forged, &facts())
         .unwrap_err();
     assert!(
-        matches!(&error, ServiceError::Refused { message, .. } if message.contains("not in approvers")),
+        matches!(&error, ServiceError::Refused { code: RefusalCode::Signature, message, .. } if message.contains("not in approvers")),
         "{error:?}"
     );
     assert_eq!(h.events("amend", "denied"), 1);

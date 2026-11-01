@@ -455,6 +455,7 @@ pub fn eventually(what: &str, mut check: impl FnMut() -> bool) {
             std::time::Instant::now() < deadline,
             "timed out waiting for {what}"
         );
+        // poll: the one sanctioned poll, for what gives no signal; bounded by WAIT_LIMIT.
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -467,6 +468,7 @@ pub async fn eventually_async(what: &str, mut check: impl FnMut() -> bool) {
             std::time::Instant::now() < deadline,
             "timed out waiting for {what}"
         );
+        // poll: the async form of the same sanctioned poll, bounded by WAIT_LIMIT.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 }

@@ -42,7 +42,7 @@ fn fetch_and_push_through_the_gateway() {
     // A protected ref: refused by the daemon through the pre-receive callback, with its
     // reason shown by git, and nothing lands.
     let out = gateway.git(&work, &["push", "origin", "HEAD:refs/heads/main"]);
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("writ: refs/heads/main is protected"),
         "{}",
@@ -115,7 +115,7 @@ fn malformed_objects_never_land() {
             &format!("{}:refs/heads/agent/bad", commit.trim()),
         ],
     );
-    assert!(!out.status.success(), "a malformed tree was accepted");
+    assert_eq!(out.status.code(), Some(1), "a malformed tree was accepted");
     assert!(stderr(&out).contains("hasDotgit"), "{}", stderr(&out));
     assert_eq!(
         gateway.bare_ref("refs/heads/agent/bad"),
@@ -196,7 +196,7 @@ fn only_valid_session_certificates_get_in() {
         .arg(format!("{ssh} -p {port} {destination} id"))
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("writ: command not allowed"),
         "{}",
@@ -247,7 +247,8 @@ fn signed_commit_verifies(agent_kind: KeyKind) {
         &work,
         &["commit", "-q", "-S", "--allow-empty", "-m", "refused"],
     );
-    assert!(!out.status.success());
+    // git's "fatal" exit when the signing program fails.
+    assert_eq!(out.status.code(), Some(128));
     assert!(
         stderr(&out).contains("writ-sign: the daemon refused to sign"),
         "{}",

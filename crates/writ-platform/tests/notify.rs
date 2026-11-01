@@ -500,7 +500,7 @@ fn bot_tokens_are_validated_without_echoing_them() {
         }
     }
     let long = format!("1:{}", "a".repeat(300));
-    assert!(BotToken::new(long).is_err());
+    assert!(matches!(BotToken::new(long), Err(PlatformError::Config(_))));
 }
 
 #[cfg(unix)]

@@ -269,7 +269,8 @@ mod tests {
             );
         }
         for bad in ["", "Fetch", "commit-sign", "push ", "sign"] {
-            assert!(bad.parse::<Operation>().is_err(), "{bad:?}");
+            let error = bad.parse::<Operation>().unwrap_err();
+            assert!(error.starts_with("unknown operation"), "{bad:?}: {error}");
         }
     }
 }

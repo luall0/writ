@@ -101,14 +101,24 @@ See [macOS Secure Enclave](architecture/macos-secure-enclave.md).
 
 ## What Writ guarantees
 
-- ✅ Agents never get forge credentials or signing keys
-- ✅ No signature or push outside an active, approver-signed lease
-- ✅ Pushes only to allowed repos and refs, no force push unless allowed
-- ✅ Only commits signed under the same lease reach upstream
-- ✅ Signatures only for allowed committer identities
-- ✅ Leases bounded in time, count and rate; revocable instantly
-- ✅ Everything logged
-- ✅ Hardware backends: keys non-exportable
+Each guarantee names the tests that try to break it (the guarantee registry). `make check`
+fails if a named test doesn't exist or is ignored, or if a guarantee has no test without a
+milestone that brings it (`tool/check-guarantees.py`). A new guarantee comes with its tests,
+in the same change (the security conventions, `docs/security.md`).
+
+| Guarantee | Tests that try to break it |
+|---|---|
+| ✅ Agents never get forge credentials or signing keys | `clients_never_see_an_internal_cause`, `errors_and_debug_never_contain_the_token`, `the_audit_log_holds_every_decision_and_no_secret`, `the_log_holds_no_secret` |
+| ✅ No signature or push outside an active, approver-signed lease | `no_signature_or_push_outside_an_active_approver_signed_lease`, `a_ticket_outside_every_template_is_rejected_before_reaching_the_approver`, `a_narrowed_ticket_never_grants_more`, `a_lease_revoked_while_the_pack_comes_in_moves_no_ref` |
+| ✅ Pushes only to allowed repos and refs, no force push unless allowed | `pushes_only_to_allowed_repos_and_refs_no_force_push_unless_allowed`, `destination_ref_and_protected_refs`, `fetch_and_push_through_the_gateway`, `git_runs_only_on_the_lease_repos_and_every_refusal_is_logged` |
+| ✅ Only commits signed under the same lease reach upstream | `only_commits_signed_under_the_same_lease_reach_upstream`, `malformed_objects_never_land` |
+| ✅ Signatures only for allowed committer identities | `signatures_only_for_allowed_committer_identities`, `committer_identity_and_object` |
+| ✅ Leases bounded in time, count and rate; revocable instantly | `leases_bounded_in_time_count_and_rate`, `counters_never_exceed_limits`, `revocation_and_expiry_drop_sessions_and_refuse_the_certificate`, `a_revocation_never_waits_for_the_audit_log`, `a_restart_watches_bound_sessions_again`, `a_lease_revoked_while_the_pack_comes_in_moves_no_ref` |
+| ✅ Everything logged | `the_audit_log_holds_every_decision_and_no_secret`, `nothing_is_granted_without_its_audit_line`, `an_unknown_ticket_is_logged_as_denied`, `git_runs_only_on_the_lease_repos_and_every_refusal_is_logged` |
+| ✅ Only reader keys reach the approval API | `only_reader_keys_reach_the_approval_api`, `only_a_reader_key_gets_through_mutual_tls`, `https_turns_away_a_key_not_in_readers` |
+| ✅ Writ never uses personal keys: only the approval key, in its agent | `writ_sign_never_signs_with_a_private_key_file` |
+| ✅ The approver sees what gets signed, whatever the agent wrote | `a_hostile_ticket_shows_nothing_a_terminal_would_act_on`, `agent_text_cannot_push_the_enforced_terms_off_the_screen` |
+| ✅ Hardware backends: keys non-exportable | planned: M7.5 |
 
 ## What Writ does NOT guarantee
 

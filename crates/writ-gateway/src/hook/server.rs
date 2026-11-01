@@ -437,8 +437,15 @@ ticket:
             format!("tok\n{}junk\n", line("refs/heads/a")),
             format!("tok\n{A} {A} refs/heads/mai n\n"),
         ] {
-            assert!(parse_input(bad.as_bytes()).is_err(), "{bad:?}");
+            let error = parse_input(bad.as_bytes()).map(|_| ()).unwrap_err();
+            assert!(
+                matches!(error, "malformed hook input" | "malformed ref update"),
+                "{bad:?}: {error}"
+            );
         }
-        assert!(parse_input(&[b't', b'\n', 0xff, b'\n']).is_err());
+        assert_eq!(
+            parse_input(&[b't', b'\n', 0xff, b'\n']).map(|_| ()),
+            Err("malformed hook input")
+        );
     }
 }

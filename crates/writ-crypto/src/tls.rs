@@ -338,10 +338,19 @@ mod tests {
         );
         assert!(!format!("{identity:?}").contains("PRIVATE"));
         let other = generate_self_signed().unwrap();
-        assert!(TlsIdentity::from_pem(&generated.cert_pem, "not a key").is_err());
-        assert!(TlsIdentity::from_pem("not a cert", &generated.key_pem).is_err());
+        assert!(matches!(
+            TlsIdentity::from_pem(&generated.cert_pem, "not a key"),
+            Err(CryptoError::Pem("private key"))
+        ));
+        assert!(matches!(
+            TlsIdentity::from_pem("not a cert", &generated.key_pem),
+            Err(CryptoError::Pem("certificate"))
+        ));
         // A key that isn't the certificate's.
-        assert!(TlsIdentity::from_pem(&generated.cert_pem, &other.key_pem).is_err());
+        assert!(matches!(
+            TlsIdentity::from_pem(&generated.cert_pem, &other.key_pem),
+            Err(CryptoError::Tls(rustls::Error::InconsistentKeys(_)))
+        ));
         let reader = generate(KeyKind::Ed25519).unwrap();
         assert!(pinned_client_config(identity.fingerprint(), &reader).is_ok());
         let p256 = generate(KeyKind::P256).unwrap();

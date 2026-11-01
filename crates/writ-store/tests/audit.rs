@@ -251,7 +251,10 @@ fn a_write_cut_short_never_glues_the_next_line_to_it() {
     let events = lifecycle();
     log.append(&events[0]).unwrap();
     breaker.set_cut_short(true);
-    assert!(log.append(&events[1]).is_err());
+    assert!(matches!(
+        log.append(&events[1]),
+        Err(writ_store::StoreError::Io(_))
+    ));
     breaker.set_cut_short(false);
     log.append(&events[2]).unwrap();
     let text = fs::read_to_string(&path).unwrap();
@@ -264,6 +267,7 @@ fn a_write_cut_short_never_glues_the_next_line_to_it() {
             "{line}"
         );
     }
+    // any error: the fragment is not JSON (serde's message).
     assert!(serde_json::from_str::<serde_json::Value>(lines[1]).is_err());
 }
 

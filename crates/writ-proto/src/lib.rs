@@ -124,8 +124,10 @@ mod tests {
 
         let err: Result<Info, ApiError> = Err(ApiError::with_reasons("rejected", vec!["a".into()]));
         assert_eq!(decode_reply::<Info>(&encode_reply(&err)), err);
-        assert!(decode_reply::<Info>(b"not json").is_err());
-        assert!(decode_reply::<Info>(br#"{"ok":{"decisions":"open"},"x":1}"#).is_err());
+        for bad in [&b"not json"[..], br#"{"ok":{"decisions":"open"},"x":1}"#] {
+            let error = decode_reply::<Info>(bad).unwrap_err();
+            assert!(error.message.starts_with("unreadable reply"), "{error:?}");
+        }
 
         let decision = Decision::Refused {
             feedback: "no".into(),

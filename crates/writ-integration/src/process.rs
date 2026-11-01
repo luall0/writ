@@ -32,6 +32,7 @@ pub fn ends_within(child: &mut Child, limit: Duration) -> bool {
         if Instant::now() >= deadline {
             return false;
         }
+        // poll: another process's exit gives this process no signal; bounded by `deadline`.
         std::thread::sleep(Duration::from_millis(5));
     }
 }

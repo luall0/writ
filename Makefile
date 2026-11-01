@@ -21,6 +21,7 @@ check:
 	python3 -I tool/check-rules.py
 	python3 -I tool/check-links.py
 	python3 -I tool/check-features.py
+	python3 -I tool/check-guarantees.py
 	cargo deny --locked check
 
 # The integration tests run the binaries (writd, writ, writ-sign) as they ship, built first on

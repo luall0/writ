@@ -3,6 +3,35 @@
 use writ_core::names::TicketId;
 use writ_store::StoreError;
 
+/// Why a request was turned down: a stable code that tests (and, later, clients) match on,
+/// never the message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalCode {
+    /// The ticket fits no template or isn't a valid ticket (every reason given).
+    Rejected,
+    /// The ticket file isn't UTF-8.
+    NotUtf8,
+    /// The session key's algorithm isn't accepted (Ed25519 or P-256 only).
+    SessionKey,
+    /// Too many tickets wait, in all or for this session.
+    TooManyPending,
+    /// More submissions from this address than the rate allows.
+    RateLimited,
+    /// The ticket or lease isn't in a state that allows this (not pending, nothing to revoke,
+    /// a lease that is gone).
+    WrongState,
+    /// A signature that can't be accepted: unreadable, another namespace, a key not in
+    /// `approvers`, other bytes, non-canonical bytes, or none where one is required.
+    Signature,
+    /// The signed ticket can't become or amend a lease (narrowing, fit, expiry, subject).
+    Lifecycle,
+    /// The feedback is empty or too long.
+    Feedback,
+    /// The ticket's session can't be used: its stored key doesn't match, or the daemon can't
+    /// watch the process the lease is bound to.
+    Session,
+}
+
 /// Why a request to the service failed. What a client may see is its `Display`; an internal
 /// cause ([`ServiceError::Internal`], [`ServiceError::AuditLog`]) stays in the `source` chain,
 /// for the daemon's log only.
@@ -11,6 +40,7 @@ pub enum ServiceError {
     /// Turned down, for the reasons given (already in the audit log when it is a denial).
     #[error("{message}")]
     Refused {
+        code: RefusalCode,
         message: String,
         /// Every reason, when there are several (a ticket that fits no template).
         reasons: Vec<String>,
@@ -27,18 +57,28 @@ pub enum ServiceError {
 
 impl ServiceError {
     /// Turned down for one reason.
-    pub fn refused(message: impl Into<String>) -> Self {
+    pub fn refused(code: RefusalCode, message: impl Into<String>) -> Self {
         Self::Refused {
+            code,
             message: message.into(),
             reasons: Vec::new(),
         }
     }
 
-    /// Turned down, with every reason.
+    /// A ticket rejected, with every reason.
     pub fn rejected(message: impl Into<String>, reasons: Vec<String>) -> Self {
         Self::Refused {
+            code: RefusalCode::Rejected,
             message: message.into(),
             reasons,
+        }
+    }
+
+    /// The refusal's code, if this is a refusal.
+    pub fn code(&self) -> Option<RefusalCode> {
+        match self {
+            Self::Refused { code, .. } => Some(*code),
+            _ => None,
         }
     }
 
@@ -73,7 +113,9 @@ impl ServiceError {
 impl From<ServiceError> for writ_proto::ApiError {
     fn from(error: ServiceError) -> Self {
         match error {
-            ServiceError::Refused { message, reasons } => Self::with_reasons(message, reasons),
+            ServiceError::Refused {
+                message, reasons, ..
+            } => Self::with_reasons(message, reasons),
             other => Self::new(other.to_string()),
         }
     }
@@ -98,6 +140,9 @@ mod tests {
         let api = writ_proto::ApiError::from(rejected);
         assert_eq!(api.message, "ticket rejected");
         assert_eq!(api.reasons, vec!["a".to_owned(), "b".to_owned()]);
-        assert_eq!(ServiceError::refused("no").reason_text(), "no");
+        assert_eq!(
+            ServiceError::refused(RefusalCode::Feedback, "no").reason_text(),
+            "no"
+        );
     }
 }

@@ -289,10 +289,17 @@ mod tests {
             "1969-12-31T23:59:59Z",
             "",
         ] {
-            assert!(bad.parse::<Timestamp>().is_err(), "{bad} should be refused");
+            assert!(
+                matches!(bad.parse::<Timestamp>(), Err(UnitError::Timestamp(_))),
+                "{bad} should be refused"
+            );
         }
-        assert!(Timestamp::from_unix(-1).is_err());
-        assert!(Timestamp::from_unix(MAX_UNIX + 1).is_err());
+        assert_eq!(Timestamp::from_unix(-1), Err(UnitError::TimestampRange(-1)));
+        assert_eq!(
+            Timestamp::from_unix(MAX_UNIX + 1),
+            Err(UnitError::TimestampRange(MAX_UNIX + 1))
+        );
+        assert!(Timestamp::from_unix(MAX_UNIX).is_ok(), "the limit itself");
     }
 
     #[test]
@@ -311,7 +318,10 @@ mod tests {
             "1.5h",
             "99999999999999999999s",
         ] {
-            assert!(bad.parse::<Duration>().is_err(), "{bad} should be refused");
+            assert!(
+                matches!(bad.parse::<Duration>(), Err(UnitError::Duration(_))),
+                "{bad} should be refused"
+            );
         }
     }
 
@@ -321,7 +331,10 @@ mod tests {
         assert_eq!("1GiB".parse::<ByteSize>().unwrap().bytes(), 1 << 30);
         assert_eq!("512".parse::<ByteSize>().unwrap().bytes(), 512);
         for bad in ["", "MB", "50mb", "50 MB", "-1"] {
-            assert!(bad.parse::<ByteSize>().is_err(), "{bad} should be refused");
+            assert!(
+                matches!(bad.parse::<ByteSize>(), Err(UnitError::Size(_))),
+                "{bad} should be refused"
+            );
         }
         let json: ByteSize = serde_json::from_str("1024").unwrap();
         assert_eq!(json.bytes(), 1024);

@@ -22,7 +22,7 @@ mod service;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use error::ServiceError;
+pub use error::{RefusalCode, ServiceError};
 pub use service::{GatewayDenial, Service, ServiceConfig, ServicePlatform};
 pub use writ_store::EventKind;
 

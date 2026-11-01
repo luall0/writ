@@ -126,11 +126,12 @@ mod tests {
         write_private(&dir.join("key"), b"secret").unwrap();
         assert_eq!(mode(&dir.join("key")), 0o600);
         assert!(
-            write_private(&dir.join("key"), b"other").is_err(),
+            crate::error_of(write_private(&dir.join("key"), b"other")).starts_with("cannot create"),
             "never overwritten"
         );
         assert_eq!(fs::read(dir.join("key")).unwrap(), b"secret");
-        assert!(load_key(&dir.join("key")).is_err(), "not a key");
+        let error = crate::error_of(load_key(&dir.join("key")));
+        assert!(error.contains("is not a key"), "{error}");
     }
 
     #[test]

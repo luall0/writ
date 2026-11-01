@@ -19,7 +19,7 @@ use super::{
     Inner, MAX_PENDING_PER_SESSION, MAX_SUBMISSIONS_PER_MINUTE, MAX_TRACKED_SOURCES, Service,
     WAIT_RECHECK, canonical_text, fingerprint, internal, not_found,
 };
-use crate::ServiceError;
+use crate::{RefusalCode, ServiceError};
 
 impl Service {
     /// Submits a ticket file sent with `session_key` (the key the connection authenticated
@@ -54,15 +54,18 @@ impl Service {
         ) {
             return reject(
                 &mut inner,
-                ServiceError::refused(format!(
-                    "the session key is {algorithm}: it must be ssh-ed25519 or ecdsa-sha2-nistp256"
-                )),
+                ServiceError::refused(
+                    RefusalCode::SessionKey,
+                    format!(
+                        "the session key is {algorithm}: it must be ssh-ed25519 or ecdsa-sha2-nistp256"
+                    ),
+                ),
             );
         }
         let Ok(text) = std::str::from_utf8(text) else {
             return reject(
                 &mut inner,
-                ServiceError::refused("the ticket file is not UTF-8"),
+                ServiceError::refused(RefusalCode::NotUtf8, "the ticket file is not UTF-8"),
             );
         };
         let request = match TicketRequest::from_yaml(text) {
@@ -78,9 +81,12 @@ impl Service {
         if waiting >= self.config.max_pending {
             return reject(
                 &mut inner,
-                ServiceError::refused(format!(
-                    "{waiting} tickets are already waiting for the approver; try again later"
-                )),
+                ServiceError::refused(
+                    RefusalCode::TooManyPending,
+                    format!(
+                        "{waiting} tickets are already waiting for the approver; try again later"
+                    ),
+                ),
             );
         }
         let session = fingerprint(session_key)?;
@@ -94,9 +100,10 @@ impl Service {
         if mine >= MAX_PENDING_PER_SESSION {
             return reject(
                 &mut inner,
-                ServiceError::refused(format!(
-                    "this session already has {mine} tickets waiting for the approver"
-                )),
+                ServiceError::refused(
+                    RefusalCode::TooManyPending,
+                    format!("this session already has {mine} tickets waiting for the approver"),
+                ),
             );
         }
         let amends = match &request.ticket.amends {
@@ -181,7 +188,10 @@ impl Service {
             if first {
                 Self::log_best_effort(inner, &event(reason.clone()));
             }
-            return Err(ServiceError::refused(format!("{reason}; try again later")));
+            return Err(ServiceError::refused(
+                RefusalCode::RateLimited,
+                format!("{reason}; try again later"),
+            ));
         }
         window.times.push_back(now);
         let refused = std::mem::take(&mut window.refused);
@@ -214,6 +224,7 @@ impl Service {
             priority: Priority::Default,
             tags: vec!["writ".to_owned(), "ticket".to_owned()],
         };
+        // poisoned: no notification (best effort; it grants nothing, the ticket still waits).
         if let Ok(outbox) = self.notifications.lock()
             && outbox.try_send(notification).is_err()
         {

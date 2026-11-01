@@ -129,8 +129,11 @@ mod tests {
         let pin = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
         std::fs::write(&file, format!("# pins\n[h]:8443 {pin}\nbad:1 md5:x\n")).unwrap();
         assert_eq!(pinned_fingerprint(&file, "[h]:8443").unwrap(), pin);
-        assert!(pinned_fingerprint(&file, "h").is_err());
-        assert!(pinned_fingerprint(&file, "bad:1").is_err());
-        assert!(pinned_fingerprint(&dir.path().join("missing"), "[h]:8443").is_err());
+        let error = crate::error_of(pinned_fingerprint(&file, "h"));
+        assert!(error.starts_with("the daemon's TLS certificate for h is not pinned"));
+        let error = crate::error_of(pinned_fingerprint(&file, "bad:1"));
+        assert!(error.starts_with("invalid pin for bad:1"), "{error}");
+        let error = crate::error_of(pinned_fingerprint(&dir.path().join("missing"), "[h]:8443"));
+        assert!(error.contains("is not pinned"), "{error}");
     }
 }

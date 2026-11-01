@@ -339,9 +339,12 @@ impl Gateway {
     }
 
     fn unregister_session(&self, serial: u64, connection: u64) {
-        if let Ok(mut sessions) = self.shared.sessions.lock()
-            && let Some(by_connection) = sessions.get_mut(&serial)
-        {
+        let mut sessions = self
+            .shared
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(by_connection) = sessions.get_mut(&serial) {
             by_connection.remove(&connection);
             if by_connection.is_empty() {
                 sessions.remove(&serial);

@@ -28,7 +28,7 @@ use proptest::strategy::ValueTree;
 use writ_core::caller::{CallerConstraint, CallerFacts, ProcessMatch, ProcessRef};
 use writ_core::config::{PolicyConfig, PushMode};
 use writ_core::fit;
-use writ_core::lease::{self, Lease, State, TicketRecord, Usage};
+use writ_core::lease::{self, Lease, LifecycleError, State, TicketRecord, Usage};
 use writ_core::narrow;
 use writ_core::policy::{
     self, CertIdentity, Context, DenyCode, FetchRequest, LedgerRef, ObjectKind, PushRequest,
@@ -659,7 +659,10 @@ proptest! {
         if narrow::check(&submitted, &signed).is_err() {
             // Refused: and the daemon would not activate it either.
             let record = TicketRecord::pending(submitted.clone());
-            prop_assert!(lease::activate(&config, &record, signed, approval(), 7, later(1)).is_err());
+            prop_assert!(matches!(
+                lease::activate(&config, &record, signed, approval(), 7, later(1)),
+                Err(LifecycleError::Narrowing(_))
+            ));
             return Ok(());
         }
         let record = TicketRecord::pending(submitted.clone());
@@ -754,7 +757,8 @@ proptest! {
             _ => true,
         };
         if beyond {
-            prop_assert!(fit::fits(&config, &wide).is_err());
+            let reasons = fit::fits(&config, &wide).err().map(|e| e.reasons).unwrap_or_default();
+            prop_assert!(!reasons.is_empty(), "a ticket outside its template fits");
         }
     }
 

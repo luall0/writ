@@ -78,9 +78,13 @@ impl<'a> Push<'a> {
 
 impl Drop for Push<'_> {
     fn drop(&mut self) {
-        if let Ok(mut pushes) = self.gateway.shared.pushes.lock() {
-            pushes.remove(&self.token);
-        }
+        // Forgotten even from a poisoned table: a token must never outlive its push.
+        self.gateway
+            .shared
+            .pushes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.token);
     }
 }
 
@@ -88,6 +92,8 @@ impl Drop for Push<'_> {
 /// daemon user's git config must not change what the gateway runs), no prompt, and
 /// `GIT_PROTOCOL` if the client asked for one.
 fn git(git_protocol: Option<String>) -> tokio::process::Command {
+    // PATH: the daemon's own PATH (the environment is cleared but for it); the daemon's
+    // host and its PATH are trusted (docs/threat-model.md, boundary 5).
     let mut cmd = tokio::process::Command::new("git");
     cmd.env_clear();
     for name in GIT_ENV_KEPT {

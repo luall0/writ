@@ -78,7 +78,10 @@ async fn fake_accept_fails_once_every_connector_is_dropped() {
     drop(second);
     // A connection made before the drop is still delivered, then accept fails.
     assert!(transport.accept().await.is_ok());
-    assert!(transport.accept().await.is_err());
+    assert!(matches!(
+        transport.accept().await,
+        Err(writ_platform::PlatformError::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionAborted
+    ));
 }
 
 #[tokio::test]
@@ -90,5 +93,6 @@ async fn fake_connect_fails_once_the_transport_is_dropped() {
             label: "late".to_owned(),
         })
         .await;
+    // any error: the fake's closed channel (an io error); what matters is no connection.
     assert!(result.is_err());
 }

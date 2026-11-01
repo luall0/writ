@@ -22,6 +22,8 @@ fn main() -> ExitCode {
     let rest = match args.as_slice() {
         [y, sign, rest @ ..] if y == "-Y" && sign == "sign" => rest,
         _ => {
+            // PATH: verify calls go to the agent host's own ssh-keygen, as git would call it;
+            // the agent host is not a boundary (nothing here grants anything).
             let error = Command::new("ssh-keygen").args(&args).exec();
             eprintln!("writ-sign: cannot run ssh-keygen: {error}");
             return ExitCode::FAILURE;
@@ -66,6 +68,7 @@ fn parse(args: &[OsString]) -> anyhow::Result<SignRequest> {
 }
 
 fn git_config(key: &str) -> Option<String> {
+    // PATH: the agent host's git, the one that called this shim.
     let out = Command::new("git")
         .args(["config", "--get", key])
         .output()
@@ -119,6 +122,7 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
         git_config("core.sshCommand"),
     )?;
 
+    // PATH: the agent host's sh runs the configured core.sshCommand, as git itself would.
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(format!("{ssh} \"$@\"")).arg("writ-sign");
     if let Some(port) = port {
@@ -187,13 +191,31 @@ mod tests {
         args.iter().map(OsString::from).collect()
     }
 
+    /// The error's message chain; a success fails the test.
+    fn error_of<T>(result: anyhow::Result<T>) -> String {
+        match result {
+            Ok(_) => panic!("expected an error, got a success"),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
     #[test]
     fn parses_what_git_passes() {
         let r = parse(&os(&["-n", "git", "-f", "/tmp/k", "-U", "/tmp/buf"])).unwrap();
         assert_eq!(r.namespace, "git");
         assert_eq!(r.file, PathBuf::from("/tmp/buf"));
-        assert!(parse(&os(&["-n", "git", "-f", "/tmp/k"])).is_err());
-        assert!(parse(&os(&["-n", "git", "-O", "x", "/tmp/buf"])).is_err());
+        assert_eq!(
+            error_of(parse(&os(&["-n", "git", "-f", "/tmp/k"]))),
+            "expected exactly one file to sign"
+        );
+        assert_eq!(
+            error_of(parse(&os(&["-n", "git", "-O", "x", "/tmp/buf"]))),
+            "unsupported option -O"
+        );
+        assert_eq!(
+            error_of(parse(&os(&["-f", "/tmp/k", "/tmp/buf"]))),
+            "missing -n <namespace>"
+        );
     }
 
     #[test]
@@ -206,13 +228,20 @@ mod tests {
             parse_url("ssh://git@writ.home/").unwrap(),
             ("git@writ.home".into(), None)
         );
-        assert!(parse_url("git@writ.home:2222").is_err());
-        assert!(parse_url("ssh://-oProxyCommand=x").is_err());
-        assert!(parse_url("ssh://git@host/path").is_err());
+        let refused = |url: &str| {
+            let error = error_of(parse_url(url));
+            assert!(
+                error.contains("writ.url") && error.contains(url),
+                "{url}: {error}"
+            );
+        };
+        refused("git@writ.home:2222");
+        refused("ssh://-oProxyCommand=x");
+        refused("ssh://git@host/path");
         // An empty or out-of-range port is no port: the rest is then not a valid host.
-        assert!(parse_url("ssh://git@host:").is_err());
-        assert!(parse_url("ssh://git@host:123456").is_err());
-        assert!(parse_url("ssh://git@").is_err());
+        refused("ssh://git@host:");
+        refused("ssh://git@host:123456");
+        refused("ssh://git@");
         assert_eq!(
             parse_url("ssh://git@[::1]:2222").unwrap(),
             ("git@::1".into(), Some("2222".into()))
@@ -221,8 +250,8 @@ mod tests {
             parse_url("ssh://git@[::1]").unwrap(),
             ("git@::1".into(), None)
         );
-        assert!(parse_url("ssh://git@[not-an-ip]:2222").is_err());
-        assert!(parse_url("ssh://git@::1").is_err());
+        refused("ssh://git@[not-an-ip]:2222");
+        refused("ssh://git@::1");
     }
 
     #[test]
@@ -237,8 +266,11 @@ mod tests {
             ssh_command(some("  "), some("ssh -i c")).unwrap(),
             "ssh -i c"
         );
-        assert!(ssh_command(None, None).is_err());
-        assert!(ssh_command(some(""), some(" ")).is_err());
+        for (env, config) in [(None, None), (some(""), some(" "))] {
+            assert!(
+                error_of(ssh_command(env, config)).starts_with("no SSH command for the daemon"),
+            );
+        }
     }
 
     #[test]
@@ -252,8 +284,15 @@ mod tests {
             "junk\n-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n",
             "-----BEGIN SSH SIGNATURE-----\n-----BEGIN SSH SIGNATURE-----\n-----END SSH SIGNATURE-----",
         ] {
-            assert!(check_signature(bad.as_bytes()).is_err(), "{bad:?}");
+            assert_eq!(
+                error_of(check_signature(bad.as_bytes())),
+                "the daemon sent something that is not an SSH signature",
+                "{bad:?}"
+            );
         }
-        assert!(check_signature(&[0xff, 0xfe]).is_err());
+        assert_eq!(
+            error_of(check_signature(&[0xff, 0xfe])),
+            "the daemon sent something that is not an SSH signature"
+        );
     }
 }

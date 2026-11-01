@@ -356,7 +356,11 @@ mod tests {
             "refs/heads/*",
             "refs/heads/x\u{7f}",
         ] {
-            assert!(bad.parse::<RefName>().is_err(), "{bad}");
+            assert_eq!(
+                bad.parse::<RefName>().unwrap_err().kind,
+                "ref name",
+                "{bad}"
+            );
         }
     }
 
@@ -381,7 +385,11 @@ mod tests {
             "a..*",
             "/x",
         ] {
-            assert!(bad.parse::<BranchPattern>().is_err(), "{bad}");
+            assert_eq!(
+                bad.parse::<BranchPattern>().unwrap_err().kind,
+                "branch pattern",
+                "{bad}"
+            );
         }
     }
 
@@ -403,8 +411,13 @@ mod tests {
         assert!(tags.matches(&refname("refs/tags/v1")));
         assert!(!tags.matches(&refname("refs/heads/v1")));
         assert!("refs/heads/main".parse::<RefPattern>().is_ok());
-        assert!("heads/main".parse::<RefPattern>().is_err());
-        assert!("*".parse::<RefPattern>().is_err());
+        for bad in ["heads/main", "*"] {
+            let error = bad.parse::<RefPattern>().unwrap_err();
+            assert_eq!(
+                (error.kind, error.why.as_str()),
+                ("ref pattern", "must start with refs/")
+            );
+        }
     }
 
     #[test]
@@ -420,7 +433,11 @@ mod tests {
         assert!(set.matches("src/auth/a.rs") && set.matches("src/routes/oauth.rs"));
         assert!(!set.matches("README.md"));
         for bad in ["", "/abs", "../x", "a/./b", "src/[", "a\nb"] {
-            assert!(bad.parse::<PathPattern>().is_err(), "{bad:?}");
+            assert_eq!(
+                bad.parse::<PathPattern>().unwrap_err().kind,
+                "path pattern",
+                "{bad:?}"
+            );
         }
     }
 }

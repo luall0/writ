@@ -57,6 +57,7 @@ pub(crate) struct Slot {
 
 impl Drop for Slot {
     fn drop(&mut self) {
+        // poisoned: the count stays up, so the source gets fewer connections (fail closed).
         if let Ok(mut counts) = self.per_source.lock()
             && let Some(count) = counts.get_mut(&self.source)
         {

@@ -213,7 +213,11 @@ mod tests {
             assert!(good.parse::<RepoName>().is_ok(), "{good}");
         }
         for bad in ["", "../x", "a/b", ".hidden", "-x", "omega.git", "a b", "é"] {
-            assert!(bad.parse::<RepoName>().is_err(), "{bad}");
+            assert_eq!(
+                bad.parse::<RepoName>().unwrap_err().kind,
+                "repo name",
+                "{bad}"
+            );
         }
     }
 
@@ -244,7 +248,10 @@ mod tests {
         let long = format!("{}@b.c", "a".repeat(250));
         assert_eq!(long.len(), 254);
         assert!(long.parse::<Email>().is_ok());
-        assert!(format!("a{long}").parse::<Email>().is_err());
+        assert_eq!(
+            format!("a{long}").parse::<Email>().unwrap_err().why,
+            "must be 1 to 254 characters"
+        );
     }
 
     #[test]
@@ -264,7 +271,11 @@ mod tests {
             "lease_01JD8X",
             "wrt_0000000000000000000000000I",
         ] {
-            assert!(bad.parse::<TicketId>().is_err(), "{bad}");
+            assert_eq!(
+                bad.parse::<TicketId>().unwrap_err().kind,
+                "ticket id",
+                "{bad}"
+            );
         }
     }
 
@@ -280,10 +291,13 @@ mod tests {
                 .parse::<CommitId>()
                 .is_err()
         );
-        assert!("9e1c".parse::<CommitId>().is_err());
+        assert_eq!("9e1c".parse::<CommitId>().unwrap_err().kind, "commit id");
         let fp = format!("SHA256:{}", "A".repeat(43));
         assert!(fp.parse::<KeyFingerprint>().is_ok());
-        assert!("SHA256:short".parse::<KeyFingerprint>().is_err());
+        assert_eq!(
+            "SHA256:short".parse::<KeyFingerprint>().unwrap_err().kind,
+            "key fingerprint"
+        );
         assert!(
             format!("MD5:{}", "A".repeat(43))
                 .parse::<KeyFingerprint>()

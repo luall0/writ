@@ -100,7 +100,8 @@ mod tests {
         assert_eq!(parse_git("hub version 2.14"), None);
         assert_eq!(parse_openssh("Sun_SSH_1.5"), None);
         assert!(at_least("git", (2, 34), MIN_GIT).is_ok());
-        assert!(at_least("git", (2, 33), MIN_GIT).is_err());
+        let error = at_least("git", (2, 33), MIN_GIT).unwrap_err();
+        assert!(error.contains("git") && error.contains("2.34"), "{error}");
         assert!(at_least("git", (3, 0), MIN_GIT).is_ok());
     }
 }

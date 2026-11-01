@@ -256,11 +256,11 @@ mod tests {
             branches: vec!["agent/*".parse().unwrap()],
             ..Narrowing::default()
         });
-        assert!(!wider.is_empty());
-        let other = Narrowing {
+        assert!(wider.contains("branch"), "{wider}");
+        let other = error(Narrowing {
             branches: vec!["main".parse().unwrap()],
             ..Narrowing::default()
-        };
-        assert!(other.apply(&ticket()).is_err());
+        });
+        assert!(other.contains("branch"), "{other}");
     }
 }

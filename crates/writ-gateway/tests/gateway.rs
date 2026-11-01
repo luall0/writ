@@ -381,6 +381,8 @@ async fn the_agents_listener_turns_away_other_sources() {
     let stream = outside.agents.connect(peer()).await.unwrap();
     let connected =
         client::connect_stream(Arc::new(client::Config::default()), stream, Accept).await;
+    // any error: russh reports the dropped connection its own way; the audit line below is
+    // the exact reason.
     assert!(connected.is_err(), "no SSH session from outside the list");
     let lines = outside.audit("connect", "denied");
     assert_eq!(lines.len(), 1, "{lines:?}");
@@ -424,6 +426,7 @@ async fn one_connection_holds_at_most_four_channels() {
             if let Ok(channel) = agent.channel_open_session().await {
                 return channel;
             }
+            // poll: the server frees the slot with no signal; bounded by WAIT_LIMIT above.
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     })
@@ -450,11 +453,13 @@ async fn only_the_listed_ssh_algorithms_are_spoken() {
         cipher: Cow::Borrowed(&[russh::cipher::AES_128_CTR]),
         ..russh::Preferred::DEFAULT
     };
+    // any error: russh's negotiation failure, no algorithm in common.
     assert!(with(ctr).await.is_err(), "aes128-ctr");
     let dh = russh::Preferred {
         kex: Cow::Borrowed(&[russh::kex::DH_G14_SHA256]),
         ..russh::Preferred::DEFAULT
     };
+    // any error: russh's negotiation failure, no algorithm in common.
     assert!(with(dh).await.is_err(), "diffie-hellman-group14-sha256");
 }
 
@@ -735,6 +740,7 @@ async fn https_serves_only_the_approval_routes_and_bounds_bodies() {
             .await
             .unwrap();
         assert_eq!(status, 404, "{method} {path}");
+        // any error: the body is not a reply at all (serde's message).
         assert!(writ_proto::decode_reply::<Info>(&body).is_err());
     }
     let id = writ_core::names::TicketId::from_parts(1_800_000_000_000, [1; 10]);
@@ -763,6 +769,7 @@ async fn https_turns_away_a_key_not_in_readers() {
         Vec::new(),
     )
     .await;
+    // any error: rustls or hyper reports the rejected client certificate its own way.
     assert!(refused.is_err(), "{refused:?}");
     // The reader gets in, on the same listener.
     let (status, _) = https(&daemon, &daemon.pin, "GET", "/v1/info", Vec::new())

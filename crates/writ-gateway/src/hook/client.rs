@@ -79,7 +79,11 @@ mod tests {
         for bad in [
             "", "\n", "ok ok\n", "OK\n", "okay\n", "deny\n", "deny \n", "ok\nok\n", " ok\n",
         ] {
-            assert!(answer(bad).is_err(), "{bad:?}");
+            assert_eq!(
+                answer(bad),
+                Err("unexpected answer from the daemon".to_owned()),
+                "{bad:?}"
+            );
         }
     }
 }

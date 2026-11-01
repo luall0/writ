@@ -343,7 +343,10 @@ fn every_transition_of_the_diagram_and_no_other() {
         );
         assert_eq!(from.as_str().parse::<State>().unwrap(), from);
     }
-    assert!("submitted".parse::<State>().is_err());
+    assert!(matches!(
+        "submitted".parse::<State>(),
+        Err(LifecycleError::UnknownState(s)) if s == "submitted"
+    ));
 }
 
 #[test]

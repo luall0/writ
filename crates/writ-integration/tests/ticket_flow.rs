@@ -136,7 +136,7 @@ fn rejected_signed_narrowed_and_refused_tickets_end_to_end() {
             .spawn()
             .unwrap(),
     );
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("comes from the session that submitted it"),
         "{}",
@@ -270,7 +270,7 @@ fn https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled()
     )
     .unwrap();
     let out = daemon.run(&["--tls-pins", other.to_str().unwrap(), "ls"], "");
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("TLS with the daemon failed"),
         "{}",
@@ -278,7 +278,7 @@ fn https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled()
     );
     // No pin at all: refused, saying how to pin.
     let out = daemon.run(&["--tls-pins", "/dev/null", "ls"], "");
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("writd tls-fingerprint"),
         "{}",
@@ -300,7 +300,7 @@ fn https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled()
         .arg(daemon.root().join("disabled.yaml"))
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("both disabled"), "{}", stderr(&out));
 }
 
@@ -334,7 +334,7 @@ fn only_a_key_in_approvers_can_sign() {
             .spawn()
             .unwrap(),
     );
-    assert!(!out.status.success(), "{}", stdout(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
         stderr(&out).contains("which is not in approvers"),
         "{}",
@@ -378,7 +378,7 @@ fn writ_sign_never_signs_with_a_private_key_file() {
         ],
         "",
     );
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("ssh-keygen could not sign"),
         "refused by ssh-keygen itself, before the daemon: {}",

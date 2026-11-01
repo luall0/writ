@@ -89,7 +89,8 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   `StoreError`, `PlatformError`, `ServiceError`; in `writ-core`, one per domain
   (`LifecycleError`, `FitError`, `CanonicalError`). Never a bare `Error`: `writd` imports many.
 - **One variant per cause** the caller may handle or a test may check (`LeaseNotActive`,
-  `SessionKeyChanged`), not a catch-all `String`.
+  `SessionKeyChanged`), not a catch-all `String`; a refusal carries a stable code
+  (`ServiceError::Refused { code: RefusalCode, .. }`) beside its message.
 - **Causes are kept**: `#[from]` / `#[source]`, never `e.to_string()` into a `String` variant.
 - **Messages**: lowercase, no trailing period, they name the object (`invalid repo name "x":
   …`, `lease wrt_… is revoked`); several reasons are joined with `; `, or listed one per line.

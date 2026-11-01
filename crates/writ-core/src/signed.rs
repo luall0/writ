@@ -78,6 +78,7 @@ impl Revocation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::CanonicalError;
 
     fn id(n: u8) -> TicketId {
         TicketId::from_parts(1_800_000_000_000, [n; 10])
@@ -114,9 +115,18 @@ mod tests {
         assert_eq!(Revocation::from_canonical(&bytes).unwrap(), revocation);
 
         // One kind is never read as another, and only canonical bytes decode.
-        assert!(Revocation::from_canonical(&refusal.canonical_bytes().unwrap()).is_err());
-        assert!(Refusal::from_canonical(&bytes).is_err());
+        assert!(matches!(
+            Revocation::from_canonical(&refusal.canonical_bytes().unwrap()),
+            Err(CanonicalError::Decode { .. })
+        ));
+        assert!(matches!(
+            Refusal::from_canonical(&bytes),
+            Err(CanonicalError::Decode { .. })
+        ));
         let spaced = String::from_utf8(bytes).unwrap().replace(':', ": ");
-        assert!(Revocation::from_canonical(spaced.as_bytes()).is_err());
+        assert!(matches!(
+            Revocation::from_canonical(spaced.as_bytes()),
+            Err(CanonicalError::NotCanonical { .. })
+        ));
     }
 }

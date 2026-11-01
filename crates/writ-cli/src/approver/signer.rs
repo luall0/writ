@@ -154,7 +154,9 @@ mod tests {
 
         let garbage = dir.path().join("garbage.pub");
         std::fs::write(&garbage, "ssh-ed25519 not-base64\n").unwrap();
-        assert!(approval_public_key(&garbage).is_err());
-        assert!(approval_public_key(&dir.path().join("missing.pub")).is_err());
+        let error = crate::error_of(approval_public_key(&garbage));
+        assert!(error.contains("is not an OpenSSH public key"), "{error}");
+        let error = crate::error_of(approval_public_key(&dir.path().join("missing.pub")));
+        assert!(error.starts_with("cannot read the approval key"), "{error}");
     }
 }

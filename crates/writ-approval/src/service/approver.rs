@@ -20,7 +20,7 @@ use writ_store::{AuditEvent, EventKind, Outcome};
 
 use super::{CLOCK_SKEW_SECONDS, Inner, Service, canonical_text, fingerprint, internal};
 use crate::PRINCIPAL;
-use crate::ServiceError;
+use crate::{RefusalCode, ServiceError};
 use writ_core::canonical::Canonical;
 
 /// The most tickets `writ ls --all` returns: the most recent ones (the audit log holds the
@@ -132,15 +132,15 @@ impl Service {
         );
         if record.state != State::Pending {
             let reason = format!("ticket {id} is {}, not pending", record.state);
-            return denied.deny(&mut inner, reason);
+            return denied.deny(&mut inner, RefusalCode::WrongState, reason);
         }
         let signed = match Ticket::from_canonical(request.signed.as_bytes()) {
             Ok(signed) => signed,
-            Err(e) => return denied.deny(&mut inner, e.to_string()),
+            Err(e) => return denied.deny(&mut inner, RefusalCode::Signature, e.to_string()),
         };
         let approver = match self.verify_approver(request.signed.as_bytes(), &request.signature) {
             Ok(approver) => approver,
-            Err(reason) => return denied.deny(&mut inner, reason),
+            Err(reason) => return denied.deny(&mut inner, RefusalCode::Signature, reason),
         };
         let approving = Approving {
             record: &record,
@@ -182,7 +182,11 @@ impl Service {
             denied,
         } = approving;
         let Some(lease) = inner.store.lease(lease_id).map_err(internal)? else {
-            return denied.deny(inner, format!("lease {lease_id} is missing"));
+            return denied.deny(
+                inner,
+                RefusalCode::WrongState,
+                format!("lease {lease_id} is missing"),
+            );
         };
         let approver = approval.approver.clone();
         let (updated, applied) = match lease::apply_amendment(
@@ -194,7 +198,7 @@ impl Service {
             now,
         ) {
             Ok(result) => result,
-            Err(e) => return denied.deny(inner, e.to_string()),
+            Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
         };
         let event = AuditEvent::new(now, EventKind::Amend, Outcome::Allowed)
             .lease(lease_id)
@@ -227,18 +231,18 @@ impl Service {
         } = approving;
         let session_key = match self.session_key(inner, record) {
             Ok(key) => key,
-            Err(reason) => return denied.deny(inner, reason),
+            Err(reason) => return denied.deny(inner, RefusalCode::Session, reason),
         };
         let approver = approval.approver.clone();
         let serial = keys::random_serial().map_err(internal)?;
         let lease =
             match lease::activate(&self.config.policy, record, signed, approval, serial, now) {
                 Ok(lease) => lease,
-                Err(e) => return denied.deny(inner, e.to_string()),
+                Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
             };
         let watch = match self.watch_session(&lease) {
             Ok(watch) => watch,
-            Err(reason) => return denied.deny(inner, reason),
+            Err(reason) => return denied.deny(inner, RefusalCode::Session, reason),
         };
         // A time that doesn't fit fails the grant: no fallback (a 0 would mean "valid since
         // 1970").
@@ -356,18 +360,19 @@ impl Service {
             "refusal not accepted",
         );
         if let Err(e) = lease::check_feedback(&request.feedback) {
-            return denied.deny(&mut inner, e.to_string());
+            return denied.deny(&mut inner, RefusalCode::Feedback, e.to_string());
         }
         let document = Refusal::new(id.clone(), request.feedback.clone())
             .canonical_bytes()
             .map_err(internal)?;
         let approver = match self.decision_signer(&document, request.signature.as_deref()) {
             Ok(approver) => approver,
-            Err(reason) => return denied.deny(&mut inner, reason),
+            Err(reason) => return denied.deny(&mut inner, RefusalCode::Signature, reason),
         };
         if record.state != State::Pending {
             return denied.deny(
                 &mut inner,
+                RefusalCode::WrongState,
                 format!("ticket {id} is {}, not pending", record.state),
             );
         }
@@ -415,7 +420,7 @@ impl Service {
             .map_err(internal)?;
         let approver = match self.decision_signer(&document, request.signature.as_deref()) {
             Ok(approver) => approver,
-            Err(reason) => return denied.deny(&mut inner, reason),
+            Err(reason) => return denied.deny(&mut inner, RefusalCode::Signature, reason),
         };
         let mut event = AuditEvent::new(now, EventKind::Revoke, Outcome::Done).caller(caller);
         if let Some(approver) = &approver {
@@ -449,6 +454,7 @@ impl Service {
             (state, _) => {
                 return denied.deny(
                     &mut inner,
+                    RefusalCode::WrongState,
                     format!("ticket {id} is {state}: nothing to revoke"),
                 );
             }
@@ -494,11 +500,19 @@ impl Denied {
         }
     }
 
-    /// Logs the denial with its reason and returns the error.
-    fn deny<T>(&self, inner: &mut Inner, reason: impl Into<String>) -> Result<T, ServiceError> {
+    /// Logs the denial with its reason and returns the error, with its code.
+    fn deny<T>(
+        &self,
+        inner: &mut Inner,
+        code: RefusalCode,
+        reason: impl Into<String>,
+    ) -> Result<T, ServiceError> {
         let reason = reason.into();
         Service::log_best_effort(inner, &self.event.clone().reason(reason.clone()));
-        Err(ServiceError::refused(format!("{}: {reason}", self.prefix)))
+        Err(ServiceError::refused(
+            code,
+            format!("{}: {reason}", self.prefix),
+        ))
     }
 }
 
