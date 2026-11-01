@@ -153,8 +153,8 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   `spawn_blocking` (`Gateway::authorize`, `api::blocking`). No lock is held across an `.await`.
 - **Nothing slow under the service's state lock**: no signer call, device, network or
   subprocess while it is held, since every approval, revocation and decision waits on it.
-  Decide under the lock, act outside, check again under the lock. The software signer in
-  `Service::sign` is the known exception until [M3.5](roadmap.md#m35--signing-outside-the-lock).
+  Decide under the lock, act outside, check again under the lock (`Service::sign`'s three
+  phases). What is reserved in the first phase is never given back on failure.
 - **Bounded everything** from untrusted peers: every read has a limit and refuses past it
   (`MAX_BODY`, `MAX_SIGN_INPUT`, `MAX_HOOK_INPUT`), handshakes and headers have timeouts, and a
   cut-short input is refused rather than decided on in part.

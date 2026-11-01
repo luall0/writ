@@ -13,7 +13,6 @@
 )]
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
@@ -33,23 +32,33 @@ pub fn software_signer(ids: &[&str], kind: KeyKind) -> SoftwareSigner {
     .unwrap()
 }
 
-/// Wraps a signer; while failing, every signature is refused with [`SignerError::Failed`]
-/// (the keys are still listed, like a device that is present but refuses).
+/// The error a [`FailingSigner`] answers, made from the key asked for.
+pub type Failure = fn(&KeyId) -> SignerError;
+
+/// Wraps a signer; while failing, every signature is refused, with [`SignerError::Failed`] or
+/// the error set by [`FailingSigner::fail_with`] (the keys are still listed, like a device
+/// that is present but refuses).
 pub struct FailingSigner<S> {
     inner: S,
-    failing: AtomicBool,
+    failure: Mutex<Option<Failure>>,
 }
 
 impl<S: Signer> FailingSigner<S> {
     pub fn new(inner: S) -> Self {
         Self {
             inner,
-            failing: AtomicBool::new(false),
+            failure: Mutex::new(None),
         }
     }
 
     pub fn set_failing(&self, failing: bool) {
-        self.failing.store(failing, Ordering::SeqCst);
+        let failed: Failure = |id| SignerError::Failed(id.clone());
+        *self.failure.lock().unwrap() = failing.then_some(failed);
+    }
+
+    /// Every signature is refused with `failure` (a queue's `Busy`, `Timeout`…).
+    pub fn fail_with(&self, failure: Failure) {
+        *self.failure.lock().unwrap() = Some(failure);
     }
 }
 
@@ -59,8 +68,8 @@ impl<S: Signer> Signer for FailingSigner<S> {
     }
 
     fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError> {
-        if self.failing.load(Ordering::SeqCst) {
-            return Err(SignerError::Failed(id.clone()));
+        if let Some(failure) = *self.failure.lock().unwrap() {
+            return Err(failure(id));
         }
         self.inner.sign(id, data)
     }
@@ -110,9 +119,12 @@ impl<S: Signer> GatedSigner<S> {
         }
     }
 
-    /// Signatures from now on wait at the gate.
-    pub fn close(&self) {
+    /// Signatures from now on wait at the gate, until the returned guard is opened or
+    /// dropped: a test that fails while a signature waits unwinds instead of hanging.
+    #[must_use = "the gate opens again when the guard is dropped"]
+    pub fn close(&self) -> Closed<'_, S> {
         self.gate.lock().unwrap().closed = true;
+        Closed { signer: self }
     }
 
     /// Lets every waiting signature through, and the next ones.
@@ -148,6 +160,22 @@ impl<S: Signer> GatedSigner<S> {
     /// How many signatures reached the gate (each one is let through, now or later).
     pub fn calls(&self) -> u64 {
         self.gate.lock().unwrap().calls
+    }
+}
+
+/// A closed [`GatedSigner`]: opens it when dropped.
+pub struct Closed<'a, S: Signer> {
+    signer: &'a GatedSigner<S>,
+}
+
+impl<S: Signer> Closed<'_, S> {
+    /// Lets every waiting signature through, and the next ones.
+    pub fn open(self) {}
+}
+
+impl<S: Signer> Drop for Closed<'_, S> {
+    fn drop(&mut self) {
+        self.signer.open();
     }
 }
 

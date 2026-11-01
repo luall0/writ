@@ -1,26 +1,34 @@
-//! Commit signatures (`docs/flows.md` § 2): the lease a certificate stands for, the policy's
-//! decision on the commit, the signature through the [`Signer`](writ_signer::Signer), then
-//! the audit line, the signature counted and the commit in the ledger.
+//! Commit signatures (`docs/flows.md` § 2), in three phases so the
+//! [`Signer`](writ_signer::Signer) never runs under the state lock (a slow or hung device
+//! would hold up every approval, wait and revocation):
 //!
-//! All of it under the state lock, so a revocation, an expiry or a concurrent signature
-//! can't come between the decision and what it allows. The signature is handed back only
-//! once its line is written and the ledger holds the commit: a signature the daemon didn't
-//! record never leaves it. The ledger holds the id of the commit git writes with the
-//! signature in it (`writ_git::signed`), so only that commit passes a push later.
+//! 1. under the lock: the lease a certificate stands for, the policy's decision on the
+//!    commit, the count and the rate slot taken (never given back);
+//! 2. without it: the signature, through the signer's queue and its deadline;
+//! 3. under the lock again: the lease still the same, active, not expired and its
+//!    certificate not on the deny list, then the audit line and the commit in the ledger.
+//!
+//! The signature is handed back only once its line is written and the ledger holds the
+//! commit: a signature the daemon didn't record never leaves it, and one made while the lease
+//! ended is discarded. The ledger holds the id of the commit git writes with the signature in
+//! it (`writ_git::signed`), so only that commit passes a push later.
 
+use std::collections::HashMap;
 use std::sync::MutexGuard;
 
 use writ_core::caller::CallerFacts;
 use writ_core::lease::Lease;
-use writ_core::names::{CommitId, RepoName, TicketId};
+use writ_core::names::{CommitId, KeyId, RepoName, TicketId};
 use writ_core::policy::{self, CertIdentity, Context, Denial, DenyCode, ObjectKind, SignRequest};
 use writ_core::ticket::{OnViolation, Operation};
+use writ_core::units::Timestamp;
 use writ_git::Commit;
+use writ_signer::SignerError;
 use writ_store::{AuditEvent, Counter, EventKind, LedgerEntry, Outcome};
 
 use super::sweep::Announce;
 use super::{Inner, Service, internal};
-use crate::{RefusalCode, ServiceError};
+use crate::ServiceError;
 
 /// The SSHSIG namespace git signs commits in (the only one the gateway accepts).
 const GIT_NAMESPACE: &str = "git";
@@ -92,6 +100,108 @@ fn failed(code: DenyCode, reason: impl Into<String>) -> Denial {
     }
 }
 
+/// The `sign` line of a request, before its outcome.
+fn sign_event(signing: &Signing, request: &SignRequest, now: Timestamp) -> AuditEvent {
+    let mut event = AuditEvent::new(now, EventKind::Sign, Outcome::Allowed)
+        .cert(signing.cert.serial)
+        .caller(&signing.caller)
+        .repo(&request.repo);
+    if let Ok(id) = signing.cert.key_id.parse::<TicketId>() {
+        event = event.lease(&id);
+    }
+    if !request.committer_email.is_empty() {
+        event = event.committer(&request.committer_email);
+    }
+    event
+}
+
+/// Logs `denial` as the request's `sign` line, and hands it back.
+fn deny(inner: &mut Inner, event: &AuditEvent, denial: Denial) -> Denial {
+    let mut line = event.clone().denial(&denial);
+    line.result = Outcome::Denied;
+    Service::log_best_effort(inner, &line);
+    denial
+}
+
+/// What the agent reads when the signer didn't sign: the kind of failure, never its cause
+/// (in the daemon's log).
+fn signer_reason(e: &SignerError) -> String {
+    match e {
+        SignerError::Busy => "the signer is busy; retry shortly".to_owned(),
+        SignerError::Timeout(_) => {
+            "the signer did not sign in time (see the daemon's log)".to_owned()
+        }
+        _ => "the signer failed (see the daemon's log)".to_owned(),
+    }
+}
+
+/// What [`Service::reserve`] took for a signature, for the next phases.
+struct Reserved<'a> {
+    lease: Lease,
+    key: KeyId,
+    commit: &'a Commit,
+    warnings: Vec<String>,
+    in_flight: InFlight<'a>,
+}
+
+/// A signature of `lease` between its phases: while one is in flight, the sweep doesn't
+/// mark the lease used up (the slot it took would make the signature's own check refuse
+/// it). Released under the lock by [`Service::settle`], or when dropped if that never runs.
+struct InFlight<'a> {
+    service: &'a Service,
+    lease: TicketId,
+    settled: bool,
+}
+
+impl InFlight<'_> {
+    fn settle(&mut self, inner: &mut Inner) {
+        if !self.settled {
+            inner.signing.end(&self.lease);
+            self.settled = true;
+        }
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            // Releasing lets the lease be marked used up: a reduction of privilege, so a
+            // poisoned lock is recovered rather than skipped.
+            let mut inner = self
+                .service
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.settle(&mut inner);
+        }
+    }
+}
+
+/// The signatures in flight, per lease.
+#[derive(Default)]
+pub(super) struct InFlightSignatures(HashMap<TicketId, u32>);
+
+impl InFlightSignatures {
+    fn start(&mut self, lease: &TicketId) {
+        let count = self.0.entry(lease.clone()).or_default();
+        *count = count.saturating_add(1);
+    }
+
+    fn end(&mut self, lease: &TicketId) {
+        if let Some(count) = self.0.get_mut(lease) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.0.remove(lease);
+            }
+        }
+    }
+
+    /// Whether a signature of `lease` is between its phases.
+    pub(super) fn any(&self, lease: &TicketId) -> bool {
+        self.0.contains_key(lease)
+    }
+}
+
 impl Service {
     /// Before the gateway reads a signing request (up to 16 MiB to decode, hash and walk):
     /// the certificate's single active lease, which allows `commit_sign` and names `repo`.
@@ -137,37 +247,43 @@ impl Service {
     /// Every outcome is one `sign` line in the audit log. A violation under a lease with
     /// `on_violation: revoke_lease` revokes it; the caller drops its sessions (it has the
     /// denial to send first: [`Service::is_revoked`] then says so).
+    ///
+    /// Three phases, so the signer never runs under the state lock: [`Service::reserve`]
+    /// (decide, take the slot), the signature, [`Service::settle`] (check again, record).
     pub fn sign(&self, signing: &Signing) -> Result<SignedCommit, Denial> {
+        let request = signing.request();
+        let reserved = self.reserve(signing, &request)?;
+        let signed = writ_signer::sshsig(
+            &*self.signer,
+            &reserved.key,
+            GIT_NAMESPACE,
+            reserved.commit.bytes(),
+        );
+        self.settle(signing, &request, reserved, signed)
+    }
+
+    /// The first phase, under the lock: the lease, the policy's decision, and the count and
+    /// the rate slot taken. A denial is logged here (and a violation's certificate barred
+    /// before the lock is released). The slot is never given back: a signature that fails or
+    /// is discarded later still used it, so nothing can be retried past the limits.
+    fn reserve<'a>(
+        &'a self,
+        signing: &'a Signing,
+        request: &SignRequest,
+    ) -> Result<Reserved<'a>, Denial> {
         let (now, mut inner) = self
             .begin()
             .map_err(|e| failed(DenyCode::Invalid, e.to_string()))?;
-        let request = &signing.request();
-        let mut event = AuditEvent::new(now, EventKind::Sign, Outcome::Allowed)
-            .cert(signing.cert.serial)
-            .caller(&signing.caller)
-            .repo(&request.repo);
-        if let Ok(id) = signing.cert.key_id.parse::<TicketId>() {
-            event = event.lease(&id);
-        }
-        if !request.committer_email.is_empty() {
-            event = event.committer(&request.committer_email);
-        }
-        let deny = |inner: &mut Inner, denial: Denial| {
-            let mut line = event.clone().denial(&denial);
-            line.result = Outcome::Denied;
-            Self::log_best_effort(inner, &line);
-            denial
-        };
-
+        let event = sign_event(signing, request, now);
         let lease = match self.lease_for(&mut inner, &signing.cert, &signing.caller, now) {
             Ok(lease) => lease,
-            Err(denial) => return Err(deny(&mut inner, denial)),
+            Err(denial) => return Err(deny(&mut inner, &event, denial)),
         };
         let usage = match inner.store.usage(&lease.id, now) {
             Ok(usage) => usage,
             Err(e) => {
                 let reason = internal(e).to_string();
-                return Err(deny(&mut inner, failed(DenyCode::Invalid, reason)));
+                return Err(deny(&mut inner, &event, failed(DenyCode::Invalid, reason)));
             }
         };
         let ctx = Context {
@@ -180,7 +296,7 @@ impl Service {
         let allowed = match policy::decide_sign(&ctx, request) {
             Ok(allowed) => allowed,
             Err(denial) => {
-                let denial = deny(&mut inner, denial);
+                let denial = deny(&mut inner, &event, denial);
                 self.after_violation(inner, &lease, &denial);
                 return Err(denial);
             }
@@ -191,74 +307,140 @@ impl Service {
             // The policy refuses both before this point (`ObjectType`, `Config`).
             tracing::error!("an allowed signature without a commit or a signing key");
             let denial = failed(DenyCode::Invalid, "internal error in the daemon");
-            return Err(deny(&mut inner, denial));
+            return Err(deny(&mut inner, &event, denial));
         };
-        let signature = match writ_signer::sshsig(&*self.signer, key, GIT_NAMESPACE, commit.bytes())
-        {
+        let max = lease.ticket.limits.max_signatures;
+        // Under the same lock as the decision: the counter can't have moved, but the store
+        // refuses past the limit whatever happens.
+        match inner.store.consume(&lease.id, Counter::Signature, max, now) {
+            Ok(true) => {}
+            Ok(false) => {
+                let reason = format!("lease {}: all {max} signatures used", lease.id);
+                return Err(deny(&mut inner, &event, failed(DenyCode::Limit, reason)));
+            }
+            Err(e) => {
+                let reason = internal(e).to_string();
+                return Err(deny(&mut inner, &event, failed(DenyCode::Invalid, reason)));
+            }
+        }
+        inner.signing.start(&lease.id);
+        Ok(Reserved {
+            key: key.clone(),
+            commit,
+            warnings: allowed.warnings,
+            in_flight: InFlight {
+                service: self,
+                lease: lease.id.clone(),
+                settled: false,
+            },
+            lease,
+        })
+    }
+
+    /// The last phase, under the lock again: the lease must still be the one the decision
+    /// was made on, active, not past `expires_at` and its certificate not on the deny list;
+    /// then the signed commit's id, the audit line and the ledger entry, and only then does
+    /// the signature leave. Otherwise it is discarded and the denial logged. Then the lease
+    /// is marked used up if it is, now that nothing of it is in flight.
+    fn settle(
+        &self,
+        signing: &Signing,
+        request: &SignRequest,
+        mut reserved: Reserved<'_>,
+        signed: Result<String, SignerError>,
+    ) -> Result<SignedCommit, Denial> {
+        let (now, mut inner) = match self.now().and_then(|now| Ok((now, self.lock()?))) {
+            Ok(locked) => locked,
+            // The slot stays used; the lease is released by `InFlight`'s drop.
+            Err(e) => return Err(failed(DenyCode::Invalid, e.to_string())),
+        };
+        reserved.in_flight.settle(&mut inner);
+        let outcome = self.record(&mut inner, signing, request, &reserved, signed, now);
+        match self.sweep_locked(&mut inner, now) {
+            Ok(true) => self.changed.notify_waiters(),
+            Ok(false) => {}
+            Err(e) => tracing::error!(error = %e.detail(), "sweep failed"),
+        }
+        outcome
+    }
+
+    /// The checks of [`Service::settle`] and what it records, under the lock.
+    fn record(
+        &self,
+        inner: &mut Inner,
+        signing: &Signing,
+        request: &SignRequest,
+        reserved: &Reserved<'_>,
+        signed: Result<String, SignerError>,
+        now: Timestamp,
+    ) -> Result<SignedCommit, Denial> {
+        let event = &sign_event(signing, request, now).lease(&reserved.lease.id);
+        let signature = match signed {
             Ok(signature) => signature,
             Err(e) => {
-                tracing::error!(error = %e, key = %key, "the signer failed");
-                let denial = failed(
-                    DenyCode::Invalid,
-                    "the signer failed (see the daemon's log)",
-                );
-                return Err(deny(&mut inner, denial));
+                tracing::error!(error = %e, key = %reserved.key, "the signer failed");
+                return Err(deny(
+                    inner,
+                    event,
+                    failed(DenyCode::Invalid, signer_reason(&e)),
+                ));
             }
         };
-        let commit_id = match writ_git::signed::signed_id(commit, &signature)
+        // The lease may have ended or changed while the backend signed.
+        let current = match self.lease_for(inner, &signing.cert, &signing.caller, now) {
+            Ok(current) if current.ticket == reserved.lease.ticket => current,
+            Ok(current) => {
+                let reason = format!(
+                    "lease {}: its terms changed while the commit was being signed; \
+                     the signature was discarded",
+                    current.id
+                );
+                return Err(deny(inner, event, failed(DenyCode::NotActive, reason)));
+            }
+            Err(denial) => {
+                let reason = format!(
+                    "{} (while the commit was being signed); the signature was discarded",
+                    denial.reason
+                );
+                return Err(deny(inner, event, Denial { reason, ..denial }));
+            }
+        };
+        let commit_id = match writ_git::signed::signed_id(reserved.commit, &signature)
             .and_then(|id| Ok(id.to_commit_id()?))
         {
             Ok(id) => id,
             Err(e) => {
                 let denial = failed(DenyCode::Invalid, format!("cannot sign the commit: {e}"));
-                return Err(deny(&mut inner, denial));
+                return Err(deny(inner, event, denial));
             }
         };
         let line = event
             .clone()
-            .lease(&lease.id)
             .commit(&commit_id)
-            .warnings(allowed.warnings.clone());
+            .warnings(reserved.warnings.clone());
         let entry = LedgerEntry {
             commit: commit_id.clone(),
-            lease: lease.id.clone(),
+            lease: current.id.clone(),
             repo: request.repo.clone(),
-            key: key.clone(),
+            key: reserved.key.clone(),
             signed_at: now,
         };
-        let max = lease.ticket.limits.max_signatures;
-        let recorded = Self::logged(&mut inner, line, |inner| {
-            // Under the same lock as the decision: the counter can't have moved, but the
-            // store refuses past the limit whatever happens.
-            if !inner
-                .store
-                .consume(&lease.id, Counter::Signature, max, now)
-                .map_err(internal)?
-            {
-                return Err(ServiceError::refused(
-                    RefusalCode::WrongState,
-                    format!("lease {}: all {max} signatures used", lease.id),
-                ));
-            }
+        let recorded = Self::logged(inner, line, |inner| {
             inner.store.ledger_append(&entry).map_err(internal)
         });
         match recorded {
             Ok(()) => Ok(SignedCommit {
                 signature,
                 commit: commit_id,
-                warnings: allowed.warnings,
+                warnings: reserved.warnings.clone(),
             }),
             Err(e) => {
                 tracing::error!(error = %e.detail(), "a signature was not recorded");
-                let code = match e.code() {
-                    Some(RefusalCode::WrongState) => DenyCode::Limit,
-                    _ => DenyCode::Invalid,
-                };
-                let denial = failed(code, e.to_string());
+                let denial = failed(DenyCode::Invalid, e.to_string());
                 // A failed change already has its line (`logged`); a log that couldn't take
                 // the allowed line gets the denial kept for when it can.
                 if matches!(e, ServiceError::AuditLog(_)) {
-                    deny(&mut inner, denial.clone());
+                    deny(inner, event, denial.clone());
                 }
                 Err(denial)
             }

@@ -72,17 +72,23 @@ sequenceDiagram
   D->>D: objects read by the ids computed from their bytes → touched paths
   D->>D: cert → lease, object type, committer email,<br/>Writ trailer (if ticket_link = trailer), paths vs expected_paths, count, rate
   alt allowed
-    D->>SG: sign(SSHSIG signed data), key = template's signing_key
+    D->>D: under the lock: count and rate slot taken (never given back)
+    D->>SG: outside the lock, through the queue (deadline): sign(SSHSIG signed data), key = template's signing_key
     SG-->>D: signature
-    D->>D: log SIGN, count it, ledger += id of the commit with its signature in it
+    D->>D: under the lock: lease still the same, active, not expired, cert not on the deny list
+    D->>D: log SIGN, ledger += id of the commit with its signature in it
     D-->>S: armored SSHSIG
     S-->>G: /tmp/obj.sig, exit 0
-  else denied
+  else denied, or the lease ended or changed while signing (signature discarded)
     D->>D: log DENY (on_violation: revoke_lease → revoked)
     D-->>S: reason
     S-->>G: exit 1 (git prints the reason)
   end
 ```
+
+The signer never runs under the service's state lock: a revocation, an approval or a `writ
+wait` never waits for a device, and a lease revoked, expired or amended while its commit is
+being signed gets no signature ([Policy and state](architecture/policy-and-state.md#policy-engine)).
 
 Signing happens at **commit time** so commit hashes never change. The ledger links signing to
 the later push: it records the id of the commit git writes once the signature is in it (git

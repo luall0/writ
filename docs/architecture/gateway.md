@@ -75,10 +75,12 @@ objects) and decoded strictly at the edge (`exec/sign.rs`), then, off the async 
    trailing dots and spaces or short name, as git's `verify_path` reads it) is refused
    whatever `paths_check` says; an agent leaving that tree out hides it, and the push-time
    `fsck` stops it then (M4).
-3. `Service::sign`, under the service's lock: the single active lease, the policy's
-   `decide_sign`, the signature through the `Signer` with the template's `signing_key`, then
-   the audit line, the signature counted and the commit recorded in the ledger. The ledger
-   holds the id of the commit git writes with the signature in it (`writ_git::signed`).
+3. `Service::sign`, in three phases ([Policy and state](policy-and-state.md#policy-engine)):
+   under the service's lock, the single active lease, the policy's `decide_sign` and the
+   signature counted; outside it, the signature through the `Signer` (its queue and
+   deadline) with the template's `signing_key`; under the lock again, the lease checked once
+   more, then the audit line and the commit recorded in the ledger. The ledger holds the id
+   of the commit git writes with the signature in it (`writ_git::signed`).
 4. The armored SSHSIG on stdout, or `writ: <reason>` on stderr; `writ-sign` shows it to the
    agent, escaped. A violation under `on_violation: revoke_lease` revokes the lease; its other
    sessions are dropped at once, this one once the agent has the reason.

@@ -61,6 +61,11 @@ impl Service {
             let Some(next) = lease::due_transition(&lease, &usage, now) else {
                 continue;
             };
+            // A signature in flight took its slot already: the lease is used up once it is
+            // settled, not before (its own last check would refuse it).
+            if next == State::Exhausted && inner.signing.any(&lease.id) {
+                continue;
+            }
             // The certificate is refused first: whatever happens to the store write, the
             // lease is over.
             self.bar_serial(lease.cert_serial);

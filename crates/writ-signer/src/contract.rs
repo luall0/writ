@@ -112,7 +112,7 @@ pub fn queued_signer_contract<S: Signer + 'static>(backend: S) {
     signer_contract(&queued);
     let before = gated.calls();
 
-    gated.close();
+    let closed = gated.close();
     // Taken by the worker, which is now stuck in the backend.
     let stuck = queued.submit(&key, b"first", SHORT).unwrap();
     gated.wait_entered();
@@ -133,7 +133,7 @@ pub fn queued_signer_contract<S: Signer + 'static>(backend: S) {
 
     // The backend answers again: the first job's late result is dropped, the second one
     // (its caller gone) is skipped, the next one signs.
-    gated.open();
+    closed.open();
     // The worker drains the queue on its own: wait for room (a condition, not a delay).
     let pending = loop {
         match queued.submit(&key, b"after the queue drained", GENEROUS) {

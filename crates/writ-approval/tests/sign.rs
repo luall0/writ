@@ -22,7 +22,7 @@ use writ_core::names::TicketId;
 use writ_core::policy::{CertIdentity, Denial, DenyCode, ObjectKind};
 use writ_core::ticket::Ticket;
 use writ_crypto::keys::{KeyKind, generate};
-use writ_crypto::ssh_key::{Certificate, HashAlg};
+use writ_crypto::ssh_key::{Certificate, HashAlg, PrivateKey};
 use writ_git::Commit;
 use writ_git::object::{HashAlgo, ObjectType};
 use writ_git::paths::{Evidence, touched};
@@ -97,7 +97,11 @@ impl Harness {
 
     /// An active lease for `yaml`: its id and the certificate's identity.
     fn lease(&self, yaml: &str) -> (TicketId, CertIdentity) {
-        let key = generate(KeyKind::Ed25519).unwrap();
+        self.lease_with(&generate(KeyKind::Ed25519).unwrap(), yaml)
+    }
+
+    /// The same, submitted with the session key `key`.
+    fn lease_with(&self, key: &PrivateKey, yaml: &str) -> (TicketId, CertIdentity) {
         let submitted = self
             .service
             .submit(key.public_key(), yaml.as_bytes(), &CallerFacts::default())
@@ -472,7 +476,7 @@ fn an_expired_or_revoked_lease_signs_nothing() {
 }
 
 #[test]
-fn a_failing_signer_or_audit_log_signs_nothing() {
+fn a_failing_signer_or_audit_log_signs_nothing_and_keeps_the_slot() {
     let h = Harness::new();
     let (lease, cert) = h.lease(FEATURE);
     let commit = build("src/a.rs", EMAIL, &trailer(&lease));
@@ -491,7 +495,9 @@ fn a_failing_signer_or_audit_log_signs_nothing() {
     );
     h.audit_breaker.set_broken(false);
     assert!(h.ledger(&lease).is_empty(), "nothing recorded");
-    assert_eq!(h.signatures(&lease), 0, "nothing counted");
+    // The slots were taken before signing, and never given back: a failure can't be retried
+    // past the limits.
+    assert_eq!(h.signatures(&lease), 2, "both slots used");
     // Both refusals are logged (the second once the log works again).
     assert_eq!(h.events("sign", "denied").len(), 1);
     h.sign(&cert, &commit, "omega-code").unwrap();
@@ -824,4 +830,238 @@ fn a_commit_is_signed_only_in_its_repo_s_object_format() {
         "homelab-scripts",
     )
     .unwrap();
+}
+
+/// How long a test waits for the service to answer while a signature is held at the gate:
+/// a bound on a hang (the call waiting behind the signer), never a pause.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Runs `f` on its own thread and returns its result, failing if it doesn't come back in
+/// time: what must answer while a signature is in flight can't hang the test instead.
+fn answers<T: Send>(what: &str, f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        scope.spawn(move || tx.send(f()).unwrap());
+        rx.recv_timeout(PATIENCE)
+            .unwrap_or_else(|_| panic!("{what} waited behind the signer"))
+    })
+}
+
+#[test]
+fn a_revocation_completes_while_a_signature_is_in_flight() {
+    // M3.5: the signer runs outside the state lock. While it is stuck, the service answers;
+    // a revocation that completes meanwhile discards the signature when it comes back.
+    let h = Harness::new();
+    let (lease, cert) = h.lease(FEATURE);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    let closed = h.signer.close();
+    std::thread::scope(|scope| {
+        let in_flight = scope.spawn(|| h.sign(&cert, &commit, "omega-code"));
+        h.signer.wait_entered();
+
+        // Approvals, `writ wait` and `writ ls` answer meanwhile (submit, approve, wait).
+        let (other, _) = answers("an approval and its wait", || h.lease(FEATURE));
+        let listing = answers("a listing", || h.service.list(false).unwrap());
+        assert!(listing.tickets.iter().any(|t| t.id == other));
+        answers("a revocation", || {
+            h.service
+                .revoke(&lease, &h.revocation(&lease), &CallerFacts::default())
+                .unwrap()
+        });
+        assert!(h.service.is_revoked(cert.serial));
+
+        closed.open();
+        denied(
+            in_flight.join().unwrap(),
+            DenyCode::NotActive,
+            &format!(
+                "lease {lease} is revoked (while the commit was being signed); \
+                 the signature was discarded"
+            ),
+        );
+    });
+    assert!(h.ledger(&lease).is_empty(), "nothing recorded");
+    assert_eq!(h.signatures(&lease), 1, "its slot stays used");
+    assert!(h.events("sign", "allowed").is_empty());
+    let denied_lines = h.events("sign", "denied");
+    assert_eq!(denied_lines.len(), 1, "one line for the call");
+    assert_eq!(denied_lines[0]["code"], "not_active");
+}
+
+#[test]
+fn a_lease_that_expires_while_signing_discards_the_signature() {
+    let h = Harness::new();
+    let (lease, cert) = h.lease(FEATURE);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    let closed = h.signer.close();
+    std::thread::scope(|scope| {
+        let in_flight = scope.spawn(|| h.sign(&cert, &commit, "omega-code"));
+        h.signer.wait_entered();
+        // feature-branch: 4h. Its expiry comes while the backend signs.
+        h.clock.advance(4 * 3600);
+        closed.open();
+        denied(
+            in_flight.join().unwrap(),
+            DenyCode::Expired,
+            &format!(
+                "lease {lease} has expired (while the commit was being signed); \
+                 the signature was discarded"
+            ),
+        );
+    });
+    assert!(h.ledger(&lease).is_empty());
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Expired);
+}
+
+#[test]
+fn a_violation_while_a_signature_is_in_flight_discards_it() {
+    // The M3 review's F4 with M3.5's phases: a violation bars the certificate before the
+    // lock is released, and the last phase checks the deny list, not only the store. Here
+    // recording the revocation fails: the store still says active, the signature in flight
+    // is refused all the same.
+    let h = Harness::new();
+    let (lease, cert) = h.lease(&(FEATURE.to_owned() + "on_violation: revoke_lease\n"));
+    let good = build("src/a.rs", EMAIL, &trailer(&lease));
+    let wrong = build("src/b.rs", "me@personal.example", &trailer(&lease));
+    let closed = h.signer.close();
+    std::thread::scope(|scope| {
+        let in_flight = scope.spawn(|| h.sign(&cert, &good, "omega-code"));
+        h.signer.wait_entered();
+        // The violation looks the lease up once; the revocation's lookup fails.
+        h.store_breaker.fail_lease_lookup_after(1);
+        denied(
+            answers("a violation", || h.sign(&cert, &wrong, "omega-code")),
+            DenyCode::Committer,
+            "not allowed",
+        );
+        assert!(h.service.is_revoked(cert.serial), "on the deny list");
+        assert_eq!(h.service.show(&lease).unwrap().state, State::Active);
+        closed.open();
+        denied(
+            in_flight.join().unwrap(),
+            DenyCode::NotActive,
+            &format!("lease {lease} is revoked (while the commit was being signed)"),
+        );
+    });
+    assert!(h.ledger(&lease).is_empty());
+}
+
+#[test]
+fn the_last_signature_in_flight_is_not_refused_as_used_up() {
+    // Its slot makes the lease used up as soon as it is taken: the sweep waits until the
+    // signature is settled, so the signature's own last check doesn't refuse it.
+    let h = Harness::new();
+    let only_sign = FEATURE.replace("[fetch, commit_sign, push]", "[commit_sign]")
+        + "limits:\n  max_signatures: 1\n";
+    let (lease, cert) = h.lease(&only_sign);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    let closed = h.signer.close();
+    std::thread::scope(|scope| {
+        let in_flight = scope.spawn(|| h.sign(&cert, &commit, "omega-code"));
+        h.signer.wait_entered();
+        answers("the daemon's sweep", || h.service.sweep());
+        assert_eq!(h.service.show(&lease).unwrap().state, State::Active);
+        denied(
+            answers("a second signature", || {
+                h.sign(&cert, &commit, "omega-code")
+            }),
+            DenyCode::Exhausted,
+            &format!("lease {lease} is used up"),
+        );
+        closed.open();
+        in_flight.join().unwrap().unwrap();
+    });
+    assert_eq!(h.ledger(&lease).len(), 1);
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Exhausted);
+    assert!(h.service.is_revoked(cert.serial));
+
+    // A failed last signature keeps its slot too: the lease is used up once it is settled.
+    let (lease, cert) = h.lease(&only_sign);
+    h.signer.set_failing(true);
+    denied(
+        h.sign(
+            &cert,
+            &build("src/a.rs", EMAIL, &trailer(&lease)),
+            "omega-code",
+        ),
+        DenyCode::Invalid,
+        "the signer failed",
+    );
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Exhausted);
+    assert!(h.service.is_revoked(cert.serial));
+}
+
+#[test]
+fn a_busy_or_late_signer_is_refused_with_its_reason() {
+    use writ_signer::SignerError;
+    let h = Harness::new();
+    let (lease, cert) = h.lease(FEATURE);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    h.signer.fail_with(|_| SignerError::Busy);
+    denied(
+        h.sign(&cert, &commit, "omega-code"),
+        DenyCode::Invalid,
+        "the signer is busy; retry shortly",
+    );
+    h.signer.fail_with(|id| SignerError::Timeout(id.clone()));
+    denied(
+        h.sign(&cert, &commit, "omega-code"),
+        DenyCode::Invalid,
+        "the signer did not sign in time (see the daemon's log)",
+    );
+    h.signer.fail_with(|_| SignerError::Unavailable);
+    denied(
+        h.sign(&cert, &commit, "omega-code"),
+        DenyCode::Invalid,
+        "the signer failed (see the daemon's log)",
+    );
+    h.signer.set_failing(false);
+    assert_eq!(h.signatures(&lease), 3, "each one used its slot");
+    assert!(h.ledger(&lease).is_empty());
+    h.sign(&cert, &commit, "omega-code").unwrap();
+}
+
+#[test]
+fn a_lease_amended_while_signing_discards_the_signature() {
+    // The decision was made on the terms in force when the signature started: new terms
+    // (an amendment approved meanwhile) discard it, whatever they say.
+    let h = Harness::new();
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let (lease, cert) = h.lease_with(&key, FEATURE);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    let closed = h.signer.close();
+    std::thread::scope(|scope| {
+        let in_flight = scope.spawn(|| h.sign(&cert, &commit, "omega-code"));
+        h.signer.wait_entered();
+        let amendment =
+            FEATURE.to_owned() + &format!("  amends: {lease}\nlimits:\n  max_signatures: 5\n");
+        let submitted = h
+            .service
+            .submit(
+                key.public_key(),
+                amendment.as_bytes(),
+                &CallerFacts::default(),
+            )
+            .unwrap();
+        let amendment = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+        answers("an amendment's approval", || {
+            h.service
+                .approve(
+                    &amendment.id,
+                    &h.approval(&amendment),
+                    &CallerFacts::default(),
+                )
+                .unwrap()
+        });
+        closed.open();
+        denied(
+            in_flight.join().unwrap(),
+            DenyCode::NotActive,
+            &format!(
+                "lease {lease}: its terms changed while the commit was being signed; \
+                 the signature was discarded"
+            ),
+        );
+    });
+    assert!(h.ledger(&lease).is_empty());
 }

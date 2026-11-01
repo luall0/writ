@@ -160,6 +160,8 @@ struct Inner {
     submissions: HashMap<Option<IpAddr>, SubmitWindow>,
     /// Each lease's denial lines in the current window, and the denials counted past it.
     denials: denials::LeaseDenials,
+    /// Signatures between their first and last phase ([`sign`]).
+    signing: sign::InFlightSignatures,
 }
 
 impl Inner {
@@ -257,6 +259,7 @@ impl Service {
                 lost: 0,
                 submissions: HashMap::new(),
                 denials: denials::LeaseDenials::default(),
+                signing: sign::InFlightSignatures::default(),
             }),
             revoked: RwLock::new(revoked),
             changed: Notify::new(),

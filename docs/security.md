@@ -81,7 +81,7 @@ reader with `decisions: open`). Each has a bound, a strict parser, and a hostile
 | TLS client certificates | HTTPS peers | TLS 1.3, a reader's Ed25519 key, handshake signature checked | `writ_crypto::tls::ReaderVerifier` |
 | Pre-receive input | git, on an agent's push | 1 MiB, cut-short refused, every line an exact update | `writ-gateway/src/hook` |
 | Pushed objects | agents | `fsckObjects`, `receive.maxInputSize` = the lease's `max_push_size` | git, configured by the gateway |
-| Sign requests (`writ-sign git <repo>`) | lease holders | the exec line's grammar (namespace `git`, a registry name); the body read only for a lease that is active, allows `commit_sign` and names the repo; the `writ-sign/1` body: 16 MiB (`MAX_SIGN_INPUT`), at most 100,000 evidence objects, sizes in plain decimal, nothing after the last object | `writ_proto::sign::SignInput`, `writ-gateway/src/exec/sign.rs` |
+| Sign requests (`writ-sign git <repo>`) | lease holders | the exec line's grammar (namespace `git`, a registry name); the body read only for a lease that is active, allows `commit_sign` and names the repo; the `writ-sign/1` body: 16 MiB (`MAX_SIGN_INPUT`), at most 100,000 evidence objects, sizes in plain decimal, nothing after the last object; at most 16 signatures waiting for the signer (`Busy` past it), 10 s each (`Timeout`), each with its slot taken first | `writ_proto::sign::SignInput`, `writ-gateway/src/exec/sign.rs` |
 | The commit to sign | lease holders | only the layout git writes (`tree`, `parent`s, `author` and `committer` as `name <email> time zone`, `encoding`, `mergetag`), no signature already in it, 100 parents; trailers found as git finds them | `writ_git::commit`, `writ_git::trailers` |
 | Evidence objects (the first parent commit, trees) | lease holders | read only by the id computed from their bytes (SHA-1 with collision detection, or SHA-256); trees parsed strictly (no empty, `.`, `..` or `/` name, no name twice, no `.git` as any filesystem reads it: a commit adding one is refused whatever `paths_check` says); the walk visits at most 1,000,000 entries, lists 100,000 paths, follows 256 levels, builds no path over 4,096 bytes and at most 64 MiB of paths in all | `writ_git::paths`, `writ_git::tree` |
 | Caller facts | the kernel, via the attestor | never what the client claims | `CallerAttestor` implementations |
@@ -144,7 +144,11 @@ A new input is added here in the same change.
   startup**: the deny list, the session watches (a session that can't be watched revokes
   its lease).
 - **A decision made earlier is checked again when it takes effect**: the pre-receive hook
-  re-authorizes the lease; a revoked lease's pushes in progress are forgotten.
+  re-authorizes the lease; a revoked lease's pushes in progress are forgotten; a signature
+  made outside the state lock leaves only if its lease is still the same, active, unexpired
+  and its certificate not on the deny list (`Service::sign`'s last phase).
+- **Nothing slow runs under the state lock** (a device, the network, a subprocess), so a
+  revocation never waits behind one; what the first phase reserved is never given back.
 - **An amendment keeps the lease's whole subject** (session key and bound process).
 
 ## Files that grant authority, and secrets

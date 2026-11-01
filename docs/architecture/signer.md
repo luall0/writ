@@ -49,6 +49,13 @@ Secure Enclave in M7.5) and the upstream credential (M4) get their own, so a dev
 commit signing can't take the HTTPS approval API (and revocation over HTTPS) down with it.
 `writd/src/platform.rs` builds them: the agent keys' queue holds 16 jobs with a 10 s deadline.
 
+The approval service never calls the signer under its state lock either: `Service::sign`
+decides and reserves under the lock, signs outside it, and checks again under the lock before
+the signature leaves ([Flows § 2](../flows.md#2-signed-commit),
+[Policy and state](policy-and-state.md#policy-engine)). A `Busy` or `Timeout` reaches the
+agent as a denial ("the signer is busy; retry shortly", "the signer did not sign in time"),
+its slot used.
+
 The contract suite has a decorator section (`writ_signer::contract::queued_signer_contract`):
 behind a queue, a backend passes the whole contract, a full queue answers `Busy` at once, a
 backend held stuck (by `testing::GatedSigner`, released on a signal) answers `Timeout`, its keys

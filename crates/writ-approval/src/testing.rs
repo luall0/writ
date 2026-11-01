@@ -30,7 +30,7 @@ use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier};
 use writ_platform::{Clock, Notifier, SessionWatcher};
 use writ_proto::{ApproveRequest, Decisions, RefuseRequest, RevokeRequest};
 use writ_signer::software::SoftwareSigner;
-use writ_signer::testing::{FailingSigner, software_signer};
+use writ_signer::testing::{FailingSigner, GatedSigner, software_signer};
 use writ_store::{AuditBreaker, AuditLog, Store, StoreBreaker};
 
 use crate::{Service, ServiceConfig, ServicePlatform};
@@ -40,7 +40,8 @@ pub const START: u64 = 1_800_000_000;
 
 /// How to build a [`TestService`]. Defaults: `decisions: signed`, 20 pending tickets at most,
 /// a fake watcher, a recording notifier, a fake clock at [`START`], and a software signer
-/// with an Ed25519 key for each template's `signing_key` (that can be made to fail).
+/// with an Ed25519 key for each template's `signing_key` (that can be held at a gate or made
+/// to fail).
 pub struct TestServiceBuilder {
     policy: PolicyConfig,
     signer_kind: KeyKind,
@@ -110,7 +111,10 @@ impl TestServiceBuilder {
             .filter_map(|t| t.signing_key.as_ref().map(|k| k.as_str().to_owned()))
             .collect();
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let signer = Arc::new(FailingSigner::new(software_signer(&ids, self.signer_kind)));
+        let signer = Arc::new(GatedSigner::new(FailingSigner::new(software_signer(
+            &ids,
+            self.signer_kind,
+        ))));
         let service = Service::new(
             ServiceConfig {
                 policy: self.policy,
@@ -159,8 +163,9 @@ pub struct TestService {
     /// Makes one lease lookup fail, to check what a fault in the middle leaves behind.
     pub store_breaker: StoreBreaker,
     pub audit_path: PathBuf,
-    /// The signer commits are signed with: `set_failing(true)` makes it refuse.
-    pub signer: Arc<FailingSigner<SoftwareSigner>>,
+    /// The signer commits are signed with: `close()` holds each signature until the test
+    /// releases it, `set_failing(true)` makes it refuse.
+    pub signer: Arc<GatedSigner<FailingSigner<SoftwareSigner>>>,
 }
 
 impl TestService {

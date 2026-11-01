@@ -47,13 +47,29 @@ approval service verified the SSHSIG), `lease::due_transition` (expired or exhau
 The daemon takes counts through the store's atomic `consume` after a decision allows, so two
 concurrent requests can't both take the last signature.
 
-A signature (`Service::sign`, from the gateway's `writ-sign git <repo>`) runs under the
-service's state lock: the single active lease, `decide_sign`, the signature through the
-`Signer`, then the `sign` audit line (lease, certificate, repo, commit, committer, warnings),
-`consume` and the ledger entry. The signature leaves the daemon only after all three; a
-signer or audit-log failure signs nothing, counts nothing and records nothing. A violation
-under `on_violation: revoke_lease` revokes the lease (a `revoke` line with the violation as
-its reason).
+A signature (`Service::sign`, from the gateway's `writ-sign git <repo>`) runs in three
+phases, so the `Signer` never runs under the service's state lock (a slow or hung device
+would hold up every approval, wait, refusal and revocation):
+
+1. **Under the lock**: the single active lease, `decide_sign`, then `consume` (the count and
+   the rate slot taken). A denial is logged there, and a violation's certificate goes on the
+   deny list before the lock is released.
+2. **Without the lock**: the signature, through the signer's queue and its deadline
+   ([the queue](signer.md#the-queue-in-front-of-a-backend)).
+3. **Under the lock again**: the lease still the one the decision was made on (same terms:
+   an amendment approved meanwhile discards the signature), active, not past `expires_at`,
+   its certificate not on the deny list; then the signed commit's id, the `sign` audit line
+   (lease, certificate, repo, commit, committer, warnings) and the ledger entry. Only then
+   does the signature leave the daemon; otherwise it is discarded and the denial logged
+   ("… (while the commit was being signed); the signature was discarded").
+
+Each call writes one `sign` line. A slot taken is never given back: a signature that fails
+(the signer, the audit log, the ledger) or is discarded still used its count and rate slot,
+so a failure can't be retried past the limits, and a crash between phases uses a slot and
+grants nothing. While a signature is in flight its lease is not marked exhausted by the
+sweep (its own slot would make its last check refuse it): the last phase marks it once the
+signature is settled. A violation under `on_violation: revoke_lease` revokes the lease (a
+`revoke` line with the violation as its reason).
 
 ## Lease store + ledger (SQLite)
 
