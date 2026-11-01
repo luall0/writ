@@ -545,6 +545,59 @@ fn a_violation_revokes_only_a_lease_that_asks_for_it() {
 }
 
 #[test]
+fn a_lease_that_cannot_sign_is_refused_before_its_request_is_read() {
+    let h = Harness::new();
+    let repo = |name: &str| name.parse::<writ_core::names::RepoName>().unwrap();
+    let caller = CallerFacts::default();
+
+    // A lease that signs for the repo passes without a line (Service::sign writes it).
+    let (_, cert) = h.lease(FEATURE);
+    h.service
+        .may_sign(&cert, &caller, &repo("omega-code"))
+        .unwrap();
+    assert!(h.events("sign", "allowed").is_empty());
+    assert!(h.events("sign", "denied").is_empty());
+
+    // Another repo, a lease without commit_sign, a revoked lease: refused and logged.
+    let refused = |cert: &CertIdentity, name: &str, code: DenyCode, reason: &str| {
+        let denial = h.service.may_sign(cert, &caller, &repo(name)).unwrap_err();
+        assert_eq!(denial.code, code, "{denial}");
+        assert!(
+            denial.to_string().contains(reason),
+            "{reason:?} not in {denial}"
+        );
+    };
+    refused(
+        &cert,
+        "dotfiles",
+        DenyCode::Repo,
+        "repo dotfiles not allowed",
+    );
+    let fetch_only = FEATURE.replace("[fetch, commit_sign, push]", "[fetch]");
+    let (_, reader) = h.lease(&fetch_only);
+    refused(
+        &reader,
+        "omega-code",
+        DenyCode::Operation,
+        "commit_sign not allowed",
+    );
+    let (lease, ended) = h.lease(FEATURE);
+    h.service
+        .revoke(&lease, &h.revocation(&lease), &caller)
+        .unwrap();
+    refused(&ended, "omega-code", DenyCode::NotActive, "is revoked");
+    let lines = h.events("sign", "denied");
+    let codes: Vec<&str> = lines.iter().map(|l| l["code"].as_str().unwrap()).collect();
+    assert_eq!(codes, ["repo", "operation", "not_active"]);
+
+    // A violation found here revokes a lease that asks for it.
+    let (lease, strict) = h.lease(&(FEATURE.to_owned() + "on_violation: revoke_lease\n"));
+    refused(&strict, "dotfiles", DenyCode::Repo, "not allowed");
+    assert!(h.service.is_revoked(strict.serial));
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Revoked);
+}
+
+#[test]
 fn a_template_whose_key_the_signer_lacks_is_a_startup_error() {
     use writ_approval::{Service, ServiceConfig, ServiceError, ServicePlatform};
     use writ_crypto::allowed_signers::AllowedSigner;

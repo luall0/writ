@@ -40,6 +40,14 @@ pub(super) async fn sign(
     command: SignCommand<'_>,
     rx: &mut ChannelReadHalf,
 ) -> Result<SignedCommit, Refused> {
+    // Nothing is read for a certificate whose lease can't sign for this repo (it may have
+    // ended since the connection was authenticated): the service logs the refusal.
+    let (cert, caller) = (command.cert.clone(), command.facts.clone());
+    let (service, repo) = (gateway.service().clone(), command.repo.clone());
+    tokio::task::spawn_blocking(move || service.may_sign(&cert, &caller, &repo))
+        .await
+        .unwrap_or_else(|_| Err(internal_error()))
+        .map_err(Refused::Denied)?;
     let mut body = Vec::new();
     let limit = u64::try_from(MAX_SIGN_INPUT)
         .unwrap_or(u64::MAX)
@@ -67,13 +75,16 @@ pub(super) async fn sign(
         service.sign(&signing).map_err(Refused::Denied)
     })
     .await
-    .unwrap_or_else(|_| {
-        Err(Refused::Denied(Denial {
-            code: DenyCode::Invalid,
-            reason: "internal error in the daemon".to_owned(),
-            hint: None,
-        }))
-    })
+    .unwrap_or_else(|_| Err(Refused::Denied(internal_error())))
+}
+
+/// A task of the gateway's that didn't finish.
+fn internal_error() -> Denial {
+    Denial {
+        code: DenyCode::Invalid,
+        reason: "internal error in the daemon".to_owned(),
+        hint: None,
+    }
 }
 
 /// The policy's facts about the object, and the commit to sign if it is one.

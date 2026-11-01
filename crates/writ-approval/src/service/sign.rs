@@ -8,10 +8,13 @@
 //! record never leaves it. The ledger holds the id of the commit git writes with the
 //! signature in it (`writ_git::signed`), so only that commit passes a push later.
 
+use std::sync::MutexGuard;
+
 use writ_core::caller::CallerFacts;
-use writ_core::names::{CommitId, TicketId};
+use writ_core::lease::Lease;
+use writ_core::names::{CommitId, RepoName, TicketId};
 use writ_core::policy::{self, CertIdentity, Context, Denial, DenyCode, SignRequest};
-use writ_core::ticket::OnViolation;
+use writ_core::ticket::{OnViolation, Operation};
 use writ_git::Commit;
 use writ_store::{AuditEvent, Counter, EventKind, LedgerEntry, Outcome};
 
@@ -51,6 +54,46 @@ fn failed(code: DenyCode, reason: impl Into<String>) -> Denial {
 }
 
 impl Service {
+    /// Before the gateway reads a signing request (up to 16 MiB to decode, hash and walk):
+    /// the certificate's single active lease, which allows `commit_sign` and names `repo`.
+    /// Only a refusal is logged (a `sign` line, and the lease revoked for a violation under
+    /// `on_violation: revoke_lease`); an allowed request gets its one line from
+    /// [`Service::sign`], which checks everything again under the lock.
+    pub fn may_sign(
+        &self,
+        cert: &CertIdentity,
+        caller: &CallerFacts,
+        repo: &RepoName,
+    ) -> Result<(), Denial> {
+        let (now, mut inner) = self
+            .begin()
+            .map_err(|e| failed(DenyCode::Invalid, e.to_string()))?;
+        let mut event = AuditEvent::new(now, EventKind::Sign, Outcome::Denied)
+            .cert(cert.serial)
+            .caller(caller)
+            .repo(repo);
+        if let Ok(id) = cert.key_id.parse::<TicketId>() {
+            event = event.lease(&id);
+        }
+        let lease = match self.lease_for(&mut inner, cert, caller, now) {
+            Ok(lease) => lease,
+            Err(denial) => {
+                Self::log_best_effort(&mut inner, &event.denial(&denial));
+                return Err(denial);
+            }
+        };
+        let checked = policy::check_operation(&lease, Operation::CommitSign)
+            .and_then(|()| policy::check_repo(&lease, repo));
+        match checked {
+            Ok(()) => Ok(()),
+            Err(denial) => {
+                Self::log_best_effort(&mut inner, &event.denial(&denial));
+                self.after_violation(inner, &lease, &denial);
+                Err(denial)
+            }
+        }
+    }
+
     /// Signs a commit under the lease the certificate stands for, if the policy allows it.
     /// Every outcome is one `sign` line in the audit log. A violation under a lease with
     /// `on_violation: revoke_lease` revokes it; the caller drops its sessions (it has the
@@ -99,12 +142,7 @@ impl Service {
             Ok(allowed) => allowed,
             Err(denial) => {
                 let denial = deny(&mut inner, denial);
-                if denial.code.is_violation()
-                    && lease.ticket.on_violation == OnViolation::RevokeLease
-                {
-                    drop(inner);
-                    self.revoke_for_violation(&lease.id, &denial);
-                }
+                self.after_violation(inner, &lease, &denial);
                 return Err(denial);
             }
         };
@@ -181,6 +219,15 @@ impl Service {
                 }
                 Err(denial)
             }
+        }
+    }
+
+    /// A denial under a lease with `on_violation: revoke_lease`, if it is a violation:
+    /// revokes the lease. Releases the state lock either way.
+    fn after_violation(&self, inner: MutexGuard<'_, Inner>, lease: &Lease, denial: &Denial) {
+        if denial.code.is_violation() && lease.ticket.on_violation == OnViolation::RevokeLease {
+            drop(inner);
+            self.revoke_for_violation(&lease.id, denial);
         }
     }
 

@@ -197,6 +197,20 @@ pub fn check_operation(lease: &Lease, operation: Operation) -> Result<(), Denial
     }
 }
 
+/// Whether the lease names `repo`; outside it, an out-of-scope denial with the amendment
+/// hint.
+pub fn check_repo(lease: &Lease, repo: &RepoName) -> Result<(), Denial> {
+    if lease.ticket.scope.repos.contains(repo) {
+        Ok(())
+    } else {
+        Err(outside(
+            &lease.id,
+            DenyCode::Repo,
+            format_args!("repo {repo} not allowed"),
+        ))
+    }
+}
+
 /// An allowed request, possibly with warnings for the activity report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Allowed {
@@ -340,13 +354,7 @@ fn admit<'a>(
     caller::check(lease.ticket.subject.caller.as_ref(), ctx.caller)
         .map_err(|e| deny(DenyCode::Caller, e.to_string()))?;
     check_operation(lease, operation)?;
-    if !lease.ticket.scope.repos.contains(repo) {
-        return Err(outside(
-            id,
-            DenyCode::Repo,
-            format_args!("repo {repo} not allowed"),
-        ));
-    }
+    check_repo(lease, repo)?;
     let (Some(template), Some(entry)) = (
         ctx.config.template(&lease.ticket.template),
         ctx.config.repo(repo),

@@ -905,7 +905,11 @@ async fn a_sign_request_that_isnt_one_is_refused_and_logged() {
     // The allowed case first, so each refusal below is the check's doing.
     let (_, err, status) = exec(&holder, "writ-sign git demo", &framed(&commit)).await;
     assert_eq!(status, Some(0), "{err}");
-    let cases: [(&str, Vec<u8>, &str); 4] = [
+    let outside = format!(
+        "writ: outside ticket {}: repo other not allowed",
+        cert.key_id()
+    );
+    let cases: [(&str, Vec<u8>, &str); 5] = [
         (
             "writ-sign git demo",
             commit.as_bytes().to_vec(),
@@ -921,14 +925,10 @@ async fn a_sign_request_that_isnt_one_is_refused_and_logged() {
             framed(&commit.replace("+0000\n\n", "+0000\ngpgsig x\n\n")),
             "writ: cannot sign: the commit is signed already",
         ),
-        (
-            "writ-sign git other",
-            framed(&commit),
-            &format!(
-                "writ: outside ticket {}: repo other not allowed",
-                cert.key_id()
-            ),
-        ),
+        ("writ-sign git other", framed(&commit), &outside),
+        // The lease is checked before the body is read: garbage for a repo the lease doesn't
+        // name gets the lease's refusal, not the body's.
+        ("writ-sign git other", b"garbage".to_vec(), &outside),
     ];
     for (line, body, reason) in &cases {
         let (out, err, status) = exec(&holder, line, body).await;
@@ -948,4 +948,5 @@ async fn a_sign_request_that_isnt_one_is_refused_and_logged() {
     );
     assert_eq!(denied[0]["repo"], "demo");
     assert_eq!(denied[3]["code"], "repo");
+    assert_eq!(denied[4]["code"], "repo");
 }

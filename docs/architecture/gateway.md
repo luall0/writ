@@ -58,8 +58,12 @@ without the daemon user's system or global git config.
 `writ-sign git <repo>` ([Flows § 2](../flows.md#2-signed-commit)): the repo is a registry
 name (git config `writ.repo` on the agent host), the body a `writ-sign/1` request
 (`writ_proto::sign`): the object git asked to sign, then the first parent commit and the trees
-the daemon needs to compute the paths the commit touches. Bounded (16 MiB, 100,000 objects) and
-decoded strictly at the edge (`exec/sign.rs`), then, off the async threads:
+the daemon needs to compute the paths the commit touches. Before reading it, the gateway asks
+`Service::may_sign` whether the certificate's lease is active, allows `commit_sign` and names
+the repo (a refusal is logged, and a violation revokes a lease with `on_violation:
+revoke_lease`; an allowed request gets its line from `Service::sign`), so a certificate whose
+lease can't sign there costs no decoding, hashing or walk. The body is bounded (16 MiB, 100,000
+objects) and decoded strictly at the edge (`exec/sign.rs`), then, off the async threads:
 
 1. The object's kind from its first bytes (a commit, a tag, anything else); a commit parsed
    strictly by `writ_git::commit` (only the layout git writes, no signature already in it).
