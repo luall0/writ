@@ -134,7 +134,7 @@ The pipeline (`make e2e`, Docker only on the host):
   API; the hardened-test rules hold (readiness by a signal or a bounded poll, exact codes, the
   allowed case beside each refusal); each scenario on its own repo and lease.
 - **CI** runs `make e2e` as a job of its own on the Linux runner (decided with the user); the
-  pre-push hook keeps running `make ci` only.
+  pre-push hook keeps requiring `make ci` only.
 
 Scenarios (each asserts what the agent reads, the audit line, Forgejo's state through its
 API, and the mirror):

@@ -1,4 +1,4 @@
-.PHONY: ci check test test-props test-agent e2e fmt run dev-client hooks
+.PHONY: ci push check test test-props test-agent e2e fmt run dev-client hooks
 
 # Lint, format check, dependency directions, source rules, doc links.
 # Each library is also linted alone: the workspace build turns on the `testing` features the
@@ -9,9 +9,21 @@ LIBRARIES := writ-core writ-proto writ-crypto writ-git writ-mirror writ-signer w
 # features the integration crate asks for.
 BINARIES := -p writd -p writ-cli -p writ-sign
 
-# What CI runs (GitHub Actions on Linux, the pre-push hook on the Mac): the one definition of
-# green. Everything is --locked: Cargo.lock is what gets built, never a fresh resolution.
-ci: check test
+# What CI runs (GitHub Actions on Linux, by hand or `make push` on the Mac): the one definition
+# of green. Everything is --locked: Cargo.lock is what gets built, never a fresh resolution.
+# On a clean working tree, a pass stamps the tree (tool/ci-stamp.sh): the pre-push hook allows
+# a push of a stamped tree only, without running CI while git holds the connection open.
+ci:
+	@tree=$$(sh tool/ci-stamp.sh tree) && \
+		$(MAKE) --no-print-directory check test && \
+		sh tool/ci-stamp.sh record "$$tree"
+
+# `make ci` (skipped if it already passed on this tree), then `git push`, on a clean working
+# tree only. Arguments for git: make push ARGS="origin main".
+push:
+	@sh tool/ci-stamp.sh require-clean
+	@sh tool/ci-stamp.sh verified || $(MAKE) --no-print-directory ci
+	git push $(ARGS)
 
 check:
 	cargo fmt --all --check
@@ -71,8 +83,8 @@ dev-client:
 	@echo "[127.0.0.1]:8443 $$(cargo run --locked -q -p writd --features dev-keystore -- tls-fingerprint dev/writd.yaml)" > dev/data/client/tls_pins
 	@echo "pinned in dev/data/client/known_hosts and dev/data/client/tls_pins; reader key in dev/readers"
 
-# Installs the git hooks (tool/git-hooks) as stubs in .git/hooks: `make ci` before every push.
-# Never through a local core.hooksPath, which would turn off a global one.
+# Installs the git hooks (tool/git-hooks) as stubs in .git/hooks: a push only of a tree
+# `make ci` passed on. Never through a local core.hooksPath, which would turn off a global one.
 hooks:
 	@sh tool/install-hooks.sh
-	@echo "pre-push runs make ci"
+	@echo "pre-push allows only a tree make ci passed on (make push runs both)"

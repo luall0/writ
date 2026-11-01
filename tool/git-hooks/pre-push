@@ -1,6 +1,9 @@
 #!/bin/sh
-# Runs `make ci` (what GitHub Actions runs) before anything is pushed: macOS-only code is
-# only ever tested here, on the Mac. Installed by `make hooks`.
+# Allows a push only if `make ci` passed here on the pushed tree (tool/ci-stamp.sh): macOS-only
+# code is only ever tested on the Mac. It never runs CI itself: git runs this hook with the
+# connection to the remote already open, and a hook as long as `make ci` made the remote close
+# it. `make push` runs `make ci` (unless it already passed on this tree), then `git push`.
+# Installed by `make hooks`.
 set -e
 cd "$(git rev-parse --show-toplevel)"
-exec make ci
+exec sh tool/ci-stamp.sh pre-push

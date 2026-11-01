@@ -14,7 +14,7 @@ user's go-ahead (hard rule 12).
 
 | Check | What it enforces | Where |
 |---|---|---|
-| `make ci` | Everything below, as one target: GitHub Actions runs it on Linux for every push and pull request; the `pre-push` hook (`make hooks`) runs it on the Mac | `Makefile`, `.github/workflows/ci.yml`, `tool/git-hooks/pre-push`, `tool/install-hooks.sh` |
+| `make ci` | Everything below, as one target: GitHub Actions runs it on Linux for every push and pull request; on the Mac, the `pre-push` hook (`make hooks`) allows only a tree it passed on (`make push`) | `Makefile`, `.github/workflows/ci.yml`, `tool/git-hooks/pre-push`, `tool/ci-stamp.sh`, `tool/install-hooks.sh` |
 | clippy (`-D warnings`) | No `unwrap`/`expect`/`panic!`, unchecked indexing, slicing or truncating casts outside tests; no unchecked arithmetic in `writ-core`, `writ-crypto`, `writ-proto`, `writ-git`; no `unsafe` | `Cargo.toml` `[workspace.lints]`, each crate's `lib.rs` |
 | `tool/check-rules.py` | A file's test module ends it (so nothing escapes the rules below); no bare `is_err()`/`!success()` in tests, no unmarked sleep in tests, no `if let Ok(… .lock())` that skips work, no relative program path in production code, no unexplained `#[allow]` of a denied lint, no `cfg(target_os)` outside the platform code, no prints in libraries | `make check` |
 | `tool/check-deps.py` | Clients never depend on daemon crates (hard rule 1) | `make check` |
@@ -320,5 +320,5 @@ allowed without a test.
 What this page doesn't cover yet, with the milestone that does: process hardening (no core
 dumps, no debugger attach, secrets out of swap: M5), the TLS key behind the `Signer` (M5,
 M7.5), the shared `~/.writ/sessions/current` pointer (M6/M7), macOS-only code tested only by
-the pre-push hook (CI is Linux). The [residual risks](threat-model.md#residual-risks-v1) list
+`make ci` on the Mac, which the pre-push hook requires (CI is Linux). The [residual risks](threat-model.md#residual-risks-v1) list
 the rest.

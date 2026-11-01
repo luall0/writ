@@ -105,9 +105,15 @@ shipped graph in `make check`).
 
 `make ci` (`make check` then `make test`) is the one definition of green: GitHub Actions runs
 it on Linux for every push and pull request (`.github/workflows/ci.yml`, no third-party
-action), and the `pre-push` hook (`make hooks`) runs it on the Mac, where macOS-only code is
-tested. `make hooks` installs stubs in `.git/hooks` rather than setting a local
-`core.hooksPath`, which would turn off a global one.
+action), and on the Mac, where macOS-only code is tested, the `pre-push` hook (`make hooks`)
+allows a push only of a tree `make ci` passed on. The hook doesn't run CI itself: git runs it
+with the connection to the remote already open, and a hook as long as `make ci` made the
+remote close it. Instead, `make ci` on a clean working tree (no change, no untracked file,
+the same tree at the start and the end) stamps HEAD's tree in `.git/writ-ci-ok`
+(`tool/ci-stamp.sh`), and the hook refuses any pushed commit whose tree isn't the stamped one.
+`make push` does both: `make ci` unless the tree is already stamped, then `git push`.
+`make hooks` installs stubs in `.git/hooks` rather than setting a local `core.hooksPath`,
+which would turn off a global one.
 The gateway's own tests (`crates/writ-gateway/tests/`) run on the fakes only: an in-memory
 transport, a fake attestor, an in-process SSH client and an in-process HTTPS client pinning
 the certificate. The end-to-end tests approve over SSH in one scenario and over HTTPS in the
