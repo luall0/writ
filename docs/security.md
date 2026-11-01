@@ -213,6 +213,8 @@ with a test:
   and the decision log has its row.
 - `Cargo.lock` is committed and every build is `--locked`; the toolchain is pinned.
 - No third-party GitHub Action: CI runs `make ci` with git and the runner's tools.
+- How to upgrade anything, and what to do when an advisory appears:
+  [dependency upgrades](guides/dependency-upgrades.md).
 
 ## Tests
 

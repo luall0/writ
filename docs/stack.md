@@ -57,3 +57,4 @@ Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versi
 - Dependency versions declared once in the root `Cargo.toml` (`[workspace.dependencies]`);
   crates use `dep.workspace = true`.
 - `Cargo.lock` is committed (binaries).
+- How to move any of these: [dependency upgrades](guides/dependency-upgrades.md).

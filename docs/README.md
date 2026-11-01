@@ -56,5 +56,8 @@ conventions, hard rules and commands, and points here for details.
   implementations, errors, secrets, logging, visibility, docs.
 - [Project initialization](guides/initialization.md): one-time bootstrap of the Cargo
   workspace (run only on an empty repo).
+- [Upgrading dependencies](guides/dependency-upgrades.md): crates, coupled pins, the
+  toolchain, `cargo-deny`, external tools and the Unicode table; what to read, check, test
+  and write down; answering an advisory.
 - [Manual checks](guides/manual-checks.md): the checks that need a person (Touch ID with
   Secretive), step by step against the development daemon.

@@ -172,3 +172,4 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Tests: levels, hardening rules, fixtures, guarantee tests, property-test seeds | [docs/testing.md](docs/testing.md) |
 | Code conventions: crates, modules, errors, secrets, logging, docs | [docs/conventions.md](docs/conventions.md) |
 | Bootstrapping an empty repo | [docs/guides/initialization.md](docs/guides/initialization.md) |
+| Upgrading a crate, the toolchain, `cargo-deny` or a tool; answering an advisory | [docs/guides/dependency-upgrades.md](docs/guides/dependency-upgrades.md) |
