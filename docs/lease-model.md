@@ -285,7 +285,9 @@ An **amendment** is a new ticket with `amends: <id>`, from the same session (sam
 key), submitted while the lease is active. While pending, the original lease keeps running;
 once signed, the amendment becomes `applied` and its terms replace the lease's: the lease
 keeps its id, certificate and counters (its `max_signatures` is the new total, not more on
-top). If the lease ended before the amendment is signed, the amendment can't be applied.
+top). An amendment changes scope, not time: its `expires_at` is capped at the lease's, since
+the certificate keeps its `valid_before` (enforced from M6). If the lease ended before the
+amendment is signed, the amendment can't be applied.
 
 A lease is **exhausted** when every operation it allows is used up: signatures with
 `commit_sign`, pushes with `push`. `fetch` has no count, so a lease that allows it never

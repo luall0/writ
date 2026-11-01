@@ -25,6 +25,7 @@ an unchanged core.
 | M2.6 | [Security checkup](history/m2.6-security-checkup.md) ✅ | The security review after M2.5 and its fixes; the [security conventions](security.md), their checks in `make check`, CI |
 | M3 | [Signed commits](history/m3-signed-commits.md) ✅ | `writ-sign`, the sign command through the `Signer`, touched paths from checked evidence, the ledger, `writ init` (wrapper mode), `object_format`; the review after M3 and its fixes |
 | M3.5 | [Signing outside the lock](history/m3.5-signing-outside-the-lock.md) ✅ | `Service::sign` in three phases (the signer never runs under the state lock), the `QueuedSigner` in front of a backend |
+| M3.6 | [Review after M3.5](history/m3.6-review-after-m3.5.md) ✅ | The security and code quality review after M3.5 and its fixes: sign requests bounded in time and number, `ops` pruned, the reader key's copies wiped, submission rates for all sources set by the operator with every refusal counted, a panicking signer logged once |
 | M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only remotes |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
@@ -87,6 +88,11 @@ checks in `make check`, the guarantee registry.
 and record), a lease with a signature in flight not marked exhausted until it is settled, the
 `QueuedSigner` in front of the agent keys' backend, the property test over interleavings.
 
+## M3.6 — Review after M3.5
+
+**Done.** Moved to [history/m3.6-review-after-m3.5.md](history/m3.6-review-after-m3.5.md):
+the review after M3.5 and its fixes; what it found for M4 and M6 is in their sections below.
+
 ## M4 — Gateway push and fetch
 
 [Flows § 3 and § 4](flows.md#3-push) in `gateway` mode, upstream over SSH, against a test
@@ -113,6 +119,15 @@ remote (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
   the sign request never lands; each mirror created with its repo's `--object-format`, and the
   first sync refuses a remote whose format isn't the registry's; no network I/O (upstream
   push, mirror sync) under the service's state lock (M3.5's pattern).
+- From the review after M3.5 ([M3.6](history/m3.6-review-after-m3.5.md)): a fetch goes
+  through `decide_fetch` and consumes `Counter::Fetch` (the rate window) in the same store
+  transaction, like a push, so `max_ops_per_minute` bounds fetches too; a lease holder's
+  connections are bounded as well (each counted as an operation, or the allowed `connect`
+  lines coalesced per lease like its denials: decide here), so looping `ssh git@writ` can't
+  grow the audit log or hold the state lock without bound; revocation latency measured with
+  pushes and fetches in flight, and if the sweep each request runs or the audit line's fsync
+  under the state lock delays it, the full sweep moves to the timer and `usage` is read once
+  per request.
 
 Acceptance:
 - [ ] `git push origin agent/x` from a wired repo reaches the remote; `git fetch` works through
@@ -125,6 +140,8 @@ Acceptance:
 - [ ] Upstream moved → the push is rejected with the remote's reason; fetch, rebase, re-sign
       and push again succeeds.
 - [ ] The mirror never holds refs the remote refused.
+- [ ] A lease holder looping fetches or connections is refused past `max_ops_per_minute`
+      (or its lines coalesced), and a revocation still completes at once meanwhile.
 
 ## M4.5 — HTTPS upstream
 
@@ -179,6 +196,10 @@ The workflow the agent follows ([Clients](architecture/clients.md#client-list),
   wirings: the agent always runs git through `writ git …` (any command; plain git is the
   same in a `--whole-repo` clone), and adds the `Writ:` trailer; decided in M3.
 - Amendments (`amends: <id>`): the original lease runs while pending, replaced once signed.
+  An amendment changes scope, not time (decided after the M3.5 review,
+  [M3.6](history/m3.6-review-after-m3.5.md)): its `expires_at` is capped at the lease's, so
+  the certificate's `valid_before` stays the lease's end and a chain of amendments can't
+  stretch a lease.
 - `writ close` and the activity report: commits, pushes, branches, denials, time used vs
   granted, files touched vs `expected_paths`.
 
@@ -188,6 +209,8 @@ Acceptance:
 - [ ] A refusal round-trip and an amendment round-trip both work from the agent's side using
       only the skill.
 - [ ] The activity report matches the audit log for that lease.
+- [ ] An amendment applied minutes before the lease ends doesn't move its end: `writ ls`, the
+      lease and the certificate all end at the original time.
 
 ## M7 — Local mode on the Mac
 
