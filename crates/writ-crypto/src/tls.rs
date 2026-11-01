@@ -148,6 +148,16 @@ struct ReaderVerifier {
 }
 
 impl ClientCertVerifier for ReaderVerifier {
+    // Stated, not left to rustls's defaults: a client certificate is always asked for and
+    // always required.
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        true
+    }
+
     fn root_hint_subjects(&self) -> &[DistinguishedName] {
         &[]
     }

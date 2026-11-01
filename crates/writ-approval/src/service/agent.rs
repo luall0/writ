@@ -160,7 +160,8 @@ impl Service {
         caller: &CallerFacts,
         now: Timestamp,
     ) -> Result<(), ServiceError> {
-        let source = caller.source_addr;
+        // Counted by group: an IPv6 host by its /64 (it holds all of it).
+        let source = caller.source_addr.map(writ_core::net::source_group);
         if inner.submissions.len() >= MAX_TRACKED_SOURCES
             && !inner.submissions.contains_key(&source)
         {

@@ -104,7 +104,7 @@ See [macOS Secure Enclave](architecture/macos-secure-enclave.md).
 Each guarantee names the tests that try to break it (the guarantee registry). `make check`
 fails if a named test doesn't exist or is ignored, or if a guarantee has no test without a
 milestone that brings it (`tool/check-guarantees.py`). A new guarantee comes with its tests,
-in the same change (the security conventions, `docs/security.md`).
+in the same change ([security conventions](security.md#guarantees-and-their-tests)).
 
 | Guarantee | Tests that try to break it |
 |---|---|
@@ -141,6 +141,8 @@ in the same change (the security conventions, `docs/security.md`).
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |
 | With `decisions: open`, any reader can refuse pending tickets or revoke leases without a signature, and an unsigned refusal's feedback reaches the agent (a way to steer it) | Opt-in (the default is `signed`); only keys in `readers` reach the approval API; never a grant; unsigned feedback is labeled as such for the agent and in the revision | Keep `decisions: signed` |
 | Any caller from an address in the agents' `allow` list can submit tickets (a new agent has no identity yet) | The list is required; submissions are bounded (2 waiting per session key, 10 a minute per address, `max_pending` in all, at least 5 minutes each), notifications are bounded and coalesced, and nothing is granted without the approver's signature | Per-host agent keys registered with the daemon (backlog) |
-| A denial before authentication (a source not allowed, no free connection slot, a key not in `readers`, a refused certificate) is coalesced: one audit line per source and minute, with the count of the others | Every denial is still counted; a flood can't fill the disk and turn the audit log into a way to block revocations | — |
+| A denial before authentication (a source not allowed, no free connection slot, a key not in `readers`, a refused certificate) is coalesced: one audit line per source (an IPv6 /64) and minute, at most 60 lines a minute in all, with the count of the others | Every denial is still counted; a flood can't fill the disk and turn the audit log into a way to block revocations | — |
+| Without an `allow` list on the approval listener, anyone who reaches it can hold its connection slots (256, 16 per source or IPv6 /64, 20 s each without authenticating), delaying a revocation through the API | A denial of service only; nothing is granted or read without a reader key; the agents' listener has its required `allow` list | Set `allow` on the approval listeners (the approver's Mac); firewall them |
+| In local mode every caller on the Unix socket shares one submission rate (10 a minute) | Local agents are the user's own; the caps bound a runaway one | Per-process rates from the attestor's facts (M7) |
 | Notifications go through a third party (Telegram): ticket ids, template names and revisions leave the network | No agent-written text is sent (no title: it could carry links, and it is the agent's words); nothing in a notification grants anything; the token is sent in clear only to a server on this machine | Another `Notifier` (self-hosted, native macOS) |
 | The HTTPS approval API's TLS private key sits in rustls's memory for the daemon's life, not zeroized (rustls and ring don't wipe keys) | The daemon holds it in no other copy; the key only authenticates the daemon to approver clients, which pin it, and grants nothing | M5: the TLS key behind the `Signer` (software backend, wiped on drop) and process hardening (no core dumps, no debugger attach, secrets locked out of swap); M7.5: the TLS key in the Secure Enclave, a config choice |

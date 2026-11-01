@@ -1,7 +1,8 @@
 # Code conventions
 
 How the code in this repo is written. [AGENTS.md](../AGENTS.md) holds the hard rules (what must
-never happen); this page holds the conventions that keep the code uniform, so a reader finds
+never happen); the [security conventions](security.md) hold the security rules every change
+follows; this page holds the conventions that keep the code uniform, so a reader finds
 things where they expect them. Written at the [M2.5 checkup](history/m2.5-code-quality-checkup.md);
 `make check` enforces what a script can check, and review enforces the rest.
 

@@ -109,11 +109,18 @@ records every commit signed per lease. Use these words in code, logs and docs.
 16. **Follow the [code conventions](docs/conventions.md)** (crate and module layout,
     interfaces and their implementations, errors, secrets, logging, visibility, tests). If a
     convention has to change, change the page in the same change.
+17. **Follow the [security conventions](docs/security.md)** and answer its
+    [security checklist](docs/security.md#the-security-checklist) for every change that
+    touches an input, a grant or a read, the audit log, revocation, a secret, what people
+    see, a dependency or a guarantee: in the commit message, and for a milestone on its
+    history page. A new untrusted input joins the inventory there, with its bounds and a
+    hostile-input test. `make check` enforces what a script can; review enforces the rest.
 
 ## Definition of done
 
 `make ci` passes (`make check`, then `make test`: unit and integration tests, and both
-property-test passes), and the milestone's acceptance items touched by the change were exercised for real:
+property-test passes), the [security checklist](docs/security.md#the-security-checklist) is
+answered, and the milestone's acceptance items touched by the change were exercised for real:
 as integration scenarios in `crates/writ-integration` (real `git`, real `ssh`, the daemon
 running), plus the [manual checks](docs/guides/manual-checks.md) for what needs a human
 (Touch ID). State in your summary what you ran.
@@ -143,6 +150,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 |---|---|
 | What Writ is, the user story, scope v1, non-goals, principles | [docs/product.md](docs/product.md) |
 | What comes next, acceptance checklists | [docs/roadmap.md](docs/roadmap.md) |
+| Security conventions, the checklist for every change, untrusted inputs and their bounds | [docs/security.md](docs/security.md) |
 | What was built, in order | [docs/history/](docs/history/README.md) |
 | Ideas beyond v1 (LLM check, HTTP proxy, hardware signers, apps) | [docs/backlog/](docs/backlog/README.md) |
 | Why something is the way it is, open questions | [docs/decisions.md](docs/decisions.md) |

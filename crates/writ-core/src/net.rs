@@ -114,6 +114,19 @@ impl<'de> Deserialize<'de> for IpRange {
     }
 }
 
+/// The group an address counts in for per-source limits: an IPv4 address on its own (an
+/// IPv4-mapped IPv6 address as that IPv4 address), an IPv6 address by its /64, since one host
+/// holds a whole /64 and could otherwise rotate through 2^64 "sources".
+pub fn source_group(addr: IpAddr) -> IpAddr {
+    match addr {
+        IpAddr::V4(_) => addr,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(std::net::Ipv6Addr::from(masked(u128::from(v6), 64, 128))),
+        },
+    }
+}
+
 /// Who may connect to a listener.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sources {
@@ -200,6 +213,22 @@ mod tests {
             let error = bad.parse::<IpRange>().unwrap_err();
             assert!(error.contains(why), "{bad}: {error}");
         }
+    }
+
+    #[test]
+    fn an_ipv6_host_counts_as_its_slash_64() {
+        assert_eq!(
+            source_group(ip("2001:db8::1")),
+            source_group(ip("2001:db8::ffff:1"))
+        );
+        assert_eq!(source_group(ip("2001:db8::1")), ip("2001:db8::"));
+        assert_ne!(
+            source_group(ip("2001:db8::1")),
+            source_group(ip("2001:db8:0:1::1"))
+        );
+        assert_eq!(source_group(ip("192.0.2.7")), ip("192.0.2.7"));
+        assert_ne!(source_group(ip("192.0.2.7")), source_group(ip("192.0.2.8")));
+        assert_eq!(source_group(ip("::ffff:192.0.2.7")), ip("192.0.2.7"));
     }
 
     #[test]

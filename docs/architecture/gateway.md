@@ -22,11 +22,11 @@ each listener has a role:
 Each listener accepts connections only from its configured sources (`allow` in
 `writd.yaml`, required on the agents' TCP listeners), and bounds what any peer can make it
 hold (`crates/writ-gateway/src/limits.rs`): 256 open connections per listener and 16 per
-source address, 20 seconds to authenticate (or to finish the TLS handshake), 4 channels at
+source address (an IPv6 host counts as its /64), 20 seconds to authenticate (or to finish the TLS handshake), 4 channels at
 once per SSH connection, 30 seconds to send a request body, 10 minutes without traffic. A
 denial before authentication (a source not allowed, no free slot, a key not in `readers`,
-a refused certificate) writes one audit line per source and minute, with the count of the
-others; text the peer chose (a certificate's key id) is cut to 64 characters.
+a refused certificate) writes one audit line per source and minute, at most 60 a minute in
+all, with the count of the others; text the peer chose (a certificate's key id) is cut to 64 characters.
 
 The SSH algorithms are listed by the gateway, never left to the library's defaults:
 mlkem768x25519-sha256 or curve25519-sha256 key exchange with strict kex, chacha20-poly1305

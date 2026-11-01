@@ -28,6 +28,9 @@ pub(crate) const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(600);
 pub(crate) const MAX_LOGGED_TEXT: usize = 64;
 /// One audit line per source and kind of denial in this window; the rest are counted.
 const DENIAL_WINDOW: Duration = Duration::from_secs(60);
+/// Audit lines for denials before authentication, all sources together, per window: past it,
+/// denials are only counted (many sources at once can't fill the disk either).
+const MAX_DENIAL_LINES: u32 = 60;
 /// Sources tracked for coalescing; past it the table starts over (each source then logs once
 /// more, which bounds the table without losing a denial).
 const MAX_TRACKED_SOURCES: usize = 4096;
@@ -81,8 +84,10 @@ impl Slots {
         }
     }
 
-    /// A slot for a connection from `source`, or why there is none.
+    /// A slot for a connection from `source` (counted by its group: an IPv6 /64), or why
+    /// there is none.
     pub(crate) fn take(&self, source: Option<IpAddr>) -> Result<Slot, &'static str> {
+        let source = source.map(writ_core::net::source_group);
         let total = self
             .total
             .clone()
@@ -110,6 +115,14 @@ impl Slots {
 /// logged, the others counted and reported with the next one logged.
 pub(crate) struct DenialThrottle {
     windows: Mutex<HashMap<(Option<IpAddr>, &'static str), Window>>,
+    /// Lines logged in the current global window, and denials not logged for its budget.
+    global: Mutex<GlobalWindow>,
+}
+
+struct GlobalWindow {
+    started: Instant,
+    logged: u32,
+    suppressed: u64,
 }
 
 struct Window {
@@ -121,12 +134,39 @@ impl DenialThrottle {
     pub(crate) fn new() -> Self {
         Self {
             windows: Mutex::new(HashMap::new()),
+            global: Mutex::new(GlobalWindow {
+                started: Instant::now(),
+                logged: 0,
+                suppressed: 0,
+            }),
         }
     }
 
-    /// Whether to log this denial now: `Some(n)` with the number of the same denials not
-    /// logged since the last line, `None` to only count it. A poisoned table logs everything.
+    /// Whether to log this denial now: `Some(n)` with the number of denials not logged since
+    /// the last line (this source's, and any the global budget held back), `None` to only
+    /// count it. Sources are grouped (an IPv6 /64). A poisoned table logs everything.
     pub(crate) fn admit(&self, source: Option<IpAddr>, kind: &'static str) -> Option<u64> {
+        let suppressed = self.admit_source(source.map(writ_core::net::source_group), kind)?;
+        // poisoned: every line is logged then (fail toward the audit log, never silence).
+        let Ok(mut global) = self.global.lock() else {
+            return Some(suppressed);
+        };
+        let now = Instant::now();
+        if now.duration_since(global.started) >= DENIAL_WINDOW {
+            global.started = now;
+            global.logged = 0;
+        }
+        if global.logged >= MAX_DENIAL_LINES {
+            global.suppressed = global
+                .suppressed
+                .saturating_add(suppressed.saturating_add(1));
+            return None;
+        }
+        global.logged = global.logged.saturating_add(1);
+        Some(suppressed.saturating_add(std::mem::take(&mut global.suppressed)))
+    }
+
+    fn admit_source(&self, source: Option<IpAddr>, kind: &'static str) -> Option<u64> {
         let Ok(mut windows) = self.windows.lock() else {
             return Some(0);
         };
@@ -217,11 +257,46 @@ mod tests {
             Some(3),
             "the count is kept"
         );
+        // An IPv6 host is its /64: rotating addresses inside it is one source.
+        assert_eq!(throttle.admit(ip("2001:db8::1"), "cap"), Some(0));
+        assert_eq!(throttle.admit(ip("2001:db8::2"), "cap"), None);
         assert_eq!(
             with_suppressed("over the cap".into(), 3),
             "over the cap (and 3 more from this address since the last line)"
         );
         assert_eq!(with_suppressed("over the cap".into(), 0), "over the cap");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn many_sources_at_once_still_log_a_bounded_number_of_lines() {
+        let throttle = DenialThrottle::new();
+        let source = |n: u32| Some(IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + n)));
+        let logged = (0..MAX_DENIAL_LINES + 10)
+            .filter(|&n| throttle.admit(source(n), "cap").is_some())
+            .count();
+        assert_eq!(logged, MAX_DENIAL_LINES as usize, "the global budget holds");
+        // In the next window, the next line carries the count of those not logged.
+        tokio::time::advance(DENIAL_WINDOW).await;
+        assert_eq!(throttle.admit(source(1_000), "cap"), Some(10));
+    }
+
+    #[test]
+    fn an_ipv6_host_gets_one_share_of_slots() {
+        let slots = Slots::with(MAX_CONNECTIONS);
+        let addr = |n: u16| {
+            Some(IpAddr::V6(std::net::Ipv6Addr::new(
+                0x2001, 0xdb8, 0, 0, 0, 0, 0, n,
+            )))
+        };
+        let held: Vec<Slot> = (0..u16::try_from(MAX_CONNECTIONS_PER_SOURCE).unwrap())
+            .map(|n| slots.take(addr(n)).unwrap())
+            .collect();
+        assert_eq!(
+            slots.take(addr(999)).err(),
+            Some("too many open connections from this address"),
+            "another address in the same /64"
+        );
+        drop(held);
     }
 
     #[test]

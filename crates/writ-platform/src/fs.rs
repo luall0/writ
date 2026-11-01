@@ -62,9 +62,19 @@ pub fn create_new_private_file(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
+/// Who may own a file the daemon trusts.
+#[derive(Clone, Copy)]
+enum Owner {
+    /// The daemon's user only (a secret: root-owned would be unreadable anyway).
+    Daemon,
+    /// The daemon's user or root (an authority file: one root owns and the daemon can't write
+    /// is as safe, and is how a container mounts its configuration).
+    DaemonOrRoot,
+}
+
 /// Opens `path` for reading without following a link or blocking, and checks it is a regular
-/// file owned by the daemon's user. `what` names the file in errors.
-fn open_owned(path: &Path, what: &str) -> Result<(File, Metadata)> {
+/// file with an allowed owner. `what` names the file in errors.
+fn open_owned(path: &Path, what: &str, owner: Owner) -> Result<(File, Metadata)> {
     let unreadable = |e: std::io::Error| {
         PlatformError::Config(format!(
             "cannot read {what} {}: {}",
@@ -82,7 +92,9 @@ fn open_owned(path: &Path, what: &str) -> Result<(File, Metadata)> {
             path.display()
         )));
     }
-    if metadata.uid() != my_uid() {
+    let allowed =
+        metadata.uid() == my_uid() || matches!(owner, Owner::DaemonOrRoot) && metadata.uid() == 0;
+    if !allowed {
         return Err(PlatformError::Config(format!(
             "{what} {} is owned by uid {}, not the daemon's user (uid {})",
             path.display(),
@@ -120,7 +132,7 @@ fn read_bounded(mut file: File, path: &Path, what: &str, max: u64) -> Result<Zer
 /// Reads a secret file: a regular file of the daemon's user that nobody else can read or
 /// write, at most `max` bytes, into memory that is wiped when dropped.
 pub fn read_secret(path: &Path, what: &str, max: u64) -> Result<Zeroizing<Vec<u8>>> {
-    let (file, metadata) = open_owned(path, what)?;
+    let (file, metadata) = open_owned(path, what, Owner::Daemon)?;
     check_private(path, &metadata)?;
     read_bounded(file, path, what, max)
 }
@@ -128,7 +140,7 @@ pub fn read_secret(path: &Path, what: &str, max: u64) -> Result<Zeroizing<Vec<u8
 /// Reads an authority file (who may do what): a regular file of the daemon's user that
 /// nobody else can write, as UTF-8, at most [`MAX_AUTHORITY_FILE`] bytes.
 pub fn read_authority(path: &Path, what: &str) -> Result<String> {
-    let (file, metadata) = open_owned(path, what)?;
+    let (file, metadata) = open_owned(path, what, Owner::DaemonOrRoot)?;
     let mode = metadata.permissions().mode();
     if mode & 0o022 != 0 {
         return Err(PlatformError::Config(format!(
@@ -279,20 +291,23 @@ mod tests {
     }
 
     #[test]
-    fn a_file_of_another_user_is_refused() {
-        // A regular file every Unix has, owned by root, mode 0644: refused for its owner
-        // alone (meaningless when the tests run as root).
+    fn owners_are_checked() {
+        // A regular file every Unix has, owned by root, mode 0644 (meaningless when the tests
+        // run as root). As an authority file it is fine: the daemon's user can't write it.
         if my_uid() == 0 {
             return;
         }
         let hosts = Path::new("/etc/hosts");
-        let error = config_error(read_authority(hosts, "policy"));
+        assert!(
+            read_authority(hosts, "policy").is_ok(),
+            "root-owned, not writable"
+        );
+        // As a secret, only the daemon's user may own it.
+        let error = config_error(read_secret(hosts, "token", 1 << 20));
         assert!(
             error.contains("is owned by uid 0, not the daemon's user"),
             "{error}"
         );
-        let error = config_error(read_secret(hosts, "token", 1 << 20));
-        assert!(error.contains("is owned by uid 0"), "{error}");
     }
 
     #[test]
