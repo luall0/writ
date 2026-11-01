@@ -246,12 +246,17 @@ The step-by-step of each mode is in [Flows](../flows.md#3-push) (3, 3b, 3c).
 ## URL rewrite
 
 `gateway` and `proxy` keep the plain `git push origin` habit with a URL rewrite written by
-`writ init`:
+`writ init`: the clone's `origin` URL, exactly as it was when wired (recorded as
+`writ.origin`), rewritten to the daemon's repo:
 
 ```ini
-[url "ssh://git@writ.home:2222/github.com/user/"]
-    insteadOf = git@github.com:user/
+[url "ssh://git@writ.home:2222/omega-code.git"]
+    insteadOf = git@github.com:user/omega-code.git
 ```
 
-The agent keeps `origin` pointing at GitHub; git transparently routes it through the daemon.
-The full git config of an agent host is in [Clients](clients.md#repo-setup-on-an-agent-host).
+The agent keeps `origin` pointing at GitHub; under the wiring, git routes `push origin` and
+`fetch origin` through the daemon. In wrapper mode the rewrite travels with the other settings
+in `writ git`'s environment, so the operator's plain git still reaches GitHub itself; in
+whole-repo mode it is in the clone's config, and `writ init` says so. Only that one URL is
+rewritten, never in a global config, and a clone without `origin` gets no rewrite. The full
+git config of an agent host is in [Clients](clients.md#repo-setup-on-an-agent-host).

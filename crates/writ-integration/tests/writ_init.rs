@@ -177,6 +177,10 @@ fn wrapper_mode_signs_through_writ_git_and_leaves_the_operator_s_git_alone() {
     let before = local_config(&daemon, &repo);
     let out = writ_ok(&daemon, &repo, &["init", "demo"]);
     assert!(out.contains("wrapper mode"), "{out}");
+    assert!(
+        out.contains("`writ git push origin` and `writ git fetch origin` go through the daemon"),
+        "{out}"
+    );
     assert!(out.contains("Committer email: agent@writ."), "{out}");
     assert_eq!(local_config(&daemon, &repo), before);
     assert!(repo.join(".git/writ/config").is_file());
@@ -341,13 +345,31 @@ fn wrapper_mode_signs_through_writ_git_and_leaves_the_operator_s_git_alone() {
         &agent_key
     ));
     // The agent fetches through the daemon (its mirror syncs main, which the operator pushed
-    // upstream), then pushes: only the agent's signed commits are new.
-    writ_ok(&daemon, &repo, &["git", "fetch", "-q", "writ"]);
+    // upstream), then pushes: only the agent's signed commits are new. It says `origin`, as
+    // it would without Writ: the rewrite sends it to the daemon.
+    writ_ok(&daemon, &repo, &["git", "fetch", "-q", "origin"]);
+    let rewritten = writ_ok(
+        &daemon,
+        &repo,
+        &["git", "remote", "get-url", "--push", "origin"],
+    );
+    assert!(
+        rewritten.trim().ends_with("/demo.git") && rewritten.starts_with("ssh://git@127.0.0.1:"),
+        "{rewritten}"
+    );
     writ_ok(
         &daemon,
         &repo,
-        &["git", "push", "-q", "writ", "HEAD:refs/heads/agent/oauth"],
+        &["git", "push", "-q", "origin", "HEAD:refs/heads/agent/oauth"],
     );
+    assert_eq!(
+        git_ok(&daemon, &origin, &["rev-parse", "refs/heads/agent/oauth"]).trim(),
+        head,
+        "upstream has the agent's branch, through the daemon"
+    );
+    // The operator's plain git still reaches `origin` itself.
+    let direct = git_ok(&daemon, &repo, &["remote", "get-url", "--push", "origin"]);
+    assert_eq!(direct.trim(), origin.to_str().unwrap());
 
     // Undone: the record is gone, the config as it was, `writ git` refuses.
     writ_ok(&daemon, &repo, &["init", "--undo"]);
@@ -374,6 +396,13 @@ fn whole_repo_mode_wires_a_dedicated_clone_and_undo_restores_it() {
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
     git_ok(&daemon, &repo, &["init", "-q"]);
+    let origin = daemon.remote.repo("demo");
+    git_ok(
+        &daemon,
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    // Last in the file: `--undo` adds the values it puts back at the end of the config.
     git_ok(
         &daemon,
         &repo,
@@ -383,6 +412,10 @@ fn whole_repo_mode_wires_a_dedicated_clone_and_undo_restores_it() {
 
     let out = writ_ok(&daemon, &repo, &["init", "demo", "--whole-repo"]);
     assert!(out.contains("whole repo"), "{out}");
+    assert!(
+        out.contains("every push and fetch to it goes through the daemon, plain git too"),
+        "{out}"
+    );
     let config = local_config(&daemon, &repo);
     assert!(config.contains("writ.repo=demo"), "{config}");
     assert!(config.contains("user.email=agent@writ"), "{config}");
@@ -441,10 +474,16 @@ fn whole_repo_mode_wires_a_dedicated_clone_and_undo_restores_it() {
             .iter()
             .all(|e| e.key.as_str() == "agent-01" && e.repo.as_str() == "demo")
     );
+    // Plain git, `origin`: through the daemon in this clone.
     git_ok(
         &daemon,
         &repo,
-        &["push", "-q", "writ", "HEAD:refs/heads/agent/oauth"],
+        &["push", "-q", "origin", "HEAD:refs/heads/agent/oauth"],
+    );
+    assert_eq!(
+        git_ok(&daemon, &origin, &["rev-parse", "refs/heads/agent/oauth"]).trim(),
+        second,
+        "upstream has the branch, through the daemon"
     );
 
     // A locked config stops the undo before it adds anything: the wiring stays recorded.

@@ -13,6 +13,10 @@
 //! What `writ init` records lives in `<git common dir>/writ/config` (git config format): never
 //! in the working tree, so it can't be committed, and it travels with the clone. Paths in the
 //! settings point at `<home>/sessions/current`, so a wired repo follows the current lease.
+//!
+//! The clone's `origin` URL, as it was when wired, is rewritten to the daemon
+//! (`url.<daemon>/<repo>.git.insteadOf`), so `git push origin` and `git fetch origin` under the
+//! wiring go through the daemon; only that exact URL, never the user's global config.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -62,26 +66,45 @@ pub struct Wiring {
     /// The repository's shared git directory (`writ.gitdir`): `writ-sign` refuses a commit
     /// made in any other repository with these settings.
     pub common_dir: PathBuf,
+    /// The clone's `origin` URL when it was wired (`writ.origin`), rewritten to the daemon.
+    pub origin: Option<String>,
 }
+
+/// One git setting: its key and value.
+pub type Setting = (String, String);
 
 /// Single-quoted for `sh` (git runs `core.sshCommand` through it).
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
+/// Where a repository is wired to, for [`settings`].
+pub struct Target<'a> {
+    /// The daemon's agents listener as git reaches it (`ssh://git@host:port`).
+    pub base_url: &'a str,
+    pub repo: &'a RepoName,
+    pub common_dir: &'a Path,
+    /// The clone's `origin` URL, rewritten to the daemon.
+    pub origin: Option<&'a str>,
+}
+
 /// The settings that wire a repository, in order (`<key> <value>`).
 pub fn settings(
-    base_url: &str,
-    repo: &RepoName,
-    common_dir: &Path,
+    target: &Target<'_>,
     home: &Path,
     known_hosts: &Path,
     writ_sign: &str,
     email: Option<&str>,
-) -> Vec<(&'static str, String)> {
+) -> Vec<Setting> {
+    let Target {
+        base_url,
+        repo,
+        common_dir,
+        origin,
+    } = *target;
     let session = home.join("sessions").join("current");
     let path = |p: PathBuf| p.display().to_string();
-    let mut settings = vec![
+    let mut settings: Vec<(&'static str, String)> = vec![
         ("remote.writ.url", format!("{base_url}/{repo}.git")),
         (
             "remote.writ.fetch",
@@ -100,6 +123,14 @@ pub fn settings(
     ];
     if let Some(email) = email {
         settings.push(("user.email", email.to_owned()));
+    }
+    let mut settings: Vec<Setting> = settings
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
+    let daemon = format!("{base_url}/{repo}.git");
+    if let Some(origin) = origin.filter(|o| !o.is_empty() && *o != daemon) {
+        settings.push((format!("url.{daemon}.insteadOf"), origin.to_owned()));
     }
     settings
 }
@@ -226,19 +257,23 @@ pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
         repo,
         email: get("writ.email"),
         common_dir,
+        origin: get("writ.origin"),
     }))
 }
 
 /// The settings of a wired repository, with this host's paths and the current lease.
-pub fn settings_for(paths: &Paths, wiring: &Wiring) -> anyhow::Result<Vec<(&'static str, String)>> {
+pub fn settings_for(paths: &Paths, wiring: &Wiring) -> anyhow::Result<Vec<Setting>> {
     let home = std::path::absolute(&paths.home).context("cannot resolve WRIT_HOME")?;
     let known_hosts =
         std::path::absolute(&paths.known_hosts).context("cannot resolve the known_hosts path")?;
     let email = wiring.email.clone().or_else(|| lease_email(&home));
     Ok(settings(
-        &wiring.base_url,
-        &wiring.repo,
-        &wiring.common_dir,
+        &Target {
+            base_url: &wiring.base_url,
+            repo: &wiring.repo,
+            common_dir: &wiring.common_dir,
+            origin: wiring.origin.as_deref(),
+        },
         &home,
         &known_hosts,
         &writ_sign_program(),
@@ -250,7 +285,7 @@ pub fn settings_for(paths: &Paths, wiring: &Wiring) -> anyhow::Result<Vec<(&'sta
 /// caller already has (`existing`): later entries win, so these override the user's config.
 pub fn config_env(
     existing: Option<&str>,
-    settings: &[(&'static str, String)],
+    settings: &[Setting],
 ) -> anyhow::Result<Vec<(String, OsString)>> {
     let start: usize = match existing {
         None => 0,
@@ -279,9 +314,12 @@ mod tests {
     #[test]
     fn writes_exactly_the_documented_config() {
         let settings = settings(
-            "ssh://git@writ.home:2222",
-            &"omega-code".parse().unwrap(),
-            Path::new("/opt/agent/omega/.git"),
+            &Target {
+                base_url: "ssh://git@writ.home:2222",
+                repo: &"omega-code".parse().unwrap(),
+                common_dir: Path::new("/opt/agent/omega/.git"),
+                origin: Some("git@github.com:user/omega-code.git"),
+            },
             Path::new("/opt/agent/.writ"),
             Path::new("/opt/agent/.writ/known_hosts"),
             "/usr/local/bin/writ-sign",
@@ -310,9 +348,46 @@ mod tests {
                  -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes",
             ),
             ("user.email", "user+agent@example.org"),
+            (
+                "url.ssh://git@writ.home:2222/omega-code.git.insteadOf",
+                "git@github.com:user/omega-code.git",
+            ),
         ];
-        let got: Vec<(&str, &str)> = settings.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let got: Vec<(&str, &str)> = settings
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn only_a_real_origin_is_rewritten() {
+        let repo: RepoName = "demo".parse().unwrap();
+        let rewrites = |origin: Option<&str>| {
+            settings(
+                &Target {
+                    base_url: "ssh://git@writ.home:2222",
+                    repo: &repo,
+                    common_dir: Path::new("/r/.git"),
+                    origin,
+                },
+                Path::new("/h"),
+                Path::new("/k"),
+                "writ-sign",
+                None,
+            )
+            .into_iter()
+            .filter(|(k, _)| k.starts_with("url."))
+            .count()
+        };
+        assert_eq!(rewrites(Some("ssh://git@github.com/u/demo.git")), 1);
+        assert_eq!(rewrites(None), 0, "no origin");
+        assert_eq!(rewrites(Some("")), 0, "an empty origin");
+        assert_eq!(
+            rewrites(Some("ssh://git@writ.home:2222/demo.git")),
+            0,
+            "origin already the daemon: no loop"
+        );
     }
 
     #[test]
@@ -328,8 +403,8 @@ mod tests {
     #[test]
     fn the_environment_comes_after_what_the_caller_has() {
         let settings = vec![
-            ("writ.repo", "demo".to_owned()),
-            ("commit.gpgSign", "true".to_owned()),
+            ("writ.repo".to_owned(), "demo".to_owned()),
+            ("commit.gpgSign".to_owned(), "true".to_owned()),
         ];
         let env = config_env(None, &settings).unwrap();
         let text: Vec<(&str, &str)> = env

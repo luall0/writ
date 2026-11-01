@@ -32,10 +32,12 @@ The daemon pushes to and fetches from each repo's `upstream` with that repo's
 | Mode | Use it for | What changes |
 |---|---|---|
 | **Wrapper** (default) | Your own clone, shared with an agent | Nothing in the repo's git config. The agent runs every git command through `writ git …` (rebase, cherry-pick, `commit --amend` and push included) or a program that runs git through `writ exec -- …`; your plain `git` keeps your key, email and remotes |
-| **Whole repo** (`--whole-repo`) | A clone dedicated to an agent (a VM, a container, a separate directory) | The repo's git config: plain `git` there is the agent's git |
+| **Whole repo** (`--whole-repo`) | A clone dedicated to an agent (a VM, a container, a separate directory) | The repo's git config: plain `git` there is the agent's git, and `origin` goes through the daemon |
 
 `writ init --undo` takes either back exactly. One wiring per clone: a repo already wired must
-be undone first.
+be undone first. In both modes the clone's `origin` URL is rewritten to the daemon under the
+wiring (only that URL, never in your global config), so the agent pushes to `origin` as usual;
+in wrapper mode your own `git push origin` still goes straight to the remote.
 
 In wrapper mode, keep the agent working in its own branch (`agent/…`) and don't work in the
 same files at the same time: you share a working tree.

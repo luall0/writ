@@ -84,17 +84,19 @@ pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
         .context("the record has no directory")?;
     std::fs::create_dir_all(record_dir)
         .with_context(|| format!("cannot create {}", record_dir.display()))?;
+    let origin = local_values(&dir, "remote.origin.url")?.into_iter().next();
     let wiring = Wiring {
         mode: request.mode,
         base_url: base_url.clone(),
         repo: request.repo.clone(),
         email: request.email.map(|e| e.as_str().to_owned()),
         common_dir: wiring::common_dir(&dir)?,
+        origin,
     };
     if request.mode == Mode::WholeRepo {
         // The values replaced, first: `--undo` puts them back.
         for (key, _) in wiring::settings_for(paths, &wiring)? {
-            let before = local_values(&dir, key)?;
+            let before = local_values(&dir, &key)?;
             if before.is_empty() {
                 record(
                     &dir,
@@ -114,9 +116,12 @@ pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
     if let Some(email) = &wiring.email {
         record(&dir, &record_path, "writ.email", email)?;
     }
+    if let Some(origin) = &wiring.origin {
+        record(&dir, &record_path, "writ.origin", origin)?;
+    }
     if request.mode == Mode::WholeRepo {
         for (key, value) in wiring::settings_for(paths, &wiring)? {
-            wiring::git(&dir, &["config", "--local", "--replace-all", key, &value])?;
+            wiring::git(&dir, &["config", "--local", "--replace-all", &key, &value])?;
         }
     }
     print_summary(paths, &wiring)?;
@@ -125,7 +130,7 @@ pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
 
 fn print_summary(paths: &Paths, wiring: &Wiring) -> anyhow::Result<()> {
     let settings = wiring::settings_for(paths, wiring)?;
-    let email = settings.iter().find(|(k, _)| *k == "user.email");
+    let email = settings.iter().find(|(k, _)| k == "user.email");
     match wiring.mode {
         Mode::Wrapper => println!(
             "Wired for Writ (wrapper mode): run git through `writ git …` (any command) to work \
@@ -137,6 +142,19 @@ fn print_summary(paths: &Paths, wiring: &Wiring) -> anyhow::Result<()> {
         ),
     }
     println!("Remote `writ`: {}/{}.git.", wiring.base_url, wiring.repo);
+    match (&wiring.origin, wiring.mode) {
+        (Some(origin), Mode::Wrapper) => println!(
+            "Remote `origin` ({}): `writ git push origin` and `writ git fetch origin` go through \
+             the daemon; plain git still reaches it directly.",
+            crate::display::clean(origin)
+        ),
+        (Some(origin), Mode::WholeRepo) => println!(
+            "Remote `origin` ({}): in this clone every push and fetch to it goes through the \
+             daemon, plain git too (`writ init --undo` takes that back).",
+            crate::display::clean(origin)
+        ),
+        (None, _) => println!("No `origin` remote: push to the `writ` remote."),
+    }
     match email {
         Some((_, email)) => println!("Committer email: {email}."),
         None => {
