@@ -45,6 +45,8 @@ TEST_SUPPORT = {
     "crates/writ-platform/src/contract.rs",
     "crates/writ-platform/src/testing.rs",
     "crates/writ-approval/src/testing.rs",
+    "crates/writ-signer/src/contract.rs",
+    "crates/writ-signer/src/testing.rs",
 }
 
 errors = []

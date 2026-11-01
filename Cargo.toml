@@ -35,6 +35,7 @@ writ-platform = { path = "crates/writ-platform" }
 writ-proto = { path = "crates/writ-proto" }
 writ-approval = { path = "crates/writ-approval" }
 writ-git = { path = "crates/writ-git" }
+writ-signer = { path = "crates/writ-signer" }
 
 age = { version = "0.11.2", default-features = false }
 anyhow = "1.0.104"

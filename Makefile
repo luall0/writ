@@ -3,7 +3,7 @@
 # Lint, format check, dependency directions, source rules, doc links.
 # Each library is also linted alone: the workspace build turns on the `testing` features the
 # tests ask for, which could hide code that only compiles with them.
-LIBRARIES := writ-core writ-proto writ-crypto writ-git writ-platform writ-store writ-approval writ-gateway
+LIBRARIES := writ-core writ-proto writ-crypto writ-git writ-signer writ-platform writ-store writ-approval writ-gateway
 
 # The shipped binaries, built on their own: a workspace build would turn on the `testing`
 # features the integration crate asks for.

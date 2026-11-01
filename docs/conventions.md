@@ -22,7 +22,7 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
 - **`writ-core` is pure**: no I/O, no clock, no randomness. Time comes in as `now: Timestamp`,
   randomness as bytes (`TicketId::from_parts`).
 - **Test support lives behind a `testing` feature** (`writ-platform`, `writ-store`,
-  `writ-approval`): fakes, contract suites, builders, test-only constructors
+  `writ-signer`, `writ-approval`): fakes, contract suites, builders, test-only constructors
   (`Store::open_in_memory`). A crate's own tests turn it on through a dev-dependency on itself.
   Production code never enables it. `make check` also lints each library alone, so code that
   only compiles with the feature can't hide.

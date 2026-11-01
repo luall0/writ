@@ -19,6 +19,9 @@ FORBIDDEN = {
     # Pure object parsing: nothing that holds state, keys or the network.
     "writ-git": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
                  "writ-platform", "writ-cli", "writ-sign"},
+    # Keys only: below the services that use them.
+    "writ-signer": {"writ-store", "writ-git", "writ-gateway", "writ-approval", "writd",
+                    "writ-platform", "writ-cli", "writ-sign"},
     # Platform traits and implementations: below every core crate but writ-core.
     "writ-platform": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
                       "writ-cli", "writ-git"},

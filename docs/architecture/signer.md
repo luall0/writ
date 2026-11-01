@@ -9,16 +9,24 @@ Cargo features). Platform-only backends, like the Secure Enclave, live in their 
 Keys sit behind an interface; the daemon never depends on the backend.
 
 ```rust
-/// Abstraction over where agent keys live and how they sign.
+/// Where keys live and how they sign. Used as a trait object (`Arc<dyn Signer>`).
 pub trait Signer: Send + Sync {
-    /// Keys this backend exposes (public part only).
-    fn list_keys(&self) -> Result<Vec<KeyInfo>>;
-    /// Sign raw data with the given key. The caller builds the SSHSIG / userauth blob.
-    fn sign(&self, key_id: &KeyId, data: &[u8]) -> Result<Signature>;
+    /// The keys this backend exposes (public parts only): `KeyInfo { id, public_key }`.
+    fn list_keys(&self) -> Result<Vec<KeyInfo>, SignerError>;
+    /// Signs raw `data` with the key `id`. The caller builds what is signed (an SSHSIG's
+    /// signed data) and wraps the signature; the signature is in SSH encoding.
+    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError>;
     /// What this backend can do (algorithms, exportability, touch requirement).
     fn capabilities(&self) -> Capabilities;
 }
 ```
+
+`writ_signer::sshsig` builds an SSHSIG (what `ssh-keygen -Y sign` writes) through any
+backend. Errors never carry key material (`SignerError`), and every backend runs the
+contract suite (`writ_signer::contract`): its signatures verify with the public key it lists,
+only for the bytes signed, and an unknown key is refused by name. The software backend
+(`writ_signer::software::SoftwareSigner`) holds Ed25519 and P-256 keys moved in by whoever
+loaded them, wiped on drop, never printed.
 
 | Backend | Algorithms | Key exportable? | Notes |
 |---|---|---|---|

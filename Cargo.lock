@@ -3953,6 +3953,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-signer"
+version = "0.0.0"
+dependencies = [
+ "signature",
+ "ssh-key",
+ "thiserror 2.0.21",
+ "writ-core",
+ "writ-crypto",
+ "writ-signer",
+]
+
+[[package]]
 name = "writ-store"
 version = "0.0.0"
 dependencies = [
