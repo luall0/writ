@@ -25,6 +25,9 @@ pub struct Keys {
     /// The keys commits are signed with, by id (each template's `signing_key`), for the
     /// `Signer`.
     pub signing: Vec<(KeyId, PrivateKey)>,
+    /// The keys the daemon reaches upstream with, by id (each repo's `upstream_credential`),
+    /// for the upstream `Signer`.
+    pub upstream: Vec<(KeyId, PrivateKey)>,
     /// The HTTPS approval API's self-signed certificate and key.
     pub tls: TlsIdentity,
 }
@@ -80,15 +83,32 @@ fn dev_key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
 /// The signing keys every template names, from `<dir>/signing/<id>`, each generated on first
 /// start (a key id is a plain name, never a path).
 fn dev_signing_keys(dir: &Path, policy: &PolicyConfig) -> anyhow::Result<Vec<(KeyId, PrivateKey)>> {
-    let ids: std::collections::BTreeSet<&KeyId> = policy
+    let ids = policy
         .templates()
         .values()
-        .filter_map(|t| t.signing_key.as_ref())
-        .collect();
-    let signing = dir.join("signing");
-    private_dir(&signing)?;
+        .filter_map(|t| t.signing_key.as_ref());
+    dev_keys(&dir.join("signing"), ids)
+}
+
+/// The upstream credentials every repo names, from `<dir>/upstream/<id>`, each generated on
+/// first start; `writd upstream-keys` prints their public keys, to add on each remote.
+fn dev_upstream_keys(
+    dir: &Path,
+    policy: &PolicyConfig,
+) -> anyhow::Result<Vec<(KeyId, PrivateKey)>> {
+    let ids = policy.repos().values().map(|r| &r.upstream_credential);
+    dev_keys(&dir.join("upstream"), ids)
+}
+
+/// One key per distinct id, in the private directory `dir`.
+fn dev_keys<'a>(
+    dir: &Path,
+    ids: impl Iterator<Item = &'a KeyId>,
+) -> anyhow::Result<Vec<(KeyId, PrivateKey)>> {
+    let ids: std::collections::BTreeSet<&KeyId> = ids.collect();
+    private_dir(dir)?;
     ids.into_iter()
-        .map(|id| Ok((id.clone(), dev_key(&signing, id.as_str())?)))
+        .map(|id| Ok((id.clone(), dev_key(dir, id.as_str())?)))
         .collect()
 }
 
@@ -110,6 +130,7 @@ pub fn keys(config: &Config, policy: &PolicyConfig) -> anyhow::Result<Keys> {
                 ca: dev_key(dir, "ca")?,
                 host: dev_key(dir, "host")?,
                 signing: dev_signing_keys(dir, policy)?,
+                upstream: dev_upstream_keys(dir, policy)?,
                 tls: dev_tls(dir)?,
             })
         }

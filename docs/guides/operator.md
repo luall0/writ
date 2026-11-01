@@ -5,6 +5,26 @@ what. Writ guards what the agent does **through the daemon**; what an agent runn
 user could reach on your machine is yours to protect. See the
 [threat model](../threat-model.md#what-writ-does-not-guarantee).
 
+## Upstream keys and host keys
+
+The daemon pushes to and fetches from each repo's `upstream` with that repo's
+`upstream_credential`, a key in its signer ([gateway](../architecture/gateway.md#upstream)).
+
+1. **Add each credential on its remote.** `writd upstream-keys writd.yaml` prints each key
+   and the repos that use it. Prefer a **deploy key** with write access on that one repository
+   (GitHub, Codeberg, Forgejo and GitLab all have them): the remote then scopes the key to the
+   repo. A key added on your account reaches every repository you can push to; the daemon's
+   registry is then the only per-repo boundary.
+2. **Pin each remote's host key** in the file `mirrors.known_hosts` names, one line per host:
+   `github.com ssh-ed25519 AAAA…`, or `[forgejo.home]:2222 ssh-ed25519 AAAA…` off port 22.
+   Take the key from the remote's published fingerprints (GitHub, Codeberg and GitLab publish
+   theirs) or from `ssh-keyscan -t ed25519 <host>` checked against them; never trust a scan
+   alone. The daemon refuses to start when a repo's host has no pin, and refuses a sync when
+   the host shows another key. Wildcards, hashed names and `@cert-authority` lines are refused.
+3. **Mind the bounds** (`mirrors` in `writd.yaml`): `max_fetch` (1 GiB) caps what one sync
+   takes from upstream, `timeout` (5 min) how long it may take; a first sync of a large
+   repository may need more.
+
 ## Wrapper or whole repo
 
 `writ init <repo>` ([repo setup](../architecture/clients.md#repo-setup-on-an-agent-host)):

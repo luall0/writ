@@ -5,7 +5,11 @@
 //!   `known_hosts`.
 //! - `writd tls-fingerprint <writd.yaml>`: prints the fingerprint of the HTTPS approval API's
 //!   certificate, to pin in clients' `tls_pins`.
+//! - `writd upstream-keys <writd.yaml>`: prints the upstream credentials' public keys, to add
+//!   on each remote.
 //! - `writd hook pre-receive`: the program git's pre-receive hook runs.
+//! - `writd upstream-ssh <max bytes> <ssh> <args…>`: the program git runs as its ssh for
+//!   upstream (it caps what upstream sends).
 //!
 //! Only this binary wires the crates together and reads configuration
 //! (docs/architecture/overview.md).
@@ -28,6 +32,8 @@ use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::readers::{self, Reader};
 use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
+use writ_mirror::known_hosts::PinnedHosts;
+use writ_mirror::{MirrorConfig, Mirrors, SyncReport};
 use writ_platform::clock::system::SystemClock;
 use writ_store::{AuditLog, Store};
 
@@ -45,7 +51,13 @@ fn main() -> ExitCode {
                 .map(ExitCode::from)
                 .unwrap_or(ExitCode::FAILURE);
         }
+        ["upstream-ssh", rest @ ..] => {
+            return u8::try_from(writ_mirror::relay::run(rest))
+                .map(ExitCode::from)
+                .unwrap_or(ExitCode::FAILURE);
+        }
         ["run", config] => run(Path::new(config)),
+        ["upstream-keys", config] => upstream_keys(Path::new(config)),
         ["host-key", config] => host_key(Path::new(config)),
         ["tls-fingerprint", config] => tls_fingerprint(Path::new(config)),
         _ => {
@@ -53,6 +65,7 @@ fn main() -> ExitCode {
                 "usage: writd run <writd.yaml>\n       \
                  writd host-key <writd.yaml>\n       \
                  writd tls-fingerprint <writd.yaml>\n       \
+                 writd upstream-keys <writd.yaml>\n       \
                  writd hook pre-receive"
             );
             return ExitCode::from(2);
@@ -85,6 +98,35 @@ fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
     let (policy, _) = load_policy(&config)?;
     println!("{}", keystore::keys(&config, &policy)?.tls.fingerprint());
     Ok(())
+}
+
+/// Prints each upstream credential's public key and the repos that use it: the key to add on
+/// each remote (as a deploy key, or on the account).
+fn upstream_keys(path: &Path) -> anyhow::Result<()> {
+    let config = Config::load(path)?;
+    let (policy, _) = load_policy(&config)?;
+    for (id, key) in keystore::keys(&config, &policy)?.upstream {
+        let repos: Vec<&str> = policy
+            .repos()
+            .iter()
+            .filter(|(_, entry)| entry.upstream_credential == id)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        println!(
+            "{id} {} (repos: {})",
+            key.public_key().to_openssh()?,
+            repos.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// The upstream host keys the operator pinned (an authority file: whoever writes it decides
+/// which servers the daemon pushes to).
+fn load_pinned_hosts(config: &Config) -> anyhow::Result<PinnedHosts> {
+    let path = &config.mirrors.known_hosts;
+    let text = writ_platform::fs::read_authority(path, "upstream known_hosts")?;
+    PinnedHosts::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
 /// The approval policy (repo registry and templates) and the approver keys, from the files
@@ -189,6 +231,29 @@ fn spawn_sweeper(service: Arc<Service>) {
     });
 }
 
+/// Syncs every mirror from upstream every `every` (the first right away), one after the other,
+/// unless a fetch or a push synced it more recently. A failure is logged and the mirror stays
+/// stale: fetches and pushes then try again, and are refused if they fail too.
+fn spawn_mirror_sync(mirrors: Mirrors, every: Duration) {
+    tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(every);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            let repos: Vec<_> = mirrors.repos().cloned().collect();
+            for repo in repos {
+                match mirrors.sync_if_stale(&repo).await {
+                    Ok(SyncReport::Synced { moved, more }) if !moved.is_empty() => {
+                        tracing::info!(%repo, moved = moved.len().saturating_add(more), "mirror synced");
+                    }
+                    Ok(_) => tracing::debug!(%repo, "mirror up to date"),
+                    Err(e) => tracing::warn!(%repo, error = %e, "mirror sync failed"),
+                }
+            }
+        }
+    });
+}
+
 /// Logs go to stderr; `WRIT_LOG` filters them (`info` by default, e.g. `WRIT_LOG=debug`).
 /// They are diagnostics only: decisions are in the audit log, which never goes through them.
 fn init_logging() {
@@ -207,8 +272,11 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let (policy, approvers) = load_policy(&config)?;
     let readers = load_readers(&config)?;
     one_key_one_purpose(&approvers, &readers)?;
+    let pinned = load_pinned_hosts(&config)?;
     let keys = keystore::keys(&config, &policy)?;
     let signer = platform::signer(keys.signing)?;
+    let upstream_signer = platform::upstream_signer(keys.upstream)?;
+    let registry = policy.repos().clone();
     keystore::private_dir(&config.state_dir)?;
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
@@ -218,6 +286,21 @@ fn run(path: &Path) -> anyhow::Result<()> {
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
+        let mirrors = Mirrors::open(
+            MirrorConfig {
+                root: repos.clone(),
+                run_dir: config.state_dir.join("mirror"),
+                relay: std::env::current_exe()?,
+                ssh: config.mirrors.ssh.clone(),
+                pinned,
+                fresh_for: Duration::from_secs(config.mirrors.fresh_for.seconds()),
+                timeout: Duration::from_secs(config.mirrors.timeout.seconds()),
+                max_fetch_bytes: config.mirrors.max_fetch.bytes(),
+            },
+            &registry,
+            upstream_signer,
+        )
+        .await?;
         let platform = platform::build(&config).await?;
         let service = Service::new(
             ServiceConfig {
@@ -273,6 +356,10 @@ fn run(path: &Path) -> anyhow::Result<()> {
         }
         let mut servers = spawn_listeners(&gateway, &platform, &tls);
         spawn_sweeper(service);
+        spawn_mirror_sync(
+            mirrors,
+            Duration::from_secs(config.mirrors.sync_every.seconds()),
+        );
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("stopping");
@@ -309,6 +396,7 @@ mod tests {
             &yaml,
             "state_dir: data\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
              keystore: { dev: keys }\n\
+             mirrors: { known_hosts: upstream_known_hosts }\n\
              transports: { agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }], \
              approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] } }\n\
              attestor: network\nsession_watcher: none\n",

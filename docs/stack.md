@@ -38,8 +38,8 @@ Settle each "Proposed" row when the milestone that needs it starts, and change i
 
 | Tool | Minimum | Why |
 |---|---|---|
-| `git` | 2.34 (M0 ran 2.54) | SSH commit signing (`gpg.format = ssh`) |
-| OpenSSH (`ssh`, `ssh-keygen`) | 8.9 (M0 ran 10.5) | `-Y sign/verify`, certificates, `session-bind` (direct_ssh) |
+| `git` | 2.34 on agent hosts (M0 ran 2.54); 2.45 on the daemon host, checked at startup | SSH commit signing (`gpg.format = ssh`); the daemon's mirrors: reftable (2.45), `fetch --porcelain` (2.41) |
+| OpenSSH (`ssh`, `ssh-keygen`) | 8.9 (M0 ran 10.5) | `-Y sign/verify`, certificates, `session-bind` (direct_ssh); the daemon's ssh to upstream (`mirrors.ssh`) |
 | Docker + compose | recent | Detached mode (M8), test remote (M4) |
 | Secretive | any | v1 approver key (Mac) |
 

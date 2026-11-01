@@ -10,6 +10,7 @@ writ-approval.workspace = true
 writ-core.workspace = true
 writ-crypto.workspace = true
 writ-git.workspace = true
+writ-mirror.workspace = true
 writ-platform.workspace = true
 writ-proto.workspace = true
 http-body-util.workspace = true

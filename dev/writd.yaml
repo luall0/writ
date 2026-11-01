@@ -7,6 +7,10 @@ approvers: approvers
 readers: readers                 # dev/readers, gitignored: written by `make dev-client`
 decisions: signed                # signed | open (refusals and revocations)
 keystore: { dev: data/keys }     # unencrypted, refused by release builds (sealed keystore: M5)
+mirrors:
+  known_hosts: upstream_known_hosts   # the remotes' host keys, pinned by hand
+  # ssh: /usr/bin/ssh             # the OpenSSH client (absolute path)
+  # fresh_for: 10s, sync_every: 5m, timeout: 5m, max_fetch: 1GiB  (the defaults)
 transports:
   agents: [{ tcp: "127.0.0.1:2222", allow: [127.0.0.1] }]   # who may connect (required on TCP)
   approvals:                     # the approval API; [] disables one, not both

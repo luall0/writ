@@ -9,7 +9,7 @@ a test that passes by luck is no test at all.
 | Level | What it tests | Needs | Runs in |
 |---|---|---|---|
 | **Unit** | One crate alone: its unit tests (`#[cfg(test)]`) and its `tests/`, on the platform fakes (`writ_platform::testing`) and the test kits (`writ_approval::testing`) | nothing | `make test` |
-| **Integration** | The crates and the binaries together (`crates/writ-integration`): the real `writd`, `writ` and `writ-sign`, the real `git` and OpenSSH, a throwaway `ssh-agent` standing in for the approver's, a fake Telegram Bot API; temporary `HOME` and git config | the local tools only (checked at start: `git` ≥ 2.34, OpenSSH ≥ 8.9, `nc`) | `make test` |
+| **Integration** | The crates and the binaries together (`crates/writ-integration`): the real `writd`, `writ` and `writ-sign`, the real `git` and OpenSSH, a throwaway `ssh-agent` standing in for the approver's, a fake Telegram Bot API; temporary `HOME` and git config | the local tools only (checked at start: `git` ≥ 2.45, OpenSSH ≥ 8.9, `nc`); upstream is a test remote, an SSH server in the test process (`writ_integration::remote`) that can also misbehave (never answer, flood) | `make test` |
 | **End to end** | Real external services: a test remote in Docker, a throwaway GitHub repo (from M4) | Docker, network | `make e2e` |
 
 Each milestone's acceptance items become integration scenarios (end-to-end ones from M4).

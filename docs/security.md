@@ -86,6 +86,9 @@ reader with `decisions: open`). Each has a bound, a strict parser, and a hostile
 | Evidence objects (the first parent commit, trees) | lease holders | read only by the id computed from their bytes (SHA-1 with collision detection, or SHA-256); trees parsed strictly (no empty, `.`, `..` or `/` name, no name twice, no `.git` as any filesystem reads it: a commit adding one is refused whatever `paths_check` says); the walk visits at most 1,000,000 entries, lists 100,000 paths, follows 256 levels, builds no path over 4,096 bytes and at most 64 MiB of paths in all | `writ_git::paths`, `writ_git::tree` |
 | Caller facts | the kernel, via the attestor | never what the client claims | `CallerAttestor` implementations |
 | Config and authority files | the operator | owner, mode, no link, regular file, 1 MiB | `writ_platform::fs::read_authority` |
+| Upstream host keys (`mirrors.known_hosts`) | the operator | an authority file; 1,000 entries; plain host names or `[host]:port` only (no wildcard, negation, hashed name or marker), no DSA key; rewritten by the daemon for ssh, comments dropped | `writ_mirror::known_hosts` |
+| What upstream sends on a sync (refs, objects, its errors) | the remote (semi-trusted: compromised, or behind a hostile network) | the pinned host key; `mirrors.max_fetch` bytes (relay) and `mirrors.timeout` (process group killed); `fsck` with `.git`, `.`, `..`, empty, absolute names and null ids at error level; branches and tags only, all or none; the registry's object format; error text cut to 2,000 characters, hidden characters dropped | git, configured by `writ_mirror::git`; `writ_mirror::relay` |
+| The upstream agent socket | processes of the daemon's user (a private directory) | one key, 4 connections, 4 signatures, 256 KiB messages, 30 s each, 16 requests a connection; anything but "list keys" and "sign with that key" fails | `writ_mirror::agent` |
 
 A new input is added here in the same change.
 
@@ -212,21 +215,33 @@ with a test:
 - Key types: approvers (`APPROVER_KEY_TYPES`), readers (Ed25519), session keys (Ed25519,
   P-256); `sk-` approvals need user presence.
 - Certificates: critical options refused.
-- git: a clean environment, no system or global config, the gateway's own hooks,
-  `fsckObjects`, a size cap.
+- git: one builder for every git the daemon runs (`writ_mirror::git::command`): a clean
+  environment, no system or global config, ssh as the only transport, the gateway's own
+  hooks or none, `fsckObjects` everywhere, packs kept whole, a size cap on pushes and on
+  syncs (`the_daemon_user_s_config_and_environment_never_reach_git`).
+- ssh to upstream: `-F /dev/null` and every option stated (`writ_mirror::upstream`), the
+  operator's pinned host keys only.
 - Git objects an agent sends: ids computed here (SHA-1 with collision detection, never a plain
   SHA-1), only the commit layout git writes, trailers found as git finds them (checked
   against `git interpret-trailers`, `trailers_are_git_s`), and refused at least where git's
   own validators refuse them (`.git` tree entries as `verify_path` reads them).
 - **A tool's own checks at the severity we need**: an external validator's warning is not a
-  refusal. git's `fsck` only warns on a `.git` tree entry (`hasDotgit`) and
-  `receive.fsckObjects` then accepts the push, so the mirrors set `receive.fsck.hasDotgit =
-  error` (M4). Each check Writ relies on is set to an error explicitly, with a test.
+  refusal. `git fsck` only warns on a `.git` tree entry (`hasDotgit`); a transfer's `fsck`
+  (`receive.fsckObjects`, `fetch.fsckObjects`) runs strict and refuses it (git 2.54), but
+  that is git's default, not Writ's decision: every git the daemon runs sets `hasDotgit`
+  (and `hasDot`, `hasDotdot`, `emptyName`, `fullPathname`, `nullSha1`) to `error`, for
+  pushes and syncs alike (`malformed_objects_never_land`,
+  `malformed_or_dangerous_objects_from_upstream_never_land`). Each check Writ relies on is
+  set to an error explicitly, with a test.
 
 ## Subprocesses
 
 - **By absolute path**, or a `// PATH: <why>` comment saying why `PATH` is trusted there
-  (the daemon's own git; the agent host's own tools) (checked).
+  (the daemon's own git; the agent host's own tools) (checked). The daemon's ssh is a
+  configured absolute path (`mirrors.ssh`), checked at startup to be an executable file.
+- **Bounded in time, as a group**: a subprocess that talks to the network (a sync, an
+  upstream push) runs in its own process group, killed whole past its deadline or when its
+  caller gives up (`writ_mirror::process`).
 - **A clean environment** (`env_clear`, then only what is needed).
 - **No argument can start with `-`** where a value is user-chosen (hosts, users, URLs).
 - **The strictest flags**: `ssh-keygen -Y sign -U` (agent only), `git upload-pack --strict`.

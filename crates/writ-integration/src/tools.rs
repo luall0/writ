@@ -5,8 +5,8 @@
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// `git` 2.34: SSH commit signing (`gpg.format = ssh`).
-pub const MIN_GIT: (u32, u32) = (2, 34);
+/// `git` 2.45: the daemon's mirrors (reftable; `writ_mirror::MIN_GIT`), SSH commit signing.
+pub const MIN_GIT: (u32, u32) = writ_mirror::MIN_GIT;
 /// OpenSSH 8.9: `ssh-keygen -Y sign/verify`, certificates.
 pub const MIN_OPENSSH: (u32, u32) = (8, 9);
 
@@ -99,9 +99,9 @@ mod tests {
         );
         assert_eq!(parse_git("hub version 2.14"), None);
         assert_eq!(parse_openssh("Sun_SSH_1.5"), None);
-        assert!(at_least("git", (2, 34), MIN_GIT).is_ok());
-        let error = at_least("git", (2, 33), MIN_GIT).unwrap_err();
-        assert!(error.contains("git") && error.contains("2.34"), "{error}");
+        assert!(at_least("git", (2, 45), MIN_GIT).is_ok());
+        let error = at_least("git", (2, 44), MIN_GIT).unwrap_err();
+        assert!(error.contains("git") && error.contains("2.45"), "{error}");
         assert!(at_least("git", (3, 0), MIN_GIT).is_ok());
     }
 }

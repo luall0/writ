@@ -13,9 +13,11 @@ use std::sync::mpsc;
 
 use tempfile::TempDir;
 use writ_crypto::keys::{KeyKind, generate};
+use writ_crypto::ssh_key::PublicKey;
 
 use crate::agent::TestAgent;
 use crate::binaries::bin;
+use crate::remote::TestRemote;
 use crate::telegram::{FakeTelegram, TOKEN};
 use crate::{WAIT_LIMIT, stderr, write_secret};
 
@@ -37,7 +39,14 @@ pub struct Daemon {
     /// The approval URL `writ` uses: SSH or HTTPS.
     pub approval_url: String,
     pub telegram: FakeTelegram,
+    /// The upstream of the repo `demo` (the policies' `ssh://git@remote.invalid/demo.git`,
+    /// rewritten to it), on its own runtime.
+    pub remote: TestRemote,
+    _remote_runtime: tokio::runtime::Runtime,
 }
+
+/// The upstream every scenario's policy names, rewritten to the test remote.
+pub const PLACEHOLDER_UPSTREAM: &str = "ssh://git@remote.invalid/demo.git";
 
 impl Drop for Daemon {
     fn drop(&mut self) {
@@ -91,7 +100,32 @@ impl Daemon {
         )
         .unwrap();
         fs::write(root.join("approver.pub"), format!("{approver_public}\n")).unwrap();
-        fs::write(root.join("policy.yaml"), policy).unwrap();
+        // The repo's upstream: a test remote with an empty `demo`, its host key pinned.
+        let remote_runtime = tokio::runtime::Runtime::new().unwrap();
+        let placeholder = generate(KeyKind::Ed25519).unwrap();
+        let remote = TestRemote::start(
+            &remote_runtime,
+            &root.join("remote"),
+            placeholder.public_key().clone(),
+        );
+        let init = Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .arg(remote.repo("demo"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap();
+        assert!(init.success());
+        fs::write(
+            root.join("upstream_known_hosts"),
+            format!("{}\n", remote.known_hosts_line()),
+        )
+        .unwrap();
+        fs::write(
+            root.join("policy.yaml"),
+            policy.replace(PLACEHOLDER_UPSTREAM, &remote.url("demo")),
+        )
+        .unwrap();
         fs::create_dir_all(root.join("home")).unwrap();
         write_secret(&root.join("telegram-token"), TOKEN.as_bytes());
         // The approver's reader key, made by the real `writ reader`, listed in `readers`.
@@ -113,6 +147,7 @@ impl Daemon {
             format!(
                 "state_dir: s\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
                  decisions: signed\nkeystore: {{ dev: s/keys }}\n\
+                 mirrors: {{ known_hosts: upstream_known_hosts }}\n\
                  transports:\n  agents: [{{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }}]\n  \
                  approvals:\n    ssh: [{{ tcp: \"127.0.0.1:0\" }}]\n    \
                  https: [{{ tcp: \"127.0.0.1:0\" }}]\n\
@@ -123,17 +158,11 @@ impl Daemon {
             ),
         )
         .unwrap();
-        // The repo the gateway serves (mirrors come in M4).
-        let bare = root.join("s/repos/demo.git");
-        fs::create_dir_all(&bare).unwrap();
-        let init = Command::new("git")
-            .args(["init", "-q", "--bare"])
-            .arg(&bare)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .status()
-            .unwrap();
-        assert!(init.success());
+        // The daemon's upstream credential (made by its dev keystore), authorized on the remote.
+        let keys = writd(root, "upstream-keys");
+        let line = keys.lines().next().expect("an upstream credential");
+        let key: Vec<&str> = line.split(' ').skip(1).take(2).collect();
+        remote.authorize(PublicKey::from_openssh(&key.join(" ")).unwrap());
 
         let host_key = writd(root, "host-key");
         let fingerprint = writd(root, "tls-fingerprint");
@@ -182,6 +211,8 @@ impl Daemon {
             https_port,
             approval_url,
             telegram,
+            remote,
+            _remote_runtime: remote_runtime,
         }
     }
 

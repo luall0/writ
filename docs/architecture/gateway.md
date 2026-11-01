@@ -4,7 +4,8 @@ The daemon is the agents' git remote and the only thing that pushes upstream. Th
 makes repo, destination ref and pushed content strong, remote-agnostic checks
 ([threat model, boundary 2](../threat-model.md#2-policy-strong-because-the-daemon-is-the-git-server)).
 
-Code: `crates/writ-gateway` (SSH server), `crates/writ-git` (mirrors, quarantine, upstream).
+Code: `crates/writ-gateway` (SSH server), `crates/writ-mirror` (the daemon's git, mirrors,
+upstream), `crates/writ-git` (objects an agent sends).
 
 ## Gateway (SSH server)
 
@@ -33,10 +34,9 @@ all, with the count of the others; text the peer chose (a certificate's key id) 
 The SSH algorithms are listed by the gateway, never left to the library's defaults:
 mlkem768x25519-sha256 or curve25519-sha256 key exchange with strict kex, chacha20-poly1305
 or aes256-gcm, Ed25519 and ECDSA P-256 keys (host, session and reader keys), no compression
-(RFC 4253 `zlib` would decompress before authentication), nothing with SHA-1. `git
-receive-pack` runs with `receive.fsckObjects` and `transfer.fsckObjects` (a malformed object,
-a `.git` or `.gitmodules` trick, never lands in a repository other leases fetch from) and
-`receive.maxInputSize` set to the lease's `max_push_size`.
+(RFC 4253 `zlib` would decompress before authentication), nothing with SHA-1. git runs
+through `writ_mirror::git::command` ([the daemon's git](#the-daemons-git)); `git
+receive-pack` also gets `receive.maxInputSize` set to the lease's `max_push_size`.
 
 A certificate is checked twice: when it is presented (CA, validity, deny list, principal
 `git`, no critical option, then the approval service finds its single active lease and checks the caller,
@@ -106,18 +106,84 @@ check is the repo's own `protected_refs` from the registry, matched ignoring cas
 quarantine and shows the agent `remote: writ: <reason>`. The commit checks against the ledger (M4) run at the same point,
 on the quarantined objects. Any failure to reach the daemon refuses the push.
 
+## The daemon's git
+
+Every git the daemon runs (`upload-pack`, `receive-pack`, syncs, reads of a quarantine) goes
+through one builder, `writ_mirror::git::command`: a clean environment (`PATH` and `TMPDIR`
+only), no system or global config, no prompt, ssh as the only transport (`protocol.allow =
+never` but ssh, `GIT_ALLOW_PROTOCOL=ssh`), and every setting Writ relies on stated on the
+command line rather than left to git's defaults:
+
+- every object checked (`transfer`, `fetch` and `receive.fsckObjects`), and the `fsck`
+  messages git only warns about raised to errors where they matter: a tree entry named
+  `.git`, `.` or `..`, an empty or absolute name, a null id (`hasDotgit`, `hasDot`,
+  `hasDotdot`, `emptyName`, `fullPathname`, `nullSha1`), whether the objects come from an
+  agent or from upstream;
+- a fetched pack kept whole (`fetch.unpackLimit = 1`): its objects land only once all are
+  checked;
+- no hook but the gateway's own pre-receive (`core.hooksPath`), no submodule, no automatic
+  maintenance, no credential helper, no file system monitor;
+- `upload-pack` serves only what refs reach (no `allow*SHA1InWant`, no filter);
+  `receive-pack` takes no shallow update and no push option, and leaves deletions and force
+  pushes to the pre-receive hook.
+
 ## Repo mirrors
 
-One bare mirror per registered repo. Used to serve fetches, receive pushes into a quarantine,
-and validate packs. Synced from upstream on fetch, on push, and periodically (no webhooks,
-[Q19](../decisions.md)).
+One bare mirror per registered repo, `<state>/repos/<name>.git`, used to serve fetches and to
+receive pushes into a quarantine (`crates/writ-mirror`). The daemon creates it at startup in
+the repo's `object_format`, with reftable refs (no loose ref files to collide by case on
+APFS), under a temporary name moved in place; a directory already there must be exactly that
+(a bare repository, that object format, reftable, not a link) or the daemon refuses to start.
 
-## Upstream pusher
+A **sync** fetches upstream's branches and tags, nothing else (`+refs/heads/*` and
+`+refs/tags/*`), with `--atomic` (every ref moves, or none) and `--prune` (a ref upstream
+deleted goes). It runs on a fetch and on a push when the mirror is older than `fresh_for`
+(10 s), and in the background every `sync_every` (5 min) (no webhooks,
+[Q19](../decisions.md)). One lock per mirror serializes syncs and pushes; concurrent callers
+wait for one sync and find the mirror fresh; at most 4 syncs run at once, daemon-wide. A sync
+that fails leaves the mirror's refs as they were, removes its partial pack, and marks the
+mirror stale; the fetch or push that asked for it is refused with the reason (fail closed).
+Past 50 packs, a sync repacks the mirror.
 
-Pushes accepted refs to the real remote with the daemon's own credentials, over **SSH** (key
-via the [signer](signer.md)) or **HTTPS** (token from the sealed keystore), depending on the
-repo's `upstream` URL ([Q4](../decisions.md)). The mirror's refs are updated **only after**
-upstream accepted the push.
+Upstream is semi-trusted (the operator's remote, but one that can be compromised, behind a
+network that can be hostile), so what a sync takes from it is checked and bounded:
+
+| What | Bound |
+|---|---|
+| Who it is | the host key pinned by the operator in `mirrors.known_hosts` (`StrictHostKeyChecking=yes`, nothing learned) |
+| What it sends | `mirrors.max_fetch` bytes (1 GiB) per sync, counted by the relay (git has no limit of its own on a fetch); `mirrors.timeout` (5 min) for the whole sync, then git, the relay and ssh are killed as a process group |
+| Its objects | `fsck`, with the checks above at error level; a pack lands whole or not at all |
+| Its refs | branches and tags only; all or none |
+| Its object format | the registry's: git refuses a remote in another (`mismatched algorithms`) |
+| What it says | an error's text cut to 2,000 characters, hidden characters dropped, one line: it reaches the audit log and an agent's terminal |
+
+## Upstream
+
+The daemon reaches upstream over **SSH** with the repo's `upstream_credential`, a key in the
+[signer](signer.md) (its own queue: 8 waiting, 10 s each). **HTTPS** with a token from the
+keystore comes in M4.5 ([Q4](../decisions.md)); until then an `https://` upstream is refused at
+startup.
+
+- The URL is the registry's `ssh://[user@]host[:port]/path`, read strictly (a plain host
+  name or address, no quote, nothing an option could start with).
+- git runs the system's OpenSSH (`mirrors.ssh`, `/usr/bin/ssh` by default, by absolute path)
+  with `-F /dev/null` and every option that matters stated: the pinned host keys only (as the
+  daemon rewrote them: plain host names or `[host]:port`, no wildcard, hashed name or marker,
+  no DSA key), public key authentication only, no forwarding, proxy, control socket or local
+  command, `BatchMode`.
+- The key never leaves the signer: for each operation the daemon serves an **ssh-agent
+  socket** (`writ_mirror::agent`) in a private directory, offering only that repo's key,
+  signing through the `Signer`; it takes 4 connections, makes 4 signatures, reads messages up
+  to 256 KiB within 30 s each, answers anything but "list keys" and "sign" with a failure, and
+  is removed when the operation ends.
+- What upstream sends goes through the **relay** (`writd upstream-ssh <max bytes> <ssh> …`),
+  git's ssh program: it runs ssh and counts the bytes, killing it past the cap.
+
+`writd upstream-keys <writd.yaml>` prints each credential's public key and the repos that use
+it, to add on each remote ([operator guide](../guides/operator.md#upstream-keys-and-host-keys)).
+
+Accepted pushes go to upstream with the same credential, and the mirror's refs are updated
+**only after** upstream accepted the push.
 
 ## Push modes (per repo)
 

@@ -14,6 +14,13 @@
 //! sign_requests:                     # held at once (16 in all, daemon-wide)
 //!   per_lease: 4                     # per lease, 1 to 16
 //! keystore: { dev: data/keys }       # M2: unsealed dev keystore, test only
+//! mirrors:
+//!   known_hosts: upstream_known_hosts  # required: the remotes' host keys, pinned by hand
+//!   ssh: /usr/bin/ssh                # the OpenSSH client, by absolute path
+//!   fresh_for: 10s                   # a mirror synced this recently isn't synced again
+//!   sync_every: 5m                   # background sync of every mirror
+//!   timeout: 5m                      # one sync or upstream push, then git and ssh are killed
+//!   max_fetch: 1GiB                  # the most one sync takes from upstream
 //! transports:
 //!   agents:                          # TCP: `allow` is required (`0.0.0.0/0` for anyone)
 //!     - { tcp: "0.0.0.0:2222", allow: ["10.0.0.0/24"] }
@@ -31,6 +38,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use writ_core::net::{IpRange, Sources};
+use writ_core::units::{ByteSize, Duration};
 use writ_proto::Decisions;
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +60,8 @@ pub struct Config {
     #[serde(default)]
     pub sign_requests: SignRequestsConfig,
     pub keystore: KeystoreConfig,
+    /// The mirrors and how they reach upstream.
+    pub mirrors: MirrorsConfig,
     pub transports: Transports,
     pub attestor: AttestorConfig,
     pub session_watcher: WatcherConfig,
@@ -120,6 +130,81 @@ fn default_per_source() -> usize {
 
 fn default_in_all() -> usize {
     writ_approval::DEFAULT_SUBMISSIONS_IN_ALL
+}
+
+/// `mirrors`: the upstream host keys and the bounds of a sync.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MirrorsConfig {
+    /// The upstream host keys, pinned by the operator (an authority file).
+    pub known_hosts: PathBuf,
+    /// The OpenSSH client the daemon reaches upstream with, by absolute path (never looked up
+    /// in `PATH`); `/usr/bin/ssh` unless the system keeps it elsewhere.
+    #[serde(default = "default_ssh")]
+    pub ssh: PathBuf,
+    #[serde(default = "default_fresh_for")]
+    pub fresh_for: Duration,
+    #[serde(default = "default_sync_every")]
+    pub sync_every: Duration,
+    #[serde(default = "default_timeout")]
+    pub timeout: Duration,
+    #[serde(default = "default_max_fetch")]
+    pub max_fetch: ByteSize,
+}
+
+fn default_ssh() -> PathBuf {
+    PathBuf::from("/usr/bin/ssh")
+}
+
+fn default_fresh_for() -> Duration {
+    Duration::from_seconds(10)
+}
+
+fn default_sync_every() -> Duration {
+    Duration::from_seconds(300)
+}
+
+fn default_timeout() -> Duration {
+    Duration::from_seconds(300)
+}
+
+fn default_max_fetch() -> ByteSize {
+    ByteSize::from_bytes(1 << 30)
+}
+
+impl MirrorsConfig {
+    /// Each bound within what makes sense: a sync that can't finish, or a limit that bounds
+    /// nothing, is a mistake.
+    fn check(&self) -> Result<(), String> {
+        if !self.ssh.is_absolute() {
+            return Err(format!(
+                "mirrors.ssh: {}, must be an absolute path (never looked up in PATH)",
+                self.ssh.display()
+            ));
+        }
+        let within = |name: &str, value: Duration, min: u64, max: u64| {
+            if (min..=max).contains(&value.seconds()) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "mirrors.{name}: {value}, must be from {} to {}",
+                    Duration::from_seconds(min),
+                    Duration::from_seconds(max)
+                ))
+            }
+        };
+        within("fresh_for", self.fresh_for, 0, 3_600)?;
+        within("sync_every", self.sync_every, 10, 86_400)?;
+        within("timeout", self.timeout, 10, 3_600)?;
+        let (min, max) = (1u64 << 20, 64u64 << 30);
+        if !(min..=max).contains(&self.max_fetch.bytes()) {
+            return Err(format!(
+                "mirrors.max_fetch: {}, must be from 1MiB to 64GiB",
+                self.max_fetch
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,6 +333,7 @@ impl Config {
         resolve(&mut config.policy);
         resolve(&mut config.approvers);
         resolve(&mut config.readers);
+        resolve(&mut config.mirrors.known_hosts);
         match &mut config.keystore {
             KeystoreConfig::Dev(dir) => resolve(dir),
         }
@@ -299,6 +385,7 @@ impl Config {
             );
         }
         config.submissions.limits().check().map_err(fail)?;
+        config.mirrors.check().map_err(fail)?;
         let per_lease = config.sign_requests.per_lease;
         if !(1..=writ_gateway::MAX_SIGN_REQUESTS).contains(&per_lease) {
             return Err(fail(format!(
@@ -330,7 +417,7 @@ mod tests {
     }
 
     const MINIMAL: &str = "state_dir: data\npolicy: policy.yaml\napprovers: approvers\n\
-        readers: readers\nkeystore: { dev: keys }\n\
+        readers: readers\nkeystore: { dev: keys }\nmirrors: { known_hosts: upstream_known_hosts }\n\
         transports: { agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }], approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] } }\n\
         attestor: network\nsession_watcher: none\n";
 
@@ -394,6 +481,73 @@ mod tests {
             let error = format!("{:#}", with(yaml).unwrap_err());
             assert!(error.contains(expected), "{yaml}: {error}");
         }
+    }
+
+    #[test]
+    fn mirror_bounds_have_defaults_and_are_bounded_on_both_sides() {
+        let config = load(MINIMAL).unwrap();
+        let mirrors = &config.mirrors;
+        assert!(mirrors.known_hosts.is_absolute());
+        assert_eq!(mirrors.ssh, PathBuf::from("/usr/bin/ssh"));
+        assert_eq!(mirrors.fresh_for.seconds(), 10);
+        assert_eq!(mirrors.sync_every.seconds(), 300);
+        assert_eq!(mirrors.timeout.seconds(), 300);
+        assert_eq!(mirrors.max_fetch.bytes(), 1 << 30);
+        let with = |yaml: &str| {
+            load(&MINIMAL.replace(
+                "mirrors: { known_hosts: upstream_known_hosts }",
+                &format!("mirrors: {{ known_hosts: upstream_known_hosts, {yaml} }}"),
+            ))
+        };
+        for good in [
+            "fresh_for: 0s",
+            "fresh_for: 1h",
+            "sync_every: 10s",
+            "sync_every: 1d",
+            "timeout: 10s",
+            "timeout: 1h",
+            "max_fetch: 1MiB",
+            "max_fetch: 64GiB",
+            "ssh: /opt/openssh/bin/ssh",
+        ] {
+            assert!(with(good).is_ok(), "{good}");
+        }
+        for (bad, expected) in [
+            (
+                "fresh_for: 61m",
+                "mirrors.fresh_for: 61m, must be from 0s to 1h",
+            ),
+            (
+                "sync_every: 9s",
+                "mirrors.sync_every: 9s, must be from 10s to 1d",
+            ),
+            (
+                "sync_every: 25h",
+                "mirrors.sync_every: 25h, must be from 10s to 1d",
+            ),
+            ("timeout: 9s", "mirrors.timeout: 9s, must be from 10s to 1h"),
+            (
+                "timeout: 61m",
+                "mirrors.timeout: 61m, must be from 10s to 1h",
+            ),
+            (
+                "max_fetch: 1048575",
+                "mirrors.max_fetch: 1048575 bytes, must be from 1MiB",
+            ),
+            ("max_fetch: 68719476737", "must be from 1MiB to 64GiB"),
+            ("depth: 1", "unknown field"),
+            ("ssh: ssh", "mirrors.ssh: ssh, must be an absolute path"),
+            (
+                "ssh: bin/ssh",
+                "mirrors.ssh: bin/ssh, must be an absolute path",
+            ),
+        ] {
+            let error = format!("{:#}", with(bad).unwrap_err());
+            assert!(error.contains(expected), "{bad}: {error}");
+        }
+        let without = MINIMAL.replace("mirrors: { known_hosts: upstream_known_hosts }\n", "");
+        let error = format!("{:#}", load(&without).unwrap_err());
+        assert!(error.contains("mirrors"), "{error}");
     }
 
     #[test]

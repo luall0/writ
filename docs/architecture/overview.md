@@ -101,8 +101,11 @@ crates/
                         files, fakes and contract suites (feature `testing`)
   writ-store/           SQLite lease store + ledger, JSONL audit log
   writ-git/             git objects from an agent's bytes: commits, trailers, trees, the
-                        paths a commit touches, the signed commit's id (M4: mirrors,
-                        quarantine, upstream push)
+                        paths a commit touches, the signed commit's id. Pure: no I/O
+  writ-mirror/          the daemon's repositories: the one hardened `git` builder, the
+                        mirrors and their syncs, upstream over ssh (pinned host keys, the
+                        credential through a one-operation agent socket, the byte-capping
+                        relay)
   writ-signer/          the `Signer` trait, the software backend, its contract suite
   writ-gateway/         russh server: git upload/receive-pack, sign, lease commands, the
                         approval API over SSH and HTTPS
@@ -140,9 +143,14 @@ spikes/                 throwaway spike code, outside the workspace, removed onc
 - `writ-git` is pure (object parsing) and `writ-signer` only holds keys: neither depends on
   the store, the gateway, the approval service or the clients, and clients never depend on
   them.
+- `writ-mirror` runs git and reaches upstream: it sits below the gateway (which runs git
+  through it) and beside the approval service, depends on neither, holds no policy (the
+  service decides, the gateway asks it to act) and no key (the `Signer` signs). Clients never
+  depend on it.
 - Only `writ-signer` and the platform crates know key backends. Every other crate goes
   through the `Signer` trait.
-- The core crates (`writ-core`, `writ-store`, `writ-git`, `writ-gateway`, `writ-approval`)
+- The core crates (`writ-core`, `writ-store`, `writ-git`, `writ-mirror`, `writ-gateway`,
+  `writ-approval`)
   depend on the platform **traits**, never on `writ-platform-macos` / `writ-platform-linux`.
   No `#[cfg(target_os)]` outside the platform crates and `writd/src/platform.rs`
   ([Platform interfaces](platform.md#rules)).

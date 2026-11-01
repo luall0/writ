@@ -7,7 +7,7 @@ the first step of [M0](../roadmap.md#m0--protocol-spike-gono-go).
 
 ```bash
 rustup --version          # https://rustup.rs (not Homebrew Rust)
-git --version             # ≥ 2.34 (SSH commit signing)
+git --version             # ≥ 2.45 (SSH commit signing; the daemon's reftable mirrors)
 ssh -V                    # OpenSSH ≥ 8.9
 docker compose version    # for the test remote (M4) and detached mode (M8)
 ```

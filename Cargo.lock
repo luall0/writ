@@ -3892,6 +3892,7 @@ dependencies = [
  "writ-core",
  "writ-crypto",
  "writ-git",
+ "writ-mirror",
  "writ-platform",
  "writ-proto",
  "writ-signer",
@@ -3913,6 +3914,7 @@ dependencies = [
 name = "writ-integration"
 version = "0.0.0"
 dependencies = [
+ "russh",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3920,10 +3922,28 @@ dependencies = [
  "writ-core",
  "writ-crypto",
  "writ-gateway",
+ "writ-mirror",
  "writ-platform",
  "writ-proto",
  "writ-signer",
  "writ-store",
+]
+
+[[package]]
+name = "writ-mirror"
+version = "0.0.0"
+dependencies = [
+ "rustix",
+ "signature",
+ "ssh-key",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "writ-core",
+ "writ-crypto",
+ "writ-platform",
+ "writ-signer",
 ]
 
 [[package]]
@@ -4004,6 +4024,7 @@ dependencies = [
  "writ-core",
  "writ-crypto",
  "writ-gateway",
+ "writ-mirror",
  "writ-platform",
  "writ-proto",
  "writ-signer",

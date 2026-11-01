@@ -17,6 +17,7 @@ writ-crypto.workspace = true
 writ-gateway.workspace = true
 writ-platform.workspace = true
 writ-proto.workspace = true
+writ-mirror.workspace = true
 writ-signer.workspace = true
 writ-store.workspace = true
 anyhow.workspace = true

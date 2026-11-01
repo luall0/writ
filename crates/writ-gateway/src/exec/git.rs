@@ -1,5 +1,6 @@
 //! git `upload-pack` and `receive-pack` on the daemon's repositories, bridged to the SSH
-//! channel. git runs with a clean environment and without the daemon user's git config.
+//! channel. git runs through [`writ_mirror::git::command`]: a clean environment, no system or
+//! global config, every object checked with the checks Writ relies on at error level.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -9,13 +10,11 @@ use russh::server::Msg;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use writ_core::names::RepoName;
+use writ_mirror::git::Hooks;
 
 use crate::Gateway;
 use crate::channel::finish;
 use crate::hook::PushContext;
-
-/// Environment variables git keeps from the daemon's; everything else is dropped.
-const GIT_ENV_KEPT: [&str; 2] = ["PATH", "TMPDIR"];
 
 /// The repo's bare repository, `<repos_root>/<name>.git`, if it exists.
 pub(super) fn repo_path(gateway: &Gateway, repo: &RepoName) -> Option<PathBuf> {
@@ -25,7 +24,7 @@ pub(super) fn repo_path(gateway: &Gateway, repo: &RepoName) -> Option<PathBuf> {
 
 /// `git upload-pack` (fetch) on the repository at `path`.
 pub(super) fn upload_pack(path: &Path, git_protocol: Option<String>) -> tokio::process::Command {
-    let mut cmd = git(git_protocol);
+    let mut cmd = git(Hooks::None, git_protocol);
     cmd.arg("upload-pack").arg("--strict").arg(path);
     cmd
 }
@@ -52,8 +51,9 @@ impl<'a> Push<'a> {
 
     /// `git receive-pack` on the repository at `path`, with the gateway's pre-receive hook,
     /// which asks the daemon about the ref updates with this push's token. Every object is
-    /// checked (`fsck`: malformed objects, `.git` or `.gitmodules` tricks never land in a
-    /// repository other leases fetch from), and the pack is refused past `max_bytes`.
+    /// checked (`fsck`, with `.git`, `.` and `..` entries at error level: malformed objects
+    /// and `.git` or `.gitmodules` tricks never land in a repository other leases fetch from),
+    /// and the pack is refused past `max_bytes`.
     pub(super) fn receive_pack(
         &self,
         path: &Path,
@@ -61,12 +61,8 @@ impl<'a> Push<'a> {
         max_bytes: u64,
     ) -> tokio::process::Command {
         let shared = &self.gateway.shared;
-        let mut cmd = git(git_protocol);
+        let mut cmd = git(Hooks::Dir(&shared.hooks_dir), git_protocol);
         cmd.arg("-c")
-            .arg(format!("core.hooksPath={}", shared.hooks_dir.display()))
-            .args(["-c", "receive.fsckObjects=true"])
-            .args(["-c", "transfer.fsckObjects=true"])
-            .arg("-c")
             .arg(format!("receive.maxInputSize={max_bytes}"))
             .arg("receive-pack")
             .arg(path)
@@ -88,22 +84,10 @@ impl Drop for Push<'_> {
     }
 }
 
-/// A `git` with a clean environment: only [`GIT_ENV_KEPT`], no system or global config (the
-/// daemon user's git config must not change what the gateway runs), no prompt, and
-/// `GIT_PROTOCOL` if the client asked for one.
-fn git(git_protocol: Option<String>) -> tokio::process::Command {
-    // PATH: the daemon's own PATH (the environment is cleared but for it); the daemon's
-    // host and its PATH are trusted (docs/threat-model.md, boundary 5).
-    let mut cmd = tokio::process::Command::new("git");
-    cmd.env_clear();
-    for name in GIT_ENV_KEPT {
-        if let Some(value) = std::env::var_os(name) {
-            cmd.env(name, value);
-        }
-    }
-    cmd.env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0");
+/// The daemon's `git` ([`writ_mirror::git::command`]), with `GIT_PROTOCOL` if the client asked
+/// for one (the only thing taken from the client's environment).
+fn git(hooks: Hooks<'_>, git_protocol: Option<String>) -> tokio::process::Command {
+    let mut cmd = writ_mirror::git::command(hooks);
     if let Some(protocol) = git_protocol {
         cmd.env("GIT_PROTOCOL", protocol);
     }

@@ -99,6 +99,17 @@ must not have passwordless `sudo`.
 
 See [macOS Secure Enclave](architecture/macos-secure-enclave.md).
 
+### 7. Daemon ↔ upstream: a pinned host, bounded input
+Upstream is the operator's remote, trusted to hold the repository but not to behave: it can be
+compromised, and the network to it can be hostile. The daemon talks to it only over ssh to a
+host key the operator pinned (nothing learned on first use), authenticates with a key that
+stays in the signer (a one-operation agent socket), and treats what comes back as untrusted
+input: every object checked by `fsck` with the checks Writ relies on at error level, branches
+and tags only, all or none, the registry's object format, bounded in bytes and time
+([Gateway](architecture/gateway.md#repo-mirrors)). What a compromised remote can still do is
+serve agents bad content on its branches (which they would fetch from it anyway) and refuse
+service; it can't reach the daemon's keys, its other mirrors, or a lease.
+
 ## What Writ guarantees
 
 Each guarantee names the tests that try to break it (the guarantee registry). `make check`
@@ -148,7 +159,6 @@ Nothing reaches upstream before M4, which wires the push checks.
 | Software keys extractable on daemon host | Personal use, homelab | YubiKey / TPM backend |
 | SHA-1 repositories are the default (`object_format: sha1`, as on GitHub and most remotes): there, the paths a commit touches are read from objects the agent sends, identified by SHA-1 | Each object's id is computed with collision detection (git's own `sha1dc` algorithm), which refuses the known attack constructions; a new chosen-prefix collision would cost a lot and only change what the path check sees, within the lease (the signature's other checks don't use these objects); the ledger's commit id includes the daemon's signature, which the agent can't predict; git and the remote rest on the same ids. From M4, a push is refused unless the paths are the same when computed again from the objects git verified in the quarantine, so a forged tree never reaches upstream through `gateway` or `proxy` | `object_format: sha256` where the remote supports it |
 | A signature that fails, times out or is discarded (its lease revoked, expired or amended while it was being signed) still uses its count and rate slot; a crash between the phases uses one too | It errs toward less: no privilege is added, a failure can't be retried past the limits, and a stuck device holds up only commit signing (16 waiting at most, 10 s each), never approvals or revocations | A new lease, or an amendment raising `max_signatures` |
-| Until M4, an agent can get a signature on a commit adding a `.git` entry under `paths_check: warn` or `off` by leaving that tree out of its sign request (with the tree, or under `deny`, it is refused) | Nothing reaches upstream before M4 | M4: `receive.fsck.hasDotgit = error` in every mirror |
 | Session key theft on an agent host | Bounded by lease scope and TTL | SE-held session keys, source pinning |
 | Daemon is a single point of failure | Fail closed is the right behavior | Local mode as fallback |
 | Upstream keys have account-wide access | Remotes don't scope personal SSH keys per repo | Repo registry + `protected_refs` enforced by the daemon; keys on YubiKey; deploy keys or bot accounts later |

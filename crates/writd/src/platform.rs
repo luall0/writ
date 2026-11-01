@@ -66,6 +66,27 @@ pub fn signer(keys: Vec<(KeyId, PrivateKey)>) -> anyhow::Result<Arc<dyn Signer>>
     Ok(Arc::new(queued))
 }
 
+/// Upstream signatures that may wait (one per ssh authentication: a sync or a push).
+const UPSTREAM_QUEUE: usize = 8;
+
+/// How long an upstream signature waits for its backend.
+const UPSTREAM_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The `Signer` holding the upstream credentials, behind its own queue: a device stuck on
+/// commit signing never holds up a sync or a push, nor the other way round.
+pub fn upstream_signer(keys: Vec<(KeyId, PrivateKey)>) -> anyhow::Result<Arc<dyn Signer>> {
+    let backend = SoftwareSigner::new(keys)?;
+    let queued = QueuedSigner::new(
+        backend,
+        QueueConfig {
+            name: "writ-upstream".to_owned(),
+            capacity: UPSTREAM_QUEUE,
+            deadline: UPSTREAM_DEADLINE,
+        },
+    )?;
+    Ok(Arc::new(queued))
+}
+
 async fn listener(config: &TransportConfig) -> anyhow::Result<Listener> {
     let transport: Arc<dyn Transport> = match (&config.tcp, &config.unix) {
         (Some(addr), None) => Arc::new(TcpTransport::bind(addr).await?),
