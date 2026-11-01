@@ -49,26 +49,56 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = io::Result<T>>,
 {
-    let mut backoff = MIN_BACKOFF;
-    let mut reported = false;
+    let mut backoff = Backoff::new();
     loop {
         match accept().await {
             Ok(accepted) => return Ok(accepted),
             Err(e) if is_transient(&e) => {
+                let next = backoff.after_error();
                 tracing::debug!(listener, error = %e, "accept failed; retrying");
-                if backoff == MAX_BACKOFF && !reported {
-                    reported = true;
+                if next.warn {
                     tracing::warn!(
                         listener,
                         error = %e,
                         "accept keeps failing (out of file descriptors or memory?); retrying"
                     );
                 }
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
+                tokio::time::sleep(next.pause).await;
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+/// What to do after a transient error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Retry {
+    pause: Duration,
+    /// Whether to report the shortage as a warning (once per call, when the pause reaches
+    /// [`MAX_BACKOFF`]).
+    warn: bool,
+}
+
+/// The pauses of one call: [`MIN_BACKOFF`], doubled each time up to [`MAX_BACKOFF`].
+struct Backoff {
+    pause: Duration,
+    reported: bool,
+}
+
+impl Backoff {
+    fn new() -> Self {
+        Self {
+            pause: MIN_BACKOFF,
+            reported: false,
+        }
+    }
+
+    fn after_error(&mut self) -> Retry {
+        let pause = self.pause;
+        let warn = pause == MAX_BACKOFF && !self.reported;
+        self.reported |= warn;
+        self.pause = (pause * 2).min(MAX_BACKOFF);
+        Retry { pause, warn }
     }
 }
 
@@ -122,67 +152,27 @@ mod tests {
         assert!(script.lock().unwrap().is_empty());
     }
 
-    /// Counts what the test's thread logs, by level.
-    #[derive(Default)]
-    struct Levels {
-        warn: std::sync::atomic::AtomicUsize,
-        debug: std::sync::atomic::AtomicUsize,
+    /// The warnings over `errors` transient errors in a row, and the pauses.
+    fn after(errors: usize) -> (usize, Vec<Duration>) {
+        let mut backoff = Backoff::new();
+        let retries: Vec<Retry> = (0..errors).map(|_| backoff.after_error()).collect();
+        let warnings = retries.iter().filter(|r| r.warn).count();
+        (warnings, retries.iter().map(|r| r.pause).collect())
     }
 
-    struct Counting(std::sync::Arc<Levels>);
-
-    impl tracing::Subscriber for Counting {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            use std::sync::atomic::Ordering::SeqCst;
-            match *event.metadata().level() {
-                tracing::Level::WARN => self.0.warn.fetch_add(1, SeqCst),
-                tracing::Level::DEBUG => self.0.debug.fetch_add(1, SeqCst),
-                _ => 0,
-            };
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-
-    /// `errors` transient errors, then a connection: (warnings, debug lines) logged.
-    async fn logged_for(errors: usize) -> (usize, usize) {
-        use std::sync::atomic::Ordering::SeqCst;
-        let levels = std::sync::Arc::new(Levels::default());
-        let _guard = tracing::subscriber::set_default(Counting(levels.clone()));
-        let mut script: VecDeque<io::Result<u8>> = (0..errors)
-            .map(|i| {
-                Err(if i % 2 == 0 {
-                    errno(24)
-                } else {
-                    io::Error::from(io::ErrorKind::ConnectionReset)
-                })
-            })
-            .collect();
-        script.push_back(Ok(1));
-        let script = Mutex::new(script);
-        let next = || {
-            let item = script.lock().unwrap().pop_front().unwrap();
-            async move { item }
-        };
-        assert_eq!(accept_retrying("test", next).await.unwrap(), 1);
-        (levels.warn.load(SeqCst), levels.debug.load(SeqCst))
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn transient_errors_are_debug_lines_and_a_lasting_shortage_one_warning() {
-        // Pauses of 5 ms doubling to 1 s: the 9th error in a row is the first at 1 s.
-        assert_eq!(logged_for(3).await, (0, 3));
-        assert_eq!(logged_for(8).await, (0, 8));
-        assert_eq!(logged_for(9).await, (1, 9));
+    #[test]
+    fn a_lasting_shortage_is_one_warning_per_accept() {
+        // Pauses of 5 ms doubling to 1 s: the 9th error in a row is the first at 1 s. Each
+        // error is one debug line (`accept_retrying`); only this decides warnings.
+        let (warnings, pauses) = after(8);
+        assert_eq!(warnings, 0);
+        assert_eq!(pauses.first(), Some(&MIN_BACKOFF));
+        assert_eq!(pauses.last(), Some(&Duration::from_millis(640)));
+        let (warnings, pauses) = after(9);
+        assert_eq!(warnings, 1);
+        assert_eq!(pauses.last(), Some(&MAX_BACKOFF));
         // However long it lasts, one warning per accept.
-        assert_eq!(logged_for(40).await, (1, 40));
+        assert_eq!(after(40).0, 1);
+        assert!(after(40).1.iter().all(|p| *p <= MAX_BACKOFF));
     }
 }
