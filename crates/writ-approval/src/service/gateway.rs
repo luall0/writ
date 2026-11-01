@@ -9,7 +9,7 @@ use writ_core::ticket::Operation;
 use writ_core::units::Timestamp;
 use writ_store::{AuditEvent, EventKind, Outcome};
 
-use super::{Inner, Service, internal};
+use super::{Inner, Service, cert_event, internal};
 
 impl Service {
     /// Finds the single active lease a session certificate stands for and checks the caller
@@ -21,14 +21,9 @@ impl Service {
         caller: &CallerFacts,
         operation: Option<Operation>,
     ) -> Result<Lease, Denial> {
-        let fail = |code: DenyCode, reason: String| Denial {
-            code,
-            reason,
-            hint: None,
-        };
         let (now, mut inner) = self
             .begin()
-            .map_err(|e| fail(DenyCode::Invalid, e.to_string()))?;
+            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
         let kind = match operation {
             None => EventKind::Connect,
             Some(Operation::CommitSign) => EventKind::Sign,
@@ -43,24 +38,16 @@ impl Service {
                 }
                 Ok(lease)
             });
-        let mut event = AuditEvent::new(
-            now,
-            kind,
-            if decision.is_ok() {
-                Outcome::Allowed
-            } else {
-                Outcome::Denied
-            },
-        )
-        .cert(cert.serial)
-        .caller(caller);
-        if let Ok(id) = cert.key_id.parse::<TicketId>() {
-            event = event.lease(&id);
-        }
+        let outcome = if decision.is_ok() {
+            Outcome::Allowed
+        } else {
+            Outcome::Denied
+        };
+        let event = cert_event(now, kind, outcome, cert, caller);
         match decision {
             Ok(lease) => {
                 if let Err(e) = Self::log(&mut inner, &event) {
-                    return Err(fail(DenyCode::Invalid, e.to_string()));
+                    return Err(Denial::new(DenyCode::Invalid, e.to_string()));
                 }
                 Ok(lease)
             }
@@ -78,17 +65,12 @@ impl Service {
         caller: &CallerFacts,
         now: Timestamp,
     ) -> Result<Lease, Denial> {
-        let no_lease = || Denial {
-            code: DenyCode::NoLease,
-            reason: "no lease matches this certificate".to_owned(),
-            hint: None,
-        };
+        let no_lease = || Denial::new(DenyCode::NoLease, "no lease matches this certificate");
         let id: TicketId = cert.key_id.parse().map_err(|_| no_lease())?;
-        let found = inner.store.lease(&id).map_err(|e| Denial {
-            code: DenyCode::Invalid,
-            reason: internal(e).to_string(),
-            hint: None,
-        })?;
+        let found = inner
+            .store
+            .lease(&id)
+            .map_err(|e| Denial::new(DenyCode::Invalid, internal(e).to_string()))?;
         let lease = policy::resolve_lease(found.iter(), cert)?.clone();
         // The deny list first: a lease that ended is refused even if its state change hasn't
         // reached the store.
@@ -98,24 +80,19 @@ impl Service {
             } else {
                 lease.state
             };
-            return Err(Denial {
-                code: DenyCode::NotActive,
-                reason: format!("lease {} is {state}", lease.id),
-                hint: None,
-            });
+            return Err(Denial::new(
+                DenyCode::NotActive,
+                format!("lease {} is {state}", lease.id),
+            ));
         }
         if lease.ticket.is_expired(now) {
-            return Err(Denial {
-                code: DenyCode::Expired,
-                reason: format!("lease {} has expired", lease.id),
-                hint: None,
-            });
+            return Err(Denial::new(
+                DenyCode::Expired,
+                format!("lease {} has expired", lease.id),
+            ));
         }
-        caller::check(lease.ticket.subject.caller.as_ref(), caller).map_err(|e| Denial {
-            code: DenyCode::Caller,
-            reason: e.to_string(),
-            hint: None,
-        })?;
+        caller::check(lease.ticket.subject.caller.as_ref(), caller)
+            .map_err(|e| Denial::new(DenyCode::Caller, e.to_string()))?;
         Ok(lease)
     }
 

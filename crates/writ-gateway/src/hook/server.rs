@@ -205,7 +205,6 @@ mod tests {
         use crate::hook::PushContext;
         use crate::{Gateway, GatewayConfig};
         use std::path::PathBuf;
-        use std::sync::Arc;
         use writ_approval::testing::TestServiceBuilder;
         use writ_core::caller::CallerFacts;
         use writ_core::canonical::Canonical;
@@ -213,7 +212,6 @@ mod tests {
         use writ_core::ticket::Ticket;
         use writ_crypto::keys::{KeyKind, generate};
         use writ_crypto::ssh_key::{Certificate, HashAlg};
-        use writ_platform::clock::system::SystemClock;
         use writ_proto::Decision;
 
         const POLICY: &str = r#"
@@ -249,9 +247,9 @@ ticket:
         #[tokio::test]
         async fn a_lease_revoked_while_the_pack_comes_in_moves_no_ref() {
             let dir = tempfile::tempdir().unwrap();
-            let test = TestServiceBuilder::new(POLICY)
-                .clock(Arc::new(SystemClock))
-                .build(dir.path());
+            // The fake clock (the builder's): nothing here goes through russh, which would
+            // check the certificate's validity window against the real one.
+            let test = TestServiceBuilder::new(POLICY).build(dir.path());
             let gateway = Gateway::start(
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
@@ -331,9 +329,7 @@ ticket:
         #[tokio::test]
         async fn a_poisoned_table_never_keeps_a_revoked_push() {
             let dir = tempfile::tempdir().unwrap();
-            let test = TestServiceBuilder::new(POLICY)
-                .clock(Arc::new(SystemClock))
-                .build(dir.path());
+            let test = TestServiceBuilder::new(POLICY).build(dir.path());
             let gateway = Gateway::start(
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),

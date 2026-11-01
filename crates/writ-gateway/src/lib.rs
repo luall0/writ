@@ -48,7 +48,7 @@ use writ_approval::{EventKind, GatewayDenial, Service};
 use writ_core::caller::CallerFacts;
 use writ_core::lease::Lease;
 use writ_core::net::Sources;
-use writ_core::policy::{CertIdentity, Denial, DenyCode};
+use writ_core::policy::{CertIdentity, Denial};
 use writ_core::ticket::Operation;
 use writ_crypto::readers::Reader;
 use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
@@ -190,13 +190,7 @@ impl Gateway {
         let (service, cert, caller) = (self.service().clone(), cert.clone(), caller.clone());
         tokio::task::spawn_blocking(move || service.authorize(&cert, &caller, operation))
             .await
-            .unwrap_or_else(|_| {
-                Err(Denial {
-                    code: DenyCode::Invalid,
-                    reason: "internal error in the daemon".to_owned(),
-                    hint: None,
-                })
-            })
+            .unwrap_or_else(|_| Err(Denial::internal()))
     }
 
     /// Logs a request the gateway turned away on its own ([`Service::gateway_denied`]), off

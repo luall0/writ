@@ -24,9 +24,11 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Duration;
 
 use tokio::sync::{Notify, broadcast};
+use writ_core::caller::CallerFacts;
 use writ_core::config::PolicyConfig;
 use writ_core::lease::{State, TicketRecord};
 use writ_core::names::{KeyFingerprint, TicketId};
+use writ_core::policy::CertIdentity;
 use writ_core::ticket::Ticket;
 use writ_core::units::Timestamp;
 use writ_crypto::allowed_signers::AllowedSigner;
@@ -35,7 +37,7 @@ use writ_crypto::ssh_key::{HashAlg, PublicKey};
 use writ_platform::{Clock, Notification, Notifier, SessionWatcher, WatchHandle};
 use writ_proto::{Decisions, Info};
 use writ_signer::Signer;
-use writ_store::{AuditEvent, AuditLog, Outcome, Store};
+use writ_store::{AuditEvent, AuditLog, EventKind, Outcome, Store};
 
 use crate::ServiceError;
 use writ_core::canonical::Canonical;
@@ -163,6 +165,24 @@ impl Inner {
             .ticket(id)
             .map_err(internal)?
             .ok_or_else(|| not_found(id))
+    }
+}
+
+/// An audit line about a request made with a certificate: its serial, the caller, and the
+/// lease its key id names, when it names one (the request is decided either way).
+fn cert_event(
+    now: Timestamp,
+    kind: EventKind,
+    outcome: Outcome,
+    cert: &CertIdentity,
+    caller: &CallerFacts,
+) -> AuditEvent {
+    let event = AuditEvent::new(now, kind, outcome)
+        .cert(cert.serial)
+        .caller(caller);
+    match cert.key_id.parse::<TicketId>() {
+        Ok(id) => event.lease(&id),
+        Err(_) => event,
     }
 }
 

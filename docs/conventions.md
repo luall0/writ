@@ -108,7 +108,10 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   A sentence meant for the agent (a denial's hint) is the exception and is written as one.
 - **What a client sees is decided at the boundary.** The approval service returns
   `ServiceError`; the gateway converts it to the wire `ApiError`, logs an internal cause there
-  and sends only "internal error". No internal detail, path or secret reaches a client.
+  and sends only "internal error". No internal detail, path or secret reaches a client. A
+  lease holder's denial is built with `Denial::new(code, reason)`, and an internal failure on
+  its path is `Denial::internal()` (one wording, "internal error in the daemon", the cause in
+  the daemon's log).
 - **Fail closed** (hard rule 2): a poisoned lock, an unreadable row, a failed clock deny.
 - **Binaries add context to every I/O error** (`.with_context(|| format!("cannot read {}",
   path.display()))`): the user sees which file.

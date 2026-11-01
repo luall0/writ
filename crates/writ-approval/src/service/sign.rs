@@ -27,7 +27,7 @@ use writ_signer::SignerError;
 use writ_store::{AuditEvent, Counter, EventKind, LedgerEntry, Outcome};
 
 use super::sweep::Announce;
-use super::{Inner, Service, internal};
+use super::{Inner, Service, cert_event, internal};
 use crate::ServiceError;
 
 /// The SSHSIG namespace git signs commits in (the only one the gateway accepts).
@@ -92,23 +92,16 @@ pub struct SignedCommit {
     pub warnings: Vec<String>,
 }
 
-fn failed(code: DenyCode, reason: impl Into<String>) -> Denial {
-    Denial {
-        code,
-        reason: reason.into(),
-        hint: None,
-    }
-}
-
 /// The `sign` line of a request, before its outcome.
 fn sign_event(signing: &Signing, request: &SignRequest, now: Timestamp) -> AuditEvent {
-    let mut event = AuditEvent::new(now, EventKind::Sign, Outcome::Allowed)
-        .cert(signing.cert.serial)
-        .caller(&signing.caller)
-        .repo(&request.repo);
-    if let Ok(id) = signing.cert.key_id.parse::<TicketId>() {
-        event = event.lease(&id);
-    }
+    let mut event = cert_event(
+        now,
+        EventKind::Sign,
+        Outcome::Allowed,
+        &signing.cert,
+        &signing.caller,
+    )
+    .repo(&request.repo);
     if !request.committer_email.is_empty() {
         event = event.committer(&request.committer_email);
     }
@@ -216,14 +209,8 @@ impl Service {
     ) -> Result<(), Denial> {
         let (now, mut inner) = self
             .begin()
-            .map_err(|e| failed(DenyCode::Invalid, e.to_string()))?;
-        let mut event = AuditEvent::new(now, EventKind::Sign, Outcome::Denied)
-            .cert(cert.serial)
-            .caller(caller)
-            .repo(repo);
-        if let Ok(id) = cert.key_id.parse::<TicketId>() {
-            event = event.lease(&id);
-        }
+            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
+        let event = cert_event(now, EventKind::Sign, Outcome::Denied, cert, caller).repo(repo);
         let lease = match self.lease_for(&mut inner, cert, caller, now) {
             Ok(lease) => lease,
             Err(denial) => {
@@ -273,7 +260,7 @@ impl Service {
     ) -> Result<Reserved<'a>, Denial> {
         let (now, mut inner) = self
             .begin()
-            .map_err(|e| failed(DenyCode::Invalid, e.to_string()))?;
+            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
         let event = sign_event(signing, request, now);
         let lease = match self.lease_for(&mut inner, &signing.cert, &signing.caller, now) {
             Ok(lease) => lease,
@@ -283,7 +270,11 @@ impl Service {
             Ok(usage) => usage,
             Err(e) => {
                 let reason = internal(e).to_string();
-                return Err(deny(&mut inner, &event, failed(DenyCode::Invalid, reason)));
+                return Err(deny(
+                    &mut inner,
+                    &event,
+                    Denial::new(DenyCode::Invalid, reason),
+                ));
             }
         };
         let ctx = Context {
@@ -306,7 +297,7 @@ impl Service {
         else {
             // The policy refuses both before this point (`ObjectType`, `Config`).
             tracing::error!("an allowed signature without a commit or a signing key");
-            let denial = failed(DenyCode::Invalid, "internal error in the daemon");
+            let denial = Denial::internal();
             return Err(deny(&mut inner, &event, denial));
         };
         let max = lease.ticket.limits.max_signatures;
@@ -316,11 +307,19 @@ impl Service {
             Ok(true) => {}
             Ok(false) => {
                 let reason = format!("lease {}: all {max} signatures used", lease.id);
-                return Err(deny(&mut inner, &event, failed(DenyCode::Limit, reason)));
+                return Err(deny(
+                    &mut inner,
+                    &event,
+                    Denial::new(DenyCode::Limit, reason),
+                ));
             }
             Err(e) => {
                 let reason = internal(e).to_string();
-                return Err(deny(&mut inner, &event, failed(DenyCode::Invalid, reason)));
+                return Err(deny(
+                    &mut inner,
+                    &event,
+                    Denial::new(DenyCode::Invalid, reason),
+                ));
             }
         }
         inner.signing.start(&lease.id);
@@ -352,7 +351,7 @@ impl Service {
         let (now, mut inner) = match self.now().and_then(|now| Ok((now, self.lock()?))) {
             Ok(locked) => locked,
             // The slot stays used; the lease is released by `InFlight`'s drop.
-            Err(e) => return Err(failed(DenyCode::Invalid, e.to_string())),
+            Err(e) => return Err(Denial::new(DenyCode::Invalid, e.to_string())),
         };
         reserved.in_flight.settle(&mut inner);
         let outcome = self.record(&mut inner, signing, request, &reserved, signed, now);
@@ -382,7 +381,7 @@ impl Service {
                 return Err(deny(
                     inner,
                     event,
-                    failed(DenyCode::Invalid, signer_reason(&e)),
+                    Denial::new(DenyCode::Invalid, signer_reason(&e)),
                 ));
             }
         };
@@ -395,7 +394,7 @@ impl Service {
                      the signature was discarded",
                     current.id
                 );
-                return Err(deny(inner, event, failed(DenyCode::NotActive, reason)));
+                return Err(deny(inner, event, Denial::new(DenyCode::NotActive, reason)));
             }
             Err(denial) => {
                 let reason = format!(
@@ -410,7 +409,7 @@ impl Service {
         {
             Ok(id) => id,
             Err(e) => {
-                let denial = failed(DenyCode::Invalid, format!("cannot sign the commit: {e}"));
+                let denial = Denial::new(DenyCode::Invalid, format!("cannot sign the commit: {e}"));
                 return Err(deny(inner, event, denial));
             }
         };
@@ -436,7 +435,7 @@ impl Service {
             }),
             Err(e) => {
                 tracing::error!(error = %e.detail(), "a signature was not recorded");
-                let denial = failed(DenyCode::Invalid, e.to_string());
+                let denial = Denial::new(DenyCode::Invalid, e.to_string());
                 // A failed change already has its line (`logged`); a log that couldn't take
                 // the allowed line gets the denial kept for when it can.
                 if matches!(e, ServiceError::AuditLog(_)) {

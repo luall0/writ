@@ -170,12 +170,27 @@ impl fmt::Display for Denial {
 
 impl std::error::Error for Denial {}
 
-fn deny(code: DenyCode, reason: impl Into<String>) -> Denial {
-    Denial {
-        code,
-        reason: reason.into(),
-        hint: None,
+impl Denial {
+    /// A denial without a hint.
+    pub fn new(code: DenyCode, reason: impl Into<String>) -> Self {
+        Self {
+            code,
+            reason: reason.into(),
+            hint: None,
+        }
     }
+
+    /// The daemon failed inside: all the agent reads (the cause goes to the daemon's log).
+    pub fn internal() -> Self {
+        Self::new(DenyCode::Invalid, INTERNAL_ERROR)
+    }
+}
+
+/// What the agent reads when the daemon failed inside.
+pub const INTERNAL_ERROR: &str = "internal error in the daemon";
+
+fn deny(code: DenyCode, reason: impl Into<String>) -> Denial {
+    Denial::new(code, reason)
 }
 
 /// An out-of-scope denial, with the amendment hint.

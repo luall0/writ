@@ -10,7 +10,7 @@ use russh::ChannelReadHalf;
 use writ_approval::{SignObject, SignedCommit, Signing};
 use writ_core::caller::CallerFacts;
 use writ_core::names::RepoName;
-use writ_core::policy::{CertIdentity, Denial, DenyCode, ObjectKind};
+use writ_core::policy::{CertIdentity, Denial, ObjectKind};
 use writ_git::Commit;
 use writ_git::object::ObjectType;
 use writ_git::paths::{self, Evidence, PathsError};
@@ -47,7 +47,7 @@ pub(super) async fn sign(
     let (service, repo) = (gateway.service().clone(), command.repo.clone());
     tokio::task::spawn_blocking(move || service.may_sign(&cert, &caller, &repo))
         .await
-        .unwrap_or_else(|_| Err(internal_error()))
+        .unwrap_or_else(|_| Err(Denial::internal()))
         .map_err(Refused::Denied)?;
     // A slot first, then the body: what the daemon holds is bounded however many lease
     // holders ask at once. The slot is kept until the request is answered.
@@ -73,16 +73,7 @@ pub(super) async fn sign(
         service.sign(&signing).map_err(Refused::Denied)
     })
     .await
-    .unwrap_or_else(|_| Err(Refused::Denied(internal_error())))
-}
-
-/// A task of the gateway's that didn't finish.
-fn internal_error() -> Denial {
-    Denial {
-        code: DenyCode::Invalid,
-        reason: "internal error in the daemon".to_owned(),
-        hint: None,
-    }
+    .unwrap_or_else(|_| Err(Refused::Denied(Denial::internal())))
 }
 
 /// What git asked to sign: a commit with the paths it touches, or another kind of object.
