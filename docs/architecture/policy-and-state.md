@@ -24,7 +24,7 @@ Every request → find the single lease matching the caller's certificate → al
 | `resolve_lease` | Certificate key id, serial, session key fingerprint | Exactly one lease matches all three |
 | `decide_sign` | Repo, object kind, committer email, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
 | `decide_push` | Repo, push mode, ref updates (old, new, fast-forward), new commits with their ledger entries, pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, not protected, a branch, within the lease's branches, no force push or deletion unless allowed; every new commit in the ledger for this lease and repo; size; `max_pushes`; rate |
-| `decide_fetch` | Repo | Common checks, rate |
+| `decide_fetch` | Repo | Common checks, rate (`Service::fetch` then takes one operation of the rate window under the same lock) |
 
 The **common checks** come first in every decision: the lease is active and before
 `expires_at`, not exhausted; the caller satisfies the lease's caller constraint

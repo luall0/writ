@@ -253,7 +253,7 @@ ticket:
             let gateway = Gateway::start(
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
-                    repos_root: dir.path().join("repos"),
+                    mirrors: writ_mirror::testing::no_repos(dir.path()).await.unwrap(),
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
@@ -334,7 +334,7 @@ ticket:
             let gateway = Gateway::start(
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
-                    repos_root: dir.path().join("repos"),
+                    mirrors: writ_mirror::testing::no_repos(dir.path()).await.unwrap(),
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
@@ -432,7 +432,7 @@ templates:
             let gateway = Gateway::start(
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
-                    repos_root: dir.path().join("repos"),
+                    mirrors: writ_mirror::testing::no_repos(dir.path()).await.unwrap(),
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),

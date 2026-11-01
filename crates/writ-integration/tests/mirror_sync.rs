@@ -237,6 +237,12 @@ fn a_sync_mirrors_branches_and_tags_only_and_follows_upstream() {
         0,
         "the agent socket is gone after the sync"
     );
+    // HEAD follows upstream's default branch, so a clone checks it out.
+    let head = |repo: &Path| f.git_ok(repo, &["symbolic-ref", "HEAD"]);
+    f.git_ok(&upstream, &["symbolic-ref", "HEAD", "refs/heads/gone"]);
+    f.sync(&mirrors).unwrap();
+    assert_eq!(head(&f.mirror()), "refs/heads/gone");
+    f.git_ok(&upstream, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
     // Upstream moves on: a branch deleted, main rewritten (a force push), a new branch.
     f.git_ok(&upstream, &["update-ref", "-d", "refs/heads/gone"]);
@@ -254,6 +260,7 @@ fn a_sync_mirrors_branches_and_tags_only_and_follows_upstream() {
         format!("refs/tags/v1 {main}"),
     ];
     assert_eq!(f.refs(&f.mirror()), expected, "the mirror follows upstream");
+    assert_eq!(head(&f.mirror()), "refs/heads/main");
 
     // Fresh: no second fetch.
     let fetches = f.remote.upload_packs();
@@ -276,7 +283,8 @@ fn concurrent_syncs_of_a_stale_mirror_fetch_once() {
         );
         [a.unwrap(), b.unwrap(), c.unwrap()]
     });
-    assert_eq!(f.remote.upload_packs(), 1);
+    // One sync: its fetch and its look at upstream's HEAD.
+    assert_eq!(f.remote.upload_packs(), 2);
     let fresh = reports.iter().filter(|r| **r == SyncReport::Fresh).count();
     assert_eq!(fresh, 2, "{reports:?}");
 }

@@ -325,7 +325,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
         let gateway = Gateway::start(
             GatewayConfig {
                 host_key: keys.host,
-                repos_root: repos,
+                mirrors: mirrors.clone(),
                 hook_program: std::env::current_exe()?,
                 state_dir: config.state_dir.join("run"),
                 readers: readers.clone(),

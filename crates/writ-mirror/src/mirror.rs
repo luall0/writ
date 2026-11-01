@@ -32,8 +32,10 @@ pub const MAX_MOVES_KEPT: usize = 20;
 pub const MAX_PACKS: usize = 50;
 /// The most of a sync's output read (its ref moves).
 const MAX_FETCH_OUTPUT: usize = 1 << 20;
-/// How long a local git command (init, a check, a repack) may take.
-const LOCAL_DEADLINE: Duration = Duration::from_secs(600);
+/// The most of upstream's `HEAD` read (one or two lines).
+const MAX_HEAD_OUTPUT: usize = 4096;
+/// How long a repack may take.
+const REPACK_DEADLINE: Duration = Duration::from_secs(600);
 
 /// What the mirrors need.
 #[derive(Debug, Clone)]
@@ -246,9 +248,12 @@ impl MirrorGuard {
         self.state.synced_at = None;
     }
 
+    /// Fetches upstream's branches and tags, then points the mirror's `HEAD` at upstream's
+    /// default branch, both within the sync's deadline and through one agent socket.
     async fn fetch(&self) -> Result<SyncReport> {
         let shared = &self.shared;
         let repo = &self.repo;
+        let started = Instant::now();
         let agent = AgentSocket::start(
             &shared.agent_dir,
             shared.signer.clone(),
@@ -264,34 +269,69 @@ impl MirrorGuard {
             max_bytes: shared.config.max_fetch_bytes,
         }
         .to_git_ssh_command()?;
+        let fetched = self
+            .upstream_git(
+                &ssh,
+                &[
+                    "fetch",
+                    "--porcelain",
+                    "--atomic",
+                    "--prune",
+                    "--no-tags",
+                    "--no-write-fetch-head",
+                    "--no-recurse-submodules",
+                    "--no-auto-maintenance",
+                    "--no-show-forced-updates",
+                    "--",
+                    repo.upstream.as_str(),
+                    "+refs/heads/*:refs/heads/*",
+                    "+refs/tags/*:refs/tags/*",
+                ],
+                shared.config.timeout,
+                MAX_FETCH_OUTPUT,
+            )
+            .await?;
+        let left = shared.config.timeout.saturating_sub(started.elapsed());
+        let head = self
+            .upstream_git(
+                &ssh,
+                &[
+                    "ls-remote",
+                    "--symref",
+                    "--",
+                    repo.upstream.as_str(),
+                    "HEAD",
+                ],
+                left,
+                MAX_HEAD_OUTPUT,
+            )
+            .await?;
+        drop(agent);
+        self.follow_head(&head).await;
+        Ok(parse_moves(&fetched))
+    }
+
+    /// Runs git against upstream (`GIT_SSH_COMMAND` = `ssh`), within `deadline`, keeping at
+    /// most `max_stdout` bytes of its output. A failure is classified from its stderr.
+    async fn upstream_git(
+        &self,
+        ssh: &str,
+        args: &[&str],
+        deadline: Duration,
+        max_stdout: usize,
+    ) -> Result<Vec<u8>> {
         let mut cmd = git::command(Hooks::None);
         cmd.arg("--git-dir")
-            .arg(&repo.path)
-            .args([
-                "fetch",
-                "--porcelain",
-                "--atomic",
-                "--prune",
-                "--no-tags",
-                "--no-write-fetch-head",
-                "--no-recurse-submodules",
-                "--no-auto-maintenance",
-                "--no-show-forced-updates",
-                "--",
-                repo.upstream.as_str(),
-                "+refs/heads/*:refs/heads/*",
-                "+refs/tags/*:refs/tags/*",
-            ])
+            .arg(&self.repo.path)
+            .args(args)
             .env("GIT_SSH_COMMAND", ssh)
             .env("GIT_SSH_VARIANT", "ssh");
-        let run = process::run(cmd, None, shared.config.timeout, MAX_FETCH_OUTPUT).await;
-        drop(agent);
-        let finished = match run {
+        let finished = match process::run(cmd, None, deadline, max_stdout).await {
             Ok(finished) => finished,
             Err(RunError::Timeout) => {
                 return Err(MirrorError::Timeout {
-                    repo: repo.name.clone(),
-                    seconds: shared.config.timeout.as_secs(),
+                    repo: self.repo.name.clone(),
+                    seconds: self.shared.config.timeout.as_secs(),
                 });
             }
             Err(RunError::Spawn(e) | RunError::Wait(e)) => return Err(MirrorError::Spawn(e)),
@@ -299,7 +339,43 @@ impl MirrorGuard {
         if !finished.status.success() {
             return Err(self.classify(&finished.stderr));
         }
-        Ok(parse_moves(&finished.stdout))
+        Ok(finished.stdout)
+    }
+
+    /// Points the mirror's `HEAD` at upstream's default branch (from `ls-remote --symref`'s
+    /// `ref: refs/heads/<name>\tHEAD`), so a clone checks it out. Only a branch the mirror
+    /// has; anything else leaves `HEAD` as it is (git refuses an invalid name itself).
+    async fn follow_head(&self, ls_remote: &[u8]) {
+        let text = String::from_utf8_lossy(ls_remote);
+        let Some(target) = text.lines().find_map(|line| {
+            line.strip_prefix("ref: ")
+                .and_then(|rest| rest.strip_suffix("\tHEAD"))
+                .filter(|name| name.starts_with("refs/heads/"))
+        }) else {
+            return;
+        };
+        let path = &self.repo.path;
+        let git_in = |args: &[&str]| {
+            let mut cmd = git::command(Hooks::None);
+            cmd.arg("--git-dir").arg(path).args(args);
+            cmd
+        };
+        let current = local(git_in(&["symbolic-ref", "-q", "HEAD"])).await;
+        if matches!(&current, Ok(out) if out.stdout.trim_ascii() == target.as_bytes()) {
+            return;
+        }
+        let exists = local(git_in(&["show-ref", "--verify", "--quiet", "--", target])).await;
+        if !matches!(&exists, Ok(out) if out.status.success()) {
+            return;
+        }
+        match local(git_in(&["symbolic-ref", "HEAD", target])).await {
+            Ok(out) if out.status.success() => {
+                tracing::info!(repo = %self.repo.name, head = target, "mirror HEAD follows upstream");
+            }
+            _ => {
+                tracing::warn!(repo = %self.repo.name, "cannot point the mirror's HEAD at upstream's")
+            }
+        }
     }
 
     /// The error a failed sync's stderr names. Upstream can print anything there: at worst it
@@ -356,7 +432,7 @@ impl MirrorGuard {
         cmd.arg("--git-dir")
             .arg(&self.repo.path)
             .args(["repack", "-a", "-d", "-q"]);
-        match process::run(cmd, None, LOCAL_DEADLINE, 0).await {
+        match process::run(cmd, None, REPACK_DEADLINE, 0).await {
             Ok(done) if done.status.success() => {}
             Ok(done) => tracing::warn!(
                 repo = %self.repo.name,
@@ -413,12 +489,17 @@ fn check_program(path: &Path, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Runs a short local git command at startup (no network: the version, creating or checking a
+/// mirror) to its end.
+async fn local(mut cmd: tokio::process::Command) -> Result<std::process::Output> {
+    cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.output().await.map_err(MirrorError::Spawn)
+}
+
 async fn check_git_version() -> Result<()> {
     let mut cmd = git::command(Hooks::None);
     cmd.arg("version");
-    let done = process::run(cmd, None, LOCAL_DEADLINE, 4096)
-        .await
-        .map_err(|e| MirrorError::Spawn(std::io::Error::other(format!("{e:?}"))))?;
+    let done = local(cmd).await?;
     let text = String::from_utf8_lossy(&done.stdout).into_owned();
     match git::parse_version(&text) {
         Some(version) if version >= MIN_GIT => Ok(()),
@@ -505,9 +586,7 @@ async fn create_mirror(
         .arg("--ref-format=reftable")
         .arg("--")
         .arg(&temporary);
-    let done = process::run(cmd, None, LOCAL_DEADLINE, 0)
-        .await
-        .map_err(|e| MirrorError::Spawn(std::io::Error::other(format!("{e:?}"))))?;
+    let done = local(cmd).await?;
     if !done.status.success() {
         return Err(MirrorError::Git {
             repo: name.clone(),
@@ -547,9 +626,7 @@ async fn verify_mirror(name: &RepoName, path: &Path, format: ObjectFormat) -> Re
         "--show-object-format",
         "--show-ref-format",
     ]);
-    let done = process::run(cmd, None, LOCAL_DEADLINE, 4096)
-        .await
-        .map_err(|e| MirrorError::Spawn(std::io::Error::other(format!("{e:?}"))))?;
+    let done = local(cmd).await?;
     if !done.status.success() {
         return Err(not(format!("not a repository ({})", shown(&done.stderr))));
     }

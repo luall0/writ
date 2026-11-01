@@ -26,6 +26,7 @@ tokio-rustls.workspace = true
 
 [dev-dependencies]
 writ-approval = { workspace = true, features = ["testing"] }
+writ-mirror = { workspace = true, features = ["testing"] }
 rustls.workspace = true
 writ-platform = { workspace = true, features = ["testing"] }
 writ-signer = { workspace = true, features = ["testing"] }

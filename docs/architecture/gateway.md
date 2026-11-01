@@ -40,8 +40,11 @@ receive-pack` also gets `receive.maxInputSize` set to the lease's `max_push_size
 
 A certificate is checked twice: when it is presented (CA, validity, deny list, principal
 `git`, no critical option, then the approval service finds its single active lease and checks the caller,
-logged as `connect`) and before each command, with the operation the command needs (fetch,
-push; a signature is checked whole by `Service::sign`, which logs it once). When a lease ends (revoked, expired, exhausted), the gateway drops every
+logged as `connect`) and before each command, with the operation the command needs: a
+fetch is decided whole by `Service::fetch` (the policy's `decide_fetch` and one operation of
+the rate window, under one lock, one `fetch` line), a push is checked for its operation (and
+decided whole at the pre-receive hook), a signature is checked whole by `Service::sign`,
+which logs it once. When a lease ends (revoked, expired, exhausted), the gateway drops every
 open session of its certificate. Replies of `writ` commands are one JSON line on stdout
 (`writ_proto`), with the reason on stderr when they fail.
 

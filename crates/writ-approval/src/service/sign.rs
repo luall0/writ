@@ -110,9 +110,7 @@ fn sign_event(signing: &Signing, request: &SignRequest, now: Timestamp) -> Audit
 
 /// Logs `denial` as the request's `sign` line, and hands it back.
 fn deny(inner: &mut Inner, event: &AuditEvent, denial: Denial) -> Denial {
-    let mut line = event.clone().denial(&denial);
-    line.result = Outcome::Denied;
-    Service::log_best_effort(inner, &line);
+    Service::log_best_effort(inner, &event.clone().denial(&denial));
     denial
 }
 
@@ -448,7 +446,12 @@ impl Service {
 
     /// A denial under a lease with `on_violation: revoke_lease`, if it is a violation:
     /// revokes the lease. Releases the state lock either way.
-    fn after_violation(&self, inner: MutexGuard<'_, Inner>, lease: &Lease, denial: &Denial) {
+    pub(super) fn after_violation(
+        &self,
+        inner: MutexGuard<'_, Inner>,
+        lease: &Lease,
+        denial: &Denial,
+    ) {
         if denial.code.is_violation() && lease.ticket.on_violation == OnViolation::RevokeLease {
             // On the deny list before the lock is released: no other request of this lease
             // gets through meanwhile, and the certificate stays refused even if recording

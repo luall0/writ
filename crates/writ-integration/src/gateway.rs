@@ -1,6 +1,7 @@
 //! The gateway in-process, on a temporary state directory, with the approval service on the
 //! test kit: driven by the real `git` and `ssh` over TCP or a Unix socket, with session
-//! certificates from real leases and commits signed through `writ-sign`.
+//! certificates from real leases and commits signed through `writ-sign`. Its repo's upstream
+//! is a test remote ([`TestRemote`]), reached through the real mirrors.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, GatedSigner};
 
 use crate::binaries::bin;
+use crate::remote::{PLACEHOLDER_UPSTREAM, TestRemote};
 
 /// The policy: one repo, `main` and tags protected, one wide template.
 pub const POLICY: &str = r#"
@@ -104,6 +106,9 @@ pub struct GitGateway {
     pub url: String,
     /// Extra ssh options to reach it (port or proxy command, known hosts).
     pub ssh_target: String,
+    /// The repo's upstream.
+    pub remote: TestRemote,
+    pub mirrors: writ_mirror::Mirrors,
 }
 
 impl GitGateway {
@@ -131,6 +136,50 @@ impl GitGateway {
         let host_public = host_key.public_key().to_openssh().unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
+        // The repo's upstream: a test remote, its host key pinned, the daemon's credential
+        // (one key per credential the policy names) authorized on it.
+        let upstream_key = generate(KeyKind::Ed25519).unwrap();
+        let remote = TestRemote::start(
+            &runtime,
+            &root.join("remote"),
+            upstream_key.public_key().clone(),
+        );
+        let policy = policy.replace(PLACEHOLDER_UPSTREAM, &remote.url("demo"));
+        let policy = policy.as_str();
+        let credentials: std::collections::BTreeSet<_> =
+            writ_core::config::PolicyConfig::from_yaml(policy)
+                .unwrap()
+                .repos()
+                .values()
+                .map(|r| r.upstream_credential.clone())
+                .collect();
+        let upstream_signer: Arc<dyn writ_signer::Signer> = Arc::new(
+            SoftwareSigner::new(credentials.into_iter().map(|id| (id, upstream_key.clone())))
+                .unwrap(),
+        );
+        let registry = writ_core::config::PolicyConfig::from_yaml(policy).unwrap();
+        let mirrors = runtime
+            .block_on(writ_mirror::Mirrors::open(
+                writ_mirror::MirrorConfig {
+                    root: root.join("repos"),
+                    run_dir: root.join("mirror"),
+                    relay: bin("writd"),
+                    ssh: PathBuf::from("/usr/bin/ssh"),
+                    pinned: writ_mirror::known_hosts::PinnedHosts::parse(&format!(
+                        "{}\n",
+                        remote.known_hosts_line()
+                    ))
+                    .unwrap(),
+                    // Until pushes reach upstream (M4 step 4), a sync would prune what an
+                    // agent pushed: the mirror stays fresh once synced.
+                    fresh_for: std::time::Duration::from_secs(3600),
+                    timeout: std::time::Duration::from_secs(60),
+                    max_fetch_bytes: 64 << 20,
+                },
+                registry.repos(),
+                upstream_signer,
+            ))
+            .unwrap();
         // The system clock: russh checks certificate validity against it itself.
         let test = TestServiceBuilder::new(policy)
             .signer_kind(agent_kind)
@@ -142,7 +191,7 @@ impl GitGateway {
         let signer = test.signer.clone();
         let config = GatewayConfig {
             host_key,
-            repos_root: root.join("repos"),
+            mirrors: mirrors.clone(),
             hook_program: bin("writd"),
             state_dir: root.join("run"),
             // No approval listener here: the service is driven directly.
@@ -207,6 +256,8 @@ impl GitGateway {
             signer,
             url,
             ssh_target,
+            remote,
+            mirrors,
         };
         gateway.session("session");
         gateway
@@ -375,9 +426,10 @@ impl GitGateway {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// A bare repo `repos/demo.git` with one commit on main, made without the gateway.
+    /// The upstream repo `demo` with one commit on main, made without the gateway (the
+    /// mirror gets it on its first sync).
     pub fn seed_repo(&self) {
-        let bare = self.root().join("repos/demo.git");
+        let bare = self.remote.repo("demo");
         let seed = self.root().join("seed");
         self.git_ok(
             self.root(),
@@ -404,11 +456,18 @@ impl GitGateway {
         work
     }
 
+    /// A ref of the mirror (`repos/demo.git`).
     pub fn bare_ref(&self, name: &str) -> Option<String> {
-        let out = self.git(
-            &self.root().join("repos/demo.git"),
-            &["rev-parse", "--verify", "-q", name],
-        );
+        self.ref_in(&self.root().join("repos/demo.git"), name)
+    }
+
+    /// A ref of the upstream repo.
+    pub fn upstream_ref(&self, name: &str) -> Option<String> {
+        self.ref_in(&self.remote.repo("demo"), name)
+    }
+
+    fn ref_in(&self, repo: &Path, name: &str) -> Option<String> {
+        let out = self.git(repo, &["rev-parse", "--verify", "-q", name]);
         out.status
             .success()
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())

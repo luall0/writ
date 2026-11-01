@@ -152,9 +152,14 @@ refs.
 
 ## 4. Fetch
 
-`git fetch writ` → the daemon syncs its mirror from upstream if stale, then serves
-`upload-pack`. Requires a lease with `fetch` (or a read-only template). Agents never hold remote
-credentials, even read-only ones.
+`git fetch writ` → `Service::fetch`: the certificate's single active lease, the policy's
+`decide_fetch` (the lease allows `fetch` and names the repo, the rate) and one operation taken
+from the rate window, under one lock, logged as one `fetch` line, so `max_ops_per_minute`
+bounds fetches too (a fetch never uses up a lease). Then the daemon syncs its mirror from
+upstream unless it is fresh (`mirrors.fresh_for`), outside the state lock, and serves
+`upload-pack`; a sync that fails refuses the fetch with its reason (`cannot sync from
+upstream: …`), logged. Requires a lease with `fetch` (or a read-only template). Agents never
+hold remote credentials, even read-only ones.
 
 ## 5. Revoke / expire
 

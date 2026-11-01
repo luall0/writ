@@ -27,6 +27,8 @@ pub mod known_hosts;
 mod mirror;
 mod process;
 pub mod relay;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod upstream;
 
 pub use mirror::{MirrorConfig, MirrorGuard, Mirrors, RefMove, SyncReport};

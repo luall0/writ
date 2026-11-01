@@ -4,10 +4,10 @@
 use writ_core::caller::{self, CallerFacts};
 use writ_core::lease::{Lease, State};
 use writ_core::names::{RepoName, TicketId};
-use writ_core::policy::{self, CertIdentity, Denial, DenyCode};
+use writ_core::policy::{self, CertIdentity, Context, Denial, DenyCode, FetchRequest};
 use writ_core::ticket::Operation;
 use writ_core::units::Timestamp;
-use writ_store::{AuditEvent, EventKind, Outcome};
+use writ_store::{AuditEvent, Counter, EventKind, Outcome};
 
 use super::{Inner, Service, cert_event, internal};
 
@@ -56,6 +56,76 @@ impl Service {
                 Err(denial)
             }
         }
+    }
+
+    /// A fetch from `repo` under the lease the certificate stands for: the single active
+    /// lease, the policy's `decide_fetch` (the lease allows `fetch` and names the repo, the
+    /// rate), and one operation taken from the rate window, under one lock, so
+    /// `max_ops_per_minute` bounds fetches like every other operation. One `fetch` line in
+    /// the audit log, whatever the outcome; a violation under `on_violation: revoke_lease`
+    /// revokes the lease.
+    pub fn fetch(
+        &self,
+        cert: &CertIdentity,
+        caller: &CallerFacts,
+        repo: &RepoName,
+    ) -> Result<Lease, Denial> {
+        let (now, mut inner) = self
+            .begin()
+            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
+        let event = cert_event(now, EventKind::Fetch, Outcome::Allowed, cert, caller).repo(repo);
+        let refuse = |inner: &mut Inner, denial: Denial| {
+            Self::log_best_effort(inner, &event.clone().denial(&denial));
+            denial
+        };
+        let lease = match self.lease_for(&mut inner, cert, caller, now) {
+            Ok(lease) => lease,
+            Err(denial) => return Err(refuse(&mut inner, denial)),
+        };
+        let event = event.lease(&lease.id);
+        let refuse = |inner: &mut Inner, denial: Denial| {
+            Self::log_best_effort(inner, &event.clone().denial(&denial));
+            denial
+        };
+        let usage = match inner.store.usage(&lease.id, now) {
+            Ok(usage) => usage,
+            Err(e) => {
+                let denial = Denial::new(DenyCode::Invalid, internal(e).to_string());
+                return Err(refuse(&mut inner, denial));
+            }
+        };
+        let ctx = Context {
+            config: &self.config.policy,
+            lease: &lease,
+            usage: &usage,
+            caller,
+            now,
+        };
+        if let Err(denial) = policy::decide_fetch(&ctx, &FetchRequest { repo: repo.clone() }) {
+            let denial = refuse(&mut inner, denial);
+            self.after_violation(inner, &lease, &denial);
+            return Err(denial);
+        }
+        // Under the same lock as the decision; the store still refuses a lease that isn't
+        // active whatever happens.
+        match inner
+            .store
+            .consume(&lease.id, Counter::Fetch, u32::MAX, now)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                let reason = format!("lease {} is not active", lease.id);
+                return Err(refuse(&mut inner, Denial::new(DenyCode::NotActive, reason)));
+            }
+            Err(e) => {
+                let denial = Denial::new(DenyCode::Invalid, internal(e).to_string());
+                return Err(refuse(&mut inner, denial));
+            }
+        }
+        if let Err(e) = Self::log(&mut inner, &event) {
+            return Err(Denial::new(DenyCode::Invalid, e.to_string()));
+        }
+        Ok(lease)
     }
 
     pub(super) fn lease_for(

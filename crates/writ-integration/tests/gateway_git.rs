@@ -236,3 +236,103 @@ fn mktree(gateway: &GitGateway, work: &Path, listing: &str) -> String {
     assert_eq!(tree.len(), 40, "mktree made the tree");
     tree
 }
+
+/// A lease that may push and sign, not fetch.
+const NO_FETCH: &str = r#"
+scope:
+  repos: [demo]
+  operations: [commit_sign, push]
+  branches: ["agent/*"]
+ticket:
+  title: No fetch
+  task: Push without fetching
+"#;
+
+/// A lease of two operations a minute.
+const TWO_A_MINUTE: &str = r#"
+scope:
+  repos: [demo]
+  operations: [fetch, commit_sign, push]
+  branches: ["agent/*"]
+ticket:
+  title: Slow
+  task: Fetch slowly
+limits:
+  max_ops_per_minute: 2
+"#;
+
+#[test]
+fn a_fetch_goes_through_the_policy_and_counts_against_the_rate() {
+    let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
+    gateway.seed_repo();
+    let work = gateway.clone("work");
+    let audit = || fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+
+    // A lease without `fetch`: refused by the policy, with its code in the log.
+    gateway.session_with("no-fetch", NO_FETCH);
+    let out = gateway.git_as("no-fetch", &work, &["fetch", "origin"]);
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("fetch not allowed"),
+        "{}",
+        stderr(&out)
+    );
+    let denied = audit_events(&audit(), "fetch", "denied");
+    assert_eq!(denied.len(), 1, "{denied:?}");
+    assert_eq!(denied[0]["code"], "operation");
+
+    // Two operations a minute: two fetches pass, the third is refused for the rate.
+    gateway.session_with("slow", TWO_A_MINUTE);
+    for n in 0..2 {
+        let out = gateway.git_as("slow", &work, &["fetch", "-q", "origin"]);
+        assert!(out.status.success(), "fetch {n}: {}", stderr(&out));
+    }
+    let out = gateway.git_as("slow", &work, &["fetch", "origin"]);
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("over 2 operations per minute"),
+        "{}",
+        stderr(&out)
+    );
+    let denied = audit_events(&audit(), "fetch", "denied");
+    assert_eq!(denied.len(), 2, "{denied:?}");
+    assert_eq!(denied[1]["code"], "rate");
+    // Every allowed fetch has its line: the clone, and the slow lease's two.
+    assert_eq!(audit_events(&audit(), "fetch", "allowed").len(), 3);
+}
+
+#[test]
+fn a_fetch_is_refused_when_upstream_refuses_the_sync() {
+    let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
+    gateway.seed_repo();
+    // The remote stops taking the daemon's credential before the mirror's first sync.
+    gateway
+        .remote
+        .authorize(generate(KeyKind::Ed25519).unwrap().public_key().clone());
+    let work = gateway.root().join("work");
+    let out = gateway.git(
+        gateway.root(),
+        &[
+            "clone",
+            &format!("{}/demo.git", gateway.url),
+            work.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("writ: cannot sync from upstream: repo demo: sync failed"),
+        "{}",
+        stderr(&out)
+    );
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    let denied = audit_events(&audit, "fetch", "denied");
+    assert_eq!(denied.len(), 1, "{denied:?}");
+    assert!(
+        denied[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Permission denied"),
+        "{denied:?}"
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/main"), None, "nothing synced");
+}

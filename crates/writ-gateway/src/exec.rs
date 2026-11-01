@@ -64,7 +64,7 @@ pub(crate) async fn run(gateway: Gateway, request: LeaseRequest, channel: Channe
     };
     match &command {
         LeaseCommand::UploadPack { repo } | LeaseCommand::ReceivePack { repo } => {
-            run_git(&refusing, &command, repo, git_protocol, channel).await;
+            run_git(&refusing, &command, repo, git_protocol, channel, connection).await;
         }
         LeaseCommand::Sign { repo } => {
             let (mut rx, tx) = channel.split();
@@ -101,16 +101,34 @@ async fn run_git(
     repo: &RepoName,
     git_protocol: Option<String>,
     channel: Channel<Msg>,
+    connection: u64,
 ) {
     let gateway = refusing.gateway;
-    // The lease may have ended since the connection was authenticated: check it again, with
-    // the operation the command needs (the service logs the outcome).
-    let lease = match gateway
-        .authorize(refusing.cert, refusing.facts, Some(command.operation()))
-        .await
-    {
-        Ok(lease) => lease,
-        Err(denial) => return refuse(channel, denial.to_string()).await,
+    let lease = match command {
+        // A fetch: the policy's decision and an operation of the rate window (the service
+        // logs the outcome).
+        LeaseCommand::UploadPack { .. } => {
+            match gateway.fetch(refusing.cert, refusing.facts, repo).await {
+                Ok(lease) => lease,
+                Err(denial) => {
+                    refuse(channel, denial.to_string()).await;
+                    // A violation may have revoked the lease: its other sessions go now.
+                    if gateway.service().is_revoked(refusing.cert.serial) {
+                        gateway.drop_sessions_except(refusing.cert.serial, connection);
+                    }
+                    return;
+                }
+            }
+        }
+        // The lease may have ended since the connection was authenticated: check it again,
+        // with the operation the command needs (the service logs the outcome).
+        _ => match gateway
+            .authorize(refusing.cert, refusing.facts, Some(command.operation()))
+            .await
+        {
+            Ok(lease) => lease,
+            Err(denial) => return refuse(channel, denial.to_string()).await,
+        },
     };
     if !lease.ticket.scope.repos.contains(repo) {
         let reason = format!(
@@ -125,6 +143,14 @@ async fn run_git(
             .await;
         return refuse(channel, reason).await;
     };
+    // A fetch serves what upstream has: the mirror is synced first unless it is fresh. A
+    // sync that fails refuses the fetch (fail closed), with its reason.
+    if matches!(command, LeaseCommand::UploadPack { .. })
+        && let Err(e) = gateway.shared.config.mirrors.sync_if_stale(repo).await
+    {
+        let reason = format!("cannot sync from upstream: {e}");
+        return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
+    }
     let push = match command {
         LeaseCommand::ReceivePack { .. } => {
             let context = PushContext {

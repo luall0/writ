@@ -19,8 +19,10 @@
 //! ends, the gateway drops its open sessions.
 //!
 //! Commits are signed by the approval service ([`Service::sign`]: the policy, the `Signer`,
-//! the ledger). Until M4, pushes are only checked against the repo's protected refs (the M0
-//! spike), for any active lease that allows the operation and names the repo.
+//! the ledger); fetches are decided by it ([`Service::fetch`]: the policy, the rate) and served
+//! from the repo's mirror once synced ([`writ_mirror::Mirrors`]). Until the rest of M4, pushes
+//! are only checked against the repo's protected refs (the M0 spike), for any active lease
+//! that allows the operation and names the repo.
 //!
 //! Every request the gateway turns away on its own is logged through
 //! [`Service::gateway_denied`]; the lease decisions are logged by the service itself.
@@ -87,8 +89,8 @@ pub enum Role {
 pub struct GatewayConfig {
     /// The gateway's SSH host key (clients pin it).
     pub host_key: PrivateKey,
-    /// Directory holding one bare repository per repo (`<name>.git`).
-    pub repos_root: PathBuf,
+    /// The daemon's repositories: one mirror per registered repo, synced from upstream.
+    pub mirrors: writ_mirror::Mirrors,
     /// Program git's pre-receive hook runs, as `<program> hook pre-receive`.
     pub hook_program: PathBuf,
     /// Private directory for the gateway's own files (hooks, the hook socket).
@@ -194,6 +196,24 @@ impl Gateway {
     ) -> std::result::Result<Lease, Denial> {
         let (service, cert, caller) = (self.service().clone(), cert.clone(), caller.clone());
         tokio::task::spawn_blocking(move || service.authorize(&cert, &caller, operation))
+            .await
+            .unwrap_or_else(|_| Err(Denial::internal()))
+    }
+
+    /// [`Service::fetch`], off the async threads.
+    async fn fetch(
+        &self,
+        cert: &CertIdentity,
+        caller: &CallerFacts,
+        repo: &writ_core::names::RepoName,
+    ) -> std::result::Result<Lease, Denial> {
+        let (service, cert, caller, repo) = (
+            self.service().clone(),
+            cert.clone(),
+            caller.clone(),
+            repo.clone(),
+        );
+        tokio::task::spawn_blocking(move || service.fetch(&cert, &caller, &repo))
             .await
             .unwrap_or_else(|_| Err(Denial::internal()))
     }

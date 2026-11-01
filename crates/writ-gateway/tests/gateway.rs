@@ -116,7 +116,7 @@ impl Daemon {
         let gateway = Gateway::start(
             GatewayConfig {
                 host_key: generate(KeyKind::Ed25519).unwrap(),
-                repos_root: dir.path().join("repos"),
+                mirrors: writ_mirror::testing::no_repos(dir.path()).await.unwrap(),
                 hook_program: PathBuf::from("/bin/false"),
                 state_dir: dir.path().join("run"),
                 readers,
@@ -516,13 +516,11 @@ async fn git_runs_only_on_the_lease_repos_and_every_refusal_is_logged() {
         .unwrap();
     let id = cert.key_id();
 
-    // In the registry, not in the lease.
+    // In the registry, not in the lease: the policy's fetch decision.
     let (_, err, status) = exec(&holder, "git-upload-pack 'other.git'", b"").await;
     assert_eq!(status, Some(1));
     assert!(
-        err.contains(&format!(
-            "outside ticket {id}: repo other is not in the lease"
-        )),
+        err.contains(&format!("outside ticket {id}: repo other not allowed")),
         "{err}"
     );
     // The lease has no push: the service denies it before any repo is looked at.
@@ -548,8 +546,13 @@ async fn git_runs_only_on_the_lease_repos_and_every_refusal_is_logged() {
         assert_eq!(line["lease"], id);
     }
     assert_eq!(fetches[0]["repo"], "other");
+    assert_eq!(fetches[0]["code"], "repo");
     assert_eq!(fetches[1]["repo"], "demo");
     assert_eq!(fetches[1]["reason"], "unknown repo demo");
+    // The fetch of demo was allowed (and counted) before the gateway found no repository.
+    let allowed = daemon.audit("fetch", "allowed");
+    assert_eq!(allowed.len(), 1, "{allowed:?}");
+    assert_eq!(allowed[0]["repo"], "demo");
     // The lease doesn't allow push: the service denied it before the repo check.
     let pushes = daemon.audit("push", "denied");
     assert_eq!(pushes.len(), 1, "{pushes:?}");

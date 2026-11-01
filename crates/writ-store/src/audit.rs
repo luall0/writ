@@ -172,8 +172,10 @@ impl AuditEvent {
         self
     }
 
-    /// The denial's code and its full text (reason and hint).
+    /// The event as a denial: result `denied`, the denial's code and its full text (reason
+    /// and hint).
     pub fn denial(mut self, denial: &Denial) -> Self {
+        self.result = Outcome::Denied;
         self.code = Some(denial.code.to_string());
         self.reason = Some(denial.to_string());
         self

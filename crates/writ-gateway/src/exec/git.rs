@@ -16,10 +16,14 @@ use crate::Gateway;
 use crate::channel::finish;
 use crate::hook::PushContext;
 
-/// The repo's bare repository, `<repos_root>/<name>.git`, if it exists.
+/// The repo's mirror, if the repo is registered.
 pub(super) fn repo_path(gateway: &Gateway, repo: &RepoName) -> Option<PathBuf> {
-    let path = gateway.shared.config.repos_root.join(format!("{repo}.git"));
-    path.is_dir().then_some(path)
+    gateway
+        .shared
+        .config
+        .mirrors
+        .path(repo)
+        .map(Path::to_path_buf)
 }
 
 /// `git upload-pack` (fetch) on the repository at `path`.

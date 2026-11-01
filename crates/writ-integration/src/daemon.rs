@@ -17,7 +17,7 @@ use writ_crypto::ssh_key::PublicKey;
 
 use crate::agent::TestAgent;
 use crate::binaries::bin;
-use crate::remote::TestRemote;
+use crate::remote::{PLACEHOLDER_UPSTREAM, TestRemote};
 use crate::telegram::{FakeTelegram, TOKEN};
 use crate::{WAIT_LIMIT, stderr, write_secret};
 
@@ -44,9 +44,6 @@ pub struct Daemon {
     pub remote: TestRemote,
     _remote_runtime: tokio::runtime::Runtime,
 }
-
-/// The upstream every scenario's policy names, rewritten to the test remote.
-pub const PLACEHOLDER_UPSTREAM: &str = "ssh://git@remote.invalid/demo.git";
 
 impl Drop for Daemon {
     fn drop(&mut self) {

@@ -14,6 +14,9 @@ use tokio::io::AsyncWriteExt;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
 
+/// The upstream every scenario's policy names; the harnesses rewrite it to their test remote.
+pub const PLACEHOLDER_UPSTREAM: &str = "ssh://git@remote.invalid/demo.git";
+
 /// How the remote answers a git command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
