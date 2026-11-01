@@ -32,11 +32,13 @@ test:
 	CARGO_TARGET_DIR=target/bins cargo build --locked $(BINARIES) --features writd/dev-keystore
 	WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo test --locked --workspace
 	WRIT_PROPTEST_SEED=random cargo test --locked -q -p writ-core --test properties -- --nocapture
+	WRIT_PROPTEST_SEED=random cargo test --locked -q -p writ-approval --test sign_phases -- --nocapture
 
 # The property tests with one seed (a number from a failed run, or `random`).
 test-props:
 	@test -n "$(SEED)" || { echo "usage: make test-props SEED=<number|random>"; exit 2; }
 	WRIT_PROPTEST_SEED="$(SEED)" cargo test --locked -p writ-core --test properties -- --nocapture
+	WRIT_PROPTEST_SEED="$(SEED)" cargo test --locked -p writ-approval --test sign_phases -- --nocapture
 
 # Opt-in: an approval signed by a key in your own ssh-agent (may ask for Touch ID or a touch).
 # make test-agent KEY=<public key .pub> [AGENT=<agent socket, default $$SSH_AUTH_SOCK>]

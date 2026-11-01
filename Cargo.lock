@@ -3803,6 +3803,7 @@ dependencies = [
 name = "writ-approval"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

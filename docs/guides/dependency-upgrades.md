@@ -188,7 +188,7 @@ build: upgrade russh 0.65 → 0.66 and ssh-key to its pin
 | git, OpenSSH | Minimums in `crates/writ-integration/src/tools.rs` (`MIN_GIT`, `MIN_OPENSSH`) and [stack.md](../stack.md) § External tools | Raising a minimum is a decision (users must have it); the integration tests check it at start |
 | `/usr/bin/ssh-keygen` | The default in `writ sign` (`WRIT_SSH_KEYGEN` overrides) | Needs OpenSSH ≥ 8.9 for `-U`; check macOS and Linux still ship it there |
 | Python (Unicode data) | The table in `crates/writ-core/src/text/hidden.rs`, generated from Python's `unicodedata` | After a Python upgrade with a newer Unicode version: `python3 -I tool/gen-hidden-chars.py`, review the diff (a newly assigned character leaves the table only if it is visible), `make ci`, commit with the Unicode version in the message. Re-check the default-ignorable list in the script against `DerivedCoreProperties.txt` of that version |
-| `proptest` regressions | `crates/writ-core/tests/properties.proptest-regressions` | Kept across upgrades: a `proptest` upgrade must still read it (the fixed-seed pass fails otherwise) |
+| `proptest` regressions | `crates/writ-core/tests/properties.proptest-regressions`, `crates/writ-approval/tests/sign_phases.proptest-regressions` | Kept across upgrades: a `proptest` upgrade must still read it (the fixed-seed pass fails otherwise) |
 
 ## Removing a dependency
 

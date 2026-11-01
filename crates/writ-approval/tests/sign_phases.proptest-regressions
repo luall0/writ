@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1af647bf85bd7878dfb6cc0b1863468b0765d332268c3aaedba8484cd9ed0cc5 # shrinks to max_signatures = 1, rate = 1, fetch = false, schedule = [Start, Start, Start, Start]
+# M3.5: found by checking the property fails with consume() taken out of the first phase.

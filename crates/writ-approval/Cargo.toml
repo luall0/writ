@@ -29,6 +29,7 @@ writ-approval = { workspace = true, features = ["testing"] }
 writ-platform = { workspace = true, features = ["testing"] }
 writ-store = { workspace = true, features = ["testing"] }
 writ-signer = { workspace = true, features = ["testing"] }
+proptest.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 
