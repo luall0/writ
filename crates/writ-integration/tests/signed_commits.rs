@@ -15,6 +15,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
+use writ_core::lease::State;
 use writ_core::names::TicketId;
 use writ_crypto::keys::KeyKind;
 use writ_integration::gateway::{GitGateway, Listen, TICKET, now};
@@ -416,4 +417,64 @@ fn a_violation_revokes_a_lease_that_asks_for_it() {
         "the daemon refused the session certificate",
         None,
     );
+}
+
+#[test]
+fn a_revocation_completes_while_a_commit_is_being_signed() {
+    // M3.5: the signer runs outside the service's lock. A real `git commit -S` whose
+    // signature is held at the gate: the service answers and a revocation completes
+    // meanwhile; the signature, when it comes, is discarded and no commit is written.
+    let gw = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
+    gw.seed_repo();
+    let work = gw.clone("work");
+    gw.wire_signing(&work);
+    let lease = gw.session("held");
+    let before = head(&gw, &work);
+    let closed = gw.signer.close();
+    std::thread::scope(|scope| {
+        let committing = scope.spawn(|| commit(&gw, "held", &work, lease.as_str(), &[]));
+        gw.signer.wait_entered();
+        assert!(
+            gw.service
+                .list(false)
+                .unwrap()
+                .tickets
+                .iter()
+                .any(|t| t.id == lease),
+            "the listing answers"
+        );
+        gw.revoke(&lease);
+        assert_eq!(gw.service.show(&lease).unwrap().state, State::Revoked);
+        // The revocation dropped the session at once: the agent learns the lease ended
+        // without waiting for the device.
+        let out = committing.join().unwrap();
+        assert_refused(&gw, &out, "writ: the lease ended", None);
+        closed.open();
+    });
+    // The call still in the daemon ends with its own refusal once the signer answers.
+    let audit = gw.root().join("audit.jsonl");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let line = loop {
+        let text = fs::read_to_string(&audit).unwrap();
+        if let Some(line) = audit_events(&text, "sign", "denied").pop() {
+            break line;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the held call never ended"
+        );
+        // poll: the call runs on after its session was dropped; only its audit line says it
+        // ended. Bounded by `deadline`.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(line["code"], "not_active", "{line}");
+    assert!(
+        line["reason"]
+            .as_str()
+            .unwrap()
+            .ends_with("(while the commit was being signed); the signature was discarded"),
+        "{line}"
+    );
+    assert_eq!(head(&gw, &work), before, "no commit written");
+    assert!(gw.ledger(&lease).is_empty(), "nothing in the ledger");
 }

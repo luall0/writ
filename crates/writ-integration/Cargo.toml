@@ -15,6 +15,7 @@ writ-crypto.workspace = true
 writ-gateway.workspace = true
 writ-platform = { workspace = true, features = ["testing"] }
 writ-proto.workspace = true
+writ-signer = { workspace = true, features = ["testing"] }
 writ-store = { workspace = true, features = ["testing"] }
 serde_json.workspace = true
 tempfile.workspace = true

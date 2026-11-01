@@ -25,6 +25,8 @@ use writ_platform::transport::tcp::TcpTransport;
 use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{BoxFuture, Connection, PeerInfo, Transport};
 use writ_proto::Decision;
+use writ_signer::software::SoftwareSigner;
+use writ_signer::testing::{FailingSigner, GatedSigner};
 
 use crate::binaries::bin;
 
@@ -96,6 +98,8 @@ pub struct GitGateway {
     pub approver: PrivateKey,
     /// The public key commits are signed with (the template's `signing_key`).
     pub agent_key: PublicKey,
+    /// The service's signer: `close()` holds each signature until the test releases it.
+    pub signer: Arc<GatedSigner<FailingSigner<SoftwareSigner>>>,
     /// `ssh://git@…` base URL of the gateway.
     pub url: String,
     /// Extra ssh options to reach it (port or proxy command, known hosts).
@@ -135,6 +139,7 @@ impl GitGateway {
             .build(root);
         let (service, approver, ca) = (test.service.clone(), test.approver.clone(), test.ca());
         let agent_key = test.signing_key("agent-01");
+        let signer = test.signer.clone();
         let config = GatewayConfig {
             host_key,
             repos_root: root.join("repos"),
@@ -198,6 +203,7 @@ impl GitGateway {
             ca,
             approver,
             agent_key,
+            signer,
             url,
             ssh_target,
         };
