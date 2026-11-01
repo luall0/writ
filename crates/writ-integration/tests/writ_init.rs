@@ -264,6 +264,35 @@ fn wrapper_mode_signs_through_writ_git_and_leaves_the_operator_s_git_alone() {
         &["exec", "--", "sh", "-c", "git config writ.repo"],
     );
     assert_eq!(child.trim(), "demo", "a program's own git sees the wiring");
+    // ... in any repository: a commit it makes in another clone is refused by writ-sign
+    // before anything is sent, so it never reaches the daemon as demo's.
+    let other = root.join("other");
+    fs::create_dir_all(&other).unwrap();
+    git_ok(&daemon, &other, &["init", "-q"]);
+    let signed_before = ledger(&daemon, &id).len();
+    let out = writ(
+        &daemon,
+        &repo,
+        &[
+            "exec",
+            "--",
+            "git",
+            "-C",
+            other.to_str().unwrap(),
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("elsewhere\n\n{trailer}"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("but the Writ settings are for"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(ledger(&daemon, &id).len(), signed_before, "nothing signed");
     let out = git(&daemon, &repo, &["push", "writ", "HEAD"]);
     assert_eq!(out.status.code(), Some(128));
     assert!(

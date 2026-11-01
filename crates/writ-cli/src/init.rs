@@ -89,6 +89,7 @@ pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
         base_url: base_url.clone(),
         repo: request.repo.clone(),
         email: request.email.map(|e| e.as_str().to_owned()),
+        common_dir: wiring::common_dir(&dir)?,
     };
     if request.mode == Mode::WholeRepo {
         // The values replaced, first: `--undo` puts them back.

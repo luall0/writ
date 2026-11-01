@@ -59,6 +59,9 @@ pub struct Wiring {
     pub repo: RepoName,
     /// The committer email asked for (`writ init --email`); otherwise the current lease's.
     pub email: Option<String>,
+    /// The repository's shared git directory (`writ.gitdir`): `writ-sign` refuses a commit
+    /// made in any other repository with these settings.
+    pub common_dir: PathBuf,
 }
 
 /// Single-quoted for `sh` (git runs `core.sshCommand` through it).
@@ -70,6 +73,7 @@ fn quote(text: &str) -> String {
 pub fn settings(
     base_url: &str,
     repo: &RepoName,
+    common_dir: &Path,
     home: &Path,
     known_hosts: &Path,
     writ_sign: &str,
@@ -85,6 +89,7 @@ pub fn settings(
         ),
         ("writ.url", base_url.to_owned()),
         ("writ.repo", repo.to_string()),
+        ("writ.gitdir", path(common_dir.to_path_buf())),
         ("gpg.format", "ssh".to_owned()),
         ("gpg.ssh.program", writ_sign.to_owned()),
         ("user.signingkey", path(session.join("signing_key.pub"))),
@@ -201,6 +206,12 @@ pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
             .map(|(_, v)| v.clone())
     };
     let invalid = || anyhow::anyhow!("{} is not a Writ wiring record", path.display());
+    // `<common dir>/writ/config`.
+    let common_dir = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(invalid)?
+        .to_path_buf();
     let mode = get("writ.mode")
         .as_deref()
         .and_then(Mode::parse)
@@ -214,6 +225,7 @@ pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
         base_url,
         repo,
         email: get("writ.email"),
+        common_dir,
     }))
 }
 
@@ -226,6 +238,7 @@ pub fn settings_for(paths: &Paths, wiring: &Wiring) -> anyhow::Result<Vec<(&'sta
     Ok(settings(
         &wiring.base_url,
         &wiring.repo,
+        &wiring.common_dir,
         &home,
         &known_hosts,
         &writ_sign_program(),
@@ -268,6 +281,7 @@ mod tests {
         let settings = settings(
             "ssh://git@writ.home:2222",
             &"omega-code".parse().unwrap(),
+            Path::new("/opt/agent/omega/.git"),
             Path::new("/opt/agent/.writ"),
             Path::new("/opt/agent/.writ/known_hosts"),
             "/usr/local/bin/writ-sign",
@@ -278,6 +292,7 @@ mod tests {
             ("remote.writ.fetch", "+refs/heads/*:refs/remotes/writ/*"),
             ("writ.url", "ssh://git@writ.home:2222"),
             ("writ.repo", "omega-code"),
+            ("writ.gitdir", "/opt/agent/omega/.git"),
             ("gpg.format", "ssh"),
             ("gpg.ssh.program", "/usr/local/bin/writ-sign"),
             (

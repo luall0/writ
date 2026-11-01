@@ -50,8 +50,10 @@ git command through `writ git …` (commit, rebase, cherry-pick, `commit --amend
 log…), or a program that runs git through `writ exec -- <program>`; the settings below reach
 git through the environment (`GIT_CONFIG_COUNT`, git ≥ 2.31, and `GIT_SSH_COMMAND`), for that
 process and what git runs (`writ-sign`, `ssh`, hooks), and so for every git that process
-starts, in any repository (a commit there would go to the daemon labeled with the wired repo;
-the operator guide says to run only the wired repo's work this way). The operator's own `git`, in the same
+starts, in any repository: `writ-sign` refuses a commit made in a repository other than
+`writ.gitdir` before sending anything, so it can't reach the daemon labeled with the wired
+repo; the other repository's SSH remotes still get the session's key (and fail on the daemon's
+pinned host key). The operator's own `git`, in the same
 clone and working tree, keeps the operator's keys, email and remotes; a plain `git push writ`
 finds no such remote. Commits a command rewrites (a rebase) are signed again, one signature
 each from `max_signatures`.
@@ -72,6 +74,7 @@ agent's configuration): the [operator guide](../guides/operator.md).
 [writ]
     url = ssh://git@writ.home:2222      # where writ-sign sends commits to sign
     repo = omega-code                   # the repo they are for (a registry name)
+    gitdir = /path/to/omega/.git        # its git common dir: writ-sign signs nothing made elsewhere
 [gpg]
     format = ssh
 [gpg "ssh"]

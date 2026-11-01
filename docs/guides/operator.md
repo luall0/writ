@@ -22,9 +22,10 @@ same files at the same time: you share a working tree.
 
 The wiring lives in the environment of what `writ git` and `writ exec` start, so **every git
 that process runs gets it**, in any repository: a build script or a tool that commits in
-another clone sends that commit to the daemon as if it were for the wired repo, and its SSH
-remotes are reached with the session's key (and fail on the daemon's pinned host key). Run
-only the work for the wired repo under `writ exec`.
+another clone has that commit refused by `writ-sign` (the settings name the wired
+repository's git directory, `writ.gitdir`), and its SSH remotes are reached with the
+session's key (and fail on the daemon's pinned host key). Run only the work for the wired
+repo under `writ exec`.
 
 ## Protect your own credentials
 

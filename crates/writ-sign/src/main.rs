@@ -21,7 +21,7 @@ mod evidence;
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context, bail};
@@ -136,6 +136,7 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
     if repo.starts_with('-') || repo.contains(char::is_whitespace) {
         bail!("invalid writ.repo {repo:?}");
     }
+    check_repository(git_config("writ.gitdir"))?;
     let ssh = ssh_command(
         std::env::var("GIT_SSH_COMMAND").ok(),
         git_config("core.sshCommand"),
@@ -190,6 +191,42 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// The commit is made in the repository the settings were made for (`writ.gitdir`, written by
+/// `writ init`): `writ git` and `writ exec` pass the settings to every git their process
+/// runs, in any repository, and a commit made elsewhere would go to the daemon labeled with
+/// the wired repo. A convenience, never a boundary. (A `--whole-repo` wiring made before the
+/// setting existed has none: its settings live in that repository's own config.)
+fn check_repository(wired: Option<String>) -> anyhow::Result<()> {
+    let Some(wired) = wired else {
+        return Ok(());
+    };
+    // PATH: the agent host's git, the one that called this shim.
+    let out = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .context("cannot run git")?;
+    let here = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if out.status.success() && same_dir(Path::new(&wired), Path::new(&here)) {
+        return Ok(());
+    }
+    bail!(
+        "this commit is made in {}, but the Writ settings are for {} (writ git and writ exec \
+         pass them to every git their process runs): run only that repository's work through \
+         them",
+        clean(&here),
+        clean(&wired)
+    )
+}
+
+/// Whether two paths name the same directory (links resolved); a path that can't be resolved
+/// is no match.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Text from elsewhere (the daemon, ssh) for the terminal: every hidden character as
@@ -355,5 +392,22 @@ mod tests {
             error_of(check_signature(&[0xff, 0xfe])),
             "the daemon sent something that is not an SSH signature"
         );
+    }
+
+    #[test]
+    fn the_same_directory_through_a_link() {
+        let root = std::env::temp_dir().join(format!("writ-sign-same-dir-{}", std::process::id()));
+        let (a, b) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::os::unix::fs::symlink(&a, root.join("link")).unwrap();
+        let checks = (
+            same_dir(&a, &root.join("link")),
+            same_dir(&a, &a.join(".")),
+            same_dir(&a, &b),
+            same_dir(&a, &root.join("missing")),
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(checks, (true, true, false, false));
     }
 }
