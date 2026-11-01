@@ -304,7 +304,14 @@ impl Service {
     /// log can't take is kept and written first once it can.
     fn log_best_effort(inner: &mut Inner, event: &AuditEvent) {
         if let Err(e) = Self::log(inner, event) {
-            tracing::error!(error = %e.detail(), "cannot write the audit log; the line is kept");
+            // Once per outage (when the first line is kept), not once per line: denials can
+            // be driven by peers, and the daemon's own log must stay bounded too.
+            if inner.unlogged.is_empty() {
+                tracing::error!(
+                    error = %e.detail(),
+                    "cannot write the audit log; lines are kept until it can"
+                );
+            }
             if inner.unlogged.len() < MAX_UNLOGGED {
                 inner.unlogged.push_back(event.clone());
             } else {

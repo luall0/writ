@@ -235,7 +235,9 @@ impl Gateway {
                 let session = match started {
                     Err(_) => return,
                     Ok(Err(e)) if client_went_away(&e) => return,
-                    Ok(Err(e)) => return tracing::warn!(error = %e, "connection failed"),
+                    // Any peer can cause these: diagnostics at debug level only, so a flood
+                    // can't fill the daemon's log (the audit log holds the decisions).
+                    Ok(Err(e)) => return tracing::debug!(error = %e, "connection failed"),
                     Ok(Ok(session)) => session,
                 };
                 // Not authenticated in time: disconnected.
@@ -255,7 +257,7 @@ impl Gateway {
                 if let Err(e) = session.await
                     && !client_went_away(&e)
                 {
-                    tracing::warn!(error = %e, "session ended with an error");
+                    tracing::debug!(error = %e, "session ended with an error");
                 }
                 deadline.abort();
             });
@@ -276,7 +278,7 @@ impl Gateway {
             let facts = match attestor.attest(&connection.peer) {
                 Ok(facts) => facts,
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::debug!(
                         listener = %transport.describe(),
                         error = %e,
                         "connection turned away"

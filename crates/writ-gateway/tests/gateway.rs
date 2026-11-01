@@ -295,13 +295,19 @@ async fn each_identity_runs_only_its_own_commands() {
     let (key, cert) = lease(&daemon).await;
     let id = cert.key_id().to_owned();
 
-    // Lease holders authenticate with a certificate, as `git` only.
+    // Lease holders authenticate with a certificate, as `git` only; the refusal is logged.
     assert!(
         Daemon::with_key(&daemon.agents, "git", &key)
             .await
             .is_none(),
         "plain key as git"
     );
+    let refused: Vec<_> = daemon
+        .audit("connect", "denied")
+        .into_iter()
+        .filter(|l| l["reason"] == "key refused: user \"git\" takes a certificate, not a plain key")
+        .collect();
+    assert_eq!(refused.len(), 1);
     let session = Daemon::with_key(&daemon.agents, "writ", &key)
         .await
         .unwrap();
@@ -771,6 +777,17 @@ async fn https_turns_away_a_key_not_in_readers() {
     .await;
     // any error: rustls or hyper reports the rejected client certificate its own way.
     assert!(refused.is_err(), "{refused:?}");
+    // The daemon logs it, with the exact reason, before dropping the connection.
+    eventually_async("the refused handshake to be logged", || {
+        !daemon.audit("connect", "denied").is_empty()
+    })
+    .await;
+    let lines = daemon.audit("connect", "denied");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        lines[0]["reason"],
+        "TLS handshake refused: unexpected error: the client certificate is not for a reader key"
+    );
     // The reader gets in, on the same listener.
     let (status, _) = https(&daemon, &daemon.pin, "GET", "/v1/info", Vec::new())
         .await

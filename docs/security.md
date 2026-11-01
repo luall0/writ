@@ -102,8 +102,12 @@ A new input is added here in the same change.
   can't fill the disk either.
 - **A per-source limit counts sources by group** (`writ_core::net::source_group`): an IPv6
   host holds a whole /64 and would otherwise be 2^64 sources.
+- **Every refusal is a line**, wherever it happens: a refused TLS handshake, a plain key for a
+  user that takes a certificate, a source not allowed, as much as a lease decision.
 - **The audit log is plain data**: no field can hold a secret, hidden characters are
   escaped, a failed write never glues lines together, the file is `0600`.
+- **The daemon's own log stays bounded**: what any peer can trigger is logged at `debug`
+  (the audit line is the record), and an audit-log outage is reported once, not per line.
 
 ## Revocation and enforcement state
 

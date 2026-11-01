@@ -56,7 +56,19 @@ impl Gateway {
                 .await
                 {
                     Ok(Ok(tls)) => tls,
-                    _ => return,
+                    // A refused handshake is a denial like any other (a client certificate
+                    // that is not a reader's, above all): logged, coalesced.
+                    Ok(Err(e)) => {
+                        let reason = format!(
+                            "TLS handshake refused: {}",
+                            limits::shown(&e.to_string(), 4 * limits::MAX_LOGGED_TEXT)
+                        );
+                        return gateway.turned_away(facts, "tls", reason).await;
+                    }
+                    Err(_) => {
+                        let reason = "TLS handshake took too long".to_owned();
+                        return gateway.turned_away(facts, "tls", reason).await;
+                    }
                 };
                 let service = hyper::service::service_fn(move |request| {
                     let (gateway, facts) = (gateway.clone(), facts.clone());
@@ -70,7 +82,8 @@ impl Gateway {
                     .serve_connection(TokioIo::new(tls), service)
                     .await;
                 if let Err(e) = served {
-                    tracing::warn!(error = %e, "HTTPS connection ended with an error");
+                    // Peer-caused: debug only (see the SSH listener).
+                    tracing::debug!(error = %e, "HTTPS connection ended with an error");
                 }
             });
         }

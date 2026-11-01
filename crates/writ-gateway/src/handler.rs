@@ -151,7 +151,14 @@ impl russh::server::Handler for Connection {
                     None
                 }
             }
-            _ => None,
+            (Role::Agents, _) => {
+                let reason = format!(
+                    "key refused: user {:?} takes a certificate, not a plain key",
+                    limits::shown(user, MAX_LOGGED_TEXT)
+                );
+                self.refused("user", reason, None).await;
+                None
+            }
         };
         Ok(if self.identity.is_some() {
             Auth::Accept
