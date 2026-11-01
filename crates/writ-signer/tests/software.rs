@@ -103,3 +103,84 @@ fn no_key_in_debug_or_errors() {
         assert!(!text.contains(&body[..20]), "{text}");
     }
 }
+
+/// A backend whose every signature panics (a device library that falls over).
+struct Panicking(SoftwareSigner);
+
+impl Signer for Panicking {
+    fn list_keys(&self) -> Result<Vec<writ_signer::KeyInfo>, SignerError> {
+        self.0.list_keys()
+    }
+
+    fn sign(&self, _: &KeyId, _: &[u8]) -> Result<writ_crypto::ssh_key::Signature, SignerError> {
+        panic!("the device fell over");
+    }
+
+    fn capabilities(&self) -> writ_signer::Capabilities {
+        self.0.capabilities()
+    }
+}
+
+/// What a test subscriber wrote.
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_backend_that_panics_signs_nothing_more_and_says_so_once() {
+    let log = Captured::default();
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let key = id("agent-01");
+    tracing::subscriber::with_default(subscriber, || {
+        let queued = QueuedSigner::new(
+            Panicking(software_signer(&["agent-01"], KeyKind::Ed25519)),
+            QueueConfig {
+                name: "writ-sign-test".to_owned(),
+                capacity: 4,
+                deadline: std::time::Duration::from_secs(60),
+            },
+        )
+        .unwrap();
+        // Answered at once, not at the deadline: the worker said so before it stopped.
+        assert!(matches!(
+            queued.sign(&key, b"first"),
+            Err(SignerError::Unavailable)
+        ));
+        // Never trusted again, without another try.
+        for _ in 0..3 {
+            assert!(matches!(
+                queued.sign(&key, b"again"),
+                Err(SignerError::Unavailable)
+            ));
+        }
+        // What doesn't go through the backend still answers.
+        assert_eq!(queued.list_keys().unwrap().len(), 1);
+    });
+    let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("the signer backend panicked"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{text}");
+    assert!(lines[0].contains("ERROR"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("queue=\"writ-sign-test\""),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[0].contains("key=agent-01"), "{}", lines[0]);
+}

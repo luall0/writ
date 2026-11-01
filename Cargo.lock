@@ -3969,6 +3969,8 @@ dependencies = [
  "signature",
  "ssh-key",
  "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
  "writ-core",
  "writ-crypto",
  "writ-signer",

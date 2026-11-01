@@ -43,6 +43,11 @@ doesn't change:
   gave up is skipped (nothing is signed for nobody), and a late result is thrown away;
 - **`list_keys` and `capabilities` from a cache** filled at startup: they never wait behind
   the device (the approval service lists keys to show the lease's public key).
+- **a backend that panics is not trusted again**: the worker answers that job
+  `SignerError::Unavailable`, writes one error line to the daemon's log (the queue and the
+  key), and stops; every later signature through that queue is `Unavailable` until the
+  daemon restarts. (A backend that aborts the process instead, as CryptoKit does on a bad
+  blob, is M7.5's to contain.)
 
 **One queue per use**: the agent keys (commit signatures) now; the TLS key (M5, maybe on the
 Secure Enclave in M7.5) and the upstream credential (M4) get their own, so a device stuck on

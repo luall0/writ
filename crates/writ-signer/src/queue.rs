@@ -10,11 +10,15 @@
 //!   whose caller already gave up (nothing is signed for nobody), and throws away a late
 //!   result;
 //! - [`Signer::list_keys`] and [`Signer::capabilities`] answer from what the backend said at
-//!   startup, never through the queue: they must never wait behind the device.
+//!   startup, never through the queue: they must never wait behind the device;
+//! - a backend that panics is not trusted again: the worker answers that job
+//!   [`SignerError::Unavailable`], logs it once, and stops; every later signature is
+//!   `Unavailable` until the daemon restarts (fail closed, and said once where it happened).
 //!
 //! One queue per use (agent keys, the TLS key, the upstream credential), so a device stuck
 //! on one use doesn't take the others down with it.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
@@ -72,9 +76,14 @@ impl QueuedSigner {
         let keys = backend.list_keys()?;
         let capabilities = backend.capabilities();
         let (jobs, inbox) = std::sync::mpsc::sync_channel(config.capacity);
+        // The worker logs where its creator does (the daemon's subscriber).
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
+        let name = config.name.clone();
         std::thread::Builder::new()
             .name(config.name)
-            .spawn(move || work(&backend, &inbox))
+            .spawn(move || {
+                tracing::dispatcher::with_default(&dispatch, || work(&name, &backend, &inbox));
+            })
             .map_err(|_| SignerError::Unavailable)?;
         Ok(Self {
             jobs,
@@ -150,13 +159,28 @@ impl Drop for Pending {
 }
 
 /// The worker: one job at a time, in order, until the queue is dropped. A job whose caller
-/// already gave up is skipped: nothing is signed for nobody.
-fn work(backend: &dyn Signer, inbox: &Receiver<Job>) {
+/// already gave up is skipped: nothing is signed for nobody. A backend that panics ends it:
+/// that job is answered `Unavailable`, the panic logged once, and the jobs still queued are
+/// dropped with the inbox (their callers read `Unavailable`, as every later one does).
+fn work(name: &str, backend: &dyn Signer, inbox: &Receiver<Job>) {
     for job in inbox {
         if job.abandoned.load(Ordering::Acquire) {
             continue;
         }
-        let answer = backend.sign(&job.id, &job.data);
+        // Not unwind-safe in general; it doesn't matter: after a panic the backend is never
+        // called again.
+        let signed =
+            std::panic::catch_unwind(AssertUnwindSafe(|| backend.sign(&job.id, &job.data)));
+        let Ok(answer) = signed else {
+            tracing::error!(
+                queue = name,
+                key = %job.id,
+                "the signer backend panicked: this queue signs nothing more until the daemon \
+                 restarts"
+            );
+            let _ = job.answer.try_send(Err(SignerError::Unavailable));
+            return;
+        };
         // The caller may have left (its deadline passed meanwhile): the result is dropped.
         let _ = job.answer.try_send(answer);
     }

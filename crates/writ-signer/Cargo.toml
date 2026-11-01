@@ -16,10 +16,13 @@ writ-crypto.workspace = true
 signature.workspace = true
 ssh-key.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 # The tests use the test support: always build it with `testing`.
 writ-signer = { workspace = true, features = ["testing"] }
+# Reads what the queue logs (a backend that panicked).
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
