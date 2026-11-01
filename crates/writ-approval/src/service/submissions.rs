@@ -175,26 +175,23 @@ impl Submissions {
     pub(super) fn admit(&mut self, source: Option<IpAddr>, now: Timestamp) -> Admission {
         let group = source.map(writ_core::net::source_group);
         let mut admission = Admission::default();
-        if !self.sources.contains_key(&group) && self.sources.len() >= self.max_sources {
-            admission.lines.extend(self.due(now));
-            if self.sources.len() >= self.max_sources {
-                admission.lines.extend(self.drop_quietest());
-            }
-        }
         self.all.slide(now);
+        // Only a source that was let through has a window (only it can be over its rate).
         let per_source = self.limits.per_source;
-        let window = self.sources.entry(group).or_default();
-        window.slide(now);
-        if window.times.len() >= per_source {
-            let reason = format!("more than {per_source} submissions a minute from this address");
-            if window.refuse() {
-                admission.lines.push(Line {
-                    scope: Scope::Caller,
-                    reason: reason.clone(),
-                });
+        if let Some(window) = self.sources.get_mut(&group) {
+            window.slide(now);
+            if window.times.len() >= per_source {
+                let reason =
+                    format!("more than {per_source} submissions a minute from this address");
+                if window.refuse() {
+                    admission.lines.push(Line {
+                        scope: Scope::Caller,
+                        reason: reason.clone(),
+                    });
+                }
+                admission.refused = Some(format!("{reason}; try again later"));
+                return admission;
             }
-            admission.refused = Some(format!("{reason}; try again later"));
-            return admission;
         }
         let in_all = self.limits.in_all;
         if self.all.times.len() >= in_all {
@@ -208,6 +205,15 @@ impl Submissions {
             admission.refused = Some(format!("{reason}; try again later"));
             return admission;
         }
+        // Let through. A new source needs room: windows already over go first, then the one
+        // quiet the longest, each with its count. A refused source never takes room.
+        if !self.sources.contains_key(&group) && self.sources.len() >= self.max_sources {
+            admission.lines.extend(self.due(now));
+            if self.sources.len() >= self.max_sources {
+                admission.lines.extend(self.drop_quietest());
+            }
+        }
+        let window = self.sources.entry(group).or_default();
         let count = window.take_count();
         if count > 0 {
             admission.lines.push(Line {
@@ -392,8 +398,8 @@ mod tests {
             assert!(counted.refused.is_some());
             assert!(counted.lines.is_empty());
         }
-        // A refusal for all sources uses nothing of the source's own rate.
-        assert!(rates.sources[&ip(10)].times.is_empty());
+        // A refusal for all sources uses nothing of the source's own rate, nor a window.
+        assert!(!rates.sources.contains_key(&ip(10)));
         // A minute on, the next one passes and carries the count.
         let passed = rates.admit(ip(20), at(60));
         assert_eq!(passed.refused, None);
@@ -453,6 +459,21 @@ mod tests {
         let mut kept: Vec<_> = rates.sources.keys().copied().collect();
         kept.sort();
         assert_eq!(kept, vec![ip(4), ip(5)]);
+    }
+
+    #[test]
+    fn sources_refused_for_all_take_no_room_in_the_table() {
+        let mut rates = Submissions::with_capacity(limits(10, 2), 2);
+        rates.admit(ip(1), at(0));
+        rates.admit(ip(2), at(0));
+        // A flood from new sources, all refused for all sources: the table keeps 1 and 2.
+        for n in 10..100 {
+            assert!(rates.admit(ip(n), at(1)).refused.is_some());
+        }
+        let mut kept: Vec<_> = rates.sources.keys().copied().collect();
+        kept.sort();
+        assert_eq!(kept, vec![ip(1), ip(2)]);
+        assert_eq!(rates.sources[&ip(1)].times.len(), 1, "its window intact");
     }
 
     #[test]
