@@ -32,7 +32,7 @@ pub mod relay;
 pub mod testing;
 pub mod upstream;
 
-pub use mirror::{MirrorConfig, MirrorGuard, Mirrors, RefMove, SyncReport};
+pub use mirror::{MirrorConfig, MirrorGuard, Mirrors, RefMove, SyncReport, UpstreamUpdate};
 
 use std::path::PathBuf;
 
@@ -82,6 +82,8 @@ pub enum MirrorError {
     TooLarge { repo: RepoName, max: u64 },
     #[error("repo {repo}: upstream did not answer within {seconds} s")]
     Timeout { repo: RepoName, seconds: u64 },
+    #[error("repo {repo}: upstream refused the push: {reason}")]
+    Rejected { repo: RepoName, reason: String },
     #[error("repo {repo}: {what} failed: {stderr}")]
     Git {
         repo: RepoName,

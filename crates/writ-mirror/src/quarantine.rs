@@ -71,6 +71,13 @@ impl Quarantine {
     fn git(&self, args: &[&str]) -> tokio::process::Command {
         let mut cmd = git::command(Hooks::None);
         cmd.arg("--git-dir").arg(&self.mirror).args(args);
+        self.objects_env(&mut cmd);
+        cmd
+    }
+
+    /// Points `cmd` at the push's objects (the quarantine first, then the mirror's), with
+    /// `GIT_QUARANTINE_PATH` set: it can read them, never move a ref.
+    pub(crate) fn objects_env(&self, cmd: &mut tokio::process::Command) {
         if let Some(objects) = &self.objects {
             cmd.env("GIT_OBJECT_DIRECTORY", objects)
                 .env(
@@ -79,7 +86,6 @@ impl Quarantine {
                 )
                 .env("GIT_QUARANTINE_PATH", objects);
         }
-        cmd
     }
 
     async fn run(

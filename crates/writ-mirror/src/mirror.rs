@@ -21,6 +21,7 @@ use crate::agent::AgentSocket;
 use crate::git::{self, Hooks};
 use crate::known_hosts::PinnedHosts;
 use crate::process::{self, RunError};
+use crate::quarantine::Quarantine;
 use crate::upstream::{SshCommand, SshUrl};
 use crate::{MIN_GIT, MirrorError, Result, relay, shown};
 
@@ -67,6 +68,16 @@ pub struct RefMove {
     pub name: String,
     pub old: String,
     pub new: String,
+}
+
+/// One ref update to make upstream, as the push decision accepted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamUpdate {
+    pub name: String,
+    /// What the agent's push started from (`None`: the ref is new).
+    pub old: Option<String>,
+    /// Where it goes (`None`: the ref is deleted).
+    pub new: Option<String>,
 }
 
 /// What a sync did.
@@ -254,21 +265,7 @@ impl MirrorGuard {
         let shared = &self.shared;
         let repo = &self.repo;
         let started = Instant::now();
-        let agent = AgentSocket::start(
-            &shared.agent_dir,
-            shared.signer.clone(),
-            repo.credential.clone(),
-            &repo.public,
-        )?;
-        let ssh = SshCommand {
-            relay: &shared.config.relay,
-            ssh: &shared.config.ssh,
-            known_hosts: &shared.known_hosts,
-            agent: agent.path(),
-            identity: &repo.identity,
-            max_bytes: shared.config.max_fetch_bytes,
-        }
-        .to_git_ssh_command()?;
+        let (agent, ssh) = self.reach_upstream()?;
         let fetched = self
             .upstream_git(
                 &ssh,
@@ -311,6 +308,96 @@ impl MirrorGuard {
         Ok(parse_moves(&fetched))
     }
 
+    /// An agent socket serving the repo's credential, and the ssh command that uses it (for
+    /// one operation: the socket goes when dropped).
+    fn reach_upstream(&self) -> Result<(AgentSocket, String)> {
+        let shared = &self.shared;
+        let agent = AgentSocket::start(
+            &shared.agent_dir,
+            shared.signer.clone(),
+            self.repo.credential.clone(),
+            &self.repo.public,
+        )?;
+        let ssh = SshCommand {
+            relay: &shared.config.relay,
+            ssh: &shared.config.ssh,
+            known_hosts: &shared.known_hosts,
+            agent: agent.path(),
+            identity: &self.repo.identity,
+            max_bytes: shared.config.max_fetch_bytes,
+        }
+        .to_git_ssh_command()?;
+        Ok((agent, ssh))
+    }
+
+    /// Pushes the accepted updates upstream from the push's quarantine, before git moves the
+    /// mirror's refs: all or none (`--atomic`), each only if upstream still has what the
+    /// agent's push started from (`--force-with-lease=<ref>:<old>`, empty for a new ref), so a
+    /// ref upstream moved meanwhile is refused with the remote's reason. Within the sync's
+    /// deadline, its bytes capped like a sync's.
+    pub async fn push_upstream(
+        &mut self,
+        quarantine: &Quarantine,
+        updates: &[UpstreamUpdate],
+    ) -> Result<()> {
+        let (agent, ssh) = self.reach_upstream()?;
+        let mut args: Vec<String> = [
+            "push",
+            "--atomic",
+            "--porcelain",
+            "--no-verify",
+            "--no-follow-tags",
+            "--no-recurse-submodules",
+        ]
+        .iter()
+        .map(|a| (*a).to_owned())
+        .collect();
+        for update in updates {
+            let old = update.old.as_deref().unwrap_or_default();
+            args.push(format!("--force-with-lease={}:{old}", update.name));
+        }
+        args.push("--".to_owned());
+        args.push(self.repo.upstream.as_str().to_owned());
+        for update in updates {
+            args.push(match &update.new {
+                Some(new) => format!("{new}:{}", update.name),
+                None => format!(":{}", update.name),
+            });
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let pushed = self
+            .run_upstream(
+                &ssh,
+                &args,
+                Some(quarantine),
+                self.shared.config.timeout,
+                MAX_FETCH_OUTPUT,
+            )
+            .await;
+        drop(agent);
+        let finished = pushed?;
+        if finished.status.success() {
+            return Ok(());
+        }
+        let classified = self.classify(&finished.stderr);
+        Err(match classified {
+            MirrorError::Git { repo, .. } => {
+                // What upstream said: the refused refs (porcelain), then its own words.
+                let refused: Vec<u8> = String::from_utf8_lossy(&finished.stdout)
+                    .lines()
+                    .filter(|line| line.starts_with('!'))
+                    .flat_map(|line| format!("{line}\n").into_bytes())
+                    .chain(finished.stderr.iter().copied())
+                    .collect();
+                MirrorError::Rejected {
+                    repo,
+                    reason: shown(&refused),
+                }
+            }
+            other => other,
+        })
+    }
+
     /// Runs git against upstream (`GIT_SSH_COMMAND` = `ssh`), within `deadline`, keeping at
     /// most `max_stdout` bytes of its output. A failure is classified from its stderr.
     async fn upstream_git(
@@ -320,26 +407,41 @@ impl MirrorGuard {
         deadline: Duration,
         max_stdout: usize,
     ) -> Result<Vec<u8>> {
+        let finished = self
+            .run_upstream(ssh, args, None, deadline, max_stdout)
+            .await?;
+        if !finished.status.success() {
+            return Err(self.classify(&finished.stderr));
+        }
+        Ok(finished.stdout)
+    }
+
+    /// Runs git against upstream, reading a push's objects when `quarantine` is given.
+    async fn run_upstream(
+        &self,
+        ssh: &str,
+        args: &[&str],
+        quarantine: Option<&Quarantine>,
+        deadline: Duration,
+        max_stdout: usize,
+    ) -> Result<process::Finished> {
         let mut cmd = git::command(Hooks::None);
         cmd.arg("--git-dir")
             .arg(&self.repo.path)
             .args(args)
             .env("GIT_SSH_COMMAND", ssh)
             .env("GIT_SSH_VARIANT", "ssh");
-        let finished = match process::run(cmd, None, deadline, max_stdout).await {
-            Ok(finished) => finished,
-            Err(RunError::Timeout) => {
-                return Err(MirrorError::Timeout {
-                    repo: self.repo.name.clone(),
-                    seconds: self.shared.config.timeout.as_secs(),
-                });
-            }
-            Err(RunError::Spawn(e) | RunError::Wait(e)) => return Err(MirrorError::Spawn(e)),
-        };
-        if !finished.status.success() {
-            return Err(self.classify(&finished.stderr));
+        if let Some(quarantine) = quarantine {
+            quarantine.objects_env(&mut cmd);
         }
-        Ok(finished.stdout)
+        match process::run(cmd, None, deadline, max_stdout).await {
+            Ok(finished) => Ok(finished),
+            Err(RunError::Timeout) => Err(MirrorError::Timeout {
+                repo: self.repo.name.clone(),
+                seconds: self.shared.config.timeout.as_secs(),
+            }),
+            Err(RunError::Spawn(e) | RunError::Wait(e)) => Err(MirrorError::Spawn(e)),
+        }
     }
 
     /// Points the mirror's `HEAD` at upstream's default branch (from `ls-remote --symref`'s

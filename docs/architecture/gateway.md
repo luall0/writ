@@ -127,7 +127,13 @@ in part. Any failure to reach the daemon refuses the push. The daemon then:
    `decide_push` (refs, protected refs, branches, force pushes and deletions, every commit
    signed under this lease for this repo with the same paths as at signing, size, count,
    rate), then the push taken from the lease's count and rate; one `push` line, allowed or
-   denied with its code and the refs.
+   denied with its code and the refs;
+5. looks at the lease once more (a revocation that came while the push was read stops it
+   here), then pushes upstream from the quarantine ([Upstream](#upstream)); only once the
+   remote took it does the hook answer `ok`, and git move the mirror's refs. A remote that
+   refuses (upstream moved, its own hook, any error) gets the push refused with its reason
+   (`upstream refused the push: …`, cut and cleaned), logged as a `push` denial; the mirror
+   never holds a ref the remote didn't take, and is marked stale after every upstream push.
 
 On a refusal git drops the quarantine and shows the agent `remote: writ: <reason>`; a
 violation under `on_violation: revoke_lease` revokes the lease, and its other sessions are
@@ -211,8 +217,13 @@ startup.
 `writd upstream-keys <writd.yaml>` prints each credential's public key and the repos that use
 it, to add on each remote ([operator guide](../guides/operator.md#upstream-keys-and-host-keys)).
 
-Accepted pushes go to upstream with the same credential, and the mirror's refs are updated
-**only after** upstream accepted the push.
+Accepted pushes go to upstream with the same credential, from the push's quarantine (git
+reads its objects there), before the mirror's refs move: `git push --atomic` (every ref, or
+none) with `--force-with-lease=<ref>:<old>` for each ref (`<old>` what the agent's push started
+from, empty for a new ref), so a ref upstream moved since the mirror's sync is refused by the
+remote's state rather than overwritten, and the agent fetches, rebases, has the commits signed
+again and pushes again. The mirror's refs are updated **only after** upstream accepted the
+push. Before each push `receive-pack` starts from a mirror synced unless fresh.
 
 ## Push modes (per repo)
 

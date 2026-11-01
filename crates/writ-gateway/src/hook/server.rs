@@ -199,16 +199,15 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         let reason = format!("repo {} is not in the registry", context.repo);
         return Err(Refused::of(reason, context, refs));
     };
-    let quarantine = Quarantine::open(
+    let quarantine = match Quarantine::open(
         &mirror,
         quarantine.map(std::path::Path::new),
         entry.object_format,
-    );
-    let read = match quarantine {
-        Ok(quarantine) => read_push(&quarantine, &updates, &lease).await,
-        Err(e) => Err(e.to_string()),
+    ) {
+        Ok(quarantine) => quarantine,
+        Err(e) => return Err(Refused::of(e.to_string(), context, refs)),
     };
-    let (updates, commits, pack_size) = match read {
+    let (updates, commits, pack_size) = match read_push(&quarantine, &updates, &lease).await {
         Ok(read) => read,
         Err(reason) => return Err(Refused::of(reason, context, refs)),
     };
@@ -220,7 +219,7 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         commits,
         pack_size,
     };
-    if let Err(denial) = gateway.push(pushing).await {
+    if let Err(denial) = gateway.push(pushing.clone()).await {
         // A violation may have revoked the lease: its other sessions go now.
         if gateway.service().is_revoked(context.cert.serial) {
             gateway.drop_sessions_except(context.cert.serial, context.connection);
@@ -229,13 +228,58 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         refused.logged = true;
         return Err(refused);
     }
+    if let Err(refused) = go_upstream(gateway, &context, &quarantine, &pushing.updates).await {
+        return Err(Refused { refs, ..refused });
+    }
     tracing::info!(
         lease = %context.cert.key_id,
         repo = %context.repo,
         refs = refs.len(),
-        "push accepted"
+        "push accepted upstream"
     );
     Ok(())
+}
+
+/// The accepted push, upstream, before git moves the mirror's refs: the lease looked at once
+/// more (a revocation that came while the push was read stops it here), then the upstream push
+/// from the quarantine. The mirror is marked stale either way (the next fetch syncs it). A
+/// push upstream refused, or failed, is refused here with the remote's reason, and logged:
+/// the mirror never holds a ref the remote didn't take.
+async fn go_upstream(
+    gateway: &Gateway,
+    context: &PushContext,
+    quarantine: &Quarantine,
+    updates: &[policy::RefUpdate],
+) -> Result<(), Refused> {
+    if let Err(denial) = gateway
+        .may_push(&context.cert, &context.caller, &context.repo)
+        .await
+    {
+        let mut refused = Refused::of(denial.to_string(), context.clone(), Vec::new());
+        refused.logged = true;
+        return Err(refused);
+    }
+    let upstream: Vec<writ_mirror::UpstreamUpdate> = updates
+        .iter()
+        .map(|u| writ_mirror::UpstreamUpdate {
+            name: u.name.clone(),
+            old: u.old.as_ref().map(|id| id.as_str().to_owned()),
+            new: u.new.as_ref().map(|id| id.as_str().to_owned()),
+        })
+        .collect();
+    // The guard leaves its slot for the push (no lock is held across an await), and goes back.
+    let taken = context.held.lock().ok().and_then(|mut held| held.take());
+    let Some(mut guard) = taken else {
+        return Err(Refused::of("internal error", context.clone(), Vec::new()));
+    };
+    let pushed = guard.push_upstream(quarantine, &upstream).await;
+    guard.mark_stale();
+    // poisoned: the guard is dropped, releasing the mirror early; the refs git moves next are
+    // the ones upstream just took, and the mirror is stale (synced again first).
+    if let Ok(mut held) = context.held.lock() {
+        *held = Some(guard);
+    }
+    pushed.map_err(|e| Refused::of(e.to_string(), context.clone(), Vec::new()))
 }
 
 /// The facts of a push, read from the quarantine: the ref updates as the policy sees them,

@@ -104,24 +104,30 @@ sequenceDiagram
   participant Q as Quarantine
   participant F as Remote (upstream)
   G->>D: git push writ agent/x (session cert)
-  D->>Q: receive pack
-  D->>D: checks: lease covers push + repo,<br/>ref matches agent/*, no force push,<br/>every new commit in ledger for this lease,<br/>size limits
+  D->>D: lease covers push + repo (may_push), mirror synced unless fresh
+  D->>Q: receive-pack: the pack, fsck'd, in quarantine
+  Q->>D: pre-receive hook: token, quarantine, ref updates
+  D->>D: lease again, mirror held, read from the objects git verified:<br/>new commits, fast-forwards, case twins, size, paths again
+  D->>D: under one lock: ledger, decide_push (refs, protected refs, force push,<br/>every new commit signed under this lease with the same paths, size),<br/>count and rate, log PUSH
   alt accepted
-    D->>F: push agent/x with daemon credentials
+    D->>D: lease once more
+    D->>F: push --atomic --force-with-lease from the quarantine, daemon credential
     alt upstream ok
-      D->>D: update mirror refs, log PUSH
+      D-->>Q: ok: git moves the mirror's refs
       D-->>G: ok
-    else upstream rejects (e.g. non-fast-forward)
-      D-->>G: rejected + upstream reason
+    else upstream rejects (moved, its hook, an error)
+      D->>D: log DENY with the remote's reason
+      D-->>G: rejected + upstream reason (the mirror unchanged)
     end
   else denied
-    D->>D: log DENY, notify
+    D->>D: log DENY (on_violation applied)
     D-->>G: rejected + reason
   end
 ```
 
 If upstream moved, the agent fetches through the daemon, rebases, and the new commits are
-signed again under the same lease.
+signed again under the same lease. A push already decided keeps its slot of the lease's count
+and rate when the remote refuses it.
 
 ### 3b. Push, `proxy` mode
 The agent connects to the daemon (same URL rewrite).

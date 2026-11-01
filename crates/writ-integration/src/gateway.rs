@@ -172,9 +172,8 @@ impl GitGateway {
                         remote.known_hosts_line()
                     ))
                     .unwrap(),
-                    // Until pushes reach upstream (M4 step 4), a sync would prune what an
-                    // agent pushed: the mirror stays fresh once synced.
-                    fresh_for: std::time::Duration::from_secs(3600),
+                    // Every fetch and push syncs first: what upstream has, always.
+                    fresh_for: std::time::Duration::ZERO,
                     timeout: std::time::Duration::from_secs(60),
                     max_fetch_bytes: 64 << 20,
                 },

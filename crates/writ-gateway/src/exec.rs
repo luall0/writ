@@ -150,11 +150,9 @@ async fn run_git(
             .await;
         return refuse(channel, reason).await;
     };
-    // A fetch serves what upstream has: the mirror is synced first unless it is fresh. A
-    // sync that fails refuses the fetch (fail closed), with its reason.
-    if matches!(command, LeaseCommand::UploadPack { .. })
-        && let Err(e) = gateway.shared.config.mirrors.sync_if_stale(repo).await
-    {
+    // A fetch serves what upstream has, and a push starts from it: the mirror is synced first
+    // unless it is fresh. A sync that fails refuses the command (fail closed), with its reason.
+    if let Err(e) = gateway.shared.config.mirrors.sync_if_stale(repo).await {
         let reason = format!("cannot sync from upstream: {e}");
         return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
     }

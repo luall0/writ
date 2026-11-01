@@ -36,6 +36,8 @@ struct State {
     /// git commands run (or taken, in another mode), by name.
     upload_packs: AtomicUsize,
     receive_packs: AtomicUsize,
+    /// A git command run in the repo before the next push is served (upstream moving meanwhile).
+    before_push: Mutex<Option<Vec<String>>>,
 }
 
 /// A running test remote.
@@ -57,6 +59,7 @@ impl TestRemote {
             mode: Mutex::new(Mode::Serve),
             upload_packs: AtomicUsize::new(0),
             receive_packs: AtomicUsize::new(0),
+            before_push: Mutex::new(None),
         });
         let listener = runtime
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
@@ -121,6 +124,13 @@ impl TestRemote {
     /// Replaces the authorized key.
     pub fn authorize(&self, key: PublicKey) {
         *self.state.authorized.lock().unwrap() = vec![key];
+    }
+
+    /// Runs `git <args>` in the pushed repo right before the next push is served: upstream
+    /// moving between the daemon's sync and its push.
+    pub fn before_next_push(&self, args: &[&str]) {
+        *self.state.before_push.lock().unwrap() =
+            Some(args.iter().map(|a| (*a).to_owned()).collect());
     }
 
     /// How many fetches (`git-upload-pack`) it took.
@@ -211,6 +221,18 @@ impl russh::server::Handler for Handler {
         counter.fetch_add(1, Ordering::AcqRel);
         let mode = *self.state.mode.lock().unwrap();
         let repo = self.state.root.join(path);
+        if program == "git-receive-pack"
+            && let Some(args) = self.state.before_push.lock().unwrap().take()
+        {
+            let done = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()
+                .unwrap();
+            assert!(done.success(), "before the push: git {args:?}");
+        }
         let protocol = self.git_protocol.clone();
         let program = program.trim_start_matches("git-").to_owned();
         tokio::spawn(async move {
