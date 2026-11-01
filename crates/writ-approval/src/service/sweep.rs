@@ -19,8 +19,9 @@ pub(super) enum Announce {
 use crate::ServiceError;
 
 impl Service {
-    /// Expires pending tickets and leases past `expires_at`, and exhausted leases. Called by
-    /// the daemon's timer; every request also sweeps first ([`Service::begin`]).
+    /// Expires pending tickets and leases past `expires_at`, and exhausted leases, then prunes
+    /// the operations no rate window counts any more. Called by the daemon's timer; every
+    /// request also sweeps first ([`Service::begin`]), without the pruning.
     pub fn sweep(&self) {
         let Ok(now) = self.now() else { return };
         let Ok(mut inner) = self.lock() else { return };
@@ -30,6 +31,11 @@ impl Service {
             Ok(true) => self.changed.notify_waiters(),
             Ok(false) => {}
             Err(e) => tracing::error!(error = %e.detail(), "sweep failed"),
+        }
+        // The rate window's old operations: here, not on every request (a write each time).
+        // A failure only leaves rows that no window counts.
+        if let Err(e) = inner.store.prune_ops(now) {
+            tracing::error!(error = %e, "cannot prune old operations");
         }
     }
 

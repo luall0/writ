@@ -31,6 +31,10 @@ use self::rows::{
 use crate::{Result, StoreError};
 use writ_core::canonical::Canonical;
 
+/// How long an operation stays in `ops` past the rate window before [`Store::prune_ops`]
+/// deletes it: a clock set back by up to this much still finds what the window must count.
+pub const OPS_KEPT_PAST_WINDOW_SECONDS: i64 = 3600;
+
 /// A counted operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Counter {
@@ -427,6 +431,27 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    /// Deletes the operations no rate window can count any more: older than the window
+    /// ending `now` by [`OPS_KEPT_PAST_WINDOW_SECONDS`] or more. Returns how many.
+    pub fn prune_ops(&self, now: Timestamp) -> Result<usize> {
+        let before = now
+            .unix()
+            .saturating_sub(RATE_WINDOW_SECONDS)
+            .saturating_sub(OPS_KEPT_PAST_WINDOW_SECONDS);
+        Ok(self
+            .conn
+            .execute("DELETE FROM ops WHERE at <= ?1", params![before])?)
+    }
+
+    /// How many operations `ops` holds (feature `testing`).
+    #[cfg(feature = "testing")]
+    pub fn ops_rows(&self) -> Result<u64> {
+        let rows: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM ops", [], |r| r.get(0))?;
+        u64::try_from(rows).map_err(|_| corrupt("ops", "negative count"))
     }
 
     fn expect_changed(&self, changed: usize, id: &TicketId, expected: State) -> Result<()> {

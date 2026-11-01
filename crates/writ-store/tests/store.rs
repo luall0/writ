@@ -21,9 +21,10 @@ use writ_core::lease::{
     self, APPROVAL_NAMESPACE, Approval, Lease, LifecycleError, State, TicketRecord,
 };
 use writ_core::names::{CommitId, KeyFingerprint, TicketId};
+use writ_core::policy::RATE_WINDOW_SECONDS;
 use writ_core::ticket::{Ticket, TicketRequest};
 use writ_core::units::Timestamp;
-use writ_store::{Counter, LedgerEntry, Store, StoreError};
+use writ_store::{Counter, LedgerEntry, OPS_KEPT_PAST_WINDOW_SECONDS, Store, StoreError};
 
 /// Stand-ins: the store keeps these as text and never parses them.
 const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIStandInSessionKey";
@@ -307,6 +308,30 @@ fn counters_never_go_over_the_limit() {
             .consume(&pending.id, Counter::Fetch, 0, t(52))
             .unwrap()
     );
+}
+
+#[test]
+fn old_operations_are_pruned_and_the_window_still_counts() {
+    let store = Store::open_in_memory().unwrap();
+    let lease = active_lease(&store, 1);
+    for offset in [30, 31, 90] {
+        assert!(
+            store
+                .consume(&lease.id, Counter::Fetch, 0, t(offset))
+                .unwrap()
+        );
+    }
+    // Kept until the window ending now is past them by the margin, then deleted.
+    let kept = RATE_WINDOW_SECONDS + OPS_KEPT_PAST_WINDOW_SECONDS;
+    assert_eq!(store.prune_ops(t(30 + kept - 1)).unwrap(), 0);
+    assert_eq!(store.ops_rows().unwrap(), 3);
+    assert_eq!(store.prune_ops(t(30 + kept)).unwrap(), 1);
+    assert_eq!(store.prune_ops(t(31 + kept)).unwrap(), 1);
+    assert_eq!(store.ops_rows().unwrap(), 1);
+    // Pruning never touches what a window counts, even with the clock set back by the margin.
+    assert_eq!(store.usage(&lease.id, t(120)).unwrap().ops_last_minute, 1);
+    assert_eq!(store.prune_ops(t(90)).unwrap(), 0);
+    assert_eq!(store.usage(&lease.id, t(120)).unwrap().ops_last_minute, 1);
 }
 
 #[test]

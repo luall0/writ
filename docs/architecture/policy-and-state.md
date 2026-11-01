@@ -84,7 +84,7 @@ Tables (`writ_store::Store`, schema version in `PRAGMA user_version`, now 2; an 
 | Table | Holds |
 |---|---|
 | `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with (schema 2). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, and `current_ticket`: the row whose terms are in force (itself, or the last applied amendment), and the certificate issued for it (schema 2) |
-| `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s) |
+| `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s). The daemon's timer sweep deletes rows an hour past the window (`Store::prune_ops`): a clock set back by up to an hour still counts what it must |
 | `ledger` | `(commit, lease, repo)` → signer key id, time. The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry |
 
 - Stored tickets are decoded strictly (canonical bytes only), and an approval must be complete

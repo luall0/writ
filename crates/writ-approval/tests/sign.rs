@@ -445,6 +445,26 @@ fn signatures_stop_at_the_count_and_the_rate() {
 }
 
 #[test]
+fn the_sweep_prunes_operations_no_window_counts() {
+    let h = Harness::new();
+    let (lease, cert) = h.lease(FEATURE);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    for _ in 0..3 {
+        h.sign(&cert, &commit, "omega-code").unwrap();
+    }
+    let rows = || Store::open(&h.db).unwrap().ops_rows().unwrap();
+    let kept = writ_core::policy::RATE_WINDOW_SECONDS + writ_store::OPS_KEPT_PAST_WINDOW_SECONDS;
+    h.clock.advance(u64::try_from(kept - 1).unwrap());
+    h.service.sweep();
+    assert_eq!(rows(), 3, "kept until past the margin");
+    h.clock.advance(1);
+    h.service.sweep();
+    assert_eq!(rows(), 0, "pruned by the daemon's timer sweep");
+    // The lease's counters are its own: pruning the rate's rows takes nothing back.
+    assert_eq!(h.signatures(&lease), 3);
+}
+
+#[test]
 fn an_expired_or_revoked_lease_signs_nothing() {
     let h = Harness::new();
     let (lease, cert) = h.lease(FEATURE);
