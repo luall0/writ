@@ -22,7 +22,7 @@ use rustls::sign::CertifiedKey;
 use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
 use sha2::{Digest, Sha256};
 use ssh_key::PrivateKey;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::readers::Reader;
 use crate::{CryptoError, Result};
@@ -214,7 +214,10 @@ impl ClientCertVerifier for ReaderVerifier {
 }
 
 /// The client certificate for a reader key: self-signed with that key (Ed25519), so the
-/// daemon sees the key it lists in `readers`. Returns the certificate and the key as PKCS#8.
+/// daemon sees the key it lists in `readers`. Returns the certificate and the key as PKCS#8,
+/// the one copy of the key that leaves: it moves into rustls (which doesn't wipe it, nor does
+/// ring the key it loads: docs/threat-model.md). The copies made on the way are wiped, on
+/// every path.
 fn reader_certificate(
     reader: &PrivateKey,
 ) -> Result<(CertificateDer<'static>, PrivatePkcs8KeyDer<'static>)> {
@@ -228,11 +231,24 @@ fn reader_certificate(
         0x20,
     ]);
     pkcs8.extend_from_slice(keypair.private.as_ref());
-    let der = PrivatePkcs8KeyDer::from(pkcs8.to_vec());
-    let signing = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(&der, &rcgen::PKCS_ED25519)?;
-    let cert =
-        rcgen::CertificateParams::new(vec!["writ-reader".to_owned()])?.self_signed(&signing)?;
-    Ok((cert.der().clone(), der))
+    let mut der = PrivatePkcs8KeyDer::from(pkcs8.to_vec());
+    match self_signed_reader(&der) {
+        Ok(cert) => Ok((cert, der)),
+        Err(e) => {
+            der.zeroize();
+            Err(e)
+        }
+    }
+}
+
+/// The reader's self-signed certificate. rcgen's copy of the key is wiped before returning,
+/// whatever the outcome (ring's key schedule inside it is not: docs/threat-model.md).
+fn self_signed_reader(der: &PrivatePkcs8KeyDer<'_>) -> Result<CertificateDer<'static>> {
+    let mut signing = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(der, &rcgen::PKCS_ED25519)?;
+    let cert = rcgen::CertificateParams::new(vec!["writ-reader".to_owned()])
+        .and_then(|params| params.self_signed(&signing));
+    signing.zeroize();
+    Ok(cert?.der().clone())
 }
 
 /// A client configuration that accepts exactly the certificate pinned as `fingerprint`

@@ -167,7 +167,9 @@ A new input is added here in the same change.
 - A secret never enters an error, a log line, a reply, the audit log or a notification; a
   library error that might hold one is replaced by a short word. Tests scan for them
   (`looks_secret`, `errors_and_debug_never_contain_the_token`).
-- Key material moves into the library that needs it; no other copy is kept.
+- Key material moves into the library that needs it; no other copy is kept, and the copies
+  made on the way (a PKCS#8 encoding, rcgen's key pair) are wiped on every path. What a
+  library keeps unwiped (rustls, ring) is a residual risk in the threat model.
 - A token travels in clear only to this machine (Telegram's `http` base: loopback only), and
   never through a proxy named in the environment (`proxy(None)`, tested in a child process
   with every proxy variable set).
