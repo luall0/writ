@@ -185,7 +185,7 @@ with a test:
   a key in `approvers` (hard rule 5); keys are compared whole, never by fingerprint.
 - One key, one purpose: the approval key signs, the reader key opens the approval API, the
   session key identifies a lease, the CA key issues certificates. Never reuse one for
-  another.
+  another; the daemon refuses to start with a key listed both in `approvers` and `readers`.
 - Randomness comes from the OS and fails rather than falls back.
 - Certificate validity is the lease's; serials are random and unique; a time that doesn't
   fit fails the grant.

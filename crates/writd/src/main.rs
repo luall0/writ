@@ -102,6 +102,25 @@ fn load_policy(config: &Config) -> anyhow::Result<(PolicyConfig, Vec<AllowedSign
     Ok((policy, approvers))
 }
 
+/// A key is an approver or a reader, never both: the reader key is a client key `writ` holds
+/// in a file, the approval key stays in its agent (hard rule 8), and one key for both roles
+/// would let whatever opens the API also sign approvals.
+fn one_key_one_purpose(approvers: &[AllowedSigner], readers: &[Reader]) -> anyhow::Result<()> {
+    for reader in readers {
+        if approvers
+            .iter()
+            .any(|a| a.key.key_data() == reader.key.key_data())
+        {
+            bail!(
+                "reader {} is also an approver key: a key has one purpose (make the reader key \
+                 with `writ reader`)",
+                reader.name
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The keys that may use the approval API. None at all is a startup error: nobody could
 /// list, show or approve anything.
 fn load_readers(config: &Config) -> anyhow::Result<Vec<Reader>> {
@@ -182,6 +201,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
     let (policy, approvers) = load_policy(&config)?;
     let readers = load_readers(&config)?;
+    one_key_one_purpose(&approvers, &readers)?;
     let keys = keystore::keys(&config)?;
     keystore::private_dir(&config.state_dir)?;
     let repos = config.state_dir.join("repos");
@@ -337,6 +357,27 @@ mod tests {
             error.starts_with("invalid configuration: cannot read approvers file"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn an_approver_key_is_never_a_reader() {
+        // The fixture lists the same key as approver and reader.
+        let (_dir, config) = setup();
+        let (_, approvers) = load_policy(&config).unwrap();
+        let readers = load_readers(&config).unwrap();
+        assert_eq!(approvers[0].key.key_data(), readers[0].key.key_data());
+        let error = one_key_one_purpose(&approvers, &readers)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("reader mac is also an approver key"),
+            "{error}"
+        );
+        // Different keys: fine.
+        let other = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+        let readers =
+            readers::parse(&format!("mac {}", other.public_key().to_openssh().unwrap())).unwrap();
+        assert!(one_key_one_purpose(&approvers, &readers).is_ok());
     }
 
     #[test]
