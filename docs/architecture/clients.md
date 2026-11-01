@@ -59,7 +59,8 @@ config, for a clone dedicated to an agent (a VM, a container); plain `git` is th
 git. The values they replace are recorded first.
 
 `writ init --undo` takes either back exactly: the record removed, and in whole-repo mode every
-key restored as it was.
+key restored as it was. Good practice for the operator (their own keys, guardrails in the
+agent's configuration): the [operator guide](../guides/operator.md).
 
 ```ini
 # The settings, as --whole-repo writes them (writ init omega-code); <home> is WRIT_HOME

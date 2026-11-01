@@ -136,6 +136,10 @@ Nothing reaches upstream before M4, which wires the push checks.
 - ❌ Protection of software keys against a compromised daemon host (v1)
 - ❌ Protection against an attacker who controls an agent host during a lease, beyond the
   lease scope
+- ❌ Protection of the operator's own credentials from an agent running as the operator:
+  Writ guards what goes through the daemon. The operator's signing and push keys stay theirs
+  by needing their presence (Touch ID, a security key), and no credential helper or token
+  should answer silently ([operator guide](guides/operator.md))
 
 ## Residual risks (v1)
 

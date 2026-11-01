@@ -23,7 +23,7 @@ an unchanged core.
 | M2 | [Ticket flow](history/m2-ticket-flow.md) ✅ | `writ request` / `sign` / `refuse` / `revoke` / `ls`, certificates, the approval API over SSH and HTTPS, notifications (Telegram) |
 | M2.5 | [Code quality checkup](history/m2.5-code-quality-checkup.md) ✅ | The review after M2 and its fixes; module layout and conventions ([conventions.md](conventions.md)); hardened tests and the integration test crate |
 | M2.6 | [Security checkup](history/m2.6-security-checkup.md) ✅ | The security review after M2.5 and its fixes; the [security conventions](security.md), their checks in `make check`, CI |
-| M3 | [Signed commits](#m3--signed-commits) | `writ-sign`, the sign command, the ledger, `writ init` |
+| M3 | [Signed commits](history/m3-signed-commits.md) ✅ | `writ-sign`, the sign command through the `Signer`, touched paths from checked evidence, the ledger, `writ init` (wrapper mode), `object_format` |
 | M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only forges |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
@@ -72,22 +72,12 @@ checks in `make check`, the guarantee registry.
 
 ## M3 — Signed commits
 
-[Flows § 2](flows.md#2-signed-commit): commits signed by the daemon under a lease.
-
-- The gateway's `sign` command: parse the commit bytes, check lease, limits, rate, committer
-  email, object type (commits only, no tags: [Q11](decisions.md)), `ticket_link: trailer`,
-  `paths_check` against `expected_paths`; sign through the `Signer`; append to the ledger.
-- `writ-sign` shim; `writ init` writes the remote, signing config and `core.sshCommand`
-  ([repo setup](architecture/clients.md#repo-setup-on-an-agent-host)).
-
-Acceptance:
-- [ ] In a repo wired by `writ init`, `git commit -S` works without any prompt and
-      `git verify-commit` passes with the agent key in `allowed_signers`.
-- [ ] Denied cases each fail with the reason printed in the agent's terminal: no lease,
-      expired, over `max_signatures`, over the rate, wrong committer email, a tag, a missing or
-      wrong `Writ:` trailer, paths outside `expected_paths` with `paths_check: deny`.
-- [ ] `paths_check: warn` signs and records the warning for the activity report.
-- [ ] Every signed commit is in the ledger with its lease and key.
+**Done.** Moved to [history/m3-signed-commits.md](history/m3-signed-commits.md): `writ-git`
+(commits, trailers, touched paths from evidence checked by its ids, the signed commit's id),
+`writ-signer` (the `Signer` trait, the software backend, its contract suite), `Service::sign`
+(policy, signature, audit line, counter and ledger under one lock; `on_violation` applied),
+`writ-sign git <repo>`, `writ init` (wrapper mode by default: `writ git`, `writ exec`;
+`--whole-repo`; `--undo`), `object_format` per repo, the operator guide.
 
 ## M4 — Gateway push and fetch
 
@@ -167,7 +157,9 @@ The workflow the agent follows ([Clients](architecture/clients.md#client-list),
 [Flows § 6 and § 6b](flows.md#6-out-of-ticket-request)).
 
 - `skill/writ/SKILL.md`: think through the scope, write and submit the ticket, wait, revise on
-  refusal, amend on an out-of-ticket denial, close with a summary.
+  refusal, amend on an out-of-ticket denial, close with a summary. One skill for both
+  wirings: the agent always runs git through `writ git …` (any command; plain git is the
+  same in a `--whole-repo` clone), and adds the `Writ:` trailer; decided in M3.
 - Amendments (`amends: <id>`): the original lease runs while pending, replaced once signed.
 - `writ close` and the activity report: commits, pushes, branches, denials, time used vs
   granted, files touched vs `expected_paths`.

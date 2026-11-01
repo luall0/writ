@@ -67,6 +67,22 @@ Terminal 2 then prints `Lease wrt_… granted until …` and exits 0; the sessio
 `dev/client.env` uses HTTPS for the approval API. To check SSH too, run step 5 again with
 `WRIT_APPROVAL_URL=ssh://127.0.0.1:2223`.
 
+**5b. Optional: a commit signed under the lease** ([M3](../history/m3-signed-commits.md);
+covered by `make test`, nothing here needs Touch ID). In terminal 2, in a throwaway repo:
+
+```sh
+writ="$PWD/target/debug/writ"; cargo build -q -p writ-cli -p writ-sign
+cd "$(mktemp -d)" && git init -q && "$writ" init demo      # wrapper mode
+echo hi > notes.txt && "$writ" git add notes.txt
+"$writ" git commit -m "Manual check" --trailer "Writ: <lease id>"   # signed, no prompt
+echo "agent@writ.invalid $(cat "$WRIT_HOME/sessions/current/signing_key.pub")" > allowed
+git -c gpg.ssh.allowedSignersFile=allowed verify-commit HEAD
+cd -
+```
+
+Without the trailer, or with another email (`"$writ" git -c user.email=… commit …`), git
+prints the daemon's reason and no commit is made.
+
 **6. Refuse and revoke** (also signed: `decisions: signed` in `dev/writd.yaml`):
 
 ```sh

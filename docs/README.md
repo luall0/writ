@@ -61,3 +61,6 @@ conventions, hard rules and commands, and points here for details.
   and write down; answering an advisory.
 - [Manual checks](guides/manual-checks.md): the checks that need a person (Touch ID with
   Secretive), step by step against the development daemon.
+- [Operator guide](guides/operator.md): wiring a repo for an agent beside your own git
+  workflow (wrapper or whole repo), protecting your own keys, guardrails in the agent's
+  configuration, checking what landed.

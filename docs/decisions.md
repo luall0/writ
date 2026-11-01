@@ -107,5 +107,5 @@ To settle before (or while) building the milestone named in each row.
 
 | ID | Question | Needed by |
 |---|---|---|
-| Q28 | Confirm the remaining **proposed crates** in [Stack](stack.md) when the milestone that needs each starts. `russh`, `ssh-key`, `tokio`, `thiserror`, `anyhow` were confirmed in [M0](history/m0-protocol-spike.md); `rusqlite`, `serde-saphyr`, `proptest`, `jiff`, `globset` in [M1](history/m1-lease-model-and-policy-core.md); `clap`, `age` 0.11, `ureq`, `zeroize`, `rustls`, `hyper`, `rcgen` in [M2](history/m2-ticket-flow.md); `tracing` in M2.5. Left: `secrecy`. | M3–M5 |
+| Q28 | Confirm the remaining **proposed crates** in [Stack](stack.md) when the milestone that needs each starts. `russh`, `ssh-key`, `tokio`, `thiserror`, `anyhow` were confirmed in [M0](history/m0-protocol-spike.md); `rusqlite`, `serde-saphyr`, `proptest`, `jiff`, `globset` in [M1](history/m1-lease-model-and-policy-core.md); `clap`, `age` 0.11, `ureq`, `zeroize`, `rustls`, `hyper`, `rcgen` in [M2](history/m2-ticket-flow.md); `tracing` in M2.5; `sha1-checked` in [M3](history/m3-signed-commits.md). Left: `secrecy`. | M5 |
 

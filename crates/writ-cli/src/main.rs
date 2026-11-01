@@ -124,7 +124,8 @@ enum Commands {
         url: AgentUrl,
     },
     /// Wire the git repository in the current directory for Writ. By default nothing in its
-    /// git config changes: run git through `writ git` to work under the lease.
+    /// git config changes: run git through `writ git` to work under the lease (good practice:
+    /// docs/guides/operator.md).
     Init {
         /// The repo's name in the daemon's registry.
         #[arg(required_unless_present = "undo")]
