@@ -27,6 +27,7 @@ an unchanged core.
 | M3.5 | [Signing outside the lock](history/m3.5-signing-outside-the-lock.md) ✅ | `Service::sign` in three phases (the signer never runs under the state lock), the `QueuedSigner` in front of a backend |
 | M3.6 | [Review after M3.5](history/m3.6-review-after-m3.5.md) ✅ | The security and code quality review after M3.5 and its fixes: sign requests bounded in time and number, `ops` pruned, the reader key's copies wiped, submission rates for all sources set by the operator with every refusal counted, a panicking signer logged once |
 | M4 | [Gateway push and fetch](history/m4-gateway-push-and-fetch.md) ✅ | Mirrors synced as untrusted input, every push check in the quarantine, upstream over SSH before the mirror moves, `make e2e` |
+| M4.1 | [Real end-to-end scenarios](#m41--real-end-to-end-scenarios) | The operator's and the agent's paths, run for real in containers against Forgejo, in CI; signature verification on the account |
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only remotes |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
@@ -103,6 +104,126 @@ ledger, the paths again, case twins), accepted pushes upstream before the mirror
 `writ init`'s `origin` rewrite, a lease's connections coalesced, `make e2e` against Forgejo.
 The throwaway GitHub repo check is left for the user
 ([manual checks](guides/manual-checks.md#a-throwaway-github-repo-m4)).
+
+## M4.1 — Real end-to-end scenarios
+
+Asked by the user after M4's GitHub check, which found two bugs no test saw: `writd host-key`
+/ `upstream-keys` needed the approvers file before the operator has one, and a daemon started
+on a relative config path ran pushes with no hook at all (no check). Both were on paths only a
+real operator takes; every harness took shortcuts (absolute paths, keys made in-process,
+files written in another order). M4's `make e2e` ran one scenario through the Rust harness.
+This milestone runs **the documented paths themselves**, with the real binaries in their own
+containers, against a real Forgejo, so the next such bug fails the pipeline, not a person.
+
+The pipeline (`make e2e`, Docker only on the host):
+
+- **`forgejo`**: pinned (`codeberg.org/forgejo/forgejo:13.0.5`), set up headless (an admin
+  user, a token), its own SSH server.
+- **`writd`**: the real Linux binaries built in a pinned Rust builder stage (`--locked`), a
+  runtime image with git ≥ 2.45 and OpenSSH (Debian 13: git 2.47, OpenSSH 10.0), started the
+  way the operator guide says: a `writd.yaml` with relative paths, a relative config path,
+  keys printed by `writd host-key` / `tls-fingerprint` / `upstream-keys` before any approver
+  exists. **A test image (`e2e/`), decided with the user: M8's deploy image (non-root,
+  minimal, compose) builds on it** rather than starting over (see
+  [M8](#m8--detached-deployment)).
+- **`agent`**: another container (another host, as in detached mode) with the real `writ`,
+  `writ-sign`, git and ssh, reaching the daemon by name; the approver's key in a throwaway
+  ssh-agent there, `writ sign --yes` over the approval API (SSH and HTTPS).
+- **The runner** (decided with the user): scenarios as Rust tests (a test target of their
+  own, ignored by `make test`) driving the containers (`docker compose exec`) and Forgejo's
+  API; the hardened-test rules hold (readiness by a signal or a bounded poll, exact codes, the
+  allowed case beside each refusal); each scenario on its own repo and lease.
+- **CI** runs `make e2e` as a job of its own on the Linux runner (decided with the user); the
+  pre-push hook keeps running `make ci` only.
+
+Scenarios (each asserts what the agent reads, the audit line, Forgejo's state through its
+API, and the mirror):
+
+1. **Operator setup from nothing**, in the order the operator guide and the manual checks give
+   it: pins, keys, the deploy key, readers, approvers, start. (The two M4 bugs fail here.)
+2. **Ticket lifecycle**: request, sign over SSH and over HTTPS, a signed refusal and a
+   revision, a revocation, a ticket that expires unsigned.
+3. **Wrapper mode**: a clone from Forgejo, `writ init`, signed commits, `writ git push
+   origin`; the operator's plain git in the same clone untouched.
+4. **Whole-repo mode**, and `writ init --undo`.
+5. **Every push denial** (protected ref, branch outside the lease, force push, deletion,
+   unsigned commit, another lease's, an unsigned parent, over `max_push_size`, a ref differing
+   only in case, a fetch without `fetch`): Forgejo and the mirror unchanged.
+6. **Upstream moved**: refused, then fetch, rebase (a conflict resolved too), signed again,
+   pushed.
+7. **Forgejo's own branch protection** refusing a push: its reason relayed, the mirror
+   unchanged.
+8. **Signature verification on the account**: the lease's signing key registered on the
+   Forgejo account and proven, the committer email one of the account's: pushed commits are
+   verified per Forgejo's API; with the key not registered (or not proven), unverified. The
+   GitHub manual check gains the same (the key added as a signing key, the email verified:
+   "Verified").
+9. **Revocation and expiry with operations in flight**; the certificate refused afterwards.
+10. **Restart**: the `writd` container restarted keeps leases, mirrors and ledger; a push works
+    after.
+11. **A broken or hostile upstream, for real**: Forgejo stopped (fetch and push refused, then
+    working once it is back), its host key changed (refused), the deploy key removed (refused
+    with Forgejo's reason).
+
+Also built here:
+
+- **Proving an agent signing key to a remote that asks** (proposed with the user, to confirm).
+  Forgejo and Gitea verify an SSH signing key only once a challenge is signed with it
+  (namespace `gitea`, a 64-hex token, web UI only: checked with Forgejo 13.0.5); GitHub doesn't
+  ask. The key never leaves the daemon, which signs commits only through the policy. A proof is
+  an **approval**, like a ticket: `writ prove-key <key id> --namespace <ns>` on the approver's
+  machine reads the remote's message (stdin, at most 4 KiB), shows the key, the namespace and
+  the message (escaped), and signs a `writ-proof/1` document over them with the approver key
+  (Touch ID: its own `kind`, so it can never pass for a ticket approval or the other way
+  round); the approval API (SSH or HTTPS) takes it, the daemon checks the approver's signature
+  over exactly that, the bound, and the namespace (any **but `git` and Writ's own**,
+  `writ-approval` and any `writ…`: signing in `git` would make commit signatures outside the
+  policy and the ledger), signs through the `Signer`, logs it (key, namespace, the message's
+  digest, the approver) and returns the armored signature. A reader key alone can't ask for
+  one; nothing on the daemon host is needed, and it works the same with the sealed keystore.
+- **`writd signing-keys`**, printing the agent signing public keys to register on accounts
+  (today only a lease's grant carries one).
+
+Notes for the implementation (gathered while planning, 2026-11-01):
+
+- **Where it starts**: M4's `make e2e` (`tool/e2e.sh`: Forgejo started headless with
+  `FORGEJO__security__INSTALL_LOCK=true`, sqlite, random local ports, `forgejo admin user
+  create` and `generate-access-token --scopes all --raw` run in the container; and
+  `crates/writ-integration/tests/e2e_forgejo.rs`: a repo and a deploy key made through the
+  API, the host key from `ssh-keyscan`, one scenario through the in-process harness). M4.1
+  replaces the harness with the real binaries in containers.
+- **The two bugs the pipeline must catch** (acceptance below): `5658e4e` (the print commands
+  read the approvers file) and `fd57274` (a relative config path left `core.hooksPath`
+  relative: git found no hook and took pushes unchecked). Reverting either fix must fail
+  `make e2e`.
+- **Forgejo's SSH signature verification, as checked by hand with Forgejo 13.0.5**: adding the
+  key (`POST /api/v1/user/keys`) is not enough (`verification.reason:
+  gpg.error.no_gpg_keys_found`); the key must be proven in the web UI, which has no API (only
+  GPG keys have one: `/user/gpg_key_token`, `/user/gpg_key_verify`). The flow a test can
+  drive: log in (`POST /user/login` with `_csrf`, `user_name`, `password`, cookies kept); `GET
+  /user/settings/keys?verify_ssh=<fingerprint>` with the fingerprint URL-escaped (a `+` must be
+  `%2B`, or the page shows no token; the page's own "Verify" link is escaped right); the page
+  shows `echo -n '<64-hex token>' | ssh-keygen -Y sign -n gitea …`; `POST /user/settings/keys`
+  with `_csrf`, `title=none`, `content=none`, `type=verify_ssh`, `fingerprint`, `signature`
+  (303). Then `GET /api/v1/repos/<owner>/<repo>/git/commits/<sha>` gives
+  `commit.verification.verified: true` and the signer. The committer email must be one of the
+  account's emails (the user was created with `agent@writ.invalid` in the check). GitHub: the
+  key added as a **signing** key and the committer email verified on the account; no proof.
+- **The runtime image**: Debian 13 (`trixie-slim`) has git 2.47.3 and OpenSSH 10.0
+  (`writ_mirror::MIN_GIT` is 2.45; Debian 12's 2.39 is too old).
+
+Acceptance:
+- [ ] `make e2e` starts from nothing (Docker and make on the host, no state), runs every
+      scenario above, and removes everything, locally and in CI.
+- [ ] Reverting either M4 fix (the print commands without the approvers file, the absolute
+      hooks path) makes `make e2e` fail.
+- [ ] Commits pushed through Writ show as verified on Forgejo once the lease's signing key is
+      registered and proven on the account; unverified otherwise.
+- [ ] The operator guide's and the manual checks' commands are the ones the pipeline runs
+      (a step changed in one is changed in the other).
+- [ ] A proof (`writ prove-key`) needs an approver's signature over exactly the key, the
+      namespace and the message; one in `git` or a `writ…` namespace, over 4 KiB, from a reader
+      key alone, or replayed as a ticket approval is refused with its code and logged.
 
 ## M4.5 — HTTPS upstream
 
@@ -242,7 +363,10 @@ Acceptance:
 LAN or VPN.
 
 - `deploy/Dockerfile` (non-root, minimal image) and `deploy/compose.yaml` with the two
-  volumes, the gateway's port and the approval transports in use (SSH, HTTPS).
+  volumes, the gateway's port and the approval transports in use (SSH, HTTPS). **Builds on
+  M4.1's test image** (`e2e/`: the pinned Rust builder stage, the Debian 13 runtime with git ≥
+  2.45 and OpenSSH), decided with the user in M4.1: harden it (non-root, minimal, read-only
+  where it can be) rather than start over, and `make e2e` then runs against the deploy image.
 - Notifications (the configured `Notifier`) for sealed restarts, denials and violations
   (waiting tickets already notify since M2).
 - Backup guidance for the ledger and the audit log.
