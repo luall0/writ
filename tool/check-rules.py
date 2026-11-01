@@ -102,6 +102,26 @@ for crate in sorted(p for p in CRATES.iterdir() if p.is_dir()):
             if not in_tests and DENIED_ALLOW.search(code) and not above.startswith("//"):
                 errors.append(f"{rel}:{number}: an #[allow] of a denied lint says why, above it")
 
+# The rules above treat everything after `#[cfg(test)]` as test code, so a test module must
+# end its file: production code after it would escape them.
+for path in sorted(CRATES.rglob("*.rs")):
+    rel = path.relative_to(ROOT).as_posix()
+    if "/target/" in rel or "/tests/" in rel:
+        continue
+    lines = path.read_text().splitlines()
+    for i, line in enumerate(lines):
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        if not (line.strip().startswith("#[cfg(test)]") and nxt.startswith("mod ") and nxt.endswith("{")):
+            continue
+        depth, end = 0, i + 1
+        for end in range(i + 1, len(lines)):
+            depth += lines[end].count("{") - lines[end].count("}")
+            if depth == 0:
+                break
+        trailing = [n for n in range(end + 1, len(lines)) if lines[n].strip()]
+        if trailing:
+            errors.append(f"{rel}:{trailing[0] + 1}: code after the test module (it must end the file)")
+
 for e in errors:
     print(f"check-rules: {e}", file=sys.stderr)
 sys.exit(1 if errors else 0)
