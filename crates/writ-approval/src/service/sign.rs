@@ -13,7 +13,7 @@ use std::sync::MutexGuard;
 use writ_core::caller::CallerFacts;
 use writ_core::lease::Lease;
 use writ_core::names::{CommitId, RepoName, TicketId};
-use writ_core::policy::{self, CertIdentity, Context, Denial, DenyCode, SignRequest};
+use writ_core::policy::{self, CertIdentity, Context, Denial, DenyCode, ObjectKind, SignRequest};
 use writ_core::ticket::{OnViolation, Operation};
 use writ_git::Commit;
 use writ_store::{AuditEvent, Counter, EventKind, LedgerEntry, Outcome};
@@ -22,17 +22,56 @@ use super::sweep::Announce;
 use super::{Inner, Service, internal};
 use crate::{RefusalCode, ServiceError};
 
+/// The SSHSIG namespace git signs commits in (the only one the gateway accepts).
+const GIT_NAMESPACE: &str = "git";
+
 /// A signing request, as the gateway parsed it.
 #[derive(Debug, Clone)]
 pub struct Signing {
     pub cert: CertIdentity,
     pub caller: CallerFacts,
-    /// The SSHSIG namespace git asked for (`git`).
-    pub namespace: String,
-    /// The facts the policy decides on.
-    pub request: SignRequest,
-    /// The commit to sign; `None` when the object isn't a commit (the policy refuses it).
-    pub commit: Option<Commit>,
+    /// The repo the commit is for (`writ-sign git <repo>`).
+    pub repo: RepoName,
+    pub object: SignObject,
+}
+
+/// What git asked to sign.
+#[derive(Debug, Clone)]
+pub enum SignObject {
+    /// A commit, with the paths it touches (`None`: they couldn't be computed).
+    Commit {
+        commit: Commit,
+        touched_paths: Option<Vec<String>>,
+    },
+    /// Anything else, by its kind: the policy refuses it.
+    Other(ObjectKind),
+}
+
+impl Signing {
+    /// The facts the policy decides on, read from the object itself.
+    fn request(&self) -> SignRequest {
+        match &self.object {
+            SignObject::Commit {
+                commit,
+                touched_paths,
+            } => SignRequest {
+                repo: self.repo.clone(),
+                object: ObjectKind::Commit,
+                object_format: Some(commit.algo().object_format()),
+                committer_email: commit.committer_email().to_owned(),
+                writ_trailers: commit.writ_trailers(),
+                touched_paths: touched_paths.clone(),
+            },
+            SignObject::Other(kind) => SignRequest {
+                repo: self.repo.clone(),
+                object: *kind,
+                object_format: None,
+                committer_email: String::new(),
+                writ_trailers: Vec::new(),
+                touched_paths: None,
+            },
+        }
+    }
 }
 
 /// A signed commit: the armored SSHSIG for git, and what the ledger recorded.
@@ -102,7 +141,7 @@ impl Service {
         let (now, mut inner) = self
             .begin()
             .map_err(|e| failed(DenyCode::Invalid, e.to_string()))?;
-        let request = &signing.request;
+        let request = &signing.request();
         let mut event = AuditEvent::new(now, EventKind::Sign, Outcome::Allowed)
             .cert(signing.cert.serial)
             .caller(&signing.caller)
@@ -146,22 +185,26 @@ impl Service {
                 return Err(denial);
             }
         };
-        let (Some(commit), Some(key)) = (&signing.commit, &lease.ticket.scope.signing_key) else {
-            let denial = failed(DenyCode::Invalid, "only commits are signed");
+        let (SignObject::Commit { commit, .. }, Some(key)) =
+            (&signing.object, &lease.ticket.scope.signing_key)
+        else {
+            // The policy refuses both before this point (`ObjectType`, `Config`).
+            tracing::error!("an allowed signature without a commit or a signing key");
+            let denial = failed(DenyCode::Invalid, "internal error in the daemon");
             return Err(deny(&mut inner, denial));
         };
-        let signature =
-            match writ_signer::sshsig(&*self.signer, key, &signing.namespace, commit.bytes()) {
-                Ok(signature) => signature,
-                Err(e) => {
-                    tracing::error!(error = %e, key = %key, "the signer failed");
-                    let denial = failed(
-                        DenyCode::Invalid,
-                        "the signer failed (see the daemon's log)",
-                    );
-                    return Err(deny(&mut inner, denial));
-                }
-            };
+        let signature = match writ_signer::sshsig(&*self.signer, key, GIT_NAMESPACE, commit.bytes())
+        {
+            Ok(signature) => signature,
+            Err(e) => {
+                tracing::error!(error = %e, key = %key, "the signer failed");
+                let denial = failed(
+                    DenyCode::Invalid,
+                    "the signer failed (see the daemon's log)",
+                );
+                return Err(deny(&mut inner, denial));
+            }
+        };
         let commit_id = match writ_git::signed::signed_id(commit, &signature)
             .and_then(|id| Ok(id.to_commit_id()?))
         {
@@ -226,6 +269,10 @@ impl Service {
     /// revokes the lease. Releases the state lock either way.
     fn after_violation(&self, inner: MutexGuard<'_, Inner>, lease: &Lease, denial: &Denial) {
         if denial.code.is_violation() && lease.ticket.on_violation == OnViolation::RevokeLease {
+            // On the deny list before the lock is released: no other request of this lease
+            // gets through meanwhile, and the certificate stays refused even if recording
+            // the revocation fails.
+            self.bar_serial(lease.cert_serial);
             drop(inner);
             self.revoke_for_violation(&lease.id, denial);
         }

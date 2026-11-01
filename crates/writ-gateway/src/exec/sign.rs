@@ -6,10 +6,10 @@
 
 use russh::ChannelReadHalf;
 use tokio::io::AsyncReadExt;
-use writ_approval::{SignedCommit, Signing};
+use writ_approval::{SignObject, SignedCommit, Signing};
 use writ_core::caller::CallerFacts;
 use writ_core::names::RepoName;
-use writ_core::policy::{CertIdentity, Denial, DenyCode, ObjectKind, SignRequest};
+use writ_core::policy::{CertIdentity, Denial, DenyCode, ObjectKind};
 use writ_git::Commit;
 use writ_git::object::ObjectType;
 use writ_git::paths::{self, Evidence, PathsError};
@@ -30,7 +30,6 @@ pub(super) enum Refused {
 pub(super) struct SignCommand<'a> {
     pub cert: &'a CertIdentity,
     pub facts: &'a CallerFacts,
-    pub namespace: &'a str,
     pub repo: &'a RepoName,
 }
 
@@ -58,19 +57,17 @@ pub(super) async fn sign(
         .await
         .map_err(|e| Refused::Unreadable(format!("cannot read the request: {e}")))?;
     let (cert, caller) = (command.cert.clone(), command.facts.clone());
-    let (namespace, repo) = (command.namespace.to_owned(), command.repo.clone());
-    let service = gateway.service().clone();
+    let (repo, service) = (command.repo.clone(), gateway.service().clone());
     // Off the async threads: hashing the evidence and walking the trees is bounded but can
     // take a while, and the service reads the store and syncs the audit log.
     tokio::task::spawn_blocking(move || {
         let input = SignInput::decode(&body).map_err(|e| Refused::Unreadable(e.to_string()))?;
-        let (request, commit) = parse(&repo, input).map_err(Refused::Unreadable)?;
+        let object = parse(input).map_err(Refused::Unreadable)?;
         let signing = Signing {
             cert,
             caller,
-            namespace,
-            request,
-            commit,
+            repo,
+            object,
         };
         service.sign(&signing).map_err(Refused::Denied)
     })
@@ -87,20 +84,12 @@ fn internal_error() -> Denial {
     }
 }
 
-/// The policy's facts about the object, and the commit to sign if it is one.
-fn parse(repo: &RepoName, input: SignInput) -> Result<(SignRequest, Option<Commit>), String> {
+/// What git asked to sign: a commit with the paths it touches, or another kind of object.
+fn parse(input: SignInput) -> Result<SignObject, String> {
     let object = writ_git::commit::kind(&input.object);
     if object != ObjectKind::Commit {
         // Refused by the policy, after the lease checks, with its own reason.
-        let request = SignRequest {
-            repo: repo.clone(),
-            object,
-            object_format: None,
-            committer_email: String::new(),
-            writ_trailers: Vec::new(),
-            touched_paths: None,
-        };
-        return Ok((request, None));
+        return Ok(SignObject::Other(object));
     }
     let commit = Commit::parse(input.object).map_err(|e| format!("cannot sign: {e}"))?;
     let evidence = Evidence::new(
@@ -125,15 +114,10 @@ fn parse(repo: &RepoName, input: SignInput) -> Result<(SignRequest, Option<Commi
             None
         }
     };
-    let request = SignRequest {
-        repo: repo.clone(),
-        object,
-        object_format: Some(commit.algo().object_format()),
-        committer_email: commit.committer_email().to_owned(),
-        writ_trailers: commit.writ_trailers(),
+    Ok(SignObject::Commit {
+        commit,
         touched_paths,
-    };
-    Ok((request, Some(commit)))
+    })
 }
 
 #[cfg(test)]
@@ -165,11 +149,12 @@ mod tests {
                 evidence: vec![(EvidenceKind::Tree, content)],
             }
         };
-        let repo: RepoName = "demo".parse().unwrap();
-        let (request, _) = parse(&repo, input(".gitignore")).unwrap();
-        assert_eq!(request.touched_paths, Some(vec![".gitignore".to_owned()]));
+        let SignObject::Commit { touched_paths, .. } = parse(input(".gitignore")).unwrap() else {
+            panic!("a commit");
+        };
+        assert_eq!(touched_paths, Some(vec![".gitignore".to_owned()]));
         assert_eq!(
-            parse(&repo, input(".GIT")).map(|_| ()),
+            parse(input(".GIT")).map(|_| ()),
             Err("cannot sign: the commit adds a .git entry to a tree".to_owned())
         );
     }

@@ -25,7 +25,9 @@ mod service;
 pub mod testing;
 
 pub use error::{RefusalCode, ServiceError};
-pub use service::{GatewayDenial, Service, ServiceConfig, ServicePlatform, SignedCommit, Signing};
+pub use service::{
+    GatewayDenial, Service, ServiceConfig, ServicePlatform, SignObject, SignedCommit, Signing,
+};
 pub use writ_store::EventKind;
 
 /// The SSH user a session certificate is valid for ([`writ_proto::LEASE_USER`]).

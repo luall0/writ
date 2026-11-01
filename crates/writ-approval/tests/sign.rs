@@ -14,12 +14,12 @@
 use std::sync::Arc;
 
 use writ_approval::testing::{START, TestService, TestServiceBuilder};
-use writ_approval::{SignedCommit, Signing};
+use writ_approval::{SignObject, SignedCommit, Signing};
 use writ_core::caller::CallerFacts;
 use writ_core::canonical::Canonical;
 use writ_core::lease::State;
 use writ_core::names::TicketId;
-use writ_core::policy::{CertIdentity, Denial, DenyCode, SignRequest};
+use writ_core::policy::{CertIdentity, Denial, DenyCode, ObjectKind};
 use writ_core::ticket::Ticket;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{Certificate, HashAlg};
@@ -217,16 +217,11 @@ fn signing(cert: &CertIdentity, built: &Built, repo: &str) -> Signing {
     Signing {
         cert: cert.clone(),
         caller: CallerFacts::default(),
-        namespace: "git".to_owned(),
-        request: SignRequest {
-            repo: repo.parse().unwrap(),
-            object: writ_core::policy::ObjectKind::Commit,
-            object_format: Some(built.commit.algo().object_format()),
-            committer_email: built.commit.committer_email().to_owned(),
-            writ_trailers: built.commit.writ_trailers(),
+        repo: repo.parse().unwrap(),
+        object: SignObject::Commit {
+            commit: built.commit.clone(),
             touched_paths: touched(&built.commit, &evidence).ok(),
         },
-        commit: Some(built.commit.clone()),
     }
 }
 
@@ -321,19 +316,23 @@ fn only_what_the_lease_allows_is_signed() {
         "homelab-scripts",
     )
     .unwrap();
-    // A tag, or anything that isn't a commit: refused after the lease checks.
-    for object in [
-        writ_core::policy::ObjectKind::Tag,
-        writ_core::policy::ObjectKind::Other,
-    ] {
-        let mut request = signing(&cert, &build("src/a.rs", EMAIL, &good), "omega-code");
-        request.request.object = object;
-        request.commit = None;
-        denied(
-            h.service.sign(&request),
+    // A tag (a violation), or anything else that isn't a commit (malformed, no violation):
+    // refused after the lease checks.
+    for (object, code, reason) in [
+        (
+            ObjectKind::Tag,
             DenyCode::ObjectType,
             "only commits are signed (no tags: releases stay a human act)",
-        );
+        ),
+        (
+            ObjectKind::Other,
+            DenyCode::Invalid,
+            "only commits are signed: this is not a commit",
+        ),
+    ] {
+        let mut request = signing(&cert, &build("src/a.rs", EMAIL, &good), "omega-code");
+        request.object = SignObject::Other(object);
+        denied(h.service.sign(&request), code, reason);
     }
     // A certificate no lease stands for.
     let mut stranger = cert.clone();
@@ -362,8 +361,13 @@ fn paths_outside_the_ticket_warn_or_deny() {
         "files outside expected_paths: docs/notes.md"
     );
     // Without the objects to compare, the paths are unknown: a warning too.
-    let mut unknown = signing(&cert, &outside, "omega-code");
-    unknown.request.touched_paths = None;
+    let unknown = Signing {
+        object: SignObject::Commit {
+            commit: outside.commit.clone(),
+            touched_paths: None,
+        },
+        ..signing(&cert, &outside, "omega-code")
+    };
     assert_eq!(
         h.service.sign(&unknown).unwrap().warnings,
         ["paths not checked"]
@@ -385,12 +389,17 @@ fn paths_outside_the_ticket_warn_or_deny() {
         DenyCode::Paths,
         "files outside expected_paths: docs/notes.md",
     );
-    let mut unknown = signing(
-        &cert,
-        &build("src/login.rs", EMAIL, &trailer(&fix)),
-        "omega-code",
-    );
-    unknown.request.touched_paths = None;
+    let unknown = Signing {
+        object: SignObject::Commit {
+            commit: build("src/login.rs", EMAIL, &trailer(&fix)).commit,
+            touched_paths: None,
+        },
+        ..signing(
+            &cert,
+            &build("src/login.rs", EMAIL, &trailer(&fix)),
+            "omega-code",
+        )
+    };
     denied(
         h.service.sign(&unknown),
         DenyCode::Paths,

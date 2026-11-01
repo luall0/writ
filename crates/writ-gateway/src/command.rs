@@ -22,7 +22,7 @@ pub(crate) enum LeaseCommand {
     /// `git-receive-pack '<repo>.git'`: push.
     ReceivePack { repo: RepoName },
     /// `writ-sign git <repo>`: sign the commit sent on stdin, for a repo of the lease.
-    Sign { namespace: String, repo: RepoName },
+    Sign { repo: RepoName },
 }
 
 impl LeaseCommand {
@@ -67,7 +67,6 @@ impl Command {
                     return None;
                 }
                 LeaseCommand::Sign {
-                    namespace: namespace.to_owned(),
                     repo: repo.parse().ok()?,
                 }
             }
@@ -117,7 +116,6 @@ mod tests {
         assert_eq!(
             Command::parse(b"writ-sign git demo"),
             Some(Command::Lease(LeaseCommand::Sign {
-                namespace: "git".into(),
                 repo: "demo".parse().unwrap(),
             }))
         );

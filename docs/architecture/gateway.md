@@ -65,7 +65,8 @@ revoke_lease`; an allowed request gets its line from `Service::sign`), so a cert
 lease can't sign there costs no decoding, hashing or walk. The body is bounded (16 MiB, 100,000
 objects) and decoded strictly at the edge (`exec/sign.rs`), then, off the async threads:
 
-1. The object's kind from its first bytes (a commit, a tag, anything else); a commit parsed
+1. The object's kind from its first bytes (a commit, a tag, anything else: the policy refuses
+   a tag as a violation, anything else as malformed); a commit parsed
    strictly by `writ_git::commit` (only the layout git writes, no signature already in it).
 2. Its committer email and `Writ:` trailers (found as git finds them), and its touched paths
    (`writ_git::paths`): every evidence object is read only by the id computed from its bytes,

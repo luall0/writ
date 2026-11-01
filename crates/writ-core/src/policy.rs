@@ -405,11 +405,22 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
     let id = &lease.id;
     let mut allowed = Allowed::default();
 
-    if request.object != ObjectKind::Commit {
-        return Err(deny(
-            DenyCode::ObjectType,
-            "only commits are signed (no tags: releases stay a human act)",
-        ));
+    match request.object {
+        ObjectKind::Commit => {}
+        // Asking for a tag is a choice (a violation); anything else (a push certificate,
+        // bytes that are no git object) is a malformed request.
+        ObjectKind::Tag => {
+            return Err(deny(
+                DenyCode::ObjectType,
+                "only commits are signed (no tags: releases stay a human act)",
+            ));
+        }
+        ObjectKind::Tree | ObjectKind::Blob | ObjectKind::Other => {
+            return Err(deny(
+                DenyCode::Invalid,
+                "only commits are signed: this is not a commit",
+            ));
+        }
     }
     if request.object_format != Some(entry.object_format) {
         let found = request

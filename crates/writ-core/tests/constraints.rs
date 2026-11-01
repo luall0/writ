@@ -533,17 +533,17 @@ fn committer_identity_and_object() {
         (
             "a tree",
             |_, r| r.object = ObjectKind::Tree,
-            Some(DenyCode::ObjectType),
+            Some(DenyCode::Invalid),
         ),
         (
             "a blob",
             |_, r| r.object = ObjectKind::Blob,
-            Some(DenyCode::ObjectType),
+            Some(DenyCode::Invalid),
         ),
         (
             "anything else",
             |_, r| r.object = ObjectKind::Other,
-            Some(DenyCode::ObjectType),
+            Some(DenyCode::Invalid),
         ),
         (
             "a SHA-256 commit for a SHA-1 repo",

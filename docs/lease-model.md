@@ -338,8 +338,10 @@ revives a used-up lease.
   checked when that parent is signed, which M4 enforces at push time (every new commit in the
   ledger for this lease).
 - `on_violation: revoke_lease`: a violation (an out-of-scope denial, `DenyCode::is_violation`)
-  revokes the lease, with the violation as the revocation's reason. With `deny_and_notify`
-  (the default) the request is only denied.
+  revokes the lease, with the violation as the revocation's reason; its certificate goes on
+  the deny list before anything else can run. Asking to sign a tag is a violation; bytes
+  that aren't a commit or a tag (a push certificate, a tree, garbage) are a malformed request
+  (`invalid`), not one. With `deny_and_notify` (the default) the request is only denied.
 - `protected_refs` from the registry always win over any lease. With account-wide upstream
   keys, this registry is the **only** per-repo boundary.
 - Active leases are persisted (SQLite) and reloaded after unsealing; certificates stay valid

@@ -10,7 +10,7 @@ mod sign;
 mod sweep;
 
 pub use gateway::GatewayDenial;
-pub use sign::{SignedCommit, Signing};
+pub use sign::{SignObject, SignedCommit, Signing};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;

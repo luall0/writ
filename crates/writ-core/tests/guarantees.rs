@@ -207,16 +207,23 @@ fn signatures_only_for_allowed_committer_identities() {
         );
     }
     assert!(policy::decide_sign(&world.ctx(), &sign_request(&world.lease)).is_ok());
-    // And only commits: never a tag, a tree or a blob, whoever the tagger.
-    for object in [ObjectKind::Tag, ObjectKind::Tree, ObjectKind::Blob] {
+    // And only commits: never a tag (a violation), a tree, a blob or anything else (a
+    // malformed request, no violation), whoever the tagger.
+    for (object, expected) in [
+        (ObjectKind::Tag, DenyCode::ObjectType),
+        (ObjectKind::Tree, DenyCode::Invalid),
+        (ObjectKind::Blob, DenyCode::Invalid),
+        (ObjectKind::Other, DenyCode::Invalid),
+    ] {
         let mut request = sign_request(&world.lease);
         request.object = object;
         assert_eq!(
             code(policy::decide_sign(&world.ctx(), &request)),
-            DenyCode::ObjectType,
+            expected,
             "{object:?}"
         );
     }
+    assert!(DenyCode::ObjectType.is_violation() && !DenyCode::Invalid.is_violation());
 }
 
 #[test]
