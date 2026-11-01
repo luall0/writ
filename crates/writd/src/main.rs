@@ -82,7 +82,7 @@ fn main() -> ExitCode {
 
 fn host_key(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
-    let (policy, _) = load_policy(&config)?;
+    let policy = load_registry(&config)?;
     println!(
         "{}",
         keystore::keys(&config, &policy)?
@@ -95,7 +95,7 @@ fn host_key(path: &Path) -> anyhow::Result<()> {
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
-    let (policy, _) = load_policy(&config)?;
+    let policy = load_registry(&config)?;
     println!("{}", keystore::keys(&config, &policy)?.tls.fingerprint());
     Ok(())
 }
@@ -104,7 +104,7 @@ fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
 /// each remote (as a deploy key, or on the account).
 fn upstream_keys(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
-    let (policy, _) = load_policy(&config)?;
+    let policy = load_registry(&config)?;
     for (id, key) in keystore::keys(&config, &policy)?.upstream {
         let repos: Vec<&str> = policy
             .repos()
@@ -129,14 +129,20 @@ fn load_pinned_hosts(config: &Config) -> anyhow::Result<PinnedHosts> {
     PinnedHosts::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
+/// The repo registry and templates alone: what the commands that print a key need (the
+/// keystore makes one key per template signing key and repo credential). An authority file,
+/// checked for owner, mode and links before it is believed.
+fn load_registry(config: &Config) -> anyhow::Result<PolicyConfig> {
+    let policy_text = writ_platform::fs::read_authority(&config.policy, "policy")?;
+    PolicyConfig::from_yaml(&policy_text)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", config.policy.display()))
+}
+
 /// The approval policy (repo registry and templates) and the approver keys, from the files
 /// the configuration names (authority files: [`writ_platform::fs::read_authority`]). No
 /// approver key at all is a startup error.
 fn load_policy(config: &Config) -> anyhow::Result<(PolicyConfig, Vec<AllowedSigner>)> {
-    // Authority files: checked for owner, mode and links before they are believed.
-    let policy_text = writ_platform::fs::read_authority(&config.policy, "policy")?;
-    let policy = PolicyConfig::from_yaml(&policy_text)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", config.policy.display()))?;
+    let policy = load_registry(config)?;
     let approvers_text = writ_platform::fs::read_authority(&config.approvers, "approvers file")?;
     let approvers = allowed_signers::parse(&approvers_text, APPROVAL_NAMESPACE)
         .map_err(|e| anyhow::anyhow!("{}: {e}", config.approvers.display()))?;
@@ -453,6 +459,17 @@ mod tests {
             error.starts_with("invalid configuration: cannot read approvers file"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn the_commands_that_print_a_key_need_no_approvers_file() {
+        // `writd host-key`, `tls-fingerprint` and `upstream-keys` run before the approver is
+        // set up (the manual checks pin the daemon, then list the approver).
+        let (dir, config) = setup();
+        std::fs::remove_file(dir.path().join("approvers")).unwrap();
+        assert!(load_registry(&config).is_ok());
+        let error = load_policy(&config).unwrap_err().to_string();
+        assert!(error.contains("cannot read approvers file"), "{error}");
     }
 
     #[test]
