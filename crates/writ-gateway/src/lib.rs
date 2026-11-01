@@ -20,9 +20,9 @@
 //!
 //! Commits are signed by the approval service ([`Service::sign`]: the policy, the `Signer`,
 //! the ledger); fetches are decided by it ([`Service::fetch`]: the policy, the rate) and served
-//! from the repo's mirror once synced ([`writ_mirror::Mirrors`]). Until the rest of M4, pushes
-//! are only checked against the repo's protected refs (the M0 spike), for any active lease
-//! that allows the operation and names the repo.
+//! from the repo's mirror once synced ([`writ_mirror::Mirrors`]); pushes are decided by it at
+//! git's pre-receive hook ([`Service::push`]: the policy on what git verified in the
+//! quarantine, the ledger, the count and the rate).
 //!
 //! Every request the gateway turns away on its own is logged through
 //! [`Service::gateway_denied`]; the lease decisions are logged by the service itself.
@@ -214,6 +214,32 @@ impl Gateway {
             repo.clone(),
         );
         tokio::task::spawn_blocking(move || service.fetch(&cert, &caller, &repo))
+            .await
+            .unwrap_or_else(|_| Err(Denial::internal()))
+    }
+
+    /// [`Service::may_push`], off the async threads.
+    async fn may_push(
+        &self,
+        cert: &CertIdentity,
+        caller: &CallerFacts,
+        repo: &writ_core::names::RepoName,
+    ) -> std::result::Result<Lease, Denial> {
+        let (service, cert, caller, repo) = (
+            self.service().clone(),
+            cert.clone(),
+            caller.clone(),
+            repo.clone(),
+        );
+        tokio::task::spawn_blocking(move || service.may_push(&cert, &caller, &repo))
+            .await
+            .unwrap_or_else(|_| Err(Denial::internal()))
+    }
+
+    /// [`Service::push`], off the async threads.
+    async fn push(&self, pushing: writ_approval::Pushing) -> std::result::Result<Lease, Denial> {
+        let service = self.service().clone();
+        tokio::task::spawn_blocking(move || service.push(&pushing))
             .await
             .unwrap_or_else(|_| Err(Denial::internal()))
     }

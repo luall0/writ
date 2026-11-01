@@ -1,5 +1,5 @@
-//! The hook side, run by git as `writd hook pre-receive` in its own process: forwards the ref
-//! updates to the daemon and exits with its answer.
+//! The hook side, run by git as `writd hook pre-receive` in its own process: forwards the
+//! push's quarantine and its ref updates to the daemon and exits with its answer.
 
 use std::io::{Read, Write};
 
@@ -19,6 +19,17 @@ fn pre_receive() -> Result<(), String> {
         std::env::var_os("WRIT_HOOK_SOCKET").ok_or("push not started by the writ gateway")?;
     let token =
         std::env::var("WRIT_HOOK_TOKEN").map_err(|_| "push not started by the writ gateway")?;
+    // Set by receive-pack when the push sent objects; none for a push that only deletes.
+    let quarantine = match std::env::var("GIT_QUARANTINE_PATH") {
+        Ok(path) => path,
+        Err(std::env::VarError::NotPresent) => String::new(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("the push's quarantine path is not UTF-8".to_owned());
+        }
+    };
+    if quarantine.contains('\n') {
+        return Err("the push's quarantine path holds a newline".to_owned());
+    }
     let mut updates = String::new();
     std::io::stdin()
         .read_to_string(&mut updates)
@@ -26,7 +37,7 @@ fn pre_receive() -> Result<(), String> {
     let mut stream = std::os::unix::net::UnixStream::connect(socket)
         .map_err(|e| format!("cannot reach the daemon: {e}"))?;
     stream
-        .write_all(request(&token, &updates).as_bytes())
+        .write_all(request(&token, &quarantine, &updates).as_bytes())
         .and_then(|()| stream.shutdown(std::net::Shutdown::Write))
         .map_err(|e| format!("cannot reach the daemon: {e}"))?;
     let mut reply = String::new();
@@ -36,9 +47,10 @@ fn pre_receive() -> Result<(), String> {
     answer(&reply)
 }
 
-/// What the hook sends: the token line, then git's lines (each ending in `\n`).
-fn request(token: &str, updates: &str) -> String {
-    let mut text = format!("{token}\n{updates}");
+/// What the hook sends: the token line, the quarantine line (empty when there is none), then
+/// git's lines (each ending in `\n`).
+fn request(token: &str, quarantine: &str, updates: &str) -> String {
+    let mut text = format!("{token}\n{quarantine}\n{updates}");
     if !text.ends_with('\n') {
         text.push('\n');
     }
@@ -63,9 +75,9 @@ mod tests {
 
     #[test]
     fn every_line_sent_ends_with_a_newline() {
-        assert_eq!(request("t", ""), "t\n");
-        assert_eq!(request("t", "a b c\n"), "t\na b c\n");
-        assert_eq!(request("t", "a b c"), "t\na b c\n");
+        assert_eq!(request("t", "", ""), "t\n\n");
+        assert_eq!(request("t", "/q", "a b c\n"), "t\n/q\na b c\n");
+        assert_eq!(request("t", "/q", "a b c"), "t\n/q\na b c\n");
     }
 
     #[test]

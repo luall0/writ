@@ -26,6 +26,7 @@ pub mod git;
 pub mod known_hosts;
 mod mirror;
 mod process;
+pub mod quarantine;
 pub mod relay;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -91,6 +92,12 @@ pub enum MirrorError {
     Spawn(#[source] std::io::Error),
     #[error("the upstream agent socket failed: {0}")]
     Agent(String),
+    #[error("not this push's quarantine: {0}")]
+    NotAQuarantine(String),
+    #[error("the push brings more than {0} new commits")]
+    TooManyCommits(usize),
+    #[error("cannot read the push: {0}")]
+    Read(String),
 }
 
 pub type Result<T> = std::result::Result<T, MirrorError>;

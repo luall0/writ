@@ -108,6 +108,24 @@ impl Limits {
     };
 }
 
+/// A digest of a list of paths (SHA-256 over each path, sorted, followed by a NUL), in hex:
+/// what the ledger keeps of the paths checked at signing, compared at push time.
+pub fn digest(paths: &[String]) -> String {
+    use sha2::Digest as _;
+    let mut sorted: Vec<&String> = paths.iter().collect();
+    sorted.sort();
+    let mut hasher = sha2::Sha256::new();
+    for path in sorted {
+        hasher.update(path.as_bytes());
+        hasher.update([0u8]);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// The paths `commit` touches, sorted (a path that isn't UTF-8 is shown with `�` in place
 /// of the bytes that aren't).
 pub fn touched(commit: &Commit, evidence: &Evidence) -> Result<Vec<String>, PathsError> {
@@ -276,6 +294,21 @@ impl Walk<'_> {
 #[cfg(test)]
 #[allow(clippy::string_slice, clippy::arithmetic_side_effects)]
 mod tests {
+
+    #[test]
+    fn the_digest_is_of_the_sorted_paths_and_tells_lists_apart() {
+        let list = |items: &[&str]| items.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(digest(&list(&["b", "a"])), digest(&list(&["a", "b"])));
+        assert_ne!(digest(&list(&["a", "b"])), digest(&list(&["ab"])));
+        assert_ne!(digest(&list(&["a"])), digest(&list(&["a", "a"])));
+        assert_ne!(digest(&list(&[])), digest(&list(&[""])));
+        // SHA-256 of nothing: an empty list.
+        assert_eq!(
+            digest(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
     use super::*;
 
     const ALGO: HashAlgo = HashAlgo::Sha1;

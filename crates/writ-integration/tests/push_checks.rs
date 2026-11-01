@@ -1,0 +1,265 @@
+//! Every push check of `gateway` mode with the real `git`, `ssh` and `writ-sign` (M4): each
+//! refusal comes with a reason the agent can read and its code in the audit log, nothing moves
+//! in the mirror (nor upstream), and the allowed push next to each refusal goes through.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
+use std::fs;
+use std::path::Path;
+use std::process::Output;
+
+use writ_crypto::keys::KeyKind;
+use writ_integration::gateway::{GitGateway, Listen};
+use writ_integration::{audit_events, stderr};
+
+/// A clone of the seeded repo, wired for signing.
+fn setup() -> (GitGateway, std::path::PathBuf) {
+    let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
+    gateway.seed_repo();
+    let work = gateway.clone("work");
+    (gateway, work)
+}
+
+/// The push was refused before any ref moved: git's status, the reason the agent reads, the
+/// audit line's code, and the ref absent from the mirror (or where it was).
+fn assert_refused(gateway: &GitGateway, out: &Output, reason: &str, code: &str) {
+    assert_eq!(out.status.code(), Some(1), "{reason}: {}", stderr(out));
+    assert!(
+        stderr(out).contains(reason),
+        "expected {reason:?} in:\n{}",
+        stderr(out)
+    );
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    let denied = audit_events(&audit, "push", "denied");
+    let last = denied.last().expect("a denied push line");
+    assert_eq!(last["code"], code, "{last}");
+}
+
+fn push(gateway: &GitGateway, work: &Path, refspec: &str) -> Output {
+    gateway.git(work, &["push", "origin", refspec])
+}
+
+#[test]
+fn a_branch_outside_the_lease_is_refused() {
+    let (gateway, work) = setup();
+    gateway.commit_signed(&work, "f", "x\n");
+    let out = push(&gateway, &work, "HEAD:refs/heads/feature/x");
+    assert_refused(&gateway, &out, "branch feature/x not allowed", "ref");
+    assert_eq!(gateway.bare_ref("refs/heads/feature/x"), None);
+    // In the lease's branches: the same commit goes through.
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+}
+
+#[test]
+fn a_force_push_or_a_deletion_is_refused_without_force_push() {
+    let (gateway, work) = setup();
+    let first = gateway.commit_signed(&work, "f", "1\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    // Another history for the same branch.
+    gateway.git_ok(&work, &["reset", "-q", "--hard", "HEAD~1"]);
+    gateway.commit_signed(&work, "g", "2\n");
+    let out = push(&gateway, &work, "+HEAD:refs/heads/agent/x");
+    assert_refused(
+        &gateway,
+        &out,
+        "force push to refs/heads/agent/x not allowed",
+        "force_push",
+    );
+    let out = push(&gateway, &work, ":refs/heads/agent/x");
+    assert_refused(
+        &gateway,
+        &out,
+        "deleting refs/heads/agent/x needs force_push",
+        "force_push",
+    );
+    assert_eq!(
+        gateway.bare_ref("refs/heads/agent/x").as_deref(),
+        Some(first.as_str())
+    );
+    // Moving forward from where it is: fine.
+    gateway.git_ok(&work, &["reset", "-q", "--hard", &first]);
+    gateway.commit_signed(&work, "h", "3\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+}
+
+#[test]
+fn a_commit_not_signed_under_this_lease_is_refused() {
+    let (gateway, work) = setup();
+    // Unsigned.
+    fs::write(work.join("f"), "x\n").unwrap();
+    gateway.git_ok(&work, &["add", "f"]);
+    gateway.git_ok(&work, &["commit", "-q", "-m", "unsigned"]);
+    let unsigned = gateway
+        .git_ok(&work, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    let out = push(&gateway, &work, "HEAD:refs/heads/agent/x");
+    assert_refused(
+        &gateway,
+        &out,
+        &format!("commit {unsigned} was not signed under this lease for repo demo"),
+        "unsigned",
+    );
+    // An unsigned commit under a signed one: the signed commit is in the ledger, its parent
+    // isn't, and it never reaches the mirror either.
+    let signed = gateway.commit_signed(&work, "g", "y\n");
+    let out = push(&gateway, &work, "HEAD:refs/heads/agent/x");
+    assert_refused(
+        &gateway,
+        &out,
+        &format!("commit {unsigned} was not signed under this lease"),
+        "unsigned",
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/agent/x"), None);
+    let present = gateway.git(
+        &gateway.root().join("repos/demo.git"),
+        &["cat-file", "-e", &signed],
+    );
+    assert_eq!(
+        present.status.code(),
+        Some(1),
+        "the refused objects never landed"
+    );
+
+    // Signed under another lease (its own session, its own trailer).
+    gateway.git_ok(&work, &["reset", "-q", "--hard", "origin/main"]);
+    let other = gateway.session("other");
+    let theirs = gateway.commit_signed_as("other", &other, &work, "h", "z\n");
+    let out = push(&gateway, &work, "HEAD:refs/heads/agent/x");
+    assert_refused(
+        &gateway,
+        &out,
+        &format!("commit {theirs} was not signed under this lease"),
+        "unsigned",
+    );
+    // The other lease may push it.
+    let out = gateway.git_as(
+        "other",
+        &work,
+        &["push", "-q", "origin", "HEAD:refs/heads/agent/y"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+/// A lease whose pushes are at most 2 KB.
+const SMALL_PUSHES: &str = r#"
+scope:
+  repos: [demo]
+  operations: [fetch, commit_sign, push]
+  branches: ["agent/*"]
+ticket:
+  title: Small pushes
+  task: Push little
+limits:
+  max_push_size: 2KB
+"#;
+
+#[test]
+fn a_pack_over_max_push_size_is_refused() {
+    let (gateway, work) = setup();
+    let lease = gateway.session_with("small", SMALL_PUSHES);
+    let mut random = vec![0u8; 20_000];
+    std::io::Read::read_exact(&mut fs::File::open("/dev/urandom").unwrap(), &mut random).unwrap();
+    let content = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    gateway.commit_signed_as("small", &lease, &work, "big", &content);
+    let out = gateway.git_as(
+        "small",
+        &work,
+        &["push", "origin", "HEAD:refs/heads/agent/big"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    // git refuses it first (receive.maxInputSize is the lease's), before the hook.
+    assert!(
+        stderr(&out).contains("pack exceeds maximum allowed size"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/agent/big"), None);
+    // Refused by git, still in the audit log.
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    let denied = audit_events(&audit, "push", "denied");
+    assert_eq!(denied.len(), 1, "{denied:?}");
+    assert!(
+        denied[0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("git refused the push before its checks"),
+        "{denied:?}"
+    );
+    // A small one under the same lease goes through.
+    gateway.git_ok(&work, &["reset", "-q", "--hard", "origin/main"]);
+    gateway.commit_signed_as("small", &lease, &work, "small", "x\n");
+    let out = gateway.git_as(
+        "small",
+        &work,
+        &["push", "-q", "origin", "HEAD:refs/heads/agent/small"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn a_ref_that_differs_only_in_case_from_one_the_repo_has_is_refused() {
+    let (gateway, work) = setup();
+    gateway.commit_signed(&work, "f", "x\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    gateway.commit_signed(&work, "g", "y\n");
+    let out = push(&gateway, &work, "HEAD:refs/heads/agent/X");
+    assert_refused(
+        &gateway,
+        &out,
+        "refs/heads/agent/X differs only in case from a ref the repo has",
+        "invalid",
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/agent/X"), None);
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/z"]);
+}
+
+#[test]
+fn a_commit_whose_paths_changed_since_signing_is_refused() {
+    let (gateway, work) = setup();
+    let commit = gateway.commit_signed(&work, "f", "x\n");
+    // What signing saw, as the ledger keeps it: replaced by the digest of other paths, as if
+    // the objects pushed weren't the ones the daemon checked (a SHA-1 collision would do it).
+    let db = rusqlite::Connection::open(gateway.root().join("leases.db")).unwrap();
+    let changed = db
+        .execute(
+            "UPDATE ledger SET paths_digest = ?1 WHERE commit_id = ?2",
+            rusqlite::params![writ_git_digest(&["other"]), commit],
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "the fixture edited the ledger");
+    let out = push(&gateway, &work, "HEAD:refs/heads/agent/x");
+    assert_refused(
+        &gateway,
+        &out,
+        &format!(
+            "commit {commit}: the paths it touches are not the ones checked when it was signed"
+        ),
+        "paths_changed",
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/agent/x"), None);
+    // With the digest signing computed, the same push goes through: the check compares what
+    // it should, not anything.
+    db.execute(
+        "UPDATE ledger SET paths_digest = ?1 WHERE commit_id = ?2",
+        rusqlite::params![writ_git_digest(&["f"]), commit],
+    )
+    .unwrap();
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+}
+
+/// `writ_git::paths::digest`, for the fixture.
+fn writ_git_digest(paths: &[&str]) -> String {
+    let owned: Vec<String> = paths.iter().map(|p| (*p).to_owned()).collect();
+    writ_git::paths::digest(&owned)
+}

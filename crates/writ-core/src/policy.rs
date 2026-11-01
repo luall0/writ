@@ -82,6 +82,10 @@ pub enum DenyCode {
     /// A pushed commit was not signed under this lease for this repo (`unsigned`, a
     /// violation).
     Unsigned,
+    /// A pushed commit touches other paths than the ones checked when it was signed, computed
+    /// again from the objects git verified (`paths_changed`, a violation: the objects aren't
+    /// the ones the daemon saw).
+    PathsChanged,
     /// The push is over `max_push_size` (`size`, a violation).
     Size,
     /// A count limit is reached: signatures or pushes (`limit`).
@@ -110,6 +114,7 @@ impl DenyCode {
                 | DenyCode::ProtectedRef
                 | DenyCode::ForcePush
                 | DenyCode::Unsigned
+                | DenyCode::PathsChanged
                 | DenyCode::Size
         )
     }
@@ -136,6 +141,7 @@ impl DenyCode {
             DenyCode::ProtectedRef => "protected_ref",
             DenyCode::ForcePush => "force_push",
             DenyCode::Unsigned => "unsigned",
+            DenyCode::PathsChanged => "paths_changed",
             DenyCode::Size => "size",
             DenyCode::Limit => "limit",
             DenyCode::Rate => "rate",
@@ -328,6 +334,9 @@ pub struct RefUpdate {
     pub new: Option<CommitId>,
     /// Whether `old` is an ancestor of `new` (computed by the daemon with git).
     pub fast_forward: bool,
+    /// Whether the ref is new and another ref of the repo has the same name ignoring case
+    /// (computed by the daemon with git): on a file system that folds case they would be one.
+    pub case_twin: bool,
 }
 
 /// A new commit in a push, and the ledger entries for it.
@@ -335,6 +344,9 @@ pub struct RefUpdate {
 pub struct PushedCommit {
     pub id: CommitId,
     pub signed_under: Vec<LedgerRef>,
+    /// The digest of the paths it touches, computed again from the objects git verified in
+    /// the push (`None`: they couldn't be computed).
+    pub paths: Option<String>,
 }
 
 /// One ledger entry for a commit: signed under this lease, for this repo.
@@ -342,6 +354,8 @@ pub struct PushedCommit {
 pub struct LedgerRef {
     pub lease: TicketId,
     pub repo: RepoName,
+    /// The digest of the paths it touched as signing saw them (`None`: unknown then).
+    pub paths: Option<String>,
 }
 
 /// A fetch from a repo.
@@ -608,8 +622,15 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
             .name
             .parse()
             .map_err(|e: crate::pattern::PatternError| deny(DenyCode::Invalid, e.to_string()))?;
-        if !seen.insert(name.clone()) {
+        // Ignoring case: two refs that differ only in case are one on APFS.
+        if !seen.insert(name.as_str().to_ascii_lowercase()) {
             return Err(deny(DenyCode::Invalid, format!("{name} is updated twice")));
+        }
+        if update.case_twin {
+            return Err(deny(
+                DenyCode::Invalid,
+                format!("{name} differs only in case from a ref the repo has"),
+            ));
         }
         if entry.protected_refs.iter().any(|p| p.protects(&name)) {
             return Err(deny(
@@ -654,17 +675,31 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
         }
     }
     for commit in &request.commits {
-        let signed_here = commit
+        let Some(entry) = commit
             .signed_under
             .iter()
-            .any(|entry| &entry.lease == id && entry.repo == request.repo);
-        if !signed_here {
+            .find(|entry| &entry.lease == id && entry.repo == request.repo)
+        else {
             return Err(outside(
                 id,
                 DenyCode::Unsigned,
                 format_args!(
                     "commit {} was not signed under this lease for repo {}",
                     commit.id, request.repo
+                ),
+            ));
+        };
+        // The paths checked at signing came from objects the agent sent; the push brings the
+        // objects git verified. Different paths mean different objects under the same ids.
+        if let Some(signed) = &entry.paths
+            && commit.paths.as_ref() != Some(signed)
+        {
+            return Err(outside(
+                id,
+                DenyCode::PathsChanged,
+                format_args!(
+                    "commit {}: the paths it touches are not the ones checked when it was signed",
+                    commit.id
                 ),
             ));
         }

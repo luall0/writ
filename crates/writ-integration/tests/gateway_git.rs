@@ -28,14 +28,11 @@ fn fetch_and_push_through_the_gateway() {
     assert_eq!(fs::read_to_string(work.join("README")).unwrap(), "demo\n");
     let main_before = gateway.bare_ref("refs/heads/main");
 
-    fs::write(work.join("feature"), "x\n").unwrap();
-    gateway.git_ok(&work, &["add", "feature"]);
-    gateway.git_ok(&work, &["commit", "-q", "-m", "feature"]);
+    let head = gateway.commit_signed(&work, "feature", "x\n");
     gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
-    let head = gateway.git_ok(&work, &["rev-parse", "HEAD"]);
     assert_eq!(
         gateway.bare_ref("refs/heads/agent/x").as_deref(),
-        Some(head.trim())
+        Some(head.as_str())
     );
 
     // A protected ref: refused by the daemon through the pre-receive callback, with its
@@ -62,16 +59,27 @@ fn fetch_and_push_through_the_gateway() {
     let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
     let refused = audit_events(&audit, "push", "denied");
     assert_eq!(refused.len(), 2, "{refused:?}");
-    assert_eq!(refused[0]["reason"], "refs/heads/main is protected");
+    assert_eq!(refused[0]["code"], "protected_ref");
+    assert_eq!(
+        refused[0]["reason"],
+        "refs/heads/main is protected in repo demo"
+    );
     assert_eq!(refused[0]["refs"][0], "refs/heads/main");
     assert_eq!(refused[0]["repo"], "demo");
-    assert_eq!(refused[1]["reason"], "refs/tags/v1 is protected");
+    assert_eq!(
+        refused[1]["reason"],
+        "refs/tags/v1 is protected in repo demo"
+    );
+    // The accepted push has its one line too.
+    let accepted = audit_events(&audit, "push", "allowed");
+    assert_eq!(accepted.len(), 1, "{accepted:?}");
+    assert_eq!(accepted[0]["refs"][0], "refs/heads/agent/x");
 
     // Fetch sees the pushed branch.
     let other = gateway.clone("other");
     gateway.git_ok(&other, &["fetch", "-q", "origin"]);
     let fetched = gateway.git_ok(&other, &["rev-parse", "origin/agent/x"]);
-    assert_eq!(fetched.trim(), head.trim());
+    assert_eq!(fetched.trim(), head);
 }
 
 #[test]
@@ -109,10 +117,19 @@ fn malformed_objects_never_land() {
             "{listing}: nothing landed"
         );
     }
+    // Each refusal, made by git before the hook, is in the audit log.
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    let refused = audit_events(&audit, "push", "denied");
+    assert_eq!(refused.len(), 4, "{refused:?}");
+    assert!(
+        refused.iter().all(|e| e["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("git refused the push")),
+        "{refused:?}"
+    );
     // A good commit still goes through, on the same connection setup.
-    fs::write(work.join("feature"), "x\n").unwrap();
-    gateway.git_ok(&work, &["add", "feature"]);
-    gateway.git_ok(&work, &["commit", "-q", "-m", "feature"]);
+    gateway.commit_signed(&work, "feature", "x\n");
     gateway.git_ok(
         &work,
         &["push", "-q", "origin", "HEAD:refs/heads/agent/good"],
@@ -196,9 +213,7 @@ fn the_same_protocol_works_over_a_unix_socket() {
     let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Unix);
     gateway.seed_repo();
     let work = gateway.clone("work");
-    fs::write(work.join("f"), "x\n").unwrap();
-    gateway.git_ok(&work, &["add", "f"]);
-    gateway.git_ok(&work, &["commit", "-q", "-m", "over a unix socket"]);
+    gateway.commit_signed(&work, "f", "over a unix socket\n");
     gateway.git_ok(
         &work,
         &["push", "-q", "origin", "HEAD:refs/heads/agent/unix"],

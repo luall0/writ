@@ -331,16 +331,19 @@ fn arb_op() -> impl Strategy<Value = Op> {
             old: old.map(commit),
             new: new.map(commit),
             fast_forward,
+            case_twin: false,
         });
     let pushed = (
         1u64..6,
         prop::collection::vec((select(lease_ids), select(REPOS.to_vec())), 0..=2),
     )
         .prop_map(|(n, under)| PushedCommit {
+            paths: None,
             id: commit(n),
             signed_under: under
                 .into_iter()
                 .map(|(lease, r)| LedgerRef {
+                    paths: None,
                     lease: lease.parse().unwrap(),
                     repo: repo(r),
                 })
@@ -532,10 +535,13 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
                             old: (!create).then(|| commit(1)),
                             new: (!delete).then(|| commit(2)),
                             fast_forward: ff,
+                            case_twin: false,
                         }],
                         commits: vec![PushedCommit {
+                            paths: None,
                             id: commit(2),
                             signed_under: vec![LedgerRef {
+                                paths: None,
                                 lease: id.clone(),
                                 repo: repo_name,
                             }],

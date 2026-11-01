@@ -158,8 +158,10 @@ pub fn sign_request(lease: &Lease) -> SignRequest {
 /// A push of two commits signed under the lease to agent/oauth-login, fast-forward.
 pub fn push_request(lease: &Lease) -> PushRequest {
     let signed = |n| PushedCommit {
+        paths: None,
         id: commit(n),
         signed_under: vec![LedgerRef {
+            paths: None,
             lease: lease.id.clone(),
             repo: repo("omega-code"),
         }],
@@ -172,6 +174,7 @@ pub fn push_request(lease: &Lease) -> PushRequest {
             old: Some(commit(1)),
             new: Some(commit(3)),
             fast_forward: true,
+            case_twin: false,
         }],
         commits: vec![signed(2), signed(3)],
         pack_size: 10_000,

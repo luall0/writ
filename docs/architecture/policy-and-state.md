@@ -23,7 +23,7 @@ Every request → find the single lease matching the caller's certificate → al
 |---|---|---|
 | `resolve_lease` | Certificate key id, serial, session key fingerprint | Exactly one lease matches all three |
 | `decide_sign` | Repo, object kind, committer email, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
-| `decide_push` | Repo, push mode, ref updates (old, new, fast-forward), new commits with their ledger entries, pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, not protected, a branch, within the lease's branches, no force push or deletion unless allowed; every new commit in the ledger for this lease and repo; size; `max_pushes`; rate |
+| `decide_push` | Repo, push mode, ref updates (old, new, fast-forward, a twin ignoring case), new commits with their ledger entries and the digest of the paths each touches (computed again from the objects git verified), pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, updated once (ignoring case), without a twin ignoring case in the repo, not protected, a branch, within the lease's branches, no force push or deletion unless allowed; every new commit in the ledger for this lease and repo, touching the paths signing saw (when it saw them); size; `max_pushes`; rate |
 | `decide_fetch` | Repo | Common checks, rate (`Service::fetch` then takes one operation of the rate window under the same lock) |
 
 The **common checks** come first in every decision: the lease is active and before
@@ -34,7 +34,8 @@ current config. Counts and rate come last, so an out-of-scope request gets the o
 reason.
 
 Each denial has a code (`DenyCode`). Out-of-scope codes (operation, repo, push mode, object
-type, committer, ticket link, paths, ref, protected ref, force push, unsigned commit, size)
+type, committer, ticket link, paths, ref, protected ref, force push, unsigned commit, paths
+changed since signing, size)
 are **violations** and trigger the lease's `on_violation`; running out of time, counts or
 rate, a wrong caller or a config change are not.
 
@@ -85,7 +86,7 @@ Tables (`writ_store::Store`, schema version in `PRAGMA user_version`, now 2; an 
 |---|---|
 | `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with (schema 2). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, and `current_ticket`: the row whose terms are in force (itself, or the last applied amendment), and the certificate issued for it (schema 2) |
 | `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s). The daemon's timer sweep deletes rows an hour past the window (`Store::prune_ops`): a clock set back by up to an hour still counts what it must |
-| `ledger` | `(commit, lease, repo)` → signer key id, time. The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry |
+| `ledger` | `(commit, lease, repo)` → signer key id, time, the digest of the paths the commit touched as signing computed them (`writ_git::paths::digest`; none when unknown, schema 4). The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry |
 
 - Stored tickets are decoded strictly (canonical bytes only), and an approval must be complete
   and under `writ-approval`: a record edited by hand fails closed.

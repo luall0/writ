@@ -6,9 +6,12 @@
 //! Unix socket; the daemon ([`server`]) decides. Git deletes the quarantine when the hook
 //! refuses.
 //!
-//! The exchange: the hook sends `<token>\n` then git's ref update lines, each ending in `\n`,
-//! and closes its side; the daemon answers `ok\n` or `deny <reason>\n`. Anything the daemon
-//! can't read whole (over [`MAX_HOOK_INPUT`], cut short, not UTF-8) is denied.
+//! The exchange: the hook sends `<token>\n`, the quarantine git made for the push
+//! (`GIT_QUARANTINE_PATH`, an empty line when the push sent no pack) and `\n`, then git's ref
+//! update lines, each ending in `\n`, and closes its side; the daemon answers `ok\n` or
+//! `deny <reason>\n`. Anything the daemon can't read whole (over [`MAX_HOOK_INPUT`], cut short,
+//! not UTF-8) is denied. The quarantine path is believed only if it is one of the mirror's
+//! (`writ_mirror::quarantine`).
 
 mod client;
 mod server;
@@ -16,23 +19,34 @@ mod server;
 pub use client::run_pre_receive;
 pub(crate) use server::serve;
 
-use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use writ_core::caller::CallerFacts;
 use writ_core::names::RepoName;
-use writ_core::pattern::{RefName, RefPattern};
+use writ_core::pattern::RefName;
 use writ_core::policy::CertIdentity;
 
 /// The most the daemon reads from a hook: the token line and every ref update line.
 pub(crate) const MAX_HOOK_INPUT: usize = 1 << 20;
 
+/// The most ref updates one push may carry.
+pub(crate) const MAX_UPDATES: usize = 1_000;
+
 /// What the daemon knows about a push in progress.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct PushContext {
     /// The session certificate the push came with (its key id is the lease).
     pub cert: CertIdentity,
     pub repo: RepoName,
     pub caller: CallerFacts,
+    /// The connection the push came on (the gateway's number for it).
+    pub connection: u64,
+    /// The repo's mirror, held from the hook's decision until `receive-pack` has moved the
+    /// refs and exited: no sync or other push changes it in between.
+    pub held: Arc<Mutex<Option<writ_mirror::MirrorGuard>>>,
+    /// Set once the hook reached the push (then it logs the outcome): a push git refused
+    /// before its hook ran (a pack too large, an object `fsck` refuses) is logged by the gateway.
+    pub decided: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// One line of the pre-receive input: `<old> <new> <ref>`.
@@ -58,20 +72,6 @@ impl RefUpdate {
             new: new.to_owned(),
             name: name.parse().ok()?,
         })
-    }
-}
-
-/// The M0 push check, until M4's: no update may touch one of the repo's protected refs.
-pub(crate) fn check_ref_updates(
-    updates: &[RefUpdate],
-    protected: &BTreeSet<RefPattern>,
-) -> Result<(), String> {
-    match updates
-        .iter()
-        .find(|u| protected.iter().any(|p| p.protects(&u.name)))
-    {
-        Some(update) => Err(format!("{} is protected", update.name)),
-        None => Ok(()),
     }
 }
 
@@ -111,41 +111,5 @@ mod tests {
         ] {
             assert_eq!(RefUpdate::parse(&bad), None, "{bad:?}");
         }
-    }
-
-    #[test]
-    fn protected_refs_are_refused() {
-        let protected: BTreeSet<RefPattern> = ["refs/heads/main", "refs/tags/*"]
-            .iter()
-            .map(|p| p.parse().unwrap())
-            .collect();
-        let check = |names: &[&str]| {
-            let updates: Vec<RefUpdate> = names.iter().map(|n| update(n)).collect();
-            check_ref_updates(&updates, &protected)
-        };
-        assert_eq!(check(&["refs/heads/agent/x"]), Ok(()));
-        assert_eq!(check(&[]), Ok(()));
-        assert_eq!(
-            check(&["refs/heads/main"]),
-            Err("refs/heads/main is protected".into())
-        );
-        assert_eq!(
-            check(&["refs/tags/v1"]),
-            Err("refs/tags/v1 is protected".into())
-        );
-        // One protected update among others denies the whole push.
-        assert_eq!(
-            check(&["refs/heads/agent/x", "refs/heads/main"]),
-            Err("refs/heads/main is protected".into())
-        );
-        // Exact patterns match exactly, but never by case alone: on APFS `MAIN` is `main`.
-        assert_eq!(check(&["refs/heads/mainline", "refs/heads/main/x"]), Ok(()));
-        for name in ["refs/heads/Main", "refs/heads/MAIN", "refs/TAGS/v1"] {
-            assert_eq!(check(&[name]), Err(format!("{name} is protected")));
-        }
-        assert_eq!(
-            check_ref_updates(&[update("refs/heads/main")], &BTreeSet::new()),
-            Ok(())
-        );
     }
 }

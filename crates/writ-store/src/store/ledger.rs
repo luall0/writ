@@ -18,6 +18,10 @@ pub struct LedgerEntry {
     /// The signer key that signed it.
     pub key: KeyId,
     pub signed_at: Timestamp,
+    /// The digest of the paths it touched as signing saw them (`writ_git::paths::digest`), or
+    /// `None` when they were unknown; a push compares it with the paths computed again from
+    /// the objects git verified.
+    pub paths_digest: Option<String>,
 }
 
 impl Store {
@@ -25,14 +29,15 @@ impl Store {
     /// first entry.
     pub fn ledger_append(&self, entry: &LedgerEntry) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO ledger (commit_id, lease_id, repo, key_id, signed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
+            "INSERT INTO ledger (commit_id, lease_id, repo, key_id, signed_at, paths_digest)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
             params![
                 entry.commit.as_str(),
                 entry.lease.as_str(),
                 entry.repo.as_str(),
                 entry.key.as_str(),
-                entry.signed_at.unix()
+                entry.signed_at.unix(),
+                entry.paths_digest.as_deref()
             ],
         )?;
         Ok(())
@@ -50,7 +55,7 @@ impl Store {
 
     fn ledger_where(&self, condition: &str, value: &str) -> Result<Vec<LedgerEntry>> {
         let mut statement = self.conn.prepare(&format!(
-            "SELECT commit_id, lease_id, repo, key_id, signed_at FROM ledger
+            "SELECT commit_id, lease_id, repo, key_id, signed_at, paths_digest FROM ledger
              WHERE {condition} ORDER BY signed_at, rowid"
         ))?;
         let rows = statement.query_map([value], |r| {
@@ -60,10 +65,11 @@ impl Store {
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })?;
         rows.map(|row| {
-            let (commit, lease, repo, key, at) = row?;
+            let (commit, lease, repo, key, at, paths_digest) = row?;
             let bad = |e: &dyn std::fmt::Display| corrupt(&commit, format!("ledger: {e}"));
             Ok(LedgerEntry {
                 commit: commit.parse().map_err(|e| bad(&e))?,
@@ -71,6 +77,7 @@ impl Store {
                 repo: repo.parse().map_err(|e| bad(&e))?,
                 key: key.parse().map_err(|e| bad(&e))?,
                 signed_at: Timestamp::from_unix(at).map_err(|e| bad(&e))?,
+                paths_digest,
             })
         })
         .collect()

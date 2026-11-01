@@ -96,18 +96,44 @@ An unreadable body or commit is refused by the gateway itself, logged as a `sign
 
 `git receive-pack` keeps the pushed objects in a quarantine directory and runs the
 pre-receive hook before any ref moves ([Q31](../decisions.md)). The gateway starts it with
-`core.hooksPath` set to its own hooks directory; the hook (`writd hook pre-receive`) only
-forwards the ref updates and a per-push token to the daemon over a private Unix socket in
-its state directory. The daemon looks the token up (which lease, which repo), decides, and
-answers `ok` or `deny <reason>`. It checks the lease again at that point (state, deny list,
-expiry, caller, the push operation, the repo still in the lease): a lease revoked or expired
-while the pack was coming in moves no ref, and revoking a lease forgets its pushes in
-progress. Input the daemon can't read whole (over 1 MiB, cut short,
-not UTF-8, a line that isn't a ref update) is refused, never decided on in part. Until M4, the
-check is the repo's own `protected_refs` from the registry, matched ignoring case. Every refusal is logged (event
-`push`, denied, with the refs) before the hook is answered. On a refusal git drops the
-quarantine and shows the agent `remote: writ: <reason>`. The commit checks against the ledger (M4) run at the same point,
-on the quarantined objects. Any failure to reach the daemon refuses the push.
+`core.hooksPath` set to its own hooks directory, after checking the lease cheaply
+(`Service::may_push`: active, `push`, the repo; only a refusal is logged). The hook (`writd
+hook pre-receive`) only forwards a per-push token, the quarantine git made
+(`GIT_QUARANTINE_PATH`, none for a push that only deletes) and the ref updates to the daemon
+over a private Unix socket in its state directory, and answers git with what the daemon says
+(`ok` or `deny <reason>`). Input the daemon can't read whole (over 1 MiB, cut short, not
+UTF-8, a line that isn't a ref update, more than 1,000 updates) is refused, never decided on
+in part. Any failure to reach the daemon refuses the push. The daemon then:
+
+1. looks the token up (which lease, which repo, which connection) and checks the lease again
+   (`Service::may_push`): a lease revoked or expired while the pack was coming in moves no
+   ref, nothing is read for it, and revoking a lease forgets its pushes in progress;
+2. holds the repo's mirror (no sync, no other push) until `receive-pack` has moved the refs
+   and exited;
+3. reads the push from the objects git verified (`writ_mirror::quarantine`), believing the
+   quarantine path only if it is a directory, not a link, right under the mirror's `objects`
+   with git's prefix, and running git there with `GIT_QUARANTINE_PATH` set (nothing it runs
+   can move a ref):
+   - each new tip is a commit;
+   - the commits no ref of the mirror reaches (`rev-list --not --all`), at most the lease's
+     `max_signatures` (and 10,000): more means some aren't signed under it;
+   - for each update, whether it is a fast-forward (`merge-base --is-ancestor`), and for a new
+     ref whether the mirror has one with the same name ignoring case;
+   - the pack's size on disk;
+   - for each new commit, the paths it touches, computed again with `writ_git::paths` from
+     these objects (the commit without its signature, its first parent, the trees that
+     differ; at most 16 MiB of objects), as a digest;
+4. decides with `Service::push`, under one lock: every new commit looked up in the ledger,
+   `decide_push` (refs, protected refs, branches, force pushes and deletions, every commit
+   signed under this lease for this repo with the same paths as at signing, size, count,
+   rate), then the push taken from the lease's count and rate; one `push` line, allowed or
+   denied with its code and the refs.
+
+On a refusal git drops the quarantine and shows the agent `remote: writ: <reason>`; a
+violation under `on_violation: revoke_lease` revokes the lease, and its other sessions are
+dropped. A push git refuses before its hook runs (a pack over `receive.maxInputSize`, an
+object `fsck` refuses) is logged by the gateway when `receive-pack` ends: the client sent ref
+updates and no decision was made.
 
 ## The daemon's git
 

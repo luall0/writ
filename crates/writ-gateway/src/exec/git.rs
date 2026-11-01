@@ -40,6 +40,22 @@ pub(super) struct Push<'a> {
 }
 
 impl<'a> Push<'a> {
+    /// Whether the pre-receive hook took the push to a decision (logged by the service or as
+    /// the hook's refusal).
+    pub(super) fn decided(&self) -> bool {
+        self.gateway
+            .shared
+            .pushes
+            .lock()
+            .map(|pushes| {
+                pushes
+                    .get(&self.token)
+                    .is_some_and(|c| c.decided.load(std::sync::atomic::Ordering::Acquire))
+            })
+            // Poisoned: say decided, so nothing is logged twice; the hook logged its own.
+            .unwrap_or(true)
+    }
+
     /// Registers the push under a new random token.
     pub(super) fn register(gateway: &'a Gateway, context: PushContext) -> Result<Self, String> {
         let token = writ_crypto::keys::random_hex(16)
@@ -79,12 +95,21 @@ impl<'a> Push<'a> {
 impl Drop for Push<'_> {
     fn drop(&mut self) {
         // Forgotten even from a poisoned table: a token must never outlive its push.
-        self.gateway
+        let context = self
+            .gateway
             .shared
             .pushes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.token);
+        // receive-pack has exited: the mirror it held (from the hook's decision) is released.
+        if let Some(context) = context {
+            context
+                .held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+        }
     }
 }
 
@@ -108,17 +133,43 @@ pub(super) fn spawn(mut cmd: tokio::process::Command) -> Result<Child, String> {
         .map_err(|e| format!("internal error: cannot start git: {}", e.kind()))
 }
 
+/// How a bridged process ended.
+pub(super) struct Bridged {
+    pub code: u32,
+    /// The bytes the client sent it.
+    pub from_client: u64,
+}
+
 /// Connects a process's stdin, stdout and stderr to the channel, then reports its exit code.
-pub(super) async fn bridge(mut child: Child, channel: Channel<Msg>) {
+pub(super) async fn bridge(mut child: Child, channel: Channel<Msg>) -> Bridged {
     let (mut rx, tx) = channel.split();
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
+    let from_client = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counted = from_client.clone();
     let stdin_task = tokio::spawn(async move {
         if let Some(mut stdin) = stdin {
             let mut reader = rx.make_reader();
-            let _ = tokio::io::copy(&mut reader, &mut stdin).await;
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = match tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                counted.fetch_add(
+                    u64::try_from(n).unwrap_or(u64::MAX),
+                    std::sync::atomic::Ordering::AcqRel,
+                );
+                if stdin
+                    .write_all(buf.get(..n).unwrap_or_default())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
             let _ = stdin.shutdown().await;
         }
     });
@@ -152,4 +203,8 @@ pub(super) async fn bridge(mut child: Child, channel: Channel<Msg>) {
     };
     stdin_task.abort();
     finish(&tx, code).await;
+    Bridged {
+        code,
+        from_client: from_client.load(std::sync::atomic::Ordering::Acquire),
+    }
 }

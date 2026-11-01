@@ -3,7 +3,6 @@
 
 use writ_approval::EventKind;
 use writ_core::names::RepoName;
-use writ_core::ticket::Operation;
 
 /// A parsed exec request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,15 +25,6 @@ pub(crate) enum LeaseCommand {
 }
 
 impl LeaseCommand {
-    /// The lease operation it needs.
-    pub(crate) fn operation(&self) -> Operation {
-        match self {
-            Self::UploadPack { .. } => Operation::Fetch,
-            Self::ReceivePack { .. } => Operation::Push,
-            Self::Sign { .. } => Operation::CommitSign,
-        }
-    }
-
     /// The audit event it is logged under.
     pub(crate) fn event(&self) -> EventKind {
         match self {

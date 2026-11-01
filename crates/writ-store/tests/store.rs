@@ -111,6 +111,9 @@ fn entry(commit_n: u64, lease: &TicketId, repo: &str) -> LedgerEntry {
         repo: repo.parse().unwrap(),
         key: "agent-ed25519-01".parse().unwrap(),
         signed_at: t(20 + commit_n as i64),
+        paths_digest: commit_n
+            .is_multiple_of(2)
+            .then(|| format!("digest-{commit_n}")),
     }
 }
 
@@ -548,11 +551,11 @@ fn a_newer_schema_is_refused() {
     drop(Store::open(&path).unwrap());
     rusqlite::Connection::open(&path)
         .unwrap()
-        .pragma_update(None, "user_version", 4)
+        .pragma_update(None, "user_version", 5)
         .unwrap();
     assert!(matches!(
         Store::open(&path),
-        Err(StoreError::SchemaTooNew(4))
+        Err(StoreError::SchemaTooNew(5))
     ));
 }
 
@@ -628,5 +631,19 @@ fn a_version_1_database_is_migrated() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
+    // The ledger gained its paths digest column: an entry keeps one, or none.
+    let lease = active_lease(&store, 2);
+    for n in [1, 2] {
+        store
+            .ledger_append(&entry(n, &lease.id, "omega-code"))
+            .unwrap();
+    }
+    let kept: Vec<_> = store
+        .ledger_for_lease(&lease.id)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.paths_digest)
+        .collect();
+    assert_eq!(kept, [None, Some("digest-2".to_owned())]);
 }

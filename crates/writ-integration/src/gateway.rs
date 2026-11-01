@@ -106,6 +106,8 @@ pub struct GitGateway {
     pub url: String,
     /// Extra ssh options to reach it (port or proxy command, known hosts).
     pub ssh_target: String,
+    /// The lease of the first session (`keys/session`).
+    pub lease: TicketId,
     /// The repo's upstream.
     pub remote: TestRemote,
     pub mirrors: writ_mirror::Mirrors,
@@ -246,7 +248,8 @@ impl GitGateway {
         };
         fs::write(&known_hosts, format!("{host} {host_public}\n")).unwrap();
 
-        let gateway = Self {
+        let mut gateway = Self {
+            lease: "wrt_01JD8X0000000000000000000A".parse().unwrap(),
             dir,
             runtime,
             service,
@@ -259,7 +262,7 @@ impl GitGateway {
             remote,
             mirrors,
         };
-        gateway.session("session");
+        gateway.lease = gateway.session("session");
         gateway
     }
 
@@ -406,6 +409,38 @@ impl GitGateway {
         ] {
             self.git_ok(work, &["config", key, value]);
         }
+    }
+
+    /// A commit of `file` (written with `content`) signed as an agent signs one: through
+    /// `writ-sign`, under the first session's lease, with its `Writ:` trailer. Returns its id.
+    pub fn commit_signed(&self, work: &Path, file: &str, content: &str) -> String {
+        self.commit_signed_as("session", &self.lease, work, file, content)
+    }
+
+    /// [`GitGateway::commit_signed`], with the session `keys/<key>` of `lease`.
+    pub fn commit_signed_as(
+        &self,
+        key: &str,
+        lease: &TicketId,
+        work: &Path,
+        file: &str,
+        content: &str,
+    ) -> String {
+        self.wire_signing(work);
+        fs::write(work.join(file), content).unwrap();
+        let ok = |args: &[&str]| {
+            let out = self.git_as(key, work, args);
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        ok(&["add", file]);
+        let trailer = format!("Writ: {lease}");
+        ok(&["commit", "-q", "-S", "-m", file, "--trailer", &trailer]);
+        ok(&["rev-parse", "HEAD"])
     }
 
     /// The ledger, read from the service's database.

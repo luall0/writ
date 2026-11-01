@@ -18,6 +18,9 @@ use crate::channel::{fail, finish, refuse};
 use crate::command::LeaseCommand;
 use crate::hook::PushContext;
 
+/// What a client sends `receive-pack` when it has nothing to push: one flush packet.
+const FLUSH_ONLY: u64 = 4;
+
 /// What [`run`] needs to log a refusal it makes itself.
 struct Refusing<'a> {
     gateway: &'a Gateway,
@@ -120,14 +123,18 @@ async fn run_git(
                 }
             }
         }
-        // The lease may have ended since the connection was authenticated: check it again,
-        // with the operation the command needs (the service logs the outcome).
-        _ => match gateway
-            .authorize(refusing.cert, refusing.facts, Some(command.operation()))
-            .await
-        {
+        // A push: the lease may have ended since the connection was authenticated, check it
+        // again (only a refusal is logged: the push is decided whole, and logged once, at the
+        // pre-receive hook).
+        _ => match gateway.may_push(refusing.cert, refusing.facts, repo).await {
             Ok(lease) => lease,
-            Err(denial) => return refuse(channel, denial.to_string()).await,
+            Err(denial) => {
+                refuse(channel, denial.to_string()).await;
+                if gateway.service().is_revoked(refusing.cert.serial) {
+                    gateway.drop_sessions_except(refusing.cert.serial, connection);
+                }
+                return;
+            }
         },
     };
     if !lease.ticket.scope.repos.contains(repo) {
@@ -157,6 +164,9 @@ async fn run_git(
                 cert: refusing.cert.clone(),
                 repo: repo.clone(),
                 caller: refusing.facts.clone(),
+                connection,
+                held: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                decided: std::sync::Arc::default(),
             };
             match git::Push::register(gateway, context) {
                 Ok(push) => Some(push),
@@ -176,7 +186,23 @@ async fn run_git(
         None => git::upload_pack(&path, git_protocol),
     };
     match git::spawn(cmd) {
-        Ok(child) => git::bridge(child, channel).await,
+        Ok(child) => {
+            let bridged = git::bridge(child, channel).await;
+            // The client sent ref updates (more than the flush of a push with nothing to
+            // send) and the hook never saw them: git refused the push before its checks. Its
+            // reason went to the agent; the refusal goes to the audit log.
+            if let Some(push) = &push
+                && bridged.from_client > FLUSH_ONLY
+                && !push.decided()
+            {
+                let reason = format!(
+                    "git refused the push before its checks (exit {}): a pack too large, \
+                     an object fsck refuses, or the client went away",
+                    bridged.code
+                );
+                refusing.deny(reason, Some(repo)).await;
+            }
+        }
         Err(reason) => {
             tracing::error!(%reason, "cannot run git");
             refuse(channel, refusing.deny(reason, Some(repo)).await).await;

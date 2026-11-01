@@ -67,6 +67,7 @@ fn update(name: &str) -> RefUpdate {
         old: Some(commit(1)),
         new: Some(commit(3)),
         fast_forward: true,
+        case_twin: false,
     }
 }
 
@@ -432,6 +433,7 @@ fn force_push_when_the_lease_allows_it() {
 fn pushed_commits_signed_under_this_lease() {
     fn under(lease: &str, repo_name: &str) -> LedgerRef {
         LedgerRef {
+            paths: None,
             lease: lease.parse().unwrap(),
             repo: repo(repo_name),
         }
@@ -476,11 +478,96 @@ fn pushed_commits_signed_under_this_lease() {
             "an unsigned commit among many",
             |_, r| {
                 r.commits.push(PushedCommit {
+                    paths: None,
                     id: commit(4),
                     signed_under: vec![],
                 });
             },
             Some(DenyCode::Unsigned),
+        ),
+    ]);
+}
+
+// Row: the paths a commit touches, signing vs push — evidence vs the objects git verified.
+
+#[test]
+fn a_pushed_commit_s_paths_must_be_the_ones_checked_at_signing() {
+    fn signed_with(r: &mut PushRequest, lease: &str, paths: Option<&str>) {
+        for commit in &mut r.commits {
+            for entry in &mut commit.signed_under {
+                if entry.lease.as_str() == lease {
+                    entry.paths = paths.map(str::to_owned);
+                }
+            }
+        }
+    }
+    check_push(&[
+        (
+            "the same paths",
+            |w, r| {
+                signed_with(r, w.lease.id.as_str(), Some("d1"));
+                r.commits
+                    .iter_mut()
+                    .for_each(|c| c.paths = Some("d1".into()));
+            },
+            None,
+        ),
+        (
+            "unknown at signing: nothing to compare",
+            |_, r| {
+                r.commits
+                    .iter_mut()
+                    .for_each(|c| c.paths = Some("d2".into()))
+            },
+            None,
+        ),
+        (
+            "other paths at push",
+            |w, r| {
+                signed_with(r, w.lease.id.as_str(), Some("d1"));
+                r.commits
+                    .iter_mut()
+                    .for_each(|c| c.paths = Some("d1".into()));
+                r.commits[1].paths = Some("d2".into());
+            },
+            Some(DenyCode::PathsChanged),
+        ),
+        (
+            "known at signing, not computable at push",
+            |w, r| {
+                signed_with(r, w.lease.id.as_str(), Some("d1"));
+                r.commits
+                    .iter_mut()
+                    .for_each(|c| c.paths = Some("d1".into()));
+                r.commits[0].paths = None;
+            },
+            Some(DenyCode::PathsChanged),
+        ),
+    ]);
+}
+
+// Row: refs that differ only in case — APFS folds them into one.
+
+#[test]
+fn refs_that_differ_only_in_case_are_refused() {
+    check_push(&[
+        ("a ref alone", |_, _| {}, None),
+        (
+            "a new ref with a twin in the repo",
+            |_, r| r.updates[0].case_twin = true,
+            Some(DenyCode::Invalid),
+        ),
+        (
+            "two updates differing only in case",
+            |_, r| {
+                let mut twin = r.updates[0].clone();
+                twin.name = twin
+                    .name
+                    .to_ascii_uppercase()
+                    .replace("REFS/HEADS/", "refs/heads/");
+                r.updates.push(twin);
+            },
+            Some(DenyCode::Invalid),
         ),
     ]);
 }

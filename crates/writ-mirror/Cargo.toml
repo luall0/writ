@@ -12,6 +12,7 @@ testing = []
 [dependencies]
 writ-core.workspace = true
 writ-crypto.workspace = true
+writ-git.workspace = true
 writ-platform.workspace = true
 writ-signer.workspace = true
 rustix.workspace = true

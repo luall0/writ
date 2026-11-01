@@ -1,18 +1,34 @@
 //! The daemon side of the hook: reads what a hook sends, decides, answers, and logs every
-//! refusal. The lease is checked again here, when the ref updates are known: a lease revoked
-//! (or expired) while the pack was coming in moves no ref.
+//! refusal. The push is decided here, when the pack is in git's quarantine and the ref updates
+//! are known (`docs/flows.md` § 3):
+//!
+//! 1. the lease, cheaply ([`Service::may_push`](writ_approval::Service::may_push)): a lease
+//!    revoked or expired while the pack was coming in moves no ref, and nothing is read for it;
+//! 2. the repo's mirror held (until `receive-pack` exits), and the push read from the objects
+//!    git verified ([`writ_mirror::quarantine`]): each new tip a commit, the commits the mirror
+//!    doesn't have (at most the lease's `max_signatures`), fast-forwards, refs that differ only
+//!    in case, the size, and the paths each commit touches, computed again;
+//! 3. [`Service::push`](writ_approval::Service::push): every commit in the ledger for this
+//!    lease and repo with the same paths, the refs, force pushes, size, count and rate, under
+//!    one lock, one `push` line.
 
 use std::future::Future;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use writ_approval::{EventKind, GatewayDenial};
+use writ_approval::{EventKind, GatewayDenial, Pushing};
 use writ_core::caller::CallerFacts;
-use writ_core::ticket::Operation;
+use writ_core::lease::Lease;
+use writ_core::names::CommitId;
+use writ_core::policy;
+use writ_mirror::quarantine::Quarantine;
 use writ_platform::transport::accept_retrying;
 
-use super::{MAX_HOOK_INPUT, PushContext, RefUpdate, check_ref_updates};
+use super::{MAX_HOOK_INPUT, MAX_UPDATES, PushContext, RefUpdate};
 use crate::Gateway;
+
+/// The most new commits one push may bring, whatever the lease (each is read and walked).
+pub(crate) const MAX_PUSH_COMMITS: usize = 10_000;
 
 /// Answers hooks on the gateway's private socket until the socket itself fails. An error
 /// about one connection or a passing shortage (out of file descriptors) is retried
@@ -113,22 +129,27 @@ pub(super) async fn read_input(
     Ok(input)
 }
 
-/// The token and the ref updates. Any line that isn't a valid update refuses the push.
-pub(super) fn parse_input(input: &[u8]) -> Result<(&str, Vec<RefUpdate>), &'static str> {
+/// What a hook sends: the token, the quarantine (none for a push without a pack) and the ref
+/// updates. Any line that isn't a valid update refuses the push.
+pub(super) fn parse_input(
+    input: &[u8],
+) -> Result<(&str, Option<&str>, Vec<RefUpdate>), &'static str> {
     let text = std::str::from_utf8(input).map_err(|_| "malformed hook input")?;
     let mut lines = text.split_terminator('\n');
     let token = lines
         .next()
         .filter(|t| !t.is_empty())
         .ok_or("malformed hook input")?;
+    let quarantine = lines.next().ok_or("malformed hook input")?;
+    let quarantine = (!quarantine.is_empty()).then_some(quarantine);
     let updates = lines
         .map(|l| RefUpdate::parse(l).ok_or("malformed ref update"))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((token, updates))
+    Ok((token, quarantine, updates))
 }
 
 async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
-    let (token, updates) = parse_input(input).map_err(Refused::new)?;
+    let (token, quarantine, updates) = parse_input(input).map_err(Refused::new)?;
     let context = gateway
         .shared
         .pushes
@@ -137,47 +158,159 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         .get(token)
         .cloned()
         .ok_or_else(|| Refused::new("unknown push"))?;
-    let refs = || {
-        updates
-            .iter()
-            .map(|u| u.name.to_string())
-            .collect::<Vec<_>>()
-    };
+    context
+        .decided
+        .store(true, std::sync::atomic::Ordering::Release);
+    let refs: Vec<String> = updates.iter().map(|u| u.name.to_string()).collect();
+    if updates.is_empty() || updates.len() > MAX_UPDATES {
+        let reason = format!("a push updates from 1 to {MAX_UPDATES} refs");
+        return Err(Refused::of(reason, context, refs));
+    }
     // The lease again, now that the pack is in: it may have been revoked or have expired
-    // since the push started (the service logs this decision).
+    // since the push started. Only a refusal is logged here.
     let lease = match gateway
-        .authorize(&context.cert, &context.caller, Some(Operation::Push))
+        .may_push(&context.cert, &context.caller, &context.repo)
         .await
     {
         Ok(lease) => lease,
         Err(denial) => {
-            let mut refused = Refused::of(denial.to_string(), context, refs());
+            let mut refused = Refused::of(denial.to_string(), context, refs);
             refused.logged = true;
             return Err(refused);
         }
     };
-    if !lease.ticket.scope.repos.contains(&context.repo) {
-        let reason = format!("repo {} is no longer in lease {}", context.repo, lease.id);
-        return Err(Refused::of(reason, context, refs()));
-    }
-    // A repo that left the registry protects nothing it used to: refuse.
-    let protected = match gateway.service().policy().repo(&context.repo) {
-        Some(entry) => &entry.protected_refs,
-        None => {
-            let reason = format!("repo {} is not in the registry", context.repo);
-            return Err(Refused::of(reason, context, Vec::new()));
-        }
+    // The mirror, held until receive-pack exits (the push's `Push` drops it).
+    let guard = match gateway.shared.config.mirrors.lock(&context.repo).await {
+        Ok(guard) => guard,
+        Err(e) => return Err(Refused::of(e.to_string(), context, refs)),
     };
-    if let Err(reason) = check_ref_updates(&updates, protected) {
-        return Err(Refused::of(reason, context, refs()));
+    let mirror = guard.path().to_owned();
+    let held = match context.held.lock() {
+        Ok(mut held) => {
+            *held = Some(guard);
+            true
+        }
+        Err(_) => false,
+    };
+    if !held {
+        return Err(Refused::of("internal error", context, refs));
+    }
+    let Some(entry) = gateway.service().policy().repo(&context.repo) else {
+        let reason = format!("repo {} is not in the registry", context.repo);
+        return Err(Refused::of(reason, context, refs));
+    };
+    let quarantine = Quarantine::open(
+        &mirror,
+        quarantine.map(std::path::Path::new),
+        entry.object_format,
+    );
+    let read = match quarantine {
+        Ok(quarantine) => read_push(&quarantine, &updates, &lease).await,
+        Err(e) => Err(e.to_string()),
+    };
+    let (updates, commits, pack_size) = match read {
+        Ok(read) => read,
+        Err(reason) => return Err(Refused::of(reason, context, refs)),
+    };
+    let pushing = Pushing {
+        cert: context.cert.clone(),
+        caller: context.caller.clone(),
+        repo: context.repo.clone(),
+        updates,
+        commits,
+        pack_size,
+    };
+    if let Err(denial) = gateway.push(pushing).await {
+        // A violation may have revoked the lease: its other sessions go now.
+        if gateway.service().is_revoked(context.cert.serial) {
+            gateway.drop_sessions_except(context.cert.serial, context.connection);
+        }
+        let mut refused = Refused::of(denial.to_string(), context, refs);
+        refused.logged = true;
+        return Err(refused);
     }
     tracing::info!(
         lease = %context.cert.key_id,
         repo = %context.repo,
-        refs = updates.len(),
+        refs = refs.len(),
         "push accepted"
     );
     Ok(())
+}
+
+/// The facts of a push, read from the quarantine: the ref updates as the policy sees them,
+/// the new commits with the digest of the paths each touches, the size.
+type PushFacts = (Vec<policy::RefUpdate>, Vec<(CommitId, Option<String>)>, u64);
+
+async fn read_push(
+    quarantine: &Quarantine,
+    updates: &[RefUpdate],
+    lease: &Lease,
+) -> Result<PushFacts, String> {
+    let zero = |id: &str| id.bytes().all(|b| b == b'0');
+    let commit_id = |id: &str| -> Result<Option<CommitId>, String> {
+        if zero(id) {
+            return Ok(None);
+        }
+        id.parse()
+            .map(Some)
+            .map_err(|_| format!("{id} is not an object id"))
+    };
+    let tips: Vec<String> = updates
+        .iter()
+        .filter(|u| !zero(&u.new))
+        .map(|u| u.new.clone())
+        .collect();
+    let kinds = quarantine.kinds(&tips).await.map_err(|e| e.to_string())?;
+    if let Some((tip, kind)) = tips.iter().zip(&kinds).find(|(_, kind)| *kind != "commit") {
+        return Err(format!("{tip} is a {kind}, not a commit"));
+    }
+    let mut facts = Vec::with_capacity(updates.len());
+    for update in updates {
+        let (old, new) = (commit_id(&update.old)?, commit_id(&update.new)?);
+        let fast_forward = match (&old, &new) {
+            (Some(old), Some(new)) => quarantine
+                .is_ancestor(old.as_str(), new.as_str())
+                .await
+                .map_err(|e| e.to_string())?,
+            _ => true,
+        };
+        let case_twin = match old {
+            None => quarantine
+                .case_twin(update.name.as_str())
+                .await
+                .map_err(|e| e.to_string())?,
+            Some(_) => false,
+        };
+        facts.push(policy::RefUpdate {
+            name: update.name.to_string(),
+            old,
+            new,
+            fast_forward,
+            case_twin,
+        });
+    }
+    let max = usize::try_from(lease.ticket.limits.max_signatures)
+        .unwrap_or(usize::MAX)
+        .min(MAX_PUSH_COMMITS);
+    let new_commits = quarantine
+        .new_commits(&tips, max)
+        .await
+        .map_err(|e| format!("{e}: more than lease {} signed", lease.id))?;
+    let mut commits = Vec::with_capacity(new_commits.len());
+    for id in new_commits {
+        let paths = quarantine
+            .touched_paths(&id)
+            .await
+            .map_err(|e| e.to_string())?;
+        commits.push((commit_id(&id)?.ok_or("a null commit id")?, paths));
+    }
+    let size_of = quarantine.clone();
+    let pack_size = tokio::task::spawn_blocking(move || size_of.size())
+        .await
+        .map_err(|_| "internal error".to_owned())?
+        .map_err(|e| e.to_string())?;
+    Ok((facts, commits, pack_size))
 }
 
 /// Writes the refusal to the audit log (event `push`, denied), off the async threads.
@@ -298,12 +431,21 @@ ticket:
                     cert,
                     repo: "demo".parse().unwrap(),
                     caller,
+                    connection: 1,
+                    held: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    decided: std::sync::Arc::default(),
                 },
             );
-            let input = format!("tok\n{A} {A} refs/heads/agent/x\n");
+            let input = format!("tok\n\n{A} {A} refs/heads/agent/x\n");
 
-            // In force: the push goes through (the denial below is the revocation's doing).
-            assert!(decide(&gateway, input.as_bytes()).await.is_ok());
+            // In force: the decision goes past the lease, to the repo's mirror (none here: the
+            // gateway's own tests have no upstream). The denial below is the revocation's.
+            let in_force = decide(&gateway, input.as_bytes()).await;
+            assert!(
+                matches!(&in_force, Err(r) if r.reason == "unknown repo demo" && !r.logged),
+                "{:?}",
+                in_force.err().map(|r| r.reason)
+            );
 
             test.service
                 .revoke(
@@ -361,6 +503,9 @@ ticket:
                     cert,
                     repo: "demo".parse().unwrap(),
                     caller: CallerFacts::default(),
+                    connection: 1,
+                    held: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    decided: std::sync::Arc::default(),
                 },
             );
             // A panic while holding the tables poisons them.
@@ -416,7 +561,7 @@ templates:
 
         /// Sends a hook's input for a push the daemon doesn't know, returns the answer.
         async fn ask(mut stream: UnixStream) -> String {
-            stream.write_all(b"no-such-token\n").await.unwrap();
+            stream.write_all(b"no-such-token\n\n").await.unwrap();
             stream.shutdown().await.unwrap();
             let mut reply = String::new();
             stream.read_to_string(&mut reply).await.unwrap();
@@ -532,16 +677,20 @@ templates:
 
     #[test]
     fn every_line_must_be_an_update() {
-        let ok = format!("tok\n{}{}", line("refs/heads/a"), line("refs/heads/b"));
-        let (token, updates) = parse_input(ok.as_bytes()).unwrap();
-        assert_eq!(token, "tok");
+        let ok = format!("tok\n/q\n{}{}", line("refs/heads/a"), line("refs/heads/b"));
+        let (token, quarantine, updates) = parse_input(ok.as_bytes()).unwrap();
+        assert_eq!((token, quarantine), ("tok", Some("/q")));
         assert_eq!(updates.len(), 2);
-        assert_eq!(parse_input(b"tok\n").map(|(_, u)| u.len()), Ok(0));
+        // No quarantine (a push that only deletes): an empty line.
+        let none = format!("tok\n\n{}", line("refs/heads/a"));
+        assert_eq!(parse_input(none.as_bytes()).map(|(_, q, _)| q), Ok(None));
+        assert_eq!(parse_input(b"tok\n\n").map(|(_, _, u)| u.len()), Ok(0));
         for bad in [
-            format!("\n{}", line("refs/heads/a")),
-            format!("tok\n\n{}", line("refs/heads/a")),
-            format!("tok\n{}junk\n", line("refs/heads/a")),
-            format!("tok\n{A} {A} refs/heads/mai n\n"),
+            format!("\n\n{}", line("refs/heads/a")),
+            "tok\n".to_owned(),
+            format!("tok\n\n\n{}", line("refs/heads/a")),
+            format!("tok\n\n{}junk\n", line("refs/heads/a")),
+            format!("tok\n\n{A} {A} refs/heads/mai n\n"),
         ] {
             let error = parse_input(bad.as_bytes()).map(|_| ()).unwrap_err();
             assert!(
@@ -550,7 +699,7 @@ templates:
             );
         }
         assert_eq!(
-            parse_input(&[b't', b'\n', 0xff, b'\n']).map(|_| ()),
+            parse_input(&[b't', b'\n', b'\n', 0xff, b'\n']).map(|_| ()),
             Err("malformed hook input")
         );
     }

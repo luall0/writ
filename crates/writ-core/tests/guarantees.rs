@@ -152,6 +152,7 @@ fn only_commits_signed_under_the_same_lease_reach_upstream() {
         (
             "signed under another lease",
             vec![LedgerRef {
+                paths: None,
                 lease: other_lease.clone(),
                 repo: repo("omega-code"),
             }],
@@ -159,6 +160,7 @@ fn only_commits_signed_under_the_same_lease_reach_upstream() {
         (
             "signed under this lease for another repo",
             vec![LedgerRef {
+                paths: None,
                 lease: world.lease.id.clone(),
                 repo: repo("homelab-scripts"),
             }],
@@ -167,6 +169,7 @@ fn only_commits_signed_under_the_same_lease_reach_upstream() {
     for (name, signed_under) in attempts {
         let mut request = push_request(&world.lease);
         request.commits.push(PushedCommit {
+            paths: None,
             id: commit(9),
             signed_under,
         });
@@ -179,8 +182,10 @@ fn only_commits_signed_under_the_same_lease_reach_upstream() {
     // Signed under this lease for this repo: allowed.
     let mut request = push_request(&world.lease);
     request.commits.push(PushedCommit {
+        paths: None,
         id: commit(9),
         signed_under: vec![LedgerRef {
+            paths: None,
             lease: world.lease.id.clone(),
             repo: repo("omega-code"),
         }],

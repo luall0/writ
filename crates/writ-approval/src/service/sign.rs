@@ -421,6 +421,13 @@ impl Service {
             repo: request.repo.clone(),
             key: reserved.key.clone(),
             signed_at: now,
+            paths_digest: match &signing.object {
+                SignObject::Commit {
+                    touched_paths: Some(paths),
+                    ..
+                } => Some(writ_git::paths::digest(paths)),
+                _ => None,
+            },
         };
         let recorded = Self::logged(inner, line, |inner| {
             inner.store.ledger_append(&entry).map_err(internal)

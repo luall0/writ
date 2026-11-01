@@ -144,7 +144,7 @@ impl Daemon {
             format!(
                 "state_dir: s\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
                  decisions: signed\nkeystore: {{ dev: s/keys }}\n\
-                 mirrors: {{ known_hosts: upstream_known_hosts }}\n\
+                 mirrors: {{ known_hosts: upstream_known_hosts, fresh_for: 0s }}\n\
                  transports:\n  agents: [{{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }}]\n  \
                  approvals:\n    ssh: [{{ tcp: \"127.0.0.1:0\" }}]\n    \
                  https: [{{ tcp: \"127.0.0.1:0\" }}]\n\

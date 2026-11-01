@@ -13,11 +13,13 @@ writ-approval = { workspace = true, features = ["testing"] }
 writ-core.workspace = true
 writ-crypto.workspace = true
 writ-gateway.workspace = true
+writ-git.workspace = true
 writ-mirror.workspace = true
 writ-platform = { workspace = true, features = ["testing"] }
 writ-proto.workspace = true
 writ-signer = { workspace = true, features = ["testing"] }
 writ-store = { workspace = true, features = ["testing"] }
+rusqlite.workspace = true
 russh.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

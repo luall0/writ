@@ -156,12 +156,8 @@ fn wrapper_mode_signs_through_writ_git_and_leaves_the_operator_s_git_alone() {
     )
     .unwrap();
     let operator_public = operator.public_key().to_openssh().unwrap();
-    let origin = root.join("origin.git");
-    git_ok(
-        &daemon,
-        &root,
-        &["init", "-q", "--bare", origin.to_str().unwrap()],
-    );
+    // The operator's `origin` is the repo's upstream (GitHub, say): the daemon's test remote.
+    let origin = daemon.remote.repo("demo");
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
     git_ok(&daemon, &repo, &["init", "-q"]);
@@ -344,6 +340,9 @@ fn wrapper_mode_signs_through_writ_git_and_leaves_the_operator_s_git_alone() {
         "agent@writ",
         &agent_key
     ));
+    // The agent fetches through the daemon (its mirror syncs main, which the operator pushed
+    // upstream), then pushes: only the agent's signed commits are new.
+    writ_ok(&daemon, &repo, &["git", "fetch", "-q", "writ"]);
     writ_ok(
         &daemon,
         &repo,

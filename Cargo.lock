@@ -3914,6 +3914,7 @@ dependencies = [
 name = "writ-integration"
 version = "0.0.0"
 dependencies = [
+ "rusqlite",
  "russh",
  "serde_json",
  "tempfile",
@@ -3922,6 +3923,7 @@ dependencies = [
  "writ-core",
  "writ-crypto",
  "writ-gateway",
+ "writ-git",
  "writ-mirror",
  "writ-platform",
  "writ-proto",
@@ -3942,6 +3944,7 @@ dependencies = [
  "tracing",
  "writ-core",
  "writ-crypto",
+ "writ-git",
  "writ-platform",
  "writ-signer",
 ]
