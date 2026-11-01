@@ -49,7 +49,9 @@ settings (`writ_cli::wiring::settings`), and what `writ init` did is recorded in
 git command through `writ git …` (commit, rebase, cherry-pick, `commit --amend`, fetch, push,
 log…), or a program that runs git through `writ exec -- <program>`; the settings below reach
 git through the environment (`GIT_CONFIG_COUNT`, git ≥ 2.31, and `GIT_SSH_COMMAND`), for that
-process and what git runs (`writ-sign`, `ssh`, hooks). The operator's own `git`, in the same
+process and what git runs (`writ-sign`, `ssh`, hooks), and so for every git that process
+starts, in any repository (a commit there would go to the daemon labeled with the wired repo;
+the operator guide says to run only the wired repo's work this way). The operator's own `git`, in the same
 clone and working tree, keeps the operator's keys, email and remotes; a plain `git push writ`
 finds no such remote. Commits a command rewrites (a rebase) are signed again, one signature
 each from `max_signatures`.

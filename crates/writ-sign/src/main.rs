@@ -173,7 +173,8 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
             match diagnose::explain(&ssh, now) {
-                Some(why) => bail!("cannot reach the daemon with this session: {why}"),
+                // The lease id comes from the certificate file: escaped like any text.
+                Some(why) => bail!("cannot reach the daemon with this session: {}", clean(&why)),
                 None => bail!("cannot reach the daemon (see above)"),
             }
         }

@@ -419,6 +419,20 @@ fn whole_repo_mode_wires_a_dedicated_clone_and_undo_restores_it() {
         &["push", "-q", "writ", "HEAD:refs/heads/agent/oauth"],
     );
 
+    // A locked config stops the undo before it adds anything: the wiring stays recorded.
+    let wired = local_config(&daemon, &repo);
+    fs::write(repo.join(".git/config.lock"), "").unwrap();
+    let out = writ(&daemon, &repo, &["init", "--undo"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("git config --unset-all") && stderr(&out).contains("failed"),
+        "{}",
+        stderr(&out)
+    );
+    fs::remove_file(repo.join(".git/config.lock")).unwrap();
+    assert_eq!(local_config(&daemon, &repo), wired);
+    assert!(repo.join(".git/writ/config").exists());
+
     // Undone: every key back as it was, the operator's email included.
     writ_ok(&daemon, &repo, &["init", "--undo"]);
     assert_eq!(local_config(&daemon, &repo), before);

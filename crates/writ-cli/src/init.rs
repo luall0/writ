@@ -172,12 +172,20 @@ pub fn undo() -> anyhow::Result<Exit> {
             }
         }
         for key in keys {
-            // Exit 5: the key wasn't there any more.
             // PATH: the agent host's own git.
-            let _ = std::process::Command::new("git")
+            let unset = std::process::Command::new("git")
                 .args(["config", "--local", "--unset-all", key])
                 .current_dir(&dir)
-                .output();
+                .output()
+                .context("cannot run git")?;
+            // Exit 5: the key wasn't there any more. Anything else (a locked config) stops
+            // here, before the previous values are added on top of the current ones.
+            if !matches!(unset.status.code(), Some(0 | 5)) {
+                bail!(
+                    "git config --unset-all {key} failed: {}",
+                    crate::display::clean_lines(String::from_utf8_lossy(&unset.stderr).trim())
+                );
+            }
             let previous = format!("previous.{key}.value");
             for (_, value) in entries.iter().filter(|(k, _)| *k == previous) {
                 wiring::git(&dir, &["config", "--local", "--add", key, value])?;

@@ -30,9 +30,11 @@ pub fn explain(ssh_command: &str, now: u64) -> Option<String> {
             "lease {lease} expired at {when}: request a new lease (or an amendment before it ends)"
         ));
     }
+    // ssh says 255 for a refused certificate and for a daemon it can't reach alike.
     Some(format!(
-        "the daemon refused the session certificate of lease {lease}: the lease is revoked, \
-         closed or used up, or the daemon doesn't know it"
+        "the daemon refused the session certificate of lease {lease} (the lease is revoked, \
+         closed or used up, or the daemon doesn't know it), or the daemon can't be reached \
+         (see ssh's message above)"
     ))
 }
 
@@ -103,6 +105,34 @@ mod tests {
             Some(PathBuf::from("/x/\"y\""))
         );
         assert_eq!(certificate_file("ssh -i /a/key"), None);
+    }
+
+    #[test]
+    fn a_valid_certificate_says_both_causes() {
+        use writ_crypto::ca::{CertificateAuthority, CertificateRequest};
+        use writ_crypto::keys::{KeyKind, generate};
+        let key = generate(KeyKind::Ed25519).unwrap();
+        let ca = CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap());
+        let cert = ca
+            .issue(&CertificateRequest {
+                subject: key.public_key(),
+                serial: 1,
+                key_id: "wrt_test",
+                principals: &["git"],
+                valid_after: 0,
+                valid_before: 2_000_000_000,
+            })
+            .unwrap();
+        let path = std::env::temp_dir().join(format!("writ-sign-diagnose-{}", std::process::id()));
+        std::fs::write(&path, cert.to_openssh().unwrap()).unwrap();
+        let text = explain(&format!("ssh -o CertificateFile={}", path.display()), 1);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            text.unwrap(),
+            "the daemon refused the session certificate of lease wrt_test (the lease is \
+             revoked, closed or used up, or the daemon doesn't know it), or the daemon can't be \
+             reached (see ssh's message above)"
+        );
     }
 
     #[test]
