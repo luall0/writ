@@ -257,6 +257,7 @@ ticket:
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
+                    sign_requests_per_lease: crate::DEFAULT_SIGN_REQUESTS_PER_LEASE,
                 },
                 test.service.clone(),
             )
@@ -337,6 +338,7 @@ ticket:
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
+                    sign_requests_per_lease: crate::DEFAULT_SIGN_REQUESTS_PER_LEASE,
                 },
                 test.service.clone(),
             )
@@ -434,6 +436,7 @@ templates:
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
+                    sign_requests_per_lease: crate::DEFAULT_SIGN_REQUESTS_PER_LEASE,
                 },
                 test.service.clone(),
             )

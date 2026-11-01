@@ -11,6 +11,8 @@
 //! submissions:                       # ticket submissions a minute (each 1 or more)
 //!   per_source: 10                   # per address (an IPv6 host by its /64; local: one)
 //!   in_all: 60                       # all sources together
+//! sign_requests:                     # held at once (16 in all, daemon-wide)
+//!   per_lease: 4                     # per lease, 1 to 16
 //! keystore: { dev: data/keys }       # M2: unsealed dev keystore, test only
 //! transports:
 //!   agents:                          # TCP: `allow` is required (`0.0.0.0/0` for anyone)
@@ -46,6 +48,9 @@ pub struct Config {
     /// The submission rates, per minute; the defaults suit one person's agents.
     #[serde(default)]
     pub submissions: SubmissionsConfig,
+    /// Sign requests held at once per lease.
+    #[serde(default)]
+    pub sign_requests: SignRequestsConfig,
     pub keystore: KeystoreConfig,
     pub transports: Transports,
     pub attestor: AttestorConfig,
@@ -87,6 +92,26 @@ impl SubmissionsConfig {
             in_all: self.in_all,
         }
     }
+}
+
+/// `sign_requests`: how many sign requests one lease may have held at once.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignRequestsConfig {
+    #[serde(default = "default_per_lease")]
+    pub per_lease: usize,
+}
+
+impl Default for SignRequestsConfig {
+    fn default() -> Self {
+        Self {
+            per_lease: default_per_lease(),
+        }
+    }
+}
+
+fn default_per_lease() -> usize {
+    writ_gateway::DEFAULT_SIGN_REQUESTS_PER_LEASE
 }
 
 fn default_per_source() -> usize {
@@ -274,6 +299,13 @@ impl Config {
             );
         }
         config.submissions.limits().check().map_err(fail)?;
+        let per_lease = config.sign_requests.per_lease;
+        if !(1..=writ_gateway::MAX_SIGN_REQUESTS).contains(&per_lease) {
+            return Err(fail(format!(
+                "sign_requests.per_lease: {per_lease}, must be from 1 to {}",
+                writ_gateway::MAX_SIGN_REQUESTS
+            )));
+        }
         let approvals = &config.transports.approvals;
         if approvals.ssh.is_empty() && approvals.https.is_empty() {
             anyhow::bail!(
@@ -358,6 +390,40 @@ mod tests {
                 "submissions.in_all: 10001, must be from 1 to 10000",
             ),
             ("submissions: { per_minute: 5 }", "unknown field"),
+        ] {
+            let error = format!("{:#}", with(yaml).unwrap_err());
+            assert!(error.contains(expected), "{yaml}: {error}");
+        }
+    }
+
+    #[test]
+    fn sign_requests_per_lease_default_to_four_and_are_bounded() {
+        assert_eq!(load(MINIMAL).unwrap().sign_requests.per_lease, 4);
+        let with = |yaml: &str| load(&format!("{MINIMAL}{yaml}\n"));
+        assert_eq!(
+            with("sign_requests: { per_lease: 1 }")
+                .unwrap()
+                .sign_requests
+                .per_lease,
+            1
+        );
+        assert_eq!(
+            with("sign_requests: { per_lease: 16 }")
+                .unwrap()
+                .sign_requests
+                .per_lease,
+            16
+        );
+        for (yaml, expected) in [
+            (
+                "sign_requests: { per_lease: 0 }",
+                "sign_requests.per_lease: 0, must be from 1 to 16",
+            ),
+            (
+                "sign_requests: { per_lease: 17 }",
+                "sign_requests.per_lease: 17, must be from 1 to 16",
+            ),
+            ("sign_requests: { in_all: 32 }", "unknown field"),
         ] {
             let error = format!("{:#}", with(yaml).unwrap_err());
             assert!(error.contains(expected), "{yaml}: {error}");

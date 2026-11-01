@@ -27,7 +27,10 @@ pub(crate) const BODY_DEADLINE: Duration = Duration::from_secs(30);
 pub(crate) const SIGN_BODY_DEADLINE: Duration = Duration::from_secs(60);
 /// Sign requests the daemon holds at once, all lease holders together, from reading the body
 /// to the answer: each holds up to 16 MiB, and the signer's queue takes no more than this.
-pub(crate) const MAX_SIGN_REQUESTS: usize = 16;
+pub const MAX_SIGN_REQUESTS: usize = 16;
+/// Sign requests one lease may have held at once, unless the operator says otherwise
+/// (`sign_requests.per_lease`, 1 to [`MAX_SIGN_REQUESTS`]): one lease can't take every slot.
+pub const DEFAULT_SIGN_REQUESTS_PER_LEASE: usize = 4;
 /// A connection with no traffic at all for this long is closed.
 pub(crate) const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(600);
 /// The longest text chosen by an unauthenticated peer (a certificate's key id) that is logged.
@@ -126,32 +129,83 @@ pub(crate) async fn read_within(
     }
 }
 
-/// The daemon's sign request slots ([`MAX_SIGN_REQUESTS`]): one is taken before a body is
-/// read and kept until the request is answered. None free: refused at once, never queued.
+/// The daemon's sign request slots: [`MAX_SIGN_REQUESTS`] in all, and the operator's number
+/// per lease (by its certificate's serial), so one lease can't hold them all. One is taken
+/// before a body is read and kept until the request is answered. None free: refused at
+/// once, never queued.
 pub(crate) struct SignSlots {
-    slots: Arc<Semaphore>,
+    total: Arc<Semaphore>,
     max: usize,
+    per_lease: usize,
+    leases: Arc<Mutex<HashMap<u64, usize>>>,
+}
+
+/// A taken sign slot, given back (in all and for its lease) when dropped.
+pub(crate) struct SignSlot {
+    _total: OwnedSemaphorePermit,
+    serial: u64,
+    leases: Arc<Mutex<HashMap<u64, usize>>>,
+}
+
+impl Drop for SignSlot {
+    fn drop(&mut self) {
+        // poisoned: the lease's count stays up, so it gets fewer slots (fail closed).
+        if let Ok(mut counts) = self.leases.lock()
+            && let Some(count) = counts.get_mut(&self.serial)
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.serial);
+            }
+        }
+    }
 }
 
 impl SignSlots {
-    pub(crate) fn new() -> Self {
-        Self::with(MAX_SIGN_REQUESTS)
+    /// `per_lease` slots per lease, from 1 to [`MAX_SIGN_REQUESTS`].
+    pub(crate) fn new(per_lease: usize) -> Result<Self, String> {
+        Self::with(MAX_SIGN_REQUESTS, per_lease)
     }
 
-    fn with(max: usize) -> Self {
-        Self {
-            slots: Arc::new(Semaphore::new(max)),
-            max,
+    fn with(max: usize, per_lease: usize) -> Result<Self, String> {
+        if !(1..=max).contains(&per_lease) {
+            return Err(format!(
+                "sign_requests.per_lease: {per_lease}, must be from 1 to {max}"
+            ));
         }
+        Ok(Self {
+            total: Arc::new(Semaphore::new(max)),
+            max,
+            per_lease,
+            leases: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
-    /// A slot, or why there is none.
-    pub(crate) fn take(&self) -> Result<OwnedSemaphorePermit, String> {
-        self.slots.clone().try_acquire_owned().map_err(|_| {
+    /// A slot for a request of the lease whose certificate has `serial`, or why there is none.
+    pub(crate) fn take(&self, serial: u64) -> Result<SignSlot, String> {
+        let total = self.total.clone().try_acquire_owned().map_err(|_| {
             format!(
                 "the daemon already holds {} sign requests; retry shortly",
                 self.max
             )
+        })?;
+        let busy = || {
+            format!(
+                "this lease already has {} sign requests in progress; retry shortly",
+                self.per_lease
+            )
+        };
+        // A poisoned table fails closed: no slot.
+        let mut counts = self.leases.lock().map_err(|_| busy())?;
+        let count = counts.entry(serial).or_insert(0);
+        if *count >= self.per_lease {
+            return Err(busy());
+        }
+        *count = count.saturating_add(1);
+        Ok(SignSlot {
+            _total: total,
+            serial,
+            leases: self.leases.clone(),
         })
     }
 }
@@ -387,19 +441,54 @@ mod tests {
     }
 
     #[test]
-    fn sign_slots_are_bounded_and_given_back() {
-        let slots = SignSlots::with(3);
-        let held: Vec<OwnedSemaphorePermit> = (0..3).map(|_| slots.take().unwrap()).collect();
+    fn sign_slots_are_bounded_in_all_and_per_lease() {
+        let slots = SignSlots::with(5, 2).unwrap();
+        // A lease gets its share, not one more; another lease still gets in.
+        let first: Vec<SignSlot> = (0..2).map(|_| slots.take(1).unwrap()).collect();
         assert_eq!(
-            slots.take().err(),
-            Some("the daemon already holds 3 sign requests; retry shortly".to_owned())
+            slots.take(1).err(),
+            Some("this lease already has 2 sign requests in progress; retry shortly".to_owned())
         );
-        drop(held);
+        let second: Vec<SignSlot> = (0..2).map(|_| slots.take(2).unwrap()).collect();
+        // In all: 5, whatever the leases.
+        let fifth = slots.take(3).unwrap();
+        assert_eq!(
+            slots.take(4).err(),
+            Some("the daemon already holds 5 sign requests; retry shortly".to_owned())
+        );
+        // A lease turned away by its own share holds no slot in all meanwhile.
+        drop(fifth);
+        assert_eq!(
+            slots.take(1).err(),
+            Some("this lease already has 2 sign requests in progress; retry shortly".to_owned())
+        );
+        assert!(slots.take(4).is_ok(), "the refused take gave its slot back");
+        // A slot comes back when its request ends, for its lease too.
+        drop(first);
+        let again = slots.take(1).unwrap();
+        assert_eq!(slots.leases.lock().unwrap().get(&1), Some(&1));
+        drop(again);
+        assert!(slots.leases.lock().unwrap().get(&1).is_none());
+        drop(second);
         assert!(
-            slots.take().is_ok(),
-            "a slot comes back when its request ends"
+            slots.leases.lock().unwrap().get(&2).is_none(),
+            "forgotten at 0"
         );
-        assert_eq!(SignSlots::new().max, MAX_SIGN_REQUESTS);
+    }
+
+    #[test]
+    fn the_operator_s_share_per_lease_is_bounded() {
+        assert!(SignSlots::new(1).is_ok());
+        assert!(SignSlots::new(MAX_SIGN_REQUESTS).is_ok());
+        assert_eq!(
+            SignSlots::new(0).err(),
+            Some("sign_requests.per_lease: 0, must be from 1 to 16".to_owned())
+        );
+        assert_eq!(
+            SignSlots::new(MAX_SIGN_REQUESTS + 1).err(),
+            Some("sign_requests.per_lease: 17, must be from 1 to 16".to_owned())
+        );
+        assert_eq!(SignSlots::new(4).unwrap().max, MAX_SIGN_REQUESTS);
     }
 
     #[test]

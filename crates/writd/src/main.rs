@@ -246,6 +246,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
                 hook_program: std::env::current_exe()?,
                 state_dir: config.state_dir.join("run"),
                 readers: readers.clone(),
+                sign_requests_per_lease: config.sign_requests.per_lease,
             },
             service.clone(),
         )

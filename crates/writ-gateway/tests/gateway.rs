@@ -120,6 +120,7 @@ impl Daemon {
                 hook_program: PathBuf::from("/bin/false"),
                 state_dir: dir.path().join("run"),
                 readers,
+                sign_requests_per_lease: writ_gateway::DEFAULT_SIGN_REQUESTS_PER_LEASE,
             },
             service,
         )

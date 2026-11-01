@@ -55,6 +55,7 @@ use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
 use writ_platform::{CallerAttestor, Connection, PeerInfo, Transport};
 
 pub use hook::run_pre_receive;
+pub use limits::{DEFAULT_SIGN_REQUESTS_PER_LEASE, MAX_SIGN_REQUESTS};
 
 pub use writ_proto::{CLIENT_USER, LEASE_USER};
 
@@ -94,6 +95,8 @@ pub struct GatewayConfig {
     pub state_dir: PathBuf,
     /// The keys that may use the approval API (`readers` file).
     pub readers: Vec<Reader>,
+    /// Sign requests one lease may have held at once (1 to [`MAX_SIGN_REQUESTS`]).
+    pub sign_requests_per_lease: usize,
 }
 
 /// A running gateway, shared by every connection.
@@ -124,6 +127,8 @@ impl Gateway {
     /// Prepares the state directory, starts the hook server and the task that drops the
     /// sessions of leases that end.
     pub async fn start(config: GatewayConfig, service: Arc<Service>) -> Result<Self> {
+        let sign_slots =
+            limits::SignSlots::new(config.sign_requests_per_lease).map_err(GatewayError::Config)?;
         writ_platform::fs::create_private_dir(&config.state_dir)?;
         let hooks_dir = config.state_dir.join("hooks");
         write_hook_script(&hooks_dir, &config.hook_program)?;
@@ -166,7 +171,7 @@ impl Gateway {
                 hooks_dir,
                 hook_socket,
                 throttle: limits::DenialThrottle::new(),
-                sign_slots: limits::SignSlots::new(),
+                sign_slots,
             }),
         };
         tokio::spawn(hook::serve(gateway.clone(), hook_listener));

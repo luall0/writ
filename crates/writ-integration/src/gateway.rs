@@ -147,6 +147,7 @@ impl GitGateway {
             state_dir: root.join("run"),
             // No approval listener here: the service is driven directly.
             readers: Vec::new(),
+            sign_requests_per_lease: writ_gateway::DEFAULT_SIGN_REQUESTS_PER_LEASE,
         };
         let gateway = runtime
             .block_on(Gateway::start(config, service.clone()))

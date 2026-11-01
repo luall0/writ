@@ -4,7 +4,7 @@
 //! holders are untrusted: the body is bounded in bytes and in time, decoded strictly, and
 //! every evidence object is checked against its id before it is read (`writ_git::paths`).
 //! The daemon holds at most [`MAX_SIGN_REQUESTS`](crate::limits::MAX_SIGN_REQUESTS) of them
-//! at once, whoever sends them.
+//! at once, and a lease at most the operator's share of those.
 
 use russh::ChannelReadHalf;
 use writ_approval::{SignObject, SignedCommit, Signing};
@@ -51,7 +51,11 @@ pub(super) async fn sign(
         .map_err(Refused::Denied)?;
     // A slot first, then the body: what the daemon holds is bounded however many lease
     // holders ask at once. The slot is kept until the request is answered.
-    let slot = gateway.shared.sign_slots.take().map_err(Refused::Gateway)?;
+    let slot = gateway
+        .shared
+        .sign_slots
+        .take(command.cert.serial)
+        .map_err(Refused::Gateway)?;
     let body = limits::read_within(rx.make_reader(), MAX_SIGN_INPUT, limits::SIGN_BODY_DEADLINE)
         .await
         .map_err(Refused::Gateway)?;
