@@ -225,6 +225,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
                 approvers: approvers.clone(),
                 decisions: config.decisions,
                 max_pending: config.max_pending,
+                submissions: config.submissions.limits(),
             },
             CertificateAuthority::new(keys.ca),
             store,

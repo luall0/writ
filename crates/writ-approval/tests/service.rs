@@ -894,6 +894,116 @@ fn one_address_submits_at_most_ten_tickets_a_minute() {
     );
 }
 
+#[test]
+fn a_burst_s_refusals_are_counted_even_when_its_source_goes_quiet() {
+    let h = Harness::with(Decisions::Signed, FakeWatcher::new(), 100);
+    let submit = |source: &str| {
+        let key = generate(KeyKind::Ed25519).unwrap();
+        h.service
+            .submit(key.public_key(), REQUEST.as_bytes(), &from(source))
+    };
+    for _ in 0..10 {
+        submit("192.0.2.1").unwrap();
+    }
+    for _ in 0..4 {
+        refused_as(
+            submit("192.0.2.1"),
+            RefusalCode::RateLimited,
+            "more than 10 submissions a minute from this address",
+        );
+    }
+    let counted = "3 more submissions from this address were refused over the rate";
+    let count_lines = || {
+        h.test
+            .events("submit", "denied")
+            .into_iter()
+            .filter(|e| e["reason"] == counted)
+            .collect::<Vec<_>>()
+    };
+    // The source never submits again: the sweep writes the count once its window is over.
+    h.clock.advance(59);
+    h.service.sweep();
+    assert!(count_lines().is_empty(), "the window isn't over yet");
+    h.clock.advance(1);
+    h.service.sweep();
+    let lines = count_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["source_addr"], "192.0.2.1");
+    h.service.sweep();
+    assert_eq!(count_lines().len(), 1, "written once");
+}
+
+#[test]
+fn all_sources_together_submit_at_most_the_operator_s_rate() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock::at_unix(START));
+    let test = TestServiceBuilder::new(POLICY)
+        .max_pending(100)
+        .submissions(writ_approval::SubmissionLimits {
+            per_source: 10,
+            in_all: 3,
+        })
+        .clock(clock.clone())
+        .build(dir.path());
+    let submit = |source: &str| {
+        let key = generate(KeyKind::Ed25519).unwrap();
+        test.service
+            .submit(key.public_key(), REQUEST.as_bytes(), &from(source))
+    };
+    // At the rate, from three addresses; one more, from a fourth, is refused.
+    for source in ["192.0.2.1", "192.0.2.2", "192.0.2.3"] {
+        submit(source).unwrap();
+    }
+    let before = test.events("submit", "denied").len();
+    for source in ["192.0.2.4", "192.0.2.5"] {
+        refused_as(
+            submit(source),
+            RefusalCode::RateLimited,
+            "more than 3 submissions a minute from all sources; try again later",
+        );
+    }
+    let denied = test.events("submit", "denied");
+    assert_eq!(denied.len(), before + 1, "one line for the burst");
+    assert_eq!(
+        denied.last().unwrap()["reason"],
+        "more than 3 submissions a minute from all sources"
+    );
+    // A minute on, the next passes and the burst's count is logged with it.
+    clock.advance(60);
+    submit("192.0.2.4").unwrap();
+    assert_eq!(
+        test.events("submit", "denied").last().unwrap()["reason"],
+        "1 more submissions were refused over the rate for all sources"
+    );
+}
+
+#[test]
+fn rates_out_of_bounds_are_a_startup_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = |per_source: usize, in_all: usize| {
+        TestServiceBuilder::new(POLICY)
+            .submissions(writ_approval::SubmissionLimits { per_source, in_all })
+            .try_build(dir.path())
+    };
+    match start(0, 60) {
+        Err(ServiceError::Config(message)) => {
+            assert_eq!(message, "submissions.per_source: 0, must be from 1 to 1000");
+        }
+        Err(other) => panic!("expected a configuration error, got {other}"),
+        Ok(_) => panic!("started with a rate of 0"),
+    }
+    match start(10, 10_001) {
+        Err(ServiceError::Config(message)) => {
+            assert_eq!(
+                message,
+                "submissions.in_all: 10001, must be from 1 to 10000"
+            );
+        }
+        Err(other) => panic!("expected a configuration error, got {other}"),
+        Ok(_) => panic!("started with a rate over its bound"),
+    }
+}
+
 /// A notifier that holds the worker inside `notify` until released.
 struct Gated {
     state: std::sync::Mutex<(bool, bool, Vec<String>)>,

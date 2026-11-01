@@ -75,7 +75,7 @@ reader with `decisions: open`). Each has a bound, a strict parser, and a hostile
 | SSH handshake and auth | the same | listed algorithms only, publickey only, 6 attempts, certificate checks (CA, type, validity, principal, no critical option, deny list) | russh with `preferred_algorithms`, `writ_crypto::ca` |
 | SSH exec line and env | authenticated peers | exact command grammar, repo names validated, only `GIT_PROTOCOL` (< 64 chars, `[A-Za-z0-9=:.]`), 4 channels per connection | `writ_proto::Command`, `writ-gateway/src/command.rs` |
 | Request bodies (SSH stdin, HTTPS) | agents, readers | 256 KiB (`MAX_BODY`), 30 s | `writ_proto` envelope, `deny_unknown_fields` |
-| Ticket YAML | agents | the body bound, one document, no anchors/aliases/merge keys, depth 32, 50,000 nodes, strict booleans; text bounds (title 200 one line, task 4,000 / 100 lines, plan 50 × 500 one line, 100 paths, caller fields); `ttl` ≥ 5 min; 2 pending per session key, 10 submissions/min per address, `max_pending` in all | `writ_core::yaml`, `fit` |
+| Ticket YAML | agents | the body bound, one document, no anchors/aliases/merge keys, depth 32, 50,000 nodes, strict booleans; text bounds (title 200 one line, task 4,000 / 100 lines, plan 50 × 500 one line, 100 paths, caller fields); `ttl` ≥ 5 min; 2 pending per session key, 10 submissions/min per address and 60/min from all sources (defaults; the operator sets both, 1-1,000 and 1-10,000: `submissions`), `max_pending` in all | `writ_core::yaml`, `fit` |
 | Canonical tickets and decisions | approver clients | decode then re-encode to the same bytes | `writ_core::canonical` |
 | SSHSIGs | approver clients | namespace, keys compared whole, accepted key types, `sk-` user presence | `writ_crypto::sshsig`, `allowed_signers` |
 | TLS client certificates | HTTPS peers | TLS 1.3, a reader's Ed25519 key, handshake signature checked | `writ_crypto::tls::ReaderVerifier` |
@@ -125,6 +125,12 @@ A new input is added here in the same change.
   (`writ_store::MAX_FIELD_CHARS`), whoever built the event, and the policy shows an agent's
   value (a committer email, a path) cut to 256 characters in a denial or a warning, so no
   request makes a large line.
+- **Submissions refused over a rate are coalesced** per burst, per source and for all
+  sources together: the first refusal has its line, the others are counted, and the count
+  is written when that rate next lets one through or when its minute ends (the sweep), so a
+  source that goes quiet still has every refusal counted. The table of sources is bounded
+  (4,096): when it is full, the window quiet the longest is dropped, its count written
+  first.
 - **A lease holder's denials are coalesced** past 60 lines a minute per lease
   ([Q34](decisions.md)): still denied, counted, and the count written as one line per kind
   when the minute is over; allowed lines and reductions of privilege are never held back.

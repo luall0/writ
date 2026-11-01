@@ -7,6 +7,10 @@
 //! approvers: approvers               # allowed_signers format
 //! readers: readers                   # who may use the approval API (`writ reader`)
 //! decisions: signed                  # signed | open: refusals and revocations
+//! max_pending: 20                    # tickets waiting for the approver at once
+//! submissions:                       # ticket submissions a minute (each 1 or more)
+//!   per_source: 10                   # per address (an IPv6 host by its /64; local: one)
+//!   in_all: 60                       # all sources together
 //! keystore: { dev: data/keys }       # M2: unsealed dev keystore, test only
 //! transports:
 //!   agents:                          # TCP: `allow` is required (`0.0.0.0/0` for anyone)
@@ -39,6 +43,9 @@ pub struct Config {
     pub decisions: Decisions,
     #[serde(default = "default_max_pending")]
     pub max_pending: usize,
+    /// The submission rates, per minute; the defaults suit one person's agents.
+    #[serde(default)]
+    pub submissions: SubmissionsConfig,
     pub keystore: KeystoreConfig,
     pub transports: Transports,
     pub attestor: AttestorConfig,
@@ -51,6 +58,43 @@ pub struct Config {
 
 fn default_max_pending() -> usize {
     writ_approval::DEFAULT_MAX_PENDING
+}
+
+/// `submissions`: how many tickets may be submitted a minute, per source and in all.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubmissionsConfig {
+    #[serde(default = "default_per_source")]
+    pub per_source: usize,
+    #[serde(default = "default_in_all")]
+    pub in_all: usize,
+}
+
+impl Default for SubmissionsConfig {
+    fn default() -> Self {
+        Self {
+            per_source: default_per_source(),
+            in_all: default_in_all(),
+        }
+    }
+}
+
+impl SubmissionsConfig {
+    /// The service's limits.
+    pub fn limits(&self) -> writ_approval::SubmissionLimits {
+        writ_approval::SubmissionLimits {
+            per_source: self.per_source,
+            in_all: self.in_all,
+        }
+    }
+}
+
+fn default_per_source() -> usize {
+    writ_approval::DEFAULT_SUBMISSIONS_PER_SOURCE
+}
+
+fn default_in_all() -> usize {
+    writ_approval::DEFAULT_SUBMISSIONS_IN_ALL
 }
 
 #[derive(Debug, Deserialize)]
@@ -229,6 +273,7 @@ impl Config {
                 path.display()
             );
         }
+        config.submissions.limits().check().map_err(fail)?;
         let approvals = &config.transports.approvals;
         if approvals.ssh.is_empty() && approvals.https.is_empty() {
             anyhow::bail!(
@@ -271,6 +316,52 @@ mod tests {
             Sources::Only(vec!["127.0.0.1".parse().unwrap()])
         );
         assert_eq!(config.transports.approvals.ssh[0].sources(), Sources::Any);
+    }
+
+    #[test]
+    fn submission_rates_default_to_one_person_s_and_are_bounded() {
+        let config = load(MINIMAL).unwrap();
+        assert_eq!(
+            config.submissions.limits(),
+            writ_approval::SubmissionLimits::default()
+        );
+        let with = |yaml: &str| load(&format!("{MINIMAL}{yaml}\n"));
+        let set = with("submissions: { per_source: 30, in_all: 200 }").unwrap();
+        assert_eq!(
+            set.submissions.limits(),
+            writ_approval::SubmissionLimits {
+                per_source: 30,
+                in_all: 200
+            }
+        );
+        // One given, the other keeps its default.
+        let one = with("submissions: { in_all: 120 }").unwrap();
+        assert_eq!(one.submissions.per_source, 10);
+        // Both bounds, on both sides.
+        assert!(with("submissions: { per_source: 1, in_all: 1 }").is_ok());
+        assert!(with("submissions: { per_source: 1000, in_all: 10000 }").is_ok());
+        for (yaml, expected) in [
+            (
+                "submissions: { per_source: 0 }",
+                "submissions.per_source: 0, must be from 1 to 1000",
+            ),
+            (
+                "submissions: { in_all: 0 }",
+                "submissions.in_all: 0, must be from 1 to 10000",
+            ),
+            (
+                "submissions: { per_source: 1001 }",
+                "submissions.per_source: 1001, must be from 1 to 1000",
+            ),
+            (
+                "submissions: { in_all: 10001 }",
+                "submissions.in_all: 10001, must be from 1 to 10000",
+            ),
+            ("submissions: { per_minute: 5 }", "unknown field"),
+        ] {
+            let error = format!("{:#}", with(yaml).unwrap_err());
+            assert!(error.contains(expected), "{yaml}: {error}");
+        }
     }
 
     #[test]

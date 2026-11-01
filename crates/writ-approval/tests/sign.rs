@@ -792,6 +792,7 @@ fn a_template_whose_key_the_signer_lacks_is_a_startup_error() {
                 }],
                 decisions: writ_proto::Decisions::Signed,
                 max_pending: 20,
+                submissions: writ_approval::SubmissionLimits::default(),
             },
             writ_crypto::ca::CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap()),
             Store::open_in_memory().unwrap(),

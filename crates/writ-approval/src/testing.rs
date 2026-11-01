@@ -33,7 +33,7 @@ use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, GatedSigner, software_signer};
 use writ_store::{AuditBreaker, AuditLog, Store, StoreBreaker};
 
-use crate::{Service, ServiceConfig, ServicePlatform};
+use crate::{Service, ServiceConfig, ServicePlatform, SubmissionLimits};
 
 /// The time a [`TestService`] starts at by default: 2027-01-15T08:00:00Z.
 pub const START: u64 = 1_800_000_000;
@@ -47,6 +47,7 @@ pub struct TestServiceBuilder {
     signer_kind: KeyKind,
     decisions: Decisions,
     max_pending: usize,
+    submissions: SubmissionLimits,
     watcher: Arc<dyn SessionWatcher>,
     notifier: Arc<dyn Notifier>,
     clock: Arc<dyn Clock>,
@@ -59,6 +60,7 @@ impl TestServiceBuilder {
             signer_kind: KeyKind::Ed25519,
             decisions: Decisions::Signed,
             max_pending: 20,
+            submissions: SubmissionLimits::default(),
             watcher: Arc::new(FakeWatcher::new()),
             notifier: Arc::new(RecordingNotifier::new()),
             clock: Arc::new(FakeClock::at_unix(START)),
@@ -72,6 +74,12 @@ impl TestServiceBuilder {
 
     pub fn max_pending(mut self, max_pending: usize) -> Self {
         self.max_pending = max_pending;
+        self
+    }
+
+    /// The submission rates (the daemon's defaults otherwise).
+    pub fn submissions(mut self, submissions: SubmissionLimits) -> Self {
+        self.submissions = submissions;
         self
     }
 
@@ -98,6 +106,11 @@ impl TestServiceBuilder {
 
     /// Starts the service with its store and audit log in `dir`, and one approver key.
     pub fn build(self, dir: &Path) -> TestService {
+        self.try_build(dir).unwrap()
+    }
+
+    /// [`TestServiceBuilder::build`], with the service's startup error if it has one.
+    pub fn try_build(self, dir: &Path) -> Result<TestService, crate::ServiceError> {
         let approver = generate(KeyKind::Ed25519).unwrap();
         let ca_key = generate(KeyKind::Ed25519).unwrap();
         let ca_fingerprint = ca_key.public_key().fingerprint(HashAlg::Sha256);
@@ -124,6 +137,7 @@ impl TestServiceBuilder {
                 }],
                 decisions: self.decisions,
                 max_pending: self.max_pending,
+                submissions: self.submissions,
             },
             CertificateAuthority::new(ca_key.clone()),
             store,
@@ -134,9 +148,8 @@ impl TestServiceBuilder {
                 watcher: self.watcher,
                 clock: self.clock,
             },
-        )
-        .unwrap();
-        TestService {
+        )?;
+        Ok(TestService {
             service,
             approver,
             ca_key,
@@ -145,7 +158,7 @@ impl TestServiceBuilder {
             store_breaker,
             audit_path,
             signer,
-        }
+        })
     }
 }
 

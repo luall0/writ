@@ -15,9 +15,10 @@ use writ_platform::{Notification, Priority};
 use writ_proto::{Decision, Submitted};
 use writ_store::{AuditEvent, EventKind, Outcome};
 
+use super::submissions::{Line, Scope};
 use super::{
-    Inner, MAX_PENDING_PER_SESSION, MAX_SUBMISSIONS_PER_MINUTE, MAX_TRACKED_SOURCES, Service,
-    WAIT_RECHECK, canonical_text, fingerprint, internal, not_found,
+    Inner, MAX_PENDING_PER_SESSION, Service, WAIT_RECHECK, canonical_text, fingerprint, internal,
+    not_found,
 };
 use crate::{RefusalCode, ServiceError};
 
@@ -151,59 +152,46 @@ impl Service {
         })
     }
 
-    /// Counts a submission from the caller's source address against
-    /// [`MAX_SUBMISSIONS_PER_MINUTE`]. Over the rate, it is refused; only the first refusal
-    /// of a burst is logged, and the count of the others with the next submission that
-    /// passes, so a flood can't fill the audit log.
+    /// Counts a submission against the rates ([`submissions`](super::submissions)): from
+    /// the caller's source, and from all sources together. Over a rate, it is refused; only
+    /// the first refusal of a burst is logged one by one, the others counted and their count
+    /// logged later, so a flood can't fill the audit log and no refusal goes uncounted.
     fn within_rate(
         inner: &mut Inner,
         caller: &CallerFacts,
         now: Timestamp,
     ) -> Result<(), ServiceError> {
-        // Counted by group: an IPv6 host by its /64 (it holds all of it).
-        let source = caller.source_addr.map(writ_core::net::source_group);
-        if inner.submissions.len() >= MAX_TRACKED_SOURCES
-            && !inner.submissions.contains_key(&source)
-        {
-            inner.submissions.clear();
+        let admission = inner.submissions.admit(caller.source_addr, now);
+        for line in admission.lines {
+            let event = Self::submission_line(line, Some(caller), now);
+            Self::log_best_effort(inner, &event);
         }
-        let window = inner.submissions.entry(source).or_default();
-        while window
-            .times
-            .front()
-            .is_some_and(|t| t.seconds_until(now) >= 60)
-        {
-            window.times.pop_front();
+        match admission.refused {
+            Some(reason) => Err(ServiceError::refused(RefusalCode::RateLimited, reason)),
+            None => Ok(()),
         }
-        let event = |reason: String| {
-            AuditEvent::new(now, EventKind::Submit, Outcome::Denied)
-                .caller(caller)
-                .reason(reason)
-        };
-        if window.times.len() >= MAX_SUBMISSIONS_PER_MINUTE {
-            let first = window.refused == 0;
-            window.refused += 1;
-            let reason = format!(
-                "more than {MAX_SUBMISSIONS_PER_MINUTE} submissions a minute from this address"
-            );
-            if first {
-                Self::log_best_effort(inner, &event(reason.clone()));
-            }
-            return Err(ServiceError::refused(
-                RefusalCode::RateLimited,
-                format!("{reason}; try again later"),
-            ));
+    }
+
+    /// The counts of the submission windows over at `now` (from the sweep: a source that
+    /// stopped submitting still gets its count logged).
+    pub(super) fn log_counted_submissions(inner: &mut Inner, now: Timestamp) {
+        for line in inner.submissions.due(now) {
+            let event = Self::submission_line(line, None, now);
+            Self::log_best_effort(inner, &event);
         }
-        window.times.push_back(now);
-        let refused = std::mem::take(&mut window.refused);
-        if refused > 1 {
-            let reason = format!(
-                "{} more submissions from this address were refused over the rate",
-                refused - 1
-            );
-            Self::log_best_effort(inner, &event(reason));
+    }
+
+    /// A `submit` line refused over a rate, with whose it is.
+    fn submission_line(line: Line, caller: Option<&CallerFacts>, now: Timestamp) -> AuditEvent {
+        let event = AuditEvent::new(now, EventKind::Submit, Outcome::Denied).reason(line.reason);
+        match (line.scope, caller) {
+            (Scope::Caller, Some(caller)) => event.caller(caller),
+            (Scope::Source(source), _) => event.caller(&CallerFacts {
+                source_addr: source,
+                process_chain: None,
+            }),
+            (Scope::Caller, None) | (Scope::All, _) => event,
         }
-        Ok(())
     }
 
     /// Tells the approver a ticket waits: queued for the notification worker, so the request

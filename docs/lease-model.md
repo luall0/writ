@@ -162,8 +162,9 @@ waiting for my signature counts), every omitted limit, `revision` and `previous_
 A ticket asks for at least 5 minutes (`ttl`, and a template's `max_ttl`): a pending ticket
 holds one of the approver's waiting slots until it expires. The approver may still narrow a
 lease below that when signing. One session key has at most 2 tickets waiting, one source
-address (an IPv6 host by its /64) submits at most 10 tickets a minute, and the daemon at
-most `max_pending` (20).
+address (an IPv6 host by its /64) submits at most 10 tickets a minute and all sources
+together at most 60 (the operator's `submissions` in `writd.yaml` sets both), and the daemon
+holds at most `max_pending` (20) waiting.
 
 ```yaml
 kind: writ-ticket/1              # the format: an approval can't be read as anything else
