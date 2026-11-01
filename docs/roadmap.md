@@ -26,7 +26,7 @@ an unchanged core.
 | M3 | [Signed commits](history/m3-signed-commits.md) ✅ | `writ-sign`, the sign command through the `Signer`, touched paths from checked evidence, the ledger, `writ init` (wrapper mode), `object_format`; the review after M3 and its fixes |
 | M3.5 | [Signing outside the lock](history/m3.5-signing-outside-the-lock.md) ✅ | `Service::sign` in three phases (the signer never runs under the state lock), the `QueuedSigner` in front of a backend |
 | M3.6 | [Review after M3.5](history/m3.6-review-after-m3.5.md) ✅ | The security and code quality review after M3.5 and its fixes: sign requests bounded in time and number, `ops` pruned, the reader key's copies wiped, submission rates for all sources set by the operator with every refusal counted, a panicking signer logged once |
-| M4 | [Gateway push and fetch](#m4--gateway-push-and-fetch) | Mirrors, quarantine, every push check, upstream over SSH |
+| M4 | [Gateway push and fetch](history/m4-gateway-push-and-fetch.md) ✅ | Mirrors synced as untrusted input, every push check in the quarantine, upstream over SSH before the mirror moves, `make e2e` |
 | M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only remotes |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
@@ -95,53 +95,14 @@ the review after M3.5 and its fixes; what it found for M4 and M6 is in their sec
 
 ## M4 — Gateway push and fetch
 
-[Flows § 3 and § 4](flows.md#3-push) in `gateway` mode, upstream over SSH, against a test
-remote (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
-
-- One bare mirror per registered repo; sync on fetch, on push and periodically.
-- Push into quarantine; checks: lease covers push and repo, ref matches the branches, protected
-  refs, no force push unless allowed, every new commit in the ledger for this lease, size.
-- Upstream pusher with the upstream credential from the `Signer`; mirror refs updated only
-  after upstream accepted; upstream rejections relayed to the agent.
-- `writ init` writes the [URL rewrite](architecture/gateway.md#url-rewrite).
-- From the M2.6 security review: mirrors use the reftable ref format (no loose ref files to
-  collide by case on APFS), and an update whose name differs only in case from an existing
-  ref is refused; `receive.fsckObjects` stays on; decide and consume a push under one store
-  transaction, with the rate window and expiry checked there too.
-- From M3: each new commit's touched paths computed again from the objects git verified in
-  the quarantine (its own hashing and collision detection), and the push refused when they
-  differ from what was checked at signing; the ledger keeps what signing saw (a schema
-  migration: the sorted paths, or their digest and a "paths unknown or warned" flag).
-- From the review after M3: the quarantine walk reuses `writ_git::paths` (bounded in
-  entries, paths, depth, path length and bytes since the review); `receive.fsck.hasDotgit =
-  error` in every mirror (git only warns by default, and `receive.fsckObjects` then accepts
-  the push: checked with git 2.54), so a `.git` entry an agent hid by leaving its tree out of
-  the sign request never lands; each mirror created with its repo's `--object-format`, and the
-  first sync refuses a remote whose format isn't the registry's; no network I/O (upstream
-  push, mirror sync) under the service's state lock (M3.5's pattern).
-- From the review after M3.5 ([M3.6](history/m3.6-review-after-m3.5.md)): a fetch goes
-  through `decide_fetch` and consumes `Counter::Fetch` (the rate window) in the same store
-  transaction, like a push, so `max_ops_per_minute` bounds fetches too; a lease holder's
-  connections are bounded as well (each counted as an operation, or the allowed `connect`
-  lines coalesced per lease like its denials: decide here), so looping `ssh git@writ` can't
-  grow the audit log or hold the state lock without bound; revocation latency measured with
-  pushes and fetches in flight, and if the sweep each request runs or the audit line's fsync
-  under the state lock delays it, the full sweep moves to the timer and `usage` is read once
-  per request.
-
-Acceptance:
-- [ ] `git push origin agent/x` from a wired repo reaches the remote; `git fetch` works through
-      the daemon; the agent host holds no remote credential.
-- [ ] Each is denied with a readable reason and nothing reaches upstream: a protected ref, a
-      branch outside the lease, a force push, a commit not signed under this lease (including
-      one signed under another lease, and an unsigned local commit under a signed one: a
-      signed commit's parent is checked when that parent is signed, so a made-up parent
-      never reaches upstream), a pack over `max_push_size`, a fetch without `fetch`.
-- [ ] Upstream moved → the push is rejected with the remote's reason; fetch, rebase, re-sign
-      and push again succeeds.
-- [ ] The mirror never holds refs the remote refused.
-- [ ] A lease holder looping fetches or connections is refused past `max_ops_per_minute`
-      (or its lines coalesced), and a revocation still completes at once meanwhile.
+**Done.** Moved to [history/m4-gateway-push-and-fetch.md](history/m4-gateway-push-and-fetch.md):
+`writ-mirror` (the daemon's hardened git, mirrors synced from upstream as untrusted input,
+upstream over OpenSSH with pinned host keys and a one-operation agent socket), fetches through
+`decide_fetch` and the rate, every push check on what git verified in the quarantine (the
+ledger, the paths again, case twins), accepted pushes upstream before the mirror moves,
+`writ init`'s `origin` rewrite, a lease's connections coalesced, `make e2e` against Forgejo.
+The throwaway GitHub repo check is left for the user
+([manual checks](guides/manual-checks.md#a-throwaway-github-repo-m4)).
 
 ## M4.5 — HTTPS upstream
 

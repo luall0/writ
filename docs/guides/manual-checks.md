@@ -113,6 +113,88 @@ rm -rf dev/data dev/approvers
 When it passes, note it under the acceptance item in
 [the M2 history page](../history/m2-ticket-flow.md).
 
+## A throwaway GitHub repo (M4)
+
+[M4](../history/m4-gateway-push-and-fetch.md)'s acceptance against a real hosted remote:
+pushes and fetches through the daemon to GitHub, with a deploy key the daemon holds. `make
+e2e` runs the same flow against Forgejo in Docker; this one needs your GitHub account, so it
+is done by hand. Use a **throwaway private repository**, never a real one.
+
+**1. The repository.** On GitHub, create a private repository (say `writ-throwaway`) with a
+README, so it has a `main`.
+
+**2. Point the development daemon at it** (edits to tracked files, taken back in step 9):
+
+```sh
+sed -i '' 's|ssh://git@remote.invalid/demo.git|ssh://git@github.com/<you>/writ-throwaway.git|' dev/policy.yaml
+echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> dev/upstream_known_hosts
+```
+
+Check that key against GitHub's published fingerprints (Settings docs, "GitHub's SSH key
+fingerprints": `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` for Ed25519) with
+`ssh-keygen -lf dev/upstream_known_hosts`.
+
+**3. The daemon's credential, as a deploy key.**
+
+```sh
+cargo run -q -p writd --features dev-keystore -- upstream-keys dev/writd.yaml
+```
+
+Add the printed `upstream-dev-01` key to the repository: Settings → Deploy keys → Add, with
+**Allow write access**.
+
+**4. Run the daemon and get a lease** (steps 1 to 5 of
+[Approving with Secretive](#approving-with-secretive-touch-id): `make dev-client`, `make run`,
+`writ request dev/ticket.yaml`, `writ sign`). Its log shows `mirror created repo=demo`, then
+a sync of `main` (and nothing about `remote.invalid`).
+
+**5. An agent's clone.** In terminal 2 (with `dev/client.env` sourced), clone with your own
+access, then wire it:
+
+```sh
+writ="$PWD/target/debug/writ"; cargo build -q -p writ-cli -p writ-sign
+git clone -q git@github.com:<you>/writ-throwaway.git "$(mktemp -d)/w" && cd "$_"
+"$writ" init demo          # prints that `writ git push origin` goes through the daemon
+"$writ" git fetch origin   # through the daemon
+git checkout -q -b agent/manual-check origin/main
+echo hi > notes.txt && "$writ" git add notes.txt
+"$writ" git commit -m "Manual check" --trailer "Writ: <lease id>"
+"$writ" git push origin HEAD:refs/heads/agent/manual-check
+```
+
+**6. Upstream moves.** On GitHub, edit `notes.txt` on `agent/manual-check` in the web editor
+and commit. Then:
+
+```sh
+echo more >> notes.txt && "$writ" git commit -qam "Second" --trailer "Writ: <lease id>"
+"$writ" git push origin HEAD:refs/heads/agent/manual-check    # rejected: upstream moved
+"$writ" git fetch origin && "$writ" git rebase origin/agent/manual-check   # signed again
+"$writ" git push origin HEAD:refs/heads/agent/manual-check    # accepted
+```
+
+**7. Refused pushes.** `"$writ" git push origin HEAD:refs/heads/main` is refused (`main` is
+protected in `dev/policy.yaml`), and a plain `git commit --no-gpg-sign` pushed with `writ git`
+is refused as not signed under the lease; `main` on GitHub doesn't move.
+
+**8. What to check.**
+
+- GitHub shows `agent/manual-check` with your commits, by `agent@writ.invalid`.
+- `git -C dev/data/repos/demo.git for-each-ref` never shows a ref GitHub refused.
+- `dev/data/audit.jsonl` has `push allowed` lines for the accepted pushes, `push denied`
+  for the refused ones (with the remote's reason for the rejection in step 6), and no key.
+- The agent side holds no GitHub credential: `dev/data/client/sessions/` holds only the
+  session key and certificate, and `writ git push` worked without your SSH agent.
+
+**9. Clean up.** Stop `make run`, delete the deploy key and the repository on GitHub, then:
+
+```sh
+git checkout dev/policy.yaml dev/upstream_known_hosts
+rm -rf dev/data dev/approvers
+```
+
+When it passes, note it under the acceptance item in
+[the M4 history page](../history/m4-gateway-push-and-fetch.md).
+
 ## Approval key through your own agent (any key)
 
 `make test-agent KEY=<public key .pub> [AGENT=<socket>]` signs a random message with a key in
