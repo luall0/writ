@@ -1,7 +1,7 @@
 //! Bounds on what a peer can make the gateway hold, whoever it is: connections per listener
 //! and per source, time to authenticate, channels per connection, time to send a request
-//! body, and the length of what it chose that ends up in the audit log before it is
-//! authenticated. Denials before authentication are coalesced per source: one audit line a
+//! body, sign requests held at once, and the length of what it chose that ends up in the
+//! audit log before it is authenticated. Denials before authentication are coalesced per source: one audit line a
 //! minute with the count of the others, so a flood can't fill the disk.
 
 use std::collections::HashMap;
@@ -9,6 +9,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
@@ -22,6 +23,11 @@ pub(crate) const AUTH_DEADLINE: Duration = Duration::from_secs(20);
 pub(crate) const MAX_CHANNELS: usize = 4;
 /// How long a client has to send a request body.
 pub(crate) const BODY_DEADLINE: Duration = Duration::from_secs(30);
+/// How long a lease holder has to send a sign request's body (up to 16 MiB, over a VPN).
+pub(crate) const SIGN_BODY_DEADLINE: Duration = Duration::from_secs(60);
+/// Sign requests the daemon holds at once, all lease holders together, from reading the body
+/// to the answer: each holds up to 16 MiB, and the signer's queue takes no more than this.
+pub(crate) const MAX_SIGN_REQUESTS: usize = 16;
 /// A connection with no traffic at all for this long is closed.
 pub(crate) const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(600);
 /// The longest text chosen by an unauthenticated peer (a certificate's key id) that is logged.
@@ -100,6 +106,52 @@ impl Slots {
             _total: total,
             source,
             per_source: self.per_source.clone(),
+        })
+    }
+}
+
+/// Reads `reader` to its end within `deadline`, keeping at most `max + 1` bytes: one more
+/// than `max` tells the caller the body was over it, without reading the rest.
+pub(crate) async fn read_within(
+    reader: impl AsyncRead + Unpin,
+    max: usize,
+    deadline: Duration,
+) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
+    match tokio::time::timeout(deadline, reader.take(limit).read_to_end(&mut body)).await {
+        Err(_) => Err("the request body took too long to arrive".to_owned()),
+        Ok(Err(e)) => Err(format!("cannot read the request: {e}")),
+        Ok(Ok(_)) => Ok(body),
+    }
+}
+
+/// The daemon's sign request slots ([`MAX_SIGN_REQUESTS`]): one is taken before a body is
+/// read and kept until the request is answered. None free: refused at once, never queued.
+pub(crate) struct SignSlots {
+    slots: Arc<Semaphore>,
+    max: usize,
+}
+
+impl SignSlots {
+    pub(crate) fn new() -> Self {
+        Self::with(MAX_SIGN_REQUESTS)
+    }
+
+    fn with(max: usize) -> Self {
+        Self {
+            slots: Arc::new(Semaphore::new(max)),
+            max,
+        }
+    }
+
+    /// A slot, or why there is none.
+    pub(crate) fn take(&self) -> Result<OwnedSemaphorePermit, String> {
+        self.slots.clone().try_acquire_owned().map_err(|_| {
+            format!(
+                "the daemon already holds {} sign requests; retry shortly",
+                self.max
+            )
         })
     }
 }
@@ -290,6 +342,64 @@ mod tests {
             "another address in the same /64"
         );
         drop(held);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_body_is_read_within_its_deadline_and_refused_past_it() {
+        const MAX: usize = 8;
+        let deadline = Duration::from_secs(60);
+        // Sends `first`, waits `pause`, sends `rest`, then ends the stream (EOF).
+        let read = |first: &'static [u8], pause: Duration, rest: &'static [u8]| async move {
+            let (mut client, server) = tokio::io::duplex(64);
+            let sender = tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                client.write_all(first).await.unwrap();
+                // poll: nothing; paused time (`start_paused`): this moves the test clock to
+                // the next deadline at once, nothing waits for real.
+                tokio::time::sleep(pause).await;
+                // The reader may have given up: a refused write is the point then.
+                let _ = client.write_all(rest).await;
+            });
+            let read = read_within(server, MAX, deadline).await;
+            sender.abort();
+            read
+        };
+        let second = Duration::from_secs(1);
+        // Up to the limit, and one byte more (the caller refuses it for its size).
+        assert_eq!(read(b"1234", second, b"5678").await.unwrap(), b"12345678");
+        assert_eq!(read(b"1234", second, b"56789").await.unwrap(), b"123456789");
+        // Never more than one byte over, however much is sent.
+        assert_eq!(
+            read(b"1234", second, b"56789abcdef").await.unwrap().len(),
+            MAX + 1
+        );
+        // The last byte just in time, then just too late.
+        assert!(read(b"1234", deadline - second, b"5678").await.is_ok());
+        assert_eq!(
+            read(b"1234", deadline + second, b"5678").await,
+            Err("the request body took too long to arrive".to_owned())
+        );
+        // A body that never ends (no EOF) is cut at the deadline too.
+        assert_eq!(
+            read(b"1234", Duration::from_secs(3600), b"").await,
+            Err("the request body took too long to arrive".to_owned())
+        );
+    }
+
+    #[test]
+    fn sign_slots_are_bounded_and_given_back() {
+        let slots = SignSlots::with(3);
+        let held: Vec<OwnedSemaphorePermit> = (0..3).map(|_| slots.take().unwrap()).collect();
+        assert_eq!(
+            slots.take().err(),
+            Some("the daemon already holds 3 sign requests; retry shortly".to_owned())
+        );
+        drop(held);
+        assert!(
+            slots.take().is_ok(),
+            "a slot comes back when its request ends"
+        );
+        assert_eq!(SignSlots::new().max, MAX_SIGN_REQUESTS);
     }
 
     #[test]

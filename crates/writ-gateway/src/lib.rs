@@ -116,6 +116,8 @@ struct Shared {
     hook_socket: PathBuf,
     /// Denials before authentication, coalesced per source.
     throttle: limits::DenialThrottle,
+    /// Sign requests held at once, all lease holders together.
+    sign_slots: limits::SignSlots,
 }
 
 impl Gateway {
@@ -164,6 +166,7 @@ impl Gateway {
                 hooks_dir,
                 hook_socket,
                 throttle: limits::DenialThrottle::new(),
+                sign_slots: limits::SignSlots::new(),
             }),
         };
         tokio::spawn(hook::serve(gateway.clone(), hook_listener));

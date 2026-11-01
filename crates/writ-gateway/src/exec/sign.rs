@@ -1,11 +1,12 @@
 //! `writ-sign git <repo>`: the body on stdin ([`SignInput`]: the object git asks to sign and
 //! the objects its touched paths are computed from) parsed here, at the edge; the decision,
 //! the signature and the ledger are the approval service's ([`Service::sign`]). Lease
-//! holders are untrusted: the body is bounded, decoded strictly, and every evidence object
-//! is checked against its id before it is read (`writ_git::paths`).
+//! holders are untrusted: the body is bounded in bytes and in time, decoded strictly, and
+//! every evidence object is checked against its id before it is read (`writ_git::paths`).
+//! The daemon holds at most [`MAX_SIGN_REQUESTS`](crate::limits::MAX_SIGN_REQUESTS) of them
+//! at once, whoever sends them.
 
 use russh::ChannelReadHalf;
-use tokio::io::AsyncReadExt;
 use writ_approval::{SignObject, SignedCommit, Signing};
 use writ_core::caller::CallerFacts;
 use writ_core::names::RepoName;
@@ -16,12 +17,13 @@ use writ_git::paths::{self, Evidence, PathsError};
 use writ_git::tree::TreeError;
 use writ_proto::sign::{EvidenceKind, MAX_SIGN_INPUT, SignInput};
 
-use crate::Gateway;
+use crate::{Gateway, limits};
 
 /// Why the gateway turned a request down before the service saw it, or the service's denial.
 pub(super) enum Refused {
-    /// The body or the object is unreadable: refused by the gateway (logged by the caller).
-    Unreadable(String),
+    /// Refused by the gateway (logged by the caller): the body or the object is unreadable,
+    /// too slow to arrive, or the daemon holds too many sign requests already.
+    Gateway(String),
     /// Decided (and logged) by the service.
     Denied(Denial),
 }
@@ -47,22 +49,21 @@ pub(super) async fn sign(
         .await
         .unwrap_or_else(|_| Err(internal_error()))
         .map_err(Refused::Denied)?;
-    let mut body = Vec::new();
-    let limit = u64::try_from(MAX_SIGN_INPUT)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    rx.make_reader()
-        .take(limit)
-        .read_to_end(&mut body)
+    // A slot first, then the body: what the daemon holds is bounded however many lease
+    // holders ask at once. The slot is kept until the request is answered.
+    let slot = gateway.shared.sign_slots.take().map_err(Refused::Gateway)?;
+    let body = limits::read_within(rx.make_reader(), MAX_SIGN_INPUT, limits::SIGN_BODY_DEADLINE)
         .await
-        .map_err(|e| Refused::Unreadable(format!("cannot read the request: {e}")))?;
+        .map_err(Refused::Gateway)?;
     let (cert, caller) = (command.cert.clone(), command.facts.clone());
     let (repo, service) = (command.repo.clone(), gateway.service().clone());
     // Off the async threads: hashing the evidence and walking the trees is bounded but can
     // take a while, and the service reads the store and syncs the audit log.
     tokio::task::spawn_blocking(move || {
-        let input = SignInput::decode(&body).map_err(|e| Refused::Unreadable(e.to_string()))?;
-        let object = parse(input).map_err(Refused::Unreadable)?;
+        // Held as long as the body is, even if the request's task is gone meanwhile.
+        let _slot = slot;
+        let input = SignInput::decode(&body).map_err(|e| Refused::Gateway(e.to_string()))?;
+        let object = parse(input).map_err(Refused::Gateway)?;
         let signing = Signing {
             cert,
             caller,

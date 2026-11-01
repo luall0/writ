@@ -80,7 +80,7 @@ pub(crate) async fn run(gateway: Gateway, request: LeaseRequest, channel: Channe
                 }
                 // The service logged its decision.
                 Err(sign::Refused::Denied(denial)) => fail(&tx, &denial.to_string()).await,
-                Err(sign::Refused::Unreadable(reason)) => {
+                Err(sign::Refused::Gateway(reason)) => {
                     fail(&tx, &refusing.deny(reason, Some(repo)).await).await;
                 }
             }
