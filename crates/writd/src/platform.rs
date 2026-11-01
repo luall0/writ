@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use anyhow::bail;
+use writ_core::names::KeyId;
 use writ_core::net::Sources;
+use writ_crypto::ssh_key::PrivateKey;
 use writ_platform::attest::network::NetworkAttestor;
 use writ_platform::notify::Notifiers;
 use writ_platform::notify::telegram::{BotToken, TelegramNotifier};
@@ -14,6 +16,8 @@ use writ_platform::transport::tcp::TcpTransport;
 use writ_platform::unlock::passphrase::PassphraseUnlock;
 use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{CallerAttestor, KeystoreUnlock, Notifier, SessionWatcher, Transport};
+use writ_signer::Signer;
+use writ_signer::software::SoftwareSigner;
 
 use crate::config::{
     AttestorConfig, Config, NotifierConfig, TransportConfig, UnlockConfig, WatcherConfig,
@@ -34,6 +38,13 @@ pub struct Platform {
     /// Built now, used by the sealed start (M5).
     pub unlock: Option<Arc<dyn KeystoreUnlock>>,
     pub notifier: Arc<dyn Notifier>,
+}
+
+/// The `Signer` holding the keys commits are signed with. This build has the software
+/// backend only, so the configuration doesn't name one yet: the `signer:` key comes with the
+/// sealed keystore (M5), and hardware backends with their milestones (M7.5).
+pub fn signer(keys: Vec<(KeyId, PrivateKey)>) -> anyhow::Result<Arc<dyn Signer>> {
+    Ok(Arc::new(SoftwareSigner::new(keys)?))
 }
 
 async fn listener(config: &TransportConfig) -> anyhow::Result<Listener> {

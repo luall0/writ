@@ -29,7 +29,6 @@ use writ_crypto::readers::{self, Reader};
 use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_platform::clock::system::SystemClock;
-use writ_signer::software::SoftwareSigner;
 use writ_store::{AuditLog, Store};
 
 use crate::config::Config;
@@ -209,7 +208,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let readers = load_readers(&config)?;
     one_key_one_purpose(&approvers, &readers)?;
     let keys = keystore::keys(&config, &policy)?;
-    let signer = Arc::new(SoftwareSigner::new(keys.signing)?);
+    let signer = platform::signer(keys.signing)?;
     keystore::private_dir(&config.state_dir)?;
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
