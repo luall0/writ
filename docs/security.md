@@ -108,8 +108,10 @@ A new input is added here in the same change.
   warnings, process chain) is cut to 2,048 characters with `…` when the line is written
   (`writ_store::MAX_FIELD_CHARS`), whoever built the event, and the policy shows an agent's
   value (a committer email, a path) cut to 256 characters in a denial or a warning, so no
-  request makes a large line. Denials after authentication are not coalesced: a lease holder
-  can still write one bounded line per request it sends ([Q34](decisions.md)).
+  request makes a large line.
+- **A lease holder's denials are coalesced** past 60 lines a minute per lease
+  ([Q34](decisions.md)): still denied, counted, and the count written as one line per kind
+  when the minute is over; allowed lines and reductions of privilege are never held back.
 - **A per-source limit counts sources by group** (`writ_core::net::source_group`): an IPv6
   host holds a whole /64 and would otherwise be 2^64 sources.
 - **Every refusal is a line**, wherever it happens: a refused TLS handshake, a plain key for a
@@ -262,6 +264,5 @@ allowed without a test.
 What this page doesn't cover yet, with the milestone that does: process hardening (no core
 dumps, no debugger attach, secrets out of swap: M5), the TLS key behind the `Signer` (M5,
 M7.5), the shared `~/.writ/sessions/current` pointer (M6/M7), macOS-only code tested only by
-the pre-push hook (CI is Linux), a flood of denied requests from a lease holder (one bounded
-audit line each, [Q34](decisions.md)). The [residual risks](threat-model.md#residual-risks-v1) list
+the pre-push hook (CI is Linux). The [residual risks](threat-model.md#residual-risks-v1) list
 the rest.

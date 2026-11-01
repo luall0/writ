@@ -38,6 +38,7 @@ impl Service {
         inner: &mut Inner,
         now: Timestamp,
     ) -> Result<bool, ServiceError> {
+        Self::log_counted_denials(inner, now);
         let mut changed = false;
         for record in inner.store.tickets(State::Pending).map_err(internal)? {
             if let Some(next) = lease::pending_due(&record, now) {

@@ -84,7 +84,9 @@ records every commit signed per lease. Use these words in code, logs and docs.
    never use the real `~/.ssh`, git config or ssh-agent (only `make test-agent`, run by hand),
    and the repo never stores fixtures made from a real key.
 9. **Everything is logged.** Every allow, deny, grant, refusal, revocation, admin change and
-   seal/unseal writes one audit line ([audit log](docs/architecture/policy-and-state.md#audit-log)).
+   seal/unseal writes one audit line ([audit log](docs/architecture/policy-and-state.md#audit-log));
+   only floods of denials are coalesced (per source before authentication, per lease after),
+   each one still counted in the log ([security](docs/security.md#grants-reductions-and-the-audit-log)).
 10. **Remote-agnostic.** No remote-specific API in the core path (GitHub, Gitea, Forgejo… are
     reached through plain git over SSH or HTTPS).
 11. **Rust:** no `unwrap()` / `expect()` / `panic!`, unchecked indexing, slicing or

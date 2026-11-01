@@ -189,12 +189,12 @@ A security and code-quality review of the whole milestone (`6daf751..568c055`), 
 2026-11-01, read by hand; its most serious finding was reproduced with a harness against
 `writ-git` before it was fixed. Every finding below was fixed in seven `M3 review step` commits
 and this page, except F5 (signing outside the lock), which became [M3.5](../roadmap.md#m35--signing-outside-the-lock),
-and one question left to the user (Q34). `make ci` passed after each step.
+and one question settled with the user (Q34, step 10). `make ci` passed after each step.
 
 | # | Severity | Finding | Fix | Verified by |
 |---|---|---|---|---|
 | F1 | High | The touched-paths walk was bounded in entries, paths and depth but not in bytes: one long directory name over many files made it hold the name once per file (1 MB sent → 200 MB held, measured; a 16 MiB request → hundreds of GB). And the gateway decoded and walked a request before any lease check | Step 1: no path over 4,096 bytes, 64 MiB of paths in all, one error per bound. Step 3: `Service::may_sign` (active lease, `commit_sign`, the repo) before the body is read | `long_names_cannot_blow_up_the_walk`, `path_length_is_bounded_on_both_sides`, `path_bytes_are_bounded_on_both_sides`, `paths_are_bounded_on_both_sides`, `entries_are_bounded_on_both_sides`; `a_lease_that_cannot_sign_is_refused_before_its_request_is_read`, and garbage for a repo outside the lease refused with the lease's reason (`a_sign_request_that_isnt_one_is_refused_and_logged`) |
-| F2 | Medium | A committer email as large as the request was logged and repeated in the denial; the paths shown had no bound; denied requests don't count against the rate | Step 4: every audit text field cut to 2,048 characters when written; agent values shown cut to 256 characters. The flood itself: Q34 | `every_text_in_a_line_is_bounded_on_both_sides`, `agent_text_stays_short_in_denials_warnings_and_the_log` (a 1 MiB email, a 4,000-byte path) |
+| F2 | Medium | A committer email as large as the request was logged and repeated in the denial; the paths shown had no bound; denied requests don't count against the rate | Step 4: every audit text field cut to 2,048 characters when written; agent values shown cut to 256 characters. Step 10 (Q34, with the user): a lease's denials past 60 lines a minute counted, the count logged when the minute is over | `every_text_in_a_line_is_bounded_on_both_sides`, `agent_text_stays_short_in_denials_warnings_and_the_log` (a 1 MiB email, a 4,000-byte path), `a_lease_s_denials_are_counted_past_sixty_lines_a_minute` (both sides of the budget and of the window) |
 | F3 | Medium | A merge touched "what differs from every parent": a merge whose tree is its second parent's touched nothing, so a merge could bring in any file unchecked; and each commit is checked only against its own (agent-chosen) parent | Step 1, with the user: a merge is compared with its first parent; `writ-sign` sends that parent only. A made-up unsigned parent is stopped at push (an M4 acceptance case now) | `a_merge_is_checked_against_its_first_parent`; `touched_paths_are_git_s` against `git diff-tree <merge>^1 <merge>` |
 | F4 | Low/Medium | A violation released the lock before revoking: another request could slip in, and a revocation failing early left the certificate accepted | Step 5: the certificate on the deny list before the lock is released | `a_violation_bars_the_certificate_even_when_its_revocation_fails` (step 8: the revocation's lease lookup made to fail with a `StoreBreaker`; the test fails without the fix); a request waiting on the lock during a violation: M3.5's blocking signer |
 | F5 | Low | The signer runs under the service's state lock | [M3.5](../roadmap.md#m35--signing-outside-the-lock): three phases and a `QueuedSigner` | — |
@@ -211,8 +211,8 @@ and one question left to the user (Q34). `make ci` passed after each step.
 
 **Docs drift** found by the review and fixed with each step: the security inventory (walk and
 body bounds), the threat model (the paths guarantee and its tests, three residual risks: the
-signer under the lock until M3.5, a hidden `.git` entry until M4, a denial flood: Q34), the
-lease model (merges, violations), the decision log (one row per step, Q34), flows § 2,
+signer under the lock until M3.5, a hidden `.git` entry until M4; a denial flood, settled by
+step 10), the lease model (merges, violations), the decision log (one row per step, Q34), flows § 2,
 gateway, clients, platform, the operator guide, the roadmap (M3.5, and M4's ledger schema,
 `hasDotgit`, mirror `object_format`, the made-up parent).
 
@@ -223,8 +223,8 @@ gateway, clients, platform, the operator guide, the roadmap (M3.5, and M4's ledg
 2. **Authority**: nothing new grants.
 3. **Fail closed**: a walk past a bound, a `.git` entry, a malformed ident, an unterminated
    signature, an internal mismatch, an unexpected git failure in `--undo`: each denies or stops.
-4. **Audit**: every line bounded; every refusal still a line (the flood is Q34); allowed
-   signatures still one line.
+4. **Audit**: every line bounded; a lease's denials past 60 a minute counted, the count a
+   line (Q34); allowed signatures still one line.
 5. **Revocation**: a violation's certificate on the deny list before the lock is released.
 6. **Secrets**: not touched.
 7. **Display**: denials show cut values; `writ-sign`'s diagnosis escaped.

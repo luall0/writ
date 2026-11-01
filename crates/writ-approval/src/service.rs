@@ -5,6 +5,7 @@
 
 mod agent;
 mod approver;
+mod denials;
 mod gateway;
 mod sign;
 mod sweep;
@@ -157,6 +158,8 @@ struct Inner {
     lost: u64,
     /// Submissions per source address in the last minute.
     submissions: HashMap<Option<IpAddr>, SubmitWindow>,
+    /// Each lease's denial lines in the current window, and the denials counted past it.
+    denials: denials::LeaseDenials,
 }
 
 impl Inner {
@@ -253,6 +256,7 @@ impl Service {
                 unlogged: VecDeque::new(),
                 lost: 0,
                 submissions: HashMap::new(),
+                denials: denials::LeaseDenials::default(),
             }),
             revoked: RwLock::new(revoked),
             changed: Notify::new(),
@@ -333,7 +337,27 @@ impl Service {
     /// Logs a denial, or a reduction of privilege: what it records happens whatever becomes
     /// of the line (a denial is denied anyway, a revocation is never held back). A line the
     /// log can't take is kept and written first once it can.
+    ///
+    /// A lease's denials past its budget are counted instead ([`denials`]), and the counts of
+    /// windows that are over written first.
     fn log_best_effort(inner: &mut Inner, event: &AuditEvent) {
+        for counted in inner.denials.due(event.time) {
+            Self::write_best_effort(inner, &counted);
+        }
+        if inner.denials.admit(event) {
+            Self::write_best_effort(inner, event);
+        }
+    }
+
+    /// Writes the counts of the denial windows over at `now` (from the sweep: a lease that
+    /// stopped sending requests still gets its count logged).
+    fn log_counted_denials(inner: &mut Inner, now: Timestamp) {
+        for counted in inner.denials.due(now) {
+            Self::write_best_effort(inner, &counted);
+        }
+    }
+
+    fn write_best_effort(inner: &mut Inner, event: &AuditEvent) {
         if let Err(e) = Self::log(inner, event) {
             // Once per outage (when the first line is kept), not once per line: denials can
             // be driven by peers, and the daemon's own log must stay bounded too.

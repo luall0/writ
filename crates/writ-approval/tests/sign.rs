@@ -690,6 +690,66 @@ fn a_violation_bars_the_certificate_even_when_its_revocation_fails() {
 }
 
 #[test]
+fn a_lease_s_denials_are_counted_past_sixty_lines_a_minute() {
+    // Q34: a lease holder sending requests it knows are refused can't grow the log faster
+    // than 60 denial lines a minute; the rest are counted, and the count logged.
+    let h = Harness::new();
+    let caller = CallerFacts::default();
+    let outside: writ_core::names::RepoName = "dotfiles".parse().unwrap();
+    let (lease, cert) = h.lease(FEATURE);
+    let (other, other_cert) = h.lease(FEATURE);
+    let lines_of = |id: &TicketId| {
+        h.events("sign", "denied")
+            .into_iter()
+            .filter(|l| l["lease"] == id.as_str())
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..60 {
+        let denial = h.service.may_sign(&cert, &caller, &outside).unwrap_err();
+        assert_eq!(denial.code, DenyCode::Repo);
+    }
+    assert_eq!(
+        lines_of(&lease).len(),
+        60,
+        "every one of the first 60 is a line"
+    );
+    // Past the budget: still denied, counted, no line; another lease is unaffected; an
+    // allowed signature is never held back.
+    for _ in 0..5 {
+        let denial = h.service.may_sign(&cert, &caller, &outside).unwrap_err();
+        assert_eq!(denial.code, DenyCode::Repo);
+    }
+    assert_eq!(lines_of(&lease).len(), 60);
+    h.service
+        .may_sign(&other_cert, &caller, &outside)
+        .unwrap_err();
+    assert_eq!(lines_of(&other).len(), 1);
+    h.sign(
+        &cert,
+        &build("src/a.rs", EMAIL, &trailer(&lease)),
+        "omega-code",
+    )
+    .unwrap();
+    assert_eq!(h.events("sign", "allowed").len(), 1);
+    // One second short of the window, still counted; at the window, the count is written by
+    // the next sweep (here, any call), then lines resume.
+    h.clock.advance(59);
+    h.service.may_sign(&cert, &caller, &outside).unwrap_err();
+    assert_eq!(lines_of(&lease).len(), 60);
+    h.clock.advance(1);
+    h.service.list(false).unwrap();
+    let lines = lines_of(&lease);
+    assert_eq!(lines.len(), 61);
+    let reason = lines[60]["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("6 more denials of this lease since"),
+        "{reason}"
+    );
+    h.service.may_sign(&cert, &caller, &outside).unwrap_err();
+    assert_eq!(lines_of(&lease).len(), 62);
+}
+
+#[test]
 fn a_template_whose_key_the_signer_lacks_is_a_startup_error() {
     use writ_approval::{Service, ServiceConfig, ServiceError, ServicePlatform};
     use writ_crypto::allowed_signers::AllowedSigner;
