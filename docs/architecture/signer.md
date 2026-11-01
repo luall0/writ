@@ -75,7 +75,8 @@ hands them to the software backend. The lease's public key reaches the agent wit
 (`signing_key.pub` in its session), for git's `user.signingkey` and for `allowed_signers`
 when verifying. `writd signing-keys <writd.yaml>` prints each signing key with the templates
 that name it, for the operator to register on an account, so the remote shows the commits as
-verified (GitHub: a signing key and the committer email verified on the account).
+verified (GitHub: a signing key and the committer email verified on the account; Forgejo and
+Gitea also ask for a proof, signed through [`writ prove-key`](approvals.md#proving-a-signing-key-to-a-remote)).
 
 | Backend | Algorithms | Key exportable? | Notes |
 |---|---|---|---|

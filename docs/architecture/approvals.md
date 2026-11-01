@@ -1,7 +1,7 @@
 # Approvals
 
 Code: `crates/writ-approval` (API), `crates/writ-crypto` (SSHSIG verification), `writ sign` /
-`writ refuse` / `writ unseal` in `crates/writ-cli`.
+`writ refuse` / `writ prove-key` / `writ unseal` in `crates/writ-cli`.
 
 ## Approval service
 
@@ -65,7 +65,8 @@ commands, bodies and replies ([Q29](../decisions.md)):
   SHA-256 fingerprint in `~/.writ/tls_pins` (`writd tls-fingerprint` prints it; no
   certificate authority is trusted), and a client certificate made from the reader key
   (mutual TLS). Routes: `GET /v1/info`, `GET /v1/tickets[?all=true]`,
-  `GET /v1/tickets/<id>`, `POST /v1/tickets/<id>/approve`, `…/refuse`, `…/revoke`; JSON
+  `GET /v1/tickets/<id>`, `POST /v1/tickets/<id>/approve`, `…/refuse`, `…/revoke`,
+  `POST /v1/proofs`; JSON
   bodies, replies in the `{"ok"}` / `{"error"}` envelope (HTTP 200, or 422 when the
   command failed, 404 for an unknown route).
 
@@ -79,7 +80,7 @@ reached the listener could read every ticket (task, plan, repos, leases). The co
 still grants nothing: approvals (and, with `decisions: signed`, refusals and revocations)
 are SSHSIGs the approval service verifies. `writ ls --all` returns the 200 most recent
 tickets. Commands: `writ info`, `writ ls [--all]`, `writ show <id>`, `writ approve <id>`,
-`writ refuse <id>`, `writ revoke <id>` (`writ_proto::Command`). Signatures are made with
+`writ refuse <id>`, `writ revoke <id>`, `writ prove` (`writ_proto::Command`). Signatures are made with
 `ssh-keygen -Y sign -U -n writ-approval -f <approval key .pub>` against the approver's agent
 socket (`WRIT_APPROVAL_AGENT`, else `SSH_AUTH_SOCK`): only the dedicated approval key is used,
 `-U` makes ssh-keygen sign with the agent only (never a private key file beside the `.pub`),
@@ -102,6 +103,46 @@ grant anything. Whether it needs a signature is the daemon's `decisions` setting
 
 The feedback goes back to the agent and is shown next to its next revision, labeled as
 recorded by the daemon. `writ revoke` on a pending ticket withdraws it.
+
+## Proving a signing key to a remote
+
+A remote shows a commit as **verified** when its signing key is registered on the account and
+the committer email is one of the account's ([M4.1](../roadmap.md#m41--real-end-to-end-scenarios)).
+`writd signing-keys <writd.yaml>` prints each agent signing key, to add on the account as a
+**signing** key. GitHub asks for nothing more. Forgejo and Gitea ask for a **proof**: a
+challenge (a 64-hex token, shown in the web UI only) signed with the key, in namespace
+`gitea`. The key never leaves the daemon, which signs commits only through the policy, so the
+proof goes through it, and is an **approval**, like a ticket ([Q35](../decisions.md)):
+
+```sh
+echo -n '<token>' | writ prove-key <key id> --namespace gitea    # in place of ssh-keygen -Y sign -n gitea
+```
+
+1. On the approver's machine, `writ prove-key` reads the remote's message on stdin (exactly as
+   given, no newline added or removed, 1 to 4 KiB of UTF-8) and shows the key, the namespace
+   and the message on stderr, escaped like agent text (newlines and hidden characters as
+   `\u{…}`). It asks on the terminal (`/dev/tty`: stdin holds the message), or signs at once
+   with `--yes`.
+2. The approval key signs the canonical `writ-proof/1` document (`{"kind":"writ-proof/1",
+   "key":…,"namespace":…,"message":…}`, namespace `writ-approval`): one Touch ID. Its own
+   `kind` keeps a proof from ever passing for a ticket approval, a refusal or a revocation,
+   and any of them from passing for a proof.
+3. The approval API (`writ prove`, `POST /v1/proofs`, SSH or HTTPS: a reader key reaches it,
+   and gets nothing without the approver's signature, whatever `decisions` says) reads the
+   document strictly (canonical bytes only), checks the namespace (never `git`, which would
+   make commit signatures outside the policy and the ledger, nor `writ-approval` or anything
+   starting with `writ`, in any case), the message's size, the key (one a template signs
+   commits with: never an upstream credential, the CA or the host key) and the approver's
+   signature over exactly those bytes.
+4. The daemon signs the message through the `Signer` (outside the state lock, like a commit),
+   writes one `prove` audit line (the key, the namespace, the message's SHA-256, the approver;
+   never the message), and only then returns the armored signature, which `writ prove-key`
+   checks against the key's public half and prints alone on stdout, to paste in the remote's
+   form.
+
+A replayed proof only repeats itself: the same key signs the same message in the same
+namespace. Nothing on the daemon host is needed, and it works the same with the sealed
+keystore (M5).
 
 ## Narrowing
 

@@ -87,7 +87,11 @@ impl Service {
 
     /// Verifies an approver's SSHSIG over `signed` (namespace `writ-approval`); returns the
     /// approver's fingerprint.
-    fn verify_approver(&self, signed: &[u8], signature: &str) -> Result<KeyFingerprint, String> {
+    pub(super) fn verify_approver(
+        &self,
+        signed: &[u8],
+        signature: &str,
+    ) -> Result<KeyFingerprint, String> {
         let key = sshsig::verify(&self.approver_keys, APPROVAL_NAMESPACE, signed, signature)
             .map_err(|e| match e {
                 writ_crypto::CryptoError::Namespace { found, .. } => {
@@ -483,17 +487,25 @@ struct Approving<'a> {
 /// A turned-down approver request: the audit line it writes (event, ticket, caller, approver)
 /// and the prefix of the error the approver sees.
 #[derive(Clone)]
-struct Denied {
+pub(super) struct Denied {
     event: AuditEvent,
     prefix: &'static str,
 }
 
 impl Denied {
-    fn new(event: AuditEvent, prefix: &'static str) -> Self {
+    pub(super) fn new(event: AuditEvent, prefix: &'static str) -> Self {
         Self { event, prefix }
     }
 
-    fn approver(&self, approver: &KeyFingerprint) -> Self {
+    /// The same denial, its audit line with more fields (a proof's key and namespace).
+    pub(super) fn with(&self, edit: impl FnOnce(AuditEvent) -> AuditEvent) -> Self {
+        Self {
+            event: edit(self.event.clone()),
+            prefix: self.prefix,
+        }
+    }
+
+    pub(super) fn approver(&self, approver: &KeyFingerprint) -> Self {
         Self {
             event: self.event.clone().approver(approver),
             prefix: self.prefix,
@@ -501,7 +513,7 @@ impl Denied {
     }
 
     /// Logs the denial with its reason and returns the error, with its code.
-    fn deny<T>(
+    pub(super) fn deny<T>(
         &self,
         inner: &mut Inner,
         code: RefusalCode,

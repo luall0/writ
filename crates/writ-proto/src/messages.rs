@@ -152,3 +152,25 @@ pub struct Ack {
     pub id: TicketId,
     pub state: State,
 }
+
+/// Body of [`Command::Prove`](crate::Command::Prove).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProveRequest {
+    /// The canonical bytes of the `writ-proof/1` document: the key, the namespace, the message.
+    pub proof: String,
+    /// The approver's armored SSHSIG over them, namespace `writ-approval`. Always required,
+    /// whatever the daemon's `decisions`: a reader key alone can't have a key sign anything.
+    pub signature: String,
+}
+
+/// Reply to [`Command::Prove`](crate::Command::Prove).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proved {
+    /// The agent signing key's armored SSHSIG over the message, in the proof's namespace: what
+    /// the remote asked for.
+    pub signature: String,
+    /// The key's public half (OpenSSH text), to check the signature against.
+    pub public_key: String,
+}

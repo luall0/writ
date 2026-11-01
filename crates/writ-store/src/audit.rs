@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use writ_core::caller::CallerFacts;
-use writ_core::names::{CommitId, KeyFingerprint, RepoName, TicketId};
+use writ_core::names::{CommitId, KeyFingerprint, KeyId, ProofNamespace, RepoName, TicketId};
 use writ_core::policy::Denial;
 use writ_core::units::Timestamp;
 
@@ -48,6 +48,9 @@ pub enum EventKind {
     Sign,
     Push,
     Fetch,
+    /// An agent signing key signed a remote's message, with an approver's signature over the
+    /// `writ-proof/1` document (allowed), or the proof was refused (denied).
+    Prove,
     Admin,
     Seal,
     Unseal,
@@ -86,6 +89,15 @@ pub struct AuditEvent {
     pub refs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub committer: Option<String>,
+    /// The signer key a proof asked for (`prove`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<KeyId>,
+    /// The SSHSIG namespace of a proof (`prove`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<ProofNamespace>,
+    /// The SHA-256 of what a proof signed, in hex (`prove`): never the message itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_sha256: Option<String>,
     /// The denial's category (`DenyCode`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
@@ -114,6 +126,9 @@ impl AuditEvent {
             commit: None,
             refs: Vec::new(),
             committer: None,
+            key: None,
+            namespace: None,
+            message_sha256: None,
             code: None,
             reason: None,
             warnings: Vec::new(),
@@ -159,6 +174,19 @@ impl AuditEvent {
 
     pub fn committer(mut self, email: &str) -> Self {
         self.committer = Some(email.to_owned());
+        self
+    }
+
+    /// A proof's key, namespace, and the digest of its message (`prove`).
+    pub fn proof(
+        mut self,
+        key: &KeyId,
+        namespace: &ProofNamespace,
+        message_sha256: String,
+    ) -> Self {
+        self.key = Some(key.clone());
+        self.namespace = Some(namespace.clone());
+        self.message_sha256 = Some(message_sha256);
         self
     }
 

@@ -21,6 +21,16 @@ pub fn assemble(public_key: &KeyData, namespace: &str, signature: Signature) -> 
     Ok(sig.to_pem(LineEnding::LF)?)
 }
 
+/// The SHA-256 of a signed message, in lowercase hex: how the audit log names what a proof
+/// signed, without the message itself.
+pub fn message_digest(msg: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(msg)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Signs `msg` with a key held in memory (software backend).
 pub fn sign(key: &PrivateKey, namespace: &str, msg: &[u8]) -> Result<String> {
     let data = signed_data(namespace, msg)?;

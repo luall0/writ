@@ -96,6 +96,12 @@ string_newtype!(
     /// An SSH key fingerprint as OpenSSH prints it: `SHA256:` + 43 base64 characters.
     KeyFingerprint, "key fingerprint", validate_fingerprint
 );
+string_newtype!(
+    /// The SSHSIG namespace of a proof an agent signing key makes for a remote (`gitea`):
+    /// never `git` (commit signatures, made only under a lease and recorded in the ledger)
+    /// nor Writ's own (`writ-approval`, anything starting with `writ`).
+    ProofNamespace, "proof namespace", validate_proof_namespace
+);
 
 /// `[A-Za-z0-9._-]`, 1 to 100 characters, not starting with `.` or `-`, not ending in `.git`.
 fn validate_plain_name(value: &str) -> Result<(), &'static str> {
@@ -167,6 +173,30 @@ fn validate_commit_id(value: &str) -> Result<(), &'static str> {
     }
 }
 
+/// `[A-Za-z0-9._@-]`, 1 to 64 characters; `git` and `writ…` (in any case) are refused.
+fn validate_proof_namespace(value: &str) -> Result<(), &'static str> {
+    if value.is_empty() || value.len() > 64 {
+        return Err("must be 1 to 64 characters");
+    }
+    if !value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'@' | b'-'))
+    {
+        return Err("only letters, digits, '.', '_', '@' and '-' are allowed");
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower == "git" {
+        return Err(
+            "git is the namespace of commit signatures: the daemon makes them only \
+             under a lease, recorded in its ledger",
+        );
+    }
+    if lower.starts_with("writ") {
+        return Err("namespaces starting with writ are Writ's own (writ-approval)");
+    }
+    Ok(())
+}
+
 fn validate_fingerprint(value: &str) -> Result<(), &'static str> {
     let b64 = value
         .strip_prefix("SHA256:")
@@ -206,6 +236,38 @@ impl TicketId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proof_namespaces_never_git_nor_writ_s_own() {
+        for good in [
+            "gitea",
+            "file",
+            "a",
+            "x@example.org",
+            "gitea.v2",
+            &"n".repeat(64),
+        ] {
+            assert!(good.parse::<ProofNamespace>().is_ok(), "{good}");
+        }
+        for (bad, why) in [
+            ("git", "commit signatures"),
+            ("GIT", "commit signatures"),
+            ("Git", "commit signatures"),
+            ("writ-approval", "Writ's own"),
+            ("writ", "Writ's own"),
+            ("WRIT-proof", "Writ's own"),
+            ("writer", "Writ's own"),
+            ("", "1 to 64"),
+            (&"n".repeat(65), "1 to 64"),
+            ("gi t", "only letters"),
+            ("git\n", "only letters"),
+            ("gitéa", "only letters"),
+            ("a/b", "only letters"),
+        ] {
+            let error = bad.parse::<ProofNamespace>().unwrap_err();
+            assert!(error.why.contains(why), "{bad:?}: {error}");
+        }
+    }
 
     #[test]
     fn plain_names() {

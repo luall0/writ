@@ -30,6 +30,9 @@ pub enum RefusalCode {
     /// The ticket's session can't be used: its stored key doesn't match, or the daemon can't
     /// watch the process the lease is bound to.
     Session,
+    /// A proof that can't be made: not a `writ-proof/1` document (a namespace refused, a
+    /// message empty or too long), a key no template signs with, or the signer failed.
+    Proof,
 }
 
 /// Why a request to the service failed. What a client may see is its `Display`; an internal

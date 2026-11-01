@@ -108,10 +108,12 @@ caller ([Identity](identity.md#local-mode-process-chain-checks)).
 ```
 
 Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`,
-`refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `admin`,
+`refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `prove` (an agent
+signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `admin`,
 `seal`, `unseal`), `result` (`allowed`, `denied`, `done`), `lease`, `ticket`, `cert`,
-`approver`, `repo`, `commit`, `refs`, `committer`, `code`, `reason`, `warnings`,
-`source_addr`, `process_chain`.
+`approver`, `repo`, `commit`, `refs`, `committer`, `key`, `namespace`, `message_sha256` (a
+proof's key, namespace and the digest of its message, never the message), `code`, `reason`,
+`warnings`, `source_addr`, `process_chain`.
 
 - Every text field is cut to 2,048 characters (`…`) when the line is written
   (`writ_store::MAX_FIELD_CHARS`), so what a request carries can't make a line large.

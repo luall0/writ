@@ -5,7 +5,8 @@
 //! `writ git <args>` and `writ exec -- <program>` (git, or a program, with the wiring).
 //! Approver side: `writ reader` (the key this machine uses on the approval API), `writ ls`,
 //! `writ sign [<id>]` (the trusted display, then an SSHSIG through the approver's
-//! ssh-agent), `writ refuse <id>`, `writ revoke <id>`.
+//! ssh-agent), `writ refuse <id>`, `writ revoke <id>`, `writ prove-key <key id> --namespace
+//! <ns>` (an agent signing key's proof for a remote, the message on stdin).
 //!
 //! The client is untrusted: every check it makes is a convenience, the daemon checks again.
 //! It never reads the user's `~/.ssh`: the daemon's host key is pinned in
@@ -27,7 +28,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use writ_core::names::{Email, RepoName, TicketId};
+use writ_core::names::{Email, KeyId, ProofNamespace, RepoName, TicketId};
 
 /// How a command ended, as the exit status (stable: the agent skill and harnesses read it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +207,25 @@ enum Commands {
         #[command(flatten)]
         signer: SignerArgs,
     },
+    /// Prove an agent signing key to a remote that asks (Forgejo, Gitea): sign the message on
+    /// stdin with it, in place of `ssh-keygen -Y sign -n <namespace>`. An approval: one
+    /// signature with your approval key.
+    ProveKey {
+        /// The key, by its id in the daemon (`writd signing-keys` lists them).
+        #[arg(value_name = "KEY_ID")]
+        key_id: KeyId,
+        /// The namespace the remote asks for (Forgejo and Gitea: gitea). Never git, nor
+        /// anything starting with writ.
+        #[arg(long, short = 'n')]
+        namespace: ProofNamespace,
+        /// Sign without asking (the proof is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
 }
 
 fn paths(cli: &Cli) -> anyhow::Result<Paths> {
@@ -322,6 +342,20 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             url,
             signer: args,
         } => approver::revoke(&paths, &url.url, &signer(&paths, args), id).await,
+        Commands::ProveKey {
+            key_id,
+            namespace,
+            yes,
+            url,
+            signer: args,
+        } => {
+            let asked = approver::ProveKey {
+                key: key_id.clone(),
+                namespace: namespace.clone(),
+                yes: *yes,
+            };
+            approver::prove_key(&paths, &url.url, &signer(&paths, args), asked).await
+        }
     }
 }
 
@@ -356,6 +390,12 @@ pub(crate) fn error_of<T>(result: anyhow::Result<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_command_line_is_well_formed() {
+        // clap checks its definition only when a command is parsed: every subcommand here.
+        <Cli as clap::CommandFactory>::command().debug_assert();
+    }
 
     #[test]
     fn sign_yes_needs_a_named_ticket() {

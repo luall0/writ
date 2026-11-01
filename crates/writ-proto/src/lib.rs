@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::Wait`] |
-//! | approvals | any key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`] |
 //!
 //! Replies are wrapped in an envelope, `{"ok": …}` or `{"error": {"message": …, "reasons": […]}}`
 //! ([`encode_reply`], [`decode_reply`]). Tickets travel as their canonical bytes in a string,
@@ -28,8 +28,8 @@ pub mod sign;
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
-    Ack, ApproveRequest, Decision, Decisions, Info, Listing, Previous, RefuseRequest, Relation,
-    RevokeRequest, Shown, Submitted, Summary,
+    Ack, ApproveRequest, Decision, Decisions, Info, Listing, Previous, ProveRequest, Proved,
+    RefuseRequest, Relation, RevokeRequest, Shown, Submitted, Summary,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -40,7 +40,7 @@ pub const MAX_BODY: usize = 256 * 1024;
 pub const LEASE_USER: &str = "git";
 
 /// The SSH user of clients with a plain key: ticket submission (the session key) and the
-/// approval API (any key).
+/// approval API (a reader key).
 pub const CLIENT_USER: &str = "writ";
 
 #[cfg(test)]
@@ -62,6 +62,7 @@ mod tests {
             Command::Approve { id: id.clone() },
             Command::Refuse { id: id.clone() },
             Command::Revoke { id },
+            Command::Prove,
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -75,6 +76,8 @@ mod tests {
             "writ ls --all extra",
             "writ  ls",
             "writ sign wrt_01JD8X0000000000000000000",
+            "writ prove agent-01",
+            "writ prove-key",
             "git-upload-pack 'x'",
         ] {
             assert_eq!(Command::parse(line), None, "{line:?}");
@@ -92,6 +95,7 @@ mod tests {
             Command::Approve { id: id.clone() },
             Command::Refuse { id: id.clone() },
             Command::Revoke { id: id.clone() },
+            Command::Prove,
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));
@@ -106,6 +110,9 @@ mod tests {
             ("GET", &format!("/v1/tickets/{id}/approve")),
             ("POST", &format!("/v1/tickets/{id}/sign")),
             ("POST", "/v1/request"),
+            ("GET", "/v1/proofs"),
+            ("POST", "/v1/proofs/x"),
+            ("POST", "/v1/proofs?key=agent-01"),
             ("GET", "/v2/info"),
             ("GET", "/v1/info/"),
             ("GET", "v1/info"),

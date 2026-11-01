@@ -1,14 +1,16 @@
-//! The approver's side: `writ ls`, `writ sign`, `writ refuse`, `writ revoke`, over the
-//! approval listener.
+//! The approver's side: `writ ls`, `writ sign`, `writ refuse`, `writ revoke`, `writ
+//! prove-key`, over the approval listener.
 //!
 //! Signatures are made by the approver's agent ([`signer`]): only the dedicated approval key
 //! is ever used, and the private key never leaves the agent. Connections to the approval API
 //! authenticate with a throwaway key: the connection grants nothing, signatures do.
 
 mod narrowing;
+mod prove;
 mod signer;
 
 pub use narrowing::Narrowing;
+pub use prove::{ProveKey, prove_key};
 pub use signer::{Signer, default_key};
 
 use std::io::{BufRead, Write as _};

@@ -62,7 +62,7 @@ pub(crate) async fn run_approval(
 pub(crate) fn approval_has_body(command: &Command) -> bool {
     matches!(
         command,
-        Command::Approve { .. } | Command::Refuse { .. } | Command::Revoke { .. }
+        Command::Approve { .. } | Command::Refuse { .. } | Command::Revoke { .. } | Command::Prove
     )
 }
 
@@ -100,6 +100,10 @@ pub(crate) async fn approval_reply(
                 Err(e) => encoded::<()>(Err(e)),
             }
         }
+        Command::Prove => match writ_proto::decode_body(&body) {
+            Ok(request) => encoded(blocking(move || service.prove(&request, &facts)).await),
+            Err(e) => encoded::<()>(Err(e)),
+        },
         Command::Request | Command::Wait { .. } => {
             encoded::<()>(Err(ApiError::new("command not allowed here")))
         }

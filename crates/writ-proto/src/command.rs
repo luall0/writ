@@ -24,6 +24,10 @@ pub enum Command {
     /// `writ revoke <id>`: revoke a lease or withdraw a pending ticket ([`RevokeRequest`] on
     /// stdin). Reply: [`Ack`].
     Revoke { id: TicketId },
+    /// `writ prove`: an agent signing key signs a remote's message, with an approver's
+    /// signature over the `writ-proof/1` document ([`ProveRequest`] on stdin). Reply:
+    /// [`Proved`].
+    Prove,
 }
 
 impl Command {
@@ -49,6 +53,7 @@ impl Command {
             ("approve", Some(_)) => Some(Self::Approve { id: id()? }),
             ("refuse", Some(_)) => Some(Self::Refuse { id: id()? }),
             ("revoke", Some(_)) => Some(Self::Revoke { id: id()? }),
+            ("prove", None) => Some(Self::Prove),
             _ => None,
         }
     }
@@ -65,6 +70,7 @@ impl Command {
             Self::Approve { id } => format!("writ approve {id}"),
             Self::Refuse { id } => format!("writ refuse {id}"),
             Self::Revoke { id } => format!("writ revoke {id}"),
+            Self::Prove => "writ prove".to_owned(),
         }
     }
 
@@ -82,6 +88,7 @@ impl Command {
     /// | ls, ls --all | `GET /v1/tickets`, `GET /v1/tickets?all=true` |
     /// | show | `GET /v1/tickets/<id>` |
     /// | approve, refuse, revoke | `POST /v1/tickets/<id>/approve` (`refuse`, `revoke`) |
+    /// | prove | `POST /v1/proofs` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request | Self::Wait { .. } => None,
@@ -92,6 +99,7 @@ impl Command {
             Self::Approve { id } => Some(("POST", format!("/v1/tickets/{id}/approve"))),
             Self::Refuse { id } => Some(("POST", format!("/v1/tickets/{id}/refuse"))),
             Self::Revoke { id } => Some(("POST", format!("/v1/tickets/{id}/revoke"))),
+            Self::Prove => Some(("POST", "/v1/proofs".to_owned())),
         }
     }
 
@@ -112,6 +120,7 @@ impl Command {
             ("POST", ["tickets", t, "approve"], None) => Self::Approve { id: id(t)? },
             ("POST", ["tickets", t, "refuse"], None) => Self::Refuse { id: id(t)? },
             ("POST", ["tickets", t, "revoke"], None) => Self::Revoke { id: id(t)? },
+            ("POST", ["proofs"], None) => Self::Prove,
             _ => return None,
         };
         Some(command)

@@ -7,7 +7,7 @@ clients make the workflow pleasant, the daemon makes it safe.
 
 | Client | Role |
 |---|---|
-| `writ` CLI | `request`, `sign`, `refuse`, `close`, `ls`, `revoke`, `unseal`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host)), `git` and `exec` (git, or a program, with that wiring) |
+| `writ` CLI | `request`, `wait`, `sign`, `refuse`, `close`, `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host)), `git` and `exec` (git, or a program, with that wiring) |
 | Agent skill | Teaches the agent the ticket workflow: think through the scope before coding, write a ticket (task, plan, repos, branches, limits, template), submit it with `writ request`, wait for my decision; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; when done, `writ close` with a summary. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine |
 | `writ try` | Borrowed from secrets-dispatcher: sets up a temporary local daemon and wires one repo, then restores everything on Ctrl-C. `--dry-run` lists every change first |
 | `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git <repo>` command for the repo in `writ.repo`, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, then `core.sshCommand`, never a plain `ssh`), with the first parent commit and the trees the daemon needs to see which paths the commit touches ([Gateway](gateway.md#signing)); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen` |
@@ -30,7 +30,8 @@ is pinned; `writd host-key` prints it), `WRIT_TLS_PINS` (default `~/.writ/tls_pi
 `WRIT_SSH_KEYGEN` (the ssh-keygen `writ sign` runs, an absolute path; default
 `/usr/bin/ssh-keygen`, never looked up in `PATH`). It never reads `~/.ssh` or uses the user's ssh-agent
 for connections: it would offer personal keys to the daemon. Exit statuses: 0 done, 1 error,
-3 rejected by policy, 4 refused, 5 expired or withdrawn, 6 not signed (`writ sign` answered no).
+3 rejected by policy, 4 refused, 5 expired or withdrawn, 6 not signed (`writ sign` or `writ
+prove-key` answered no).
 
 Denial reasons from the daemon reach the agent: `writ-sign` prints them on stderr (escaped,
 like any text from elsewhere) before exiting 1, and git shows them; git shows the gateway's

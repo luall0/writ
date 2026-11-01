@@ -1,12 +1,14 @@
 //! [`Service`]: see the crate documentation. Its methods are grouped by caller: [`agent`]
-//! (submit, wait), [`approver`] (list, show, approve, refuse, revoke), [`gateway`]
-//! (authorize, what the gateway denied), [`sign`] (commit signatures) and [`sweep`] (time:
-//! expiry, exhaustion, ended sessions).
+//! (submit, wait), [`approver`] (list, show, approve, refuse, revoke), [`prove`] (a signing
+//! key's proof for a remote, an approver's request too), [`gateway`] (authorize, what the
+//! gateway denied), [`sign`] (commit signatures) and [`sweep`] (time: expiry, exhaustion,
+//! ended sessions).
 
 mod agent;
 mod approver;
 mod coalesced;
 mod gateway;
+mod prove;
 mod push;
 mod sign;
 mod submissions;

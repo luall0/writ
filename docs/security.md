@@ -78,6 +78,7 @@ reader with `decisions: open`). Each has a bound, a strict parser, and a hostile
 | Ticket YAML | agents | the body bound, one document, no anchors/aliases/merge keys, depth 32, 50,000 nodes, strict booleans; text bounds (title 200 one line, task 4,000 / 100 lines, plan 50 × 500 one line, 100 paths, caller fields); `ttl` ≥ 5 min; 2 pending per session key, 10 submissions/min per address and 60/min from all sources (defaults; the operator sets both, 1-1,000 and 1-10,000: `submissions`), `max_pending` in all | `writ_core::yaml`, `fit` |
 | Canonical tickets and decisions | approver clients | decode then re-encode to the same bytes | `writ_core::canonical` |
 | SSHSIGs | approver clients | namespace, keys compared whole, accepted key types, `sk-` user presence | `writ_crypto::sshsig`, `allowed_signers` |
+| Proofs (`writ prove`) | readers, with an approver's signature | the body bound; the `writ-proof/1` document decoded strictly (canonical bytes); the namespace 1-64 of `[A-Za-z0-9._@-]`, never `git` nor `writ…` in any case; the message 1 to 4,096 bytes of UTF-8; the key one a template signs commits with; the approver's SSHSIG over exactly those bytes, required whatever `decisions` says; through the signer's queue (`Busy`, `Timeout`) | `writ_core::signed::Proof`, `writ_core::names::ProofNamespace`, `Service::prove` |
 | TLS client certificates | HTTPS peers | TLS 1.3, a reader's Ed25519 key, handshake signature checked | `writ_crypto::tls::ReaderVerifier` |
 | Pre-receive input | git, on an agent's push | 1 MiB, cut-short refused, a token, a quarantine path (believed only as a directory, not a link, right under the mirror's `objects` with git's prefix), 1 to 1,000 lines each an exact update | `writ-gateway/src/hook`, `writ_mirror::quarantine` |
 | Pushed objects | agents | `fsckObjects` (with `.git`, `.`, `..`, empty, absolute names, null ids at error level), `receive.maxInputSize` = the lease's `max_push_size`; read only after `may_push`; new commits at most the lease's `max_signatures` (10,000 in all); each commit's paths from at most 16 MiB of objects, in the bounded walk; every read within 120 s | git, configured by `writ_mirror::git`; `writ_mirror::quarantine`; `writ_git::paths` |
@@ -204,7 +205,11 @@ A new input is added here in the same change.
   grants anything.
 - **Unsigned words are labeled**: feedback from a refusal nobody signed reaches the agent and
   the revision marked as such.
-- **A confirmation flag needs an explicit target** (`writ sign --yes <id>`).
+- **A confirmation flag needs an explicit target** (`writ sign --yes <id>`, `writ prove-key
+  <key id> --namespace <ns> --yes`).
+- **A remote's message is shown whole and escaped** before a proof is signed (`writ
+  prove-key`: newlines and hidden characters as `\u{…}`, its length in bytes), since what is
+  signed is exactly those bytes.
 
 ## Library defaults are never the decision
 
