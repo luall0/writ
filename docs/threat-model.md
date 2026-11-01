@@ -106,6 +106,13 @@ fails if a named test doesn't exist or is ignored, or if a guarantee has no test
 milestone that brings it (`tool/check-guarantees.py`). A new guarantee comes with its tests,
 in the same change ([security conventions](security.md#guarantees-and-their-tests)).
 
+Until M3 and M4, the guarantees on signing and pushing hold in the policy core
+(`writ_core::policy`, tested above) but the daemon doesn't call it yet: the gateway signs any
+object for an active lease that allows `commit_sign`, and accepts a push into its mirror
+checked only against the lease (active, the operation, the repo) and the repo's
+`protected_refs`. Nothing reaches upstream before M4, which wires the push checks; M3 wires
+the signing checks. Each milestone's acceptance list tests its half end to end.
+
 | Guarantee | Tests that try to break it |
 |---|---|
 | ✅ Agents never get forge credentials or signing keys | `clients_never_see_an_internal_cause`, `errors_and_debug_never_contain_the_token`, `the_audit_log_holds_every_decision_and_no_secret`, `the_log_holds_no_secret` |

@@ -2,23 +2,43 @@
 //! refusal. The lease is checked again here, when the ref updates are known: a lease revoked
 //! (or expired) while the pack was coming in moves no ref.
 
+use std::future::Future;
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use writ_approval::{EventKind, GatewayDenial};
 use writ_core::caller::CallerFacts;
 use writ_core::ticket::Operation;
+use writ_platform::transport::accept_retrying;
 
 use super::{MAX_HOOK_INPUT, PushContext, RefUpdate, check_ref_updates};
 use crate::Gateway;
 
+/// Answers hooks on the gateway's private socket until the socket itself fails. An error
+/// about one connection or a passing shortage (out of file descriptors) is retried
+/// ([`accept_retrying`]): it must not end the hook server, or every later push would be
+/// refused until a restart.
 pub(crate) async fn serve(gateway: Gateway, listener: UnixListener) {
+    let listener = &listener;
+    serve_from(gateway, move || async move {
+        listener.accept().await.map(|(stream, _)| stream)
+    })
+    .await;
+}
+
+/// [`serve`], over any source of connections (a test scripts the accept results).
+async fn serve_from<F, Fut>(gateway: Gateway, mut accept: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::io::Result<UnixStream>>,
+{
     loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
+        match accept_retrying("hook socket", &mut accept).await {
+            Ok(stream) => {
                 tokio::spawn(answer(gateway.clone(), stream));
             }
             Err(e) => {
-                tracing::error!(error = %e, "hook socket failed");
+                tracing::error!(error = %e, "hook socket failed; pushes are refused");
                 return;
             }
         }
@@ -366,6 +386,96 @@ ticket:
                 pushes.is_empty(),
                 "the revoked lease's push is forgotten anyway"
             );
+        }
+    }
+
+    mod accept_loop {
+        use super::super::serve_from;
+        use crate::{Gateway, GatewayConfig};
+        use std::collections::VecDeque;
+        use std::io;
+        use std::path::PathBuf;
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::UnixStream;
+        use writ_approval::testing::TestServiceBuilder;
+        use writ_crypto::keys::{KeyKind, generate};
+        use writ_platform::clock::system::SystemClock;
+
+        const POLICY: &str = r#"
+repos:
+  demo:
+    upstream: ssh://git@forge.invalid/demo.git
+    upstream_credential: upstream-01
+templates:
+  read:
+    repos: [demo]
+    operations: [fetch]
+    max_ttl: 1h
+    max_signatures: 0
+    max_pushes: 0
+    max_ops_per_minute: 10
+    max_push_size: 1MB
+"#;
+
+        /// Sends a hook's input for a push the daemon doesn't know, returns the answer.
+        async fn ask(mut stream: UnixStream) -> String {
+            stream.write_all(b"no-such-token\n").await.unwrap();
+            stream.shutdown().await.unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).await.unwrap();
+            reply
+        }
+
+        #[tokio::test]
+        async fn a_transient_accept_error_never_ends_the_hook_server() {
+            let dir = tempfile::tempdir().unwrap();
+            let test = TestServiceBuilder::new(POLICY)
+                .clock(Arc::new(SystemClock))
+                .build(dir.path());
+            let gateway = Gateway::start(
+                GatewayConfig {
+                    host_key: generate(KeyKind::Ed25519).unwrap(),
+                    repos_root: dir.path().join("repos"),
+                    signing_key: generate(KeyKind::Ed25519).unwrap(),
+                    hook_program: PathBuf::from("/bin/false"),
+                    state_dir: dir.path().join("run"),
+                    readers: Vec::new(),
+                },
+                test.service.clone(),
+            )
+            .await
+            .unwrap();
+            let (first, first_server_side) = UnixStream::pair().unwrap();
+            let (second, second_server_side) = UnixStream::pair().unwrap();
+            // Out of descriptors and a reset before and between the connections, then the
+            // socket itself gone (EBADF).
+            let script = Mutex::new(VecDeque::from([
+                Err(io::Error::from_raw_os_error(24)),
+                Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
+                Ok(first_server_side),
+                Err(io::Error::from_raw_os_error(24)),
+                Ok(second_server_side),
+                Err(io::Error::from_raw_os_error(9)),
+            ]));
+            let accept = move || {
+                let item = script
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or_else(|| Err(io::Error::from_raw_os_error(9)));
+                async move { item }
+            };
+            let server = tokio::spawn(serve_from(gateway, accept));
+
+            // Both connections are answered: neither error ended the server.
+            assert_eq!(ask(first).await, "deny unknown push\n");
+            assert_eq!(ask(second).await, "deny unknown push\n");
+            // A lasting error does end it.
+            server.await.unwrap();
+            let denied = test.events("push", "denied");
+            assert_eq!(denied.len(), 2);
+            assert!(denied.iter().all(|e| e["reason"] == "unknown push"));
         }
     }
 

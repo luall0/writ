@@ -36,19 +36,34 @@ const TRANSIENT_ERRNO: [i32; 4] = [24, 23, 55, 100];
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const TRANSIENT_ERRNO: [i32; 2] = [24, 23];
 
-/// Runs `accept` until it succeeds or fails for good; a transient error is logged and retried
-/// after a growing pause.
-pub(crate) async fn accept_retrying<T, F, Fut>(listener: &str, mut accept: F) -> io::Result<T>
+/// Runs `accept` until it succeeds or fails for good; a transient error is retried after a
+/// growing pause. Every listener's accept loop goes through this: one connection's error, or a
+/// passing shortage, never ends a listener.
+///
+/// Any peer can cause a transient error (a connection reset before it was accepted,
+/// descriptors used up by connections), so each one is logged at `debug` only: a flood can't
+/// fill the daemon's log. A shortage that lasts until the pause reaches [`MAX_BACKOFF`] is
+/// reported once, as a warning, per call (at most one line a second or so).
+pub async fn accept_retrying<T, F, Fut>(listener: &str, mut accept: F) -> io::Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = io::Result<T>>,
 {
     let mut backoff = MIN_BACKOFF;
+    let mut reported = false;
     loop {
         match accept().await {
             Ok(accepted) => return Ok(accepted),
             Err(e) if is_transient(&e) => {
-                tracing::warn!(listener, error = %e, "accept failed; retrying");
+                tracing::debug!(listener, error = %e, "accept failed; retrying");
+                if backoff == MAX_BACKOFF && !reported {
+                    reported = true;
+                    tracing::warn!(
+                        listener,
+                        error = %e,
+                        "accept keeps failing (out of file descriptors or memory?); retrying"
+                    );
+                }
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
@@ -105,5 +120,69 @@ mod tests {
         let error = accept_retrying("test", next).await.unwrap_err();
         assert_eq!(error.raw_os_error(), Some(9));
         assert!(script.lock().unwrap().is_empty());
+    }
+
+    /// Counts what the test's thread logs, by level.
+    #[derive(Default)]
+    struct Levels {
+        warn: std::sync::atomic::AtomicUsize,
+        debug: std::sync::atomic::AtomicUsize,
+    }
+
+    struct Counting(std::sync::Arc<Levels>);
+
+    impl tracing::Subscriber for Counting {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            use std::sync::atomic::Ordering::SeqCst;
+            match *event.metadata().level() {
+                tracing::Level::WARN => self.0.warn.fetch_add(1, SeqCst),
+                tracing::Level::DEBUG => self.0.debug.fetch_add(1, SeqCst),
+                _ => 0,
+            };
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// `errors` transient errors, then a connection: (warnings, debug lines) logged.
+    async fn logged_for(errors: usize) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let levels = std::sync::Arc::new(Levels::default());
+        let _guard = tracing::subscriber::set_default(Counting(levels.clone()));
+        let mut script: VecDeque<io::Result<u8>> = (0..errors)
+            .map(|i| {
+                Err(if i % 2 == 0 {
+                    errno(24)
+                } else {
+                    io::Error::from(io::ErrorKind::ConnectionReset)
+                })
+            })
+            .collect();
+        script.push_back(Ok(1));
+        let script = Mutex::new(script);
+        let next = || {
+            let item = script.lock().unwrap().pop_front().unwrap();
+            async move { item }
+        };
+        assert_eq!(accept_retrying("test", next).await.unwrap(), 1);
+        (levels.warn.load(SeqCst), levels.debug.load(SeqCst))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_errors_are_debug_lines_and_a_lasting_shortage_one_warning() {
+        // Pauses of 5 ms doubling to 1 s: the 9th error in a row is the first at 1 s.
+        assert_eq!(logged_for(3).await, (0, 3));
+        assert_eq!(logged_for(8).await, (0, 8));
+        assert_eq!(logged_for(9).await, (1, 9));
+        // However long it lasts, one warning per accept.
+        assert_eq!(logged_for(40).await, (1, 40));
     }
 }

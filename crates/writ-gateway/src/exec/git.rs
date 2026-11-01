@@ -152,7 +152,8 @@ pub(super) async fn bridge(mut child: Child, channel: Channel<Msg>) {
     };
     let (out, err) = tokio::join!(out, err);
     if let Err(e) = out.and(err) {
-        tracing::warn!(error = %e, "channel write failed");
+        // The client hanging up mid-command does this: peer-caused, debug only.
+        tracing::debug!(error = %e, "channel write failed");
     }
     let code = match child.wait().await {
         Ok(status) => status

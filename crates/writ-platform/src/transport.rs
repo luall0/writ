@@ -1,10 +1,13 @@
 //! How clients reach the daemon: the [`Transport`] interface. Every transport carries the
 //! same SSH protocol: only the byte stream and what is known about its peer differ.
 //!
-//! Portable implementation: [`tcp::TcpTransport`].
+//! Portable implementation: [`tcp::TcpTransport`]. [`accept_retrying`] is the accept loop's
+//! rule for every listener the daemon runs, a transport's or its own (the hook socket).
 
 mod retry;
 pub mod tcp;
+
+pub use retry::accept_retrying;
 
 use std::future::Future;
 use std::net::SocketAddr;

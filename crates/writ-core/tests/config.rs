@@ -43,6 +43,38 @@ fn the_test_policy_parses_with_defaults() {
 }
 
 /// Each edit of the test policy, and the start of the error it must give.
+/// The policy with one more repo named `name`, a copy of `homelab-scripts`.
+fn with_extra_repo(name: &str) -> String {
+    POLICY.replacen(
+        "  dotfiles:\n",
+        &format!(
+            "  {name}:\n    upstream: ssh://git@forgejo.home/user/other.git\n    \
+             upstream_credential: upstream-forgejo-01\n  dotfiles:\n"
+        ),
+        1,
+    )
+}
+
+#[test]
+fn repo_names_are_unique_ignoring_case() {
+    // Allowed: a different name (the check's control).
+    let config = PolicyConfig::from_yaml(&with_extra_repo("homelab-scripts-2")).unwrap();
+    assert!(config.repo(&repo("homelab-scripts-2")).is_some());
+    // Refused: the same name in another case. The error names the second of the two in the
+    // registry's (byte) order.
+    for name in [
+        "Homelab-Scripts",
+        "HOMELAB-SCRIPTS",
+        "homelab-Scripts",
+        "homelab-scriptS",
+    ] {
+        let error = PolicyConfig::from_yaml(&with_extra_repo(name)).unwrap_err();
+        let second = name.max("homelab-scripts");
+        assert_eq!(error.path, format!("repos.{second}"), "{name}");
+        assert!(error.message.contains("same name ignoring case"), "{error}");
+    }
+}
+
 #[test]
 fn errors_name_the_field() {
     let cases: Vec<(&str, String, &str)> = vec![

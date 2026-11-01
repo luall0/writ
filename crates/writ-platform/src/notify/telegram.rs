@@ -165,6 +165,10 @@ impl TelegramNotifier {
             .timeout_global(Some(TELEGRAM_TIMEOUT))
             .http_status_as_error(false)
             .max_redirects(0)
+            // Stated, not left to ureq's default, which reads `ALL_PROXY`/`HTTPS_PROXY`/
+            // `HTTP_PROXY` from the environment: the token is in the request path, and with
+            // an `http` base on loopback it would reach a proxy in clear.
+            .proxy(None)
             .build();
         Ok(Self {
             token,

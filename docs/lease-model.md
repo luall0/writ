@@ -45,6 +45,8 @@ repos:
 
 Defaults: `protected_refs: []`, `push_modes: [gateway]`, `ticket_link: trailer`. The
 `direct_ssh` section is required with the `direct_ssh` push mode and refused without it.
+Repo names are unique ignoring case: a repo's mirror is `<name>.git`, and on a
+case-insensitive file system (local mode's APFS) `Demo` and `demo` would be one directory.
 
 A lease can only use a push mode that its repo allows. `direct_ssh` with an account-wide key
 requires `allow_account_wide: true` in the registry **and** is shown as a warning in the

@@ -145,6 +145,20 @@ impl PolicyConfig {
 
     /// Cross-checks a parsed document.
     fn validate(raw: RawPolicyConfig) -> Result<Self, FieldError> {
+        // A repo's mirror is `<name>.git`: on a case-insensitive file system (APFS, local
+        // mode's mirrors) `Demo` and `demo` would be one directory under two entries, each
+        // with its own protected refs and upstream. Names are unique ignoring ASCII case
+        // (repo names are ASCII).
+        let mut folded = std::collections::BTreeSet::new();
+        for name in raw.repos.keys() {
+            if !folded.insert(name.as_str().to_ascii_lowercase()) {
+                return Err(FieldError::at(
+                    format!("repos.{name}"),
+                    "another repo has the same name ignoring case (their mirrors would be one \
+                     directory on a case-insensitive file system)",
+                ));
+            }
+        }
         for (name, repo) in &raw.repos {
             validate_repo(name, repo)?;
         }

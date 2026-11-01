@@ -300,6 +300,70 @@ fn telegram_posts_send_message_with_the_exact_body() {
     );
 }
 
+/// The environment variable that tells [`proxy_child_sends_one_message`] where to send.
+const CHILD_BASE: &str = "WRIT_TEST_PROXY_CHILD_BASE";
+
+/// The proxy variables ureq would read by default.
+const PROXY_VARS: [&str; 6] = [
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+];
+
+/// Run by [`a_proxy_in_the_environment_never_sees_the_token`] in a process of its own, with
+/// proxy variables set (the environment is process-wide: setting it here would reach every
+/// other test).
+#[test]
+#[ignore = "a child process of a_proxy_in_the_environment_never_sees_the_token"]
+fn proxy_child_sends_one_message() {
+    let base = std::env::var(CHILD_BASE)
+        .expect("run by a_proxy_in_the_environment_never_sees_the_token, which sets the base");
+    TelegramNotifier::with_api_base(token(), "42", &base)
+        .unwrap()
+        .notify(&Notification {
+            title: "Ticket waiting".to_owned(),
+            message: "through no proxy".to_owned(),
+            priority: Priority::Default,
+            tags: Vec::new(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_proxy_in_the_environment_never_sees_the_token() {
+    let server = FakeBotApi::ok();
+    // A "proxy" that never answers: whatever connects to it is in its backlog.
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--ignored", "--exact", "proxy_child_sends_one_message"])
+        .env(CHILD_BASE, &server.base)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy");
+    for var in PROXY_VARS {
+        child.env(var, &proxy_url);
+    }
+    let output = child.output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    // The child really ran the message (not filtered out), straight to the server...
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, format!("/bot{TOKEN}/sendMessage"));
+    // ...and never connected to the proxy (a connection would wait in the backlog).
+    proxy.set_nonblocking(true).unwrap();
+    let error = proxy.accept().map(|_| ()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+}
+
 #[test]
 fn channel_chat_ids_are_strings_and_low_priority_is_silent() {
     let server = FakeBotApi::ok();

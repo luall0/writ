@@ -13,7 +13,7 @@ later approver apps.
 | Leases + ledger | SQLite | Decided |
 | Audit log | JSONL, append-only | Decided |
 | Keystore | age format | Decided |
-| Notifications | Behind the `Notifier` trait; v1: Telegram Bot API (`sendMessage`, plain text) over `ureq` 3 | Decided (M2) |
+| Notifications | Behind the `Notifier` trait; v1: Telegram Bot API (`sendMessage`, plain text) over `ureq` 3, with no proxy (ureq's default would take one from the environment) and no redirects | Decided (M2) |
 | Async runtime | `tokio` | Decided (M0) |
 | SQLite access | `rusqlite` 0.41 (bundled SQLite) | Decided (M1) |
 | age | `age` 0.11 (0.12 pulls `ml-kem` 0.2, whose `kem` pre-release conflicts with russh 0.65's) | Decided (M2) |

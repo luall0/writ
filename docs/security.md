@@ -84,8 +84,10 @@ A new input is added here in the same change.
   showing that skipping is the safe side (checked).
 - **Missing facts deny**: no process chain, no source address where a list is set, an
   unknown key type, an unreadable row.
-- **Accept loops never end on one connection's error**: a transport retries transient
-  errors; only a broken listener stops it.
+- **Accept loops never end on one connection's error**: every listener (each transport,
+  and the gateway's own hook socket) accepts through `writ_platform::transport::accept_retrying`,
+  which retries transient errors (out of descriptors, a reset before the accept); only a
+  broken listener stops it.
 - **The deny list is checked at every decision point** (connection, each command, the
   pre-receive hook), not only at connection.
 
@@ -107,7 +109,8 @@ A new input is added here in the same change.
 - **The audit log is plain data**: no field can hold a secret, hidden characters are
   escaped, a failed write never glues lines together, the file is `0600`.
 - **The daemon's own log stays bounded**: what any peer can trigger is logged at `debug`
-  (the audit line is the record), and an audit-log outage is reported once, not per line.
+  (the audit line is the record), and an audit-log outage is reported once, not per line;
+  a lasting accept failure is reported once per accept, when its pause reaches a second.
 
 ## Revocation and enforcement state
 
@@ -135,7 +138,9 @@ A new input is added here in the same change.
   library error that might hold one is replaced by a short word. Tests scan for them
   (`looks_secret`, `errors_and_debug_never_contain_the_token`).
 - Key material moves into the library that needs it; no other copy is kept.
-- A token travels in clear only to this machine (Telegram's `http` base: loopback only).
+- A token travels in clear only to this machine (Telegram's `http` base: loopback only), and
+  never through a proxy named in the environment (`proxy(None)`, tested in a child process
+  with every proxy variable set).
 - No `log` → `tracing` bridge: libraries such as ureq log URLs that hold tokens
   (`cargo deny` bans the bridges).
 
@@ -201,7 +206,8 @@ with a test:
 - **No `unsafe`** (`unsafe_code = "deny"`); safe wrappers (`rustix`) for system calls.
 - **Parse, don't validate**: untrusted strings become validated newtypes at the edge.
 - **Compare security values exactly**: never `Path ==` (it normalizes), never a fingerprint
-  where the whole key is at hand, case-insensitively where a file system folds case (refs).
+  where the whole key is at hand, case-insensitively where a file system folds case (refs;
+  repo names, which name mirrors, are unique ignoring case).
 
 ## Dependencies
 
