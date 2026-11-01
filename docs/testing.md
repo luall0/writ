@@ -52,7 +52,15 @@ These rules hold for every test, at every level.
   - every allowed case next to its denials passes, so the denial is the check's doing and not
     a broken fixture;
   - hostile input is tried where input is untrusted: escape sequences and bidi controls in
-    every agent-written field, cut-short and oversized input, path-like names.
+    every agent-written field, cut-short and oversized input, path-like names;
+  - a limit that is costly to reach is tested on both sides with a small limit passed in (the
+    mechanism), plus one test at the real limit or past it with the input it guards against
+    (`writ_git::paths`: `path_bytes_are_bounded_on_both_sides` with a 7-byte budget,
+    `long_names_cannot_blow_up_the_walk` at the real one);
+  - an ordering that matters (the deny list before the lock is released, the audit line
+    before the change) has a test that makes the step after it fail (`FailingSigner`,
+    `AuditBreaker`, `StoreBreaker`) and checks what is left; a fix's test is seen to fail
+    without the fix before it is committed.
 - **Fixtures are shared, not copied**: the test kits and the integration harness hold the
   service setup, the approver's signatures, the agent, the daemon. A fixture edited for a test
   asserts the edit applied, so a drifted fixture fails instead of weakening the test.

@@ -82,6 +82,12 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   serialized, signed or displayed.
 - **Strict input**: `#[serde(deny_unknown_fields)]` on everything deserialized; canonical
   documents implement `writ_core::canonical::Canonical` and decode only from their exact bytes.
+- **One source for a fact.** What can be read from an object is read from it where it is
+  used, not carried beside it in fields that must agree (`Signing` holds the commit, and the
+  service reads the committer, trailers and format from it: `SignObject`). An enum of the
+  cases beats two `Option`s that are `Some` together.
+- **No parameter that is always one value**: a constant the callee owns (the SSHSIG namespace
+  `git` in `Service::sign`) is one less input to trust.
 
 ## Errors
 
@@ -91,7 +97,11 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   (`LifecycleError`, `FitError`, `CanonicalError`). Never a bare `Error`: `writd` imports many.
 - **One variant per cause** the caller may handle or a test may check (`LeaseNotActive`,
   `SessionKeyChanged`), not a catch-all `String`; a refusal carries a stable code
-  (`ServiceError::Refused { code: RefusalCode, .. }`) beside its message.
+  (`ServiceError::Refused { code: RefusalCode, .. }`) beside its message. **Each limit has its
+  own variant** (`PathsError::TooManyEntries`, `TooManyPaths`, `PathTooLong`,
+  `TooManyBytes`), so a test can tell which one fired.
+- **A message says what was checked, nothing more**: an error that names a format
+  (`name <email> time zone`) comes from a parser that checks all of it.
 - **Causes are kept**: `#[from]` / `#[source]`, never `e.to_string()` into a `String` variant.
 - **Messages**: lowercase, no trailing period, they name the object (`invalid repo name "x":
   …`, `lease wrt_… is revoked`); several reasons are joined with `; `, or listed one per line.
@@ -141,10 +151,21 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
 
 - **Nothing blocks the runtime**: SQLite, fsync, file I/O and blocking HTTP run in
   `spawn_blocking` (`Gateway::authorize`, `api::blocking`). No lock is held across an `.await`.
+- **Nothing slow under the service's state lock**: no signer call, device, network or
+  subprocess while it is held, since every approval, revocation and decision waits on it.
+  Decide under the lock, act outside, check again under the lock. The software signer in
+  `Service::sign` is the known exception until [M3.5](roadmap.md#m35--signing-outside-the-lock).
 - **Bounded everything** from untrusted peers: every read has a limit and refuses past it
   (`MAX_BODY`, `MAX_SIGN_INPUT`, `MAX_HOOK_INPUT`), handshakes and headers have timeouts, and a
   cut-short input is refused rather than decided on in part.
 - **One worker, not a thread per event** for background work (the notification worker).
+
+## Clients
+
+- **Settings passed through the environment reach every child process** (`GIT_CONFIG_*`,
+  `GIT_SSH_COMMAND` from `writ git` / `writ exec`). A client that acts on them checks that it
+  runs in the context they were made for, and refuses with both sides named otherwise
+  (`writ-sign` and `writ.gitdir`). A convenience, never a boundary: the daemon decides.
 
 ## Comments and docs
 

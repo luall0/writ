@@ -214,7 +214,9 @@ body bounds), the threat model (the paths guarantee and its tests, three residua
 signer under the lock until M3.5, a hidden `.git` entry until M4; a denial flood, settled by
 step 10), the lease model (merges, violations), the decision log (one row per step, Q34), flows § 2,
 gateway, clients, platform, the operator guide, the roadmap (M3.5, and M4's ledger schema,
-`hasDotgit`, mirror `object_format`, the made-up parent).
+`hasDotgit`, mirror `object_format`, the made-up parent). The classes of mistake behind the
+findings became general rules in the [security conventions](../security.md) (and its
+checklist), the [code conventions](../conventions.md) and the [test rules](../testing.md#hardened-tests).
 
 ### The security checklist, for the review
 

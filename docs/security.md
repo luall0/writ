@@ -30,7 +30,8 @@ one of them answers it in its commit message. "Not touched" is a valid answer; s
 
 1. **Inputs.** Does it add or change an untrusted input (a field, a command, a file, a
    header)? It is in the [inventory](#untrusted-inputs), with its size, time and count
-   bounds, its parser, and a hostile-input test.
+   bounds (in bytes as well as in count, including what is built from it), its parser, and a
+   hostile-input test; costly work on it comes after the cheapest authorization check.
 2. **Authority.** Does it add a way to grant, widen or read? It goes through an approver
    signature (grants), a reader key (reads), or a template (scope), never a flag or a client
    check (hard rules 1, 5).
@@ -39,7 +40,8 @@ one of them answers it in its commit message. "Not touched" is a valid answer; s
 4. **Audit.** Every allow, deny, grant, refusal, revocation and admin change writes its line;
    grants first, reductions never blocked ([details](#grants-reductions-and-the-audit-log)).
 5. **Revocation.** Does it hold a decision anywhere (memory, a token, a session)? A
-   revocation reaches it, and it is rebuilt from the store at startup.
+   revocation reaches it, and it is rebuilt from the store at startup. A revocation decided
+   while handling a request bars the certificate before the lock is released.
 6. **Secrets.** No key, token or passphrase in an error, a log, a reply, `Debug`, or a file
    others can read; zeroized; moved, never copied ([details](#secrets)).
 7. **Display.** Does agent or daemon text reach a terminal or a notification? It is escaped,
@@ -53,6 +55,19 @@ one of them answers it in its commit message. "Not touched" is a valid answer; s
 
 Everything here comes from someone the daemon doesn't trust (an agent, a network peer, a
 reader with `decisions: open`). Each has a bound, a strict parser, and a hostile-input test.
+
+- **Bound bytes, not only counts.** A limit on how many things also needs one on how big each
+  is, and on what the daemon builds from them: the touched-paths walk was bounded in entries,
+  paths and depth, yet one long directory name over many files made it hold the name once per
+  file (the M3 review's F1). Count the bytes of what is built (`MAX_PATH_LEN`,
+  `MAX_PATH_BYTES`), not only the input's.
+- **Costly work after the cheapest authorization.** Decoding, hashing or walking a large
+  input waits until the caller is known to be allowed to ask at all (`Service::may_sign`
+  before a sign request is read); the decision itself still checks everything again where it
+  is made.
+- **A violation is a choice, malformed input is not.** What the policy forbids (a tag, another
+  repo, a committer outside the lease) is a violation and may revoke a lease; bytes that don't
+  parse, or aren't the kind of object asked for, are `invalid` and never revoke one.
 
 | Input | From | Bounds | Parsed by |
 |---|---|---|---|
@@ -98,9 +113,10 @@ A new input is added here in the same change.
 - **Grants and allows are logged first** (`Service::logged`): no line, no grant.
 - **Reductions of privilege never wait for the log** (`Service::reduced`): revocation,
   withdrawal, expiry, exhaustion and an ended session are applied either way; the
-  certificate goes on the deny list first, before anything that can fail; the line is
-  written first when possible, otherwise kept in memory (bounded) and written once the log
-  can take it.
+  certificate goes on the deny list first, before anything that can fail, and a revocation
+  decided while handling a request (a violation) bars it before the state lock is released,
+  so no other request of the lease gets in between; the line is written first when
+  possible, otherwise kept in memory (bounded) and written once the log can take it.
 - **Denials before authentication are coalesced** per source and minute, with a global budget
   of 60 lines a minute, and a count: every denial is counted, and a flood from many sources
   can't fill the disk either.
@@ -188,7 +204,12 @@ with a test:
   `fsckObjects`, a size cap.
 - Git objects an agent sends: ids computed here (SHA-1 with collision detection, never a plain
   SHA-1), only the commit layout git writes, trailers found as git finds them (checked
-  against `git interpret-trailers`, `trailers_are_git_s`).
+  against `git interpret-trailers`, `trailers_are_git_s`), and refused at least where git's
+  own validators refuse them (`.git` tree entries as `verify_path` reads them).
+- **A tool's own checks at the severity we need**: an external validator's warning is not a
+  refusal. git's `fsck` only warns on a `.git` tree entry (`hasDotgit`) and
+  `receive.fsckObjects` then accepts the push, so the mirrors set `receive.fsck.hasDotgit =
+  error` (M4). Each check Writ relies on is set to an error explicitly, with a test.
 
 ## Subprocesses
 
