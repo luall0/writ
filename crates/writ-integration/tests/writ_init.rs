@@ -70,6 +70,26 @@ fn granted() -> (Daemon, String, String) {
     (daemon, id, key)
 }
 
+#[test]
+fn writd_signing_keys_prints_the_key_a_lease_signs_with() {
+    // What the operator registers on an account (a signing key) is the key the lease's
+    // commits are signed with, and nothing else.
+    let (daemon, _, key) = granted();
+    let printed = daemon.print("signing-keys");
+    assert_eq!(
+        printed,
+        format!("agent-01 {} (templates: feature)", key.trim()),
+        "{printed}"
+    );
+    // The upstream credential is another key, and is not listed there.
+    let upstream = daemon.print("upstream-keys");
+    assert!(
+        upstream.starts_with("upstream-01 ssh-ed25519 "),
+        "{upstream}"
+    );
+    assert!(!printed.contains(upstream.split(' ').nth(2).unwrap()));
+}
+
 /// Plain git, as the operator runs it: the throwaway home's `.gitconfig`, no system config.
 fn git(daemon: &Daemon, cwd: &Path, args: &[&str]) -> Output {
     Command::new("git")

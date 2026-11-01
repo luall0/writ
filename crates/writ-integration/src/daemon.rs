@@ -322,6 +322,12 @@ impl Daemon {
             .unwrap()
     }
 
+    /// `writd <command> <writd.yaml>` for a command that prints (`signing-keys`,
+    /// `upstream-keys`, `host-key`): its output, trimmed.
+    pub fn print(&self, command: &str) -> String {
+        writd(self.root(), command)
+    }
+
     /// The audit log so far.
     pub fn audit(&self) -> String {
         fs::read_to_string(self.root().join("s/audit.jsonl")).unwrap()
@@ -333,7 +339,7 @@ impl Daemon {
     }
 }
 
-/// `writd <command> <config>` (host-key, tls-fingerprint): its one line of output.
+/// `writd <command> <config>` (host-key, tls-fingerprint…): its output, trimmed.
 fn writd(root: &Path, command: &str) -> String {
     let out = Command::new(bin("writd"))
         .arg(command)

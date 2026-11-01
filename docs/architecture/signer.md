@@ -73,7 +73,9 @@ the development keystore (`keystore: { dev: … }`, refused by release builds) g
 Ed25519 key per template `signing_key` on first start, in `<keys>/signing/<id>` (0600), and
 hands them to the software backend. The lease's public key reaches the agent with the grant
 (`signing_key.pub` in its session), for git's `user.signingkey` and for `allowed_signers`
-when verifying.
+when verifying. `writd signing-keys <writd.yaml>` prints each signing key with the templates
+that name it, for the operator to register on an account, so the remote shows the commits as
+verified (GitHub: a signing key and the committer email verified on the account).
 
 | Backend | Algorithms | Key exportable? | Notes |
 |---|---|---|---|

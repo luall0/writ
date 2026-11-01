@@ -7,6 +7,8 @@
 //!   certificate, to pin in clients' `tls_pins`.
 //! - `writd upstream-keys <writd.yaml>`: prints the upstream credentials' public keys, to add
 //!   on each remote.
+//! - `writd signing-keys <writd.yaml>`: prints the agent signing keys' public keys, to register
+//!   on the accounts that show commits as verified.
 //! - `writd hook pre-receive`: the program git's pre-receive hook runs.
 //! - `writd upstream-ssh <max bytes> <ssh> <args…>`: the program git runs as its ssh for
 //!   upstream (it caps what upstream sends).
@@ -42,6 +44,31 @@ use crate::config::Config;
 /// How often pending tickets and leases are checked for expiry.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Every command `main` dispatches, with its arguments: the usage text, and the list the
+/// end-to-end coverage registry is checked against (docs/end-to-end.md).
+const COMMANDS: &[(&str, &str)] = &[
+    ("run", "<writd.yaml>"),
+    ("host-key", "<writd.yaml>"),
+    ("tls-fingerprint", "<writd.yaml>"),
+    ("upstream-keys", "<writd.yaml>"),
+    ("signing-keys", "<writd.yaml>"),
+    ("hook", "pre-receive"),
+    ("upstream-ssh", "<max bytes> <ssh> <args…>"),
+];
+
+/// The usage text: one line per command.
+fn usage() -> String {
+    COMMANDS
+        .iter()
+        .enumerate()
+        .map(|(i, (name, args))| {
+            let lead = if i == 0 { "usage: " } else { "       " };
+            format!("{lead}writd {name} {args}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -60,14 +87,9 @@ fn main() -> ExitCode {
         ["upstream-keys", config] => upstream_keys(Path::new(config)),
         ["host-key", config] => host_key(Path::new(config)),
         ["tls-fingerprint", config] => tls_fingerprint(Path::new(config)),
+        ["signing-keys", config] => signing_keys(Path::new(config)),
         _ => {
-            eprintln!(
-                "usage: writd run <writd.yaml>\n       \
-                 writd host-key <writd.yaml>\n       \
-                 writd tls-fingerprint <writd.yaml>\n       \
-                 writd upstream-keys <writd.yaml>\n       \
-                 writd hook pre-receive"
-            );
+            eprintln!("{}", usage());
             return ExitCode::from(2);
         }
     };
@@ -116,6 +138,27 @@ fn upstream_keys(path: &Path) -> anyhow::Result<()> {
             "{id} {} (repos: {})",
             key.public_key().to_openssh()?,
             repos.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Prints each agent signing key's public key and the templates that name it: the key to
+/// register on an account (as a signing key) so the remote shows its commits as verified.
+fn signing_keys(path: &Path) -> anyhow::Result<()> {
+    let config = Config::load(path)?;
+    let policy = load_registry(&config)?;
+    for (id, key) in keystore::keys(&config, &policy)?.signing {
+        let templates: Vec<&str> = policy
+            .templates()
+            .iter()
+            .filter(|(_, template)| template.signing_key.as_ref() == Some(&id))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        println!(
+            "{id} {} (templates: {})",
+            key.public_key().to_openssh()?,
+            templates.join(", ")
         );
     }
     Ok(())
