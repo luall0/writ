@@ -1,6 +1,8 @@
 //! `writ`, the Writ CLI.
 //!
-//! Agent side: `writ request <ticket.yaml>` (submit and wait), `writ wait <id>`.
+//! Agent side: `writ request <ticket.yaml>` (submit and wait), `writ wait <id>`, `writ init
+//! <repo>` (wire a repository; `--whole-repo` for a clone dedicated to an agent, `--undo`),
+//! `writ git <args>` and `writ exec -- <program>` (git, or a program, with the wiring).
 //! Approver side: `writ reader` (the key this machine uses on the approval API), `writ ls`,
 //! `writ sign [<id>]` (the trusted display, then an SSHSIG through the approver's
 //! ssh-agent), `writ refuse <id>`, `writ revoke <id>`.
@@ -14,14 +16,18 @@ mod approver;
 mod client;
 mod display;
 mod https;
+mod init;
 mod reader;
 mod session;
+mod wiring;
+mod wrap;
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use writ_core::names::TicketId;
+use writ_core::names::{Email, RepoName, TicketId};
 
 /// How a command ended, as the exit status (stable: the agent skill and harnesses read it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +122,36 @@ enum Commands {
         lease: Option<TicketId>,
         #[command(flatten)]
         url: AgentUrl,
+    },
+    /// Wire the git repository in the current directory for Writ. By default nothing in its
+    /// git config changes: run git through `writ git` to work under the lease.
+    Init {
+        /// The repo's name in the daemon's registry.
+        #[arg(required_unless_present = "undo")]
+        repo: Option<RepoName>,
+        /// Write the settings in the repo's git config: for a clone dedicated to an agent.
+        #[arg(long, conflicts_with = "undo")]
+        whole_repo: bool,
+        /// The committer email (default: the current lease's, if it allows exactly one).
+        #[arg(long, conflicts_with = "undo")]
+        email: Option<Email>,
+        /// Take the repo back to before `writ init`.
+        #[arg(long, conflicts_with = "repo")]
+        undo: bool,
+        /// The daemon's agents listener, ssh://host:port.
+        #[arg(long, env = "WRIT_URL")]
+        url: Option<String>,
+    },
+    /// Run any git command with the repo's Writ wiring (signing by the daemon, the session's
+    /// SSH command, the `writ` remote), without changing its git config.
+    Git {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<OsString>,
+    },
+    /// Run a program (that runs git) with the repo's Writ wiring: writ exec -- <program> [args].
+    Exec {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<OsString>,
     },
     /// Print this machine's reader key line for the daemon's `readers` file (the key is made
     /// on first use).
@@ -215,6 +251,37 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         Commands::Wait { id, lease, url } => {
             agent::wait(&paths, &url.url, id, lease.as_ref()).await
         }
+        Commands::Init { undo: true, .. } => init::undo(),
+        Commands::Init {
+            repo,
+            whole_repo,
+            email,
+            url,
+            ..
+        } => {
+            let repo = repo
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("writ init needs the repo's registry name"))?;
+            let url = url
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("writ init needs WRIT_URL (or --url)"))?;
+            let mode = if *whole_repo {
+                wiring::Mode::WholeRepo
+            } else {
+                wiring::Mode::Wrapper
+            };
+            init::init(
+                &paths,
+                &init::Init {
+                    url,
+                    repo,
+                    mode,
+                    email: email.as_ref(),
+                },
+            )
+        }
+        Commands::Git { args } => wrap::git(&paths, args),
+        Commands::Exec { command } => wrap::exec(&paths, command),
         Commands::Reader { name } => {
             session::create_private_dir(&paths.home)?;
             println!("{}", reader::ensure(&paths.reader, name)?);

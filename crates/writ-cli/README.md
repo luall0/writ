@@ -7,6 +7,10 @@ The `writ` binary, for both sides.
 - **The agent's side** (`agent`): `writ request` (a new session key, the ticket submitted, the
   decision awaited) and `writ wait`; session files in `~/.writ/sessions/<lease>/` (`session`),
   the daemon's signing key among them (`signing_key.pub`).
+- **Wiring a repo** (`wiring`, `init`, `wrap`): `writ init <repo>` in wrapper mode (the
+  default: only `.git/writ/config`, the agent runs `writ git …` / `writ exec -- …` with the
+  settings in the environment) or `--whole-repo` (the settings in the repo's config, for a
+  clone dedicated to an agent); `writ init --undo` takes either back exactly.
 - **The approver's side** (`approver`): `writ ls`, `writ sign` (the trusted display, narrowing
   flags, a signature by the approval key through the approver's agent), `writ refuse`,
   `writ revoke`. `approver/signer` runs `ssh-keygen -Y sign` with only the approval key's

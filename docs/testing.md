@@ -78,13 +78,14 @@ These rules hold for every test, at every level.
 | `writ-signer` | The software backend against the `Signer` contract suite (`writ_signer::contract`, shared, so later backends run the same ones); keys it refuses; nothing of a key in `Debug` or errors. M5: sealed keystore unreadable without the passphrase. |
 | `writ-approval` | The approval service on the platform fakes (`RecordingNotifier`, `FakeWatcher`) and a manual clock: rejection before the approver, approval and certificate, every approval that must be refused (unknown key, other namespace, other bytes, widening, non-canonical bytes), narrowing, refusal and revision, revocation, `decisions: signed` and `open`, expiry, session binding, deny list across a restart, audit log without secrets. |
 | `writ-platform*` | One contract suite per interface (`Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnlock`, `Notifier`), run by every implementation, portable or platform-only. Fakes for each, used by the core crates' tests, so the core is tested without any real platform. Platform-only suites run on their OS (`cfg`-gated). |
-| Clients | `writ sign`'s display neutralizes control sequences; `writ-sign` forwards verify calls to `ssh-keygen`, prints denial reasons escaped and explains a refused session from its certificate; `writ init` writes exactly the documented config. |
+| Clients | `writ sign`'s display neutralizes control sequences; `writ-sign` forwards verify calls to `ssh-keygen`, prints denial reasons escaped and explains a refused session from its certificate; `writ init` writes exactly the documented config (`writes_exactly_the_documented_config`), in wrapper mode through the environment after the caller's own entries; in `writ_init.rs`, the operator's git (key, email, remotes) untouched beside `writ git`, a rebase signed again, `--undo` restoring the config exactly. |
 | Integration | `crates/writ-integration`: each milestone's acceptance scenarios with the real binaries and local tools. |
 | End to end | A test forge (Forgejo or Gitea in Docker) for upstream: the M4+ acceptance scenarios scripted. Not part of `make test` (needs Docker): `make e2e`. |
 
 The integration scenarios (`crates/writ-integration/tests/`) run the real `git` and `ssh`
 against an in-process gateway (`gateway_git.rs`; `signed_commits.rs` for signing, every
-denial with the reason git prints), the real `writd` binary with the real `writ`
+denial with the reason git prints), the real `writd` in repos wired by `writ init`
+(`writ_init.rs`), the real `writd` binary with the real `writ`
 CLI, approver signatures from `ssh-keygen` through a throwaway `ssh-agent` and a fake
 Telegram Bot API (`ticket_flow.rs`), and the OpenSSH tools against `writ-crypto`
 (`interop.rs`). They run the binaries as they ship: `make test` builds them first on their
