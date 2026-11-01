@@ -3914,11 +3914,13 @@ dependencies = [
 name = "writ-integration"
 version = "0.0.0"
 dependencies = [
+ "base64ct",
  "rusqlite",
  "russh",
  "serde_json",
  "tempfile",
  "tokio",
+ "ureq",
  "writ-approval",
  "writ-core",
  "writ-crypto",

@@ -1,4 +1,4 @@
-.PHONY: ci check test test-props test-agent fmt run dev-client hooks
+.PHONY: ci check test test-props test-agent e2e fmt run dev-client hooks
 
 # Lint, format check, dependency directions, source rules, doc links.
 # Each library is also linted alone: the workspace build turns on the `testing` features the
@@ -46,6 +46,11 @@ test-agent:
 	@test -n "$(KEY)" || { echo "usage: make test-agent KEY=<public key .pub> [AGENT=<socket>]"; exit 2; }
 	WRIT_TEST_AGENT_KEY="$(KEY)" SSH_AUTH_SOCK="$(or $(AGENT),$(SSH_AUTH_SOCK))" \
 		WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo test --locked -p writ-integration --test interop -- --ignored --exact your_agent_key_signs_approvals_rust_verifies
+
+# End to end against a real remote: a throwaway Forgejo in Docker (tool/e2e.sh). Not part of
+# `make ci` (it needs Docker).
+e2e:
+	sh tool/e2e.sh
 
 fmt:
 	cargo fmt --all

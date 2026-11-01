@@ -40,7 +40,7 @@ Settle each "Proposed" row when the milestone that needs it starts, and change i
 |---|---|---|
 | `git` | 2.34 on agent hosts (M0 ran 2.54); 2.45 on the daemon host, checked at startup | SSH commit signing (`gpg.format = ssh`); the daemon's mirrors: reftable (2.45), `fetch --porcelain` (2.41) |
 | OpenSSH (`ssh`, `ssh-keygen`) | 8.9 (M0 ran 10.5) | `-Y sign/verify`, certificates, `session-bind` (direct_ssh); the daemon's ssh to upstream (`mirrors.ssh`) |
-| Docker + compose | recent | Detached mode (M8), test remote (M4) |
+| Docker + compose | recent | Detached mode (M8); `make e2e` runs Forgejo `13.0.5` (`codeberg.org/forgejo/forgejo`, pinned in `tool/e2e.sh`) |
 | Secretive | any | v1 approver key (Mac) |
 
 Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versions).

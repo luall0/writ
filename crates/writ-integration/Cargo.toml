@@ -19,11 +19,13 @@ writ-platform = { workspace = true, features = ["testing"] }
 writ-proto.workspace = true
 writ-signer = { workspace = true, features = ["testing"] }
 writ-store = { workspace = true, features = ["testing"] }
+base64ct.workspace = true
 rusqlite.workspace = true
 russh.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+ureq.workspace = true
 
 [lints]
 workspace = true
