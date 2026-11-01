@@ -245,6 +245,8 @@ pub enum ObjectKind {
     Tag,
     Tree,
     Blob,
+    /// Not a git object git signs (a push certificate, anything else).
+    Other,
 }
 
 /// A commit-signing request, as parsed by the daemon from the object bytes.

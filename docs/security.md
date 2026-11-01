@@ -15,7 +15,7 @@ user's go-ahead (hard rule 12).
 | Check | What it enforces | Where |
 |---|---|---|
 | `make ci` | Everything below, as one target: GitHub Actions runs it on Linux for every push and pull request; the `pre-push` hook (`make hooks`) runs it on the Mac | `Makefile`, `.github/workflows/ci.yml`, `tool/git-hooks/pre-push`, `tool/install-hooks.sh` |
-| clippy (`-D warnings`) | No `unwrap`/`expect`/`panic!`, unchecked indexing, slicing or truncating casts outside tests; no unchecked arithmetic in `writ-core`, `writ-crypto`, `writ-proto`; no `unsafe` | `Cargo.toml` `[workspace.lints]`, each crate's `lib.rs` |
+| clippy (`-D warnings`) | No `unwrap`/`expect`/`panic!`, unchecked indexing, slicing or truncating casts outside tests; no unchecked arithmetic in `writ-core`, `writ-crypto`, `writ-proto`, `writ-git`; no `unsafe` | `Cargo.toml` `[workspace.lints]`, each crate's `lib.rs` |
 | `tool/check-rules.py` | A file's test module ends it (so nothing escapes the rules below); no bare `is_err()`/`!success()` in tests, no unmarked sleep in tests, no `if let Ok(… .lock())` that skips work, no relative program path in production code, no unexplained `#[allow]` of a denied lint, no `cfg(target_os)` outside the platform code, no prints in libraries | `make check` |
 | `tool/check-deps.py` | Clients never depend on daemon crates (hard rule 1) | `make check` |
 | `tool/check-features.py` | No `testing` or `dev-keystore` feature in a shipped binary's graph (checks itself on the test crate) | `make check` |

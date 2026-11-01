@@ -100,6 +100,9 @@ crates/
                         KeystoreUnlock, Notifier, Clock), portable implementations, private
                         files, fakes and contract suites (feature `testing`)
   writ-store/           SQLite lease store + ledger, JSONL audit log
+  writ-git/             git objects from an agent's bytes: commits, trailers, trees, the
+                        paths a commit touches, the signed commit's id (M4: mirrors,
+                        quarantine, upstream push)
   writ-gateway/         russh server: git upload/receive-pack, sign, lease commands, the
                         approval API over SSH and HTTPS
   writ-approval/        the approval service: tickets, approvals, refusals, revocations,
@@ -118,7 +121,6 @@ Planned, created by the milestone that needs them:
 ```
 crates/
   writ-signer/          `Signer` trait + backends (M3)
-  writ-git/             commit parsing, pack quarantine, mirrors, upstream push (M3, M4)
   writ-platform-macos/  macOS-only implementations (process chain, kqueue, Secure Enclave; M7)
   writ-platform-linux/  Linux-only implementations (later)
 skill/writ/SKILL.md     the agent skill (M6)
@@ -135,6 +137,8 @@ spikes/                 throwaway spike code, outside the workspace, removed onc
   approval signatures, the pinned TLS), but never on `writ-store`, `writ-signer`,
   `writ-gateway`, `writ-approval`, `writ-platform*` or `writd`. A check they make
   is a convenience; the daemon checks again.
+- `writ-git` is pure (object parsing): it depends on no crate that holds state, keys or the
+  network, and clients never depend on it.
 - Only `writ-signer` and the platform crates know key backends. Every other crate goes
   through the `Signer` trait.
 - The core crates (`writ-core`, `writ-store`, `writ-git`, `writ-gateway`, `writ-approval`)

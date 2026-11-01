@@ -88,7 +88,7 @@ records every commit signed per lease. Use these words in code, logs and docs.
     reached through plain git over SSH or HTTPS).
 11. **Rust:** no `unwrap()` / `expect()` / `panic!`, unchecked indexing, slicing or
     truncating casts outside tests (clippy denies them; `arithmetic_side_effects` too in
-    `writ-core`, `writ-crypto`, `writ-proto`); `thiserror` in library crates, `anyhow` only in
+    `writ-core`, `writ-crypto`, `writ-proto`, `writ-git`); `thiserror` in library crates, `anyhow` only in
     binaries; `unsafe` denied except in a dedicated module with a `SAFETY` comment.
     `writ-core` stays pure (no I/O).
 12. **Every guarantee has a test** that tries to break it ([guarantee tests](docs/testing.md#guarantee-tests)).
