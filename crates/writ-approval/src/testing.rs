@@ -31,7 +31,7 @@ use writ_platform::{Clock, Notifier, SessionWatcher};
 use writ_proto::{ApproveRequest, Decisions, RefuseRequest, RevokeRequest};
 use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, software_signer};
-use writ_store::{AuditBreaker, AuditLog, Store};
+use writ_store::{AuditBreaker, AuditLog, Store, StoreBreaker};
 
 use crate::{Service, ServiceConfig, ServicePlatform};
 
@@ -102,6 +102,7 @@ impl TestServiceBuilder {
         let ca_fingerprint = ca_key.public_key().fingerprint(HashAlg::Sha256);
         let audit_path = dir.join("audit.jsonl");
         let (audit, audit_breaker) = AuditLog::open_breakable(&audit_path).unwrap();
+        let (store, store_breaker) = Store::open_breakable(&dir.join("leases.db")).unwrap();
         let ids: std::collections::BTreeSet<String> = self
             .policy
             .templates()
@@ -121,7 +122,7 @@ impl TestServiceBuilder {
                 max_pending: self.max_pending,
             },
             CertificateAuthority::new(ca_key.clone()),
-            Store::open(&dir.join("leases.db")).unwrap(),
+            store,
             audit,
             ServicePlatform {
                 notifier: self.notifier,
@@ -137,6 +138,7 @@ impl TestServiceBuilder {
             ca_key,
             ca_fingerprint,
             audit_breaker,
+            store_breaker,
             audit_path,
             signer,
         }
@@ -154,6 +156,8 @@ pub struct TestService {
     pub ca_fingerprint: Fingerprint,
     /// Makes the audit log fail, to check that nothing changes without its line.
     pub audit_breaker: AuditBreaker,
+    /// Makes one lease lookup fail, to check what a fault in the middle leaves behind.
+    pub store_breaker: StoreBreaker,
     pub audit_path: PathBuf,
     /// The signer commits are signed with: `set_failing(true)` makes it refuse.
     pub signer: Arc<FailingSigner<SoftwareSigner>>,

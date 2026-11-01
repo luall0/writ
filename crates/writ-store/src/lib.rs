@@ -13,6 +13,8 @@ mod store;
 #[cfg(feature = "testing")]
 pub use audit::{AuditBreaker, looks_secret};
 pub use audit::{AuditEvent, AuditLog, EventKind, MAX_FIELD_CHARS, Outcome};
+#[cfg(feature = "testing")]
+pub use store::StoreBreaker;
 pub use store::{Counter, LedgerEntry, Store};
 
 use writ_core::lease::{LifecycleError, State};

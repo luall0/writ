@@ -654,6 +654,42 @@ fn a_lease_that_cannot_sign_is_refused_before_its_request_is_read() {
 }
 
 #[test]
+fn a_violation_bars_the_certificate_even_when_its_revocation_fails() {
+    // The M3 review's F4: the deny list comes before the lock is released and before the
+    // revocation is recorded. Here recording it fails (its lease lookup): the certificate is
+    // refused all the same, and the next request of the lease with it.
+    let h = Harness::new();
+    let (lease, cert) = h.lease(&(FEATURE.to_owned() + "on_violation: revoke_lease\n"));
+    // Service::sign looks the lease up once; the revocation's lookup fails.
+    h.store_breaker.fail_lease_lookup_after(1);
+    denied(
+        h.sign(
+            &cert,
+            &build("src/a.rs", "me@personal.example", &trailer(&lease)),
+            "omega-code",
+        ),
+        DenyCode::Committer,
+        "not allowed",
+    );
+    assert!(h.service.is_revoked(cert.serial), "on the deny list");
+    assert_eq!(
+        h.service.show(&lease).unwrap().state,
+        State::Active,
+        "the revocation wasn't recorded"
+    );
+    denied(
+        h.sign(
+            &cert,
+            &build("src/a.rs", EMAIL, &trailer(&lease)),
+            "omega-code",
+        ),
+        DenyCode::NotActive,
+        &format!("lease {lease} is revoked"),
+    );
+    assert!(h.ledger(&lease).is_empty());
+}
+
+#[test]
 fn a_template_whose_key_the_signer_lacks_is_a_startup_error() {
     use writ_approval::{Service, ServiceConfig, ServiceError, ServicePlatform};
     use writ_crypto::allowed_signers::AllowedSigner;

@@ -115,8 +115,9 @@ Acceptance:
       revocation completes while a signature is in flight, and that signature is then refused
       with its exact code; approvals, `writ wait` and `writ ls` answer meanwhile.
 - [ ] A violation puts the certificate on the deny list before the lock is released: a second
-      request of the lease waiting on the lock is refused (`not_active`), and a revocation
-      whose recording fails still leaves the certificate refused.
+      request of the lease waiting on the lock is refused (`not_active`). (A revocation whose
+      recording fails already leaves the certificate refused:
+      `a_violation_bars_the_certificate_even_when_its_revocation_fails`, since the review.)
 - [ ] The `Signer` contract suite gains the decorator section: a full queue refuses at once
       with `Busy`; a backend that blocks returns `Timeout`; `list_keys` answers while the
       backend is stuck. The software backend runs it behind a `QueuedSigner`.

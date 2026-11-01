@@ -43,6 +43,24 @@ pub enum Counter {
 /// The lease store and ledger.
 pub struct Store {
     conn: Connection,
+    /// Set by a test to make a lease lookup fail (feature `testing` only).
+    #[cfg(feature = "testing")]
+    breaker: Option<std::sync::Arc<std::sync::atomic::AtomicI64>>,
+}
+
+/// Makes one lease lookup of a [`Store`] fail, to test what a fault in the middle of an
+/// operation leaves behind (feature `testing`).
+#[cfg(feature = "testing")]
+#[derive(Debug, Clone)]
+pub struct StoreBreaker(std::sync::Arc<std::sync::atomic::AtomicI64>);
+
+#[cfg(feature = "testing")]
+impl StoreBreaker {
+    /// The next `succeed` lease lookups work, the one after fails, then they work again.
+    pub fn fail_lease_lookup_after(&self, succeed: u32) {
+        self.0
+            .store(i64::from(succeed), std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Store {
@@ -64,9 +82,22 @@ impl Store {
         Self::init(Connection::open_in_memory()?)
     }
 
+    /// [`Store::open`], with a [`StoreBreaker`] (feature `testing`).
+    #[cfg(feature = "testing")]
+    pub fn open_breakable(path: &Path) -> Result<(Self, StoreBreaker)> {
+        let switch = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1));
+        let mut store = Self::open(path)?;
+        store.breaker = Some(switch.clone());
+        Ok((store, StoreBreaker(switch)))
+    }
+
     fn init(conn: Connection) -> Result<Self> {
         schema::prepare(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            #[cfg(feature = "testing")]
+            breaker: None,
+        })
     }
 
     /// Stores a freshly submitted ticket (`pending`), with the session public key it was
@@ -297,6 +328,21 @@ impl Store {
 
     /// A lease (active or ended) with the terms in force. `None` if `id` is not a lease.
     pub fn lease(&self, id: &TicketId) -> Result<Option<Lease>> {
+        #[cfg(feature = "testing")]
+        if let Some(switch) = &self.breaker {
+            // -1: off; n: n more lookups work; 0: this one fails, then off.
+            let ordering = std::sync::atomic::Ordering::SeqCst;
+            match switch.load(ordering) {
+                0 => {
+                    switch.store(-1, ordering);
+                    return Err(StoreError::Io(std::io::Error::other(
+                        "the store was broken by the test",
+                    )));
+                }
+                n if n > 0 => switch.store(n.saturating_sub(1), ordering),
+                _ => {}
+            }
+        }
         self.conn
             .query_row(&lease_query("l.id = ?1"), [id.as_str()], raw_lease)
             .optional()?
