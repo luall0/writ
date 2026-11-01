@@ -65,7 +65,11 @@ decoded strictly at the edge (`exec/sign.rs`), then, off the async threads:
    strictly by `writ_git::commit` (only the layout git writes, no signature already in it).
 2. Its committer email and `Writ:` trailers (found as git finds them), and its touched paths
    (`writ_git::paths`): every evidence object is read only by the id computed from its bytes,
-   so the agent can leave objects out (the paths are then unknown) but can't change them.
+   so the agent can leave objects out (the paths are then unknown) but can't change them. A
+   commit adding a `.git` entry (in any case, with the characters HFS+ ignores, NTFS's
+   trailing dots and spaces or short name, as git's `verify_path` reads it) is refused
+   whatever `paths_check` says; an agent leaving that tree out hides it, and the push-time
+   `fsck` stops it then (M4).
 3. `Service::sign`, under the service's lock: the single active lease, the policy's
    `decide_sign`, the signature through the `Signer` with the template's `signing_key`, then
    the audit line, the signature counted and the commit recorded in the ledger. The ledger

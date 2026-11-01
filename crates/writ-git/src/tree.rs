@@ -1,6 +1,6 @@
 //! Tree objects (`<mode> <name>\0<raw id>` entries), parsed strictly: an entry git's own
-//! `fsck` would refuse as a path (empty, `.`, `..`, a `/` in the name, a name twice) makes
-//! the whole tree unreadable here.
+//! `fsck` would refuse as a path (empty, `.`, `..`, a `/` in the name, a name twice, `.git` as
+//! any filesystem reads it) makes the whole tree unreadable here.
 
 use std::collections::BTreeMap;
 
@@ -17,6 +17,10 @@ pub enum TreeError {
     Name,
     #[error("a name appears twice")]
     Duplicate,
+    /// An entry some filesystem reads as `.git`: checked out, it would be the repository's
+    /// own directory (hooks, config).
+    #[error("an entry is named .git")]
+    DotGit,
 }
 
 /// What an entry points at.
@@ -63,6 +67,9 @@ pub fn parse(algo: HashAlgo, content: &[u8]) -> Result<Entries, TreeError> {
         if name.is_empty() || name == b"." || name == b".." || name.contains(&b'/') {
             return Err(TreeError::Name);
         }
+        if is_dotgit(name) {
+            return Err(TreeError::DotGit);
+        }
         let (raw, after) = after
             .split_at_checked(algo.raw_len())
             .ok_or(TreeError::CutShort)?;
@@ -82,6 +89,36 @@ pub fn parse(algo: HashAlgo, content: &[u8]) -> Result<Entries, TreeError> {
         rest = after;
     }
     Ok(entries)
+}
+
+/// Characters HFS+ ignores in a name (git's `is_hfs_dotgit`).
+fn hfs_ignored(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200C}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{206A}'..='\u{206F}' | '\u{FEFF}'
+    )
+}
+
+/// Whether some filesystem reads `name` as `.git` (git's `verify_path`): in any case, with
+/// characters HFS+ ignores, with NTFS's trailing dots and spaces, an alternate data stream
+/// (`.git::$INDEX_ALLOCATION`), its short name `git~1`, or behind a backslash (a separator on
+/// NTFS).
+pub fn is_dotgit(name: &[u8]) -> bool {
+    let folded: String = String::from_utf8_lossy(name)
+        .chars()
+        .filter(|&c| !hfs_ignored(c))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    folded.split('\\').any(|component| {
+        if component == "git~1" {
+            return true;
+        }
+        let Some(rest) = component.strip_prefix(".git") else {
+            return false;
+        };
+        let rest = rest.split(':').next().unwrap_or(rest);
+        rest.chars().all(|c| c == '.' || c == ' ')
+    })
 }
 
 #[cfg(test)]
@@ -133,6 +170,40 @@ mod tests {
                 Err(expected.clone()),
                 "{expected}: {:?}",
                 String::from_utf8_lossy(&content)
+            );
+        }
+        for name in [
+            &b".git"[..],
+            b".GIT",
+            b".Git.",
+            b".git ",
+            b".git. .",
+            b".git::$INDEX_ALLOCATION",
+            b"git~1",
+            b"GIT~1",
+            ".g\u{200c}it".as_bytes(),
+            "\u{feff}.git".as_bytes(),
+            b"a\\.git",
+        ] {
+            assert_eq!(
+                parse(HashAlgo::Sha1, &entry("40000", name, 1)),
+                Err(TreeError::DotGit),
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+        for name in [
+            &b".gitignore"[..],
+            b".github",
+            b".gitmodules",
+            b"git",
+            b"x.git",
+            b".git~1",
+        ] {
+            assert!(
+                parse(HashAlgo::Sha1, &entry("100644", name, 1)).is_ok_and(|e| e.len() == 1),
+                "{}",
+                String::from_utf8_lossy(name)
             );
         }
         // A SHA-1 entry read as SHA-256 is cut short.

@@ -9,9 +9,23 @@
 use crate::commit::Commit;
 use crate::object::{ObjectError, ObjectId, ObjectType};
 
-/// The bytes of `commit` with `signature` (the armored text the signing program wrote) in
-/// its signature header, as git builds them.
-pub fn signed_bytes(commit: &Commit, signature: &str) -> Vec<u8> {
+/// Why the signed commit can't be built.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SignedError {
+    /// The armored signature doesn't end its last line: its header would run into the
+    /// message.
+    #[error("the signature doesn't end with a newline")]
+    Unterminated,
+    #[error(transparent)]
+    Object(#[from] ObjectError),
+}
+
+/// The bytes of `commit` with `signature` (the armored text the signing program wrote, every
+/// line ended) in its signature header, as git builds them.
+pub fn signed_bytes(commit: &Commit, signature: &str) -> Result<Vec<u8>, SignedError> {
+    if !signature.ends_with('\n') {
+        return Err(SignedError::Unterminated);
+    }
     let bytes = commit.bytes();
     // Right after the newline that ends the last header (the blank line follows).
     let at = bytes
@@ -25,14 +39,13 @@ pub fn signed_bytes(commit: &Commit, signature: &str) -> Vec<u8> {
         header.push(b' ');
         header.extend_from_slice(line.as_bytes());
     }
-    [headers, &header, rest].concat()
+    Ok([headers, &header, rest].concat())
 }
 
 /// The id of the signed commit.
-pub fn signed_id(commit: &Commit, signature: &str) -> Result<ObjectId, ObjectError> {
-    commit
-        .algo()
-        .hash(ObjectType::Commit, &signed_bytes(commit, signature))
+pub fn signed_id(commit: &Commit, signature: &str) -> Result<ObjectId, SignedError> {
+    let bytes = signed_bytes(commit, signature)?;
+    Ok(commit.algo().hash(ObjectType::Commit, &bytes)?)
 }
 
 #[cfg(test)]
@@ -47,12 +60,30 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        let signed = signed_bytes(&commit, "-----BEGIN X-----\nabc\n-----END X-----\n");
+        let signed = signed_bytes(&commit, "-----BEGIN X-----\nabc\n-----END X-----\n").unwrap();
         assert_eq!(
             String::from_utf8(signed).unwrap(),
             "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n\
              author A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\
              gpgsig -----BEGIN X-----\n abc\n -----END X-----\n\nm\n"
+        );
+    }
+
+    #[test]
+    fn a_signature_must_end_its_last_line() {
+        let commit = Commit::parse(
+            b"tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n\
+              author A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nm\n"
+                .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            signed_bytes(&commit, "-----BEGIN X-----\nabc\n-----END X-----"),
+            Err(SignedError::Unterminated)
+        );
+        assert_eq!(
+            signed_id(&commit, "-----BEGIN X-----\nabc\n-----END X-----"),
+            Err(SignedError::Unterminated)
         );
     }
 }

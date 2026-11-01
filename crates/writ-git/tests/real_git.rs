@@ -308,7 +308,7 @@ fn the_signed_id_is_the_commit_git_writes() {
             let ours = writ_git::signed::signed_id(&buffer, signature).unwrap();
             assert_eq!(ours.as_str(), repo.head(), "{format}");
             assert_eq!(
-                writ_git::signed::signed_bytes(&buffer, signature),
+                writ_git::signed::signed_bytes(&buffer, signature).unwrap(),
                 repo.git_bytes(&["cat-file", "commit", "HEAD"])
             );
         }

@@ -160,12 +160,25 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// The email of an ident line value (`Name <email> 1700000000 +0000`): between its one `<`
-/// and the `>` after it.
+/// and the `>` after it, which a space, the time in seconds and the zone follow.
 fn email(ident: &[u8]) -> Option<&[u8]> {
     let open = ident.iter().position(|&b| b == b'<')?;
     let close = ident.iter().position(|&b| b == b'>')?;
     let count = |c: u8| ident.iter().filter(|&&b| b == c).count();
     if close <= open || count(b'<') != 1 || count(b'>') != 1 {
+        return None;
+    }
+    let tail = ident.get(close.checked_add(1)?..)?.strip_prefix(b" ")?;
+    let space = tail.iter().position(|&b| b == b' ')?;
+    let time = tail.get(..space)?;
+    let zone = tail.get(space.checked_add(1)?..)?;
+    let digits = |s: &[u8]| s.iter().all(u8::is_ascii_digit);
+    let time_ok = !time.is_empty() && time.len() <= 20 && digits(time);
+    let zone_ok = match zone {
+        [sign, rest @ ..] => matches!(sign, b'+' | b'-') && rest.len() == 4 && digits(rest),
+        [] => false,
+    };
+    if !time_ok || !zone_ok {
         return None;
     }
     ident.get(open.checked_add(1)?..close)
@@ -309,6 +322,32 @@ mod tests {
             (
                 commit(&base("").replace("<agent@writ>", ">agent@writ<"), "m"),
                 CommitError::Ident("committer"),
+            ),
+            (
+                commit(&base("").replace(" 1700000000 +0100", ""), "m"),
+                CommitError::Ident("committer"),
+            ),
+            (
+                commit(
+                    &base("").replace("1700000000 +0100", "1700000000 0100"),
+                    "m",
+                ),
+                CommitError::Ident("committer"),
+            ),
+            (
+                commit(&base("").replace("1700000000 +0100", "x +0100"), "m"),
+                CommitError::Ident("committer"),
+            ),
+            (
+                commit(
+                    &base("").replace("1700000000 +0100", "1700000000 +01000"),
+                    "m",
+                ),
+                CommitError::Ident("committer"),
+            ),
+            (
+                commit(&base("").replace("<a@x> 1700000000 +0000", "<a@x>"), "m"),
+                CommitError::Ident("author"),
             ),
             (
                 commit(&base("").replace(TREE, &TREE.to_uppercase()), "m"),

@@ -125,7 +125,7 @@ impl Service {
                 }
             };
         let commit_id = match writ_git::signed::signed_id(commit, &signature)
-            .and_then(|id| id.to_commit_id())
+            .and_then(|id| Ok(id.to_commit_id()?))
         {
             Ok(id) => id,
             Err(e) => {

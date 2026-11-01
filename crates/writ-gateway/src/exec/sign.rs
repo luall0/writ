@@ -12,7 +12,8 @@ use writ_core::names::RepoName;
 use writ_core::policy::{CertIdentity, Denial, DenyCode, ObjectKind, SignRequest};
 use writ_git::Commit;
 use writ_git::object::ObjectType;
-use writ_git::paths::{self, Evidence};
+use writ_git::paths::{self, Evidence, PathsError};
+use writ_git::tree::TreeError;
 use writ_proto::sign::{EvidenceKind, MAX_SIGN_INPUT, SignInput};
 
 use crate::Gateway;
@@ -101,9 +102,18 @@ fn parse(repo: &RepoName, input: SignInput) -> Result<(SignRequest, Option<Commi
             (kind, content)
         }),
     );
-    let touched_paths = paths::touched(&commit, &evidence)
-        .inspect_err(|e| tracing::debug!(error = %e, "the commit's paths are unknown"))
-        .ok();
+    let touched_paths = match paths::touched(&commit, &evidence) {
+        Ok(paths) => Some(paths),
+        // Refused whatever paths_check says: checked out, it would be the repository's own
+        // directory. (Leaving the tree out hides it; the push-time fsck stops it then.)
+        Err(PathsError::Tree(_, TreeError::DotGit)) => {
+            return Err("cannot sign: the commit adds a .git entry to a tree".to_owned());
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "the commit's paths are unknown");
+            None
+        }
+    };
     let request = SignRequest {
         repo: repo.clone(),
         object,
@@ -113,4 +123,43 @@ fn parse(repo: &RepoName, input: SignInput) -> Result<(SignRequest, Option<Commi
         touched_paths,
     };
     Ok((request, Some(commit)))
+}
+
+#[cfg(test)]
+mod tests {
+    use writ_git::HashAlgo;
+
+    use super::*;
+
+    #[test]
+    fn a_dot_git_entry_is_refused_whatever_paths_check_says() {
+        let algo = HashAlgo::Sha1;
+        let blob = algo.hash(ObjectType::Blob, b"x").unwrap();
+        let raw: Vec<u8> = (0..20)
+            .map(|i| u8::from_str_radix(blob.as_str().get(2 * i..2 * i + 2).unwrap(), 16).unwrap())
+            .collect();
+        let tree = |name: &str| {
+            let mut content = format!("100644 {name}\0").into_bytes();
+            content.extend_from_slice(&raw);
+            content
+        };
+        let input = |name: &str| {
+            let content = tree(name);
+            let id = algo.hash(ObjectType::Tree, &content).unwrap();
+            SignInput {
+                object: format!(
+                    "tree {id}\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nm\n"
+                )
+                .into_bytes(),
+                evidence: vec![(EvidenceKind::Tree, content)],
+            }
+        };
+        let repo: RepoName = "demo".parse().unwrap();
+        let (request, _) = parse(&repo, input(".gitignore")).unwrap();
+        assert_eq!(request.touched_paths, Some(vec![".gitignore".to_owned()]));
+        assert_eq!(
+            parse(&repo, input(".GIT")).map(|_| ()),
+            Err("cannot sign: the commit adds a .git entry to a tree".to_owned())
+        );
+    }
 }
