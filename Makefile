@@ -64,7 +64,8 @@ dev-client:
 	@echo "[127.0.0.1]:8443 $$(cargo run --locked -q -p writd --features dev-keystore -- tls-fingerprint dev/writd.yaml)" > dev/data/client/tls_pins
 	@echo "pinned in dev/data/client/known_hosts and dev/data/client/tls_pins; reader key in dev/readers"
 
-# Installs the git hooks (tool/git-hooks): `make ci` before every push.
+# Installs the git hooks (tool/git-hooks) as stubs in .git/hooks: `make ci` before every push.
+# Never through a local core.hooksPath, which would turn off a global one.
 hooks:
-	git config core.hooksPath tool/git-hooks
+	@sh tool/install-hooks.sh
 	@echo "pre-push runs make ci"
