@@ -56,6 +56,13 @@ impl<'a> Push<'a> {
             .unwrap_or(true)
     }
 
+    /// Whether the pre-receive hook the push runs with is in place (an absolute path to a
+    /// file: `Gateway::start` refuses a relative state directory).
+    pub(super) fn hook_in_place(&self) -> bool {
+        let hook = self.gateway.shared.hooks_dir.join("pre-receive");
+        hook.is_absolute() && hook.is_file()
+    }
+
     /// Registers the push under a new random token.
     pub(super) fn register(gateway: &'a Gateway, context: PushContext) -> Result<Self, String> {
         let token = writ_crypto::keys::random_hex(16)

@@ -140,6 +140,15 @@ impl Mirrors {
         signer: Arc<dyn Signer>,
     ) -> Result<Self> {
         check_git_version().await?;
+        // git and ssh resolve relative paths from wherever they run: only absolute ones.
+        for (what, path) in [("root", &config.root), ("run_dir", &config.run_dir)] {
+            if !path.is_absolute() {
+                return Err(MirrorError::Config(format!(
+                    "{what} {} must be an absolute path",
+                    path.display()
+                )));
+            }
+        }
         check_program(&config.ssh, "ssh")?;
         check_program(&config.relay, "the relay")?;
         let private = |path: &Path| {

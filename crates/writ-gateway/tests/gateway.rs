@@ -954,3 +954,54 @@ async fn a_sign_request_that_isnt_one_is_refused_and_logged() {
     assert_eq!(denied[3]["code"], "repo");
     assert_eq!(denied[4]["code"], "repo");
 }
+
+#[tokio::test]
+async fn relative_paths_are_refused_at_start() {
+    // git looks a relative hooks path up inside the repository it runs in, finds no hook, and
+    // takes the push unchecked: the gateway never starts on one.
+    let dir = tempfile::tempdir().unwrap();
+    let test = TestServiceBuilder::new(POLICY).build(dir.path());
+    let mirrors = writ_mirror::testing::no_repos(dir.path()).await.unwrap();
+    let config = |state_dir: PathBuf, hook_program: PathBuf| GatewayConfig {
+        host_key: generate(KeyKind::Ed25519).unwrap(),
+        mirrors: mirrors.clone(),
+        hook_program,
+        state_dir,
+        readers: Vec::new(),
+        sign_requests_per_lease: writ_gateway::DEFAULT_SIGN_REQUESTS_PER_LEASE,
+    };
+    for (state, hook, what) in [
+        (
+            "run",
+            "/usr/bin/false",
+            "state_dir run must be an absolute path",
+        ),
+        (
+            dir.path().join("run").to_str().unwrap(),
+            "writd",
+            "hook_program writd must be an absolute path",
+        ),
+    ] {
+        let started = Gateway::start(
+            config(PathBuf::from(state), PathBuf::from(hook)),
+            test.service.clone(),
+        )
+        .await;
+        match started {
+            Err(writ_gateway::GatewayError::Config(message)) => {
+                assert!(message.contains(what), "{message}")
+            }
+            Err(other) => panic!("expected a configuration error, got {other}"),
+            Ok(_) => panic!("started with a relative {what}"),
+        }
+    }
+    // Both absolute: it starts (the refusals were the paths' doing).
+    assert!(
+        Gateway::start(
+            config(dir.path().join("run"), PathBuf::from("/usr/bin/false")),
+            test.service.clone(),
+        )
+        .await
+        .is_ok()
+    );
+}

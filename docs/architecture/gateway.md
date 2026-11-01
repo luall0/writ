@@ -139,7 +139,13 @@ On a refusal git drops the quarantine and shows the agent `remote: writ: <reason
 violation under `on_violation: revoke_lease` revokes the lease, and its other sessions are
 dropped. A push git refuses before its hook runs (a pack over `receive.maxInputSize`, an
 object `fsck` refuses) is logged by the gateway when `receive-pack` ends: the client sent ref
-updates and no decision was made.
+updates and no decision was made; the mirror is then marked stale, so the next sync prunes
+anything git kept without a decision.
+
+git takes a push with no check at all when it finds no pre-receive hook, so the hook is never
+left to chance: the hooks directory is an absolute path (the gateway refuses to start on a
+relative one: git would look it up inside the repository), and `receive-pack` doesn't start
+for a push whose hook file isn't there.
 
 ## The daemon's git
 

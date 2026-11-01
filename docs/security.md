@@ -240,6 +240,10 @@ with a test:
 
 ## Subprocesses
 
+- **Paths handed to git are absolute**: git resolves a relative one from wherever it runs (a
+  relative `core.hooksPath` is looked up inside the repository, finds no hook, and the push
+  goes through unchecked). `writd.yaml`'s paths are made absolute when it is read, and the
+  gateway and the mirrors refuse relative directories.
 - **By absolute path**, or a `// PATH: <why>` comment saying why `PATH` is trusted there
   (the daemon's own git; the agent host's own tools) (checked). The daemon's ssh is a
   configured absolute path (`mirrors.ssh`), checked at startup to be an executable file.

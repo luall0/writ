@@ -154,6 +154,17 @@ milestone's detail:
   removed); the test says so instead of assuming a refusal.
 - **`AuditEvent::denial` didn't set the result**: the new fetch path logged a denial as
   `allowed`; fixed at its source rather than in each caller.
+- **Found by the user's GitHub check, after the milestone: pushes went unchecked into the mirror
+  when the daemon was started with a relative config path** (`make run`: `dev/writd.yaml`).
+  The state directory stayed relative, so `core.hooksPath` was too; git looks a relative hooks
+  path up inside the repository, found no pre-receive hook, and took the push with none of
+  M4's checks (the upstream push lives in the hook, so nothing reached GitHub; other leases
+  could have fetched the unchecked ref from the mirror until a sync pruned it). Every harness
+  passed absolute paths, so no test saw it. Fixed in layers: `writd.yaml`'s paths made
+  absolute when read; the gateway and the mirrors refuse relative directories; a push whose
+  hook file is missing is refused before `receive-pack` starts
+  (`a_push_is_refused_when_its_hook_is_missing`); a push that ends without a decision marks
+  the mirror stale. The rule is in [security](../security.md#subprocesses).
 - **`writ init --undo` puts values back at the end of the config**: values are equal, their
   order isn't (git config's CLI can't insert); the test fixture orders its entries so the
   comparison stays exact.

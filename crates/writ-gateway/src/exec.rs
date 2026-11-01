@@ -175,6 +175,15 @@ async fn run_git(
         }
         _ => None,
     };
+    // A push runs only with its hook in place: without it, git would take the push with no
+    // check at all (fail closed, whatever happened to the hooks directory).
+    if let Some(push) = &push
+        && !push.hook_in_place()
+    {
+        tracing::error!("the pre-receive hook is missing: pushes are refused");
+        let reason = "internal error: the push hook is missing".to_owned();
+        return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
+    }
     let cmd = match &push {
         Some(push) => push.receive_pack(
             &path,
@@ -194,11 +203,16 @@ async fn run_git(
                 && !push.decided()
             {
                 let reason = format!(
-                    "git refused the push before its checks (exit {}): a pack too large, \
-                     an object fsck refuses, or the client went away",
+                    "the push ended before its checks (exit {}): git refused it (a pack too \
+                     large, an object fsck refuses), or the client went away",
                     bridged.code
                 );
                 refusing.deny(reason, Some(repo)).await;
+                // Whatever git did without a decision, the next fetch or push syncs the mirror
+                // first: a ref upstream doesn't have is pruned.
+                if let Ok(mut guard) = gateway.shared.config.mirrors.lock(repo).await {
+                    guard.mark_stale();
+                }
             }
         }
         Err(reason) => {

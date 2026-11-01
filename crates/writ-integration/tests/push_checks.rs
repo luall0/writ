@@ -193,7 +193,7 @@ fn a_pack_over_max_push_size_is_refused() {
         denied[0]["reason"]
             .as_str()
             .unwrap()
-            .starts_with("git refused the push before its checks"),
+            .starts_with("the push ended before its checks"),
         "{denied:?}"
     );
     // A small one under the same lease goes through.
@@ -262,4 +262,31 @@ fn a_commit_whose_paths_changed_since_signing_is_refused() {
 fn writ_git_digest(paths: &[&str]) -> String {
     let owned: Vec<String> = paths.iter().map(|p| (*p).to_owned()).collect();
     writ_git::paths::digest(&owned)
+}
+
+#[test]
+fn a_push_is_refused_when_its_hook_is_missing() {
+    // Without its pre-receive hook git would take a push with no check at all: the gateway
+    // refuses to run receive-pack then, whatever removed the hook.
+    let (gateway, work) = setup();
+    gateway.commit_signed(&work, "f", "x\n");
+    let hook = gateway.root().join("run/hooks/pre-receive");
+    let saved = fs::read(&hook).unwrap();
+    fs::remove_file(&hook).unwrap();
+    let out = push(&gateway, &work, "HEAD:refs/heads/agent/x");
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("writ: internal error: the push hook is missing"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/agent/x"), None);
+    assert_eq!(gateway.upstream_ref("refs/heads/agent/x"), None);
+    // The hook back: the same push goes through.
+    fs::write(&hook, saved).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
 }

@@ -31,3 +31,43 @@ pub async fn no_repos(dir: &Path) -> Result<Mirrors> {
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn relative_directories_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mirrors = no_repos(dir.path()).await;
+        assert!(mirrors.is_ok(), "absolute: opened");
+        let signer = writ_signer::software::SoftwareSigner::new(Vec::new()).unwrap();
+        let mut config = MirrorConfig {
+            root: PathBuf::from("repos"),
+            run_dir: dir.path().join("mirror"),
+            relay: PathBuf::from("/usr/bin/false"),
+            ssh: PathBuf::from("/usr/bin/ssh"),
+            pinned: PinnedHosts::parse(UNREACHABLE_PIN).unwrap(),
+            fresh_for: Duration::from_secs(1),
+            timeout: Duration::from_secs(10),
+            max_fetch_bytes: 1 << 20,
+        };
+        let signer: Arc<dyn writ_signer::Signer> = Arc::new(signer);
+        let none = BTreeMap::new();
+        let open = |config: MirrorConfig| Mirrors::open(config, &none, signer.clone());
+        match open(config.clone()).await {
+            Err(crate::MirrorError::Config(m)) => {
+                assert!(m.contains("root repos must be an absolute path"), "{m}")
+            }
+            other => panic!("expected a configuration error, got {:?}", other.err()),
+        }
+        config.root = dir.path().join("repos");
+        config.run_dir = PathBuf::from("mirror");
+        match open(config).await {
+            Err(crate::MirrorError::Config(m)) => {
+                assert!(m.contains("run_dir mirror must be an absolute path"), "{m}")
+            }
+            other => panic!("expected a configuration error, got {:?}", other.err()),
+        }
+    }
+}

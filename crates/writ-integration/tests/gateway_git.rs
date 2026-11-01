@@ -125,7 +125,7 @@ fn malformed_objects_never_land() {
         refused.iter().all(|e| e["reason"]
             .as_str()
             .unwrap()
-            .starts_with("git refused the push")),
+            .starts_with("the push ended before its checks")),
         "{refused:?}"
     );
     // A good commit still goes through, on the same connection setup.

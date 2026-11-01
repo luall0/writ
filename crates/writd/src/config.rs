@@ -323,7 +323,13 @@ impl Config {
         let text = writ_platform::fs::read_authority(path, "configuration")?;
         let mut config: Config = writ_core::yaml::parse_yaml(&text)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        let base = path.parent().unwrap_or(Path::new("."));
+        // Absolute: the daemon hands these paths to git, which resolves a relative one from
+        // wherever it runs (a relative `core.hooksPath` is looked up inside the repository,
+        // where there is no hook, and git then takes the push unchecked).
+        let base = std::path::absolute(path.parent().unwrap_or(Path::new("."))).map_err(|e| {
+            anyhow::anyhow!("{}: cannot resolve its directory: {e}", path.display())
+        })?;
+        let base = base.as_path();
         let resolve = |p: &mut PathBuf| {
             if p.is_relative() {
                 *p = base.join(&*p);
@@ -480,6 +486,32 @@ mod tests {
         ] {
             let error = format!("{:#}", with(yaml).unwrap_err());
             assert!(error.contains(expected), "{yaml}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_config_named_by_a_relative_path_gives_absolute_paths() {
+        // `make run` passes `dev/writd.yaml`: every path the daemon hands to git must still
+        // be absolute (a relative hooks path would be looked up inside the repository).
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let name = dir.path().file_name().unwrap().to_owned();
+        std::fs::write(dir.path().join("writd.yaml"), MINIMAL).unwrap();
+        let relative = Path::new(&name).join("writd.yaml");
+        assert!(relative.is_relative());
+        let config = Config::load(&relative).unwrap();
+        for path in [
+            &config.state_dir,
+            &config.policy,
+            &config.approvers,
+            &config.readers,
+            &config.mirrors.known_hosts,
+        ] {
+            assert!(path.is_absolute(), "{}", path.display());
+            assert!(
+                path.starts_with(std::env::current_dir().unwrap()),
+                "{}",
+                path.display()
+            );
         }
     }
 

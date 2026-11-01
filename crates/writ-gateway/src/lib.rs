@@ -131,6 +131,19 @@ impl Gateway {
     pub async fn start(config: GatewayConfig, service: Arc<Service>) -> Result<Self> {
         let sign_slots =
             limits::SignSlots::new(config.sign_requests_per_lease).map_err(GatewayError::Config)?;
+        // git resolves a relative hooks path inside the repository it runs in, finds no hook
+        // there, and takes the push unchecked: only absolute paths.
+        for (what, path) in [
+            ("state_dir", &config.state_dir),
+            ("hook_program", &config.hook_program),
+        ] {
+            if !path.is_absolute() {
+                return Err(GatewayError::Config(format!(
+                    "{what} {} must be an absolute path",
+                    path.display()
+                )));
+            }
+        }
         writ_platform::fs::create_private_dir(&config.state_dir)?;
         let hooks_dir = config.state_dir.join("hooks");
         write_hook_script(&hooks_dir, &config.hook_program)?;
