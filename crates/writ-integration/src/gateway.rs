@@ -17,7 +17,7 @@ use writ_core::net::Sources;
 use writ_core::ticket::Ticket;
 use writ_crypto::ca::{CertificateAuthority, CertificateRequest};
 use writ_crypto::keys::{KeyKind, generate};
-use writ_crypto::ssh_key::{LineEnding, PrivateKey};
+use writ_crypto::ssh_key::{LineEnding, PrivateKey, PublicKey};
 use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_platform::clock::system::SystemClock;
 use writ_platform::testing::FakeAttestor;
@@ -94,7 +94,8 @@ pub struct GitGateway {
     /// The same key as the service's CA, to forge certificates without a lease.
     pub ca: CertificateAuthority,
     pub approver: PrivateKey,
-    pub agent_key: PrivateKey,
+    /// The public key commits are signed with (the template's `signing_key`).
+    pub agent_key: PublicKey,
     /// `ssh://git@…` base URL of the gateway.
     pub url: String,
     /// Extra ssh options to reach it (port or proxy command, known hosts).
@@ -103,6 +104,12 @@ pub struct GitGateway {
 
 impl GitGateway {
     pub fn start(agent_kind: KeyKind, listen: Listen) -> Self {
+        Self::start_with(agent_kind, listen, POLICY)
+    }
+
+    /// With another policy (its templates' `signing_key`s are the signer's keys); the first
+    /// session (`keys/session`) is a lease for [`TICKET`], which must fit it.
+    pub fn start_with(agent_kind: KeyKind, listen: Listen, policy: &str) -> Self {
         crate::tools::require();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -117,20 +124,20 @@ impl GitGateway {
         .unwrap();
 
         let host_key = generate(KeyKind::Ed25519).unwrap();
-        let agent_key = generate(agent_kind).unwrap();
         let host_public = host_key.public_key().to_openssh().unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         // The system clock: russh checks certificate validity against it itself.
-        let test = TestServiceBuilder::new(POLICY)
+        let test = TestServiceBuilder::new(policy)
+            .signer_kind(agent_kind)
             .clock(Arc::new(SystemClock))
             .watcher(Arc::new(NoSessionWatcher::new()))
             .build(root);
         let (service, approver, ca) = (test.service.clone(), test.approver.clone(), test.ca());
+        let agent_key = test.signing_key("agent-01");
         let config = GatewayConfig {
             host_key,
             repos_root: root.join("repos"),
-            signing_key: agent_key.clone(),
             hook_program: bin("writd"),
             state_dir: root.join("run"),
             // No approval listener here: the service is driven directly.
@@ -205,11 +212,16 @@ impl GitGateway {
     /// A lease for a fresh session key, signed by the approver: writes `keys/<name>` and
     /// `keys/<name>-cert.pub`, returns the lease id.
     pub fn session(&self, name: &str) -> TicketId {
+        self.session_with(name, TICKET)
+    }
+
+    /// The same, for the ticket `ticket` (YAML, as an agent writes it).
+    pub fn session_with(&self, name: &str, ticket: &str) -> TicketId {
         let key = generate(KeyKind::Ed25519).unwrap();
         let facts = CallerFacts::default();
         let submitted = self
             .service
-            .submit(key.public_key(), TICKET.as_bytes(), &facts)
+            .submit(key.public_key(), ticket.as_bytes(), &facts)
             .unwrap();
         let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
         self.service
@@ -309,8 +321,41 @@ impl GitGateway {
     }
 
     pub fn git(&self, cwd: &Path, args: &[&str]) -> Output {
-        let key = self.root().join("keys/session");
+        self.git_as("session", cwd, args)
+    }
+
+    /// git with the session `keys/<name>`.
+    pub fn git_as(&self, name: &str, cwd: &Path, args: &[&str]) -> Output {
+        let key = self.root().join("keys").join(name);
         self.git_with(&self.ssh_command(&key, true), cwd, args)
+    }
+
+    /// Wires a clone for signing as `writ init` would, with the harness's SSH command (from
+    /// `GIT_SSH_COMMAND`): `writ.url`, `writ.repo`, the `writ-sign` shim and the daemon's
+    /// signing key, trusted by `allowed_signers` for `git verify-commit`.
+    pub fn wire_signing(&self, work: &Path) {
+        let agent_public = self.agent_key.to_openssh().unwrap();
+        let allowed = self.root().join("allowed_signers");
+        fs::write(&allowed, format!("agent@writ {agent_public}\n")).unwrap();
+        let shim = writ_sign();
+        for (key, value) in [
+            ("gpg.format", "ssh"),
+            ("gpg.ssh.program", shim.to_str().unwrap()),
+            ("user.signingkey", &format!("key::{agent_public}")),
+            ("gpg.ssh.allowedSignersFile", allowed.to_str().unwrap()),
+            ("writ.url", &self.url),
+            ("writ.repo", "demo"),
+        ] {
+            self.git_ok(work, &["config", key, value]);
+        }
+    }
+
+    /// The ledger, read from the service's database.
+    pub fn ledger(&self, lease: &TicketId) -> Vec<writ_store::LedgerEntry> {
+        writ_store::Store::open(&self.root().join("leases.db"))
+            .unwrap()
+            .ledger_for_lease(lease)
+            .unwrap()
     }
 
     pub fn git_ok(&self, cwd: &Path, args: &[&str]) -> String {

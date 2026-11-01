@@ -6,6 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+writ-core.workspace = true
+writ-crypto.workspace = true
+writ-proto.workspace = true
 anyhow.workspace = true
 
 [lints]

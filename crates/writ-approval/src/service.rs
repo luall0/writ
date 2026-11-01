@@ -1,14 +1,16 @@
 //! [`Service`]: see the crate documentation. Its methods are grouped by caller: [`agent`]
 //! (submit, wait), [`approver`] (list, show, approve, refuse, revoke), [`gateway`]
-//! (authorize, what the gateway denied) and [`sweep`] (time: expiry, exhaustion, ended
-//! sessions).
+//! (authorize, what the gateway denied), [`sign`] (commit signatures) and [`sweep`] (time:
+//! expiry, exhaustion, ended sessions).
 
 mod agent;
 mod approver;
 mod gateway;
+mod sign;
 mod sweep;
 
 pub use gateway::GatewayDenial;
+pub use sign::{SignedCommit, Signing};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
@@ -27,6 +29,7 @@ use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::ssh_key::{HashAlg, PublicKey};
 use writ_platform::{Clock, Notification, Notifier, SessionWatcher, WatchHandle};
 use writ_proto::{Decisions, Info};
+use writ_signer::Signer;
 use writ_store::{AuditEvent, AuditLog, Outcome, Store};
 
 use crate::ServiceError;
@@ -70,6 +73,8 @@ pub struct ServiceConfig {
 /// The platform implementations the service uses.
 pub struct ServicePlatform {
     pub notifier: Arc<dyn Notifier>,
+    /// Holds the keys commits are signed with (each template's `signing_key`).
+    pub signer: Arc<dyn Signer>,
     pub watcher: Arc<dyn SessionWatcher>,
     pub clock: Arc<dyn Clock>,
 }
@@ -93,6 +98,7 @@ pub struct Service {
     dropped: Arc<AtomicU64>,
     watcher: Arc<dyn SessionWatcher>,
     clock: Arc<dyn Clock>,
+    signer: Arc<dyn Signer>,
     me: Weak<Service>,
 }
 
@@ -176,6 +182,29 @@ fn canonical_text(ticket: &Ticket) -> Result<String, ServiceError> {
     String::from_utf8(bytes).map_err(internal)
 }
 
+/// Every template's signing key is one the signer holds: checked at startup, so a missing
+/// key is a configuration error, not a denial found later on a commit.
+fn signing_keys_exist(policy: &PolicyConfig, signer: &dyn Signer) -> Result<(), ServiceError> {
+    let held: HashSet<_> = signer
+        .list_keys()
+        .map_err(internal)?
+        .into_iter()
+        .map(|key| key.id)
+        .collect();
+    for (name, template) in policy.templates() {
+        if let Some(id) = template
+            .signing_key
+            .as_ref()
+            .filter(|id| !held.contains(*id))
+        {
+            return Err(ServiceError::Config(format!(
+                "template {name} signs with key {id}, which the signer doesn't hold"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn fingerprint(key: &PublicKey) -> Result<KeyFingerprint, ServiceError> {
     key.fingerprint(HashAlg::Sha256)
         .to_string()
@@ -208,6 +237,7 @@ impl Service {
                     .map(|l| l.cert_serial),
             );
         }
+        signing_keys_exist(&config.policy, &*platform.signer)?;
         let dropped = Arc::new(AtomicU64::new(0));
         let outbox = notification_worker(platform.notifier, dropped.clone()).map_err(internal)?;
         let approver_keys = config.approvers.iter().map(|a| a.key.clone()).collect();
@@ -231,6 +261,7 @@ impl Service {
             dropped,
             watcher: platform.watcher,
             clock: platform.clock,
+            signer: platform.signer,
             me: me.clone(),
         });
         service.sweep();
@@ -403,6 +434,15 @@ impl Service {
     /// Serials whose lease just ended (revoked, expired, exhausted): drop their sessions.
     pub fn subscribe_revocations(&self) -> broadcast::Receiver<u64> {
         self.revocations.subscribe()
+    }
+
+    /// The public key (OpenSSH text) commits are signed with under `ticket`, if it signs.
+    fn signing_public_key(&self, ticket: &Ticket) -> Result<Option<String>, ServiceError> {
+        let Some(id) = &ticket.scope.signing_key else {
+            return Ok(None);
+        };
+        let key = writ_signer::public_key(&*self.signer, id).map_err(internal)?;
+        key.to_openssh().map(Some).map_err(internal)
     }
 
     /// How this daemon takes decisions.

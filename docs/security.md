@@ -66,7 +66,9 @@ reader with `decisions: open`). Each has a bound, a strict parser, and a hostile
 | TLS client certificates | HTTPS peers | TLS 1.3, a reader's Ed25519 key, handshake signature checked | `writ_crypto::tls::ReaderVerifier` |
 | Pre-receive input | git, on an agent's push | 1 MiB, cut-short refused, every line an exact update | `writ-gateway/src/hook` |
 | Pushed objects | agents | `fsckObjects`, `receive.maxInputSize` = the lease's `max_push_size` | git, configured by the gateway |
-| Commit bytes to sign | lease holders | `MAX_SIGN_INPUT` | `writ-gateway/src/exec/sign.rs` (M3: parsed by the daemon) |
+| Sign requests (`writ-sign git <repo>`) | lease holders | the exec line's grammar (namespace `git`, a registry name); the `writ-sign/1` body: 16 MiB (`MAX_SIGN_INPUT`), at most 100,000 evidence objects, sizes in plain decimal, nothing after the last object | `writ_proto::sign::SignInput`, `writ-gateway/src/exec/sign.rs` |
+| The commit to sign | lease holders | only the layout git writes (`tree`, `parent`s, `author`, `committer`, `encoding`, `mergetag`), no signature already in it, 100 parents; trailers found as git finds them | `writ_git::commit`, `writ_git::trailers` |
+| Evidence objects (parent commits, trees) | lease holders | read only by the id computed from their bytes (SHA-1 with collision detection, or SHA-256); trees parsed strictly (no empty, `.`, `..` or `/` name, no name twice); the walk visits at most 1,000,000 entries, lists 100,000 paths, follows 256 levels | `writ_git::paths`, `writ_git::tree` |
 | Caller facts | the kernel, via the attestor | never what the client claims | `CallerAttestor` implementations |
 | Config and authority files | the operator | owner, mode, no link, regular file, 1 MiB | `writ_platform::fs::read_authority` |
 
@@ -147,7 +149,8 @@ A new input is added here in the same change.
 ## What people see
 
 - **Agent and daemon text is escaped** before any terminal: `display::clean`/`clean_lines`
-  turn every hidden character into a visible `\u{…}`. The hidden set is generated from
+  turn every hidden character into a visible `\u{…}`, and `writ-sign` does the same to what
+  the daemon and ssh say (a denial lists the commit's paths, which can hold anything). The hidden set is generated from
   Unicode categories (`tool/gen-hidden-chars.py`), never written by hand.
 - **The trusted display is bounded** (40 lines per agent field unless `--full`) and **ends
   on the enforced terms**, right above the prompt. Lists are quoted so two different lists
@@ -175,6 +178,9 @@ with a test:
 - Certificates: critical options refused.
 - git: a clean environment, no system or global config, the gateway's own hooks,
   `fsckObjects`, a size cap.
+- Git objects an agent sends: ids computed here (SHA-1 with collision detection, never a plain
+  SHA-1), only the commit layout git writes, trailers found as git finds them (checked
+  against `git interpret-trailers`, `trailers_are_git_s`).
 
 ## Subprocesses
 

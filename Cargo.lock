@@ -3811,8 +3811,10 @@ dependencies = [
  "writ-approval",
  "writ-core",
  "writ-crypto",
+ "writ-git",
  "writ-platform",
  "writ-proto",
+ "writ-signer",
  "writ-store",
 ]
 
@@ -3887,8 +3889,10 @@ dependencies = [
  "writ-approval",
  "writ-core",
  "writ-crypto",
+ "writ-git",
  "writ-platform",
  "writ-proto",
+ "writ-signer",
  "writ-store",
 ]
 
@@ -3950,6 +3954,9 @@ name = "writ-sign"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "writ-core",
+ "writ-crypto",
+ "writ-proto",
 ]
 
 [[package]]
@@ -3994,6 +4001,7 @@ dependencies = [
  "writ-gateway",
  "writ-platform",
  "writ-proto",
+ "writ-signer",
  "writ-store",
  "zeroize",
 ]

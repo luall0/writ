@@ -18,11 +18,20 @@ pub struct Submitted {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status", deny_unknown_fields)]
 pub enum Decision {
-    /// Signed: the lease (canonical bytes of the terms in force, narrowed if I narrowed them)
-    /// and the session certificate (OpenSSH text).
-    Active { lease: String, certificate: String },
-    /// A signed amendment, now the terms of its lease (the certificate doesn't change).
-    Applied { lease: String },
+    /// Signed: the lease (canonical bytes of the terms in force, narrowed if I narrowed them),
+    /// the session certificate (OpenSSH text), and the public key commits are signed with
+    /// (OpenSSH text) when the lease allows `commit_sign`.
+    Active {
+        lease: String,
+        certificate: String,
+        signing_key: Option<String>,
+    },
+    /// A signed amendment, now the terms of its lease (the certificate doesn't change), with
+    /// the signing key of its terms.
+    Applied {
+        lease: String,
+        signing_key: Option<String>,
+    },
     /// Refused, with feedback, and who signed the refusal: `None` when nobody did (a daemon
     /// with `decisions: open`), so the feedback may not be the approver's.
     Refused {

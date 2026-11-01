@@ -8,7 +8,7 @@
 //!
 //! | Listener | Authenticated as | Commands |
 //! |---|---|---|
-//! | agents | a session certificate | git, `writ-sign git` (gateway) |
+//! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::Wait`] |
 //! | approvals | any key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`] |
 //!
@@ -23,6 +23,7 @@
 mod command;
 mod envelope;
 mod messages;
+pub mod sign;
 
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};

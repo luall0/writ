@@ -9,6 +9,7 @@ publish.workspace = true
 writ-approval.workspace = true
 writ-core.workspace = true
 writ-crypto.workspace = true
+writ-git.workspace = true
 writ-platform.workspace = true
 writ-proto.workspace = true
 http-body-util.workspace = true
@@ -26,6 +27,7 @@ tokio-rustls.workspace = true
 writ-approval = { workspace = true, features = ["testing"] }
 rustls.workspace = true
 writ-platform = { workspace = true, features = ["testing"] }
+writ-signer = { workspace = true, features = ["testing"] }
 writ-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -5,7 +5,8 @@ The `writ` binary, for both sides.
 ## What it does
 
 - **The agent's side** (`agent`): `writ request` (a new session key, the ticket submitted, the
-  decision awaited) and `writ wait`; session files in `~/.writ/sessions/<lease>/` (`session`).
+  decision awaited) and `writ wait`; session files in `~/.writ/sessions/<lease>/` (`session`),
+  the daemon's signing key among them (`signing_key.pub`).
 - **The approver's side** (`approver`): `writ ls`, `writ sign` (the trusted display, narrowing
   flags, a signature by the approval key through the approver's agent), `writ refuse`,
   `writ revoke`. `approver/signer` runs `ssh-keygen -Y sign` with only the approval key's

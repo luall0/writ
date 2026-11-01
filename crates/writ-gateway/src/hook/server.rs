@@ -256,7 +256,6 @@ ticket:
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
                     repos_root: dir.path().join("repos"),
-                    signing_key: generate(KeyKind::Ed25519).unwrap(),
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
@@ -339,7 +338,6 @@ ticket:
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
                     repos_root: dir.path().join("repos"),
-                    signing_key: generate(KeyKind::Ed25519).unwrap(),
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
@@ -437,7 +435,6 @@ templates:
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
                     repos_root: dir.path().join("repos"),
-                    signing_key: generate(KeyKind::Ed25519).unwrap(),
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),

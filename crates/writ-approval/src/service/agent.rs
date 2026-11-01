@@ -302,12 +302,14 @@ impl Service {
                 Decision::Active {
                     lease: canonical_text(&lease.ticket)?,
                     certificate,
+                    signing_key: self.signing_public_key(&lease.ticket)?,
                 }
             }
             State::Applied => {
                 let lease = lease_terms(&inner, record.ticket.lease_id())?;
                 Decision::Applied {
                     lease: canonical_text(&lease.ticket)?,
+                    signing_key: self.signing_public_key(&lease.ticket)?,
                 }
             }
             State::Refused => Decision::Refused {

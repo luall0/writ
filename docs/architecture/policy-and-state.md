@@ -22,7 +22,7 @@ Every request → find the single lease matching the caller's certificate → al
 | Function | Input facts | Checks, in order |
 |---|---|---|
 | `resolve_lease` | Certificate key id, serial, session key fingerprint | Exactly one lease matches all three |
-| `decide_sign` | Repo, object kind, committer email, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree or blob), committer email in the lease, the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
+| `decide_sign` | Repo, object kind, committer email, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object), committer email in the lease, the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
 | `decide_push` | Repo, push mode, ref updates (old, new, fast-forward), new commits with their ledger entries, pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, not protected, a branch, within the lease's branches, no force push or deletion unless allowed; every new commit in the ledger for this lease and repo; size; `max_pushes`; rate |
 | `decide_fetch` | Repo | Common checks, rate |
 
@@ -47,6 +47,14 @@ approval service verified the SSHSIG), `lease::due_transition` (expired or exhau
 The daemon takes counts through the store's atomic `consume` after a decision allows, so two
 concurrent requests can't both take the last signature.
 
+A signature (`Service::sign`, from the gateway's `writ-sign git <repo>`) runs under the
+service's state lock: the single active lease, `decide_sign`, the signature through the
+`Signer`, then the `sign` audit line (lease, certificate, repo, commit, committer, warnings),
+`consume` and the ledger entry. The signature leaves the daemon only after all three; a
+signer or audit-log failure signs nothing, counts nothing and records nothing. A violation
+under `on_violation: revoke_lease` revokes the lease (a `revoke` line with the violation as
+its reason).
+
 ## Lease store + ledger (SQLite)
 
 - Leases and their state ([lifecycle](../lease-model.md#lifecycle))
@@ -61,7 +69,7 @@ Tables (`writ_store::Store`, schema version in `PRAGMA user_version`, now 2; an 
 |---|---|
 | `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with (schema 2). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, and `current_ticket`: the row whose terms are in force (itself, or the last applied amendment), and the certificate issued for it (schema 2) |
 | `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s) |
-| `ledger` | `(commit, lease, repo)` → signer key id, time. Signing the same commit again for the same lease and repo keeps the first entry |
+| `ledger` | `(commit, lease, repo)` → signer key id, time. The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry |
 
 - Stored tickets are decoded strictly (canonical bytes only), and an approval must be complete
   and under `writ-approval`: a record edited by hand fails closed.

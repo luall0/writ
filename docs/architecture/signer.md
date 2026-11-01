@@ -28,6 +28,15 @@ only for the bytes signed, and an unknown key is refused by name. The software b
 (`writ_signer::software::SoftwareSigner`) holds Ed25519 and P-256 keys moved in by whoever
 loaded them, wiped on drop, never printed.
 
+The daemon signs commits with `sshsig`, in git's namespace `git`, with the key the lease's
+template names (`signing_key`): templates' key ids are the signer's, and the daemon refuses to
+start when a template names a key its signer doesn't hold. Until the sealed keystore (M5),
+the development keystore (`keystore: { dev: … }`, refused by release builds) generates one
+Ed25519 key per template `signing_key` on first start, in `<keys>/signing/<id>` (0600), and
+hands them to the software backend. The lease's public key reaches the agent with the grant
+(`signing_key.pub` in its session), for git's `user.signingkey` and for `allowed_signers`
+when verifying.
+
 | Backend | Algorithms | Key exportable? | Notes |
 |---|---|---|---|
 | **Software** (v1) | ed25519, P-256 | While unsealed, by root on the host | Encrypted keystore at rest, sealed start |

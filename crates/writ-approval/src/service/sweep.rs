@@ -6,6 +6,16 @@ use writ_core::units::Timestamp;
 use writ_store::{AuditEvent, EventKind, Outcome};
 
 use super::{Inner, Service, internal};
+
+/// When the sessions of a lease the daemon revokes are dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Announce {
+    /// At once.
+    Now,
+    /// By the caller, which has the request that caused it to answer first (the agent reads
+    /// why); the certificate is refused meanwhile.
+    Later,
+}
 use crate::ServiceError;
 
 impl Service {
@@ -81,7 +91,7 @@ impl Service {
     pub(super) fn session_ended(&self, lease_id: &TicketId, serial: u64) {
         self.bar_serial(serial);
         let reason = "the session's process ended";
-        if let Err(e) = self.revoke_by_daemon(lease_id, reason) {
+        if let Err(e) = self.revoke_by_daemon(lease_id, reason, Announce::Now) {
             tracing::error!(
                 lease = %lease_id,
                 error = %e.detail(),
@@ -92,8 +102,15 @@ impl Service {
         self.changed.notify_waiters();
     }
 
-    /// Revokes an active lease on the daemon's own decision (`reason` in its audit line).
-    fn revoke_by_daemon(&self, lease_id: &TicketId, reason: &str) -> Result<(), ServiceError> {
+    /// Revokes an active lease on the daemon's own decision (`reason` in its audit line). Its
+    /// certificate goes on the deny list first; its open sessions are dropped now, or by the
+    /// caller once it has answered ([`Announce::Later`]).
+    pub(super) fn revoke_by_daemon(
+        &self,
+        lease_id: &TicketId,
+        reason: &str,
+        announce: Announce,
+    ) -> Result<(), ServiceError> {
         let now = self.now()?;
         let mut inner = self.lock()?;
         let Some(lease) = inner.store.lease(lease_id).map_err(internal)? else {
@@ -115,7 +132,10 @@ impl Service {
                 .map_err(internal)
         });
         drop(inner);
-        self.deny_serial(lease.cert_serial);
+        match announce {
+            Announce::Now => self.deny_serial(lease.cert_serial),
+            Announce::Later => self.bar_serial(lease.cert_serial),
+        }
         done
     }
 
@@ -132,7 +152,8 @@ impl Service {
                 }
                 Ok(None) => {}
                 Err(reason) => {
-                    self.revoke_by_daemon(&lease.id, &format!("after a restart: {reason}"))?;
+                    let reason = format!("after a restart: {reason}");
+                    self.revoke_by_daemon(&lease.id, &reason, Announce::Now)?;
                 }
             }
         }

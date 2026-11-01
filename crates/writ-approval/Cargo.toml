@@ -8,13 +8,15 @@ publish.workspace = true
 [features]
 # Test support (a service on the fakes, approver signatures), for the tests of this crate
 # and of others.
-testing = ["dep:serde_json", "writ-platform/testing", "writ-store/testing"]
+testing = ["dep:serde_json", "writ-platform/testing", "writ-store/testing", "writ-signer/testing"]
 
 [dependencies]
 writ-core.workspace = true
 writ-crypto.workspace = true
+writ-git.workspace = true
 writ-platform.workspace = true
 writ-proto.workspace = true
+writ-signer.workspace = true
 writ-store.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -26,6 +28,7 @@ tracing.workspace = true
 writ-approval = { workspace = true, features = ["testing"] }
 writ-platform = { workspace = true, features = ["testing"] }
 writ-store = { workspace = true, features = ["testing"] }
+writ-signer = { workspace = true, features = ["testing"] }
 serde_json.workspace = true
 tempfile.workspace = true
 

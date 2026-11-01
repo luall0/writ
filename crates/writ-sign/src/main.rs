@@ -1,13 +1,22 @@
 //! `writ-sign`: git's `gpg.ssh.program` on agent hosts.
 //!
-//! `-Y sign` sends the object to the daemon (`writ-sign <namespace>` over the gateway) and
-//! writes the signature where git expects it. Everything else (`-Y verify`,
-//! `-Y find-principals`, …) is the real `ssh-keygen`'s job.
+//! `-Y sign` sends the object to the daemon (`writ-sign git <repo>` over the gateway), with
+//! the objects it needs to see which paths the commit touches ([`evidence`]), and writes the
+//! signature where git expects it. Everything else (`-Y verify`, `-Y find-principals`, …) is
+//! the real `ssh-keygen`'s job.
 //!
-//! The daemon is found from git's configuration: `writ.url` (`ssh://git@host:port`) and the
-//! SSH command git itself uses (`GIT_SSH_COMMAND`, then `core.sshCommand`). There is no
-//! fallback to a plain `ssh`: it would offer the user's own keys and agent and trust their
-//! `known_hosts`, so without a configured command nothing is sent.
+//! The daemon is found from git's configuration: `writ.url` (`ssh://git@host:port`), the repo
+//! the commit is for (`writ.repo`, a registry name), and the SSH command git itself uses
+//! (`GIT_SSH_COMMAND`, then `core.sshCommand`). There is no fallback to a plain `ssh`: it
+//! would offer the user's own keys and agent and trust their `known_hosts`, so without a
+//! configured command nothing is sent.
+//!
+//! The daemon's refusal reaches the agent's terminal (git prints this program's stderr when
+//! it fails), escaped like any text from elsewhere ([`clean`]). When ssh itself fails, the
+//! session certificate says why the daemon may have turned it away ([`diagnose`]).
+
+mod diagnose;
+mod evidence;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -16,6 +25,11 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context, bail};
+use writ_core::text::is_hidden_char;
+use writ_proto::sign::SignInput;
+
+/// ssh's exit status when it fails itself (connection, authentication).
+const SSH_FAILED: i32 = 255;
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -115,12 +129,21 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
     let object = std::fs::read(&request.file)
         .with_context(|| format!("cannot read {}", request.file.display()))?;
     let url = git_config("writ.url")
-        .context("git config writ.url is not set: the repo is not set up for Writ")?;
+        .context("git config writ.url is not set: the repo is not set up for Writ (writ init)")?;
     let (destination, port) = parse_url(&url)?;
+    let repo = git_config("writ.repo")
+        .context("git config writ.repo is not set: the repo is not set up for Writ (writ init)")?;
+    if repo.starts_with('-') || repo.contains(char::is_whitespace) {
+        bail!("invalid writ.repo {repo:?}");
+    }
     let ssh = ssh_command(
         std::env::var("GIT_SSH_COMMAND").ok(),
         git_config("core.sshCommand"),
     )?;
+    // Best effort: without it the daemon can't check the paths (refused under
+    // `paths_check: deny`), but the commit may still be signed.
+    let evidence = evidence::gather(&object).unwrap_or_default();
+    let body = SignInput { object, evidence }.encode();
 
     // PATH: the agent host's sh runs the configured core.sshCommand, as git itself would.
     let mut cmd = Command::new("sh");
@@ -129,20 +152,32 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
         cmd.arg("-p").arg(port);
     }
     cmd.arg(destination)
-        .arg(format!("writ-sign {}", request.namespace))
+        .arg(format!("writ-sign {} {repo}", request.namespace))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().context("cannot run ssh")?;
-    child
-        .stdin
-        .take()
-        .context("no stdin")?
-        .write_all(&object)
-        .context("cannot send the object to the daemon")?;
+    let mut stdin = child.stdin.take().context("no stdin")?;
+    // Written from a thread: the daemon may answer (a refusal) before reading it all.
+    let writer = std::thread::spawn(move || stdin.write_all(&body));
     let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!("the daemon refused to sign (see above)");
+    let _ = writer.join();
+    let said = String::from_utf8_lossy(&out.stderr);
+    for line in said.lines() {
+        eprintln!("{}", clean(line));
+    }
+    match out.status.code() {
+        Some(0) => {}
+        Some(SSH_FAILED) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            match diagnose::explain(&ssh, now) {
+                Some(why) => bail!("cannot reach the daemon with this session: {why}"),
+                None => bail!("cannot reach the daemon (see above)"),
+            }
+        }
+        _ => bail!("the daemon refused to sign (see above)"),
     }
     check_signature(&out.stdout)?;
     let mut sig_path = request.file.into_os_string();
@@ -154,6 +189,22 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// Text from elsewhere (the daemon, ssh) for the terminal: every hidden character as
+/// `\u{…}`, and `\` as `\\`.
+fn clean(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_hidden_char(c) {
+            out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else if c == '\\' {
+            out.push_str("\\\\");
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The SSH command to reach the daemon: `GIT_SSH_COMMAND`, then `core.sshCommand`. Never a
@@ -271,6 +322,15 @@ mod tests {
                 error_of(ssh_command(env, config)).starts_with("no SSH command for the daemon"),
             );
         }
+    }
+
+    #[test]
+    fn text_from_elsewhere_is_escaped() {
+        assert_eq!(
+            clean("writ: files outside expected_paths: a\u{1b}[2Jb, c\\d"),
+            "writ: files outside expected_paths: a\\u{1b}[2Jb, c\\\\d"
+        );
+        assert_eq!(clean("plain"), "plain");
     }
 
     #[test]

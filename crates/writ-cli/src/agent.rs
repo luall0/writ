@@ -5,7 +5,8 @@
 //! authenticated with that key (so the daemon knows the submitter holds it), and waits for
 //! the decision. Once signed, the session lives in `<home>/sessions/<lease>/`: `key`,
 //! `key.pub`, `key-cert.pub` (the certificate, valid until the lease expires), `ticket.json`
-//! (as submitted) and `lease.json` (as signed: narrowed if the approver narrowed it);
+//! (as submitted), `lease.json` (as signed: narrowed if the approver narrowed it) and
+//! `signing_key.pub` (the daemon's key for the lease's commits, when it signs);
 //! `<home>/sessions/current` points at it.
 
 use std::fs;
@@ -143,7 +144,11 @@ async fn decide(
         .call(&Command::Wait { id: id.clone() }, b"")
         .await??;
     match decision {
-        Decision::Active { lease, certificate } => {
+        Decision::Active {
+            lease,
+            certificate,
+            signing_key,
+        } => {
             let terms = Ticket::from_canonical(lease.as_bytes())
                 .context("the daemon sent a lease that isn't canonical")?;
             write_file(
@@ -151,6 +156,7 @@ async fn decide(
                 certificate.trim_end().to_owned() + "\n",
             )?;
             write_file(&dir.join("lease.json"), &lease)?;
+            write_signing_key(dir, signing_key.as_deref())?;
             point_current(paths, id)?;
             println!(
                 "Lease {id} granted until {}: {} on {}, branches {}.",
@@ -163,10 +169,11 @@ async fn decide(
             println!("Session files: {}", dir.display());
             Ok(Exit::Ok)
         }
-        Decision::Applied { lease } => {
+        Decision::Applied { lease, signing_key } => {
             let terms = Ticket::from_canonical(lease.as_bytes())
                 .context("the daemon sent a lease that isn't canonical")?;
             write_file(&dir.join("lease.json"), &lease)?;
+            write_signing_key(dir, signing_key.as_deref())?;
             println!(
                 "Amendment {id} signed: lease {} now runs under its terms (until {}).",
                 terms.lease_id(),
@@ -206,6 +213,16 @@ async fn decide(
             Ok(Exit::Ended)
         }
     }
+}
+
+/// `signing_key.pub`: the public key the daemon signs the lease's commits with (git's
+/// `user.signingkey`, and what `allowed_signers` lists to verify them). A key that doesn't
+/// parse is refused rather than written.
+fn write_signing_key(dir: &Path, key: Option<&str>) -> anyhow::Result<()> {
+    let Some(key) = key else { return Ok(()) };
+    let key = writ_crypto::ssh_key::PublicKey::from_openssh(key)
+        .context("the daemon sent a signing key that isn't an SSH public key")?;
+    write_file(&dir.join("signing_key.pub"), key.to_openssh()? + "\n")
 }
 
 fn print_narrowing(submitted: Option<&Ticket>, terms: &Ticket) {

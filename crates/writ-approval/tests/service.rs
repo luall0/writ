@@ -253,10 +253,18 @@ fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
     }
 
     assert_eq!(h.approve(&ticket).unwrap(), State::Active);
-    let Decision::Active { lease, certificate } = h.wait(&ticket.id, &key) else {
+    let Decision::Active {
+        lease,
+        certificate,
+        signing_key,
+    } = h.wait(&ticket.id, &key)
+    else {
         panic!("expected an active lease");
     };
     assert_eq!(Ticket::from_canonical(lease.as_bytes()).unwrap(), ticket);
+    // The public key commits are signed with, for the agent's git config.
+    let expected = h.signing_key("agent-ed25519-01").to_openssh().unwrap();
+    assert_eq!(signing_key.as_deref(), Some(expected.as_str()));
     let cert = Certificate::from_openssh(&certificate).unwrap();
     assert_eq!(cert.key_id(), ticket.id.as_str());
     assert_eq!(cert.public_key(), key.public_key().key_data());
@@ -364,7 +372,10 @@ fn a_narrowed_approval_is_the_lease_and_bounds_the_certificate() {
     h.service
         .approve(&ticket.id, &h.signed(&narrowed), &facts())
         .unwrap();
-    let Decision::Active { lease, certificate } = h.wait(&ticket.id, &key) else {
+    let Decision::Active {
+        lease, certificate, ..
+    } = h.wait(&ticket.id, &key)
+    else {
         panic!("expected an active lease");
     };
     assert_eq!(Ticket::from_canonical(lease.as_bytes()).unwrap(), narrowed);

@@ -1,7 +1,6 @@
 //! The gateway with the real `git` and `ssh`: fetch and push through it, the pre-receive check
-//! (and its audit lines), session certificates (only valid ones from a real lease get in),
-//! commits signed by the daemon through `writ-sign` that `git verify-commit` accepts, and the
-//! same protocol over a Unix socket.
+//! (and its audit lines), session certificates (only valid ones from a real lease get in), and
+//! the same protocol over a Unix socket. Signing is in `signed_commits.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -18,7 +17,7 @@ use std::process::Command;
 
 use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::keys::{KeyKind, generate};
-use writ_integration::gateway::{GitGateway, Listen, now, writ_sign};
+use writ_integration::gateway::{GitGateway, Listen, now};
 use writ_integration::{audit_events, stderr};
 
 #[test]
@@ -202,68 +201,6 @@ fn only_valid_session_certificates_get_in() {
         "{}",
         stderr(&out)
     );
-}
-
-fn signed_commit_verifies(agent_kind: KeyKind) {
-    let gateway = GitGateway::start(agent_kind, Listen::Tcp);
-    gateway.seed_repo();
-    let work = gateway.clone("work");
-    let agent_public = gateway.agent_key.public_key().to_openssh().unwrap();
-    let allowed = gateway.root().join("allowed_signers");
-    fs::write(&allowed, format!("agent@writ {agent_public}\n")).unwrap();
-    let shim = writ_sign();
-    for (key, value) in [
-        ("gpg.format", "ssh"),
-        ("gpg.ssh.program", shim.to_str().unwrap()),
-        ("user.signingkey", &format!("key::{agent_public}")),
-        ("gpg.ssh.allowedSignersFile", allowed.to_str().unwrap()),
-        ("writ.url", &gateway.url),
-    ] {
-        gateway.git_ok(&work, &["config", key, value]);
-    }
-
-    gateway.git_ok(
-        &work,
-        &["commit", "-q", "-S", "--allow-empty", "-m", "signed"],
-    );
-    let out = gateway.git(&work, &["verify-commit", "HEAD"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("Good \"git\" signature for agent@writ"),
-        "{}",
-        stderr(&out)
-    );
-
-    // Signed commits push like any other.
-    gateway.git_ok(
-        &work,
-        &["push", "-q", "origin", "HEAD:refs/heads/agent/signed"],
-    );
-
-    // No valid certificate, no signature.
-    let leases = gateway.service.list(false).unwrap();
-    gateway.revoke(&leases.tickets[0].id);
-    let out = gateway.git(
-        &work,
-        &["commit", "-q", "-S", "--allow-empty", "-m", "refused"],
-    );
-    // git's "fatal" exit when the signing program fails.
-    assert_eq!(out.status.code(), Some(128));
-    assert!(
-        stderr(&out).contains("writ-sign: the daemon refused to sign"),
-        "{}",
-        stderr(&out)
-    );
-}
-
-#[test]
-fn ed25519_commits_signed_by_the_daemon_verify_with_git() {
-    signed_commit_verifies(KeyKind::Ed25519);
-}
-
-#[test]
-fn p256_commits_signed_by_the_daemon_verify_with_git() {
-    signed_commit_verifies(KeyKind::P256);
 }
 
 #[test]

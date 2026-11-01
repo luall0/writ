@@ -21,8 +21,8 @@ pub(crate) enum LeaseCommand {
     UploadPack { repo: RepoName },
     /// `git-receive-pack '<repo>.git'`: push.
     ReceivePack { repo: RepoName },
-    /// `writ-sign <namespace>`: sign the object sent on stdin.
-    Sign { namespace: String },
+    /// `writ-sign git <repo>`: sign the commit sent on stdin, for a repo of the lease.
+    Sign { namespace: String, repo: RepoName },
 }
 
 impl LeaseCommand {
@@ -60,9 +60,17 @@ impl Command {
             "git-receive-pack" => LeaseCommand::ReceivePack {
                 repo: repo_name(unquote(arg)?)?,
             },
-            "writ-sign" if arg == "git" => LeaseCommand::Sign {
-                namespace: arg.to_owned(),
-            },
+            "writ-sign" => {
+                // The namespace git signs commits in, then a registry name (never a path).
+                let (namespace, repo) = arg.split_once(' ')?;
+                if namespace != "git" {
+                    return None;
+                }
+                LeaseCommand::Sign {
+                    namespace: namespace.to_owned(),
+                    repo: repo.parse().ok()?,
+                }
+            }
             _ => return None,
         };
         Some(Self::Lease(command))
@@ -107,9 +115,10 @@ mod tests {
             Some(Command::Lease(LeaseCommand::ReceivePack { repo: demo }))
         );
         assert_eq!(
-            Command::parse(b"writ-sign git"),
+            Command::parse(b"writ-sign git demo"),
             Some(Command::Lease(LeaseCommand::Sign {
-                namespace: "git".into()
+                namespace: "git".into(),
+                repo: "demo".parse().unwrap(),
             }))
         );
         assert_eq!(
@@ -133,7 +142,12 @@ mod tests {
             b"git-upload-pack 'demo.git.git'",
             b"git-upload-pack '.git'",
             b"git-upload-pack 'de mo.git'",
-            b"writ-sign writ-approval",
+            b"writ-sign writ-approval demo",
+            b"writ-sign git",
+            b"writ-sign git ../demo",
+            b"writ-sign git demo extra",
+            b"writ-sign git 'demo'",
+            b"writ-sign git -demo",
             b"writ ls -l",
             b"writ request extra",
             b"git-upload-pack",

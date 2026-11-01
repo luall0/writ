@@ -14,7 +14,9 @@ approval API over HTTPS.
   authentication; the listener's allowed sources.
 - **The agent and approval commands** (`api`): the same over SSH and HTTPS (`https`).
 - **Lease holders' commands** (`exec`): `git upload-pack` / `receive-pack` on the lease's repos
-  (`exec/git`, with a clean environment) and `writ-sign` (`exec/sign`).
+  (`exec/git`, with a clean environment) and `writ-sign git <repo>` (`exec/sign`: the body
+  decoded, the commit and its touched paths parsed with `writ-git`, then the approval
+  service's `sign`).
 - **The pre-receive check** (`hook`): git's hook (`hook/client`, run by git as
   `writd hook pre-receive`) asks the daemon (`hook/server`) about the ref updates.
 - Open sessions dropped when their lease ends.
@@ -25,12 +27,12 @@ Every refusal it makes on its own is logged before the client is told.
 
 - Transport, protocol and dispatch. Lease decisions are the approval service's (and
   `writ-core`'s); the gateway never decides policy itself.
-- Until M3 and M4: signing uses a key in memory, and pushes are checked only against the
-  repo's protected refs.
+- Until M4: pushes are checked only against the repo's protected refs.
 
 ## Depends on
 
-`writ-approval`, `writ-core`, `writ-crypto`, `writ-platform` (the traits), `writ-proto`.
+`writ-approval`, `writ-core`, `writ-crypto`, `writ-git`, `writ-platform` (the traits),
+`writ-proto`.
 
 ## Docs
 

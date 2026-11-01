@@ -29,6 +29,7 @@ use writ_crypto::readers::{self, Reader};
 use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_platform::clock::system::SystemClock;
+use writ_signer::software::SoftwareSigner;
 use writ_store::{AuditLog, Store};
 
 use crate::config::Config;
@@ -69,16 +70,21 @@ fn main() -> ExitCode {
 
 fn host_key(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
+    let (policy, _) = load_policy(&config)?;
     println!(
         "{}",
-        keystore::keys(&config)?.host.public_key().to_openssh()?
+        keystore::keys(&config, &policy)?
+            .host
+            .public_key()
+            .to_openssh()?
     );
     Ok(())
 }
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
-    println!("{}", keystore::keys(&config)?.tls.fingerprint());
+    let (policy, _) = load_policy(&config)?;
+    println!("{}", keystore::keys(&config, &policy)?.tls.fingerprint());
     Ok(())
 }
 
@@ -202,7 +208,8 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let (policy, approvers) = load_policy(&config)?;
     let readers = load_readers(&config)?;
     one_key_one_purpose(&approvers, &readers)?;
-    let keys = keystore::keys(&config)?;
+    let keys = keystore::keys(&config, &policy)?;
+    let signer = Arc::new(SoftwareSigner::new(keys.signing)?);
     keystore::private_dir(&config.state_dir)?;
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
@@ -225,6 +232,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
             audit,
             ServicePlatform {
                 notifier: platform.notifier.clone(),
+                signer,
                 watcher: platform.watcher.clone(),
                 clock: Arc::new(SystemClock),
             },
@@ -235,7 +243,6 @@ fn run(path: &Path) -> anyhow::Result<()> {
             GatewayConfig {
                 host_key: keys.host,
                 repos_root: repos,
-                signing_key: keys.agent,
                 hook_program: std::env::current_exe()?,
                 state_dir: config.state_dir.join("run"),
                 readers: readers.clone(),

@@ -51,7 +51,8 @@ session key and runs `writ request` (the ticket file on stdin); the key it authe
 becomes `subject.session_key`. It then runs `writ wait <id>` on the same connection, which
 returns once I decide: the lease (canonical bytes) and the certificate, the feedback, or
 `expired` / `revoked`. Only that session key can wait on the ticket. The session lands in
-`~/.writ/sessions/<lease>/` (`key`, `key.pub`, `key-cert.pub`, `ticket.json`, `lease.json`),
+`~/.writ/sessions/<lease>/` (`key`, `key.pub`, `key-cert.pub`, `ticket.json`, `lease.json`,
+and `signing_key.pub`, the daemon's key for the lease's commits),
 with `current` pointing at it. `writ request` exits 0 when granted, 3 when rejected by
 policy, 4 when refused, 5 when the ticket expired or was withdrawn. `writ sign` and
 `writ refuse` reach the approval listener ([Approvals](architecture/approvals.md#reaching-the-daemon)).
@@ -65,23 +66,27 @@ sequenceDiagram
   participant D as writd
   participant SG as Signer backend
   G->>S: -Y sign -n git -f key /tmp/obj
-  S->>D: sign(full commit object) over SSH, session cert
-  D->>D: cert → lease, limits, committer email, object type,<br/>Writ trailer (if ticket_link = trailer), paths vs expected_paths
+  S->>S: parent commits + trees that differ (git cat-file, diff-tree)
+  S->>D: writ-sign git <repo>: the commit + those objects, over SSH, session cert
+  D->>D: objects read by the ids computed from their bytes → touched paths
+  D->>D: cert → lease, object type, committer email,<br/>Writ trailer (if ticket_link = trailer), paths vs expected_paths, count, rate
   alt allowed
-    D->>SG: sign(SSHSIG blob)
+    D->>SG: sign(SSHSIG signed data), key = template's signing_key
     SG-->>D: signature
-    D->>D: ledger += commit hash, log SIGN
+    D->>D: log SIGN, count it, ledger += id of the commit with its signature in it
     D-->>S: armored SSHSIG
     S-->>G: /tmp/obj.sig, exit 0
   else denied
-    D->>D: log DENY, notify
+    D->>D: log DENY (on_violation: revoke_lease → revoked)
     D-->>S: reason
-    S-->>G: exit 1 (agent sees reason)
+    S-->>G: exit 1 (git prints the reason)
   end
 ```
 
 Signing happens at **commit time** so commit hashes never change. The ledger links signing to
-the later push.
+the later push: it records the id of the commit git writes once the signature is in it (git
+puts it in a `gpgsig` header, `writ_git::signed`), so the same commit without its signature,
+which has another id, never matches. Denial notifications come with M8.
 
 ## 3. Push
 

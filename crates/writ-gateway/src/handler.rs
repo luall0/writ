@@ -271,10 +271,16 @@ impl russh::server::Handler for Connection {
         let (gateway, facts) = (self.gateway.clone(), self.facts.clone());
         match route(identity, Command::parse(data)) {
             Ok(Route::Lease(cert, command)) => {
-                let git_protocol = self.git_protocol.clone();
+                let request = exec::LeaseRequest {
+                    cert,
+                    facts,
+                    command,
+                    git_protocol: self.git_protocol.clone(),
+                    connection: self.number,
+                };
                 tokio::spawn(async move {
                     let _permit = permit;
-                    exec::run(gateway, cert, facts, command, git_protocol, channel).await;
+                    exec::run(gateway, request, channel).await;
                 });
             }
             Ok(Route::Agent(key, command)) => {
@@ -369,7 +375,7 @@ mod tests {
         let lease_lines = [
             "git-upload-pack 'demo.git'",
             "git-receive-pack 'demo.git'",
-            "writ-sign git",
+            "writ-sign git demo",
         ];
         let agent_lines = ["writ request".to_owned(), format!("writ wait {id}")];
         let approval_lines = [

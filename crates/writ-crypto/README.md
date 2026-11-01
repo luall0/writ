@@ -20,7 +20,7 @@ The cryptography Writ needs, on top of `ssh-key` and `rustls`.
 
 ## Scope
 
-- Primitives and formats only: where keys live is the `Signer`'s business (M3), who may sign
+- Primitives and formats only: where keys live is the `Signer`'s business (`writ-signer`), who may sign
   is the approval service's.
 - Usable by clients (the CLI signs approvals and pins TLS with it) and by the daemon.
 

@@ -10,7 +10,7 @@ clients make the workflow pleasant, the daemon makes it safe.
 | `writ` CLI | `request`, `sign`, `refuse`, `close`, `ls`, `revoke`, `unseal`, `init` (wires a repo's remote, URL rewrite and signing config) |
 | Agent skill | Teaches the agent the ticket workflow: think through the scope before coding, write a ticket (task, plan, repos, branches, limits, template), submit it with `writ request`, wait for my decision; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; when done, `writ close` with a summary. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine |
 | `writ try` | Borrowed from secrets-dispatcher: sets up a temporary local daemon and wires one repo, then restores everything on Ctrl-C. `--dry-run` lists every change first |
-| `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git` command, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, `core.sshCommand`, `ssh`); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen` |
+| `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git <repo>` command for the repo in `writ.repo`, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, then `core.sshCommand`, never a plain `ssh`), with the parent commits and trees the daemon needs to see which paths the commit touches ([Gateway](gateway.md#signing)); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen` |
 | Session agent (optional) | Holds the session key; on a Mac it can live in the Secure Enclave (no Touch ID) so it can't be copied |
 | Harness integration | Omega Code requests a lease when an agent session starts and wires the repo's git config |
 | Approvers | v1: `writ sign` + Secretive. Later: own Mac SE app, iPhone app |
@@ -32,8 +32,12 @@ is pinned; `writd host-key` prints it), `WRIT_TLS_PINS` (default `~/.writ/tls_pi
 for connections: it would offer personal keys to the daemon. Exit statuses: 0 done, 1 error,
 3 rejected by policy, 4 refused, 5 expired or withdrawn, 6 not signed (`writ sign` answered no).
 
-Denial reasons from the daemon reach the agent unchanged: `writ-sign` prints them on stderr
-before exiting 1, and git shows the gateway's rejection message after a push.
+Denial reasons from the daemon reach the agent: `writ-sign` prints them on stderr (escaped,
+like any text from elsewhere) before exiting 1, and git shows them; git shows the gateway's
+rejection message after a push. When ssh itself fails (the gateway refuses an expired, revoked
+or unknown certificate during authentication, where SSH can't say why), `writ-sign` reads the
+session certificate named in the SSH command and says whether there is no lease, an expired
+one, or one the daemon refused: a convenience, the daemon decided already.
 
 ## Repo setup on an agent host
 
@@ -42,7 +46,8 @@ before exiting 1, and git shows the gateway's rejection message after a push.
 [remote "writ"]
     url = ssh://git@writ.home:2222/omega-code
 [writ]
-    url = ssh://git@writ.home:2222      # where writ-sign sends objects to sign
+    url = ssh://git@writ.home:2222      # where writ-sign sends commits to sign
+    repo = omega-code                   # the repo they are for (a registry name)
 [gpg]
     format = ssh
 [gpg "ssh"]

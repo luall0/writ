@@ -50,6 +50,9 @@ pub enum ServiceError {
     /// The audit log can't be written: nothing was done (no change without its line).
     #[error("the audit log can't be written; nothing was done")]
     AuditLog(#[source] StoreError),
+    /// The configuration can't work (found at startup).
+    #[error("invalid configuration: {0}")]
+    Config(String),
     /// A fault inside the daemon (the store, a poisoned lock, the clock). Fails closed.
     #[error("internal error in the daemon (see its log)")]
     Internal(#[source] Box<dyn std::error::Error + Send + Sync>),

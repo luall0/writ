@@ -18,9 +18,9 @@
 //! and the deny list are the approval service's ([`writ_approval::Service`]); when a lease
 //! ends, the gateway drops its open sessions.
 //!
-//! Until M3 and M4, signing uses a key held in memory and pushes are only checked against the
-//! repo's protected refs (the M0 spike), for any active lease that allows the operation and
-//! names the repo.
+//! Commits are signed by the approval service ([`Service::sign`]: the policy, the `Signer`,
+//! the ledger). Until M4, pushes are only checked against the repo's protected refs (the M0
+//! spike), for any active lease that allows the operation and names the repo.
 //!
 //! Every request the gateway turns away on its own is logged through
 //! [`Service::gateway_denied`]; the lease decisions are logged by the service itself.
@@ -54,7 +54,6 @@ use writ_crypto::readers::Reader;
 use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
 use writ_platform::{CallerAttestor, Connection, PeerInfo, Transport};
 
-pub use exec::MAX_SIGN_INPUT;
 pub use hook::run_pre_receive;
 
 pub use writ_proto::{CLIENT_USER, LEASE_USER};
@@ -89,8 +88,6 @@ pub struct GatewayConfig {
     pub host_key: PrivateKey,
     /// Directory holding one bare repository per repo (`<name>.git`).
     pub repos_root: PathBuf,
-    /// Key used for the `writ-sign` command (in memory until the `Signer` interface, M3).
-    pub signing_key: PrivateKey,
     /// Program git's pre-receive hook runs, as `<program> hook pre-receive`.
     pub hook_program: PathBuf,
     /// Private directory for the gateway's own files (hooks, the hook socket).
@@ -360,19 +357,40 @@ impl Gateway {
     /// A reduction of privilege: a poisoned table is still used (its handles are dropped),
     /// never skipped.
     fn drop_sessions(&self, serial: u64) {
+        // No connection has this number: they count up from 1.
+        self.drop_sessions_except(serial, u64::MAX);
+    }
+
+    /// [`Gateway::drop_sessions`], but the connection `keep`: it is answering the request
+    /// that ended the lease, and a disconnect would overtake its answer. It ends when the
+    /// client hangs up; every command it may still send is refused (deny list).
+    pub(crate) fn drop_sessions_except(&self, serial: u64, keep: u64) {
         self.shared
             .pushes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|_, push| push.cert.serial != serial);
-        let handles: Vec<russh::server::Handle> = self
-            .shared
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&serial)
-            .map(|by_connection| by_connection.into_values().collect())
-            .unwrap_or_default();
+        let handles: Vec<russh::server::Handle> = {
+            let mut sessions = self
+                .shared
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let by_connection = sessions.entry(serial).or_default();
+            let dropped: Vec<u64> = by_connection
+                .keys()
+                .copied()
+                .filter(|&c| c != keep)
+                .collect();
+            let handles = dropped
+                .iter()
+                .filter_map(|c| by_connection.remove(c))
+                .collect();
+            if by_connection.is_empty() {
+                sessions.remove(&serial);
+            }
+            handles
+        };
         for handle in handles {
             tokio::spawn(async move {
                 let _ = handle

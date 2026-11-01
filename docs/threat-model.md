@@ -106,22 +106,24 @@ fails if a named test doesn't exist or is ignored, or if a guarantee has no test
 milestone that brings it (`tool/check-guarantees.py`). A new guarantee comes with its tests,
 in the same change ([security conventions](security.md#guarantees-and-their-tests)).
 
-Until M3 and M4, the guarantees on signing and pushing hold in the policy core
-(`writ_core::policy`, tested above) but the daemon doesn't call it yet: the gateway signs any
-object for an active lease that allows `commit_sign`, and accepts a push into its mirror
-checked only against the lease (active, the operation, the repo) and the repo's
-`protected_refs`. Nothing reaches upstream before M4, which wires the push checks; M3 wires
-the signing checks. Each milestone's acceptance list tests its half end to end.
+Since M3 the daemon signs a commit only through the policy (`writ_core::policy::decide_sign`,
+called by `Service::sign`). Until M4, the guarantees on pushing hold in the policy core
+(tested above) but the daemon doesn't call it yet: it accepts a push into its mirror checked
+only against the lease (active, the operation, the repo) and the repo's `protected_refs`.
+Nothing reaches upstream before M4, which wires the push checks.
 
 | Guarantee | Tests that try to break it |
 |---|---|
-| ✅ Agents never get forge credentials or signing keys | `clients_never_see_an_internal_cause`, `errors_and_debug_never_contain_the_token`, `the_audit_log_holds_every_decision_and_no_secret`, `the_log_holds_no_secret` |
-| ✅ No signature or push outside an active, approver-signed lease | `no_signature_or_push_outside_an_active_approver_signed_lease`, `a_ticket_outside_every_template_is_rejected_before_reaching_the_approver`, `a_narrowed_ticket_never_grants_more`, `a_lease_revoked_while_the_pack_comes_in_moves_no_ref` |
+| ✅ Agents never get forge credentials or signing keys | `no_key_in_debug_or_errors`, `clients_never_see_an_internal_cause`, `errors_and_debug_never_contain_the_token`, `the_audit_log_holds_every_decision_and_no_secret`, `the_log_holds_no_secret` |
+| ✅ No signature or push outside an active, approver-signed lease | `no_signature_or_push_outside_an_active_approver_signed_lease`, `a_ticket_outside_every_template_is_rejected_before_reaching_the_approver`, `a_narrowed_ticket_never_grants_more`, `a_lease_revoked_while_the_pack_comes_in_moves_no_ref`, `an_expired_or_revoked_lease_signs_nothing`, `no_lease_an_expired_or_a_revoked_one_says_why` |
 | ✅ Pushes only to allowed repos and refs, no force push unless allowed | `pushes_only_to_allowed_repos_and_refs_no_force_push_unless_allowed`, `destination_ref_and_protected_refs`, `fetch_and_push_through_the_gateway`, `git_runs_only_on_the_lease_repos_and_every_refusal_is_logged` |
 | ✅ Only commits signed under the same lease reach upstream | `only_commits_signed_under_the_same_lease_reach_upstream`, `malformed_objects_never_land` |
-| ✅ Signatures only for allowed committer identities | `signatures_only_for_allowed_committer_identities`, `committer_identity_and_object` |
-| ✅ Leases bounded in time, count and rate; revocable instantly | `leases_bounded_in_time_count_and_rate`, `counters_never_exceed_limits`, `revocation_and_expiry_drop_sessions_and_refuse_the_certificate`, `a_revocation_never_waits_for_the_audit_log`, `a_restart_watches_bound_sessions_again`, `a_lease_revoked_while_the_pack_comes_in_moves_no_ref` |
-| ✅ Everything logged | `the_audit_log_holds_every_decision_and_no_secret`, `nothing_is_granted_without_its_audit_line`, `an_unknown_ticket_is_logged_as_denied`, `git_runs_only_on_the_lease_repos_and_every_refusal_is_logged` |
+| ✅ Signatures only for allowed committer identities | `signatures_only_for_allowed_committer_identities`, `committer_identity_and_object`, `only_what_the_lease_allows_is_signed`, `what_the_commit_says_is_checked` |
+| ✅ Signatures only for commits, linked to their lease (`Writ:` trailer) where the repo asks | `only_what_the_lease_allows_is_signed`, `what_the_commit_says_is_checked`, `a_sign_request_that_isnt_one_is_refused_and_logged`, `trailers_are_git_s` |
+| ✅ With `paths_check: deny`, no signature for a commit touching paths outside `expected_paths`, or whose paths are unknown | `paths_outside_the_ticket_warn_or_deny`, `paths_outside_the_ticket_are_refused_with_paths_check_deny`, `evidence_is_only_what_its_bytes_hash_to`, `touched_paths_are_git_s`, `a_shared_subtree_cannot_blow_up_the_walk` |
+| ✅ The ledger holds the commit as signed: the same commit without its signature has another id | `a_commit_is_signed_counted_and_recorded_as_git_writes_it`, `the_signed_id_is_the_commit_git_writes`, `ed25519_commits_signed_by_the_daemon_verify_and_are_in_the_ledger` |
+| ✅ Leases bounded in time, count and rate; revocable instantly | `leases_bounded_in_time_count_and_rate`, `counters_never_exceed_limits`, `signatures_stop_at_the_count_and_the_rate`, `signatures_stop_at_the_lease_s_count_and_rate`, `a_violation_revokes_only_a_lease_that_asks_for_it`, `revocation_and_expiry_drop_sessions_and_refuse_the_certificate`, `a_revocation_never_waits_for_the_audit_log`, `a_restart_watches_bound_sessions_again`, `a_lease_revoked_while_the_pack_comes_in_moves_no_ref` |
+| ✅ Everything logged | `the_audit_log_holds_every_decision_and_no_secret`, `nothing_is_granted_without_its_audit_line`, `a_failing_signer_or_audit_log_signs_nothing`, `a_sign_request_that_isnt_one_is_refused_and_logged`, `an_unknown_ticket_is_logged_as_denied`, `git_runs_only_on_the_lease_repos_and_every_refusal_is_logged` |
 | ✅ Only reader keys reach the approval API | `only_reader_keys_reach_the_approval_api`, `only_a_reader_key_gets_through_mutual_tls`, `https_turns_away_a_key_not_in_readers` |
 | ✅ Writ never uses personal keys: only the approval key, in its agent | `writ_sign_never_signs_with_a_private_key_file` |
 | ✅ The approver sees what gets signed, whatever the agent wrote | `a_hostile_ticket_shows_nothing_a_terminal_would_act_on`, `agent_text_cannot_push_the_enforced_terms_off_the_screen` |
@@ -140,6 +142,7 @@ the signing checks. Each milestone's acceptance list tests its half end to end.
 | Risk | Accepted because | Mitigation path |
 |---|---|---|
 | Software keys extractable on daemon host | Personal use, homelab | YubiKey / TPM backend |
+| In a SHA-1 repository, the paths a commit touches are read from objects the agent sends, identified by SHA-1 | Each object's id is computed with collision detection (git's own `sha1dc` algorithm), which refuses the known attack constructions; a new chosen-prefix collision would cost a lot and only change what the path check sees, within the lease (the signature's other checks don't use these objects); the ledger's commit id includes the daemon's signature, which the agent can't predict | SHA-256 repositories |
 | Session key theft on an agent host | Bounded by lease scope and TTL | SE-held session keys, source pinning |
 | Daemon is a single point of failure | Fail closed is the right behavior | Local mode as fallback |
 | Upstream keys have account-wide access | Forges don't scope personal SSH keys per repo | Repo registry + `protected_refs` enforced by the daemon; keys on YubiKey; deploy keys or bot accounts later |

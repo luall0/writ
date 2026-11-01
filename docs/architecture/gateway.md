@@ -14,7 +14,7 @@ each listener has a role:
 
 | Listener (role) | SSH user and authentication | Commands |
 |---|---|---|
-| agents | `git` + an **SSH user certificate** issued by the daemon for an active lease ([Identity](identity.md#session-identity)) | **git** `upload-pack` (fetch) and `receive-pack` (push), so a plain `git fetch/push writ` works; **sign** for the `writ-sign` shim (full commit object in, armored SSHSIG out) |
+| agents | `git` + an **SSH user certificate** issued by the daemon for an active lease ([Identity](identity.md#session-identity)) | **git** `upload-pack` (fetch) and `receive-pack` (push), so a plain `git fetch/push writ` works; **sign** for the `writ-sign` shim: `writ-sign git <repo>` (the commit and its evidence in, armored SSHSIG out; [signing](#signing)) |
 | agents | `writ` + a plain key: the session key of a ticket | **lease** commands: `writ request` (submit the ticket on stdin), `writ wait <id>` |
 | approvals (SSH) | any user, a key listed in the daemon's `readers` file (a certificate is refused) | the approval API: `writ info`, `ls`, `show`, `approve`, `refuse`, `revoke` ([Approvals](approvals.md#reaching-the-daemon)) |
 | approvals (HTTPS) | mutual TLS 1.3: the daemon's pinned self-signed certificate, and a client certificate for a key in `readers` | the same API as `GET`/`POST` routes (`crates/writ-gateway/src/https.rs`) |
@@ -39,7 +39,7 @@ a `.git` or `.gitmodules` trick, never lands in a repository other leases fetch 
 A certificate is checked twice: when it is presented (CA, validity, deny list, principal
 `git`, no critical option, then the approval service finds its single active lease and checks the caller,
 logged as `connect`) and before each command, with the operation the command needs (fetch,
-push, commit_sign). When a lease ends (revoked, expired, exhausted), the gateway drops every
+push; a signature is checked whole by `Service::sign`, which logs it once). When a lease ends (revoked, expired, exhausted), the gateway drops every
 open session of its certificate. Replies of `writ` commands are one JSON line on stdout
 (`writ_proto`), with the reason on stderr when they fail.
 
@@ -52,6 +52,29 @@ registry names, with or without `.git` (`omega-code.git`), never paths; git runs
 in the lease's `scope.repos`, at `<repos_root>/<name>.git`. Only `GIT_PROTOCOL` is taken from
 the client's environment, and git runs with a clean environment (`PATH` and `TMPDIR` only),
 without the daemon user's system or global git config.
+
+## Signing
+
+`writ-sign git <repo>` ([Flows § 2](../flows.md#2-signed-commit)): the repo is a registry
+name (git config `writ.repo` on the agent host), the body a `writ-sign/1` request
+(`writ_proto::sign`): the object git asked to sign, then the parent commits and the trees the
+daemon needs to compute the paths the commit touches. Bounded (16 MiB, 100,000 objects) and
+decoded strictly at the edge (`exec/sign.rs`), then, off the async threads:
+
+1. The object's kind from its first bytes (a commit, a tag, anything else); a commit parsed
+   strictly by `writ_git::commit` (only the layout git writes, no signature already in it).
+2. Its committer email and `Writ:` trailers (found as git finds them), and its touched paths
+   (`writ_git::paths`): every evidence object is read only by the id computed from its bytes,
+   so the agent can leave objects out (the paths are then unknown) but can't change them.
+3. `Service::sign`, under the service's lock: the single active lease, the policy's
+   `decide_sign`, the signature through the `Signer` with the template's `signing_key`, then
+   the audit line, the signature counted and the commit recorded in the ledger. The ledger
+   holds the id of the commit git writes with the signature in it (`writ_git::signed`).
+4. The armored SSHSIG on stdout, or `writ: <reason>` on stderr; `writ-sign` shows it to the
+   agent, escaped. A violation under `on_violation: revoke_lease` revokes the lease; its other
+   sessions are dropped at once, this one once the agent has the reason.
+
+An unreadable body or commit is refused by the gateway itself, logged as a `sign` denial.
 
 ## Push checks in git's quarantine
 

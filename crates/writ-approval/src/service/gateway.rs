@@ -71,7 +71,7 @@ impl Service {
         }
     }
 
-    fn lease_for(
+    pub(super) fn lease_for(
         &self,
         inner: &mut Inner,
         cert: &CertIdentity,

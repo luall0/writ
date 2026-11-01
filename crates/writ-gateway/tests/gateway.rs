@@ -117,7 +117,6 @@ impl Daemon {
             GatewayConfig {
                 host_key: generate(KeyKind::Ed25519).unwrap(),
                 repos_root: dir.path().join("repos"),
-                signing_key: generate(KeyKind::Ed25519).unwrap(),
                 hook_program: PathBuf::from("/bin/false"),
                 state_dir: dir.path().join("run"),
                 readers,
@@ -315,7 +314,7 @@ async fn each_identity_runs_only_its_own_commands() {
         "writ ls",
         &format!("writ approve {id}"),
         &format!("writ revoke {id}"),
-        "writ-sign git",
+        "writ-sign git demo",
         "git-upload-pack 'demo.git'",
     ] {
         let (_, err, status) = exec(&session, line, b"").await;
@@ -336,7 +335,7 @@ async fn each_identity_runs_only_its_own_commands() {
     for line in [
         "writ request",
         &format!("writ wait {id}"),
-        "writ-sign git",
+        "writ-sign git demo",
         "sh -c id",
     ] {
         let (_, err, status) = exec(&approver, line, b"").await;
@@ -843,17 +842,110 @@ async fn bodies_are_read_up_to_their_limit_and_refused_past_it() {
     let holder = Daemon::with_cert(&daemon.agents, &key, &cert)
         .await
         .unwrap();
-    let limit = usize::try_from(writ_gateway::MAX_SIGN_INPUT).unwrap();
-    let (out, err, status) = exec(&holder, "writ-sign git", &vec![b'x'; limit]).await;
+    // A commit for this lease, its message padded so the body is exactly `size` bytes.
+    let body = |size: usize| {
+        let commit = |padding: usize| {
+            format!(
+                "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n\
+                 author A <agent@writ> 1 +0000\ncommitter A <agent@writ> 1 +0000\n\n\
+                 Subject\n\n{}\n\nWrit: {}\n",
+                "x".repeat(padding),
+                cert.key_id()
+            )
+        };
+        let encode = |padding: usize| {
+            writ_proto::sign::SignInput {
+                object: commit(padding).into_bytes(),
+                evidence: Vec::new(),
+            }
+            .encode()
+        };
+        let mut padding = size - encode(0).len();
+        while encode(padding).len() > size {
+            padding -= 1;
+        }
+        let body = encode(padding);
+        assert_eq!(body.len(), size, "the fixture is exactly {size} bytes");
+        body
+    };
+    let limit = writ_proto::sign::MAX_SIGN_INPUT;
+    let (out, err, status) = exec(&holder, "writ-sign git demo", &body(limit)).await;
     assert_eq!(status, Some(0), "{err}");
     assert!(
         String::from_utf8(out)
             .unwrap()
             .starts_with("-----BEGIN SSH SIGNATURE-----")
     );
-    let (out, err, status) = exec(&holder, "writ-sign git", &vec![b'x'; limit + 1]).await;
+    let (out, err, status) = exec(&holder, "writ-sign git demo", &body(limit + 1)).await;
     assert_eq!(status, Some(1));
     assert!(out.is_empty());
-    assert!(err.contains("object too large to sign"), "{err}");
+    assert!(err.contains("writ: the request is too large"), "{err}");
     assert_eq!(daemon.audit("sign", "denied").len(), 1);
+}
+
+#[tokio::test]
+async fn a_sign_request_that_isnt_one_is_refused_and_logged() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let (key, cert) = lease(&daemon).await;
+    let holder = Daemon::with_cert(&daemon.agents, &key, &cert)
+        .await
+        .unwrap();
+    let framed = |object: &str| {
+        writ_proto::sign::SignInput {
+            object: object.as_bytes().to_vec(),
+            evidence: Vec::new(),
+        }
+        .encode()
+    };
+    let commit = format!(
+        "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <agent@writ> 1 +0000\n\
+         committer A <agent@writ> 1 +0000\n\nm\n\nWrit: {}\n",
+        cert.key_id()
+    );
+    // The allowed case first, so each refusal below is the check's doing.
+    let (_, err, status) = exec(&holder, "writ-sign git demo", &framed(&commit)).await;
+    assert_eq!(status, Some(0), "{err}");
+    let cases: [(&str, Vec<u8>, &str); 4] = [
+        (
+            "writ-sign git demo",
+            commit.as_bytes().to_vec(),
+            "writ: not a writ-sign/1 request (update writ-sign)",
+        ),
+        (
+            "writ-sign git demo",
+            framed("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nnope\n\nm\n"),
+            "writ: cannot sign: the commit's author header is missing or out of place",
+        ),
+        (
+            "writ-sign git demo",
+            framed(&commit.replace("+0000\n\n", "+0000\ngpgsig x\n\n")),
+            "writ: cannot sign: the commit is signed already",
+        ),
+        (
+            "writ-sign git other",
+            framed(&commit),
+            &format!(
+                "writ: outside ticket {}: repo other not allowed",
+                cert.key_id()
+            ),
+        ),
+    ];
+    for (line, body, reason) in &cases {
+        let (out, err, status) = exec(&holder, line, body).await;
+        assert_eq!(status, Some(1), "{reason}");
+        assert!(out.is_empty());
+        assert!(err.starts_with(reason), "{reason:?} not in {err:?}");
+    }
+    let denied = daemon.audit("sign", "denied");
+    assert_eq!(
+        denied.len(),
+        cases.len(),
+        "every refusal logged: {denied:?}"
+    );
+    assert_eq!(
+        denied[0]["reason"],
+        "not a writ-sign/1 request (update writ-sign)"
+    );
+    assert_eq!(denied[0]["repo"], "demo");
+    assert_eq!(denied[3]["code"], "repo");
 }

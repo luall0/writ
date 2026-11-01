@@ -14,6 +14,9 @@ The approval service: tickets from submission to decision, and the leases they b
 - **The gateway** (`service/gateway`): `authorize` (a session certificate → its single active
   lease, checked for the operation), and `gateway_denied` (what the gateway turned away on its
   own).
+- **Signatures** (`service/sign`): `sign` (the lease, `writ-core`'s decision on the commit, the
+  signature through the `Signer`, then the audit line, the counter and the ledger, all under
+  the state lock; `on_violation: revoke_lease` applied).
 - **Time** (`service/sweep`): expiry, exhaustion, ended sessions.
 
 Every change writes its audit line first; every denial writes one too. Errors are
@@ -31,7 +34,8 @@ signatures, for every crate's tests.
 
 ## Depends on
 
-`writ-core`, `writ-crypto`, `writ-platform` (the traits only), `writ-proto`, `writ-store`.
+`writ-core`, `writ-crypto`, `writ-git` (the signed commit's id), `writ-platform` (the traits
+only), `writ-proto`, `writ-signer` (the trait), `writ-store`.
 
 ## Docs
 

@@ -320,13 +320,20 @@ revives a used-up lease.
 - Signing names the repo the commit is for; the ledger records it, and a push only accepts
   commits signed under the same lease **for the same repo**.
 - `ticket_link` (per repo): with `trailer`, every commit must carry exactly one `Writ: <id>`
-  matching the lease, or signing is refused. The trailer must be in the message **before** signing; the
+  trailer (found the way git finds trailers: the message's last paragraph, the key in any
+  case) matching the lease, or signing is refused. The trailer must be in the message **before** signing; the
   daemon never rewrites commits. With `notes`, the daemon attaches a note under
   `refs/notes/writ` and pushes it upstream. With `ledger_only`, the link exists only in the
   daemon.
 - `paths_check` (per template): compares files touched by each commit with `expected_paths`.
-  `warn` notifies and flags the activity report; `deny` refuses to sign, also when the
-  touched paths can't be computed.
+  `warn` signs and records a warning for the activity report (in the `sign` audit line);
+  `deny` refuses to sign, also when the touched paths can't be computed. The daemon computes
+  them from the parent commits and trees `writ-sign` sends, each read only by the id computed
+  from its bytes: the paths that differ from the parent, every path of a root commit, and for
+  a merge the paths that differ from every parent (what the merge itself changed).
+- `on_violation: revoke_lease`: a violation (an out-of-scope denial, `DenyCode::is_violation`)
+  revokes the lease, with the violation as the revocation's reason. With `deny_and_notify`
+  (the default) the request is only denied.
 - `protected_refs` from the registry always win over any lease. With account-wide upstream
   keys, this registry is the **only** per-repo boundary.
 - Active leases are persisted (SQLite) and reloaded after unsealing; certificates stay valid
