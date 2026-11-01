@@ -162,8 +162,10 @@ echo hi > notes.txt && "$writ" git add notes.txt
 "$writ" git push origin HEAD:refs/heads/agent/manual-check
 ```
 
-**6. Upstream moves.** On GitHub, edit `notes.txt` on `agent/manual-check` in the web editor
-and commit. Then:
+**6. Upstream moves.** On GitHub, on `agent/manual-check`, add a file (`theirs.txt`, any
+content) in the web editor and commit; another file than the agent's, so the rebase below
+applies cleanly (editing `notes.txt` there makes it conflict: resolve it, then `"$writ" git
+add notes.txt && "$writ" git rebase --continue`, which signs the commit again). Then:
 
 ```sh
 echo more >> notes.txt && "$writ" git commit -qam "Second" --trailer "Writ: <lease id>"
