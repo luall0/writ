@@ -71,7 +71,10 @@ template names (`signing_key`): templates' key ids are the signer's, and the dae
 start when a template names a key its signer doesn't hold. Until the sealed keystore (M5),
 the development keystore (`keystore: { dev: … }`, refused by release builds) generates one
 Ed25519 key per template `signing_key` on first start, in `<keys>/signing/<id>` (0600), and
-hands them to the software backend. The lease's public key reaches the agent with the grant
+hands them to the software backend (likewise one key per `upstream_credential` of an `ssh://`
+repo, in `<keys>/upstream/<id>`; an `https://` repo's credential is a token the operator writes
+in `<keys>/tokens/<id>`, never generated, held outside the `Signer` since it doesn't sign:
+[gateway](gateway.md#https-with-a-token)). The lease's public key reaches the agent with the grant
 (`signing_key.pub` in its session), for git's `user.signingkey` and for `allowed_signers`
 when verifying. `writd signing-keys <writd.yaml>` prints each signing key with the templates
 that name it, for the operator to register on an account, so the remote shows the commits as
@@ -121,5 +124,5 @@ unlocked ([Q17](../decisions.md)).
 The unseal sequence is [Flows § 7](../flows.md#7-daemon-startup-sealed). Until unsealed, every
 request fails closed with "daemon sealed".
 
-Secrets held in memory (decrypted keys, the data key, tokens) are zeroized on drop and never
+Secrets held in memory (decrypted keys, the data key, tokens: `UpstreamToken`, `BotToken`) are zeroized on drop and never
 printed through `Debug` or logs.

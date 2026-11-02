@@ -151,9 +151,10 @@ for a push whose hook file isn't there.
 
 Every git the daemon runs (`upload-pack`, `receive-pack`, syncs, reads of a quarantine) goes
 through one builder, `writ_mirror::git::command`: a clean environment (`PATH` and `TMPDIR`
-only), no system or global config, no prompt, ssh as the only transport (`protocol.allow =
-never` but ssh, `GIT_ALLOW_PROTOCOL=ssh`), and every setting Writ relies on stated on the
-command line rather than left to git's defaults:
+only), no system or global config, no prompt, no transport at all (`protocol.allow = never`)
+except the one an upstream operation allows for itself, `ssh` or `https`
+(`protocol.<it>.allow`, `GIT_ALLOW_PROTOCOL=<it>`), and every setting Writ relies on stated on
+the command line rather than left to git's defaults:
 
 - every object checked (`transfer`, `fetch` and `receive.fsckObjects`), and the `fsck`
   messages git only warns about raised to errors where they matter: a tree entry named
@@ -163,7 +164,8 @@ command line rather than left to git's defaults:
 - a fetched pack kept whole (`fetch.unpackLimit = 1`): its objects land only once all are
   checked;
 - no hook but the gateway's own pre-receive (`core.hooksPath`), no submodule, no automatic
-  maintenance, no credential helper, no file system monitor;
+  maintenance, no credential helper (but the daemon's own, for an HTTPS upstream's
+  operation), no file system monitor;
 - `upload-pack` serves only what refs reach (no `allow*SHA1InWant`, no filter);
   `receive-pack` takes no shallow update and no push option, and leaves deletions and force
   pushes to the pre-receive hook.
@@ -191,19 +193,22 @@ network that can be hostile), so what a sync takes from it is checked and bounde
 
 | What | Bound |
 |---|---|
-| Who it is | the host key pinned by the operator in `mirrors.known_hosts` (`StrictHostKeyChecking=yes`, nothing learned) |
-| What it sends | `mirrors.max_fetch` bytes (1 GiB) per sync, counted by the relay (git has no limit of its own on a fetch); `mirrors.timeout` (5 min) for the whole sync, then git, the relay and ssh are killed as a process group |
+| Who it is | `ssh://`: the host key pinned by the operator in `mirrors.known_hosts` (`StrictHostKeyChecking=yes`, nothing learned); `https://`: a certificate for its host from the system's CAs, or from those in `mirrors.ca_certs`, and no redirect |
+| What it sends | `mirrors.max_fetch` bytes (1 GiB) per sync, counted by the relay (`ssh://`) or the proxy (`https://`), git having no limit of its own on a fetch; `mirrors.timeout` (5 min) for the whole sync, then git, the relay and ssh are killed as a process group |
 | Its objects | `fsck`, with the checks above at error level; a pack lands whole or not at all |
 | Its refs | branches and tags only; all or none |
 | Its object format | the registry's: git refuses a remote in another (`mismatched algorithms`) |
-| What it says | an error's text cut to 2,000 characters, hidden characters dropped, one line: it reaches the audit log and an agent's terminal |
+| What it says | an error's text cut to 2,000 characters, hidden characters dropped, one line, an HTTPS upstream's token taken out: it reaches the audit log and an agent's terminal |
 
 ## Upstream
 
-The daemon reaches upstream over **SSH** with the repo's `upstream_credential`, a key in the
-[signer](signer.md) (its own queue: 8 waiting, 10 s each). **HTTPS** with a token from the
-keystore comes in M4.5 ([Q4](../decisions.md)); until then an `https://` upstream is refused at
-startup.
+The repo's `upstream` URL picks the way ([Q4](../decisions.md)): **SSH** (`ssh://`) with the
+repo's `upstream_credential`, a key in the [signer](signer.md) (its own queue: 8 waiting, 10 s
+each), or **HTTPS** (`https://`) with the token of that id from the keystore
+([below](#https-with-a-token)). Either way git does the protocol, and what the daemon gives it
+serves that one operation.
+
+### SSH with a key
 
 - The URL is the registry's `ssh://[user@]host[:port]/path`, read strictly (a plain host
   name or address, no quote, nothing an option could start with).
@@ -219,9 +224,49 @@ startup.
   is removed when the operation ends.
 - What upstream sends goes through the **relay** (`writd upstream-ssh <max bytes> <ssh> …`),
   git's ssh program: it runs ssh and counts the bytes, killing it past the cap.
+- Its sockets live in `<state>/mirror/sockets/`, a private directory; leftovers are removed
+  at startup.
 
 `writd upstream-keys <writd.yaml>` prints each credential's public key and the repos that use
 it, to add on each remote ([operator guide](../guides/operator.md#upstream-keys-and-host-keys)).
+
+### HTTPS with a token
+
+For remotes reached over HTTPS only. A token can't sign: unlike an SSH key it has to reach
+git, so it reaches only the daemon's own git, for one operation, and only for the registry's
+host ([operator guide](../guides/operator.md#https-upstreams-and-tokens)).
+
+- The URL is the registry's `https://[user@]host[:port]/path`, read strictly: a plain host
+  name or address, no password (refused: the token is in the keystore), no query or fragment.
+  Never `http://`.
+- The token (until M5, alone in `<keys>/tokens/<id>`, 0600, written by the operator; 1 to
+  1,024 printable ASCII characters, no space) is read at startup into memory wiped on drop,
+  never printed; a missing or malformed one stops the daemon. One credential id is a key or
+  a token, never both.
+- git gets it from its credential helper, the daemon's own program
+  (`writd upstream-credential <socket> <operation>`), which asks a **credential socket**
+  (`writ_mirror::credential`) served for the operation in a private directory: it answers
+  only `protocol=https` and the registry's host and port, 4 times at most, 8 connections,
+  4 KiB requests within 30 s, and goes when the operation ends. The token reaches git through
+  pipes: never a command line, an environment variable, a URL, the mirror's config or a file.
+  The user name sent with it is the URL's, or `writ` (GitHub, GitLab, Forgejo and Gitea take
+  any name with a token).
+- git reaches upstream only through a **SOCKS5 proxy** (`writ_mirror::proxy`,
+  `http.proxy=socks5h://localhost/<socket>`) served for the operation on a Unix socket in the
+  same private directory: it connects only to the registry's host and port, at most 16
+  times, and counts what upstream sends across all its tunnels against `mirrors.max_fetch`,
+  ending every tunnel past it. TLS stays end to end between git and upstream: the proxy relays
+  ciphertext. git 2.47 or newer (older ones drop the socket path from `http.proxy`).
+- git's HTTPS is stated too: the certificate verified (`http.sslVerify`), against
+  `mirrors.ca_certs` when the operator gave one (an authority file of 1 to 1,000 PEM
+  certificates and nothing else, rewritten by the daemon), the system's CAs otherwise; no
+  redirect (`http.followRedirects=false`: the token never follows one); no extra header,
+  cookie, empty authentication, prompt or other credential helper; an empty private `HOME`
+  (no `.netrc`).
+- Whatever upstream says has the token taken out before it reaches an error: a hostile
+  upstream received it, and could print it back.
+
+### Pushing upstream
 
 Accepted pushes go to upstream with the same credential, from the push's quarantine (git
 reads its objects there), before the mirror's refs move: `git push --atomic` (every ref, or

@@ -28,7 +28,7 @@ an unchanged core.
 | M3.6 | [Review after M3.5](history/m3.6-review-after-m3.5.md) ✅ | The security and code quality review after M3.5 and its fixes: sign requests bounded in time and number, `ops` pruned, the reader key's copies wiped, submission rates for all sources set by the operator with every refusal counted, a panicking signer logged once |
 | M4 | [Gateway push and fetch](history/m4-gateway-push-and-fetch.md) ✅ | Mirrors synced as untrusted input, every push check in the quarantine, upstream over SSH before the mirror moves, `make e2e` |
 | M4.1 | [Real end-to-end scenarios](history/m4.1-real-end-to-end-scenarios.md) ✅ | The operator's and the agent's paths run for real in containers against Forgejo, in CI: every command and flag in a scenario, the guides' commands the ones the pipeline runs, heavy concurrency; `writ prove-key` and verified commits on the account |
-| M4.5 | [HTTPS upstream](#m45--https-upstream) | Upstream with tokens for HTTPS-only remotes |
+| M4.5 | [HTTPS upstream](history/m4.5-https-upstream.md) ✅ | Upstream over HTTPS with a token: the daemon's own credential helper fed by a one-operation socket, a one-operation proxy capping bytes and reaching only the registry's host, the certificate verified, no redirect |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
@@ -107,18 +107,22 @@ The throwaway GitHub repo check is left for the user
 
 ## M4.5 — HTTPS upstream
 
-Upstream over HTTPS with a token, chosen by the repo's `upstream` URL ([Q4](decisions.md)).
-
-Acceptance:
-- [ ] A repo with an `https://` upstream fetches and pushes through the daemon with a token
-      read from the keystore; the token never appears in logs, errors or the mirror's config.
+**Done.** Moved to [history/m4.5-https-upstream.md](history/m4.5-https-upstream.md): an
+`https://` upstream reached with a token from the keystore (`<keys>/tokens/<id>` until M5),
+handed to the daemon's own git for one operation by its credential helper
+(`writd upstream-credential`) and a one-operation socket; git reaching only the registry's
+host through a one-operation SOCKS5 proxy that caps what upstream sends; the certificate
+verified (`mirrors.ca_certs` or the system's), no redirect; the token taken out of upstream's
+words; scenario 13 against Forgejo behind a TLS front.
 
 ## M5 — Sealed start and signed admin changes
 
 [Signer and sealing](architecture/signer.md#startup-and-sealing),
 [Flows § 7](flows.md#7-daemon-startup-sealed). From here, Writ may hold real credentials.
 
-- age keystore with a random data key; software keys and tokens only inside it.
+- age keystore with a random data key; software keys and tokens only inside it (the HTTPS
+  upstreams' tokens, a file the operator writes in the development keystore since M4.5, move
+  into it, and how the operator adds one becomes a signed admin change).
 - `writd` starts sealed and serves only the unseal endpoint; `writ unseal` sends the
   passphrase and an unseal SSHSIG; active leases reloaded after unsealing.
 - Admin changes (approvers, templates, repo registry) only through signed approvals, logged.

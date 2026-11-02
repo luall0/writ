@@ -22,7 +22,7 @@ guarantee below must be covered by at least one test that tries to break it
 |---|---|---|
 | My personal keys | Secretive (Secure Enclave) | **Never touched by Writ** |
 | Agent signing keys | Signer backend | Software (v1), YubiKey / SE / TPM later |
-| Upstream remote credentials | Daemon, behind the signer interface | SSH keys on my remote accounts: **account-wide access**, not per repo. Agents never see them |
+| Upstream remote credentials | Daemon: SSH keys behind the signer interface; HTTPS tokens in the keystore (a `0600` file until M5) | SSH keys on my remote accounts: **account-wide access**, not per repo; tokens as narrow as the remote allows (GitHub: one repository). Agents never see them; a token reaches only the daemon's own git, for one operation |
 | Repo mirrors | Daemon host | Personal projects only for now |
 | Session keys + certificates | Agent hosts | Short-lived, one per lease |
 | Approver keys | Secretive (v1), YubiKey, own SE app later | Sign approvals, admin changes and unsealing; listed in the daemon's `approvers` file |
@@ -99,16 +99,21 @@ must not have passwordless `sudo`.
 
 See [macOS Secure Enclave](architecture/macos-secure-enclave.md).
 
-### 7. Daemon ↔ upstream: a pinned host, bounded input
+### 7. Daemon ↔ upstream: an authenticated host, bounded input
 Upstream is the operator's remote, trusted to hold the repository but not to behave: it can be
 compromised, and the network to it can be hostile. The daemon talks to it only over ssh to a
-host key the operator pinned (nothing learned on first use), authenticates with a key that
-stays in the signer (a one-operation agent socket), and treats what comes back as untrusted
-input: every object checked by `fsck` with the checks Writ relies on at error level, branches
+host key the operator pinned (nothing learned on first use), authenticating with a key that
+stays in the signer (a one-operation agent socket); or over HTTPS to a certificate from the
+system's CAs or the operator's (`mirrors.ca_certs`), with no redirect, reaching nothing but
+the registry's host (a one-operation proxy), authenticating with a token handed to its own git
+for that operation alone (a one-operation credential socket). It treats what comes back as
+untrusted input: every object checked by `fsck` with the checks Writ relies on at error level, branches
 and tags only, all or none, the registry's object format, bounded in bytes and time
 ([Gateway](architecture/gateway.md#repo-mirrors)). What a compromised remote can still do is
 serve agents bad content on its branches (which they would fetch from it anyway) and refuse
-service; it can't reach the daemon's keys, its other mirrors, or a lease.
+service; it can't reach the daemon's keys, its other mirrors, or a lease. An HTTPS remote
+receives its token (that is how it authenticates): what it prints back is taken out of the
+errors agents see.
 
 ## What Writ guarantees
 
@@ -123,7 +128,8 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 
 | Guarantee | Tests that try to break it |
 |---|---|
-| ✅ Agents never get remote credentials or signing keys | `no_key_in_debug_or_errors`, `clients_never_see_an_internal_cause`, `errors_and_debug_never_contain_the_token`, `the_audit_log_holds_every_decision_and_no_secret`, `the_log_holds_no_secret` |
+| ✅ Agents never get remote credentials or signing keys | `no_key_in_debug_or_errors`, `clients_never_see_an_internal_cause`, `errors_and_debug_never_contain_the_token`, `the_audit_log_holds_every_decision_and_no_secret`, `the_log_holds_no_secret`, `a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees`, `an_https_upstream_syncs_with_the_token_which_nothing_else_holds`, `a_token_upstream_refuses_fails_the_sync_without_showing_it`, `a_hostile_upstream_printing_the_token_back_has_it_taken_out`, `a_token_is_one_word_of_printable_ascii_and_never_printed`, `https_repos_take_the_operator_s_token_and_ssh_repos_a_generated_key` |
+| ✅ An HTTPS upstream's token goes only to the registry's host, over TLS it verified, for one operation | `a_certificate_from_a_ca_the_daemon_does_not_trust_is_refused_before_any_token`, `a_redirect_is_refused_and_the_token_never_follows_it`, `it_tunnels_only_to_upstream`, `only_a_request_for_this_upstream_over_https_is_answered`, `the_socket_answers_this_upstream_a_bounded_number_of_times`, `git_reaches_nothing_but_the_one_transport_allowed`, `https_urls_are_read_strictly` |
 | ✅ No signature or push outside an active, approver-signed lease | `no_signature_or_push_outside_an_active_approver_signed_lease`, `a_ticket_outside_every_template_is_rejected_before_reaching_the_approver`, `a_narrowed_ticket_never_grants_more`, `a_lease_revoked_while_the_pack_comes_in_moves_no_ref`, `an_expired_or_revoked_lease_signs_nothing`, `a_lease_that_cannot_sign_is_refused_before_its_request_is_read`, `no_lease_an_expired_or_a_revoked_one_says_why` |
 | ✅ Pushes only to allowed repos and refs, no force push unless allowed | `pushes_only_to_allowed_repos_and_refs_no_force_push_unless_allowed`, `destination_ref_and_protected_refs`, `fetch_and_push_through_the_gateway`, `git_runs_only_on_the_lease_repos_and_every_refusal_is_logged`, `a_branch_outside_the_lease_is_refused`, `a_force_push_or_a_deletion_is_refused_without_force_push`, `a_ref_that_differs_only_in_case_from_one_the_repo_has_is_refused`, `refs_that_differ_only_in_case_are_refused` |
 | ✅ Only commits signed under the same lease reach upstream, with the paths checked at signing | `only_commits_signed_under_the_same_lease_reach_upstream`, `malformed_objects_never_land`, `a_commit_not_signed_under_this_lease_is_refused`, `a_commit_whose_paths_changed_since_signing_is_refused`, `a_pushed_commit_s_paths_must_be_the_ones_checked_at_signing`, `unsigning_gives_back_the_commit_that_was_signed` |
@@ -162,6 +168,8 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | Session key theft on an agent host | Bounded by lease scope and TTL | SE-held session keys, source pinning |
 | Daemon is a single point of failure | Fail closed is the right behavior | Local mode as fallback |
 | Upstream keys have account-wide access | Remotes don't scope personal SSH keys per repo | Repo registry + `protected_refs` enforced by the daemon; keys on YubiKey; deploy keys or bot accounts later |
+| An HTTPS upstream's token leaves the daemon's memory for each operation: its own git (and git's `remote-https`) holds it, through pipes, while the operation runs; a token can't stay in a signer, since it doesn't sign | Only the daemon's user reaches those processes and the private socket directory (boundary 5); one operation, then the socket is gone; never a command line, an environment, a URL or a file; the token as narrow as the remote allows | Prefer `ssh://` upstreams (the key never leaves the signer); M5's process hardening; per-operation tokens where a remote issues them (GitHub App installation tokens, backlog) |
+| An HTTPS upstream is authenticated by the system's CAs unless the operator narrows them (`mirrors.ca_certs`): any public CA, or one compromised, could vouch for a remote and receive the token | The web PKI is how HTTPS remotes identify themselves (and the operator's own `git push` trusts it already); no redirect is followed; git reaches only the registry's host through the daemon's proxy, so a MITM needs a bad certificate for that very host | `mirrors.ca_certs` with only the remote's CA; certificate pinning (open question Q37); `ssh://` upstreams with a pinned host key |
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | Hardware unseal recipients later |
 | `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |

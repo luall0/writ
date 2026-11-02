@@ -105,7 +105,8 @@ crates/
   writ-mirror/          the daemon's repositories: the one hardened `git` builder, the
                         mirrors and their syncs, upstream over ssh (pinned host keys, the
                         credential through a one-operation agent socket, the byte-capping
-                        relay)
+                        relay) or HTTPS (the token through a one-operation credential
+                        socket, the byte-capping proxy)
   writ-signer/          the `Signer` trait, the software backend, its contract suite
   writ-gateway/         russh server: git upload/receive-pack, sign, lease commands, the
                         approval API over SSH and HTTPS

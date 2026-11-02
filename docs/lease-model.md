@@ -32,8 +32,8 @@ repos:
     protected_refs: ["refs/heads/main"]
     push_modes: [gateway, proxy]              # proxy: no mirror, refs and commits still checked
   some-https-only-repo:
-    upstream: https://git.example.org/user/some-repo.git
-    upstream_credential: token-example-01     # token stored in the sealed keystore
+    upstream: https://git.example.org/user/some-repo.git   # https://[user@]host[:port]/path
+    upstream_credential: token-example-01     # a token in the keystore (`<keys>/tokens/<id>` until M5)
     push_modes: [gateway]
   dotfiles:
     upstream: ssh://git@github.com/user/dotfiles.git
@@ -48,6 +48,10 @@ Defaults: `protected_refs: []`, `push_modes: [gateway]`, `ticket_link: trailer`,
 `object_format: sha1` (GitHub and most remotes have only SHA-1 repositories; a commit is
 signed only in its repo's format, so a SHA-256 repository never gets SHA-1 objects signed). The
 `direct_ssh` section is required with the `direct_ssh` push mode and refused without it.
+The `upstream` URL picks how the daemon reaches it: `ssh://` with a key in its signer,
+`https://` with a token from its keystore (never `http://`, never a password in the URL); an
+`upstream_credential` id is a key or a token, never both
+([gateway](architecture/gateway.md#upstream)).
 Repo names are unique ignoring case: a repo's mirror is `<name>.git`, and on a
 case-insensitive file system (local mode's APFS) `Demo` and `demo` would be one directory.
 

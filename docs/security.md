@@ -88,8 +88,13 @@ reader with `decisions: open`). Each has a bound, a strict parser, and a hostile
 | Caller facts | the kernel, via the attestor | never what the client claims | `CallerAttestor` implementations |
 | Config and authority files | the operator | owner, mode, no link, regular file, 1 MiB | `writ_platform::fs::read_authority` |
 | Upstream host keys (`mirrors.known_hosts`) | the operator | an authority file; 1,000 entries; plain host names or `[host]:port` only (no wildcard, negation, hashed name or marker), no DSA key; rewritten by the daemon for ssh, comments dropped | `writ_mirror::known_hosts` |
-| What upstream sends on a sync (refs, objects, its errors) | the remote (semi-trusted: compromised, or behind a hostile network) | the pinned host key; `mirrors.max_fetch` bytes (relay) and `mirrors.timeout` (process group killed); `fsck` with `.git`, `.`, `..`, empty, absolute names and null ids at error level; branches and tags only, all or none; the registry's object format; error text cut to 2,000 characters, hidden characters dropped | git, configured by `writ_mirror::git`; `writ_mirror::relay` |
+| What upstream sends on a sync (refs, objects, its errors) | the remote (semi-trusted: compromised, or behind a hostile network) | the pinned host key (`ssh://`), or a certificate from the trusted CAs and no redirect (`https://`); `mirrors.max_fetch` bytes (relay, or proxy) and `mirrors.timeout` (process group killed); `fsck` with `.git`, `.`, `..`, empty, absolute names and null ids at error level; branches and tags only, all or none; the registry's object format; error text cut to 2,000 characters, hidden characters dropped, the token taken out | git, configured by `writ_mirror::git`; `writ_mirror::relay`; `writ_mirror::proxy` |
 | The upstream agent socket | processes of the daemon's user (a private directory) | one key, 4 connections, 4 signatures, 256 KiB messages, 30 s each, 16 requests a connection; anything but "list keys" and "sign with that key" fails | `writ_mirror::agent` |
+| An HTTPS upstream's token file (`<keys>/tokens/<id>`) | the operator | a secret file (`read_secret`: owner, 0600, no link), 4 KiB; the token 1 to 1,024 printable ASCII characters, no space or newline, surrounding whitespace trimmed; missing or malformed stops the daemon, the error never holding it | `writ_mirror::credential::UpstreamToken`, `writd/src/keystore.rs` |
+| Upstream CA certificates (`mirrors.ca_certs`) | the operator | an authority file (1 MiB); 1 to 1,000 PEM certificates, each a trust anchor webpki reads, no other block; rewritten by the daemon for git | `writ_crypto::tls::check_ca_certs` |
+| The upstream credential socket | processes of the daemon's user (a private directory): the daemon's helper | 8 connections, 4 answers holding the token, a 4 KiB request within 30 s; answered only for `protocol=https` and the registry's host and port, each named once; anything else closed without a word | `writ_mirror::credential` |
+| The upstream proxy (SOCKS5) | the daemon's git (a private directory) | `CONNECT` without authentication only; the registry's host and port only (by name, case aside, or the address the URL names); 16 connections, the handshake within 30 s, upstream reached within 15 s; what upstream sends counted against `mirrors.max_fetch` across every tunnel, all ended past it | `writ_mirror::proxy` |
+| An HTTPS upstream's URL (`upstream`) | the operator (the registry) | `https://[user@]host[:port]/path`: printable ASCII, no quote, a plain host name or address, port 1-65535, the user of `[A-Za-z0-9._~-]`, no password, query or fragment; never `http://` | `writ_mirror::upstream::HttpsUrl` |
 
 A new input is added here in the same change.
 
@@ -167,10 +172,12 @@ A new input is added here in the same change.
 
 ## Files that grant authority, and secrets
 
-- **Authority files** (`writd.yaml`, the policy, `approvers`, `readers`) are read with
+- **Authority files** (`writd.yaml`, the policy, `approvers`, `readers`, `mirrors.known_hosts`,
+  `mirrors.ca_certs`) are read with
   `read_authority`: no link followed, never blocking (a FIFO), a regular file of the
   daemon's user, writable by nobody else.
-- **Secrets** (bot token, wrapped key, keystore keys) are read with `read_secret`: the same,
+- **Secrets** (bot token, wrapped key, keystore keys, upstream tokens) are read with
+  `read_secret`: the same,
   readable by nobody else, bounded, zeroized.
 - **Created files** are private from creation (`0600`, `create_new`, directories `0700` with
   `DirBuilder::mode`), never through a link, never overwritten.
@@ -186,7 +193,10 @@ A new input is added here in the same change.
   library keeps unwiped (rustls, ring) is a residual risk in the threat model.
 - A token travels in clear only to this machine (Telegram's `http` base: loopback only), and
   never through a proxy named in the environment (`proxy(None)`, tested in a child process
-  with every proxy variable set).
+  with every proxy variable set). An upstream token goes only over TLS the daemon's git
+  verified, to the registry's host, through the daemon's own proxy (no `http://`, no
+  redirect), and reaches git only through its credential helper's pipes (never a command
+  line, environment, URL or file).
 - No `log` → `tracing` bridge: libraries such as ureq log URLs that hold tokens
   (`cargo deny` bans the bridges).
 
@@ -225,11 +235,15 @@ with a test:
   P-256); `sk-` approvals need user presence.
 - Certificates: critical options refused.
 - git: one builder for every git the daemon runs (`writ_mirror::git::command`): a clean
-  environment, no system or global config, ssh as the only transport, the gateway's own
-  hooks or none, `fsckObjects` everywhere, packs kept whole, a size cap on pushes and on
+  environment, no system or global config, no transport but the one an upstream operation
+  allows (`git_reaches_nothing_but_the_one_transport_allowed`), the gateway's own hooks or
+  none, `fsckObjects` everywhere, packs kept whole, a size cap on pushes and on
   syncs (`the_daemon_user_s_config_and_environment_never_reach_git`).
 - ssh to upstream: `-F /dev/null` and every option stated (`writ_mirror::upstream`), the
   operator's pinned host keys only.
+- HTTPS to upstream: every setting git relies on stated (`writ_mirror::git::HTTPS_HARDENING`:
+  certificate verified, no redirect, no header, cookie, prompt or other credential helper),
+  the operator's CAs or the system's, an empty `HOME` (no `.netrc`), the daemon's proxy.
 - Git objects an agent sends: ids computed here (SHA-1 with collision detection, never a plain
   SHA-1), only the commit layout git writes, trailers found as git finds them (checked
   against `git interpret-trailers`, `trailers_are_git_s`), and refused at least where git's
