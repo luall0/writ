@@ -159,7 +159,8 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: submissions.in_all` | `submission_rates_per_source_and_in_all_are_the_operator_s` |
 | `writd.yaml: sign_requests.per_lease` | `sign_requests_per_lease_bounds_the_requests_held_at_once` |
 | `writd.yaml: keystore.dev` | `writd_signing_keys_prints_the_key_a_lease_signs_with`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `a_repo_behind_https_is_fetched_and_pushed_with_a_token_nobody_else_sees` |
-| `writd.yaml: unlock.passphrase` | `what_this_build_does_not_have_is_refused_at_start` (read and logged); planned: M5 |
+| `writd.yaml: keystore.sealed.dir` | `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
+| `writd.yaml: keystore.sealed.boot` | `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
 | `writd.yaml: mirrors.known_hosts` | `another_host_key_or_an_unpinned_host_is_refused`, `a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons` |
 | `writd.yaml: mirrors.ca_certs` | `a_certificate_from_a_ca_the_daemon_does_not_trust_is_refused_before_any_token`, `the_operator_s_cas_are_the_only_ones_git_is_given`, `a_certificate_the_system_trusts_is_refused_when_the_operator_named_their_cas` |
 | `writd.yaml: mirrors.git` | `mirrors_git_and_ssh_are_the_programs_named` |

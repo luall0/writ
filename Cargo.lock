@@ -3861,6 +3861,7 @@ version = "0.0.0"
 dependencies = [
  "base64ct",
  "rcgen",
+ "rustix",
  "rustls",
  "rustls-webpki",
  "sha2 0.10.9",
@@ -3972,6 +3973,7 @@ name = "writ-platform"
 version = "0.0.0"
 dependencies = [
  "age",
+ "bech32",
  "rustix",
  "serde_json",
  "tempfile",
@@ -4034,6 +4036,8 @@ dependencies = [
 name = "writd"
 version = "0.0.0"
 dependencies = [
+ "age",
+ "age-core",
  "anyhow",
  "serde",
  "ssh-key",

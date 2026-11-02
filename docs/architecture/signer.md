@@ -113,7 +113,24 @@ the Secure Enclave in local mode, `se-cryptokit`, in
 The daemon always **starts sealed**: it serves nothing except the unseal endpoint until
 unlocked ([Q17](../decisions.md)).
 
-- Software keys are stored in an encrypted keystore (age format), with a random data key.
+- Software keys are stored in an encrypted keystore (age format), with a random data key:
+  the data key is an age X25519 **identity** (`DataKey::identity`), wrapped with the
+  passphrase (age scrypt, `identity.age`), and **each secret is its own age file** encrypted
+  to that identity's recipient (`recipient`, printed by `writd init`): the CA key, the agent
+  signing keys, the upstream credentials, each with its public half beside it (`.pub`, read by
+  the commands that print a key with no unseal, and checked against the key when it is
+  opened). A secret is read only through one seam (`SecretFiles` in `writd`'s keystore: the
+  identities that may open a file), so a hardware recipient (M7.6) is one more identity there,
+  with no format change.
+- **The boot tier** (`keystore.sealed.boot`, its own directory): the keys a sealed daemon
+  authenticates itself with to the client that brings the passphrase, readable at start: the
+  SSH host key and the HTTPS approval API's TLS key and certificate. Without hardware, what a
+  daemon uses before any human input can be rebuilt from its disk; the
+  [threat model](../threat-model.md#residual-risks-v1) says what that leaves.
+- `writd init <writd.yaml>` makes the keystore once, as the daemon's user, into empty
+  directories (a failure leaves them empty): the passphrase twice (at least 12 characters,
+  one line of stdin when it isn't a terminal), the identity, the boot tier, the CA key and
+  every key the policy names. It never makes a token.
 - v1: `writ unseal` on the Mac asks for the keystore passphrase **and** signs an unseal
   approval with Secretive. Both travel over the authenticated channel; the daemon decrypts in
   memory only.

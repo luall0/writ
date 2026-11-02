@@ -16,13 +16,13 @@ use writ_platform::notify::telegram::{BotToken, TelegramNotifier};
 use writ_platform::transport::tcp::TcpTransport;
 use writ_platform::unlock::passphrase::PassphraseUnlock;
 use writ_platform::watch::none::NoSessionWatcher;
-use writ_platform::{CallerAttestor, KeystoreUnlock, Notifier, SessionWatcher, Transport};
+use writ_platform::{CallerAttestor, Notifier, SessionWatcher, Transport};
 use writ_signer::Signer;
 use writ_signer::queue::{QueueConfig, QueuedSigner};
 use writ_signer::software::SoftwareSigner;
 
 use crate::config::{
-    AttestorConfig, Config, NotifierConfig, TransportConfig, UnlockConfig, WatcherConfig,
+    AttestorConfig, Config, NotifierConfig, SealedConfig, TransportConfig, WatcherConfig,
 };
 
 /// A listener and who may connect to it.
@@ -37,8 +37,6 @@ pub struct Platform {
     pub approvals_https: Vec<Listener>,
     pub attestor: Arc<dyn CallerAttestor>,
     pub watcher: Arc<dyn SessionWatcher>,
-    /// Built now, used by the sealed start (M5).
-    pub unlock: Option<Arc<dyn KeystoreUnlock>>,
     pub notifier: Arc<dyn Notifier>,
 }
 
@@ -87,6 +85,21 @@ pub fn upstream_signer(keys: Vec<(KeyId, PrivateKey)>) -> anyhow::Result<Arc<dyn
     Ok(Arc::new(queued))
 }
 
+/// The file holding the sealed keystore's identity, wrapped with the passphrase.
+fn identity_file(sealed: &SealedConfig) -> std::path::PathBuf {
+    sealed.dir.join("identity.age")
+}
+
+/// Wraps a new keystore identity with `passphrase` (`writd init`). Refuses an existing file.
+pub fn enroll(
+    sealed: &SealedConfig,
+    passphrase: &writ_platform::Passphrase,
+    key: &writ_platform::DataKey,
+) -> anyhow::Result<()> {
+    PassphraseUnlock::enroll(identity_file(sealed), passphrase, key)?;
+    Ok(())
+}
+
 async fn listener(config: &TransportConfig) -> anyhow::Result<Listener> {
     let transport: Arc<dyn Transport> = match (&config.tcp, &config.unix) {
         (Some(addr), None) => Arc::new(TcpTransport::bind(addr).await?),
@@ -124,10 +137,6 @@ pub async fn build(config: &Config) -> anyhow::Result<Platform> {
             bail!("session_watcher macos is not in this build (local mode, M7)")
         }
     };
-    let unlock: Option<Arc<dyn KeystoreUnlock>> = match &config.unlock {
-        None => None,
-        Some(UnlockConfig::Passphrase(file)) => Some(Arc::new(PassphraseUnlock::new(file.clone()))),
-    };
     let mut notifiers: Vec<Arc<dyn Notifier>> = Vec::new();
     for n in &config.notifiers {
         match n {
@@ -147,7 +156,6 @@ pub async fn build(config: &Config) -> anyhow::Result<Platform> {
         approvals_https,
         attestor,
         watcher,
-        unlock,
         notifier: Arc::new(Notifiers(notifiers)),
     })
 }

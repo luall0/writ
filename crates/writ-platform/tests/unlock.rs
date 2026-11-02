@@ -284,3 +284,42 @@ fn generated_data_keys_are_random() {
     assert_ne!(a.as_bytes(), &[0u8; 32]);
     assert_eq!(format!("{a:?}"), "DataKey(<redacted>)");
 }
+
+#[test]
+fn a_data_key_is_one_age_identity_whose_recipient_opens_only_with_it() {
+    use std::io::{Read, Write};
+    let key = DataKey::from_bytes(KEY);
+    // The same bytes, the same identity: what the passphrase unwraps is the keystore's.
+    assert_eq!(
+        key.recipient().unwrap().to_string(),
+        DataKey::from_bytes(KEY).recipient().unwrap().to_string()
+    );
+    let recipient = key.recipient().unwrap();
+    assert!(recipient.to_string().starts_with("age1"), "{recipient}");
+    let other = DataKey::from_bytes([9; 32]);
+    assert_ne!(
+        other.recipient().unwrap().to_string(),
+        recipient.to_string()
+    );
+
+    let encryptor =
+        age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+            .unwrap();
+    let mut sealed = Vec::new();
+    let mut writer = encryptor.wrap_output(&mut sealed).unwrap();
+    writer.write_all(b"a secret").unwrap();
+    writer.finish().unwrap();
+
+    let open = |key: &DataKey| -> Option<Vec<u8>> {
+        let identity = key.identity().unwrap();
+        let decryptor = age::Decryptor::new_buffered(&sealed[..]).unwrap();
+        let mut reader = decryptor
+            .decrypt(std::iter::once(&identity as &dyn age::Identity))
+            .ok()?;
+        let mut plain = Vec::new();
+        reader.read_to_end(&mut plain).unwrap();
+        Some(plain)
+    };
+    assert_eq!(open(&key).as_deref(), Some(&b"a secret"[..]));
+    assert_eq!(open(&other), None, "another key opens nothing");
+}

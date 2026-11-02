@@ -39,7 +39,13 @@ writ-signer = { path = "crates/writ-signer" }
 writ-mirror = { path = "crates/writ-mirror" }
 
 age = { version = "0.11.2", default-features = false }
+# The fake recipient of the keystore's tests (one more recipient, no change to the keystore):
+# age's own stanza and file key types, already in the tree.
+age-core = { version = "0.11.0", default-features = false }
 anyhow = "1.0.104"
+# The keystore's age X25519 identity from the 32-byte data key (age's own encoding, already in
+# the tree through age).
+bech32 = "0.9.1"
 base64ct = { version = "1.8.3", features = ["alloc"] }
 http-body-util = "0.1.5"
 hyper = { version = "1.12.0", features = ["http1", "server", "client"] }
@@ -54,8 +60,9 @@ globset = { version = "0.4.21", default-features = false }
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 proptest = "1.12.0"
 # Safe wrappers over the Unix calls the private-file checks need (open without following a
-# link, the effective uid); already in the tree (tempfile).
-rustix = { version = "1.1.6", default-features = false, features = ["fs", "process", "std"] }
+# link, the effective uid), and the terminal's echo, off while a passphrase is typed; already
+# in the tree (tempfile).
+rustix = { version = "1.1.6", default-features = false, features = ["fs", "process", "std", "termios"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # Deserialization only: no `include` (files), no `properties` (variable interpolation).

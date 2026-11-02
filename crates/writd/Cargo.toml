@@ -20,6 +20,7 @@ writ-proto.workspace = true
 writ-mirror.workspace = true
 writ-signer.workspace = true
 writ-store.workspace = true
+age.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 ssh-key.workspace = true
@@ -29,7 +30,10 @@ tracing-subscriber.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+age-core.workspace = true
 tempfile.workspace = true
+# A cheap scrypt work factor for the keystore's tests (`enroll_with_work_factor`).
+writ-platform = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

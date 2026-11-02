@@ -13,7 +13,10 @@
 //!   in_all: 60                       # all sources together
 //! sign_requests:                     # held at once (16 in all, daemon-wide)
 //!   per_lease: 4                     # per lease, 1 to 16
-//! keystore: { dev: data/keys }       # M2: unsealed dev keystore, test only
+//! keystore:
+//!   sealed:                          # M5: one age file per secret, sealed at start
+//!     dir: data/keys                 # every secret but the boot tier's (0700)
+//!     boot: data/boot                # the host and TLS keys, readable at a sealed start (0700)
 //! mirrors:
 //!   known_hosts: upstream_known_hosts  # required: the remotes' host keys, pinned by hand
 //!   ca_certs: upstream_ca.pem        # HTTPS upstreams: the CAs trusted (default: the system's)
@@ -31,7 +34,6 @@
 //!     https: [{ tcp: "127.0.0.1:8443" }]
 //! attestor: network
 //! session_watcher: none
-//! unlock: { passphrase: data/keys/data-key.age }   # used from M5
 //! notifiers:
 //!   - telegram: { token_file: data/keys/telegram-token, chat_id: "123456789" }
 //! ```
@@ -67,8 +69,6 @@ pub struct Config {
     pub transports: Transports,
     pub attestor: AttestorConfig,
     pub session_watcher: WatcherConfig,
-    #[serde(default)]
-    pub unlock: Option<UnlockConfig>,
     #[serde(default)]
     pub notifiers: Vec<NotifierConfig>,
 }
@@ -226,9 +226,24 @@ impl MirrorsConfig {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum KeystoreConfig {
+    /// One age file per secret, made by `writd init`; the daemon starts sealed.
+    Sealed(SealedConfig),
     /// Plain key files in a directory, generated on first start: for tests and development
-    /// only, refused by release builds (the sealed keystore comes in M5).
+    /// only, refused by release builds.
     Dev(PathBuf),
+}
+
+/// `keystore.sealed`: where the sealed keystore's two parts live.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SealedConfig {
+    /// Every secret but the boot tier's, each its own age file, and the passphrase-wrapped
+    /// identity that opens them.
+    pub dir: PathBuf,
+    /// The boot tier: the keys a sealed daemon authenticates itself with (the SSH host key,
+    /// the TLS key), readable at a sealed start. Its own directory, so it can live apart
+    /// from `dir` (another volume, a Docker secret).
+    pub boot: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -307,13 +322,6 @@ pub enum WatcherConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum UnlockConfig {
-    /// The data key wrapped under a passphrase (age scrypt), in this file.
-    Passphrase(PathBuf),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum NotifierConfig {
     /// A Telegram bot sending to one chat.
     Telegram(TelegramConfig),
@@ -369,10 +377,11 @@ impl Config {
             resolve(ca_certs);
         }
         match &mut config.keystore {
+            KeystoreConfig::Sealed(sealed) => {
+                resolve(&mut sealed.dir);
+                resolve(&mut sealed.boot);
+            }
             KeystoreConfig::Dev(dir) => resolve(dir),
-        }
-        if let Some(UnlockConfig::Passphrase(file)) = &mut config.unlock {
-            resolve(file);
         }
         for notifier in &mut config.notifiers {
             match notifier {
@@ -801,15 +810,18 @@ mod tests {
                 "keystore",
                 "mirrors",
                 "transports",
-                "unlock",
                 "notifiers",
             ],
         );
         section("submissions: { __probe__: 0 }", "submissions.", &[]);
         section("sign_requests: { __probe__: 0 }", "sign_requests.", &[]);
-        section("keystore: { __probe__: 0 }", "keystore.", &[]);
+        section("keystore: { __probe__: 0 }", "keystore.", &["sealed"]);
+        section(
+            "keystore: { sealed: { __probe__: 0 } }",
+            "keystore.sealed.",
+            &[],
+        );
         section("mirrors: { __probe__: 0 }", "mirrors.", &[]);
-        section("unlock: { __probe__: 0 }", "unlock.", &[]);
         section(
             "transports: { __probe__: 0 }",
             "transports.",
@@ -927,7 +939,7 @@ mod tests {
     fn the_template_parses_as_is_and_with_every_default_taken_in() {
         // docs/operators/templates/writd.yaml: the required keys set, each optional one
         // commented out at its default; taken in, they change nothing but the notifier and
-        // the paths an operator names (unlock, ca_certs).
+        // the paths an operator names (ca_certs).
         let template = include_str!("../../../docs/operators/templates/writd.yaml");
         let as_is = load(template).unwrap();
         let taken = uncommented(template);
@@ -957,7 +969,7 @@ mod tests {
             ),
             "a commented-out value is not the default"
         );
-        assert!(all.unlock.is_some() && all.mirrors.ca_certs.is_some());
+        assert!(all.mirrors.ca_certs.is_some());
         assert_eq!(all.notifiers.len(), 1);
         for key in writd_keys() {
             let name = key.rsplit('.').next().unwrap();

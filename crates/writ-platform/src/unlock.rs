@@ -10,7 +10,7 @@ use std::io::Read;
 
 use zeroize::Zeroizing;
 
-use crate::Result;
+use crate::{PlatformError, Result};
 
 /// The keystore's data key. Zeroized on drop, never printed.
 pub struct DataKey(Zeroizing<[u8; 32]>);
@@ -22,6 +22,30 @@ impl DataKey {
 
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    /// The keystore's age X25519 identity: these 32 bytes are its secret scalar. Every secret
+    /// of the sealed keystore is its own age file encrypted to this identity's recipient
+    /// ([`Self::recipient`]); the passphrase wraps only these bytes.
+    pub fn identity(&self) -> Result<age::x25519::Identity> {
+        use bech32::ToBase32;
+        // age's own text encoding of an identity (bech32), parsed back: age builds
+        // one from that text only. The text is wiped once parsed.
+        let text = Zeroizing::new(
+            bech32::encode(
+                "age-secret-key-",
+                self.0.as_slice().to_base32(),
+                bech32::Variant::Bech32,
+            )
+            .map_err(|_| PlatformError::Unlock("cannot encode the keystore identity".to_owned()))?,
+        );
+        text.parse::<age::x25519::Identity>()
+            .map_err(|_| PlatformError::Unlock("cannot read the keystore identity".to_owned()))
+    }
+
+    /// The public recipient of [`Self::identity`] (`age1…`): what a secret is encrypted to.
+    pub fn recipient(&self) -> Result<age::x25519::Recipient> {
+        Ok(self.identity()?.to_public())
     }
 
     /// A new random key from the OS random source (`/dev/urandom`). Fails, never panics, if

@@ -7,10 +7,12 @@ state_dir: data                    # leases.db, audit.jsonl, repos/ (the mirrors
 policy: policy.yaml                # the repo registry and the templates
 approvers: approvers               # `<name> <public key>` per line: who may sign
 readers: readers                   # one line per reader key, as `writ reader <name>` prints it
-keystore:
-  dev: data/keys                   # debug builds with the dev-keystore feature only (M5: sealed)
-# unlock:
-#   passphrase: data/keys/data-key.age   # read and logged, used from M5
+keystore:                          # made once by `writd init writd.yaml`
+  sealed:
+    dir: data/keys                 # every secret, each its own age file (0700)
+    boot: data/boot                # the host and TLS keys, read at a sealed start (0700)
+  # Or, for tests and development only, the plain development keystore: `dev: data/keys`
+  # (debug builds with the dev-keystore feature; refused by release builds).
 
 # Approvals and tickets
 # decisions: signed                # signed | open: refusals and revocations signed too

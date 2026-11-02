@@ -17,7 +17,7 @@ later approver apps.
 | Notifications | Behind the `Notifier` trait; v1: Telegram Bot API (`sendMessage`, plain text) over `ureq` 3, with no proxy (ureq's default would take one from the environment) and no redirects | Decided (M2) |
 | Async runtime | `tokio` | Decided (M0) |
 | SQLite access | `rusqlite` 0.41 (bundled SQLite) | Decided (M1) |
-| age | `age` 0.11 (0.12 pulls `ml-kem` 0.2, whose `kem` pre-release conflicts with russh 0.65's) | Decided (M2) |
+| age | `age` 0.11 (0.12 pulls `ml-kem` 0.2, whose `kem` pre-release conflicts with russh 0.65's); `bech32` 0.9 (age's own encoding of the keystore's X25519 identity from the 32-byte data key) and, in tests only, `age-core` 0.11 (the stanza and file key types of a fake recipient), both already in the tree through `age` | Decided (M2; M5) |
 | Approval API | The gateway's SSH protocol on its own listener (`russh`), and HTTPS (`hyper` 1 + `rustls` 0.23 with `ring`, `tokio-rustls`; self-signed certificate from `rcgen`); clients pin the host key or the certificate ([Q29](decisions.md)); reader keys as client certificates, parsed with `rustls-webpki` 0.103 (rustls's own parser, no new code in the tree) | Decided (M2; readers M2.6) |
 | Config | `serde` + `serde-saphyr` 2 (YAML, duplicate keys refused) + `serde_path_to_error` (errors name the field) | Decided (M1): `serde_yaml` is deprecated |
 | CLI | `clap` 4 (derive, env) | Decided (M2) |
@@ -25,7 +25,7 @@ later approver apps.
 | OpenPGP signatures (M5.5) | `pgp` (rPGP, MIT/Apache-2.0) if it signs through the `Signer`, else a minimal v4 writer in `writ-crypto`; never `sequoia-openpgp` (LGPL) | Proposed |
 | RSA keys (M5.5) | `aws-lc-rs`, for RSA only (generation and constant-time signing); the `rsa` crate stays banned (Marvin); `p384` for P-384 | Proposed |
 | Secrets in memory | `zeroize` (decided in M2); `secrecy` | Proposed |
-| Unix file checks | `rustix` 1.1 (`fs`, `process`): opening without following a link or blocking, the effective uid, for the private-file and authority-file checks (`writ_platform::fs`); safe wrappers, so no `unsafe` in the tree, and already a dependency of `tempfile` | Decided (M2.6) |
+| Unix file checks | `rustix` 1.1 (`fs`, `process`, `termios`): opening without following a link or blocking, the effective uid, for the private-file and authority-file checks (`writ_platform::fs`); the terminal's echo, off while a passphrase is typed (`writ_crypto::passphrase`, M5); safe wrappers, so no `unsafe` in the tree, and already a dependency of `tempfile` | Decided (M2.6; M5) |
 | Logging | `tracing` 0.1 in every library crate, `tracing-subscriber` 0.3 (`fmt`, `env-filter`) installed by `writd` only, to stderr, filtered by `WRIT_LOG`; the audit log is separate and never goes through it | Decided (M2.5) |
 | Secure Enclave (local mode) | Swift + CryptoKit, key blob under the `_writd` user | Decided (M0 spike, [Q33](decisions.md)); how `writd` calls it is settled in M7.5 |
 | Tests | `proptest` for policy properties, `tempfile`, real `git` and `ssh-keygen` binaries | Decided (M1) |

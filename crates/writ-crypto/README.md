@@ -17,6 +17,9 @@ The cryptography Writ needs, on top of `ssh-key` and `rustls`.
   panicking.
 - **The approval API's TLS** (`tls`): the self-signed certificate, its pin, the server
   identity (`TlsIdentity`) and the client config that accepts only the pinned certificate.
+- **A passphrase a person types** (`passphrase`): its bounds, read with the terminal's echo
+  off, or one line of stdin, a byte at a time into memory wiped on drop (`writd init`,
+  `writ unseal`).
 
 ## Scope
 

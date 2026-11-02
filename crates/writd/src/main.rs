@@ -1,5 +1,6 @@
 //! `writd`, the Writ daemon.
 //!
+//! - `writd init <writd.yaml>`: makes the sealed keystore, once (asks for its passphrase).
 //! - `writd run <writd.yaml>`: the daemon (gateway, approval API, expiry timer).
 //! - `writd host-key <writd.yaml>`: prints the gateway's host key, to pin in clients'
 //!   `known_hosts`.
@@ -31,6 +32,7 @@ use anyhow::{Context, bail};
 use writ_approval::{Service, ServiceConfig, ServicePlatform};
 use writ_core::config::PolicyConfig;
 use writ_core::lease::APPROVAL_NAMESPACE;
+use writ_core::names::KeyId;
 use writ_crypto::allowed_signers::{self, AllowedSigner};
 use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::readers::{self, Reader};
@@ -49,6 +51,7 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 /// Every command `main` dispatches, with its arguments: the usage text, and the list the
 /// end-to-end coverage registry is checked against (docs/end-to-end.md).
 const COMMANDS: &[(&str, &str)] = &[
+    ("init", "<writd.yaml>"),
     ("run", "<writd.yaml>"),
     ("host-key", "<writd.yaml>"),
     ("tls-fingerprint", "<writd.yaml>"),
@@ -91,6 +94,7 @@ fn main() -> ExitCode {
                 .map(ExitCode::from)
                 .unwrap_or(ExitCode::FAILURE);
         }
+        ["init", config] => keystore::init(Path::new(config)),
         ["run", config] => run(Path::new(config)),
         ["upstream-keys", config] => upstream_keys(Path::new(config)),
         ["host-key", config] => host_key(Path::new(config)),
@@ -113,21 +117,35 @@ fn main() -> ExitCode {
 fn host_key(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
     let policy = load_registry(&config)?;
-    println!(
-        "{}",
-        keystore::keys(&config, &policy)?
-            .host
-            .public_key()
-            .to_openssh()?
-    );
+    println!("{}", keystore::public(&config, &policy)?.host.to_openssh()?);
     Ok(())
 }
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
     let policy = load_registry(&config)?;
-    println!("{}", keystore::keys(&config, &policy)?.tls.fingerprint());
+    println!("{}", keystore::public(&config, &policy)?.tls_fingerprint);
     Ok(())
+}
+
+/// The repos whose upstream credential is `id`.
+fn repos_using<'a>(policy: &'a PolicyConfig, id: &KeyId) -> Vec<&'a str> {
+    policy
+        .repos()
+        .iter()
+        .filter(|(_, entry)| entry.upstream_credential == *id)
+        .map(|(name, _)| name.as_str())
+        .collect()
+}
+
+/// The templates that sign with key `id`.
+fn templates_using<'a>(policy: &'a PolicyConfig, id: &KeyId) -> Vec<&'a str> {
+    policy
+        .templates()
+        .iter()
+        .filter(|(_, template)| template.signing_key.as_ref() == Some(id))
+        .map(|(name, _)| name.as_str())
+        .collect()
 }
 
 /// Prints each upstream credential's public key and the repos that use it: the key to add on
@@ -135,17 +153,11 @@ fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
 fn upstream_keys(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
     let policy = load_registry(&config)?;
-    for (id, key) in keystore::keys(&config, &policy)?.upstream {
-        let repos: Vec<&str> = policy
-            .repos()
-            .iter()
-            .filter(|(_, entry)| entry.upstream_credential == id)
-            .map(|(name, _)| name.as_str())
-            .collect();
+    for (id, key) in keystore::public(&config, &policy)?.upstream {
         println!(
             "{id} {} (repos: {})",
-            key.public_key().to_openssh()?,
-            repos.join(", ")
+            key.to_openssh()?,
+            repos_using(&policy, &id).join(", ")
         );
     }
     Ok(())
@@ -156,17 +168,11 @@ fn upstream_keys(path: &Path) -> anyhow::Result<()> {
 fn signing_keys(path: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
     let policy = load_registry(&config)?;
-    for (id, key) in keystore::keys(&config, &policy)?.signing {
-        let templates: Vec<&str> = policy
-            .templates()
-            .iter()
-            .filter(|(_, template)| template.signing_key.as_ref() == Some(&id))
-            .map(|(name, _)| name.as_str())
-            .collect();
+    for (id, key) in keystore::public(&config, &policy)?.signing {
         println!(
             "{id} {} (templates: {})",
-            key.public_key().to_openssh()?,
-            templates.join(", ")
+            key.to_openssh()?,
+            templates_using(&policy, &id).join(", ")
         );
     }
     Ok(())
@@ -384,9 +390,6 @@ fn run(path: &Path) -> anyhow::Result<()> {
         tracing::info!(host_key = %host_public, tls_fingerprint = %tls.fingerprint(), "started");
         log_access(&approvers, &readers);
         tracing::info!(decisions = ?config.decisions, "decisions");
-        if platform.unlock.is_some() {
-            tracing::info!("keystore unlock configured (used by the sealed start, M5)");
-        }
         let mut servers = spawn_listeners(&gateway, &platform, &tls);
         spawn_sweeper(service);
         spawn_mirror_sync(

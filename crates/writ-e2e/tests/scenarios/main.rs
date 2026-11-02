@@ -26,6 +26,7 @@ mod push_denials;
 mod remote_protection;
 mod restart;
 mod revocation_and_expiry;
+mod sealed_keystore;
 mod ticket_lifecycle;
 mod upstream_moved;
 mod verified_commits;

@@ -571,15 +571,4 @@ fn what_this_build_does_not_have_is_refused_at_start() {
         error.lines().last().unwrap(),
         "writd: session_watcher macos is not in this build (local mode, M7)"
     );
-
-    // An unlock method is taken, and said (the sealed start that uses it comes with M5).
-    let configured = "keystore unlock configured (used by the sealed start, M5)";
-    let daemon = Daemon::start_with(POLICY, Approvals::Https, |yaml| {
-        format!("{yaml}unlock: {{ passphrase: s/keys/data-key.age }}\n")
-    });
-    assert!(daemon.log().contains(configured), "{}", daemon.log());
-    assert!(daemon.run(&["ls"], "").status.success());
-    drop(daemon);
-    let daemon = Daemon::start(POLICY, Approvals::Https);
-    assert!(!daemon.log().contains(configured), "{}", daemon.log());
 }
