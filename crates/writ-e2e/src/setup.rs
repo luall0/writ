@@ -32,6 +32,11 @@ pub const APPROVALS_HTTPS: &str = "https://writd:8443";
 /// credential's id.
 pub const HTTPS_REPO: &str = "https";
 pub const HTTPS_CREDENTIAL: &str = "token-https";
+/// A second front for the same repository, with a certificate only the daemon container's
+/// system store trusts (not `mirrors.ca_certs`), and the registry's repository behind it: every
+/// sync of it refused.
+pub const SYSTEM_FRONT: &str = "forgejo-https-system";
+pub const SYSTEM_REPO: &str = "https-system";
 
 /// The reader's name in the daemon's `readers` file.
 pub const READER: &str = "e2e-approver";
@@ -185,6 +190,19 @@ pub fn run() -> Stack {
     let front = Container::of("forgejo-https").run_as("front", "cat /tls/cert.pem");
     assert_eq!(front.status.code(), Some(0), "{}", stderr(&front));
     operator.write("upstream_ca.pem", &stdout(&front), "0644");
+    // Not the operator's: the test machine's system store trusts the second front (as root),
+    // so the daemon is shown to trust `mirrors.ca_certs` alone.
+    let system = Container::of(SYSTEM_FRONT).run_as("front", "cat /tls/cert.pem");
+    assert_eq!(system.status.code(), Some(0), "{}", stderr(&system));
+    let installed = Container::of(DAEMON).run_as(
+        "root",
+        &format!(
+            "cat > /usr/local/share/ca-certificates/{SYSTEM_FRONT}.crt <<'PEM'\n{}PEM\n\
+             update-ca-certificates >/dev/null",
+            stdout(&system)
+        ),
+    );
+    assert_eq!(installed.status.code(), Some(0), "{}", stderr(&installed));
 
     // 3. Forgejo's host key, pinned, and checked against the one it publishes.
     doc_step(

@@ -110,8 +110,9 @@ struct Shared {
     /// The sockets of each operation (agent, credential, proxy).
     socket_dir: PathBuf,
     known_hosts: PathBuf,
-    /// The CA certificates as git reads them, when the operator gave some.
-    ca_file: Option<PathBuf>,
+    /// The CA certificates as git reads them, when the operator gave some, and the empty
+    /// directory git is given as its CA path with them ([`CaCerts`]).
+    ca_certs: Option<CaCerts>,
     /// An empty private directory: the `HOME` of an HTTPS operation's git (no `.netrc`).
     home: PathBuf,
     syncs: Semaphore,
@@ -123,6 +124,15 @@ struct Repo {
     reach: Reach,
     format: ObjectFormat,
     state: Arc<Mutex<SyncState>>,
+}
+
+/// The operator's CA certificates, as git is given them: the file (`http.sslCAInfo`), and an
+/// empty directory as the CA path (`http.sslCAPath`). curl built with a default CA path (Debian's
+/// is) keeps trusting it when only the file is set: with the empty one, the operator's CAs are
+/// the only ones.
+struct CaCerts {
+    file: PathBuf,
+    empty_dir: PathBuf,
 }
 
 /// How a repo's upstream is reached.
@@ -247,10 +257,17 @@ impl Mirrors {
         let known_hosts = config.run_dir.join("known_hosts");
         replace_file(&known_hosts, config.pinned.to_file()?.as_bytes())?;
         let ca_file = config.run_dir.join("ca_certs.pem");
-        let ca_file = match &config.ca_certs {
+        let ca_certs = match &config.ca_certs {
             Some(pem) => {
                 replace_file(&ca_file, pem.as_bytes())?;
-                Some(ca_file)
+                let empty_dir = config.run_dir.join("ca_path");
+                private(&empty_dir)?;
+                // Empty, or nothing at all: whatever is in it, git would trust.
+                remove_leftovers(&empty_dir, |_| true)?;
+                Some(CaCerts {
+                    file: ca_file,
+                    empty_dir,
+                })
             }
             None => {
                 remove_leftovers(&config.run_dir, |name| name == "ca_certs.pem")?;
@@ -270,7 +287,7 @@ impl Mirrors {
                 repos: opened,
                 socket_dir,
                 known_hosts,
-                ca_file,
+                ca_certs,
                 home,
                 syncs: Semaphore::new(MAX_SYNCS),
             }),
@@ -474,8 +491,9 @@ impl MirrorGuard {
                     .collect();
                 config.push(helper);
                 config.push(format!("http.proxy={}", proxy.url()));
-                if let Some(ca_file) = &shared.ca_file {
-                    config.push(format!("http.sslCAInfo={}", ca_file.display()));
+                if let Some(ca) = &shared.ca_certs {
+                    config.push(format!("http.sslCAInfo={}", ca.file.display()));
+                    config.push(format!("http.sslCAPath={}", ca.empty_dir.display()));
                 }
                 let home = shared.home.to_str().ok_or_else(|| {
                     MirrorError::Config(format!("{} is not UTF-8", shared.home.display()))

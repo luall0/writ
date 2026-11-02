@@ -248,7 +248,9 @@ with a test:
   operator's pinned host keys only.
 - HTTPS to upstream: every setting git relies on stated (`writ_mirror::git::HTTPS_HARDENING`:
   certificate verified, no redirect, no header, cookie, prompt or other credential helper),
-  the operator's CAs or the system's, an empty `HOME` (no `.netrc`), the daemon's proxy.
+  the operator's CAs or the system's, never both (with `mirrors.ca_certs`, git also gets an
+  empty CA directory: curl built with a default one, Debian's, keeps trusting it when only
+  the file is named), an empty `HOME` (no `.netrc`), the daemon's proxy.
 - Git objects an agent sends: ids computed here (SHA-1 with collision detection, never a plain
   SHA-1), only the commit layout git writes, trailers found as git finds them (checked
   against `git interpret-trailers`, `trailers_are_git_s`), and refused at least where git's

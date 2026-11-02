@@ -5,11 +5,15 @@
 //! protected ref is still refused; and the token is in its keystore file alone: not in the
 //! daemon's log, its mirrors or their configuration, the audit log, or anything on the
 //! agent's side. git ran the daemon's credential helper (`writd upstream-credential`) for it.
+//!
+//! And `mirrors.ca_certs` is the only trust: the `https-system` repository, the same Forgejo
+//! repository behind a second front whose certificate the daemon container's system store
+//! trusts (plain git there reaches it), is refused, its certificate not verifying.
 
 use writ_e2e::Stack;
-use writ_e2e::agent::expect;
-use writ_e2e::setup::{HTTPS_CREDENTIAL, HTTPS_REPO};
-use writ_e2e::stdout;
+use writ_e2e::agent::{expect, ticket};
+use writ_e2e::setup::{HTTPS_CREDENTIAL, HTTPS_REPO, SYSTEM_FRONT, SYSTEM_REPO};
+use writ_e2e::{stderr, stdout};
 
 use crate::{assert_push_refused, wired};
 
@@ -85,4 +89,40 @@ fn a_repo_behind_https_is_fetched_and_pushed_with_a_token_nobody_else_sees() {
     );
     let audit = stack.operator.read("data/audit.jsonl");
     assert!(!audit.contains(&token));
+}
+
+#[test]
+#[ignore = "end to end: make e2e"]
+fn a_certificate_the_system_trusts_is_refused_when_the_operator_named_their_cas() {
+    let stack = Stack::shared();
+
+    // The system trusts the second front (the setup put its certificate in the daemon
+    // container's store): plain git, as the daemon's user, reaches the repository there.
+    let plain = stack.operator.run(&format!(
+        "GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote \
+         https://{SYSTEM_FRONT}:3443/writ/{HTTPS_REPO}.git HEAD"
+    ));
+    expect(&plain, 0, "plain git through the system's CAs");
+
+    // The daemon trusts only `mirrors.ca_certs`, which names the other front: refused, with
+    // the reason, and nothing in the mirror.
+    let agent = stack.agent("https-system");
+    let lease = agent.lease(&stack, &ticket(&[SYSTEM_REPO], &["agent/*"], "1h", ""));
+    agent.clone_from_forgejo(&stack, HTTPS_REPO, "work");
+    agent.ok_in("work", &format!("writ init {SYSTEM_REPO}"));
+    let out = agent.in_dir("work", "writ git fetch origin");
+    expect(
+        &out,
+        128,
+        "a fetch through a certificate only the system trusts",
+    );
+    let refusal = "upstream's certificate does not verify";
+    assert!(stderr(&out).contains(refusal), "{}", stderr(&out));
+    let denied = stack.audited(&lease, "fetch", "denied");
+    let reason = denied.last().expect("a fetch denied line")["reason"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(reason.contains(refusal), "{reason}");
+    assert_eq!(stack.mirror_ref(SYSTEM_REPO, "refs/heads/main"), None);
 }

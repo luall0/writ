@@ -37,6 +37,7 @@ minutes): the others run beside it, so a run never takes less than about 5 minut
 |---|---|---|---|
 | `forgejo` | `codeberg.org/forgejo/forgejo:13.0.5`, pinned by digest | the remote: an admin account `writ` (email `agent@writ.invalid`) owning one repository per scenario | `http://forgejo:3000` (API, web forms), `ssh://git@forgejo` (the daemon's upstream) |
 | `forgejo-https` | `tls-front`: Debian 13, socat and a throwaway self-signed certificate made at build time | Forgejo over HTTPS: TLS in front of `forgejo:3000` | `https://forgejo-https:3443` (the `https` repo's upstream) |
+| `forgejo-https-system` | `tls-front` again (`TLS_NAME`), with its own certificate, which the setup adds to the `writd` container's system store, never to `mirrors.ca_certs` | Forgejo over HTTPS, a second front | `https://forgejo-https-system:3443` (the `https-system` repo's upstream: refused) |
 | `writd` | `writd`: Debian 13, git 2.47, OpenSSH 10.0, the real `writd` | the operator, user `writ`, in `/home/writ` (`writd.yaml`, `policy.yaml`, `approvers`, `readers`, `data/`, `writd.log`) | `writd:2222` (agents), `writd:2223` (approval API, SSH), `writd:8443` (approval API, HTTPS) |
 | `agent` | `agent`: the same base, `writ` and `writ-sign` | user `agent`: one directory and `WRIT_HOME` per scenario's agent (`~/agents/<name>`), and the operator's own git (`user.name Operator`); user `approver`: the approver's machine (`~/.writ`, a throwaway ssh-agent holding the approval key, standing in for Secretive) | `docker exec` |
 | `runner` | `runner`: the scenarios' test binary and the Docker client | the scenarios, driving the others through the Docker socket and Forgejo's API | started by `make e2e` |
@@ -98,7 +99,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 10 | `restart` | `restart` | The daemon's container restarted keeps leases, mirrors and ledger | alone |
 | 11 | `hostile_upstream` | `hostile` | Forgejo stopped, its host key changed, its deploy key removed: refused with the reason, working again once restored | alone |
 | 12 | `concurrency` | `busy` | Eight agents on one daemon at once (tickets submitted and signed in parallel, each pushing its rounds) while a writer changes Forgejo directly; consistent end state whatever the interleaving | alone |
-| 13 | `https_upstream` | `https` | An HTTPS upstream with a token (Forgejo behind its TLS front, the certificate in `mirrors.ca_certs`): fetch, push, a protected ref refused; the token in its keystore file alone (not in the log, the mirrors, the audit log or on the agent's side) | shared |
+| 13 | `https_upstream` | `https`, `https-system` | An HTTPS upstream with a token (Forgejo behind its TLS front, the certificate in `mirrors.ca_certs`): fetch, push, a protected ref refused; the token in its keystore file alone (not in the log, the mirrors, the audit log or on the agent's side); a second front whose certificate the system store trusts (plain git reaches it) refused by the daemon, which trusts `mirrors.ca_certs` alone | shared |
 
 Every scenario checks, where it applies: **what the agent reads** (the exit code and the
 words, never just "it failed"), **the audit line** (event, result, code), **Forgejo's state**

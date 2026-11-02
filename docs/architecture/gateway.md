@@ -265,7 +265,10 @@ host ([operator guide](../guides/operator.md#https-upstreams-and-tokens)).
   ciphertext. git 2.47 or newer (older ones drop the socket path from `http.proxy`).
 - git's HTTPS is stated too: the certificate verified (`http.sslVerify`), against
   `mirrors.ca_certs` when the operator gave one (an authority file of 1 to 1,000 PEM
-  certificates and nothing else, rewritten by the daemon), the system's CAs otherwise; no
+  certificates and nothing else, rewritten by the daemon, `http.sslCAInfo`) and those alone
+  (`http.sslCAPath` an empty private directory, emptied at every start: curl built with a
+  default CA directory, as Debian's is, keeps trusting it when only the file is named), the
+  system's CAs otherwise; no
   redirect (`http.followRedirects=false`: the token never follows one); no extra header,
   cookie, empty authentication, prompt or other credential helper; an empty private `HOME`
   (no `.netrc`).

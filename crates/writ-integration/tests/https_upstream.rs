@@ -401,3 +401,42 @@ fn a_hostile_upstream_printing_the_token_back_has_it_taken_out() {
         other => panic!("expected Git, got {other:?}"),
     }
 }
+
+#[test]
+fn the_operator_s_cas_are_the_only_ones_git_is_given() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    // With `ca_certs`, git also gets an empty CA directory: curl built with a default one
+    // (Debian's) keeps trusting it when only the file is named (the end-to-end scenario 13
+    // shows it with a certificate the system store trusts).
+    let ca_path = f.root().join("mirror/ca_path");
+    drop(f.open());
+    let mode = std::fs::metadata(&ca_path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+    assert_eq!(std::fs::read_dir(&ca_path).unwrap().count(), 0);
+
+    // A certificate planted there is gone before any sync: the operator's file names another
+    // CA, so the remote is refused.
+    std::fs::write(ca_path.join("planted.pem"), &f.remote.ca_pem).unwrap();
+    let other = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).unwrap();
+    let mut config = f.config();
+    config.ca_certs = Some(other.cert.pem());
+    let mirrors = f.open_with(config);
+    assert_eq!(std::fs::read_dir(&ca_path).unwrap().count(), 0);
+    assert!(
+        matches!(f.sync(&mirrors), Err(MirrorError::Certificate { .. })),
+        "only the operator's CAs"
+    );
+    assert!(f.remote.users().is_empty(), "no request carried the token");
+
+    // Something that can't be removed (a directory) stops the start: never a CA path that
+    // isn't empty.
+    std::fs::create_dir(ca_path.join("certs")).unwrap();
+    match f.open_at(f.config(), &f.remote.url("demo")) {
+        Err(MirrorError::Io { what, path, .. }) => {
+            assert_eq!(what, "cannot remove");
+            assert_eq!(path, ca_path.join("certs"));
+        }
+        other => panic!("expected the CA path refused, got {:?}", other.err()),
+    }
+}

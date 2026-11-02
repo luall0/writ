@@ -1,7 +1,8 @@
 #!/bin/sh
 # make e2e: the end-to-end pipeline (docs/end-to-end.md). Builds the images (e2e/Dockerfile),
-# starts Forgejo (and its HTTPS front), writd and an agent host (e2e/compose.yaml) under a project of their own,
-# runs the scenarios in the runner container, and removes everything whatever happens.
+# starts Forgejo (and its two HTTPS fronts), writd and an agent host (e2e/compose.yaml) under a
+# project of their own, runs the scenarios in the runner container, and removes everything
+# whatever happens.
 #
 #   make e2e                          every scenario
 #   make e2e ARGS=wrapper_mode        the scenarios whose name holds a filter (libtest's)
@@ -31,5 +32,5 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 compose --profile runner build
-compose up -d forgejo forgejo-https writd agent
+compose up -d forgejo forgejo-https forgejo-https-system writd agent
 compose run --rm -e WRIT_E2E_PROJECT="$PROJECT" runner "$@"

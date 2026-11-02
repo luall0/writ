@@ -9,7 +9,9 @@
 #   the Docker socket and Forgejo's API.
 # - `tls-front`: Forgejo over HTTPS (`https://forgejo-https:3443`), for the daemon's HTTPS
 #   upstream: socat terminating TLS with a throwaway self-signed certificate made at build
-#   time, in front of Forgejo's plain HTTP.
+#   time, in front of Forgejo's plain HTTP. Built twice, each with its own certificate: for
+#   `forgejo-https` (in the daemon's `mirrors.ca_certs`) and for `forgejo-https-system` (in
+#   the daemon container's system store only, `TLS_NAME`).
 #
 # A test image (decided with the user in M4.1): debug builds, because only they take the
 # development keystore until the sealed keystore exists (M5). M8's deploy image (non-root,
@@ -70,6 +72,8 @@ COPY --from=build /out/scenarios /usr/local/bin/scenarios
 ENTRYPOINT ["/usr/local/bin/scenarios", "--ignored"]
 
 FROM ${DEBIAN_IMAGE} AS tls-front
+# The name the certificate is made for (and the compose service's).
+ARG TLS_NAME=forgejo-https
 RUN apt-get update \
     && apt-get install -y --no-install-recommends socat openssl \
     && rm -rf /var/lib/apt/lists/* \
@@ -77,9 +81,10 @@ RUN apt-get update \
     && mkdir /tls && chown front /tls
 USER front
 WORKDIR /tls
-# A throwaway certificate for the front's name, made here (never stored in the repository);
-# the operator setup copies `cert.pem` to the daemon as its `mirrors.ca_certs`.
+# A throwaway certificate for the front's name, made here (never stored in the repository).
+# `forgejo-https`'s: the operator setup copies it to the daemon as its `mirrors.ca_certs`;
+# `forgejo-https-system`'s: scenario 13 adds it to the daemon container's system store.
 RUN openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
-        -subj /CN=forgejo-https -addext subjectAltName=DNS:forgejo-https \
+        -subj "/CN=${TLS_NAME}" -addext "subjectAltName=DNS:${TLS_NAME}" \
         -keyout key.pem -out cert.pem 2>/dev/null
 CMD ["socat", "OPENSSL-LISTEN:3443,reuseaddr,fork,cert=/tls/cert.pem,key=/tls/key.pem,verify=0", "TCP:forgejo:3000"]

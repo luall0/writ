@@ -19,9 +19,12 @@ repos:
   busy:       { upstream: "ssh://git@forgejo/writ/busy.git",       upstream_credential: upstream-busy,       protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Over HTTPS, with a Forgejo token the operator puts in the keystore (no deploy key).
   https:      { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  # The same Forgejo repository behind a front whose certificate only the system trusts, not
+  # `mirrors.ca_certs`: every sync refused (scenario 13).
+  https-system: { upstream: "https://forgejo-https-system:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
 templates:
   feature:
-    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, inflight, restart, hostile, busy, https]
+    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, inflight, restart, hostile, busy, https, https-system]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     force_push: true                 # a ticket may ask for it (none does unless it says so)

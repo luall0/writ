@@ -15,6 +15,15 @@ services:
   forgejo-https:
     build: { context: .., dockerfile: e2e/Dockerfile, target: tls-front }
     init: true
+  # The same front with its own certificate, which only the daemon container's system store
+  # trusts (the `https-system` repo): `mirrors.ca_certs` names the other one, so it is refused.
+  forgejo-https-system:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+      target: tls-front
+      args: { TLS_NAME: forgejo-https-system }
+    init: true
   writd:
     build: { context: .., dockerfile: e2e/Dockerfile, target: writd }
     init: true
