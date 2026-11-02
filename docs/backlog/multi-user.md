@@ -95,7 +95,7 @@ Rough, to be written up with the open questions settled.
   lease's user's for that repo, never the repo's alone; a repo with no credential for that
   user refuses the push (fail closed). The mirror stays one per repo, its syncs made with any
   of the repo's credentials (or a daemon-owned read credential: open question).
-- **Notes ([M4.7](../roadmap.md#m47--ticket-link-in-git-notes)):** `refs/notes/writ` is
+- **Notes ([M4.7](../history/m4.7-ticket-link-in-git-notes.md)):** the notes ref is
   shared by every lease on a repo, so by several users. M4.7's notes job already takes the
   credential it pushes with as a parameter, and each pending note records the credential that
   pushed its commit, so this milestone only decides which credential pushes a batch of notes

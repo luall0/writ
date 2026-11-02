@@ -30,7 +30,7 @@ an unchanged core.
 | M4.1 | [Real end-to-end scenarios](history/m4.1-real-end-to-end-scenarios.md) ✅ | The operator's and the agent's paths run for real in containers against Forgejo, in CI: every command and flag in a scenario, the guides' commands the ones the pipeline runs, heavy concurrency; `writ prove-key` and verified commits on the account |
 | M4.5 | [HTTPS upstream](history/m4.5-https-upstream.md) ✅ | Upstream over HTTPS with a token: the daemon's own credential helper fed by a one-operation socket, a one-operation proxy capping bytes and reaching only the registry's host, the certificate verified, no redirect |
 | M4.6 | [Review after M4.5](history/m4.6-review-after-m4.5.md) ✅ | The security and code quality review after M4.5 and its fixes: a push's mirror never held by a client, the mirror lock with a deadline, `mirrors.ca_certs` the only trust, GnuTLS's certificate refusal read, the ledger before a push's walk, `mirrors.git`, `writ-mirror` split by concern |
-| M4.7 | [Ticket link in git notes](#m47--ticket-link-in-git-notes) | `ticket_link: notes`: the daemon writes each signed commit's lease in a note under `refs/notes/writ` and pushes it upstream itself, the commit untouched |
+| M4.7 | [Ticket link in git notes](history/m4.7-ticket-link-in-git-notes.md) ✅ | `ticket_link: notes`: each pushed commit's lease in a git note (`refs/notes/commits`, or `refs/notes/writ`), written and pushed by the daemon after the branch, merged with the remote's, the commit untouched |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
@@ -131,47 +131,12 @@ GnuTLS's certificate refusal recognized; the ledger read before a push's objects
 
 ## M4.7 — Ticket link in git notes
 
-[Lease model § rules](lease-model.md#rules), [Q25](decisions.md). `ticket_link: notes` is
-refused at load until this milestone. Projects whose commit conventions don't allow a
-`Writ:` trailer still get the lease link on the remote, readable without asking the daemon:
-a git note, which annotates a commit without changing it (same hash, same signature).
-
-- A note per pushed commit under `refs/notes/writ` (`Writ: <lease id>`, the same text as the
-  trailer), written by the daemon from its ledger, never by the agent: agents push branches
-  only, and a pushed `refs/notes/…` stays refused (`ref`).
-- The notes ref is shared by every lease on the repo. Once upstream took a push, its commits
-  (only those the ledger holds for that lease and repo) are pending a note; a notes job,
-  under the mirror lock, writes a notes commit for every pending note of the repo on top of
-  the mirror's `refs/notes/writ`, and pushes it upstream after the branch, as a
-  fast-forward. A remote that moved it meanwhile (`fetch first`, `non-fast-forward`) gets a
-  fetch of that one ref, a merge of the notes (`git notes merge -s cat_sort_uniq`) and one
-  retry, then a refusal logged. The mirror's sync stays branches and tags only: git refuses
-  a fetch naming a ref upstream doesn't have yet, so a sync fetching `refs/notes/writ` would
-  fail on every repo without notes.
-- Notes commits are **unsigned**, made under a fixed daemon identity (`writd`): no remote
-  verifies or shows a notes commit's signature, and the ledger, not the note, is the
-  reference. The notes push uses the credential of the push that brought the commits (the
-  repo's `upstream_credential` today), passed to the notes job as a parameter, and each
-  pending note records it: [M11](#m11--multi-user-daemon) only decides which credential
-  pushes a batch.
-- The notes job never needs the commits it annotates (a note names a commit by its id): only
-  a repository holding `refs/notes/writ`. M9's `proxy` mode writes notes too, with the same
-  job, from a small notes-only repository per repo.
-- What the remote does with notes: kept by all; shown by Forgejo and Gitea on the commit
-  page, not by GitHub's web interface (`git log --notes=writ` after
-  `git fetch origin refs/notes/writ:refs/notes/writ`). The operator guide says so.
-- A notes push that fails doesn't undo the branch push (the commit is already upstream and in
-  the ledger); it is logged, and the next push of that repo writes the missing notes.
-
-Acceptance:
-- [ ] A repo with `ticket_link: notes` takes commits without a trailer; after a push, the
-      remote has a note under `refs/notes/writ` for each pushed commit naming its lease, and
-      every commit's hash and signature are unchanged.
-- [ ] Two leases pushing to one repo at once both get their notes; none is lost.
-- [ ] A notes ref moved upstream meanwhile is merged and pushed again; a remote that refuses
-      the notes push leaves the branch pushed, an audit line, and the notes written next time.
-- [ ] An agent pushing `refs/notes/writ` (or any `refs/notes/…`) is refused (`ref`).
-- [ ] End to end against Forgejo: the note shows on the commit page.
+**Done.** Moved to [history/m4.7-ticket-link-in-git-notes.md](history/m4.7-ticket-link-in-git-notes.md):
+`ticket_link: notes`, each pushed commit's lease in a git note (`refs/notes/commits` by
+default, `refs/notes/writ` with `notes_ref: writ`), written by the daemon from its ledger and
+pushed after the branch by a notes job under the mirror lock (merged with `cat_sort_uniq` when
+the remote's ref moved, one retry, the notes waiting for the next push otherwise); unsigned
+notes commits; the commits untouched.
 
 ## M5 — Sealed start and signed admin changes
 
