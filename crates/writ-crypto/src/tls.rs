@@ -87,6 +87,34 @@ impl std::fmt::Debug for TlsIdentity {
     }
 }
 
+/// The most certificates a CA bundle may hold.
+pub const MAX_CA_CERTS: usize = 1000;
+
+/// Checks a PEM bundle of CA certificates (what an HTTPS upstream's certificate must chain
+/// to): 1 to [`MAX_CA_CERTS`] certificates, each one a trust anchor webpki can read, and
+/// nothing else in the file (no key, no other block). Returns how many it holds.
+pub fn check_ca_certs(pem: &str) -> Result<usize> {
+    use rustls::pki_types::pem::SectionKind;
+    let mut count: usize = 0;
+    for section in <(SectionKind, Vec<u8>) as PemObject>::pem_slice_iter(pem.as_bytes()) {
+        let (kind, der) = section.map_err(|_| CryptoError::Pem("CA certificates"))?;
+        if kind != SectionKind::Certificate {
+            return Err(CryptoError::Pem("CA certificates (a block that isn't one)"));
+        }
+        let der = CertificateDer::from(der);
+        webpki::anchor_from_trusted_cert(&der)
+            .map_err(|_| CryptoError::Pem("CA certificates (one doesn't parse)"))?;
+        count = count.saturating_add(1);
+        if count > MAX_CA_CERTS {
+            return Err(CryptoError::Pem("CA certificates (more than 1000)"));
+        }
+    }
+    if count == 0 {
+        return Err(CryptoError::Pem("CA certificates (none)"));
+    }
+    Ok(count)
+}
+
 impl TlsIdentity {
     /// Reads a PEM certificate and its PEM private key (which must be the certificate's).
     pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self> {
@@ -350,6 +378,40 @@ mod tests {
         assert_eq!(pin, fingerprint(b"some der bytes"));
         assert!(pin.starts_with("SHA256:") && pin.len() == 7 + 43, "{pin}");
         assert_ne!(pin, fingerprint(b"other der bytes"));
+    }
+
+    #[test]
+    fn a_ca_bundle_holds_certificates_and_nothing_else() {
+        let a = generate_self_signed().unwrap();
+        let b = generate_self_signed().unwrap();
+        assert_eq!(check_ca_certs(&a.cert_pem).unwrap(), 1);
+        let both = format!("# a comment\n{}\n{}", a.cert_pem, b.cert_pem);
+        assert_eq!(check_ca_certs(&both).unwrap(), 2);
+        let with_key = format!("{}{}", a.cert_pem, *a.key_pem);
+        let broken = a.cert_pem.replace("MII", "MIX");
+        let many = a.cert_pem.repeat(MAX_CA_CERTS + 1);
+        for (pem, why) in [
+            ("", "invalid TLS CA certificates (none)"),
+            ("not pem at all", "invalid TLS CA certificates (none)"),
+            (
+                with_key.as_str(),
+                "invalid TLS CA certificates (a block that isn't one)",
+            ),
+            (
+                broken.as_str(),
+                "invalid TLS CA certificates (one doesn't parse)",
+            ),
+            (
+                many.as_str(),
+                "invalid TLS CA certificates (more than 1000)",
+            ),
+        ] {
+            assert_eq!(check_ca_certs(pem).unwrap_err().to_string(), why);
+        }
+        assert_eq!(
+            check_ca_certs(&a.cert_pem.repeat(MAX_CA_CERTS)).unwrap(),
+            MAX_CA_CERTS
+        );
     }
 
     #[test]
