@@ -339,8 +339,11 @@ step "Step 8: what to check"
 AUDIT="$DIR/daemon/data/audit.jsonl"
 allowed=$(grep "\"lease\":\"$LEASE\"" "$AUDIT" | grep -c '"event":"push","result":"allowed"' || true)
 denied=$(grep "\"lease\":\"$LEASE\"" "$AUDIT" | grep -c '"event":"push","result":"denied"' || true)
-check "the audit log has the allowed pushes ($allowed)" test "$allowed" -ge 3
-check "and the refused ones ($denied)" test "$denied" -ge 2
+# Two pushes went through (step 5, and after the rebase); the one behind upstream never
+# reached the daemon's checks (git refused it: the daemon had synced first, so it wasn't a
+# fast-forward); two were refused by the daemon (main, the unsigned commit).
+check "the audit log has the 2 allowed pushes (found $allowed)" test "$allowed" -eq 2
+check "and the 2 refused ones, main and the unsigned commit (found $denied)" test "$denied" -eq 2
 check "and no key material" sh -c "! grep -q 'PRIVATE KEY' '$AUDIT'"
 others=$(ls "$DIR/client/sessions/$LEASE" | grep -vcE '^(key|key\.pub|key-cert\.pub|lease\.json|signing_key\.pub|ticket\.json|wrt_[0-9A-Z]+\.json)$' || true)
 check "the session holds no GitHub credential (only its key, certificate, lease)" test "$others" -eq 0
