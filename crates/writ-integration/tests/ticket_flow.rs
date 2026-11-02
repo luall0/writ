@@ -404,3 +404,379 @@ fn writ_sign_never_signs_with_a_private_key_file() {
     );
     assert_eq!(request.finish().0.code(), Some(4));
 }
+
+/// `writ` run to the end with nothing on stdin, from a configured command.
+fn output(mut command: Command) -> std::process::Output {
+    writ_integration::process::finish(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    )
+}
+
+/// `writ request --no-wait` with `text` in the file `<name>.yaml`.
+fn submit(daemon: &Daemon, name: &str, text: &str) -> std::process::Output {
+    let file = daemon.root().join(format!("{name}.yaml"));
+    fs::write(&file, text).unwrap();
+    daemon.run(&["request", "--no-wait", file.to_str().unwrap()], "")
+}
+
+/// The ticket was rejected before reaching the approver, with exactly these reasons.
+fn assert_rejected(out: &std::process::Output, reasons: &[&str]) {
+    assert_eq!(out.status.code(), Some(3), "{}", stdout(out));
+    let listed: String = reasons.iter().map(|r| format!("  - {r}\n")).collect();
+    assert_eq!(stderr(out), format!("writ: ticket rejected\n{listed}"));
+}
+
+/// The rejections here would pass the harness's submission rate.
+fn more_submissions(yaml: &str) -> String {
+    format!("{yaml}submissions: {{ per_source: 100, in_all: 100 }}\n")
+}
+
+#[test]
+fn require_expected_paths_rejects_a_ticket_without_them() {
+    let policy = format!("{POLICY}    require_expected_paths: true\n");
+    let daemon = Daemon::start(&policy, Approvals::Https);
+    let out = submit(&daemon, "without", &ticket("", "1h"));
+    assert_rejected(
+        &out,
+        &[
+            "the ticket fits no template",
+            "feature: the template requires ticket.expected_paths",
+        ],
+    );
+    let out = submit(
+        &daemon,
+        "with",
+        &ticket("  expected_paths: [\"src/**\"]\n", "1h"),
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(daemon.audited("submit", "denied"), 1, "{}", daemon.audit());
+    assert_eq!(daemon.audited("submit", "allowed"), 1, "{}", daemon.audit());
+}
+
+/// A registry of two repos, a template for one of them and without `push`.
+const CAPPED: &str = r#"
+repos:
+  demo:
+    upstream: ssh://git@remote.invalid/demo.git
+    upstream_credential: upstream-01
+  other:
+    upstream: ssh://git@remote.invalid/demo.git
+    upstream_credential: upstream-01
+templates:
+  feature:
+    repos: [demo]
+    operations: [fetch, commit_sign]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ"]
+    signing_key: agent-01
+    max_ttl: 2h
+    max_signatures: 40
+    max_pushes: 20
+    max_ops_per_minute: 100
+    max_push_size: 10MB
+"#;
+
+#[test]
+fn a_ticket_past_its_template_is_rejected_with_each_reason() {
+    let daemon = Daemon::start_with(CAPPED, Approvals::Https, more_submissions);
+    let capped = |scope: &str, limits: &str| {
+        format!(
+            "scope:\n  repos: [demo]\n  operations: [fetch, commit_sign]\n  \
+             branches: [\"agent/x\"]\n  committer_emails: [agent@writ]\n{scope}\
+             ticket:\n  title: Capped\n  task: Ask for as much as the template allows\n\
+             limits:\n{limits}"
+        )
+    };
+    // Everything at the template's maximum: taken.
+    let at = "  ttl: 2h\n  max_signatures: 40\n  max_pushes: 20\n  max_ops_per_minute: 100\n  \
+              max_push_size: 10MB\n";
+    let out = submit(&daemon, "at", &capped("", at));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    // Nothing asked: the template's maxima, as the lease's limits.
+    let out = submit(&daemon, "defaults", &capped("", "  {}\n"));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let id = stdout(&out)
+        .strip_prefix("Ticket ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    let terms: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(daemon.session(&id).join("ticket.json")).unwrap())
+            .unwrap();
+    let limits = &terms["limits"];
+    assert_eq!(
+        (
+            &limits["max_signatures"],
+            &limits["max_pushes"],
+            &limits["max_ops_per_minute"],
+            &limits["max_push_size"]
+        ),
+        (
+            &serde_json::json!(40),
+            &serde_json::json!(20),
+            &serde_json::json!(100),
+            &serde_json::json!(10_000_000)
+        ),
+        "{terms}"
+    );
+
+    // One past, each on its own: rejected with its reason.
+    for (name, scope, limits, reason) in [
+        (
+            "ttl",
+            "",
+            at.replace("ttl: 2h", "ttl: 7201s"),
+            "the lease would last 7201s, over the template's max_ttl (2h)",
+        ),
+        (
+            "signatures",
+            "",
+            at.replace("max_signatures: 40", "max_signatures: 41"),
+            "limits.max_signatures is 41, over the template's 40",
+        ),
+        (
+            "pushes",
+            "",
+            at.replace("max_pushes: 20", "max_pushes: 21"),
+            "limits.max_pushes is 21, over the template's 20",
+        ),
+        (
+            "rate",
+            "",
+            at.replace("max_ops_per_minute: 100", "max_ops_per_minute: 101"),
+            "limits.max_ops_per_minute is 101, over the template's 100",
+        ),
+        (
+            "size",
+            "",
+            at.replace("max_push_size: 10MB", "max_push_size: 10000001"),
+            "limits.max_push_size is 10000001, over the template's 10000000",
+        ),
+        (
+            "force",
+            "  force_push: true\n",
+            at.to_owned(),
+            "force_push is not allowed by the template",
+        ),
+    ] {
+        assert_ne!(limits, at.to_owned() + scope, "{name}: the fixture changed");
+        let out = submit(&daemon, name, &capped(scope, &limits));
+        assert_rejected(
+            &out,
+            &["the ticket fits no template", &format!("feature: {reason}")],
+        );
+    }
+    for (name, from, to, reason) in [
+        (
+            "repo",
+            "repos: [demo]",
+            "repos: [demo, other]",
+            "repo other is not allowed by the template",
+        ),
+        (
+            "operation",
+            "operations: [fetch, commit_sign]",
+            "operations: [fetch, commit_sign, push]",
+            "operation push is not allowed by the template",
+        ),
+        (
+            "branch",
+            "branches: [\"agent/x\"]",
+            "branches: [main]",
+            "branch main is not within the template's branches (agent/*)",
+        ),
+        (
+            "email",
+            "committer_emails: [agent@writ]",
+            "committer_emails: [agent@writ, me@personal.example]",
+            "committer email me@personal.example is not allowed by the template",
+        ),
+    ] {
+        let text = capped("", at);
+        let past = text.replace(from, to);
+        assert_ne!(past, text, "{name}: the fixture changed");
+        let out = submit(&daemon, name, &past);
+        assert_rejected(
+            &out,
+            &["the ticket fits no template", &format!("feature: {reason}")],
+        );
+    }
+    assert_eq!(daemon.audited("submit", "allowed"), 2, "{}", daemon.audit());
+    assert_eq!(daemon.audited("submit", "denied"), 10, "{}", daemon.audit());
+}
+
+/// Two templates a plain ticket fits, one of them for any branch.
+const TWO_TEMPLATES: &str = r#"
+repos:
+  demo:
+    upstream: ssh://git@remote.invalid/demo.git
+    upstream_credential: upstream-01
+templates:
+  feature:
+    repos: [demo]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ"]
+    signing_key: agent-01
+    max_ttl: 2h
+    max_signatures: 40
+    max_pushes: 20
+    max_ops_per_minute: 100
+    max_push_size: 10MB
+  wide:
+    repos: [demo]
+    operations: [fetch, commit_sign, push]
+    branches: ["*"]
+    committer_emails: ["agent@writ"]
+    signing_key: agent-01
+    max_ttl: 2h
+    max_signatures: 40
+    max_pushes: 20
+    max_ops_per_minute: 100
+    max_push_size: 10MB
+"#;
+
+#[test]
+fn the_origin_hint_is_shown_and_a_caller_constraint_is_checked() {
+    let daemon = Daemon::start(TWO_TEMPLATES, Approvals::Https);
+    let template_of = |out: &std::process::Output| {
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(out));
+        stdout(out)
+            .split_once("(template ")
+            .and_then(|(_, rest)| rest.split(',').next())
+            .unwrap()
+            .to_owned()
+    };
+    // `template`: fits both and none named, rejected; named, that one; fits one, that one.
+    let out = submit(&daemon, "both", &ticket("", "1h"));
+    assert_rejected(
+        &out,
+        &["the ticket fits several templates (feature, wide): name one with `template:`"],
+    );
+    let named = format!("template: wide\n{}", ticket("", "1h"));
+    assert_eq!(template_of(&submit(&daemon, "named", &named)), "wide");
+    let only = ticket("", "1h").replace("agent/oauth", "main");
+    assert_eq!(template_of(&submit(&daemon, "only", &only)), "wide");
+    let unknown = format!("template: nope\n{}", ticket("", "1h"));
+    assert_rejected(
+        &submit(&daemon, "unknown", &unknown),
+        &["template nope does not exist"],
+    );
+    // A template the ticket doesn't fit, named: only its reasons.
+    let misfit = format!("template: feature\n{only}");
+    assert_rejected(
+        &submit(&daemon, "misfit", &misfit),
+        &[
+            "the ticket fits no template",
+            "feature: branch main is not within the template's branches (agent/*)",
+        ],
+    );
+
+    // `origin_hint` is shown to the approver, as the agent's claim; `caller` as the process
+    // the lease is bound to.
+    let bound = format!(
+        "template: feature\norigin_hint: \"build-host-7 / claude session 42\"\n\
+         caller:\n  descends_from:\n    executable: /usr/local/bin/agent-harness\n    \
+         pid: 4242\n    generation: 7\n    code_identity: {{ signing_id: com.example.harness, \
+         team_id: ABCDE12345 }}\n{}",
+        ticket(
+            "  plan: [\"Read the OAuth spec\", \"Add the login route\"]\n",
+            "1h"
+        )
+    );
+    let request = daemon.request("bound", &bound);
+    let id = request.id.clone();
+    let out = daemon.run(&["sign", &id, "--full", "--yes"], "");
+    let shown = stdout(&out);
+    assert!(
+        shown.contains(
+            "origin hint (the agent's claim, not checked):\n    │ build-host-7 / claude session 42"
+        ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(
+            "descends from /usr/local/bin/agent-harness (pid 4242, generation 7, signed \
+             com.example.harness team ABCDE12345)"
+        ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("  plan\n    │ 1. Read the OAuth spec\n    │ 2. Add the login route\n"),
+        "{shown}"
+    );
+    // The constraint is checked as soon as it would bind a lease: this daemon watches no
+    // session (`session_watcher: none`, the only one this build has), so a lease bound to a
+    // process is never granted (fail closed), whatever the approver signs.
+    assert_eq!(out.status.code(), Some(1), "{shown}");
+    assert_eq!(
+        stderr(&out),
+        "writ: approval refused: the lease is bound to a session the daemon can't watch: \
+         session watching is not supported by this implementation\n"
+    );
+    let denied = writ_integration::audit_events(&daemon.audit(), "grant", "denied");
+    assert_eq!(denied.len(), 1, "{denied:?}");
+    assert_eq!(
+        denied[0]["reason"],
+        "the lease is bound to a session the daemon can't watch: session watching is not \
+         supported by this implementation",
+        "{}",
+        denied[0]
+    );
+    assert_eq!(daemon.audited("grant", "allowed"), 0, "{}", daemon.audit());
+    let out = daemon.run(&["revoke", &id], "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(request.finish().0.code(), Some(5));
+    // The same lease without the constraint fetches.
+    let free = daemon.lease("free", &format!("template: feature\n{}", ticket("", "1h")));
+    let out = daemon.ls_remote(&daemon.session(&free));
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn writ_ssh_keygen_names_the_program_the_approver_signs_with() {
+    let daemon = Daemon::start(POLICY, Approvals::Https);
+    let request = daemon.request("keygen", &ticket("", "1h"));
+    let id = request.id.clone();
+    let with_keygen = |keygen: &str| {
+        let mut command = daemon.writ(&["sign", &id, "--yes"]);
+        command.env("WRIT_SSH_KEYGEN", keygen);
+        output(command)
+    };
+    // Looked up in PATH it could be anything: refused before anything is signed.
+    let out = with_keygen("ssh-keygen");
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert_eq!(
+        stderr(&out).lines().last().unwrap(),
+        "writ: WRIT_SSH_KEYGEN must be an absolute path"
+    );
+    assert_eq!(daemon.audited("grant", "allowed"), 0);
+    // An absolute path: that program signs (a wrapper that records it ran, then runs the
+    // real ssh-keygen).
+    let wrapper = daemon.root().join("keygen-wrapper");
+    let log = daemon.root().join("keygen.log");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec /usr/bin/ssh-keygen \"$@\"\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let out = with_keygen(wrapper.to_str().unwrap());
+    assert!(out.status.success(), "{}", stderr(&out));
+    let runs = fs::read_to_string(&log).unwrap();
+    assert_eq!(runs.lines().count(), 1, "{runs}");
+    assert!(
+        runs.starts_with("-Y sign -U -n writ-approval -f "),
+        "{runs}"
+    );
+    assert_eq!(request.finish().0.code(), Some(0));
+    assert_eq!(daemon.audited("grant", "allowed"), 1);
+}

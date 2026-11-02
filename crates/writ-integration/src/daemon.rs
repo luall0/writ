@@ -9,11 +9,12 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, ExitStatus, Output, Stdio};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 use writ_crypto::keys::{KeyKind, generate};
-use writ_crypto::ssh_key::PublicKey;
+use writ_crypto::ssh_key::{PrivateKey, PublicKey};
 
 use crate::agent::TestAgent;
 use crate::binaries::bin;
@@ -42,6 +43,8 @@ pub struct Daemon {
     /// The upstream of the repo `demo` (the policies' `ssh://git@remote.invalid/demo.git`,
     /// rewritten to it), on its own runtime.
     pub remote: TestRemote,
+    /// The daemon's log lines after its listeners were announced, as they come.
+    log_lines: Mutex<mpsc::Receiver<String>>,
     _remote_runtime: tokio::runtime::Runtime,
 }
 
@@ -83,97 +86,83 @@ impl Ports {
     }
 }
 
+/// What [`Daemon`] prepares before `writd run`: the directory with every file the daemon
+/// reads, and the services standing in for upstream and Telegram.
+struct Setup {
+    dir: TempDir,
+    approver: PrivateKey,
+    telegram: FakeTelegram,
+    remote: TestRemote,
+    remote_runtime: tokio::runtime::Runtime,
+}
+
+impl Setup {
+    fn root(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// `writd run` on the prepared configuration, its log going to `writd.err`.
+    fn spawn(&self, log: &str) -> Child {
+        Command::new(bin("writd"))
+            .arg("run")
+            .arg(self.root().join("writd.yaml"))
+            .env("WRIT_LOG", log)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+}
+
+/// Edits the default `writd.yaml`: the edit must change it, so a default that drifted fails
+/// the test instead of leaving the key unset.
+pub type Edit<'a> = &'a dyn Fn(&str) -> String;
+
 impl Daemon {
     /// Starts `writd` with `policy`, one approver key (in the test agent) and `decisions`.
     pub fn start(policy: &str, approvals: Approvals) -> Self {
-        crate::tools::require();
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let approver = generate(KeyKind::Ed25519).unwrap();
-        let approver_public = approver.public_key().to_openssh().unwrap();
-        fs::write(
-            root.join("approvers"),
-            format!("me@mac {approver_public}\n"),
-        )
-        .unwrap();
-        fs::write(root.join("approver.pub"), format!("{approver_public}\n")).unwrap();
-        // The repo's upstream: a test remote with an empty `demo`, its host key pinned.
-        let remote_runtime = tokio::runtime::Runtime::new().unwrap();
-        let placeholder = generate(KeyKind::Ed25519).unwrap();
-        let remote = TestRemote::start(
-            &remote_runtime,
-            &root.join("remote"),
-            placeholder.public_key().clone(),
-        );
-        let init = Command::new("git")
-            .args(["init", "-q", "--bare"])
-            .arg(remote.repo("demo"))
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .status()
-            .unwrap();
-        assert!(init.success());
-        fs::write(
-            root.join("upstream_known_hosts"),
-            format!("{}\n", remote.known_hosts_line()),
-        )
-        .unwrap();
-        fs::write(
-            root.join("policy.yaml"),
-            policy.replace(PLACEHOLDER_UPSTREAM, &remote.url("demo")),
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("home")).unwrap();
-        write_secret(&root.join("telegram-token"), TOKEN.as_bytes());
-        // The approver's reader key, made by the real `writ reader`, listed in `readers`.
-        let reader = Command::new(bin("writ"))
-            .args(["reader", "test-mac"])
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", root.join("home"))
-            .env("WRIT_HOME", root.join("writ"))
-            .output()
-            .unwrap();
-        assert!(reader.status.success(), "writ reader: {reader:?}");
-        let line = String::from_utf8(reader.stdout).unwrap();
-        assert!(line.starts_with("test-mac ssh-ed25519 "), "{line}");
-        fs::write(root.join("readers"), line).unwrap();
-        let telegram = FakeTelegram::start();
-        fs::write(
-            root.join("writd.yaml"),
-            format!(
-                "state_dir: s\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
-                 decisions: signed\nkeystore: {{ dev: s/keys }}\n\
-                 mirrors: {{ known_hosts: upstream_known_hosts, fresh_for: 0s }}\n\
-                 transports:\n  agents: [{{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }}]\n  \
-                 approvals:\n    ssh: [{{ tcp: \"127.0.0.1:0\" }}]\n    \
-                 https: [{{ tcp: \"127.0.0.1:0\" }}]\n\
-                 attestor: network\nsession_watcher: none\n\
-                 notifiers:\n  - telegram: {{ token_file: telegram-token, chat_id: \"42\", \
-                 api_base: \"http://127.0.0.1:{}\" }}\n",
-                telegram.port
-            ),
-        )
-        .unwrap();
-        // The daemon's upstream credential (made by its dev keystore), authorized on the remote.
-        let keys = writd(root, "upstream-keys");
-        let line = keys.lines().next().expect("an upstream credential");
-        let key: Vec<&str> = line.split(' ').skip(1).take(2).collect();
-        remote.authorize(PublicKey::from_openssh(&key.join(" ")).unwrap());
+        Self::launch(setup(policy, None), approvals, "info")
+    }
 
+    /// [`Daemon::start`] with the default `writd.yaml` edited by `edit` (which must change
+    /// it).
+    pub fn start_with(policy: &str, approvals: Approvals, edit: impl Fn(&str) -> String) -> Self {
+        Self::launch(setup(policy, Some(&edit)), approvals, "info")
+    }
+
+    /// [`Daemon::start_with`], with `WRIT_LOG` set to `log` (`info` otherwise).
+    pub fn start_logging(
+        policy: &str,
+        approvals: Approvals,
+        log: &str,
+        edit: impl Fn(&str) -> String,
+    ) -> Self {
+        Self::launch(setup(policy, Some(&edit)), approvals, log)
+    }
+
+    /// The same directory as [`Daemon::start_with`], but `writd run` must refuse to start:
+    /// returns what it printed (its status is checked: 1).
+    pub fn refused(policy: &str, edit: impl Fn(&str) -> String) -> String {
+        let setup = setup(policy, Some(&edit));
+        let mut child = setup.spawn("info");
+        if !crate::process::ends_within(&mut child, WAIT_LIMIT) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("writd run started, it should have refused to");
+        }
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        stderr(&out)
+    }
+
+    fn launch(setup: Setup, approvals: Approvals, log: &str) -> Self {
+        let root = setup.root();
         let host_key = writd(root, "host-key");
         let fingerprint = writd(root, "tls-fingerprint");
         assert!(fingerprint.starts_with("SHA256:"), "{fingerprint}");
 
-        let mut child = Command::new(bin("writd"))
-            .arg("run")
-            .arg(root.join("writd.yaml"))
-            .env("WRIT_LOG", "info")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let ports = announced_ports(&mut child, &root.join("writd.err"));
+        let mut child = setup.spawn(log);
+        let (lines, ports) = announced_ports(&mut child, &root.join("writd.err"));
         let Some((agents_port, approvals_port, https_port)) = ports else {
             let _ = child.kill();
             panic!(
@@ -198,7 +187,14 @@ impl Daemon {
             Approvals::Https => format!("https://127.0.0.1:{https_port}"),
         };
         let agent = TestAgent::start();
-        agent.add(&approver);
+        agent.add(&setup.approver);
+        let Setup {
+            dir,
+            telegram,
+            remote,
+            remote_runtime,
+            ..
+        } = setup;
         Self {
             dir,
             child,
@@ -209,6 +205,7 @@ impl Daemon {
             approval_url,
             telegram,
             remote,
+            log_lines: Mutex::new(lines),
             _remote_runtime: remote_runtime,
         }
     }
@@ -220,6 +217,73 @@ impl Daemon {
     /// The daemon's log so far.
     pub fn log(&self) -> String {
         fs::read_to_string(self.root().join("writd.err")).unwrap_or_default()
+    }
+
+    /// Waits for the next log line containing `needle` (lines logged after the listeners
+    /// were announced, each looked at once), at most `limit`: returns it.
+    pub fn wait_for_log(&self, needle: &str, limit: Duration) -> String {
+        let lines = self.log_lines.lock().unwrap();
+        let deadline = Instant::now() + limit;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match lines.recv_timeout(left) {
+                Ok(line) if line.contains(needle) => return line,
+                Ok(_) => {}
+                Err(_) => panic!(
+                    "no log line with {needle:?} within {limit:?}:\n{}",
+                    self.log()
+                ),
+            }
+        }
+    }
+
+    /// A commit on `branch` of the upstream repo `demo`, made there directly (not through
+    /// the daemon): upstream moving on its own. Returns its id.
+    pub fn upstream_commit(&self, branch: &str, message: &str) -> String {
+        let seed = self.root().join("upstream-seed");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Upstream",
+                    "-c",
+                    "user.email=up@example.com",
+                ])
+                .args(args)
+                .current_dir(&seed)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", stderr(&out));
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        if !seed.exists() {
+            fs::create_dir_all(&seed).unwrap();
+            git(&["init", "-q", "-b", branch]);
+        }
+        git(&["commit", "-q", "--allow-empty", "-m", message]);
+        let upstream = self.remote.repo("demo");
+        git(&[
+            "push",
+            "-q",
+            "-f",
+            upstream.to_str().unwrap(),
+            &format!("HEAD:refs/heads/{branch}"),
+        ]);
+        git(&["rev-parse", "HEAD"])
+    }
+
+    /// A ticket submitted and signed as is: the lease's id (its session files are in
+    /// [`Daemon::session`]).
+    pub fn lease(&self, name: &str, ticket: &str) -> String {
+        let request = self.request(name, ticket);
+        let id = request.id.clone();
+        let out = self.run(&["sign", &id, "--yes"], "");
+        assert!(out.status.success(), "writ sign: {}", stderr(&out));
+        let (status, out, err) = request.finish();
+        assert_eq!(status.code(), Some(0), "{out}{err}");
+        id
     }
 
     /// The `writ` CLI with this daemon's endpoints, keys and a private home.
@@ -339,6 +403,97 @@ impl Daemon {
     }
 }
 
+/// Writes the daemon's directory: the approver and reader keys, the policy (its upstream
+/// rewritten to a fresh test remote, whose `demo` is empty), the Telegram token, and
+/// `writd.yaml` (edited by `edit`, which must change it); the daemon's upstream credential is
+/// authorized on the remote.
+fn setup(policy: &str, edit: Option<Edit<'_>>) -> Setup {
+    crate::tools::require();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let approver = generate(KeyKind::Ed25519).unwrap();
+    let approver_public = approver.public_key().to_openssh().unwrap();
+    fs::write(
+        root.join("approvers"),
+        format!("me@mac {approver_public}\n"),
+    )
+    .unwrap();
+    fs::write(root.join("approver.pub"), format!("{approver_public}\n")).unwrap();
+    // The repo's upstream: a test remote with an empty `demo`, its host key pinned.
+    let remote_runtime = tokio::runtime::Runtime::new().unwrap();
+    let placeholder = generate(KeyKind::Ed25519).unwrap();
+    let remote = TestRemote::start(
+        &remote_runtime,
+        &root.join("remote"),
+        placeholder.public_key().clone(),
+    );
+    let init = Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(remote.repo("demo"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status()
+        .unwrap();
+    assert!(init.success());
+    fs::write(
+        root.join("upstream_known_hosts"),
+        format!("{}\n", remote.known_hosts_line()),
+    )
+    .unwrap();
+    fs::write(
+        root.join("policy.yaml"),
+        policy.replace(PLACEHOLDER_UPSTREAM, &remote.url("demo")),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("home")).unwrap();
+    write_secret(&root.join("telegram-token"), TOKEN.as_bytes());
+    // The approver's reader key, made by the real `writ reader`, listed in `readers`.
+    let reader = Command::new(bin("writ"))
+        .args(["reader", "test-mac"])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", root.join("home"))
+        .env("WRIT_HOME", root.join("writ"))
+        .output()
+        .unwrap();
+    assert!(reader.status.success(), "writ reader: {reader:?}");
+    let line = String::from_utf8(reader.stdout).unwrap();
+    assert!(line.starts_with("test-mac ssh-ed25519 "), "{line}");
+    fs::write(root.join("readers"), line).unwrap();
+    let telegram = FakeTelegram::start();
+    let yaml = format!(
+        "state_dir: s\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
+         decisions: signed\nkeystore: {{ dev: s/keys }}\n\
+         mirrors: {{ known_hosts: upstream_known_hosts, fresh_for: 0s }}\n\
+         transports:\n  agents: [{{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }}]\n  \
+         approvals:\n    ssh: [{{ tcp: \"127.0.0.1:0\" }}]\n    \
+         https: [{{ tcp: \"127.0.0.1:0\" }}]\n\
+         attestor: network\nsession_watcher: none\n\
+         notifiers:\n  - telegram: {{ token_file: telegram-token, chat_id: \"42\", \
+         api_base: \"http://127.0.0.1:{}\" }}\n",
+        telegram.port
+    );
+    fs::write(root.join("writd.yaml"), &yaml).unwrap();
+    // The daemon's upstream credential (made by its dev keystore), authorized on the remote:
+    // read with the default configuration, so an edit the daemon refuses still gets here.
+    let keys = writd(root, "upstream-keys");
+    let line = keys.lines().next().expect("an upstream credential");
+    let key: Vec<&str> = line.split(' ').skip(1).take(2).collect();
+    remote.authorize(PublicKey::from_openssh(&key.join(" ")).unwrap());
+    if let Some(edit) = edit {
+        let edited = edit(&yaml);
+        assert_ne!(edited, yaml, "the edit left writd.yaml as it was");
+        fs::write(root.join("writd.yaml"), edited).unwrap();
+    }
+    Setup {
+        dir,
+        approver,
+        telegram,
+        remote,
+        remote_runtime,
+    }
+}
+
 /// `writd <command> <config>` (host-key, tls-fingerprint…): its output, trimmed.
 fn writd(root: &Path, command: &str) -> String {
     let out = Command::new(bin("writd"))
@@ -351,8 +506,12 @@ fn writd(root: &Path, command: &str) -> String {
 }
 
 /// Reads the daemon's log (copying it to `log`) until it announced its three listeners, or
-/// it ended, or [`WAIT_LIMIT`] passed. Keeps copying in the background afterwards.
-fn announced_ports(child: &mut Child, log: &Path) -> Option<(u16, u16, u16)> {
+/// it ended, or [`WAIT_LIMIT`] passed. Keeps copying in the background afterwards, and
+/// sending each line after those to the receiver returned.
+fn announced_ports(
+    child: &mut Child,
+    log: &Path,
+) -> (mpsc::Receiver<String>, Option<(u16, u16, u16)>) {
     let stderr = child.stderr.take().unwrap();
     let mut file = fs::File::create(log).unwrap();
     let (lines, announced) = mpsc::channel::<String>();
@@ -369,10 +528,11 @@ fn announced_ports(child: &mut Child, log: &Path) -> Option<(u16, u16, u16)> {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         match announced.recv_timeout(left) {
             Ok(line) => ports.read(&line),
-            Err(_) => return None,
+            Err(_) => return (announced, None),
         }
     }
-    ports.all()
+    let all = ports.all();
+    (announced, all)
 }
 
 /// The ssh options that keep a client away from the user's own SSH setup: no config, no other

@@ -18,7 +18,7 @@ use std::process::Output;
 use writ_core::lease::State;
 use writ_core::names::TicketId;
 use writ_crypto::keys::KeyKind;
-use writ_integration::gateway::{GitGateway, Listen, TICKET, now};
+use writ_integration::gateway::{GitGateway, Listen, POLICY, TICKET, now};
 use writ_integration::{audit_events, stderr};
 
 /// git's status when the signing program fails.
@@ -479,4 +479,102 @@ fn a_revocation_completes_while_a_commit_is_being_signed() {
     );
     assert_eq!(head(&gw, &work), before, "no commit written");
     assert!(gw.ledger(&lease).is_empty(), "nothing in the ledger");
+}
+
+/// The harness's policy with `line` added to the repo `demo`.
+fn with_repo_line(line: &str) -> String {
+    let protected = "    protected_refs: [\"refs/heads/main\", \"refs/tags/*\"]\n";
+    let policy = POLICY.replace(protected, &format!("{protected}    {line}\n"));
+    assert_ne!(policy, POLICY, "the repo line was added");
+    policy
+}
+
+#[test]
+fn ticket_link_trailer_is_required_only_when_the_repo_asks() {
+    let no_trailer = ["commit", "-q", "-S", "--allow-empty", "-m", "no trailer"];
+    // No `ticket_link` (`ledger_only`, the default), and `ledger_only` written out: a commit
+    // with no `Writ:` trailer is signed, and the ledger links it to its lease.
+    for policy in [
+        POLICY.to_owned(),
+        with_repo_line("ticket_link: ledger_only"),
+    ] {
+        let gw = GitGateway::start_with(KeyKind::Ed25519, Listen::Tcp, &policy);
+        gw.seed_repo();
+        let work = gw.clone("work");
+        gw.wire_signing(&work);
+        let out = gw.git(&work, &no_trailer);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let id = head(&gw, &work);
+        let message = gw.git_ok(&work, &["log", "-1", "--format=%B"]);
+        assert!(!message.contains("Writ:"), "{message}");
+        let ledger = gw.ledger(&gw.lease);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0].commit.as_str(), id);
+        let out = gw.git(&work, &["verify-commit", "HEAD"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+
+    // `trailer`: the same commit is refused; with its trailer, signed.
+    let gw = GitGateway::start_with(
+        KeyKind::Ed25519,
+        Listen::Tcp,
+        &with_repo_line("ticket_link: trailer"),
+    );
+    gw.seed_repo();
+    let work = gw.clone("work");
+    gw.wire_signing(&work);
+    let id = gw.lease.clone();
+    let out = gw.git(&work, &no_trailer);
+    assert_refused(
+        &gw,
+        &out,
+        &format!("writ: repo demo needs a `Writ: {id}` trailer in the commit message"),
+        Some("ticket_link"),
+    );
+    assert!(gw.ledger(&id).is_empty());
+    let out = commit(&gw, "session", &work, id.as_str(), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let ledger = gw.ledger(&id);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0].commit.as_str(), head(&gw, &work));
+}
+
+#[test]
+fn paths_check_off_signs_any_path_without_a_warning() {
+    let paths = ticket("  expected_paths: [\"src/**\"]\n");
+    // The same commit, outside expected_paths, under `warn` then `off`.
+    let mut warnings = Vec::new();
+    for check in ["warn", "off"] {
+        let policy = STRICT.replace("paths_check: deny", &format!("paths_check: {check}"));
+        assert_ne!(policy, STRICT);
+        let gw = GitGateway::start_with(KeyKind::Ed25519, Listen::Tcp, &policy);
+        gw.seed_repo();
+        let work = gw.clone("work");
+        gw.wire_signing(&work);
+        let lease = gw.session_with("paths", &paths);
+        fs::create_dir_all(work.join("docs")).unwrap();
+        fs::write(work.join("docs/notes.md"), "notes\n").unwrap();
+        gw.git_ok(&work, &["add", "-A"]);
+        let out = commit(&gw, "paths", &work, lease.as_str(), &[]);
+        assert!(out.status.success(), "{check}: {}", stderr(&out));
+        let id = head(&gw, &work);
+        let ledger = gw.ledger(&lease);
+        assert_eq!(ledger.len(), 1, "{check}");
+        assert_eq!(ledger[0].commit.as_str(), id);
+        let audit = fs::read_to_string(gw.root().join("audit.jsonl")).unwrap();
+        let signed = audit_events(&audit, "sign", "allowed");
+        assert_eq!(signed.len(), 1, "{check}: {signed:?}");
+        assert_eq!(signed[0]["commit"], id.as_str());
+        warnings.push(signed[0].get("warnings").cloned());
+    }
+    assert_eq!(
+        warnings,
+        [
+            Some(serde_json::json!([
+                "files outside expected_paths: docs/notes.md"
+            ])),
+            None
+        ],
+        "warn records the paths, off doesn't look"
+    );
 }
