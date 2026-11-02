@@ -14,6 +14,9 @@ Ideas and new requirements for Writ, not built yet, and not part of the
    (what shipped, decisions, numbers), it is added at the end of the
    [history](../history/README.md), and its row and section leave this page. Links to its
    old path are updated in the same change.
+5. **Parked:** looked at and set aside for now. Its page moves to (or is written in)
+   [`parked/`](#parked) with why it is a no-go and what would reopen it, and its row moves to
+   the parked table below. Reopening it moves the page back here.
 
 Sizes are rough: **S** a day or less, **M** a few days, **L** a week or more. Nothing here is
 a promise or an order: the user picks what comes next.
@@ -60,7 +63,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
 | [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |
-| [Keychain Secure Enclave signer with a paid Apple account](#keychain-secure-enclave-signer-with-a-paid-apple-account) | Signers | feature | M | idea, spiked |
+| [Developer ID signed binaries](#developer-id-signed-binaries) | Packaging | improvement | S | idea |
 | [Hardware-wrapped secrets](hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | specified; picked as [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
@@ -109,28 +112,16 @@ HSM, the daemon only asks it for signatures ([Signer](../architecture/signer.md)
   no provider SDK in the core. The threat model gains a trusted third party (the provider and
   the account holding the keys).
 
-### Keychain Secure Enclave signer with a paid Apple account
+### Developer ID signed binaries
 
-The `se-keychain` backend of [macOS Secure Enclave](../architecture/macos-secure-enclave.md):
-a Secure Enclave key in the data protection keychain under a keychain access group, once the
-Apple Developer Program is paid. The M0 spike built it with a free Personal Team (the Xcode
-project is archived in commit `3485f40`, `spikes/secure-enclave/keychain-app/`); what it found:
-
-- Works: the capability, launching with the profile, key creation and signing with no
-  prompt (6–7 ms); code without the entitlement is refused (`-34018`), an ad-hoc binary
-  claiming it is killed at launch.
-- **Isolation is by team, not by daemon:** other code, reusing the profile and signed with my
-  Apple Development identity, used the key without a prompt. Anything running as my user can
-  sign with my team (identity in the login keychain, Xcode's account session), so the design
-  must keep the signing identity out of the agents' reach (build elsewhere, or remove it from
-  this Mac after signing) and drop `get-task-allow` (no debugger attach).
-- A Personal Team profile lasts 7 days; a paid account's lasts years, which is what makes
-  removing the identity from this Mac practical.
-- The paid team ID likely differs from the Personal Team's: the access group changes, so the
-  keys are created again (agent keys re-registered on remotes and in `allowed_signers`).
-
-Most of what it needs (SSHSIG conversion, the `Signer` contract suite, key creation) comes
-with the CryptoKit backend in [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac).
+Pay for the Apple Developer Program only to sign `writd`, `writ` and `writ-sign` with a
+Developer ID certificate and notarize them, instead of the self-signed certificate M7
+plans. What it brings: binaries that install on any Mac without Gatekeeper warnings or a
+self-signed certificate to trust, and a code identity anchored in Apple (team ID) for the
+process chain's `CodeIdentity`. Not a security gain for this Mac: Plan B's isolation comes
+from the `_writd` user, not from the signature. Not coupled with the keychain signer, which is
+[parked](parked/keychain-secure-enclave-signer.md). Worth it once Writ runs on Macs other than
+mine.
 
 ## Approvals
 
@@ -172,3 +163,11 @@ repo registry is no longer the only per-repo boundary
 
 Request the lease automatically when an agent tab opens, bind it to that tab's session (process
 chain in local mode), and wire the repo's git config ([Q10](../decisions.md)).
+
+## Parked
+
+Looked at and set aside: each page says why it is a no-go for now and what would reopen it.
+
+| Idea | Area | Kind | Parked on | Why |
+|---|---|---|---|---|
+| [Keychain Secure Enclave signer with a paid Apple account](parked/keychain-secure-enclave-signer.md) | Signers | feature | 2026-11-02 | Plan B under `_writd` already meets every goal, and a launchd daemon can't use the data protection keychain (TN3137) |

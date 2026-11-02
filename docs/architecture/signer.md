@@ -85,7 +85,7 @@ Gitea also ask for a proof, signed through [`writ prove-key`](approvals.md#provi
 |---|---|---|---|
 | **Software** (v1) | ed25519, P-256 | While unsealed, by root on the host | Encrypted keystore at rest, sealed start |
 | **YubiKey PIV** | P-256, P-384, ed25519 (recent firmware) | No | Touch policy must be `never` for unattended agent keys; USB passthrough to the container |
-| **Secure Enclave** | P-256 | No | Local mode on a Mac only. v1: a CryptoKit key under the dedicated `_writd` user (`se-cryptokit`, M7.5); a keychain access group (`se-keychain`) needs a paid Apple account. See [macOS Secure Enclave](macos-secure-enclave.md) |
+| **Secure Enclave** | P-256 | No | Local mode on a Mac only. v1: a CryptoKit key under the dedicated `_writd` user (`se-cryptokit`, M7.5); a keychain access group (`se-keychain`) is [parked](../backlog/parked/keychain-secure-enclave-signer.md). See [macOS Secure Enclave](macos-secure-enclave.md) |
 | **TPM 2.0** | P-256 | No | Possible future backend on the server |
 | **Cloud KMS** (AWS, Google Cloud, Azure, Vault Transit…) | P-256, ed25519 on some | No | Possible future backend for a host with no hardware: a network call per signature, and a credential for the service on the daemon ([backlog](../backlog/README.md#cloud-kms-signer-backend)) |
 | **ssh-agent** (any socket: Secretive, yubikey-agent, 1Password…) | Whatever the agent holds | Depends on what backs it | Lets the daemon reuse an existing agent. Caveat: if agents run as the same user and can reach that socket, they can bypass Writ; only safe when the socket is out of the agents' reach (other user, other host) |

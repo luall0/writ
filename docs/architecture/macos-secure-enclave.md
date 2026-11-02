@@ -17,7 +17,7 @@ In local mode, `writd` should hold agent keys that are:
 2. **usable without a prompt**: agents work unattended, including with the screen locked
 3. **usable only by the daemon**: not by other processes running as my user (agents included)
 
-The paid route (Apple Developer Program) meets all three with a keychain access group. This document covers what we can do **before paying**, and the fallbacks if those options don't work.
+This document covers what we can do without the Apple Developer Program, and the fallbacks if those options don't work. The paid route (a keychain access group) was meant to meet all three, but under the dedicated `_writd` user it brings nothing Plan B lacks, and a launchd daemon can't use the data protection keychain anyway: it is [parked](../backlog/parked/keychain-secure-enclave-signer.md).
 
 ## Background: why a self-signed certificate isn't enough
 
@@ -109,7 +109,7 @@ If neither A nor B works:
 
 `writd` in Docker on the homelab server with the software signer. Nothing here depends on Apple signing, and approvals already go through Secretive, which is signed.
 
-Neither mode waits on the Secure Enclave: local mode ships first (M7) with the software signer and a daemon isolated from my user, and the Secure Enclave backend plugs in afterwards (M7.5) as one more `Signer`, whichever plan passes, or once I pay for the account.
+Neither mode waits on the Secure Enclave: local mode ships first (M7) with the software signer and a daemon isolated from my user, and the Secure Enclave backend plugs in afterwards (M7.5) as one more `Signer`: Plan B, `se-cryptokit`, which the M0 spike chose.
 
 ## Decision flow
 
@@ -123,7 +123,6 @@ flowchart TD
   D -- yes --> D1[Backend: yubikey-piv + dedicated user]
   D -- no --> D2[Backend: software + dedicated user]
   A1 & B1 & D1 & D2 --> E[Plugged into local mode as a Signer backend, M7.5]
-  P[Pay for Apple Developer Program] -.replaces.-> A1
 ```
 
 ## M0 results
@@ -137,8 +136,9 @@ Measured on an M1 Pro, macOS 27.2, FileVault on; details in
   signed with my Apple Development identity, used the key with no prompt**: the group binds
   the key to my team, and anything running as my user can sign with my team (identity in the
   login keychain, Xcode's account session). Development builds also allow debugger attach,
-  and the profile lasts 7 days. Kept for a paid account in the
-  [backlog](../backlog/README.md#keychain-secure-enclave-signer-with-a-paid-apple-account).
+  and the profile lasts 7 days. The paid-account version is
+  [parked](../backlog/parked/keychain-secure-enclave-signer.md): under `_writd` it adds
+  nothing to Plan B, and a launchd daemon can't use the data protection keychain.
 - **Plan B** passes: a role account `_writd` (uid below 500, no shell, hidden) creates the
   key from a LaunchDaemon and signs with no prompt (8–44 ms), with the screen locked, after a
   reboot and while nobody is logged in. My user can't read the blob, use it, attach to the
@@ -159,7 +159,7 @@ Notes for M7 and M7.5:
 
 | Plan | Cost | Non-exportable | Only the daemon | Works with screen locked | Maintenance |
 |---|---|---|---|---|---|
-| Paid account + access group | 99 €/yr | ✅ | ⚠️ team-wide: only if the signing identity is out of my user's reach | ✅ | Low |
+| Paid account + access group ([parked](../backlog/parked/keychain-secure-enclave-signer.md)) | 99 €/yr | ✅ | ⚠️ team-wide in my session; under `_writd` the daemon probably can't use the keychain (TN3137) | ✅ | Low |
 | A: Personal Team + access group (tested) | Free | ✅ | ❌ team-wide: any code I can sign with my team | ✅ | Rebuild every 7 days |
 | B: CryptoKit + dedicated user (tested, chosen) | Free | ✅ | ✅ (Unix permissions) | ✅ | Medium (user + LaunchDaemon setup) |
 | C: CryptoKit, own user | Free | ✅ | ❌ | ✅ | Testing only |
@@ -173,7 +173,7 @@ All plans plug into the existing `Signer` interface:
 
 | Backend id | Used by |
 |---|---|
-| `se-keychain` | Paid account, Plan A |
+| `se-keychain` | Plan A (not built; the paid version is [parked](../backlog/parked/keychain-secure-enclave-signer.md)) |
 | `se-cryptokit` | Plans B and C |
 | `yubikey-piv` | Plan D |
 | `software` | Plan D, Plan E |
@@ -187,3 +187,4 @@ Switching plans changes only the configured backend, not the daemon.
 - Legacy file-based keychain with ACLs: can't hold Secure Enclave keys
 - CryptoKit blob alone as an isolation mechanism: it's bound to the Mac, not to the app (confirmed in M0)
 - Personal Team keychain access group as isolation from my user: any code signed with my team can use the key, and anything running as my user can sign with my team (M0)
+- Data protection keychain from a launchd daemon (paid account or not): only available in a user login context, per Apple's [TN3137](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains); not tested by us, see the [parked page](../backlog/parked/keychain-secure-enclave-signer.md)
