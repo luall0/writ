@@ -64,7 +64,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Hardware-wrapped secrets](hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | specified; picked as [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
-| [Secure Enclave session keys](#secure-enclave-session-keys) | Identity | hardening | M | idea |
+| [Non-exportable session keys](#non-exportable-session-keys) | Identity | hardening | M | idea |
 | [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | idea |
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
@@ -146,11 +146,27 @@ Same, on the iPhone (Secure Enclave + Face ID), to approve away from the Mac.
 
 ## Identity
 
-### Secure Enclave session keys
+### Non-exportable session keys
 
-The optional session agent holds the session key in the Mac's Secure Enclave (no Touch ID),
-so malware on the agent host can use it during the lease but never copy it
-([Identity](../architecture/identity.md)).
+The session key held by a dedicated ssh-agent on the agent host, backed by a key that can't be
+exported: the Secure Enclave on a Mac (a CryptoKit key, no Touch ID), a TPM on Linux
+(`ssh-tpm-agent`), a YubiKey (`yubikey-agent`, touch policy `never`). `writ request` asks that
+agent for the session key instead of writing `~/.writ/sessions/<lease>/key`, and the session's
+git config points `ssh` at its socket (`IdentityAgent`). Malware on the agent host can use the
+key during the lease, never copy it ([Identity](../architecture/identity.md)).
+
+- Never the user's own agent (hard rule 8): a socket set apart for Writ.
+- The daemon doesn't change: it already takes Ed25519 and P-256 session keys. It can't tell
+  where a key lives (no attestation), so this is hardening the agent host opts into, never
+  something a lease can require (hard rule 1).
+- Where it helps: detached mode, where a copied key works from any address the agents'
+  `allow` list admits. Little in local mode: the Unix socket and the process chain already
+  refuse a copied key used from anywhere else.
+- One key per lease is easy where keys are blobs (Secure Enclave, TPM); a YubiKey has a few
+  slots, so a key would be reused across leases (revocation stays per certificate): to settle
+  before building.
+- [Source-address pinning](#source-address-pinning) answers the same theft, enforced by the
+  daemon and on every OS: likely first.
 
 ### Local mode on Linux
 
