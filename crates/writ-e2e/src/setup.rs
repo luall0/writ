@@ -1,5 +1,5 @@
 //! The operator setup, from nothing, in the order the operator guide gives it
-//! (docs/guides/operator.md#setting-up-the-daemon): the daemon's files with relative paths,
+//! (docs/operators/setup.md): the daemon's files with relative paths,
 //! the upstream credentials added on Forgejo as deploy keys (and the HTTPS repo's token in the
 //! keystore, its front's certificate trusted), Forgejo's host key pinned and
 //! checked against the one it publishes, the signing keys listed, the daemon's host key and

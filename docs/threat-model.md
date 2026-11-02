@@ -155,7 +155,7 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 - ❌ Protection of the operator's own credentials from an agent running as the operator:
   Writ guards what goes through the daemon. The operator's signing and push keys stay theirs
   by needing their presence (Touch ID, a security key), and no credential helper or token
-  should answer silently ([operator guide](guides/operator.md))
+  should answer silently ([operators' good practice](operators/good-practice.md#protect-your-own-credentials))
 
 ## Residual risks (v1)
 

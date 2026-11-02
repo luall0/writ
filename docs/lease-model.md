@@ -14,6 +14,9 @@ Three layers, from fixed to per-task:
 
 The code for this page lives in `crates/writ-core` (types, template fit, narrowing, state
 machine) and is enforced by the [policy engine](architecture/policy-and-state.md).
+Every key of the registry, the templates and the ticket file, with its default, bound and
+status: the operator reference ([`policy.yaml`](operators/policy-yaml.md),
+[the ticket file](operators/ticket.md)).
 
 ## Repo registry (daemon config, admin-approved)
 

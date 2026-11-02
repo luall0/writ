@@ -1,0 +1,53 @@
+# writd.yaml: the daemon's configuration (docs/operators/writd-yaml.md has every key).
+# Required keys are set; every optional key is commented out at its default value.
+# Relative paths are relative to this file's directory. Mode 0644 or stricter, owned by the
+# daemon's user.
+
+state_dir: data                    # leases.db, audit.jsonl, repos/ (the mirrors), run/
+policy: policy.yaml                # the repo registry and the templates
+approvers: approvers               # `<name> <public key>` per line: who may sign
+readers: readers                   # one line per reader key, as `writ reader <name>` prints it
+keystore:
+  dev: data/keys                   # debug builds with the dev-keystore feature only (M5: sealed)
+# unlock:
+#   passphrase: data/keys/data-key.age   # read and logged, used from M5
+
+# Approvals and tickets
+# decisions: signed                # signed | open: refusals and revocations signed too
+# max_pending: 20                  # tickets waiting for the approver at once, 1 or more
+# submissions:
+#   per_source: 10                 # tickets one source submits a minute, 1 to 1000
+#   in_all: 60                     # all sources together, 1 to 10000
+# sign_requests:
+#   per_lease: 4                   # commit sign requests held at once per lease, 1 to 16
+
+mirrors:
+  known_hosts: upstream_known_hosts   # the remotes' SSH host keys, pinned by hand
+  # ca_certs: upstream_ca.pem      # https:// upstreams: these CAs only (default: the system's)
+  # git: /usr/bin/git              # absolute path; 2.45, or 2.47 for https:// upstreams
+  # ssh: /usr/bin/ssh              # absolute path
+  # fresh_for: 10s                 # 0s to 1h: a mirror synced this recently isn't synced again
+  # sync_every: 5m                 # 10s to 1d: background sync of every mirror
+  # timeout: 5m                    # 10s to 1h: one sync or upstream push
+  # max_fetch: 1GiB                # 1MiB to 64GiB: the most one sync takes from upstream
+
+# Listeners: each is `tcp: "host:port"` (or `unix: <path>`, refused until local mode, M7),
+# with `allow`, the addresses or CIDR ranges that may connect.
+transports:
+  agents:                          # at least one; `allow` required on TCP
+    - { tcp: "0.0.0.0:2222", allow: ["10.0.0.0/24"] }
+  approvals:                       # ssh and https may each be [] (disabled), not both
+    ssh:
+      - { tcp: "127.0.0.1:2223" }  # `allow` optional: only readers get in
+    https:
+      - { tcp: "127.0.0.1:8443" }  # pin `writd tls-fingerprint writd.yaml` on the client
+
+attestor: network                  # network | macos_process_chain (local mode, M7)
+session_watcher: none              # none | macos (local mode, M7)
+
+# Notifications (none by default): a Telegram bot.
+# notifiers:
+#   - telegram:
+#       token_file: data/keys/telegram-token   # the bot token alone, mode 0600
+#       chat_id: "123456789"       # a numeric id (quoted), or @channelname
+#       api_base: https://api.telegram.org     # another Bot API server

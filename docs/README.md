@@ -21,6 +21,14 @@ conventions, hard rules and commands, and points here for details.
 - [History](history/README.md): what was built, in order.
 - [Decisions](decisions.md): decision log (Q1–Q32) and open questions.
 
+## Operators
+- [Operators](operators/README.md): running Writ. [Setting up the daemon](operators/setup.md);
+  every setting, with its default, bounds and status: [`writd.yaml`](operators/writd-yaml.md),
+  [`policy.yaml`](operators/policy-yaml.md) (registry and templates),
+  [the ticket file](operators/ticket.md), [client settings](operators/clients.md);
+  [good practice](operators/good-practice.md) beside an agent (wrapper or whole repo, your own
+  keys, guardrails, checking what landed).
+
 ## Domain
 - [Lease model](lease-model.md): repo registry, templates, ticket / lease schema, trust of
   each constraint, lifecycle, rules.
@@ -64,6 +72,3 @@ conventions, hard rules and commands, and points here for details.
   and write down; answering an advisory.
 - [Manual checks](guides/manual-checks.md): the checks that need a person (Touch ID with
   Secretive), step by step against the development daemon.
-- [Operator guide](guides/operator.md): wiring a repo for an agent beside your own git
-  workflow (wrapper or whole repo), protecting your own keys, guardrails in the agent's
-  configuration, checking what landed.

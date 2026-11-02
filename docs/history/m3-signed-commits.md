@@ -9,7 +9,7 @@
   ([repo setup](../architecture/clients.md#repo-setup-on-an-agent-host)).
 - Added during the milestone, after a discussion with the user: `writ init` in wrapper mode
   by default (the operator's own git untouched), each repo's `object_format` in the
-  registry, an [operator guide](../guides/operator.md), and "remote" in place of "forge" in
+  registry, an [operator guide](../operators/good-practice.md), and "remote" in place of "forge" in
   the docs.
 
 **Status:** done on 2026-11-01, in five `feat:` steps, two `docs:` commits, and a test fix
@@ -58,7 +58,7 @@ default, or `sha256`); a commit is signed only in its repo's format
 (`DenyCode::ObjectFormat`). The M4 roadmap gained a push-time check of the touched paths on
 the objects git verified in the quarantine.
 
-**Docs**: this page, the [operator guide](../guides/operator.md), the M6 note (one skill,
+**Docs**: this page, the [operator guide](../operators/good-practice.md), the M6 note (one skill,
 always `writ git`), and a separate commit replacing "forge" with "remote" (or GitHub,
 Codeberg, Forgejo, GitLab…) outside the history pages.
 

@@ -63,7 +63,7 @@ minutes): the others run beside it, so a run never takes less than about 5 minut
 1. `tool/e2e.sh` builds the images, starts `forgejo`, `writd` (idle: its entrypoint,
    `e2e/writd-start.sh`, waits for the operator) and `agent`, then runs the runner.
 2. The first scenario to need the stack runs **the operator setup** (`crates/writ-e2e/src/setup.rs`),
-   once, from nothing, in the order of the [operator guide](guides/operator.md#setting-up-the-daemon):
+   once, from nothing, in the order of the [operator setup](operators/setup.md):
    the daemon's files; `writd upstream-keys`, each key added on its repository as a deploy key;
    the `https` repo's token (made on the account for repositories) pasted into the keystore,
    the HTTPS front's certificate as `upstream_ca.pem`; Forgejo's host key scanned, compared with the one Forgejo publishes, pinned; `writd
@@ -201,7 +201,7 @@ and that file runs each of its lines through `doc_step`, `doc_step_fails` or
 `# comment` ignored). `tool/check-e2e.py` checks both ways: every command line of a marked
 block is run by that file, and every `doc_step…` literal is a line of a block marked for its
 file. So a step changed in the docs is changed in the pipeline, and the other way round.
-Today: the operator guide's [setup](guides/operator.md#setting-up-the-daemon) (`setup.rs`)
+Today: the operator guide's [setup](operators/setup.md) (`setup.rs`)
 and the [GitHub manual check](guides/manual-checks.md#a-throwaway-github-repo-m4)'s agent
 steps (`wrapper_mode.rs`).
 

@@ -1,0 +1,35 @@
+# A ticket, as an agent writes it for `writ request` (docs/operators/ticket.md has every key).
+# Required keys are set; every optional key is commented out at its default value.
+# Everything here is checked against a template, and shown to the approver as written.
+
+scope:
+  repos: [my-repo]
+  operations: [fetch, commit_sign, push]   # fetch | commit_sign | push
+  branches: ["agent/oauth-login"]  # needed for commit_sign and push
+  # force_push: false
+  # committer_emails: []           # empty: the template's
+ticket:
+  title: "Add OAuth login"         # one line, 200 characters at most
+  task: "Add GitHub OAuth login to the web app, behind a feature flag"
+  # plan: []                       # one-line steps, in order, e.g. ["Callback route", "Tests"]
+  # expected_paths: []             # globs, e.g. ["src/auth/**", "tests/auth/**"]
+  # amends: null                   # the active lease (of this session) this ticket amends
+  # revises: null                  # the refused ticket (of this session) this one revises
+
+# template: null                   # null: the only template the ticket fits
+# origin_hint: null                # where the agent runs, shown to the approver
+# limits:                          # each omitted: the template's maximum
+#   ttl: 4h                        # at least 5m, counted from submission
+#   max_signatures: 50
+#   max_pushes: 30
+#   max_ops_per_minute: 20
+#   max_push_size: 50MB
+# on_violation: deny_and_notify    # deny_and_notify | revoke_lease
+# caller:                          # none by default; local mode, set by a harness
+#   descends_from:                 # the process the lease's callers must descend from
+#     executable: /Applications/Harness.app/Contents/MacOS/harness
+#     pid: 4242
+#     generation: 118              # its pidversion: a reused pid doesn't match
+#     code_identity:               # optional: its code signature must match too
+#       signing_id: com.example.harness
+#       team_id: ABCDE12345        # optional

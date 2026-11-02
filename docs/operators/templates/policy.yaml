@@ -1,0 +1,32 @@
+# policy.yaml: the repo registry and the templates (docs/operators/policy-yaml.md has every
+# key). Required keys are set; every optional key is commented out at its default value.
+# Mode 0644 or stricter, owned by the daemon's user.
+
+repos:
+  my-repo:                         # the name agents use; unique ignoring case
+    upstream: ssh://git@github.com/me/my-repo.git   # or https://host/path, with a token
+    upstream_credential: upstream-my-repo-01   # `writd upstream-keys` prints it (a deploy key)
+    # protected_refs: []           # full refs no lease may push, e.g. ["refs/heads/main", "refs/tags/*"]
+    # push_modes: [gateway]        # gateway | proxy (M9) | direct_ssh (M10)
+    # ticket_link: ledger_only     # ledger_only | trailer (a `Writ: <lease>` line) | notes (M4.7)
+    # object_format: sha1          # sha1 | sha256
+    # direct_ssh:                  # only with push_modes [direct_ssh] (M10)
+    #   hosts: [github.com]
+    #   allow_account_wide: false
+
+templates:
+  feature-branch:                  # a ticket names it, or fits it alone
+    repos: [my-repo]               # each in the registry
+    operations: [fetch, commit_sign, push]   # fetch | commit_sign | push
+    branches: ["agent/*"]          # required with commit_sign or push
+    committer_emails: ["me+agent@example.org"]   # required with commit_sign
+    signing_key: agent-ed25519-01  # required with commit_sign: `writd signing-keys` prints it
+    max_ttl: 4h                    # at least 5m
+    max_signatures: 50
+    max_pushes: 30
+    max_ops_per_minute: 20         # at least 1
+    max_push_size: 50MB
+    # push_modes: [gateway]        # within each repo's push_modes
+    # force_push: false            # whether a ticket may ask for force pushes
+    # paths_check: warn            # off | warn | deny: commits vs the ticket's expected_paths
+    # require_expected_paths: false

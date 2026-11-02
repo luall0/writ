@@ -242,13 +242,13 @@ serves that one operation.
   at startup.
 
 `writd upstream-keys <writd.yaml>` prints each credential's public key and the repos that use
-it, to add on each remote ([operator guide](../guides/operator.md#upstream-keys-and-host-keys)).
+it, to add on each remote ([operator guide](../operators/setup.md#upstream-keys-and-host-keys)).
 
 ### HTTPS with a token
 
 For remotes reached over HTTPS only. A token can't sign: unlike an SSH key it has to reach
 git, so it reaches only the daemon's own git, for one operation, and only for the registry's
-host ([operator guide](../guides/operator.md#https-upstreams-and-tokens)).
+host ([operator guide](../operators/setup.md#https-upstreams-and-tokens)).
 
 - The URL is the registry's `https://[user@]host[:port]/path`, read strictly: a plain host
   name or address, no password (refused: the token is in the keystore), no query or fragment.

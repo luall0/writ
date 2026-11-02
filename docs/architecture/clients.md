@@ -65,7 +65,7 @@ git. The values they replace are recorded first.
 
 `writ init --undo` takes either back exactly: the record removed, and in whole-repo mode every
 key restored as it was. Good practice for the operator (their own keys, guardrails in the
-agent's configuration): the [operator guide](../guides/operator.md).
+agent's configuration): the [operators' good practice](../operators/good-practice.md).
 
 ```ini
 # The settings, as --whole-repo writes them (writ init omega-code); <home> is WRIT_HOME

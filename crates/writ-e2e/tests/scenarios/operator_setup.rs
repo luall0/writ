@@ -1,4 +1,4 @@
-//! Scenario 1, the operator setup from nothing (docs/guides/operator.md#setting-up-the-daemon):
+//! Scenario 1, the operator setup from nothing (docs/operators/setup.md):
 //! the setup runs once per stack, with the guide's own commands ([`writ_e2e::setup`]); this
 //! checks what it saw and that the daemon it started checks every push. The two bugs M4's
 //! GitHub check found fail here: a command that prints a key needing the approvers file
