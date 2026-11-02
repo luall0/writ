@@ -9,6 +9,7 @@
 //!   ca.age      ca.pub      the SSH CA key (age file), its public half (in clear)
 //!   signing/<id>.age .pub   the agent signing keys
 //!   upstream/<id>.age .pub  the ssh:// upstreams' credentials
+//!   tokens/<id>.age         the https:// upstreams' tokens, and the notifiers' kept sealed
 //! keystore.sealed.boot (0700): read at a sealed start
 //!   host                    the SSH host key (OpenSSH, 0600)
 //!   tls-01 tls-01.crt       the HTTPS approval API's key (P-256, OpenSSH, 0600), its
@@ -25,9 +26,11 @@ use anyhow::{Context, bail};
 use writ_core::config::PolicyConfig;
 use writ_core::names::KeyId;
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
+use writ_mirror::credential::UpstreamToken;
+use writ_platform::notify::telegram::BotToken;
 use zeroize::Zeroizing;
 
-use super::{Keys, PublicKeys, TlsKeyPair, signing_ids, upstream_credentials, write_private};
+use super::{Boot, Keys, PublicKeys, TlsKeyPair, signing_ids, upstream_credentials, write_private};
 use crate::config::SealedConfig;
 
 /// The largest secret file read: a key or a token in an age file is a few hundred bytes.
@@ -65,6 +68,12 @@ impl Layout<'_> {
     pub fn upstream_public(&self, id: &KeyId) -> PathBuf {
         self.upstream_dir().join(format!("{id}.pub"))
     }
+    pub fn tokens_dir(&self) -> PathBuf {
+        self.0.dir.join("tokens")
+    }
+    pub fn token(&self, id: &KeyId) -> PathBuf {
+        self.tokens_dir().join(format!("{id}.age"))
+    }
     pub fn host(&self) -> PathBuf {
         self.0.boot.join("host")
     }
@@ -78,20 +87,14 @@ impl Layout<'_> {
 
 /// An identity that may open a secret file: the keystore's own (unwrapped at unseal), or,
 /// from M7.6, one held by hardware.
-// Used by the sealed start (M5 step 3); the keystore's tests use it now.
-#[cfg_attr(not(test), allow(dead_code))]
 pub type SecretIdentity = Box<dyn age::Identity + Send + Sync>;
 
 /// Opens the keystore's secret files: the one seam a secret is unwrapped through. A file is
 /// opened by whichever of the identities its header names a stanza for.
-// Used by the sealed start (M5 step 3); the keystore's tests use it now.
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct SecretFiles {
     identities: Vec<SecretIdentity>,
 }
 
-// Used by the sealed start (M5 step 3); the keystore's tests use it now.
-#[cfg_attr(not(test), allow(dead_code))]
 impl SecretFiles {
     pub fn new(identities: Vec<SecretIdentity>) -> Self {
         Self { identities }
@@ -213,6 +216,65 @@ pub fn tls(sealed: &SealedConfig) -> anyhow::Result<TlsKeyPair> {
     })
 }
 
+/// What a sealed daemon reads at start: the boot tier, and the CA's public half.
+pub fn boot(sealed: &SealedConfig) -> anyhow::Result<Boot> {
+    Ok(Boot {
+        host: host_key(sealed)?,
+        tls: tls(sealed)?,
+        ca_public: read_public(&Layout(sealed).ca_public(), "the CA key")?,
+    })
+}
+
+/// The sealed secret `tokens/<id>.age`, opened by `files`; `what` names it. A missing one is
+/// a token nobody added yet.
+fn sealed_token(
+    files: &SecretFiles,
+    sealed: &SealedConfig,
+    id: &KeyId,
+    what: &str,
+) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+    let path = Layout(sealed).token(id);
+    if !path.exists() {
+        bail!(
+            "{what} {id} is not in the keystore: an approver adds it with `writ admin token {id}`"
+        );
+    }
+    files.read(&path, what)
+}
+
+/// The tokens of `https://` repos, opened by `files`.
+pub fn tokens(
+    sealed: &SealedConfig,
+    policy: &PolicyConfig,
+    files: &SecretFiles,
+) -> anyhow::Result<std::collections::BTreeMap<KeyId, std::sync::Arc<UpstreamToken>>> {
+    let (_, ids) = upstream_credentials(policy)?;
+    ids.into_iter()
+        .map(|id| {
+            let bytes = sealed_token(files, sealed, id, "upstream token")?;
+            let token = UpstreamToken::from_bytes(&bytes)
+                .map_err(|why| anyhow::anyhow!("upstream token {id}: not a token: {why}"))?;
+            Ok((id.clone(), std::sync::Arc::new(token)))
+        })
+        .collect()
+}
+
+/// The tokens of the notifiers that keep theirs sealed, opened by `files`.
+pub fn bot_tokens(
+    sealed: &SealedConfig,
+    ids: &std::collections::BTreeSet<KeyId>,
+    files: &SecretFiles,
+) -> anyhow::Result<std::collections::BTreeMap<KeyId, BotToken>> {
+    ids.iter()
+        .map(|id| {
+            let bytes = sealed_token(files, sealed, id, "notifier token")?;
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|_| anyhow::anyhow!("notifier token {id}: not text"))?;
+            Ok((id.clone(), BotToken::new(text.trim().to_owned())?))
+        })
+        .collect()
+}
+
 /// The public halves: the boot tier's keys, and the `.pub` files beside each sealed key, for
 /// every key the policy names. Nothing sealed is opened.
 pub fn public(sealed: &SealedConfig, policy: &PolicyConfig) -> anyhow::Result<PublicKeys> {
@@ -242,7 +304,6 @@ pub fn public(sealed: &SealedConfig, policy: &PolicyConfig) -> anyhow::Result<Pu
 
 /// The sealed key at `secret`, opened by `files`, and checked against its public half at
 /// `public` (the one printed and registered): a mismatch means one was replaced.
-#[cfg_attr(not(test), allow(dead_code))] // The sealed start (M5 step 3).
 fn sealed_key(
     files: &SecretFiles,
     secret: &Path,
@@ -264,7 +325,6 @@ fn sealed_key(
 
 /// The daemon's keys, from the sealed keystore opened by `files`: the boot tier's, and every
 /// sealed key the policy names.
-#[cfg_attr(not(test), allow(dead_code))] // The sealed start (M5 step 3).
 pub fn keys(
     sealed: &SealedConfig,
     policy: &PolicyConfig,
@@ -300,10 +360,8 @@ pub fn keys(
         .collect::<anyhow::Result<_>>()?;
     Ok(Keys {
         ca: sealed_key(files, &layout.ca(), &layout.ca_public(), "the CA key")?,
-        host: host_key(sealed)?,
         signing,
         upstream,
-        tls: tls(sealed)?,
     })
 }
 
@@ -457,9 +515,11 @@ mod tests {
         assert_eq!(public.upstream, made.keys.upstream);
 
         let keys = keys(&sealed, &policy(), &opened(&sealed, PASSPHRASE).unwrap()).unwrap();
-        assert_eq!(*keys.host.public_key(), made.keys.host);
+        let boot = boot(&sealed).unwrap();
+        assert_eq!(*boot.host.public_key(), made.keys.host);
+        assert_eq!(boot.ca_public, *keys.ca.public_key());
         assert_eq!(
-            writ_crypto::tls::fingerprint_pem(&keys.tls.cert_pem).unwrap(),
+            writ_crypto::tls::fingerprint_pem(&boot.tls.cert_pem).unwrap(),
             made.keys.tls_fingerprint
         );
         let ids = |keys: &[(KeyId, PrivateKey)]| -> Vec<String> {

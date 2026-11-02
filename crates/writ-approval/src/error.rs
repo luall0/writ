@@ -33,6 +33,11 @@ pub enum RefusalCode {
     /// A proof that can't be made: not a `writ-proof/1` document (a namespace refused, a
     /// message empty or too long), a key no template signs with, or the signer failed.
     Proof,
+    /// The daemon is sealed: nothing but `info` and an unseal is served.
+    Sealed,
+    /// An unseal that can't be accepted: not this boot's or this daemon's document, a
+    /// signature not an approver's, a wrong passphrase, or a keystore that doesn't open.
+    Unseal,
 }
 
 /// Why a request to the service failed. What a client may see is its `Display`; an internal

@@ -72,7 +72,10 @@ pub(crate) async fn reconcile(gateway: &Gateway, repo: &RepoName) {
     };
     if !unrecorded.is_empty() {
         let ids: Vec<CommitId> = unrecorded.iter().map(|(id, _)| id.clone()).collect();
-        let held = match gateway.shared.config.mirrors.lock(repo).await {
+        let Ok(mirrors) = gateway.mirrors() else {
+            return;
+        };
+        let held = match mirrors.lock(repo).await {
             Ok(guard) => guard.held_commits(&ids).await,
             Err(e) => Err(e),
         };
@@ -108,7 +111,9 @@ pub(crate) async fn reconcile(gateway: &Gateway, repo: &RepoName) {
 /// Writes and pushes the notes waiting on `repo` (at most [`MAX_NOTES`]; the rest go with the
 /// next push), one batch per credential, the mirror held for it.
 pub(crate) async fn write(gateway: &Gateway, repo: &RepoName) {
-    let mirrors = &gateway.shared.config.mirrors;
+    let Ok(mirrors) = gateway.mirrors() else {
+        return;
+    };
     let held = mirrors.lock(repo).await;
     let pending = {
         let (service, repo) = (gateway.service().clone(), repo.clone());

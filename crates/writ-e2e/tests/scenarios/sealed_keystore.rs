@@ -3,11 +3,16 @@
 //! at rest reveals no key (every secret its own age file, only public halves in clear); the
 //! boot tier holds the host and TLS keys alone; the commands that print a key read the public
 //! halves with no passphrase, and print what `writd init` printed; a second `writd init`, and
-//! a short passphrase, are refused and leave nothing behind.
+//! a short passphrase, are refused and leave nothing behind. Then a second daemon on its own
+//! ports, started sealed: every request refused with "daemon sealed" until the approver runs
+//! `writ unseal` (a wrong passphrase refused first, over HTTPS; the right one over SSH).
+
+use std::time::Duration;
 
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
-use writ_e2e::setup::{POLICY_YAML, WRITD_YAML};
+use writ_e2e::docker::eventually;
+use writ_e2e::setup::{DAEMON, POLICY_YAML, WRITD_YAML};
 
 /// The end-to-end `writd.yaml` with a sealed keystore in `keys/` and its boot tier in `boot/`.
 fn sealed_yaml() -> String {
@@ -135,4 +140,115 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
         "writd: the passphrase is 9 characters: at least 12 are needed"
     );
     assert_eq!(short.ok("ls"), "policy.yaml\nwritd.yaml\n");
+}
+
+/// The second daemon's policy: one repo, one template (no `https://` repo, whose token only an
+/// approver adds).
+const SEALED_POLICY: &str = r#"repos:
+  setup: { upstream: "ssh://git@forgejo/writ/setup.git", upstream_credential: upstream-sealed }
+templates:
+  feature:
+    repos: [setup]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ.invalid"]
+    signing_key: agent-sealed
+    max_ttl: 1h
+    max_signatures: 10
+    max_pushes: 10
+    max_ops_per_minute: 10
+    max_push_size: 1MB
+"#;
+
+#[test]
+#[ignore = "end to end: make e2e"]
+fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
+    let stack = Stack::shared();
+    let home = &stack.operator;
+    home.ok("mkdir -p sealed-run && cp approvers readers upstream_known_hosts upstream_ca.pem sealed-run/");
+    let dir = home.with(&format!("{}/sealed-run", home.dir), None);
+    // Its own ports, beside the stack's daemon.
+    let yaml = sealed_yaml()
+        .replace("0.0.0.0:2222", "0.0.0.0:3222")
+        .replace("0.0.0.0:2223", "0.0.0.0:3223")
+        .replace("0.0.0.0:8443", "0.0.0.0:9443");
+    dir.write("writd.yaml", &yaml, "0644");
+    dir.write("policy.yaml", SEALED_POLICY, "0644");
+    let passphrase = "the sealed run's passphrase";
+    expect(
+        &dir.run_with(
+            "writd init writd.yaml",
+            format!("{passphrase}\n").as_bytes(),
+        ),
+        0,
+        "init",
+    );
+    let host_key = dir.ok("writd host-key writd.yaml").trim().to_owned();
+    let pin = dir.ok("writd tls-fingerprint writd.yaml").trim().to_owned();
+    dir.ok("nohup writd run writd.yaml > writd.log 2>&1 & echo $! > writd.pid");
+    eventually("the sealed daemon started", Duration::from_secs(30), || {
+        dir.run("grep -q 'sealed=true' writd.log").status.success()
+    });
+
+    // The approver pins it, and uses every flag of `writ unseal`.
+    let approver = &stack.approver;
+    approver.ok("mkdir -m 700 -p .writ-sealed");
+    approver.write(
+        ".writ-sealed/known_hosts",
+        &format!("[{DAEMON}]:3223 {host_key}\n"),
+        "0644",
+    );
+    approver.write(
+        ".writ-sealed/tls_pins",
+        &format!("[{DAEMON}]:9443 {pin}\n"),
+        "0644",
+    );
+    let writ =
+        "writ --known-hosts $HOME/.writ-sealed/known_hosts --tls-pins $HOME/.writ-sealed/tls_pins";
+    let ssh = format!("ssh://{DAEMON}:3223");
+    let https = format!("https://{DAEMON}:9443");
+    let signer = "--key $HOME/.writ/approver.pub --agent $HOME/agent.sock";
+
+    let out = approver.run(&format!("{writ} ls --approval-url {ssh}"));
+    let (_, why) = expect(&out, 1, "ls while sealed");
+    assert!(
+        why.contains("daemon sealed: an approver unseals it with `writ unseal`"),
+        "{why}"
+    );
+
+    let out = approver.run_with(
+        &format!("{writ} unseal --approval-url {https} {signer}"),
+        b"not the passphrase\n",
+    );
+    let (said, why) = expect(&out, 1, "a wrong passphrase");
+    assert!(said.contains("is sealed (start "), "{said}");
+    assert!(why.contains("wrong passphrase"), "{why}");
+
+    let out = approver.run_with(
+        &format!("{writ} unseal --approval-url {ssh} {signer}"),
+        format!("{passphrase}\n").as_bytes(),
+    );
+    let (said, _) = expect(&out, 0, "writ unseal");
+    assert!(said.contains("Unsealed (signed by SHA256:"), "{said}");
+    let out = approver.run(&format!("{writ} ls --approval-url {https}"));
+    expect(&out, 0, "ls once unsealed");
+
+    // In its audit log: the sealed start, the refusals, the unseal.
+    let audit = dir.read("data/audit.jsonl");
+    let lines: Vec<serde_json::Value> = audit
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let count = |event: &str, result: &str| {
+        lines
+            .iter()
+            .filter(|l| l["event"] == event && l["result"] == result)
+            .count()
+    };
+    assert_eq!(count("seal", "done"), 1, "{audit}");
+    assert_eq!(count("unseal", "denied"), 1, "{audit}");
+    assert_eq!(count("unseal", "allowed"), 1, "{audit}");
+    assert!(count("command", "denied") >= 1, "{audit}");
+    assert!(!audit.contains(passphrase));
+    dir.ok("kill $(cat writd.pid)");
 }

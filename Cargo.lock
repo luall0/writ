@@ -3907,6 +3907,7 @@ dependencies = [
  "writ-proto",
  "writ-signer",
  "writ-store",
+ "zeroize",
 ]
 
 [[package]]
@@ -3993,6 +3994,7 @@ dependencies = [
  "serde",
  "serde_json",
  "writ-core",
+ "zeroize",
 ]
 
 [[package]]

@@ -213,13 +213,7 @@ impl Service {
             priority: Priority::Default,
             tags: vec!["writ".to_owned(), "ticket".to_owned()],
         };
-        // poisoned: no notification (best effort; it grants nothing, the ticket still waits).
-        if let Ok(outbox) = self.notifications.lock()
-            && outbox.try_send(notification).is_err()
-        {
-            self.dropped
-                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        }
+        self.notify(notification);
     }
 
     /// Waits until the ticket is decided. Only the session that submitted it (same key) can

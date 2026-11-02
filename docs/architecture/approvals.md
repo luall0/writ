@@ -53,6 +53,18 @@ triggering the signature; it is the trusted display
 - It signs exactly the canonical bytes it displayed (fetched from the daemon, then decoded and
   re-encoded locally to check they match).
 
+## `writ unseal`
+
+A sealed daemon ([Flows § 7](../flows.md#7-daemon-startup-sealed)) answers only `writ info`
+and `writ unseal`. `writ unseal [--approval-url] [--key] [--agent]` reads the boot to unseal
+from `writ info` (the daemon's host key fingerprint, this start's nonce), asks for the
+keystore's passphrase (one line of stdin when it isn't a terminal), signs the `writ-unseal/1`
+document `{daemon, nonce}` with the approval key, and sends the three over the pinned
+channel. A signature is good for one start of one daemon: replayed after a restart, or sent to
+another daemon, it is refused. The passphrase travels in the request body only, is wiped once
+read on both sides, and is never logged; a wrong one is refused after the signature was
+checked. Both halves are needed: the passphrase alone, or the signature alone, opens nothing.
+
 ## Reaching the daemon
 
 The approval API has two transports, each enabled or disabled in `writd.yaml`

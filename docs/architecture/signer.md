@@ -154,5 +154,17 @@ unlocked ([Q17](../decisions.md)).
 The unseal sequence is [Flows § 7](../flows.md#7-daemon-startup-sealed). Until unsealed, every
 request fails closed with "daemon sealed".
 
+How it is built: the approval service starts sealed (`writ_approval::Service`: no CA key, no
+signer) and the gateway without mirrors; `writ info` names the boot to unseal (the host key's
+fingerprint and a nonce drawn at start). `writ unseal` sends the passphrase with an approver's
+SSHSIG over `writ-unseal/1` (`{daemon, nonce}`); the service checks it
+(`Service::check_unseal`), then the daemon's `Unsealer` (`writd`'s `daemon::Opener`) unwraps
+the identity through `KeystoreUnlock`, opens every secret through the one seam, starts the
+signers and the mirrors (`Gateway::set_mirrors`), and hands the service its keys
+(`Service::unseal`, which checks the CA is the one whose public half the daemon started with
+and that the signer holds every template's key, and logs `unseal` before anything is
+served). The notifiers whose token is sealed (`notifiers[].telegram.token.sealed`) start
+then; those whose token is in the boot tier (`token.boot`) were told of the sealed start.
+
 Secrets held in memory (decrypted keys, the data key, tokens: `UpstreamToken`, `BotToken`) are zeroized on drop and never
 printed through `Debug` or logs.

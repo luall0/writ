@@ -988,6 +988,7 @@ fn violations_are_out_of_scope_denials_only() {
         DenyCode::Caller,
         DenyCode::Config,
         DenyCode::ObjectFormat,
+        DenyCode::Sealed,
     ] {
         assert!(!code.is_violation(), "{code}");
     }

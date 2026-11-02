@@ -217,16 +217,25 @@ sequenceDiagram
   participant U as writ unseal (Mac)
   participant SC as Secretive
   actor Me
-  D->>D: start sealed (only unseal endpoint served)
-  D-->>Me: notification: "writd restarted, sealed"
+  D->>D: start sealed: the boot tier only (host key, TLS key), a boot nonce drawn
+  D-->>Me: notification "writd started, sealed" (token in the boot tier only)
   Me->>U: writ unseal
+  U->>D: writ info (over the pinned SSH or HTTPS channel, reader key)
+  D-->>U: sealed: this daemon (host key fingerprint), this boot (nonce)
   U->>Me: keystore passphrase prompt
-  U->>SC: sign unseal request (namespace writ-approval)
+  U->>SC: sign writ-unseal/1 {daemon, nonce} (namespace writ-approval)
   SC->>Me: Touch ID
-  U->>D: passphrase + SSHSIG over the authenticated channel
-  D->>D: verify approver, decrypt keystore in memory, log UNSEAL
-  D->>D: reload active leases from SQLite
+  U->>D: writ unseal: passphrase + the document + its SSHSIG
+  D->>D: check the document is this daemon's and this boot's, the SSHSIG an approver's
+  D->>D: unwrap the identity (scrypt), open every secret, start the signers and mirrors
+  D->>D: the service gets the CA and the signer, logs UNSEAL; the active leases are served again
+  D-->>Me: notification "writd unsealed"
 ```
 
-Until unsealed, every request fails closed with "daemon sealed". Later, hardware recipients
-replace the passphrase.
+Until unsealed, every request but `writ info` and `writ unseal` fails closed with "daemon
+sealed" (`sealed`), logged and coalesced per source; the sealed start is one `seal` line. The
+signature is checked before the passphrase is tried, so only an approver can make the daemon
+spend scrypt's second; one unseal runs at a time. A wrong passphrase, a signature for another
+boot or another daemon, a key not in `approvers`: each refused, logged, the daemon still
+sealed. The development keystore opens at start (its `unseal` line names it). Later,
+hardware recipients replace the passphrase (M7.6).

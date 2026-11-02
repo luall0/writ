@@ -23,7 +23,8 @@ use writ_signer::queue::{QueueConfig, QueuedSigner};
 use writ_signer::software::SoftwareSigner;
 
 use crate::config::{
-    AttestorConfig, Config, NotifierConfig, SealedConfig, TransportConfig, WatcherConfig,
+    AttestorConfig, Config, NotifierConfig, SealedConfig, TelegramConfig, TokenConfig,
+    TransportConfig, WatcherConfig,
 };
 
 /// A listener and who may connect to it.
@@ -38,7 +39,8 @@ pub struct Platform {
     pub approvals_https: Vec<Listener>,
     pub attestor: Arc<dyn CallerAttestor>,
     pub watcher: Arc<dyn SessionWatcher>,
-    pub notifier: Arc<dyn Notifier>,
+    /// The boot tier's notifiers now; the sealed ones join at unseal.
+    pub notifier: Arc<LateNotifiers>,
 }
 
 /// Commit signatures that may wait for the agent keys' backend while it signs one.
@@ -141,6 +143,12 @@ fn identity_file(sealed: &SealedConfig) -> std::path::PathBuf {
     sealed.dir.join("identity.age")
 }
 
+/// How the sealed keystore's identity is recovered at unseal: the passphrase (age scrypt) in
+/// this build; M7.6 brings hardware recipients, picked here too.
+pub fn unlock(sealed: &SealedConfig) -> Arc<dyn writ_platform::KeystoreUnlock> {
+    Arc::new(PassphraseUnlock::new(identity_file(sealed)))
+}
+
 /// Wraps a new keystore identity with `passphrase` (`writd init`). Refuses an existing file.
 pub fn enroll(
     sealed: &SealedConfig,
@@ -188,16 +196,13 @@ pub async fn build(config: &Config) -> anyhow::Result<Platform> {
             bail!("session_watcher macos is not in this build (local mode, M7)")
         }
     };
-    let mut notifiers: Vec<Arc<dyn Notifier>> = Vec::new();
+    let notifiers = Arc::new(LateNotifiers::default());
     for n in &config.notifiers {
         match n {
             NotifierConfig::Telegram(telegram) => {
-                let token = BotToken::from_file(&telegram.token_file)?;
-                let notifier = match &telegram.api_base {
-                    None => TelegramNotifier::new(token, &telegram.chat_id)?,
-                    Some(base) => TelegramNotifier::with_api_base(token, &telegram.chat_id, base)?,
-                };
-                notifiers.push(Arc::new(notifier));
+                if let TokenConfig::Boot(file) = &telegram.token {
+                    notifiers.add(telegram_notifier(BotToken::from_file(file)?, telegram)?);
+                }
             }
         }
     }
@@ -207,6 +212,50 @@ pub async fn build(config: &Config) -> anyhow::Result<Platform> {
         approvals_https,
         attestor,
         watcher,
-        notifier: Arc::new(Notifiers(notifiers)),
+        notifier: notifiers,
     })
+}
+
+/// A Telegram notifier with its token (from the boot tier, or opened at unseal).
+pub fn telegram_notifier(
+    token: BotToken,
+    telegram: &TelegramConfig,
+) -> anyhow::Result<Arc<dyn Notifier>> {
+    let notifier = match &telegram.api_base {
+        None => TelegramNotifier::new(token, &telegram.chat_id)?,
+        Some(base) => TelegramNotifier::with_api_base(token, &telegram.chat_id, base)?,
+    };
+    Ok(Arc::new(notifier))
+}
+
+/// The notifiers the service tells: those whose token is in the boot tier from the start,
+/// those whose token is sealed added at unseal. A notification goes to the ones there when it
+/// is sent.
+#[derive(Default)]
+pub struct LateNotifiers(std::sync::RwLock<Vec<Arc<dyn Notifier>>>);
+
+impl std::fmt::Debug for LateNotifiers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LateNotifiers")
+    }
+}
+
+impl LateNotifiers {
+    pub fn add(&self, notifier: Arc<dyn Notifier>) {
+        self.0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(notifier);
+    }
+}
+
+impl Notifier for LateNotifiers {
+    fn notify(&self, notification: &writ_platform::Notification) -> writ_platform::Result<()> {
+        let now: Vec<Arc<dyn Notifier>> = self
+            .0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Notifiers(now).notify(notification)
+    }
 }

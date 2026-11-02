@@ -226,6 +226,15 @@ enum Commands {
         #[command(flatten)]
         signer: SignerArgs,
     },
+    /// Unseal a daemon that started sealed: the keystore's passphrase (asked for, or one
+    /// line of stdin), and one signature with your approval key over this start of this
+    /// daemon.
+    Unseal {
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
 }
 
 fn paths(cli: &Cli) -> anyhow::Result<Paths> {
@@ -342,6 +351,9 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             url,
             signer: args,
         } => approver::revoke(&paths, &url.url, &signer(&paths, args), id).await,
+        Commands::Unseal { url, signer: args } => {
+            approver::unseal(&paths, &url.url, &signer(&paths, args)).await
+        }
         Commands::ProveKey {
             key_id,
             namespace,

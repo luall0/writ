@@ -26,6 +26,12 @@
 //!
 //! Every request the gateway turns away on its own is logged through
 //! [`Service::gateway_denied`]; the lease decisions are logged by the service itself.
+//!
+//! The gateway starts with the service, sealed or not. While the service is sealed, it
+//! answers only `writ info` and `writ unseal` (on the approval listeners, to reader keys);
+//! every other request is refused with "daemon sealed", logged and coalesced per source. An
+//! unseal is checked by the service, then handed to the daemon's [`Unsealer`], which opens the
+//! keystore and hands the gateway its mirrors ([`Gateway::set_mirrors`]).
 
 // This crate reads what agents send (SSH channels, request bodies, the pre-receive hook's
 // input) and counts it against limits: every arithmetic operation is checked, saturating,
@@ -46,7 +52,7 @@ use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use russh::Disconnect;
@@ -91,12 +97,30 @@ pub enum Role {
     Approvals,
 }
 
+/// Opens a sealed daemon: the keystore, with the passphrase an unseal brought, then what it
+/// holds (the service's keys, the mirrors). Implemented by the daemon's wiring; the gateway
+/// calls it once the service checked the unseal's signature
+/// ([`Service::check_unseal`]), one unseal at a time.
+pub trait Unsealer: Send + Sync {
+    /// Opens the keystore and starts what it holds; `approver` signed the unseal. An error is
+    /// the reason, for the approver and the audit log: never a secret.
+    fn unseal(
+        &self,
+        passphrase: writ_proto::PassphraseText,
+        approver: writ_core::names::KeyFingerprint,
+        caller: CallerFacts,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<(), String>>;
+}
+
 /// What the gateway needs to run.
 pub struct GatewayConfig {
     /// The gateway's SSH host key (clients pin it).
     pub host_key: PrivateKey,
     /// The daemon's repositories: one mirror per registered repo, synced from upstream.
-    pub mirrors: writ_mirror::Mirrors,
+    /// `None` while sealed: the [`Unsealer`] sets them ([`Gateway::set_mirrors`]).
+    pub mirrors: Option<writ_mirror::Mirrors>,
+    /// What opens a sealed daemon; `None` when nothing is sealed (an unseal is refused).
+    pub unsealer: Option<Arc<dyn Unsealer>>,
     /// Program git's pre-receive hook runs, as `<program> hook pre-receive`.
     pub hook_program: PathBuf,
     /// Private directory for the gateway's own files (hooks, the hook socket).
@@ -116,6 +140,10 @@ pub struct Gateway {
 struct Shared {
     config: GatewayConfig,
     service: Arc<Service>,
+    /// The mirrors: set at start, or at unseal.
+    mirrors: OnceLock<writ_mirror::Mirrors>,
+    /// One unseal at a time.
+    unsealing: tokio::sync::Mutex<()>,
     authorities: Vec<Fingerprint>,
     ssh: Arc<russh::server::Config>,
     /// Pushes in progress, by the token handed to their pre-receive hook.
@@ -134,7 +162,11 @@ struct Shared {
 impl Gateway {
     /// Prepares the state directory, starts the hook server and the task that drops the
     /// sessions of leases that end.
-    pub async fn start(config: GatewayConfig, service: Arc<Service>) -> Result<Self> {
+    pub async fn start(mut config: GatewayConfig, service: Arc<Service>) -> Result<Self> {
+        let mirrors = OnceLock::new();
+        if let Some(given) = config.mirrors.take() {
+            let _ = mirrors.set(given);
+        }
         let sign_slots =
             limits::SignSlots::new(config.sign_requests_per_lease).map_err(GatewayError::Config)?;
         // git resolves a relative hooks path inside the repository it runs in, finds no hook
@@ -184,6 +216,8 @@ impl Gateway {
             shared: Arc::new(Shared {
                 config,
                 service,
+                mirrors,
+                unsealing: tokio::sync::Mutex::new(()),
                 authorities,
                 ssh,
                 pushes: Mutex::new(HashMap::new()),
@@ -203,6 +237,32 @@ impl Gateway {
     /// The approval service the gateway asks.
     pub fn service(&self) -> &Arc<Service> {
         &self.shared.service
+    }
+
+    /// Hands the gateway its mirrors, at unseal. Once only: mirrors already set are kept.
+    pub fn set_mirrors(&self, mirrors: writ_mirror::Mirrors) -> Result<()> {
+        self.shared
+            .mirrors
+            .set(mirrors)
+            .map_err(|_| GatewayError::Config("the mirrors are already set".to_owned()))
+    }
+
+    /// The mirrors, or "daemon sealed" before the unseal set them.
+    pub(crate) fn mirrors(&self) -> std::result::Result<&writ_mirror::Mirrors, String> {
+        self.shared
+            .mirrors
+            .get()
+            .ok_or_else(|| writ_core::policy::SEALED.to_owned())
+    }
+
+    /// A request refused because the daemon is sealed (event `command`, denied), coalesced
+    /// per source like the other denials no lease answers for.
+    pub(crate) async fn refused_sealed(&self, caller: CallerFacts) {
+        if let Some(suppressed) = self.shared.throttle.admit(caller.source_addr, "sealed") {
+            let reason = limits::with_suppressed(writ_core::policy::SEALED.to_owned(), suppressed);
+            let denial = GatewayDenial::new(EventKind::Command, reason);
+            self.log_denial(denial, caller).await;
+        }
     }
 
     /// Brings the notes of `repo` up to date when it asks for notes (`ticket_link: notes`): the

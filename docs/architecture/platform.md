@@ -153,9 +153,8 @@ transports:
     https: [{ tcp: "0.0.0.0:8443" }]
 attestor: network
 session_watcher: none
-signer: { software: /var/lib/writ/keys }
-unlock: passphrase
-notifiers: [{ telegram: { token_file: /var/lib/writ/keys/telegram-token, chat_id: "123456789" } }]
+keystore: { sealed: { dir: /var/lib/writ/keys, boot: /run/secrets/writ-boot } }  # unlocked by the passphrase
+notifiers: [{ telegram: { token: { boot: /run/secrets/writ-boot/telegram }, chat_id: "123456789" } }]
 ```
 
 ```yaml
@@ -166,16 +165,17 @@ transports:
     ssh: [{ unix: ~/Library/Application Support/Writ/approvals.sock }]
 attestor: macos_process_chain
 session_watcher: macos
-signer: { software: /var/db/writ/keys }   # se-cryptokit from M7.5 (key blob there, _writd only)
-unlock: passphrase
-notifiers: [{ telegram: { token_file: /var/db/writ/keys/telegram-token, chat_id: "123456789" } }]
+keystore: { sealed: { dir: /var/db/writ/keys, boot: /var/db/writ/boot } }   # se-cryptokit keys from M7.5 (_writd only)
+notifiers: [{ telegram: { token: { sealed: telegram-01 }, chat_id: "123456789" } }]
 ```
 
 The full file (`writd.yaml`: state directory, policy, approvers, `decisions`, keystore) is
-described in `crates/writd/src/config.rs`; `dev/writd.yaml` is the development one. Until the
-sealed keystore (M5) the `signer:` key isn't read: the build has the software backend only,
-which `writd/src/platform.rs` builds (`platform::signer`) from the keystore's keys, behind
-its queue ([the queue in front of a backend](signer.md#the-queue-in-front-of-a-backend)).
+described in `crates/writd/src/config.rs` and [the operator reference](../operators/writd-yaml.md);
+`dev/writd.yaml` is the development one. The build has the software backend only, which
+`writd/src/platform.rs` builds (`platform::signer`) from the keystore's keys, behind its queue
+([the queue in front of a backend](signer.md#the-queue-in-front-of-a-backend)); a backend per
+key comes with M5.5's declarations and M7.5. The keystore's unlock is the passphrase
+(`platform::unlock`); M7.6 brings hardware recipients, picked there too.
 
 Asking for an implementation the build doesn't have (e.g. `macos_process_chain` on Linux) is
 a startup error, never a silent fallback.

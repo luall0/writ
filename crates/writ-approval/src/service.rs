@@ -15,6 +15,7 @@ mod push;
 mod sign;
 mod submissions;
 mod sweep;
+mod unseal;
 
 pub use gateway::GatewayDenial;
 pub use push::Pushing;
@@ -26,7 +27,7 @@ pub use submissions::{
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
 use tokio::sync::{Notify, broadcast};
@@ -41,11 +42,11 @@ use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::ssh_key::{HashAlg, PublicKey};
 use writ_platform::{Clock, Notification, Notifier, SessionWatcher, WatchHandle};
-use writ_proto::{Decisions, Info};
+use writ_proto::{Decisions, Info, SealedBoot};
 use writ_signer::Signer;
 use writ_store::{AuditEvent, AuditLog, EventKind, Outcome, Store};
 
-use crate::ServiceError;
+use crate::{RefusalCode, ServiceError};
 use writ_core::canonical::Canonical;
 
 /// How far back a certificate's validity starts, for clocks a little behind the daemon's.
@@ -77,22 +78,38 @@ pub struct ServiceConfig {
     pub max_pending: usize,
     /// The submission rates (per source, all sources together).
     pub submissions: SubmissionLimits,
+    /// The CA's public key (its private key comes at unseal, and must be this one's).
+    pub ca_public: PublicKey,
+    /// The fingerprint of the daemon's SSH host key: what an unseal signature names.
+    pub daemon: KeyFingerprint,
 }
 
 /// The platform implementations the service uses.
 pub struct ServicePlatform {
     pub notifier: Arc<dyn Notifier>,
-    /// Holds the keys commits are signed with (each template's `signing_key`).
-    pub signer: Arc<dyn Signer>,
     pub watcher: Arc<dyn SessionWatcher>,
     pub clock: Arc<dyn Clock>,
 }
 
+/// What an unseal brings: the keys that stay in the keystore while the daemon is sealed.
+pub struct Opened {
+    /// Issues session certificates.
+    pub ca: CertificateAuthority,
+    /// Holds the keys commits are signed with (each template's `signing_key`).
+    pub signer: Arc<dyn Signer>,
+}
+
 /// The approval service. Shared (`Arc`) by the gateway and the daemon's timers.
+///
+/// It starts **sealed**: every request but `info` and an unseal fails with "daemon sealed"
+/// until [`Service::unseal`] hands it the CA and the signer ([`unseal`]).
 pub struct Service {
     config: ServiceConfig,
     approver_keys: Vec<PublicKey>,
-    ca: CertificateAuthority,
+    /// Set once, at unseal; never taken back.
+    opened: OnceLock<Opened>,
+    /// What an unseal signature must name while sealed: this daemon, this boot.
+    boot: SealedBoot,
     inner: Mutex<Inner>,
     /// Serials of every certificate whose lease ended: refused at connection.
     revoked: RwLock<HashSet<u64>>,
@@ -107,7 +124,6 @@ pub struct Service {
     dropped: Arc<AtomicU64>,
     watcher: Arc<dyn SessionWatcher>,
     clock: Arc<dyn Clock>,
-    signer: Arc<dyn Signer>,
     me: Weak<Service>,
 }
 
@@ -194,6 +210,16 @@ fn cert_event(
     }
 }
 
+/// What the gateway's caller reads when [`Service::begin`] fails: "daemon sealed" as its own
+/// code, anything else as `invalid`.
+fn as_denial(error: ServiceError) -> writ_core::policy::Denial {
+    use writ_core::policy::{Denial, DenyCode};
+    match error.code() {
+        Some(RefusalCode::Sealed) => Denial::sealed(),
+        _ => Denial::new(DenyCode::Invalid, error.to_string()),
+    }
+}
+
 fn internal(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> ServiceError {
     ServiceError::internal(e)
 }
@@ -238,11 +264,12 @@ fn fingerprint(key: &PublicKey) -> Result<KeyFingerprint, ServiceError> {
 }
 
 impl Service {
-    /// Starts the service on an open store and audit log. Every certificate of a lease that
-    /// already ended goes on the deny list.
+    /// Starts the service, sealed, on an open store and audit log. Every certificate of a
+    /// lease that already ended goes on the deny list. `nonce` is this boot's (16 random
+    /// bytes): what an unseal signature names.
     pub fn new(
         config: ServiceConfig,
-        ca: CertificateAuthority,
+        nonce: [u8; 16],
         store: Store,
         audit: AuditLog,
         platform: ServicePlatform,
@@ -263,16 +290,20 @@ impl Service {
                     .map(|l| l.cert_serial),
             );
         }
-        signing_keys_exist(&config.policy, &*platform.signer)?;
         let dropped = Arc::new(AtomicU64::new(0));
         let outbox = notification_worker(platform.notifier, dropped.clone()).map_err(internal)?;
         let submissions = submissions::Submissions::new(config.submissions);
         let approver_keys = config.approvers.iter().map(|a| a.key.clone()).collect();
         let (revocations, _) = broadcast::channel(256);
+        let boot = SealedBoot {
+            daemon: config.daemon.clone(),
+            nonce: writ_core::signed::BootNonce::from_bytes(nonce),
+        };
         let service = Arc::new_cyclic(|me| Self {
             config,
             approver_keys,
-            ca,
+            opened: OnceLock::new(),
+            boot,
             inner: Mutex::new(Inner {
                 store,
                 audit,
@@ -291,7 +322,6 @@ impl Service {
             dropped,
             watcher: platform.watcher,
             clock: platform.clock,
-            signer: platform.signer,
             me: me.clone(),
         });
         service.sweep();
@@ -301,7 +331,19 @@ impl Service {
 
     /// The CA's public key, for the gateway's list of trusted authorities.
     pub fn ca_public_key(&self) -> &PublicKey {
-        self.ca.public_key()
+        &self.config.ca_public
+    }
+
+    /// What the unseal brought, or "daemon sealed".
+    fn opened(&self) -> Result<&Opened, ServiceError> {
+        self.opened
+            .get()
+            .ok_or_else(|| ServiceError::refused(RefusalCode::Sealed, writ_core::policy::SEALED))
+    }
+
+    /// Whether the daemon is sealed.
+    pub fn is_sealed(&self) -> bool {
+        self.opened.get().is_none()
     }
 
     /// The repo registry and the templates.
@@ -330,6 +372,7 @@ impl Service {
     /// What every request starts with: now, the state lock, and a sweep (so nothing past its
     /// time is acted on).
     fn begin(&self) -> Result<(Timestamp, MutexGuard<'_, Inner>), ServiceError> {
+        self.opened()?;
         let now = self.now()?;
         let mut inner = self.lock()?;
         self.sweep_locked(&mut inner, now)?;
@@ -507,14 +550,26 @@ impl Service {
         let Some(id) = &ticket.scope.signing_key else {
             return Ok(None);
         };
-        let key = writ_signer::public_key(&*self.signer, id).map_err(internal)?;
+        let key = writ_signer::public_key(&*self.opened()?.signer, id).map_err(internal)?;
         key.to_openssh().map(Some).map_err(internal)
+    }
+
+    /// Queues a notification for the worker: the request never waits on the sink. Best
+    /// effort (it grants nothing): a poisoned queue sends none, a full one counts it.
+    fn notify(&self, notification: Notification) {
+        // poisoned: no notification (best effort: it grants nothing, the state is the store's).
+        if let Ok(outbox) = self.notifications.lock()
+            && outbox.try_send(notification).is_err()
+        {
+            self.dropped.fetch_add(1, Ordering::AcqRel);
+        }
     }
 
     /// How this daemon takes decisions.
     pub fn info(&self) -> Info {
         Info {
             decisions: self.config.decisions,
+            sealed: self.is_sealed().then(|| self.boot.clone()),
         }
     }
 }

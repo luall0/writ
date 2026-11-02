@@ -116,7 +116,8 @@ impl Daemon {
         let gateway = Gateway::start(
             GatewayConfig {
                 host_key: generate(KeyKind::Ed25519).unwrap(),
-                mirrors: writ_mirror::testing::no_repos(dir.path()).await.unwrap(),
+                mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
+                unsealer: None,
                 hook_program: PathBuf::from("/bin/false"),
                 state_dir: dir.path().join("run"),
                 readers,
@@ -964,7 +965,8 @@ async fn relative_paths_are_refused_at_start() {
     let mirrors = writ_mirror::testing::no_repos(dir.path()).await.unwrap();
     let config = |state_dir: PathBuf, hook_program: PathBuf| GatewayConfig {
         host_key: generate(KeyKind::Ed25519).unwrap(),
-        mirrors: mirrors.clone(),
+        mirrors: Some(mirrors.clone()),
+        unsealer: None,
         hook_program,
         state_dir,
         readers: Vec::new(),

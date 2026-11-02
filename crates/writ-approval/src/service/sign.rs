@@ -205,9 +205,7 @@ impl Service {
         caller: &CallerFacts,
         repo: &RepoName,
     ) -> Result<(), Denial> {
-        let (now, mut inner) = self
-            .begin()
-            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
+        let (now, mut inner) = self.begin().map_err(super::as_denial)?;
         let event = cert_event(now, EventKind::Sign, Outcome::Denied, cert, caller).repo(repo);
         let lease = match self.lease_for(&mut inner, cert, caller, now) {
             Ok(lease) => lease,
@@ -239,7 +237,7 @@ impl Service {
         let request = signing.request();
         let reserved = self.reserve(signing, &request)?;
         let signed = writ_signer::sshsig(
-            &*self.signer,
+            &*self.opened().map_err(super::as_denial)?.signer,
             &reserved.key,
             GIT_NAMESPACE,
             reserved.commit.bytes(),
@@ -256,9 +254,7 @@ impl Service {
         signing: &'a Signing,
         request: &SignRequest,
     ) -> Result<Reserved<'a>, Denial> {
-        let (now, mut inner) = self
-            .begin()
-            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
+        let (now, mut inner) = self.begin().map_err(super::as_denial)?;
         let event = sign_event(signing, request, now);
         let lease = match self.lease_for(&mut inner, &signing.cert, &signing.caller, now) {
             Ok(lease) => lease,

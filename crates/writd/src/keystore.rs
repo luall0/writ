@@ -36,18 +36,15 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// The daemon's keys, private halves: what `writd run` needs.
+/// The daemon's keys an unseal opens (private halves).
 pub struct Keys {
     pub ca: PrivateKey,
-    pub host: PrivateKey,
     /// The keys commits are signed with, by id (each template's `signing_key`), for the
     /// `Signer`.
     pub signing: Vec<(KeyId, PrivateKey)>,
     /// The keys the daemon reaches `ssh://` upstreams with, by id (their repos'
     /// `upstream_credential`), for the upstream `Signer`.
     pub upstream: Vec<(KeyId, PrivateKey)>,
-    /// The HTTPS approval API's key and self-signed certificate.
-    pub tls: TlsKeyPair,
 }
 
 /// The HTTPS approval API's key id in its `Signer`.
@@ -95,15 +92,15 @@ pub struct PublicKeys {
 }
 
 impl PublicKeys {
-    fn of(keys: &Keys) -> anyhow::Result<Self> {
+    fn of(boot: &Boot, keys: &Keys) -> anyhow::Result<Self> {
         let public = |keys: &[(KeyId, PrivateKey)]| {
             keys.iter()
                 .map(|(id, key)| (id.clone(), key.public_key().clone()))
                 .collect()
         };
         Ok(Self {
-            host: keys.host.public_key().clone(),
-            tls_fingerprint: writ_crypto::tls::fingerprint_pem(&keys.tls.cert_pem)?,
+            host: boot.host.public_key().clone(),
+            tls_fingerprint: writ_crypto::tls::fingerprint_pem(&boot.tls.cert_pem)?,
             signing: public(&keys.signing),
             upstream: public(&keys.upstream),
         })
@@ -143,36 +140,80 @@ fn upstream_credentials(
     Ok((keys, tokens))
 }
 
-/// The daemon's keys, from the configured keystore.
-pub fn keys(config: &Config, policy: &PolicyConfig) -> anyhow::Result<Keys> {
-    match &config.keystore {
-        KeystoreConfig::Dev(dir) => dev::keys(dir, policy),
-        KeystoreConfig::Sealed(_) => bail!(
-            "keystore.sealed: this build does not unseal yet (the sealed start comes in M5); \
-             the commands that print a key work"
-        ),
-    }
-}
-
 /// The public halves of the daemon's keys, from the configured keystore: no unseal needed.
 pub fn public(config: &Config, policy: &PolicyConfig) -> anyhow::Result<PublicKeys> {
     match &config.keystore {
-        KeystoreConfig::Dev(dir) => PublicKeys::of(&dev::keys(dir, policy)?),
+        KeystoreConfig::Dev(dir) => PublicKeys::of(&dev::boot(dir)?, &dev::keys(dir, policy)?),
         KeystoreConfig::Sealed(sealed) => sealed::public(sealed, policy),
     }
 }
 
-/// The tokens the daemon reaches `https://` upstreams with, by id (their repos'
-/// `upstream_credential`), from the configured keystore. Apart from [`keys`]: the commands
-/// that print a key run before the operator wrote any token.
-pub fn tokens(
+/// What the daemon starts with: the boot tier alone (sealed), or every key (the development
+/// keystore, open at start).
+pub enum Start {
+    Sealed(Boot),
+    Open(Boot, Box<Opened>),
+}
+
+/// What a sealed daemon reads at start: the keys it authenticates itself with, and the CA's
+/// public key (to check certificates against, and the CA key the unseal brings).
+pub struct Boot {
+    pub host: PrivateKey,
+    pub tls: TlsKeyPair,
+    pub ca_public: PublicKey,
+}
+
+/// What an open keystore gives: every key, the `https://` upstreams' tokens, and the tokens
+/// of the notifiers that keep theirs sealed (by id).
+pub struct Opened {
+    pub keys: Keys,
+    pub tokens: BTreeMap<KeyId, Arc<UpstreamToken>>,
+    pub bot_tokens: BTreeMap<KeyId, writ_platform::notify::telegram::BotToken>,
+}
+
+/// The ids of the notifier tokens kept sealed (`notifiers[].telegram.token.sealed`).
+pub fn sealed_bot_ids(config: &Config) -> BTreeSet<KeyId> {
+    config
+        .notifiers
+        .iter()
+        .filter_map(|notifier| match notifier {
+            crate::config::NotifierConfig::Telegram(telegram) => match &telegram.token {
+                crate::config::TokenConfig::Sealed(id) => Some(id.clone()),
+                crate::config::TokenConfig::Boot(_) => None,
+            },
+        })
+        .collect()
+}
+
+/// What the daemon starts with, from the configured keystore.
+pub fn start(config: &Config, policy: &PolicyConfig) -> anyhow::Result<Start> {
+    match &config.keystore {
+        KeystoreConfig::Sealed(sealed) => Ok(Start::Sealed(sealed::boot(sealed)?)),
+        KeystoreConfig::Dev(dir) => Ok(Start::Open(
+            dev::boot(dir)?,
+            Box::new(Opened {
+                keys: dev::keys(dir, policy)?,
+                tokens: dev::tokens(dir, policy)?,
+                bot_tokens: dev::bot_tokens(dir, &sealed_bot_ids(config))?,
+            }),
+        )),
+    }
+}
+
+/// Opens the sealed keystore with the identity a passphrase unwrapped: every key and token
+/// the configuration names.
+pub fn open(
     config: &Config,
     policy: &PolicyConfig,
-) -> anyhow::Result<BTreeMap<KeyId, Arc<UpstreamToken>>> {
-    match &config.keystore {
-        KeystoreConfig::Dev(dir) => dev::tokens(dir, policy),
-        KeystoreConfig::Sealed(_) => {
-            bail!("keystore.sealed: this build does not unseal yet (the sealed start comes in M5)")
-        }
-    }
+    identity: age::x25519::Identity,
+) -> anyhow::Result<Opened> {
+    let KeystoreConfig::Sealed(sealed) = &config.keystore else {
+        bail!("only a sealed keystore is opened at unseal");
+    };
+    let files = sealed::SecretFiles::new(vec![Box::new(identity)]);
+    Ok(Opened {
+        keys: sealed::keys(sealed, policy, &files)?,
+        tokens: sealed::tokens(sealed, policy, &files)?,
+        bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &files)?,
+    })
 }

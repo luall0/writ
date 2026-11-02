@@ -117,6 +117,11 @@ credential that pushed notes), `namespace`, `message_sha256` (a proof's namespac
 digest of its message, never the message), `count` (how many notes a `notes` line is about),
 `code`, `reason`, `warnings`, `source_addr`, `process_chain`.
 
+- `seal` (done): the daemon started sealed. `unseal`: allowed (the approver who signed, or
+  "the development keystore, open at start"), or denied with the reason (a signature for
+  another boot or daemon, a key not in `approvers`, a wrong passphrase, a keystore that
+  doesn't open); never the passphrase. While sealed, a refused request is a `command` line
+  (denied, `daemon sealed`), coalesced per source like the other denials before a lease.
 - Every text field is cut to 2,048 characters (`…`) when the line is written
   (`writ_store::MAX_FIELD_CHARS`), so what a request carries can't make a line large.
 - A lease's denials past 60 lines a minute are counted, not written one by one: the count is

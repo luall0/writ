@@ -21,9 +21,7 @@ impl Service {
         caller: &CallerFacts,
         operation: Option<Operation>,
     ) -> Result<Lease, Denial> {
-        let (now, mut inner) = self
-            .begin()
-            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
+        let (now, mut inner) = self.begin().map_err(super::as_denial)?;
         let kind = match operation {
             None => EventKind::Connect,
             Some(Operation::CommitSign) => EventKind::Sign,
@@ -75,9 +73,7 @@ impl Service {
         caller: &CallerFacts,
         repo: &RepoName,
     ) -> Result<Lease, Denial> {
-        let (now, mut inner) = self
-            .begin()
-            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
+        let (now, mut inner) = self.begin().map_err(super::as_denial)?;
         let event = cert_event(now, EventKind::Fetch, Outcome::Allowed, cert, caller).repo(repo);
         let refuse = |inner: &mut Inner, denial: Denial| {
             Self::log_best_effort(inner, &event.clone().denial(&denial));

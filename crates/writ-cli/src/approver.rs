@@ -1,5 +1,5 @@
 //! The approver's side: `writ ls`, `writ sign`, `writ refuse`, `writ revoke`, `writ
-//! prove-key`, over the approval listener.
+//! prove-key`, `writ unseal`, over the approval listener.
 //!
 //! Signatures are made by the approver's agent ([`signer`]): only the dedicated approval key
 //! is ever used, and the private key never leaves the agent. Connections to the approval API
@@ -18,11 +18,12 @@ use std::io::{BufRead, Write as _};
 use anyhow::{Context, bail};
 use writ_core::lease::State;
 use writ_core::names::TicketId;
-use writ_core::signed::{Refusal, Revocation};
+use writ_core::signed::{Refusal, Revocation, Unseal};
 use writ_core::ticket::Ticket;
 use writ_core::units::Timestamp;
 use writ_proto::{
-    Ack, ApproveRequest, Command, Listing, RefuseRequest, Relation, RevokeRequest, Shown,
+    Ack, ApproveRequest, Command, Info, Listing, PassphraseText, RefuseRequest, Relation,
+    RevokeRequest, Shown, UnsealRequest, Unsealed,
 };
 
 use crate::client::Approvals;
@@ -286,6 +287,40 @@ pub async fn refuse(
                 None => read_feedback()?,
             };
             refuse_with(session, signer, id, feedback).await
+        })
+        .await
+}
+
+/// `writ unseal`: the boot to unseal from `writ info` (this daemon's host key, this start's
+/// nonce), the keystore's passphrase, then one signature with the approval key over that
+/// `writ-unseal/1` document. The daemon checks the signature before it tries the passphrase.
+pub async fn unseal(paths: &Paths, url: &str, signer: &Signer) -> anyhow::Result<Exit> {
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let info: Info = session.call(&Command::Info, b"").await??;
+            let Some(boot) = info.sealed else {
+                bail!("the daemon is not sealed: there is nothing to unseal");
+            };
+            println!(
+                "Daemon {} is sealed (start {}).",
+                boot.daemon,
+                boot.nonce.as_str()
+            );
+            let typed = writ_crypto::passphrase::read("Keystore passphrase: ", None, false)?;
+            let document = Unseal::new(boot.daemon, boot.nonce).canonical_bytes()?;
+            let signature = signer.sign(&document)?;
+            let request = UnsealRequest {
+                passphrase: PassphraseText::new(typed.as_str().to_owned()),
+                unseal: String::from_utf8(document)?,
+                signature,
+            };
+            drop(typed);
+            let body = zeroize::Zeroizing::new(writ_proto::encode_body(&request)?);
+            drop(request);
+            let unsealed: Unsealed = session.call(&Command::Unseal, &body).await??;
+            println!("Unsealed (signed by {}).", unsealed.signed_by);
+            Ok(Exit::Ok)
         })
         .await
 }

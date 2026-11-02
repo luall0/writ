@@ -186,6 +186,11 @@ impl russh::server::Handler for Connection {
                         self.identity = Some(Identity::Lease(cert));
                         Ok(Auth::Accept)
                     }
+                    // A sealed service logs nothing itself: the gateway does, coalesced.
+                    Err(denial) if denial.code == writ_core::policy::DenyCode::Sealed => {
+                        self.gateway.refused_sealed(self.facts.clone()).await;
+                        Ok(Auth::reject())
+                    }
                     Err(_) => Ok(Auth::reject()),
                 }
             }

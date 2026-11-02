@@ -193,7 +193,8 @@ async fn prepare<'a>(
     let gateway = refusing.gateway;
     let path = git::repo_path(gateway, repo)
         .ok_or_else(|| Refusal::Unlogged(format!("unknown repo {repo}")))?;
-    if let Err(e) = gateway.shared.config.mirrors.sync_if_stale(repo).await {
+    let mirrors = gateway.mirrors().map_err(Refusal::Unlogged)?;
+    if let Err(e) = mirrors.sync_if_stale(repo).await {
         return Err(Refusal::Unlogged(format!("cannot sync from upstream: {e}")));
     }
     let LeaseCommand::ReceivePack { .. } = command else {
@@ -265,9 +266,11 @@ async fn run_prepared(
         // Whatever git did without a decision, the next fetch or push syncs the mirror first:
         // a ref upstream doesn't have is pruned. A mirror busy past its deadline is synced
         // anyway once `fresh_for` has passed.
-        match gateway.shared.config.mirrors.lock(repo).await {
-            Ok(mut guard) => guard.mark_stale(),
-            Err(e) => tracing::warn!(%repo, error = %e, "cannot mark the mirror stale"),
+        if let Ok(mirrors) = gateway.mirrors() {
+            match mirrors.lock(repo).await {
+                Ok(mut guard) => guard.mark_stale(),
+                Err(e) => tracing::warn!(%repo, error = %e, "cannot mark the mirror stale"),
+            }
         }
     }
     // Dropping the push unregisters its token.

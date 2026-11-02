@@ -146,7 +146,7 @@ async fn handle(
     } else {
         Vec::new()
     };
-    let (reply, failure) = approval_reply(gateway.service().clone(), facts, command, body).await;
+    let (reply, failure) = approval_reply(gateway, facts, command, body).await;
     let status = if failure.is_some() {
         StatusCode::UNPROCESSABLE_ENTITY
     } else {

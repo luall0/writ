@@ -1,7 +1,8 @@
 //! The other documents an approver may sign, besides tickets: a refusal and a revocation,
-//! required when the daemon's `decisions` setting is `signed`, and a proof, always required:
+//! required when the daemon's `decisions` setting is `signed`; a proof, always required:
 //! the approver lets an agent signing key sign one message for a remote that asks for it
-//! before it shows commits as verified (Forgejo, Gitea).
+//! before it shows commits as verified (Forgejo, Gitea); and an unseal, which with the
+//! keystore's passphrase opens a sealed daemon.
 //!
 //! Like a ticket, each is a [`Canonical`] document: canonical bytes, `kind` first, decoded only
 //! from exactly those bytes. The `kind` keeps one signed document from
@@ -13,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::Canonical;
-use crate::names::{KeyId, ProofNamespace, TicketId};
+use crate::names::{KeyFingerprint, KeyId, ProofNamespace, TicketId};
 
 /// The longest feedback a refusal may carry.
 pub const MAX_FEEDBACK_CHARS: usize = 4_000;
@@ -103,6 +104,81 @@ impl Proof {
             key,
             namespace,
             message,
+        }
+    }
+}
+
+/// Only `"writ-unseal/1"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum UnsealKind {
+    #[default]
+    #[serde(rename = "writ-unseal/1")]
+    V1,
+}
+
+/// The length of a boot nonce in hex characters (16 random bytes).
+pub const BOOT_NONCE_HEX: usize = 32;
+
+/// What a sealed daemon draws at each start, for an unseal signature to name: 32 lowercase
+/// hex characters. A signature over one boot's nonce opens no other boot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct BootNonce(String);
+
+/// A boot nonce that isn't 32 lowercase hex characters.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("a boot nonce is {BOOT_NONCE_HEX} lowercase hex characters")]
+pub struct BootNonceError;
+
+impl BootNonce {
+    /// The nonce of 16 random bytes.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for BootNonce {
+    type Error = BootNonceError;
+
+    fn try_from(value: String) -> Result<Self, BootNonceError> {
+        let hex = |c: char| c.is_ascii_digit() || ('a'..='f').contains(&c);
+        if value.len() != BOOT_NONCE_HEX || !value.chars().all(hex) {
+            return Err(BootNonceError);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<BootNonce> for String {
+    fn from(value: BootNonce) -> String {
+        value.0
+    }
+}
+
+/// The approver unseals one daemon (named by its SSH host key's fingerprint) at one boot
+/// (its nonce): with the keystore's passphrase, it opens the keystore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unseal {
+    pub kind: UnsealKind,
+    pub daemon: KeyFingerprint,
+    pub nonce: BootNonce,
+}
+
+impl Canonical for Unseal {
+    const KIND: &'static str = "writ-unseal/1";
+}
+
+impl Unseal {
+    pub fn new(daemon: KeyFingerprint, nonce: BootNonce) -> Self {
+        Self {
+            kind: UnsealKind::V1,
+            daemon,
+            nonce,
         }
     }
 }
@@ -221,6 +297,48 @@ mod tests {
         assert_eq!(
             ProofMessage::try_from("é".repeat(2049)).unwrap_err(),
             ProofMessageError(4098)
+        );
+    }
+
+    #[test]
+    fn an_unseal_is_pinned_strict_and_names_one_boot() {
+        let daemon: KeyFingerprint = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+            .parse()
+            .unwrap();
+        let unseal = Unseal::new(daemon, BootNonce::from_bytes([0xab; 16]));
+        let bytes = unseal.canonical_bytes().unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            r#"{"kind":"writ-unseal/1","daemon":"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU","nonce":"abababababababababababababababab"}"#
+        );
+        assert_eq!(Unseal::from_canonical(&bytes).unwrap(), unseal);
+        // Never another document, nor the other way round.
+        assert!(matches!(
+            Revocation::from_canonical(&bytes),
+            Err(CanonicalError::Decode { .. })
+        ));
+        let revocation = Revocation::new(id(1)).canonical_bytes().unwrap();
+        assert!(matches!(
+            Unseal::from_canonical(&revocation),
+            Err(CanonicalError::Decode { .. })
+        ));
+        // The nonce: 32 lowercase hex characters, no fewer, no more, no other.
+        let text = String::from_utf8(bytes).unwrap();
+        let ab = "ab".repeat(16);
+        for bad in [
+            text.replace(&ab, &"ab".repeat(15)),
+            text.replace(&ab, &format!("{ab}a")),
+            text.replace(&ab, &"AB".repeat(16)),
+            text.replace(&ab, &"zz".repeat(16)),
+        ] {
+            let error = Unseal::from_canonical(bad.as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("lowercase hex"), "{bad}: {error}");
+        }
+        assert_eq!(
+            BootNonce::try_from("0".repeat(32)).unwrap().as_str(),
+            "0".repeat(32)
         );
     }
 

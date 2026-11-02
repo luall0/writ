@@ -255,6 +255,7 @@ impl Service {
         let valid_before =
             u64::try_from(lease.ticket.limits.expires_at.unix()).map_err(internal)?;
         let certificate = self
+            .opened()?
             .ca
             .issue(&CertificateRequest {
                 subject: &session_key,

@@ -19,12 +19,7 @@ use crate::hook::PushContext;
 
 /// The repo's mirror, if the repo is registered.
 pub(super) fn repo_path(gateway: &Gateway, repo: &RepoName) -> Option<PathBuf> {
-    gateway
-        .shared
-        .config
-        .mirrors
-        .path(repo)
-        .map(Path::to_path_buf)
+    gateway.mirrors().ok()?.path(repo).map(Path::to_path_buf)
 }
 
 /// `git upload-pack` (fetch) on the repository at `path`.
@@ -157,7 +152,13 @@ fn git(
     hooks: Hooks<'_>,
     git_protocol: Option<String>,
 ) -> tokio::process::Command {
-    let mut cmd = writ_mirror::git::command(gateway.shared.config.mirrors.git(), hooks);
+    // Sealed, there is no git to run: an empty path never starts (fail closed). A command is
+    // only built after the service allowed it, which a sealed service never does.
+    let git = gateway
+        .mirrors()
+        .map(|mirrors| mirrors.git().to_path_buf())
+        .unwrap_or_default();
+    let mut cmd = writ_mirror::git::command(&git, hooks);
     if let Some(protocol) = git_protocol {
         cmd.env("GIT_PROTOCOL", protocol);
     }

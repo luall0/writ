@@ -50,6 +50,8 @@ session_watcher: none              # none | macos (local mode, M7)
 # Notifications (none by default): a Telegram bot.
 # notifiers:
 #   - telegram:
-#       token_file: data/keys/telegram-token   # the bot token alone, mode 0600
+#       token:                     # where the bot token is, the operator's choice (no default):
+#         boot: data/boot/telegram # read at start, the token alone, mode 0600: a sealed restart is told
+#         # Or `sealed: <id>`: sealed with the other secrets (`writ admin token <id>`), read at unseal
 #       chat_id: "123456789"       # a numeric id (quoted), or @channelname
 #       api_base: https://api.telegram.org     # another Bot API server

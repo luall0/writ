@@ -35,7 +35,7 @@
 //! attestor: network
 //! session_watcher: none
 //! notifiers:
-//!   - telegram: { token_file: data/keys/telegram-token, chat_id: "123456789" }
+//!   - telegram: { token: { boot: data/boot/telegram }, chat_id: "123456789" }
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -330,14 +330,26 @@ pub enum NotifierConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TelegramConfig {
-    /// A file holding only the bot token, mode 0600 (the token is a secret; it moves into the
-    /// sealed keystore in M5).
-    pub token_file: PathBuf,
+    /// Where the bot token is: readable at a sealed start, or sealed with the other secrets.
+    pub token: TokenConfig,
     /// The chat to send to: a numeric id, or `@channelname`.
     pub chat_id: String,
     /// Another Bot API server (self-hosted); default `https://api.telegram.org`.
     #[serde(default)]
     pub api_base: Option<String>,
+}
+
+/// `notifiers[].telegram.token`: the operator's choice, with no default.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum TokenConfig {
+    /// A file holding only the token (0600), read at start: a sealed restart is notified at
+    /// once, and "unsealed" comes only from the real daemon; whoever holds the file can send
+    /// as the bot. Put it in the boot tier's directory.
+    Boot(PathBuf),
+    /// A sealed secret of this id (added with `writ admin token <id>`), read at unseal: no
+    /// notification before.
+    Sealed(writ_core::names::KeyId),
 }
 
 /// The directory a configuration file is in: `.` for a bare name (`writd.yaml`), whose
@@ -385,7 +397,11 @@ impl Config {
         }
         for notifier in &mut config.notifiers {
             match notifier {
-                NotifierConfig::Telegram(telegram) => resolve(&mut telegram.token_file),
+                NotifierConfig::Telegram(telegram) => {
+                    if let TokenConfig::Boot(file) = &mut telegram.token {
+                        resolve(file);
+                    }
+                }
             }
         }
         let transports = &mut config.transports;
@@ -757,16 +773,57 @@ mod tests {
     }
 
     #[test]
-    fn reads_a_telegram_notifier() {
+    fn reads_a_telegram_notifier_with_its_token_boot_or_sealed() {
         let config = load(&format!(
-            "{MINIMAL}notifiers:\n  - telegram: {{ token_file: keys/tg, chat_id: \"-100123\" }}\n"
+            "{MINIMAL}notifiers:\n  - telegram: {{ token: {{ boot: boot/tg }}, chat_id: \"-100123\" }}\n  \
+             - telegram: {{ token: {{ sealed: telegram-01 }}, chat_id: \"7\" }}\n"
         ))
         .unwrap();
-        let [NotifierConfig::Telegram(telegram)] = config.notifiers.as_slice() else {
-            panic!("one telegram notifier expected");
+        let [
+            NotifierConfig::Telegram(boot),
+            NotifierConfig::Telegram(sealed),
+        ] = config.notifiers.as_slice()
+        else {
+            panic!("two telegram notifiers expected");
         };
-        assert!(telegram.token_file.is_absolute());
-        assert_eq!(telegram.chat_id, "-100123");
+        assert!(matches!(&boot.token, TokenConfig::Boot(file) if file.is_absolute()));
+        assert_eq!(boot.chat_id, "-100123");
+        assert!(matches!(&sealed.token, TokenConfig::Sealed(id) if id.as_str() == "telegram-01"));
+        // The choice is required, and it is one of the two; an id is a plain name.
+        for (bad, why) in [
+            (
+                "{ chat_id: \"7\" }",
+                "notifiers[0].telegram: line 10 column 27: missing field `token`",
+            ),
+            (
+                "{ token_file: tg, chat_id: \"7\" }",
+                "notifiers[0].telegram.token_file: line 10 column 27: unknown field `token_file`, \
+                 expected one of token, chat_id, api_base",
+            ),
+            (
+                "{ token: {}, chat_id: \"7\" }",
+                "notifiers[0].telegram.token: line 10 column 35: expected string key for \
+                 externally tagged enum",
+            ),
+            (
+                "{ token: { boot: a, sealed: b }, chat_id: \"7\" }",
+                "notifiers[0].telegram.token.boot: line 10 column 45: expected end of mapping \
+                 after enum variant value",
+            ),
+            (
+                "{ token: { sealed: ../escape }, chat_id: \"7\" }",
+                "notifiers[0].telegram.token.sealed: line 10 column 44: invalid key id \
+                 \"../escape\": only letters, digits, '.', '_' and '-' are allowed",
+            ),
+        ] {
+            let error = load(&format!("{MINIMAL}notifiers: [{{ telegram: {bad} }}]\n"))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.ends_with(&format!("writd.yaml: {why}")),
+                "{bad}: {error}"
+            );
+        }
         assert!(
             load(&format!(
                 "{MINIMAL}notifiers: [{{ ntfy: \"https://x/y\" }}]\n"
@@ -846,6 +903,11 @@ mod tests {
         section(
             "notifiers: [{ telegram: { __probe__: 0 } }]",
             "notifiers[].telegram.",
+            &["token"],
+        );
+        section(
+            "notifiers: [{ telegram: { token: { __probe__: 0 } } }]",
+            "notifiers[].telegram.token.",
             &[],
         );
         assert!(code.len() > 25, "{code:?}");

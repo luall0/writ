@@ -29,6 +29,9 @@ pub enum Approvals {
     Https,
 }
 
+/// The passphrase of the sealed keystore [`Daemon::start_sealed`] makes.
+pub const PASSPHRASE: &str = "an integration test passphrase";
+
 /// A running `writd`, killed on drop.
 pub struct Daemon {
     dir: TempDir,
@@ -45,6 +48,7 @@ pub struct Daemon {
     pub remote: TestRemote,
     /// The daemon's log lines after its listeners were announced, as they come.
     log_lines: Mutex<mpsc::Receiver<String>>,
+    approvals: Approvals,
     _remote_runtime: tokio::runtime::Runtime,
 }
 
@@ -121,13 +125,65 @@ pub type Edit<'a> = &'a dyn Fn(&str) -> String;
 impl Daemon {
     /// Starts `writd` with `policy`, one approver key (in the test agent) and `decisions`.
     pub fn start(policy: &str, approvals: Approvals) -> Self {
-        Self::launch(setup(policy, None), approvals, "info")
+        Self::launch(setup(policy, None, false), approvals, "info")
+    }
+
+    /// [`Daemon::start`] on a sealed keystore, made by `writd init` with [`PASSPHRASE`]: the
+    /// daemon starts sealed ([`Daemon::unseal`] opens it).
+    pub fn start_sealed(policy: &str, approvals: Approvals) -> Self {
+        Self::launch(setup(policy, None, true), approvals, "info")
+    }
+
+    /// [`Daemon::start_sealed`] with the default `writd.yaml` edited by `edit`.
+    pub fn start_sealed_with(
+        policy: &str,
+        approvals: Approvals,
+        edit: impl Fn(&str) -> String,
+    ) -> Self {
+        Self::launch(setup(policy, Some(&edit), true), approvals, "info")
+    }
+
+    /// `writ unseal` with [`PASSPHRASE`] on stdin.
+    pub fn unseal(&self) -> Output {
+        self.run(&["unseal"], &format!("{PASSPHRASE}\n"))
+    }
+
+    /// Stops the daemon and starts it again on the same directory (new ports, pinned again):
+    /// a restart. Waits until it announced its listeners.
+    pub fn restart(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let mut child = Command::new(bin("writd"))
+            .arg("run")
+            .arg(self.root().join("writd.yaml"))
+            .env("WRIT_LOG", "info")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (lines, ports) = announced_ports(&mut child, &self.root().join("writd.err"));
+        let Some(ports) = ports else {
+            let _ = child.kill();
+            panic!("writd did not start again: {}", self.log());
+        };
+        self.child = child;
+        self.log_lines = Mutex::new(lines);
+        self.listening(ports);
+    }
+
+    /// Pins the daemon on the ports it announced, and points `writ` at them.
+    fn listening(&mut self, (agents, approvals, https): (u16, u16, u16)) {
+        pin(self.root(), agents, approvals, https);
+        self.agents_port = agents;
+        self.approvals_port = approvals;
+        self.https_port = https;
+        self.approval_url = approval_url(self.approvals, approvals, https);
     }
 
     /// [`Daemon::start`] with the default `writd.yaml` edited by `edit` (which must change
     /// it).
     pub fn start_with(policy: &str, approvals: Approvals, edit: impl Fn(&str) -> String) -> Self {
-        Self::launch(setup(policy, Some(&edit)), approvals, "info")
+        Self::launch(setup(policy, Some(&edit), false), approvals, "info")
     }
 
     /// [`Daemon::start_with`], with `WRIT_LOG` set to `log` (`info` otherwise).
@@ -137,13 +193,13 @@ impl Daemon {
         log: &str,
         edit: impl Fn(&str) -> String,
     ) -> Self {
-        Self::launch(setup(policy, Some(&edit)), approvals, log)
+        Self::launch(setup(policy, Some(&edit), false), approvals, log)
     }
 
     /// The same directory as [`Daemon::start_with`], but `writd run` must refuse to start:
     /// returns what it printed (its status is checked: 1).
     pub fn refused(policy: &str, edit: impl Fn(&str) -> String) -> String {
-        let setup = setup(policy, Some(&edit));
+        let setup = setup(policy, Some(&edit), false);
         let mut child = setup.spawn("info");
         if !crate::process::ends_within(&mut child, WAIT_LIMIT) {
             let _ = child.kill();
@@ -157,7 +213,6 @@ impl Daemon {
 
     fn launch(setup: Setup, approvals: Approvals, log: &str) -> Self {
         let root = setup.root();
-        let host_key = writd(root, "host-key");
         let fingerprint = writd(root, "tls-fingerprint");
         assert!(fingerprint.starts_with("SHA256:"), "{fingerprint}");
 
@@ -170,22 +225,8 @@ impl Daemon {
                 fs::read_to_string(root.join("writd.err")).unwrap_or_default()
             );
         };
-        fs::write(
-            root.join("known_hosts"),
-            format!(
-                "[127.0.0.1]:{agents_port} {host_key}\n[127.0.0.1]:{approvals_port} {host_key}\n"
-            ),
-        )
-        .unwrap();
-        fs::write(
-            root.join("tls_pins"),
-            format!("[127.0.0.1]:{https_port} {fingerprint}\n"),
-        )
-        .unwrap();
-        let approval_url = match approvals {
-            Approvals::Ssh => format!("ssh://127.0.0.1:{approvals_port}"),
-            Approvals::Https => format!("https://127.0.0.1:{https_port}"),
-        };
+        pin(root, agents_port, approvals_port, https_port);
+        let approval_url = approval_url(approvals, approvals_port, https_port);
         let agent = TestAgent::start();
         agent.add(&setup.approver);
         let Setup {
@@ -206,6 +247,7 @@ impl Daemon {
             telegram,
             remote,
             log_lines: Mutex::new(lines),
+            approvals,
             _remote_runtime: remote_runtime,
         }
     }
@@ -403,11 +445,35 @@ impl Daemon {
     }
 }
 
+/// Pins the daemon's host key and TLS certificate on its ports, as `writd host-key` and
+/// `writd tls-fingerprint` print them (no passphrase needed).
+fn pin(root: &Path, agents: u16, approvals: u16, https: u16) {
+    let host_key = writd(root, "host-key");
+    let fingerprint = writd(root, "tls-fingerprint");
+    fs::write(
+        root.join("known_hosts"),
+        format!("[127.0.0.1]:{agents} {host_key}\n[127.0.0.1]:{approvals} {host_key}\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("tls_pins"),
+        format!("[127.0.0.1]:{https} {fingerprint}\n"),
+    )
+    .unwrap();
+}
+
+fn approval_url(approvals: Approvals, ssh: u16, https: u16) -> String {
+    match approvals {
+        Approvals::Ssh => format!("ssh://127.0.0.1:{ssh}"),
+        Approvals::Https => format!("https://127.0.0.1:{https}"),
+    }
+}
+
 /// Writes the daemon's directory: the approver and reader keys, the policy (its upstream
 /// rewritten to a fresh test remote, whose `demo` is empty), the Telegram token, and
 /// `writd.yaml` (edited by `edit`, which must change it); the daemon's upstream credential is
 /// authorized on the remote.
-fn setup(policy: &str, edit: Option<Edit<'_>>) -> Setup {
+fn setup(policy: &str, edit: Option<Edit<'_>>, sealed: bool) -> Setup {
     crate::tools::require();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -469,11 +535,37 @@ fn setup(policy: &str, edit: Option<Edit<'_>>) -> Setup {
          approvals:\n    ssh: [{{ tcp: \"127.0.0.1:0\" }}]\n    \
          https: [{{ tcp: \"127.0.0.1:0\" }}]\n\
          attestor: network\nsession_watcher: none\n\
-         notifiers:\n  - telegram: {{ token_file: telegram-token, chat_id: \"42\", \
+         notifiers:\n  - telegram: {{ token: {{ boot: telegram-token }}, chat_id: \"42\", \
          api_base: \"http://127.0.0.1:{}\" }}\n",
         telegram.port
     );
+    let yaml = if sealed {
+        yaml.replace(
+            "keystore: { dev: s/keys }",
+            "keystore: { sealed: { dir: s/keys, boot: s/boot } }",
+        )
+    } else {
+        yaml
+    };
     fs::write(root.join("writd.yaml"), &yaml).unwrap();
+    if sealed {
+        // `writd init`, the passphrase on stdin as a script gives it.
+        let mut init = Command::new(bin("writd"))
+            .arg("init")
+            .arg(root.join("writd.yaml"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        init.stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{PASSPHRASE}\n").as_bytes())
+            .unwrap();
+        let out = crate::process::finish(init);
+        assert!(out.status.success(), "writd init: {}", stderr(&out));
+    }
     // The daemon's upstream credential (made by its dev keystore), authorized on the remote:
     // read with the default configuration, so an edit the daemon refuses still gets here.
     let keys = writd(root, "upstream-keys");

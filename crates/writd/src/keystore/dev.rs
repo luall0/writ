@@ -11,8 +11,9 @@ use writ_core::names::KeyId;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey};
 use writ_mirror::credential::{MAX_TOKEN_FILE, UpstreamToken};
+use writ_platform::notify::telegram::BotToken;
 
-use super::{Keys, TlsKeyPair, make_tls, private_dir, upstream_credentials, write_private};
+use super::{Boot, Keys, TlsKeyPair, make_tls, private_dir, upstream_credentials, write_private};
 
 /// The TLS key and certificate of the dev keystore, made on first start.
 fn dev_tls(dir: &Path) -> anyhow::Result<TlsKeyPair> {
@@ -104,6 +105,27 @@ fn dev_tokens(
         .collect()
 }
 
+/// The tokens of the notifiers that keep theirs sealed, from `<dir>/tokens/<id>` (the token
+/// alone, mode 0600). A missing or malformed one stops the daemon, never naming the token.
+pub fn bot_tokens(
+    dir: &Path,
+    ids: &std::collections::BTreeSet<KeyId>,
+) -> anyhow::Result<std::collections::BTreeMap<KeyId, BotToken>> {
+    allowed()?;
+    ids.iter()
+        .map(|id| {
+            let path = dir.join("tokens").join(id.as_str());
+            if !path.exists() {
+                bail!(
+                    "notifier token {id} is not in the keystore: write it alone to {} (mode 0600)",
+                    path.display()
+                );
+            }
+            Ok((id.clone(), BotToken::from_file(&path)?))
+        })
+        .collect()
+}
+
 /// One key per distinct id, in the private directory `dir`.
 fn dev_keys<'a>(
     dir: &Path,
@@ -135,10 +157,19 @@ pub fn keys(dir: &Path, policy: &PolicyConfig) -> anyhow::Result<Keys> {
     private_dir(dir)?;
     Ok(Keys {
         ca: dev_key(dir, "ca")?,
-        host: dev_key(dir, "host")?,
         signing: dev_signing_keys(dir, policy)?,
         upstream: dev_upstream_keys(dir, policy)?,
+    })
+}
+
+/// The development keystore's host and TLS keys, and the CA's public half.
+pub fn boot(dir: &Path) -> anyhow::Result<Boot> {
+    allowed()?;
+    private_dir(dir)?;
+    Ok(Boot {
+        host: dev_key(dir, "host")?,
         tls: dev_tls(dir)?,
+        ca_public: dev_key(dir, "ca")?.public_key().clone(),
     })
 }
 

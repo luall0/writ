@@ -27,7 +27,7 @@ pub mod testing;
 pub use error::{RefusalCode, ServiceError};
 pub use service::{
     DEFAULT_SUBMISSIONS_IN_ALL, DEFAULT_SUBMISSIONS_PER_SOURCE, GatewayDenial,
-    MAX_SUBMISSIONS_IN_ALL, MAX_SUBMISSIONS_PER_SOURCE, Pushing, Service, ServiceConfig,
+    MAX_SUBMISSIONS_IN_ALL, MAX_SUBMISSIONS_PER_SOURCE, Opened, Pushing, Service, ServiceConfig,
     ServicePlatform, SignObject, SignedCommit, Signing, SubmissionLimits,
 };
 pub use writ_store::{EventKind, PendingNote};

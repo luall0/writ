@@ -19,7 +19,7 @@ use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
 use writ_core::lease::APPROVAL_NAMESPACE;
 use writ_core::names::TicketId;
-use writ_core::signed::{Refusal, Revocation};
+use writ_core::signed::{BootNonce, Refusal, Revocation, Unseal};
 use writ_core::ticket::Ticket;
 use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::ca::CertificateAuthority;
@@ -28,12 +28,17 @@ use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
 use writ_crypto::sshsig;
 use writ_platform::testing::{FakeClock, FakeWatcher, RecordingNotifier};
 use writ_platform::{Clock, Notifier, SessionWatcher};
-use writ_proto::{ApproveRequest, Decisions, RefuseRequest, RevokeRequest};
+use writ_proto::{
+    ApproveRequest, Decisions, PassphraseText, RefuseRequest, RevokeRequest, UnsealRequest,
+};
 use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, GatedSigner, software_signer};
 use writ_store::{AuditBreaker, AuditLog, Store, StoreBreaker};
 
-use crate::{Service, ServiceConfig, ServicePlatform, SubmissionLimits};
+use crate::{Opened, Service, ServiceConfig, ServicePlatform, SubmissionLimits};
+
+/// The boot nonce of every [`TestService`].
+pub const NONCE: [u8; 16] = [7; 16];
 
 /// The time a [`TestService`] starts at by default: 2027-01-15T08:00:00Z.
 pub const START: u64 = 1_800_000_000;
@@ -51,6 +56,7 @@ pub struct TestServiceBuilder {
     watcher: Arc<dyn SessionWatcher>,
     notifier: Arc<dyn Notifier>,
     clock: Arc<dyn Clock>,
+    sealed: bool,
 }
 
 impl TestServiceBuilder {
@@ -64,7 +70,15 @@ impl TestServiceBuilder {
             watcher: Arc::new(FakeWatcher::new()),
             notifier: Arc::new(RecordingNotifier::new()),
             clock: Arc::new(FakeClock::at_unix(START)),
+            sealed: false,
         }
+    }
+
+    /// Leaves the service sealed, as the daemon starts with the sealed keystore
+    /// ([`TestService::open`] unseals it). Open by default, as with the development keystore.
+    pub fn sealed(mut self) -> Self {
+        self.sealed = true;
+        self
     }
 
     pub fn decisions(mut self, decisions: Decisions) -> Self {
@@ -113,6 +127,13 @@ impl TestServiceBuilder {
     pub fn try_build(self, dir: &Path) -> Result<TestService, crate::ServiceError> {
         let approver = generate(KeyKind::Ed25519).unwrap();
         let ca_key = generate(KeyKind::Ed25519).unwrap();
+        let host_key = generate(KeyKind::Ed25519).unwrap();
+        let daemon: writ_core::names::KeyFingerprint = host_key
+            .public_key()
+            .fingerprint(HashAlg::Sha256)
+            .to_string()
+            .parse()
+            .unwrap();
         let ca_fingerprint = ca_key.public_key().fingerprint(HashAlg::Sha256);
         let audit_path = dir.join("audit.jsonl");
         let (audit, audit_breaker) = AuditLog::open_breakable(&audit_path).unwrap();
@@ -138,18 +159,19 @@ impl TestServiceBuilder {
                 decisions: self.decisions,
                 max_pending: self.max_pending,
                 submissions: self.submissions,
+                ca_public: ca_key.public_key().clone(),
+                daemon: daemon.clone(),
             },
-            CertificateAuthority::new(ca_key.clone()),
+            NONCE,
             store,
             audit,
             ServicePlatform {
                 notifier: self.notifier,
-                signer: signer.clone(),
                 watcher: self.watcher,
                 clock: self.clock,
             },
         )?;
-        Ok(TestService {
+        let test = TestService {
             service,
             approver,
             ca_key,
@@ -158,7 +180,12 @@ impl TestServiceBuilder {
             store_breaker,
             audit_path,
             signer,
-        })
+            daemon,
+        };
+        if !self.sealed {
+            test.open()?;
+        }
+        Ok(test)
     }
 }
 
@@ -179,9 +206,36 @@ pub struct TestService {
     /// The signer commits are signed with: `close()` holds each signature until the test
     /// releases it, `set_failing(true)` makes it refuse.
     pub signer: Arc<GatedSigner<FailingSigner<SoftwareSigner>>>,
+    /// What an unseal names: the daemon's host key fingerprint.
+    pub daemon: writ_core::names::KeyFingerprint,
 }
 
 impl TestService {
+    /// Unseals the service with its CA and signer, as the development keystore does at start
+    /// (no approver).
+    pub fn open(&self) -> Result<(), crate::ServiceError> {
+        self.service.unseal(
+            Opened {
+                ca: self.ca(),
+                signer: self.signer.clone(),
+            },
+            None,
+            &writ_core::caller::CallerFacts::default(),
+        )
+    }
+
+    /// An unseal request for this boot, signed by `signer` (the approver, or another key).
+    pub fn unseal_request(&self, signer: &PrivateKey, passphrase: &str) -> UnsealRequest {
+        let document = Unseal::new(self.daemon.clone(), BootNonce::from_bytes(NONCE))
+            .canonical_bytes()
+            .unwrap();
+        UnsealRequest {
+            passphrase: PassphraseText::new(passphrase.to_owned()),
+            signature: sshsig::sign(signer, APPROVAL_NAMESPACE, &document).unwrap(),
+            unseal: String::from_utf8(document).unwrap(),
+        }
+    }
+
     /// The service's CA, to issue certificates no lease stands for.
     pub fn ca(&self) -> CertificateAuthority {
         CertificateAuthority::new(self.ca_key.clone())

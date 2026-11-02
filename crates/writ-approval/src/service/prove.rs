@@ -47,8 +47,9 @@ impl Service {
             denied,
         } = checked;
         let message = proof.message.as_str().as_bytes();
-        let signed = writ_signer::public_key(&*self.signer, &proof.key).and_then(|public| {
-            writ_signer::sshsig(&*self.signer, &proof.key, proof.namespace.as_str(), message)
+        let signer = &*self.opened()?.signer;
+        let signed = writ_signer::public_key(signer, &proof.key).and_then(|public| {
+            writ_signer::sshsig(signer, &proof.key, proof.namespace.as_str(), message)
                 .map(|signature| (public, signature))
         });
         let (now, mut inner) = self.begin()?;

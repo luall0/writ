@@ -235,7 +235,8 @@ impl GitGateway {
         let signer = test.signer.clone();
         let config = GatewayConfig {
             host_key,
-            mirrors: mirrors.clone(),
+            mirrors: Some(mirrors.clone()),
+            unsealer: None,
             hook_program: bin("writd"),
             state_dir: root.join("run"),
             // No approval listener here: the service is driven directly.

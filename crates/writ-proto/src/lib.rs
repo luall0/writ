@@ -10,7 +10,10 @@
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::Wait`] |
-//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`] |
+//!
+//! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
+//! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed".
 //!
 //! Replies are wrapped in an envelope, `{"ok": …}` or `{"error": {"message": …, "reasons": […]}}`
 //! ([`encode_reply`], [`decode_reply`]). Tickets travel as their canonical bytes in a string,
@@ -28,8 +31,9 @@ pub mod sign;
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
-    Ack, ApproveRequest, Decision, Decisions, Info, Listing, Previous, ProveRequest, Proved,
-    RefuseRequest, Relation, RevokeRequest, Shown, Submitted, Summary,
+    Ack, ApproveRequest, Decision, Decisions, Info, Listing, PassphraseText, Previous,
+    ProveRequest, Proved, RefuseRequest, Relation, RevokeRequest, SealedBoot, Shown, Submitted,
+    Summary, UnsealRequest, Unsealed,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -63,6 +67,7 @@ mod tests {
             Command::Refuse { id: id.clone() },
             Command::Revoke { id },
             Command::Prove,
+            Command::Unseal,
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -78,6 +83,7 @@ mod tests {
             "writ sign wrt_01JD8X0000000000000000000",
             "writ prove agent-01",
             "writ prove-key",
+            "writ unseal now",
             "git-upload-pack 'x'",
         ] {
             assert_eq!(Command::parse(line), None, "{line:?}");
@@ -96,6 +102,7 @@ mod tests {
             Command::Refuse { id: id.clone() },
             Command::Revoke { id: id.clone() },
             Command::Prove,
+            Command::Unseal,
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));
@@ -113,6 +120,8 @@ mod tests {
             ("GET", "/v1/proofs"),
             ("POST", "/v1/proofs/x"),
             ("POST", "/v1/proofs?key=agent-01"),
+            ("GET", "/v1/unseal"),
+            ("POST", "/v1/unseal/x"),
             ("GET", "/v2/info"),
             ("GET", "/v1/info/"),
             ("GET", "v1/info"),
@@ -125,6 +134,7 @@ mod tests {
     fn replies_round_trip_and_errors_are_typed() {
         let ok: Result<Info, ApiError> = Ok(Info {
             decisions: Decisions::Open,
+            sealed: None,
         });
         let bytes = encode_reply(&ok);
         assert_eq!(bytes, b"{\"ok\":{\"decisions\":\"open\"}}\n");
@@ -147,5 +157,36 @@ mod tests {
             b"{\"ok\":{\"status\":\"refused\",\"feedback\":\"no\",\"signed_by\":null}}\n"
         );
         assert_eq!(decode_reply::<Decision>(&bytes), Ok(decision));
+    }
+
+    #[test]
+    fn a_passphrase_on_the_wire_is_never_printed() {
+        let request = UnsealRequest {
+            passphrase: PassphraseText::new("correct horse battery staple".to_owned()),
+            unseal: "{}".to_owned(),
+            signature: "sig".to_owned(),
+        };
+        let shown = format!("{request:?}");
+        assert!(!shown.contains("horse"), "{shown}");
+        let bytes = encode_body(&request).unwrap();
+        let back: UnsealRequest = decode_body(&bytes).unwrap();
+        assert_eq!(back.passphrase.expose(), "correct horse battery staple");
+        // A sealed boot in `info`, absent once open.
+        let info = Info {
+            decisions: Decisions::Signed,
+            sealed: Some(SealedBoot {
+                daemon: "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+                    .parse()
+                    .unwrap(),
+                nonce: writ_core::signed::BootNonce::from_bytes([1; 16]),
+            }),
+        };
+        let bytes = encode_reply(&Ok::<_, ApiError>(info.clone()));
+        assert_eq!(decode_reply::<Info>(&bytes), Ok(info));
+        let open = encode_reply(&Ok::<_, ApiError>(Info {
+            decisions: Decisions::Signed,
+            sealed: None,
+        }));
+        assert_eq!(open, b"{\"ok\":{\"decisions\":\"signed\"}}\n");
     }
 }

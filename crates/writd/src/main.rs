@@ -20,6 +20,7 @@
 //! (docs/architecture/overview.md).
 
 mod config;
+mod daemon;
 mod keystore;
 mod platform;
 
@@ -32,9 +33,8 @@ use anyhow::{Context, bail};
 use writ_approval::{Service, ServiceConfig, ServicePlatform};
 use writ_core::config::PolicyConfig;
 use writ_core::lease::APPROVAL_NAMESPACE;
-use writ_core::names::KeyId;
+use writ_core::names::{KeyFingerprint, KeyId};
 use writ_crypto::allowed_signers::{self, AllowedSigner};
-use writ_crypto::ca::CertificateAuthority;
 use writ_crypto::readers::{self, Reader};
 use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
@@ -44,6 +44,7 @@ use writ_platform::clock::system::SystemClock;
 use writ_store::{AuditLog, Store};
 
 use crate::config::Config;
+use crate::keystore::Start;
 
 /// How often pending tickets and leases are checked for expiry.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
@@ -311,7 +312,7 @@ fn spawn_sweeper(service: Arc<Service>) {
 /// stale: fetches and pushes then try again, and are refused if they fail too. After a mirror
 /// synced (or was fresh), its notes are brought up to date (`Gateway::reconcile_notes`): at
 /// start, and every `every`.
-fn spawn_mirror_sync(mirrors: Mirrors, gateway: Gateway, every: Duration) {
+pub(crate) fn spawn_mirror_sync(mirrors: Mirrors, gateway: Gateway, every: Duration) {
     tokio::spawn(async move {
         let mut ticks = tokio::time::interval(every);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -349,17 +350,13 @@ fn init_logging() {
 
 fn run(path: &Path) -> anyhow::Result<()> {
     init_logging();
-    let config = Config::load(path)?;
+    let config = Arc::new(Config::load(path)?);
     let (policy, approvers) = load_policy(&config)?;
     let readers = load_readers(&config)?;
     one_key_one_purpose(&approvers, &readers)?;
     let pinned = load_pinned_hosts(&config)?;
     let ca_certs = load_ca_certs(&config)?;
-    let keys = keystore::keys(&config, &policy)?;
-    let tokens = keystore::tokens(&config, &policy)?;
-    let signer = platform::signer(keys.signing)?;
-    let upstream_signer = platform::upstream_signer(keys.upstream)?;
-    let registry = policy.repos().clone();
+    let start = keystore::start(&config, &policy)?;
     keystore::private_dir(&config.state_dir)?;
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
@@ -368,16 +365,41 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let mirror_config = mirror_config(&config, repos, pinned, ca_certs)?;
-        let mirrors = Mirrors::open(mirror_config, &registry, upstream_signer, &tokens).await?;
         let platform = platform::build(&config).await?;
-        let authority = CertificateAuthority::new(keys.ca);
-        let service = start_service(&config, policy, &approvers, authority, &platform, signer)?;
-        let host_public = keys.host.public_key().to_openssh()?;
-        let tls = platform::tls_identity(keys.tls)?;
+        let (boot, open) = match start {
+            Start::Sealed(boot) => (boot, None),
+            Start::Open(boot, opened) => (boot, Some(*opened)),
+        };
+        let host_public = boot.host.public_key().clone();
+        let daemon: KeyFingerprint = host_public
+            .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
+            .to_string()
+            .parse()?;
+        let tls = platform::tls_identity(boot.tls)?;
+        let service = start_service(
+            &config,
+            policy.clone(),
+            &approvers,
+            boot.ca_public,
+            daemon,
+            &platform,
+        )?;
+        let opener = daemon::Opener::new(
+            config.clone(),
+            policy,
+            mirror_config,
+            service.clone(),
+            platform.notifier.clone(),
+        );
+        let unsealer: Option<Arc<dyn writ_gateway::Unsealer>> = match open {
+            Some(_) => None,
+            None => Some(Arc::new(opener.clone())),
+        };
         let gateway = Gateway::start(
             GatewayConfig {
-                host_key: keys.host,
-                mirrors: mirrors.clone(),
+                host_key: boot.host,
+                mirrors: None,
+                unsealer,
                 hook_program: std::env::current_exe()?,
                 state_dir: config.state_dir.join("run"),
                 readers: readers.clone(),
@@ -386,29 +408,40 @@ fn run(path: &Path) -> anyhow::Result<()> {
             service.clone(),
         )
         .await?;
+        opener.set_gateway(gateway.clone());
+        let sealed = open.is_none();
+        match open {
+            Some(opened) => {
+                opener
+                    .open(opened, None, &writ_core::caller::CallerFacts::default())
+                    .await?;
+            }
+            None => service.announce_sealed(),
+        }
 
-        tracing::info!(host_key = %host_public, tls_fingerprint = %tls.fingerprint(), "started");
+        tracing::info!(
+            host_key = %host_public.to_openssh()?,
+            tls_fingerprint = %tls.fingerprint(),
+            sealed,
+            "started"
+        );
         log_access(&approvers, &readers);
         tracing::info!(decisions = ?config.decisions, "decisions");
         let mut servers = spawn_listeners(&gateway, &platform, &tls);
         spawn_sweeper(service);
-        spawn_mirror_sync(
-            mirrors,
-            gateway.clone(),
-            Duration::from_secs(config.mirrors.sync_every.seconds()),
-        );
         until_stopped(&mut servers).await
     })
 }
 
-/// The approval service, on the state directory's store and audit log.
+/// The approval service, sealed, on the state directory's store and audit log, with a boot
+/// nonce drawn now.
 fn start_service(
     config: &Config,
     policy: PolicyConfig,
     approvers: &[AllowedSigner],
-    authority: CertificateAuthority,
+    ca_public: writ_crypto::ssh_key::PublicKey,
+    daemon: KeyFingerprint,
     platform: &platform::Platform,
-    signer: Arc<dyn writ_signer::Signer>,
 ) -> anyhow::Result<Arc<Service>> {
     let store = Store::open(&config.state_dir.join("leases.db"))?;
     let audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
@@ -419,13 +452,14 @@ fn start_service(
             decisions: config.decisions,
             max_pending: config.max_pending,
             submissions: config.submissions.limits(),
+            ca_public,
+            daemon,
         },
-        authority,
+        writ_crypto::keys::random_array()?,
         store,
         audit,
         ServicePlatform {
             notifier: platform.notifier.clone(),
-            signer,
             watcher: platform.watcher.clone(),
             clock: Arc::new(SystemClock),
         },

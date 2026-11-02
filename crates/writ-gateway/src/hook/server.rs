@@ -265,10 +265,8 @@ async fn hold_mirror(
     context: &PushContext,
     quarantine: Option<&str>,
 ) -> Result<Quarantine, Denied> {
-    let guard = gateway
-        .shared
-        .config
-        .mirrors
+    let mirrors = gateway.mirrors().map_err(Denied::new)?;
+    let guard = mirrors
         .lock(&context.repo)
         .await
         .map_err(|e| Denied::new(e.to_string()))?;
@@ -283,7 +281,7 @@ async fn hold_mirror(
         .repo(&context.repo)
         .ok_or_else(|| Denied::new(format!("repo {} is not in the registry", context.repo)))?;
     Quarantine::open(
-        gateway.shared.config.mirrors.git(),
+        mirrors.git(),
         &mirror,
         quarantine.map(std::path::Path::new),
         entry.object_format,
@@ -522,7 +520,8 @@ ticket:
             let gateway = Gateway::start(
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
-                    mirrors: writ_mirror::testing::no_repos(dir.path()).await.unwrap(),
+                    mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
+                    unsealer: None,
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
@@ -612,7 +611,8 @@ ticket:
             let gateway = Gateway::start(
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
-                    mirrors: writ_mirror::testing::no_repos(dir.path()).await.unwrap(),
+                    mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
+                    unsealer: None,
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),
@@ -713,7 +713,8 @@ templates:
             let gateway = Gateway::start(
                 GatewayConfig {
                     host_key: generate(KeyKind::Ed25519).unwrap(),
-                    mirrors: writ_mirror::testing::no_repos(dir.path()).await.unwrap(),
+                    mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
+                    unsealer: None,
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
                     readers: Vec::new(),

@@ -95,6 +95,8 @@ pub enum DenyCode {
     /// The request itself is malformed, or the daemon can't decide (an internal fault): fail
     /// closed (`invalid`).
     Invalid,
+    /// The daemon is sealed: nothing is served until an approver unseals it (`sealed`).
+    Sealed,
 }
 
 impl DenyCode {
@@ -146,6 +148,7 @@ impl DenyCode {
             DenyCode::Limit => "limit",
             DenyCode::Rate => "rate",
             DenyCode::Invalid => "invalid",
+            DenyCode::Sealed => "sealed",
         }
     }
 }
@@ -186,11 +189,19 @@ impl Denial {
         }
     }
 
+    /// The daemon is sealed: the same words for every request.
+    pub fn sealed() -> Self {
+        Self::new(DenyCode::Sealed, SEALED)
+    }
+
     /// The daemon failed inside: all the agent reads (the cause goes to the daemon's log).
     pub fn internal() -> Self {
         Self::new(DenyCode::Invalid, INTERNAL_ERROR)
     }
 }
+
+/// What a client reads of every request while the daemon is sealed.
+pub const SEALED: &str = "daemon sealed: an approver unseals it with `writ unseal`";
 
 /// What the agent reads when the daemon failed inside.
 pub const INTERNAL_ERROR: &str = "internal error in the daemon";

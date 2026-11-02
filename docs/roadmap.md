@@ -164,8 +164,8 @@ Settled with the user before building (the [decision log](decisions.md) has the 
   what a daemon uses before any human input can be rebuilt from its disk, so a copy of the
   boot keys plus an intercepted unseal gives the passphrase away (the threat model's residual
   risk; closed by a transport key in hardware, M7.5 in local mode).
-- **The notification token, the operator's choice** (`notifiers[].telegram.token: boot |
-  sealed`, required, no default): `boot` sends "writd restarted, sealed" at once, and
+- **The notification token, the operator's choice** (`notifiers[].telegram.token`: `{ boot: <file> }` or
+  `{ sealed: <id> }`, required, no default): `boot` sends "writd restarted, sealed" at once, and
   "unsealed" only from the real daemon (no such message after a `writ unseal` that said it
   worked means something answered in its place), but whoever holds the boot keys can send
   as the bot; `sealed` sends nothing until unsealed. Both are written up in the operator

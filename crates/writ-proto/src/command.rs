@@ -28,6 +28,10 @@ pub enum Command {
     /// signature over the `writ-proof/1` document ([`ProveRequest`] on stdin). Reply:
     /// [`Proved`].
     Prove,
+    /// `writ unseal`: the keystore's passphrase and an approver's signature over this boot's
+    /// `writ-unseal/1` document ([`UnsealRequest`] on stdin). Reply: [`Unsealed`]. The only
+    /// command, with `info`, a sealed daemon answers.
+    Unseal,
 }
 
 impl Command {
@@ -54,6 +58,7 @@ impl Command {
             ("refuse", Some(_)) => Some(Self::Refuse { id: id()? }),
             ("revoke", Some(_)) => Some(Self::Revoke { id: id()? }),
             ("prove", None) => Some(Self::Prove),
+            ("unseal", None) => Some(Self::Unseal),
             _ => None,
         }
     }
@@ -71,6 +76,7 @@ impl Command {
             Self::Refuse { id } => format!("writ refuse {id}"),
             Self::Revoke { id } => format!("writ revoke {id}"),
             Self::Prove => "writ prove".to_owned(),
+            Self::Unseal => "writ unseal".to_owned(),
         }
     }
 
@@ -89,6 +95,7 @@ impl Command {
     /// | show | `GET /v1/tickets/<id>` |
     /// | approve, refuse, revoke | `POST /v1/tickets/<id>/approve` (`refuse`, `revoke`) |
     /// | prove | `POST /v1/proofs` |
+    /// | unseal | `POST /v1/unseal` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request | Self::Wait { .. } => None,
@@ -100,6 +107,7 @@ impl Command {
             Self::Refuse { id } => Some(("POST", format!("/v1/tickets/{id}/refuse"))),
             Self::Revoke { id } => Some(("POST", format!("/v1/tickets/{id}/revoke"))),
             Self::Prove => Some(("POST", "/v1/proofs".to_owned())),
+            Self::Unseal => Some(("POST", "/v1/unseal".to_owned())),
         }
     }
 
@@ -121,6 +129,7 @@ impl Command {
             ("POST", ["tickets", t, "refuse"], None) => Self::Refuse { id: id(t)? },
             ("POST", ["tickets", t, "revoke"], None) => Self::Revoke { id: id(t)? },
             ("POST", ["proofs"], None) => Self::Prove,
+            ("POST", ["unseal"], None) => Self::Unseal,
             _ => return None,
         };
         Some(command)

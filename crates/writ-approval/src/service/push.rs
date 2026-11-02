@@ -59,9 +59,7 @@ impl Service {
         caller: &CallerFacts,
         repo: &RepoName,
     ) -> Result<Lease, Denial> {
-        let (now, mut inner) = self
-            .begin()
-            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
+        let (now, mut inner) = self.begin().map_err(super::as_denial)?;
         let event = cert_event(now, EventKind::Push, Outcome::Denied, cert, caller).repo(repo);
         let lease = match self.lease_for(&mut inner, cert, caller, now) {
             Ok(lease) => lease,
@@ -87,9 +85,7 @@ impl Service {
     /// under one lock. One `push` line, whatever the outcome; a violation under
     /// `on_violation: revoke_lease` revokes the lease (the caller drops its sessions).
     pub fn push(&self, pushing: &Pushing) -> Result<Lease, Denial> {
-        let (now, mut inner) = self
-            .begin()
-            .map_err(|e| Denial::new(DenyCode::Invalid, e.to_string()))?;
+        let (now, mut inner) = self.begin().map_err(super::as_denial)?;
         let event = pushing.event(now);
         let refuse = |inner: &mut Inner, event: &AuditEvent, denial: Denial| {
             Self::log_best_effort(inner, &event.clone().denial(&denial));

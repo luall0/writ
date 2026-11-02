@@ -23,4 +23,4 @@ attestor: network
 session_watcher: none
 notifiers: []
 # notifiers:
-#   - telegram: { token_file: telegram-token, chat_id: "123456789" }   # token file mode 0600, gitignored
+#   - telegram: { token: { boot: telegram-token }, chat_id: "123456789" }   # token file mode 0600, gitignored

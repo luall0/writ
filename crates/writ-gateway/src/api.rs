@@ -10,7 +10,8 @@ use serde::Serialize;
 use writ_approval::{Service, ServiceError};
 use writ_core::caller::CallerFacts;
 use writ_crypto::ssh_key::PublicKey;
-use writ_proto::{ApiError, Command, MAX_BODY};
+use writ_proto::{ApiError, Command, MAX_BODY, UnsealRequest, Unsealed};
+use zeroize::Zeroizing;
 
 use crate::channel::reply;
 use crate::{Gateway, limits};
@@ -25,6 +26,10 @@ pub(crate) async fn run_agent(
     channel: Channel<Msg>,
 ) {
     let (mut rx, tx) = channel.split();
+    if gateway.service().is_sealed() {
+        gateway.refused_sealed(facts).await;
+        return reply(tx, sealed()).await;
+    }
     let service = gateway.service().clone();
     let result = match command {
         Command::Request => match read_body(&mut rx).await {
@@ -54,26 +59,42 @@ pub(crate) async fn run_approval(
     } else {
         Vec::new()
     };
-    let result = approval_reply(gateway.service().clone(), facts, command, body).await;
+    let result = approval_reply(gateway, facts, command, body).await;
     reply(tx, result).await;
+}
+
+/// What every request but `info` and `unseal` gets while the daemon is sealed.
+fn sealed() -> (Vec<u8>, Option<String>) {
+    encoded::<()>(Err(ApiError::new(writ_core::policy::SEALED)))
 }
 
 /// Whether an approval command reads a JSON body.
 pub(crate) fn approval_has_body(command: &Command) -> bool {
     matches!(
         command,
-        Command::Approve { .. } | Command::Refuse { .. } | Command::Revoke { .. } | Command::Prove
+        Command::Approve { .. }
+            | Command::Refuse { .. }
+            | Command::Revoke { .. }
+            | Command::Prove
+            | Command::Unseal
     )
 }
 
 /// Runs an approval command, the same over SSH and HTTPS: the reply bytes, and the failure
 /// to report. `body` is the command's JSON body (empty when it has none).
 pub(crate) async fn approval_reply(
-    service: Arc<Service>,
+    gateway: Gateway,
     facts: CallerFacts,
     command: Command,
     body: Vec<u8>,
 ) -> (Vec<u8>, Option<String>) {
+    // An unseal's body holds the passphrase: wiped once read.
+    let body = Zeroizing::new(body);
+    let service: Arc<Service> = gateway.service().clone();
+    if service.is_sealed() && !matches!(command, Command::Info | Command::Unseal) {
+        gateway.refused_sealed(facts).await;
+        return sealed();
+    }
     let empty = body.iter().all(u8::is_ascii_whitespace);
     match command {
         Command::Info => encoded(Ok(service.info())),
@@ -104,8 +125,56 @@ pub(crate) async fn approval_reply(
             Ok(request) => encoded(blocking(move || service.prove(&request, &facts)).await),
             Err(e) => encoded::<()>(Err(e)),
         },
+        Command::Unseal => unseal(gateway, facts, &body).await,
         Command::Request | Command::Wait { .. } => {
             encoded::<()>(Err(ApiError::new("command not allowed here")))
+        }
+    }
+}
+
+/// `writ unseal`: the service checks the document and the approver's signature (this daemon,
+/// this boot) before the passphrase is tried; then the daemon's [`crate::Unsealer`] opens
+/// the keystore. One unseal at a time; a refusal after the check is logged here, once.
+async fn unseal(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Option<String>) {
+    let request: UnsealRequest = match writ_proto::decode_body(body) {
+        Ok(request) => request,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let Some(unsealer) = gateway.shared.config.unsealer.clone() else {
+        return encoded::<()>(Err(ApiError::new(
+            "this daemon has no sealed keystore: there is nothing to unseal",
+        )));
+    };
+    let Ok(_one) = gateway.shared.unsealing.try_lock() else {
+        return encoded::<()>(Err(ApiError::new(
+            "an unseal is already in progress: wait for it",
+        )));
+    };
+    let (service, caller) = (gateway.service().clone(), facts.clone());
+    let checked = blocking(move || {
+        service
+            .check_unseal(&request, &caller)
+            .map(|approver| (approver, request))
+    })
+    .await;
+    let (approver, request) = match checked {
+        Ok(checked) => checked,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    match unsealer
+        .unseal(request.passphrase, approver.clone(), facts.clone())
+        .await
+    {
+        Ok(()) => encoded(Ok(Unsealed {
+            signed_by: approver,
+        })),
+        Err(reason) => {
+            let (service, logged) = (gateway.service().clone(), reason.clone());
+            let _ = tokio::task::spawn_blocking(move || {
+                service.unseal_failed(Some(&approver), &logged, &facts);
+            })
+            .await;
+            encoded::<()>(Err(ApiError::new(format!("not unsealed: {reason}"))))
         }
     }
 }

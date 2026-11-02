@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 use writ_core::lease::State;
 use writ_core::names::{KeyFingerprint, RepoName, TemplateName, TicketId};
+use writ_core::signed::BootNonce;
 use writ_core::units::Timestamp;
+use zeroize::Zeroizing;
 
 /// Reply to [`Command::Request`]: the ticket is waiting for the approver.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +53,72 @@ pub enum Decision {
 #[serde(deny_unknown_fields)]
 pub struct Info {
     pub decisions: Decisions,
+    /// While the daemon is sealed: what an unseal signature names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<SealedBoot>,
+}
+
+/// A sealed daemon's boot, as a `writ-unseal/1` document names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SealedBoot {
+    /// The fingerprint of the daemon's SSH host key.
+    pub daemon: KeyFingerprint,
+    /// Drawn at this start: a signature over it opens no other boot.
+    pub nonce: BootNonce,
+}
+
+/// The keystore's passphrase on the wire: wiped on drop, never printed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PassphraseText(Zeroizing<String>);
+
+impl PassphraseText {
+    pub fn new(text: String) -> Self {
+        Self(Zeroizing::new(text))
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for PassphraseText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PassphraseText(<redacted>)")
+    }
+}
+
+impl Serialize for PassphraseText {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PassphraseText {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Moved into the wiped box, never copied.
+        String::deserialize(deserializer).map(Self::new)
+    }
+}
+
+/// Body of [`Command::Unseal`](crate::Command::Unseal).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnsealRequest {
+    /// The keystore's passphrase.
+    pub passphrase: PassphraseText,
+    /// The canonical bytes of the `writ-unseal/1` document: this daemon, this boot.
+    pub unseal: String,
+    /// The approver's armored SSHSIG over them, namespace `writ-approval`.
+    pub signature: String,
+}
+
+/// Reply to [`Command::Unseal`](crate::Command::Unseal): the daemon is open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unsealed {
+    /// The approver key that signed the unseal.
+    pub signed_by: KeyFingerprint,
 }
 
 /// Whether refusals and revocations need an approver signature (`writd.yaml`: `decisions`).
