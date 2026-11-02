@@ -120,6 +120,23 @@ pushes and fetches through the daemon to GitHub, with a deploy key the daemon ho
 e2e` runs the same agent commands against Forgejo in Docker; this one needs your GitHub account, so it
 is done by hand. Use a **throwaway private repository**, never a real one.
 
+**The quick way.** With the repository created (step 1) and your approval key saved (step 1
+of [Approving with Secretive](#approving-with-secretive-touch-id)):
+
+```sh
+make github-check REPO=<you>/writ-throwaway                                # steps 2 to 8
+make github-check REPO=<you>/writ-throwaway EMAIL=<you+agent@example.org>  # and "Verified"
+```
+
+`tool/github-check.sh` sets a daemon up from nothing in a temporary directory (nothing in
+`dev/` changes), runs steps 2 to 8 with the commands below, prints each check as `ok` or
+`FAIL`, and removes what it made. You touch it twice: Touch ID for the ticket, and your
+GitHub SSH key for the clones and for the "upstream moves" commit, which it pushes from a
+second clone instead of the web editor. With [`gh`](https://cli.github.com/) installed and
+logged in it adds and removes the deploy key (and the signing key, for "Verified")
+itself; otherwise it prints each key and waits while you add it. `EMAIL` must be one of your
+account's verified emails: it becomes the lease's committer email. The steps by hand follow.
+
 **1. The repository.** On GitHub, create a private repository (say `writ-throwaway`) with a
 README, so it has a `main`.
 
@@ -200,10 +217,13 @@ writ git push origin HEAD:refs/heads/agent/manual-check    # refused: not signed
   for the refused ones (with the remote's reason for the rejection in step 6), and no key.
 - The agent side holds no GitHub credential: `dev/data/client/sessions/` holds only the
   session key and certificate, and `writ git push` worked without your SSH agent.
-- With the lease's signing key added on your account as a **signing** key (`writd
-  signing-keys dev/writd.yaml` prints it) and `agent@writ.invalid` a verified email of the
-  account, GitHub shows the commits pushed after as "Verified"; without them, as unverified
-  (GitHub asks no proof; Forgejo does: `make e2e`'s `verified_commits`).
+- "Verified": GitHub shows a commit as verified when its signing key is a **signing** key on
+  your account (`writd signing-keys dev/writd.yaml` prints it) and its committer email is
+  one of your account's **verified** emails. `agent@writ.invalid` can't be one (GitHub
+  verifies by mail): set the template's `committer_emails` to an address of yours (a
+  `+agent` one) first, or let `make github-check … EMAIL=<address>` do it. Commits pushed
+  before the key is on the account show as unverified, those after as "Verified". (GitHub
+  asks no proof; Forgejo does: `make e2e`'s `verified_commits`.)
 
 **9. Clean up.** Stop `make run`, delete the deploy key and the repository on GitHub, then:
 

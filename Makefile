@@ -1,4 +1,4 @@
-.PHONY: ci push check test test-props test-agent e2e fmt run dev-client hooks
+.PHONY: ci push check test test-props test-agent e2e github-check fmt run dev-client hooks
 
 # Lint, format check, dependency directions, source rules, doc links, the guarantee and
 # end-to-end registries.
@@ -67,6 +67,13 @@ test-agent:
 # A filter for the scenarios: make e2e ARGS=wrapper_mode.
 e2e:
 	sh tool/e2e.sh $(ARGS)
+
+# The GitHub manual check as one command (by hand: your approval key signs, Touch ID), against a
+# THROWAWAY repository with a main: make github-check REPO=<owner>/<repo> [EMAIL=<a verified
+# email of yours>, to check "Verified"]. Uses `gh` when it is installed and logged in.
+github-check:
+	@test -n "$(REPO)" || { echo "usage: make github-check REPO=<owner>/<repo> [EMAIL=<address>]"; exit 2; }
+	sh tool/github-check.sh "$(REPO)" $(if $(EMAIL),--email "$(EMAIL)")
 
 fmt:
 	cargo fmt --all

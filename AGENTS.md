@@ -151,6 +151,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Tests: unit and integration, property tests with the fixed seed and a random one | `make test` |
 | Property tests with one seed (replay a failure) | `make test-props SEED=<number\|random>` |
 | Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
+| The GitHub manual check as one command (by hand: Touch ID; a throwaway repo; `gh` optional) | `make github-check REPO=<owner>/<repo> [EMAIL=<verified email>]` |
 | Pin the development daemon for the client (`dev/data/client/`), before the [manual checks](docs/guides/manual-checks.md) | `make dev-client` |
 | Format | `make fmt` |
 | Install the git hooks (`pre-push` allows only a tree `make ci` passed on) | `make hooks` |
