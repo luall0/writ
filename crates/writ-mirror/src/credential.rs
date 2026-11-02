@@ -287,6 +287,35 @@ mod tests {
         reply
     }
 
+    /// Sends a request the socket refuses unread: it stops reading at its bound and hangs up
+    /// with the rest unread, which Linux turns into a reset (macOS closes quietly). Either way
+    /// git gets no reply, which is all a refusal is: an empty end, or the reset, nothing else.
+    async fn ask_cut_off(path: &Path, request: &str) {
+        let cut_off = |e: std::io::Error| {
+            assert!(
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::NotConnected
+                ),
+                "{e}"
+            );
+        };
+        let mut stream = UnixStream::connect(path).await.unwrap();
+        if let Err(e) = stream.write_all(request.as_bytes()).await {
+            return cut_off(e);
+        }
+        if let Err(e) = stream.shutdown().await {
+            return cut_off(e);
+        }
+        let mut reply = Vec::new();
+        match stream.read_to_end(&mut reply).await {
+            Ok(_) => assert!(reply.is_empty(), "{}", String::from_utf8_lossy(&reply)),
+            Err(e) => cut_off(e),
+        }
+    }
+
     #[tokio::test]
     async fn the_socket_answers_this_upstream_a_bounded_number_of_times() {
         let dir = tempfile::tempdir().unwrap();
@@ -337,12 +366,14 @@ mod tests {
         let socket = CredentialSocket::start(dir.path(), upstream, token()).unwrap();
         let padding = "x".repeat(MAX_MESSAGE);
         let long = format!("protocol=https\nhost=git.example.org\npath={padding}\n");
-        assert!(ask(socket.path(), &long).await.is_empty());
+        ask_cut_off(socket.path(), &long).await;
+        assert_eq!(socket.answers(), 0, "the token was never handed out");
         let fits = format!(
             "protocol=https\nhost=git.example.org\npath={}\n",
             "x".repeat(MAX_MESSAGE - 42)
         );
         assert_eq!(fits.len(), MAX_MESSAGE);
         assert!(!ask(socket.path(), &fits).await.is_empty());
+        assert_eq!(socket.answers(), 1);
     }
 }
