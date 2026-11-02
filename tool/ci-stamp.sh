@@ -9,9 +9,11 @@
 #                   on that same tree
 #   require-clean   exit 1 with the reason if the working tree is not clean
 #   verified        exit 0 if the working tree is clean and HEAD's tree is the stamped one
-#   pre-push        reads git's pre-push input on stdin; exit 0 if every pushed commit's tree
-#                   is the stamped one, 1 with the reason otherwise (fail closed: no stamp,
-#                   an unreadable line or an unknown commit refuses)
+#   pre-push        reads git's pre-push input on stdin; exit 0 if each pushed ref's tip has
+#                   the stamped tree, 1 with the reason otherwise (fail closed: no stamp, an
+#                   unreadable line or an unknown commit refuses). The commits below a tip
+#                   aren't checked: a series of commits pushed at once ran `make ci` on its
+#                   last tree only.
 #
 # The stamp is the tree, not the commit: what was tested is the content, so rewording a
 # commit message keeps it. A convenience on the Mac, not a boundary: GitHub Actions runs

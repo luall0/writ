@@ -29,6 +29,7 @@ an unchanged core.
 | M4 | [Gateway push and fetch](history/m4-gateway-push-and-fetch.md) ✅ | Mirrors synced as untrusted input, every push check in the quarantine, upstream over SSH before the mirror moves, `make e2e` |
 | M4.1 | [Real end-to-end scenarios](history/m4.1-real-end-to-end-scenarios.md) ✅ | The operator's and the agent's paths run for real in containers against Forgejo, in CI: every command and flag in a scenario, the guides' commands the ones the pipeline runs, heavy concurrency; `writ prove-key` and verified commits on the account |
 | M4.5 | [HTTPS upstream](history/m4.5-https-upstream.md) ✅ | Upstream over HTTPS with a token: the daemon's own credential helper fed by a one-operation socket, a one-operation proxy capping bytes and reaching only the registry's host, the certificate verified, no redirect |
+| M4.6 | [Review after M4.5](history/m4.6-review-after-m4.5.md) ✅ | The security and code quality review after M4.5 and its fixes: a push's mirror never held by a client, the mirror lock with a deadline, `mirrors.ca_certs` the only trust, GnuTLS's certificate refusal read, the ledger before a push's walk, `mirrors.git`, `writ-mirror` split by concern |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
@@ -114,6 +115,16 @@ handed to the daemon's own git for one operation by its credential helper
 host through a one-operation SOCKS5 proxy that caps what upstream sends; the certificate
 verified (`mirrors.ca_certs` or the system's), no redirect; the token taken out of upstream's
 words; scenario 13 against Forgejo behind a TLS front.
+
+## M4.6 — Review after M4.5
+
+**Done.** Moved to [history/m4.6-review-after-m4.5.md](history/m4.6-review-after-m4.5.md):
+the review after M4.5 and its fixes (a push's mirror released at receive-pack's exit, at once
+on a refusal and 10 s after an acceptance at the latest; `Mirrors::lock` with a deadline;
+`mirrors.ca_certs` the only trust, the system's CA directory too, with an end-to-end scenario;
+GnuTLS's certificate refusal recognized; the ledger read before a push's objects are walked;
+`mirrors.git`; one `MirrorError` per cause; the arithmetic lint in `writ-mirror` and
+`writ-gateway`; `mirror.rs` split by concern), and the review loop's.
 
 ## M5 — Sealed start and signed admin changes
 
