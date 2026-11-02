@@ -57,8 +57,11 @@ impl AgentSocket {
         key: KeyId,
         public: &PublicKey,
     ) -> Result<Self> {
-        let name = writ_crypto::keys::random_hex(8)
-            .map_err(|_| MirrorError::Agent("no randomness".to_owned()))?;
+        let name =
+            writ_crypto::keys::random_hex(8).map_err(|source| MirrorError::NoRandomness {
+                what: "the agent socket",
+                source,
+            })?;
         let path = dir.join(format!("{name}.sock"));
         let listener = UnixListener::bind(&path).map_err(|source| MirrorError::Io {
             what: "cannot create the agent socket",

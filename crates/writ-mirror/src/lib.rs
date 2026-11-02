@@ -21,6 +21,11 @@
 //! git runs with a clean environment and no system or global config ([`git`]); the gateway
 //! runs `upload-pack` and `receive-pack` through the same builder.
 
+// This crate reads what upstream, git and the daemon's own sockets send (SOCKS5, the ssh-agent
+// protocol, git's output) and counts bytes against caps: every arithmetic operation is
+// checked, saturating, or allowed with the reason it can't overflow.
+#![deny(clippy::arithmetic_side_effects)]
+
 pub mod agent;
 pub mod credential;
 pub mod git;
@@ -107,6 +112,14 @@ pub enum MirrorError {
     },
     #[error("cannot run git: {0}")]
     Spawn(#[source] std::io::Error),
+    #[error("no randomness for {what}: {source}")]
+    NoRandomness {
+        what: &'static str,
+        #[source]
+        source: writ_crypto::CryptoError,
+    },
+    #[error("the sync slots are closed: the daemon is stopping")]
+    SyncSlotsClosed,
     #[error("the upstream agent socket failed: {0}")]
     Agent(String),
     #[error("not this push's quarantine: {0}")]
@@ -115,6 +128,8 @@ pub enum MirrorError {
     TooManyCommits(usize),
     #[error("cannot read the push: {0}")]
     Read(String),
+    #[error("cannot read the push: git took more than {seconds} s")]
+    ReadTimeout { seconds: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, MirrorError>;

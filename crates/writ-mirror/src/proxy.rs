@@ -66,8 +66,11 @@ impl UpstreamProxy {
     /// Serves a proxy to `upstream` on a new socket in `dir`, a private directory, letting
     /// upstream send at most `max_bytes`.
     pub fn start(dir: &Path, upstream: &HttpsUrl, max_bytes: u64) -> Result<Self> {
-        let name = writ_crypto::keys::random_hex(8)
-            .map_err(|_| MirrorError::Agent("no randomness".to_owned()))?;
+        let name =
+            writ_crypto::keys::random_hex(8).map_err(|source| MirrorError::NoRandomness {
+                what: "the upstream proxy socket",
+                source,
+            })?;
         let path = dir.join(format!("{name}.proxy"));
         let listener = UnixListener::bind(&path).map_err(|source| MirrorError::Io {
             what: "cannot create the upstream proxy socket",

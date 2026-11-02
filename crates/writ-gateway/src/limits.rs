@@ -104,7 +104,7 @@ impl Slots {
         if *count >= MAX_CONNECTIONS_PER_SOURCE {
             return Err("too many open connections from this address");
         }
-        *count += 1;
+        *count = count.saturating_add(1);
         Ok(Slot {
             _total: total,
             source,
@@ -275,7 +275,7 @@ impl DenialThrottle {
         }
         match windows.get_mut(&(source, kind)) {
             Some(window) if now.duration_since(window.started) < DENIAL_WINDOW => {
-                window.suppressed += 1;
+                window.suppressed = window.suppressed.saturating_add(1);
                 None
             }
             Some(window) => {

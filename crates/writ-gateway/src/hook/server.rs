@@ -116,7 +116,7 @@ pub(super) async fn read_input(
     let mut input = Vec::new();
     let limit = u64::try_from(MAX_HOOK_INPUT).unwrap_or(u64::MAX);
     stream
-        .take(limit + 1)
+        .take(limit.saturating_add(1))
         .read_to_end(&mut input)
         .await
         .map_err(|_| "cannot read the push")?;

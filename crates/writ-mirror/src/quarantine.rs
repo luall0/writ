@@ -96,7 +96,9 @@ impl Quarantine {
     ) -> Result<process::Finished> {
         match process::run(self.git(args), stdin, READ_DEADLINE, max_stdout).await {
             Ok(done) => Ok(done),
-            Err(RunError::Timeout) => Err(MirrorError::Read("git took too long".to_owned())),
+            Err(RunError::Timeout) => Err(MirrorError::ReadTimeout {
+                seconds: READ_DEADLINE.as_secs(),
+            }),
             Err(RunError::Spawn(e) | RunError::Wait(e)) => Err(MirrorError::Spawn(e)),
         }
     }

@@ -27,6 +27,11 @@
 //! Every request the gateway turns away on its own is logged through
 //! [`Service::gateway_denied`]; the lease decisions are logged by the service itself.
 
+// This crate reads what agents send (SSH channels, request bodies, the pre-receive hook's
+// input) and counts it against limits: every arithmetic operation is checked, saturating,
+// or allowed with the reason it can't overflow.
+#![deny(clippy::arithmetic_side_effects)]
+
 mod api;
 mod channel;
 mod command;

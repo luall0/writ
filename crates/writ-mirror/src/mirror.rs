@@ -375,7 +375,7 @@ impl MirrorGuard {
             .syncs
             .acquire()
             .await
-            .map_err(|_| MirrorError::Agent("the sync slots are closed".to_owned()))?;
+            .map_err(|_| MirrorError::SyncSlotsClosed)?;
         let fetched = self.fetch().await;
         if fetched.is_err() {
             self.remove_partial_packs();
@@ -558,7 +558,7 @@ impl MirrorGuard {
         if finished.status.success() {
             return Ok(());
         }
-        let classified = self.classify(&access, &finished.stderr);
+        let classified = self.classify(&access, &finished.stderr, "upstream push");
         drop(access);
         Err(match classified {
             MirrorError::Git { repo, .. } => {
@@ -591,7 +591,7 @@ impl MirrorGuard {
             .run_upstream(access, args, None, deadline, max_stdout)
             .await?;
         if !finished.status.success() {
-            return Err(self.classify(access, &finished.stderr));
+            return Err(self.classify(access, &finished.stderr, "sync"));
         }
         Ok(finished.stdout)
     }
@@ -657,9 +657,10 @@ impl MirrorGuard {
         }
     }
 
-    /// The error a failed sync's stderr names. Upstream can print anything there: at worst it
-    /// changes which failure is reported, never whether the sync failed.
-    fn classify(&self, access: &Access, stderr: &[u8]) -> MirrorError {
+    /// The error the stderr of a failed sync or upstream push (`what`) names. Upstream can
+    /// print anything there: at worst it changes which failure is reported, never whether the
+    /// operation failed.
+    fn classify(&self, access: &Access, stderr: &[u8], what: &'static str) -> MirrorError {
         let text = String::from_utf8_lossy(stderr);
         let repo = self.repo.name.clone();
         if access.too_large() || text.contains(relay::TOO_LARGE) {
@@ -682,7 +683,7 @@ impl MirrorGuard {
         } else {
             MirrorError::Git {
                 repo,
-                what: "sync",
+                what,
                 stderr: self.clean(stderr),
             }
         }
@@ -914,8 +915,10 @@ async fn create_mirror(
     path: &Path,
     format: ObjectFormat,
 ) -> Result<()> {
-    let suffix = writ_crypto::keys::random_hex(8)
-        .map_err(|_| MirrorError::Config("no randomness".to_owned()))?;
+    let suffix = writ_crypto::keys::random_hex(8).map_err(|source| MirrorError::NoRandomness {
+        what: "a new mirror's name",
+        source,
+    })?;
     let temporary = config.root.join(format!(".{name}.git.new-{suffix}"));
     let mut cmd = git::command(Hooks::None);
     cmd.args(["init", "--bare", "--quiet", "--template="])
