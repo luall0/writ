@@ -184,6 +184,38 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
 - **Docs change with the code** (hard rule 15): behavior → its page, a decision → the
   decision log.
 
+## Configuration keys
+
+The [operator documentation](operators/README.md) is the operator's reference: a key missing
+there, or described as it was, is a bug. A change that adds, removes, renames or changes a
+key, a value, a default or a bound of `writd.yaml`, `policy.yaml` or the ticket file, or an
+environment variable a binary reads, does in the same change (hard rule 19):
+
+1. **The struct that parses it**: its default and its bound, checked at load with an error
+   naming the key.
+2. **Its reference row** (`docs/operators/writd-yaml.md`, `policy-yaml.md`, `ticket.md`,
+   `clients.md`): the value, the default, the bound and what it does, or that its effect isn't
+   built yet and from which milestone.
+3. **Its file's template** (`docs/operators/templates/`): set if required, commented out at
+   its default otherwise.
+4. **A test that sets it and checks its effect**: an integration test (`crates/writ-integration`)
+   or an end-to-end scenario, named in the
+   [configuration coverage registry](testing.md#configuration-coverage-every-key); a parser's
+   unit test is not enough. A key accepted for a later milestone names it there
+   (`planned: M9`) until its effect exists.
+5. **The examples** that show it: the [development configuration](../dev/writd.yaml), the
+   [lease model](lease-model.md), a guide.
+
+A value this build can't honor at all (a Unix socket before local mode, `ticket_link: notes`
+before M4.7) is refused at start with the milestone that brings it, never taken and ignored.
+
+Checked: `make test` fails when a key the parser takes has no reference row, no registry row
+or no line in its template, when a row names a key the parser doesn't take, when an
+enumerated value isn't in its row, or when a template doesn't parse as written and with every
+commented-out setting taken in (`writd`'s and `writ-core`'s `every_…_key_is_in_the_operator_reference`
+and `the_…_template_parses_…`); `make check` fails when a test the registry names doesn't
+exist, or a planned milestone is already done (`tool/check-config.py`).
+
 ## Tests
 
 The rules for tests (determinism, what each level tests, how to try to break a guarantee) are

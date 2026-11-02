@@ -129,6 +129,14 @@ records every commit signed per lease. Use these words in code, logs and docs.
     without a scenario); [adding a scenario](docs/end-to-end.md#adding-a-scenario). A
     command a guide shows is the command the pipeline runs (`<!-- e2e: … -->` blocks,
     checked both ways).
+19. **Every configuration key is documented and tested.** A key, value, default or bound
+    added to or changed in `writd.yaml`, `policy.yaml` or the ticket file, or an environment
+    variable a binary reads, updates its row in the [operator reference](docs/operators/README.md)
+    and its file's template ([the five steps](docs/conventions.md#configuration-keys))
+    and is set by an integration test or an end-to-end scenario that checks its effect, named
+    in the [configuration coverage registry](docs/testing.md#configuration-coverage-every-key)
+    (`planned: M<n>` while its effect is a later milestone's), in the same change (`make test`
+    fails on a key without its rows, `make check` on a row naming no test).
 
 ## Definition of done
 
@@ -148,7 +156,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 |---|---|
 | Everything CI runs (`check` then `test`); on a clean working tree, a pass stamps the tree for the `pre-push` hook | `make ci` |
 | `make ci` (skipped if it already passed on this tree), then `git push`; the way to push | `make push [ARGS="origin main"]` |
-| Lint, format check, dependency directions, source rules, doc links, no test-only feature in the binaries, the guarantee and end-to-end registries, `cargo deny` | `make check` |
+| Lint, format check, dependency directions, source rules, doc links, no test-only feature in the binaries, the guarantee, end-to-end and configuration registries, `cargo deny` | `make check` |
 | Tests: unit and integration, property tests with the fixed seed and a random one | `make test` |
 | Property tests with one seed (replay a failure) | `make test-props SEED=<number\|random>` |
 | Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
@@ -185,6 +193,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Session keys, certificates, revocation, local mode process chain | [docs/architecture/identity.md](docs/architecture/identity.md) |
 | `writ` CLI, `writ-sign`, the agent skill, `writ try`, agent host git config | [docs/architecture/clients.md](docs/architecture/clients.md) |
 | Docker, compose, network exposure, host hardening, launchd | [docs/architecture/deployment.md](docs/architecture/deployment.md) |
+| Setting the daemon up, every key of `writd.yaml`, `policy.yaml`, the ticket file and the clients' settings, good practice beside an agent | [docs/operators/](docs/operators/README.md) |
 | Crates, external tool versions, pinning | [docs/stack.md](docs/stack.md) |
 | Tests: levels, hardening rules, fixtures, guarantee tests, property-test seeds | [docs/testing.md](docs/testing.md) |
 | End-to-end scenarios: running, the stack, the coverage registry, adding a scenario | [docs/end-to-end.md](docs/end-to-end.md) |

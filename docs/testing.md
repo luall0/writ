@@ -16,6 +16,8 @@ Each milestone's acceptance items become integration scenarios, and what a perso
 agent reaches through a binary becomes an end-to-end scenario too: every command and flag has
 one ([the rule and its registry](end-to-end.md#coverage-every-command-and-flag), checked by
 `make check` and `make test`; [adding a scenario](end-to-end.md#adding-a-scenario)).
+Every configuration key is set by an integration test or an end-to-end scenario that checks
+its effect ([the rule and its registry](#configuration-coverage-every-key)).
 What needs a human stays manual: the approver's real agent (`make test-agent`, Touch ID) and
 the [manual checks](guides/manual-checks.md).
 
@@ -125,6 +127,114 @@ others.
 Every crate is testable without network or Docker. Tests never touch the
 user's real `~/.ssh`, git config or ssh-agent (except `make test-agent`, run by hand): they set `HOME`, `GIT_CONFIG_GLOBAL` and
 `GIT_CONFIG_NOSYSTEM`, and use generated keys.
+
+## Configuration coverage: every key
+
+Every key of `writd.yaml`, `policy.yaml` and the ticket file, and every environment variable a
+binary reads, is set by a test that checks its effect: an integration test
+(`crates/writ-integration/tests/`, the real binaries, or the in-process gateway and mirrors
+for the mirror bounds) or an end-to-end scenario. A parser's unit test doesn't count: it shows
+the key is read, not that it does anything. A key whose effect comes with a later milestone
+names it (`planned: M10`); one this build refuses at start names the test that shows the
+refusal. Hard rule 19; the [conventions](conventions.md#configuration-keys) say what else a
+key change touches.
+
+Checked: `make test` fails when a key the parsers take has no row here (or on its
+[operator reference](operators/README.md) page), or a row names a key they don't take
+(`writd`'s `every_writd_yaml_key_is_in_the_operator_reference`, `writ-core`'s
+`every_policy_key_is_in_the_operator_reference` and `every_ticket_key_is_in_the_operator_reference`);
+`make check` fails when a named test isn't one of the integration or end-to-end crate's, or a
+planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` row
+(`tool/check-config.py`).
+
+| Key | Tested by |
+|---|---|
+| `writd.yaml: state_dir` | `a_restarted_daemon_keeps_leases_mirrors_and_ledger`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `whole_repo_mode_wires_a_dedicated_clone_and_undo_restores_it` |
+| `writd.yaml: policy` | `writd_signing_keys_prints_the_key_a_lease_signs_with`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |
+| `writd.yaml: approvers` | `only_a_key_in_approvers_can_sign`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |
+| `writd.yaml: readers` | `every_client_setting_works_as_a_flag`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |
+| `writd.yaml: decisions` | `decisions_open_takes_unsigned_refusals_and_signed_does_not`, `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
+| `writd.yaml: max_pending` | `max_pending_caps_the_tickets_waiting_on_both_sides` |
+| `writd.yaml: submissions.per_source` | `submission_rates_per_source_and_in_all_are_the_operator_s` |
+| `writd.yaml: submissions.in_all` | `submission_rates_per_source_and_in_all_are_the_operator_s` |
+| `writd.yaml: sign_requests.per_lease` | `sign_requests_per_lease_bounds_the_requests_held_at_once` |
+| `writd.yaml: keystore.dev` | `writd_signing_keys_prints_the_key_a_lease_signs_with`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `a_repo_behind_https_is_fetched_and_pushed_with_a_token_nobody_else_sees` |
+| `writd.yaml: unlock.passphrase` | `what_this_build_does_not_have_is_refused_at_start` (read and logged); planned: M5 |
+| `writd.yaml: mirrors.known_hosts` | `another_host_key_or_an_unpinned_host_is_refused`, `a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons` |
+| `writd.yaml: mirrors.ca_certs` | `a_certificate_from_a_ca_the_daemon_does_not_trust_is_refused_before_any_token`, `the_operator_s_cas_are_the_only_ones_git_is_given`, `a_certificate_the_system_trusts_is_refused_when_the_operator_named_their_cas` |
+| `writd.yaml: mirrors.git` | `mirrors_git_and_ssh_are_the_programs_named` |
+| `writd.yaml: mirrors.ssh` | `mirrors_git_and_ssh_are_the_programs_named` |
+| `writd.yaml: mirrors.fresh_for` | `a_sync_mirrors_branches_and_tags_only_and_follows_upstream`, `concurrent_syncs_of_a_stale_mirror_fetch_once`, `upstream_moved_the_push_is_refused_then_fetch_rebase_re_sign_and_push_again` |
+| `writd.yaml: mirrors.sync_every` | `mirrors_sync_every_syncs_without_any_client` |
+| `writd.yaml: mirrors.timeout` | `an_upstream_that_never_answers_is_cut_at_the_deadline`, `a_mirror_held_past_its_deadline_is_busy_never_waited_on_forever` |
+| `writd.yaml: mirrors.max_fetch` | `a_sync_past_the_byte_cap_is_refused_on_both_sides` |
+| `writd.yaml: transports.agents` | `listeners_take_only_the_sources_they_allow`, `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
+| `writd.yaml: transports.approvals.ssh` | `listeners_take_only_the_sources_they_allow`, `https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled` |
+| `writd.yaml: transports.approvals.https` | `listeners_take_only_the_sources_they_allow`, `https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled`, `revocation_and_expiry_drop_sessions_and_refuse_the_certificate` |
+| `writd.yaml: <listener>.tcp` | `listeners_take_only_the_sources_they_allow`, `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
+| `writd.yaml: <listener>.unix` | `what_this_build_does_not_have_is_refused_at_start` (refused); planned: M7 |
+| `writd.yaml: <listener>.allow` | `listeners_take_only_the_sources_they_allow` |
+| `writd.yaml: attestor` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; the value macos_process_chain planned: M7 |
+| `writd.yaml: session_watcher` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; the value macos planned: M7 |
+| `writd.yaml: notifiers[].telegram.token_file` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
+| `writd.yaml: notifiers[].telegram.chat_id` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
+| `writd.yaml: notifiers[].telegram.api_base` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
+| `policy.yaml: repos.<name>.upstream` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees` |
+| `policy.yaml: repos.<name>.upstream_credential` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_credential_the_remote_does_not_take_is_refused`, `an_https_upstream_syncs_with_the_token_which_nothing_else_holds` |
+| `policy.yaml: repos.<name>.protected_refs` | `fetch_and_push_through_the_gateway`, `every_push_denial_leaves_forgejo_and_the_mirror_unchanged` |
+| `policy.yaml: repos.<name>.push_modes` | `push_modes_without_gateway_refuse_a_gateway_push`; the value proxy planned: M9, the value direct_ssh planned: M10 |
+| `policy.yaml: repos.<name>.ticket_link` | `ticket_link_trailer_is_required_only_when_the_repo_asks`, `what_the_commit_says_is_checked`; the value notes planned: M4.7 |
+| `policy.yaml: repos.<name>.object_format` | `an_upstream_in_another_object_format_is_refused`, `a_sync_mirrors_branches_and_tags_only_and_follows_upstream` |
+| `policy.yaml: repos.<name>.direct_ssh.hosts` | planned: M10 |
+| `policy.yaml: repos.<name>.direct_ssh.allow_account_wide` | planned: M10 |
+| `policy.yaml: templates.<name>.repos` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `policy.yaml: templates.<name>.operations` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `policy.yaml: templates.<name>.branches` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
+| `policy.yaml: templates.<name>.push_modes` | `push_modes_without_gateway_refuse_a_gateway_push` |
+| `policy.yaml: templates.<name>.force_push` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `policy.yaml: templates.<name>.committer_emails` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `what_the_commit_says_is_checked` |
+| `policy.yaml: templates.<name>.signing_key` | `ed25519_commits_signed_by_the_daemon_verify_and_are_in_the_ledger`, `p256_commits_signed_by_the_daemon_verify_and_are_in_the_ledger`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
+| `policy.yaml: templates.<name>.max_ttl` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `policy.yaml: templates.<name>.max_signatures` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `policy.yaml: templates.<name>.max_pushes` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `policy.yaml: templates.<name>.max_ops_per_minute` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `policy.yaml: templates.<name>.max_push_size` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `policy.yaml: templates.<name>.paths_check` | `paths_check_off_signs_any_path_without_a_warning`, `paths_outside_the_ticket_are_refused_with_paths_check_deny` |
+| `policy.yaml: templates.<name>.require_expected_paths` | `require_expected_paths_rejects_a_ticket_without_them` |
+| `ticket: template` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
+| `ticket: origin_hint` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
+| `ticket: caller.descends_from.executable` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
+| `ticket: caller.descends_from.pid` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
+| `ticket: caller.descends_from.generation` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
+| `ticket: caller.descends_from.code_identity.signing_id` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
+| `ticket: caller.descends_from.code_identity.team_id` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
+| `ticket: scope.repos` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `ticket: scope.operations` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `a_fetch_goes_through_the_policy_and_counts_against_the_rate` |
+| `ticket: scope.branches` | `a_branch_outside_the_lease_is_refused`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `ticket: scope.force_push` | `a_force_push_or_a_deletion_is_refused_without_force_push`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `ticket: scope.committer_emails` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `ticket: ticket.title` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
+| `ticket: ticket.task` | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
+| `ticket: ticket.plan` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
+| `ticket: ticket.expected_paths` | `paths_outside_the_ticket_are_refused_with_paths_check_deny`, `require_expected_paths_rejects_a_ticket_without_them` |
+| `ticket: ticket.amends` | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
+| `ticket: ticket.revises` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `decisions_open_takes_unsigned_refusals_and_signed_does_not` |
+| `ticket: limits.ttl` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `a_ticket_left_unsigned_expires` |
+| `ticket: limits.max_signatures` | `signatures_stop_at_the_lease_s_count_and_rate`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `ticket: limits.max_pushes` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `ticket: limits.max_ops_per_minute` | `signatures_stop_at_the_lease_s_count_and_rate`, `a_fetch_goes_through_the_policy_and_counts_against_the_rate` |
+| `ticket: limits.max_push_size` | `a_pack_over_max_push_size_is_refused`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `ticket: on_violation` | `a_violation_revokes_a_lease_that_asks_for_it`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `env: WRIT_HOME` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
+| `env: WRIT_KNOWN_HOSTS` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
+| `env: WRIT_TLS_PINS` | `revocation_and_expiry_drop_sessions_and_refuse_the_certificate`, `every_client_setting_works_as_a_flag` |
+| `env: WRIT_READER` | `every_client_setting_works_as_a_flag` |
+| `env: WRIT_URL` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
+| `env: WRIT_APPROVAL_URL` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
+| `env: WRIT_APPROVAL_KEY` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
+| `env: WRIT_APPROVAL_AGENT` | `decisions_open_takes_unsigned_refusals_and_signed_does_not`, `every_client_setting_works_as_a_flag` |
+| `env: WRIT_SSH_KEYGEN` | `writ_ssh_keygen_names_the_program_the_approver_signs_with` |
+| `env: WRIT_LOG` | `mirrors_sync_every_syncs_without_any_client` |
 
 ## Guarantee tests
 

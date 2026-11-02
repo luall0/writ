@@ -766,6 +766,208 @@ mod tests {
         );
     }
 
+    /// What the parser says it expects instead of a probe key or value: the fields of a map,
+    /// or the values of an enumeration.
+    fn expected(doc: &str) -> Vec<String> {
+        let error = writ_core::yaml::parse_yaml::<Config>(doc)
+            .unwrap_err()
+            .to_string();
+        let (_, list) = error
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("no list of what is expected in: {error}"));
+        list.split(", ")
+            .map(|name| name.trim().trim_matches('`').to_owned())
+            .collect()
+    }
+
+    /// Every key of writd.yaml, as the reference writes it. The keys come from the parser
+    /// itself (a probe key makes it list the fields it expects), so a new field shows up
+    /// without anyone listing it; a new section is expanded by adding it below.
+    fn writd_keys() -> std::collections::BTreeSet<String> {
+        let mut code = std::collections::BTreeSet::new();
+        let mut section = |doc: &str, prefix: &str, sections: &[&str]| {
+            for name in expected(doc) {
+                if !sections.contains(&name.as_str()) {
+                    code.insert(format!("{prefix}{name}"));
+                }
+            }
+        };
+        section(
+            "__probe__: 0",
+            "",
+            &[
+                "submissions",
+                "sign_requests",
+                "keystore",
+                "mirrors",
+                "transports",
+                "unlock",
+                "notifiers",
+            ],
+        );
+        section("submissions: { __probe__: 0 }", "submissions.", &[]);
+        section("sign_requests: { __probe__: 0 }", "sign_requests.", &[]);
+        section("keystore: { __probe__: 0 }", "keystore.", &[]);
+        section("mirrors: { __probe__: 0 }", "mirrors.", &[]);
+        section("unlock: { __probe__: 0 }", "unlock.", &[]);
+        section(
+            "transports: { __probe__: 0 }",
+            "transports.",
+            &["approvals"],
+        );
+        section(
+            "transports: { approvals: { __probe__: 0 } }",
+            "transports.approvals.",
+            &[],
+        );
+        // The three lists hold listeners, written once as `<listener>.…`.
+        section(
+            "transports: { agents: [{ __probe__: 0 }] }",
+            "<listener>.",
+            &[],
+        );
+        assert_eq!(
+            expected("notifiers: [{ __probe__: 0 }]"),
+            ["telegram"],
+            "a new notifier: probe it"
+        );
+        section(
+            "notifiers: [{ telegram: { __probe__: 0 } }]",
+            "notifiers[].telegram.",
+            &[],
+        );
+        assert!(code.len() > 25, "{code:?}");
+        code
+    }
+
+    #[test]
+    fn every_writd_yaml_key_is_in_the_operator_reference() {
+        // AGENTS.md rule 19: every key the parser takes has its row in
+        // docs/operators/writd-yaml.md and in docs/testing.md's configuration coverage
+        // registry, and every row names a key it takes.
+        let code = writd_keys();
+        let page = include_str!("../../../docs/operators/writd-yaml.md");
+        let rows: Vec<(&str, &str)> = page
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|rest| Some((rest.split_once('`')?.0, rest)))
+            .filter(|(key, _)| !key.starts_with("WRIT_"))
+            .collect();
+        let listed: std::collections::BTreeSet<String> =
+            rows.iter().map(|(key, _)| (*key).to_owned()).collect();
+        assert_eq!(listed.len(), rows.len(), "a key with two rows");
+        let testing = include_str!("../../../docs/testing.md");
+        let (_, registry) = testing
+            .split_once("## Configuration coverage: every key")
+            .expect("the registry section in docs/testing.md");
+        let registry = registry.split_once("\n## ").map_or(registry, |(r, _)| r);
+        let covered: std::collections::BTreeSet<String> = registry
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `writd.yaml: "))
+            .filter_map(|rest| rest.split('`').next())
+            .map(str::to_owned)
+            .collect();
+        for (what, keys) in [
+            ("docs/operators/writd-yaml.md", &listed),
+            (
+                "docs/testing.md's configuration coverage registry",
+                &covered,
+            ),
+        ] {
+            let missing: Vec<&String> = code.difference(keys).collect();
+            let unknown: Vec<&String> = keys.difference(&code).collect();
+            assert!(
+                missing.is_empty() && unknown.is_empty(),
+                "{what}: keys the parser takes without a row {missing:?}; rows for keys it \
+                 doesn't take {unknown:?}"
+            );
+        }
+        // Each value an enumerated key takes is named in its row.
+        for (key, doc) in [
+            ("decisions", "decisions: __probe__"),
+            ("attestor", "attestor: __probe__"),
+            ("session_watcher", "session_watcher: __probe__"),
+        ] {
+            let (_, row) = rows.iter().find(|(k, _)| *k == key).expect("its row");
+            for value in expected(doc) {
+                assert!(row.contains(&format!("`{value}`")), "{key}: `{value}`");
+            }
+        }
+    }
+
+    /// The template with every commented-out setting (`# key: value`, `#   - key:`) taken in:
+    /// prose comments start with a capital or hold no `key:` first.
+    fn uncommented(template: &str) -> String {
+        template
+            .lines()
+            .map(|line| {
+                let indent = line.len() - line.trim_start().len();
+                let Some(rest) = line.trim_start().strip_prefix("# ") else {
+                    return line.to_owned();
+                };
+                let key = rest.trim_start().trim_start_matches("- ");
+                let name: String = key
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                    .collect();
+                if name.is_empty()
+                    || !key
+                        .strip_prefix(name.as_str())
+                        .is_some_and(|rest| rest.starts_with(':'))
+                {
+                    return line.to_owned();
+                }
+                format!("{}{rest}", " ".repeat(indent))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_template_parses_as_is_and_with_every_default_taken_in() {
+        // docs/operators/templates/writd.yaml: the required keys set, each optional one
+        // commented out at its default; taken in, they change nothing but the notifier and
+        // the paths an operator names (unlock, ca_certs).
+        let template = include_str!("../../../docs/operators/templates/writd.yaml");
+        let as_is = load(template).unwrap();
+        let taken = uncommented(template);
+        assert_ne!(taken, template);
+        let all = load(&taken).unwrap();
+        assert_eq!(all.decisions, as_is.decisions);
+        assert_eq!(all.max_pending, as_is.max_pending);
+        assert_eq!(all.submissions.limits(), as_is.submissions.limits());
+        assert_eq!(all.sign_requests.per_lease, as_is.sign_requests.per_lease);
+        let (a, b) = (&all.mirrors, &as_is.mirrors);
+        assert_eq!(
+            (
+                &a.git,
+                &a.ssh,
+                a.fresh_for,
+                a.sync_every,
+                a.timeout,
+                a.max_fetch
+            ),
+            (
+                &b.git,
+                &b.ssh,
+                b.fresh_for,
+                b.sync_every,
+                b.timeout,
+                b.max_fetch
+            ),
+            "a commented-out value is not the default"
+        );
+        assert!(all.unlock.is_some() && all.mirrors.ca_certs.is_some());
+        assert_eq!(all.notifiers.len(), 1);
+        for key in writd_keys() {
+            let name = key.rsplit('.').next().unwrap();
+            assert!(
+                template.contains(&format!("{name}:")),
+                "{key}: not in the template"
+            );
+        }
+    }
+
     #[test]
     fn errors_name_the_field() {
         let e = load(&format!("{MINIMAL}decisions: maybe\n"))

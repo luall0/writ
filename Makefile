@@ -1,7 +1,7 @@
 .PHONY: ci push check test test-props test-agent e2e github-check fmt run dev-client hooks
 
-# Lint, format check, dependency directions, source rules, doc links, the guarantee and
-# end-to-end registries.
+# Lint, format check, dependency directions, source rules, doc links, the guarantee,
+# end-to-end and configuration registries.
 # Each library is also linted alone: the workspace build turns on the `testing` features the
 # tests ask for, which could hide code that only compiles with them.
 LIBRARIES := writ-core writ-proto writ-crypto writ-git writ-mirror writ-signer writ-platform writ-store writ-approval writ-gateway
@@ -36,6 +36,7 @@ check:
 	python3 -I tool/check-features.py
 	python3 -I tool/check-guarantees.py
 	python3 -I tool/check-e2e.py
+	python3 -I tool/check-config.py
 	cargo deny --locked check
 
 # The integration tests run the binaries (writd, writ, writ-sign) as they ship, built first on
