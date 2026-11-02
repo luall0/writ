@@ -29,9 +29,9 @@ remote (local Forgejo or Gitea in Docker) and one throwaway GitHub repo.
   for systems that keep OpenSSH elsewhere.
 
 **Status:** done on 2026-11-01, in six `feat:` steps, a `test:` commit (`make e2e`) and this
-`docs:` commit; every acceptance item is exercised by `make test` and `make e2e`. **One check
-is left for the user**: the throwaway GitHub repo ([manual checks](../guides/manual-checks.md#a-throwaway-github-repo-m4)),
-which needs a GitHub account and a deploy key.
+`docs:` commit; every acceptance item is exercised by `make test` and `make e2e`. The
+throwaway GitHub repo ([manual checks](../guides/manual-checks.md#a-throwaway-github-repo-m4))
+passed by the user on 2026-11-02, with `make github-check` (added after M4.1).
 
 The plan and its eight decisions (D1 to D8, below) were agreed with the user before any code;
 the user asked one question on the way (does the URL rewrite break the operator's own pushes?
@@ -216,8 +216,10 @@ milestone's detail:
   push origin` through the daemon); `a_push_reaches_upstream_with_the_daemon_s_credential_only`
   (the agent's key can't reach the remote, only its session is on its disk); against Forgejo in
   `make e2e` (`pushes_and_fetches_go_through_the_daemon_to_forgejo`, a deploy key the daemon
-  holds). **GitHub: pending**, the [manual check](../guides/manual-checks.md#a-throwaway-github-repo-m4)
-  needs the user's account.*
+  holds). **GitHub: passed** on 2026-11-02, by the user (`make github-check REPO=…`, the
+  [manual check](../guides/manual-checks.md#a-throwaway-github-repo-m4)'s steps 2 to 8 with
+  its own commands against a throwaway private repository, the daemon's credential a deploy
+  key: every check `ok`, the agent's session holding no GitHub credential).*
 - [x] Each is denied with a readable reason and nothing reaches upstream: a protected ref, a
       branch outside the lease, a force push, a commit not signed under this lease (including
       one signed under another lease, and an unsigned local commit under a signed one), a pack
@@ -227,13 +229,17 @@ milestone's detail:
   ref differing only in case, and paths changed since signing, by editing the ledger);
   `fetch_and_push_through_the_gateway` (protected refs); `a_fetch_goes_through_the_policy_and_counts_against_the_rate`
   (no `fetch`: code `operation`). The pack over the size is refused by git before the hook, and
-  logged.*
+  logged. On GitHub (`make github-check`, 2026-11-02): a push to `main` and an unsigned commit
+  refused, `main` and the branch unchanged on GitHub, both refusals in the audit log.*
 - [x] Upstream moved → the push is rejected with the remote's reason; fetch, rebase, re-sign
       and push again succeeds.
   *`upstream_moved_the_push_is_refused_then_fetch_rebase_re_sign_and_push_again`: the remote
   moves the ref between the daemon's sync and its push, the agent reads `upstream refused the
   push: … stale info`, then fetches, rebases, signs again and pushes; and against Forgejo in
-  `make e2e`, upstream moved through its API.*
+  `make e2e`, upstream moved through its API. On GitHub (`make github-check`, 2026-11-02):
+  another contributor's commit pushed to the branch, the agent's push rejected and GitHub
+  keeping that commit, then fetch, rebase (signed again) and push landing on top of it, the
+  mirror following.*
 - [x] The mirror never holds refs the remote refused.
   *The same scenario and `the_remote_s_refusal_reaches_the_agent_and_never_the_mirror` (a hook
   on the remote refusing, its words relayed with escapes neutralized): the mirror's ref and
