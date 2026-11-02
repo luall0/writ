@@ -109,13 +109,13 @@ pub enum Hooks<'a> {
     Dir(&'a Path),
 }
 
-/// A `git` with a clean environment (only `PATH` and `TMPDIR`), no system or global config
-/// (the daemon user's git config must not change what the daemon runs), no prompt, no
-/// transport, and [`HARDENING`].
-pub fn command(hooks: Hooks<'_>) -> Command {
-    // PATH: the daemon's own PATH (the environment is cleared but for it); the daemon's host
-    // and its PATH are trusted (docs/threat-model.md, boundary 5).
-    let mut cmd = Command::new("git");
+/// The `git` at `program` (the operator's `mirrors.git`, an absolute path) with a clean
+/// environment (only `PATH` and `TMPDIR`), no system or global config (the daemon user's git
+/// config must not change what the daemon runs), no prompt, no transport, and [`HARDENING`].
+/// What git itself starts (`sh` for an ssh command or a credential helper) is found in the
+/// daemon's `PATH`: the daemon's host is trusted (docs/threat-model.md, boundary 5).
+pub fn command(program: &Path, hooks: Hooks<'_>) -> Command {
+    let mut cmd = Command::new(program);
     cmd.env_clear();
     for name in ENV_KEPT {
         if let Some(value) = std::env::var_os(name) {
@@ -172,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn the_daemon_user_s_config_and_environment_never_reach_git() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cmd = command(Hooks::None);
+        let mut cmd = command(&crate::testing::git(), Hooks::None);
         cmd.args(["config", "--list", "--show-origin"])
             .current_dir(dir.path());
         let out = cmd.output().await.unwrap();
@@ -188,7 +188,7 @@ mod tests {
 
     async fn ls_remote(transport: Option<Transport>, url: &str) -> String {
         let dir = tempfile::tempdir().unwrap();
-        let mut cmd = command(Hooks::None);
+        let mut cmd = command(&crate::testing::git(), Hooks::None);
         if let Some(transport) = transport {
             allow(&mut cmd, transport);
         }

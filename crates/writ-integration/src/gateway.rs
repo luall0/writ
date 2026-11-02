@@ -203,6 +203,7 @@ impl GitGateway {
                     root: root.join("repos"),
                     run_dir: root.join("mirror"),
                     relay: bin("writd"),
+                    git: writ_mirror::testing::git(),
                     ssh: PathBuf::from("/usr/bin/ssh"),
                     pinned: writ_mirror::known_hosts::PinnedHosts::parse(&pinned).unwrap(),
                     ca_certs: https.as_ref().map(|h| h.ca_pem.clone()),

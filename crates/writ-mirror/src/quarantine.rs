@@ -44,14 +44,22 @@ const MAX_ID_LIST: usize = 1 << 24;
 /// A push's quarantine, or none (a push that only deletes refs sends no pack).
 #[derive(Debug, Clone)]
 pub struct Quarantine {
+    /// The daemon's git (`mirrors.git`).
+    git: PathBuf,
     mirror: PathBuf,
     objects: Option<PathBuf>,
     algo: HashAlgo,
 }
 
 impl Quarantine {
-    /// The quarantine at `path` of the mirror at `mirror`, in the repo's object `format`.
-    pub fn open(mirror: &Path, path: Option<&Path>, format: ObjectFormat) -> Result<Self> {
+    /// The quarantine at `path` of the mirror at `mirror`, in the repo's object `format`, read
+    /// with the daemon's `git` ([`Mirrors::git`](crate::Mirrors::git)).
+    pub fn open(
+        git: &Path,
+        mirror: &Path,
+        path: Option<&Path>,
+        format: ObjectFormat,
+    ) -> Result<Self> {
         let algo = match format {
             ObjectFormat::Sha1 => HashAlgo::Sha1,
             ObjectFormat::Sha256 => HashAlgo::Sha256,
@@ -61,6 +69,7 @@ impl Quarantine {
             Some(path) => Some(check(mirror, path)?),
         };
         Ok(Self {
+            git: git.to_owned(),
             mirror: mirror.to_owned(),
             objects,
             algo,
@@ -69,7 +78,7 @@ impl Quarantine {
 
     /// git, reading this push: the quarantine's objects, then the mirror's.
     fn git(&self, args: &[&str]) -> tokio::process::Command {
-        let mut cmd = git::command(Hooks::None);
+        let mut cmd = git::command(&self.git, Hooks::None);
         cmd.arg("--git-dir").arg(&self.mirror).args(args);
         self.objects_env(&mut cmd);
         cmd
@@ -462,7 +471,14 @@ mod tests {
         std::fs::create_dir_all(objects.join("tmp_objdir-incoming-abc")).unwrap();
         std::fs::create_dir_all(objects.join("pack")).unwrap();
         std::fs::create_dir_all(dir.path().join("tmp_objdir-incoming-elsewhere")).unwrap();
-        let open = |path: &Path| Quarantine::open(&mirror, Some(path), ObjectFormat::Sha1);
+        let open = |path: &Path| {
+            Quarantine::open(
+                Path::new("/usr/bin/git"),
+                &mirror,
+                Some(path),
+                ObjectFormat::Sha1,
+            )
+        };
         assert!(open(&objects.join("tmp_objdir-incoming-abc")).is_ok());
         assert!(
             open(&objects.join("pack/../tmp_objdir-incoming-abc")).is_ok(),
@@ -486,7 +502,9 @@ mod tests {
         std::os::unix::fs::symlink(objects.join("tmp_objdir-incoming-abc"), &link).unwrap();
         assert!(matches!(open(&link), Err(MirrorError::NotAQuarantine(_))));
         // No quarantine at all (a push that only deletes).
-        assert!(Quarantine::open(&mirror, None, ObjectFormat::Sha1).is_ok());
+        assert!(
+            Quarantine::open(Path::new("/usr/bin/git"), &mirror, None, ObjectFormat::Sha1).is_ok()
+        );
     }
 
     #[test]

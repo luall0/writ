@@ -362,6 +362,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
                 root: repos.clone(),
                 run_dir: config.state_dir.join("mirror"),
                 relay: std::env::current_exe()?,
+                git: config.mirrors.git.clone(),
                 ssh: config.mirrors.ssh.clone(),
                 pinned,
                 ca_certs,

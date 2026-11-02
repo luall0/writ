@@ -81,6 +81,7 @@ impl Fixture {
             root: self.root().join("repos"),
             run_dir: self.root().join("mirror"),
             relay: bin("writd"),
+            git: writ_mirror::testing::git(),
             ssh: PathBuf::from("/usr/bin/ssh"),
             pinned: PinnedHosts::parse(UNREACHABLE_PIN).unwrap(),
             ca_certs: Some(self.remote.ca_pem.clone()),

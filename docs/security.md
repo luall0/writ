@@ -271,8 +271,10 @@ with a test:
   goes through unchecked). `writd.yaml`'s paths are made absolute when it is read, and the
   gateway and the mirrors refuse relative directories.
 - **By absolute path**, or a `// PATH: <why>` comment saying why `PATH` is trusted there
-  (the daemon's own git; the agent host's own tools) (checked). The daemon's ssh is a
-  configured absolute path (`mirrors.ssh`), checked at startup to be an executable file.
+  (the agent host's own tools) (checked). The daemon's git and ssh are configured absolute
+  paths (`mirrors.git`, `mirrors.ssh`), checked at startup to be executable files; what git
+  itself starts (`sh` for an ssh command or a credential helper) comes from the daemon's
+  `PATH`, trusted with its host.
 - **Bounded in time, as a group**: a subprocess that talks to the network (a sync, an
   upstream push) runs in its own process group, killed whole past its deadline or when its
   caller gives up (`writ_mirror::process`).

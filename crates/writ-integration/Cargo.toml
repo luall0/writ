@@ -14,7 +14,7 @@ writ-core.workspace = true
 writ-crypto.workspace = true
 writ-gateway.workspace = true
 writ-git.workspace = true
-writ-mirror.workspace = true
+writ-mirror = { workspace = true, features = ["testing"] }
 writ-platform = { workspace = true, features = ["testing"] }
 writ-proto.workspace = true
 writ-signer = { workspace = true, features = ["testing"] }

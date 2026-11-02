@@ -53,6 +53,8 @@ pub struct MirrorConfig {
     /// The daemon's own program (`writd`), run by git as `writd upstream-ssh …` (the relay)
     /// and `writd upstream-credential …` (the credential helper).
     pub relay: PathBuf,
+    /// The system's git, by absolute path (checked at startup, never looked up in `PATH`).
+    pub git: PathBuf,
     /// The system's ssh, by absolute path.
     pub ssh: PathBuf,
     /// The upstream host keys the operator pinned.
@@ -218,7 +220,8 @@ impl Mirrors {
         let https = repos
             .values()
             .any(|entry| matches!(Upstream::parse(&entry.upstream), Ok(Upstream::Https(_))));
-        check_git_version(if https { MIN_GIT_HTTPS } else { MIN_GIT }).await?;
+        check_program(&config.git, "git")?;
+        check_git_version(&config.git, if https { MIN_GIT_HTTPS } else { MIN_GIT }).await?;
         // git and ssh resolve relative paths from wherever they run: only absolute ones.
         for (what, path) in [("root", &config.root), ("run_dir", &config.run_dir)] {
             if !path.is_absolute() {
@@ -297,6 +300,12 @@ impl Mirrors {
     /// The mirror's directory, for a registered repo.
     pub fn path(&self, repo: &RepoName) -> Option<&Path> {
         self.shared.repos.get(repo).map(|r| r.path.as_path())
+    }
+
+    /// The daemon's git (`mirrors.git`), which everything run on a mirror uses: the gateway's
+    /// `upload-pack` and `receive-pack`, the reads of a push.
+    pub fn git(&self) -> &Path {
+        &self.shared.config.git
     }
 
     /// The registered repos.
@@ -605,7 +614,7 @@ impl MirrorGuard {
         deadline: Duration,
         max_stdout: usize,
     ) -> Result<process::Finished> {
-        let mut cmd = git::command(Hooks::None);
+        let mut cmd = git::command(&self.shared.config.git, Hooks::None);
         access.apply(&mut cmd);
         cmd.arg("--git-dir").arg(&self.repo.path).args(args);
         if let Some(quarantine) = quarantine {
@@ -635,7 +644,7 @@ impl MirrorGuard {
         };
         let path = &self.repo.path;
         let git_in = |args: &[&str]| {
-            let mut cmd = git::command(Hooks::None);
+            let mut cmd = git::command(&self.shared.config.git, Hooks::None);
             cmd.arg("--git-dir").arg(path).args(args);
             cmd
         };
@@ -726,7 +735,7 @@ impl MirrorGuard {
         if packs <= MAX_PACKS {
             return;
         }
-        let mut cmd = git::command(Hooks::None);
+        let mut cmd = git::command(&self.shared.config.git, Hooks::None);
         cmd.arg("--git-dir")
             .arg(&self.repo.path)
             .args(["repack", "-a", "-d", "-q"]);
@@ -815,8 +824,8 @@ fn is_certificate_failure(stderr: &str) -> bool {
 }
 
 /// git must be at least `min`.
-async fn check_git_version(min: (u32, u32)) -> Result<()> {
-    let mut cmd = git::command(Hooks::None);
+async fn check_git_version(program: &Path, min: (u32, u32)) -> Result<()> {
+    let mut cmd = git::command(program, Hooks::None);
     cmd.arg("version");
     let done = local(cmd).await?;
     let text = String::from_utf8_lossy(&done.stdout).into_owned();
@@ -886,7 +895,7 @@ async fn open_repo(
 
     let path = config.root.join(format!("{name}.git"));
     match std::fs::symlink_metadata(&path) {
-        Ok(_) => verify_mirror(name, &path, entry.object_format).await?,
+        Ok(_) => verify_mirror(&config.git, name, &path, entry.object_format).await?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             create_mirror(config, name, &path, entry.object_format).await?;
         }
@@ -920,7 +929,7 @@ async fn create_mirror(
         source,
     })?;
     let temporary = config.root.join(format!(".{name}.git.new-{suffix}"));
-    let mut cmd = git::command(Hooks::None);
+    let mut cmd = git::command(&config.git, Hooks::None);
     cmd.args(["init", "--bare", "--quiet", "--template="])
         .arg(format!("--object-format={}", format.as_str()))
         .arg("--ref-format=reftable")
@@ -945,7 +954,12 @@ async fn create_mirror(
 
 /// Checks that `path` is a mirror the daemon made: a directory (not a link), a bare
 /// repository, in the repo's object format, with reftable refs.
-async fn verify_mirror(name: &RepoName, path: &Path, format: ObjectFormat) -> Result<()> {
+async fn verify_mirror(
+    program: &Path,
+    name: &RepoName,
+    path: &Path,
+    format: ObjectFormat,
+) -> Result<()> {
     let not = |why: String| MirrorError::NotAMirror {
         repo: name.clone(),
         path: path.to_owned(),
@@ -959,7 +973,7 @@ async fn verify_mirror(name: &RepoName, path: &Path, format: ObjectFormat) -> Re
     if !meta.is_dir() {
         return Err(not("not a directory (a link or a file)".to_owned()));
     }
-    let mut cmd = git::command(Hooks::None);
+    let mut cmd = git::command(program, Hooks::None);
     cmd.arg("--git-dir").arg(path).args([
         "rev-parse",
         "--is-bare-repository",

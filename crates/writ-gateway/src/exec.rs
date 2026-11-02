@@ -190,7 +190,7 @@ async fn run_git(
             git_protocol,
             lease.ticket.limits.max_push_size.bytes(),
         ),
-        None => git::upload_pack(&path, git_protocol),
+        None => git::upload_pack(gateway, &path, git_protocol),
     };
     match git::spawn(cmd) {
         Ok(child) => {

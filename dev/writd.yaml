@@ -11,6 +11,7 @@ mirrors:
   known_hosts: upstream_known_hosts   # the remotes' host keys, pinned by hand
   # ca_certs: upstream_ca.pem     # https:// upstreams: the CAs trusted (default: the system's);
   #                               # their tokens alone in data/keys/tokens/<id>, mode 0600
+  # git: /usr/bin/git             # git (absolute path; 2.45, or 2.47 for https://)
   # ssh: /usr/bin/ssh             # the OpenSSH client (absolute path)
   # fresh_for: 10s, sync_every: 5m, timeout: 5m, max_fetch: 1GiB  (the defaults)
 transports:

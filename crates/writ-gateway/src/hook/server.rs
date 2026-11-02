@@ -200,6 +200,7 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         return Err(Refused::of(reason, context, refs));
     };
     let quarantine = match Quarantine::open(
+        gateway.shared.config.mirrors.git(),
         &mirror,
         quarantine.map(std::path::Path::new),
         entry.object_format,

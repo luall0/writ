@@ -28,8 +28,12 @@ pub(super) fn repo_path(gateway: &Gateway, repo: &RepoName) -> Option<PathBuf> {
 }
 
 /// `git upload-pack` (fetch) on the repository at `path`.
-pub(super) fn upload_pack(path: &Path, git_protocol: Option<String>) -> tokio::process::Command {
-    let mut cmd = git(Hooks::None, git_protocol);
+pub(super) fn upload_pack(
+    gateway: &Gateway,
+    path: &Path,
+    git_protocol: Option<String>,
+) -> tokio::process::Command {
+    let mut cmd = git(gateway, Hooks::None, git_protocol);
     cmd.arg("upload-pack").arg("--strict").arg(path);
     cmd
 }
@@ -89,7 +93,7 @@ impl<'a> Push<'a> {
         max_bytes: u64,
     ) -> tokio::process::Command {
         let shared = &self.gateway.shared;
-        let mut cmd = git(Hooks::Dir(&shared.hooks_dir), git_protocol);
+        let mut cmd = git(self.gateway, Hooks::Dir(&shared.hooks_dir), git_protocol);
         cmd.arg("-c")
             .arg(format!("receive.maxInputSize={max_bytes}"))
             .arg("receive-pack")
@@ -146,10 +150,14 @@ impl Drop for Push<'_> {
     }
 }
 
-/// The daemon's `git` ([`writ_mirror::git::command`]), with `GIT_PROTOCOL` if the client asked
-/// for one (the only thing taken from the client's environment).
-fn git(hooks: Hooks<'_>, git_protocol: Option<String>) -> tokio::process::Command {
-    let mut cmd = writ_mirror::git::command(hooks);
+/// The daemon's `git` ([`writ_mirror::git::command`], `mirrors.git`), with `GIT_PROTOCOL` if the
+/// client asked for one (the only thing taken from the client's environment).
+fn git(
+    gateway: &Gateway,
+    hooks: Hooks<'_>,
+    git_protocol: Option<String>,
+) -> tokio::process::Command {
+    let mut cmd = writ_mirror::git::command(gateway.shared.config.mirrors.git(), hooks);
     if let Some(protocol) = git_protocol {
         cmd.env("GIT_PROTOCOL", protocol);
     }

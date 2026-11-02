@@ -221,7 +221,8 @@ serves that one operation.
 
 - The URL is the registry's `ssh://[user@]host[:port]/path`, read strictly (a plain host
   name or address, no quote, nothing an option could start with).
-- git runs the system's OpenSSH (`mirrors.ssh`, `/usr/bin/ssh` by default, by absolute path)
+- git (`mirrors.git`, `/usr/bin/git` by default, by absolute path, like everything the daemon
+  runs on its mirrors) runs the system's OpenSSH (`mirrors.ssh`, `/usr/bin/ssh` by default)
   with `-F /dev/null` and every option that matters stated: the pinned host keys only (as the
   daemon rewrote them: plain host names or `[host]:port`, no wildcard, hashed name or marker,
   no DSA key), public key authentication only, no forwarding, proxy, control socket or local

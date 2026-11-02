@@ -17,6 +17,7 @@
 //! mirrors:
 //!   known_hosts: upstream_known_hosts  # required: the remotes' host keys, pinned by hand
 //!   ca_certs: upstream_ca.pem        # HTTPS upstreams: the CAs trusted (default: the system's)
+//!   git: /usr/bin/git                # git, by absolute path (2.45, or 2.47 for https://)
 //!   ssh: /usr/bin/ssh                # the OpenSSH client, by absolute path
 //!   fresh_for: 10s                   # a mirror synced this recently isn't synced again
 //!   sync_every: 5m                   # background sync of every mirror
@@ -143,6 +144,10 @@ pub struct MirrorsConfig {
     /// operator (an authority file); without it, the system's.
     #[serde(default)]
     pub ca_certs: Option<PathBuf>,
+    /// The git the daemon runs on its mirrors and with upstream, by absolute path (never
+    /// looked up in `PATH`); `/usr/bin/git` unless the system keeps it elsewhere.
+    #[serde(default = "default_git")]
+    pub git: PathBuf,
     /// The OpenSSH client the daemon reaches upstream with, by absolute path (never looked up
     /// in `PATH`); `/usr/bin/ssh` unless the system keeps it elsewhere.
     #[serde(default = "default_ssh")]
@@ -155,6 +160,10 @@ pub struct MirrorsConfig {
     pub timeout: Duration,
     #[serde(default = "default_max_fetch")]
     pub max_fetch: ByteSize,
+}
+
+fn default_git() -> PathBuf {
+    PathBuf::from("/usr/bin/git")
 }
 
 fn default_ssh() -> PathBuf {
@@ -181,11 +190,13 @@ impl MirrorsConfig {
     /// Each bound within what makes sense: a sync that can't finish, or a limit that bounds
     /// nothing, is a mistake.
     fn check(&self) -> Result<(), String> {
-        if !self.ssh.is_absolute() {
-            return Err(format!(
-                "mirrors.ssh: {}, must be an absolute path (never looked up in PATH)",
-                self.ssh.display()
-            ));
+        for (name, path) in [("git", &self.git), ("ssh", &self.ssh)] {
+            if !path.is_absolute() {
+                return Err(format!(
+                    "mirrors.{name}: {}, must be an absolute path (never looked up in PATH)",
+                    path.display()
+                ));
+            }
         }
         let within = |name: &str, value: Duration, min: u64, max: u64| {
             if (min..=max).contains(&value.seconds()) {
@@ -559,6 +570,7 @@ mod tests {
         let config = load(MINIMAL).unwrap();
         let mirrors = &config.mirrors;
         assert!(mirrors.known_hosts.is_absolute());
+        assert_eq!(mirrors.git, PathBuf::from("/usr/bin/git"));
         assert_eq!(mirrors.ssh, PathBuf::from("/usr/bin/ssh"));
         assert_eq!(mirrors.fresh_for.seconds(), 10);
         assert_eq!(mirrors.sync_every.seconds(), 300);
@@ -580,6 +592,7 @@ mod tests {
             "max_fetch: 1MiB",
             "max_fetch: 64GiB",
             "ssh: /opt/openssh/bin/ssh",
+            "git: /opt/homebrew/bin/git",
         ] {
             assert!(with(good).is_ok(), "{good}");
         }
@@ -607,6 +620,11 @@ mod tests {
             ),
             ("max_fetch: 68719476737", "must be from 1MiB to 64GiB"),
             ("depth: 1", "unknown field"),
+            ("git: git", "mirrors.git: git, must be an absolute path"),
+            (
+                "git: bin/git",
+                "mirrors.git: bin/git, must be an absolute path",
+            ),
             ("ssh: ssh", "mirrors.ssh: ssh, must be an absolute path"),
             (
                 "ssh: bin/ssh",

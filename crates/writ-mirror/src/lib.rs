@@ -35,7 +35,7 @@ mod process;
 pub mod proxy;
 pub mod quarantine;
 pub mod relay;
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod upstream;
 
