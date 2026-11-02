@@ -111,7 +111,10 @@ in part. Any failure to reach the daemon refuses the push. The daemon then:
 2. holds the repo's mirror (no sync, no other push) until `receive-pack` has moved the refs
    and exited: released at its exit, not when the client has read its output (a client that
    keeps its SSH window shut holds nothing; what is left of the output gets 30 s, then the
-   channel closes);
+   channel closes), and 10 s after the hook's yes at the latest (`REF_UPDATE_GRACE`: the
+   refs move at once, but a report larger than the pipe, which the client doesn't read,
+   keeps `receive-pack` from exiting; a ref update later than that checks its old value and
+   fails rather than moving past the decision);
 3. reads the push from the objects git verified (`writ_mirror::quarantine`), within 10
    minutes in all (`LOCAL_WORK_DEADLINE`, each git killed with its group past it), believing the
    quarantine path only if it is a directory, not a link, right under the mirror's `objects`
