@@ -3924,11 +3924,17 @@ name = "writ-integration"
 version = "0.0.0"
 dependencies = [
  "base64ct",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rcgen",
  "rusqlite",
  "russh",
+ "rustls",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "ureq",
  "writ-approval",
  "writ-core",

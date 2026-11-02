@@ -16,7 +16,7 @@ use std::fs;
 use std::path::Path;
 
 use writ_crypto::keys::KeyKind;
-use writ_integration::gateway::{GitGateway, Listen};
+use writ_integration::gateway::{GitGateway, HTTPS_TOKEN, Listen};
 use writ_integration::{audit_events, stderr};
 
 fn setup() -> (GitGateway, std::path::PathBuf) {
@@ -229,4 +229,97 @@ fn write_hook(repo: &Path, script: &str) {
     let path = hooks.join("pre-receive");
     fs::write(&path, script).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Every file under `dir` holding `needle`, by path.
+fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap().map(Result::unwrap) {
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                stack.push(entry.path());
+            } else if kind.is_file() {
+                let bytes = fs::read(entry.path()).unwrap_or_default();
+                if bytes.windows(needle.len()).any(|w| w == needle) {
+                    found.push(entry.path());
+                }
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees() {
+    let gateway = GitGateway::start_https();
+    gateway.seed_repo();
+    let work = gateway.clone("work");
+    let https = gateway.https.as_ref().unwrap();
+    let head = gateway.commit_signed(&work, "f", "x\n");
+    let out = gateway.git(&work, &["push", "origin", "HEAD:refs/heads/agent/x"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(!stderr(&out).contains(HTTPS_TOKEN), "{}", stderr(&out));
+    assert_eq!(
+        gateway.upstream_ref("refs/heads/agent/x").as_deref(),
+        Some(head.as_str())
+    );
+    assert_eq!(
+        gateway.bare_ref("refs/heads/agent/x").as_deref(),
+        Some(head.as_str())
+    );
+    // Over HTTPS, with the token: never over the remote's SSH.
+    assert_eq!(
+        (https.receive_packs(), gateway.remote.receive_packs()),
+        (1, 0)
+    );
+    assert_eq!(gateway.remote.upload_packs(), 0);
+    let users = https.users();
+    assert!(!users.is_empty());
+    assert!(users.iter().all(|u| u == "writ"), "{users:?}");
+    // Nowhere on disk: not the agent's side, not the mirrors, not the audit log.
+    assert_eq!(
+        files_holding(gateway.root(), HTTPS_TOKEN.as_bytes()),
+        Vec::<std::path::PathBuf>::new()
+    );
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    assert_eq!(audit_events(&audit, "push", "allowed").len(), 1, "{audit}");
+}
+
+#[test]
+fn upstream_moved_over_https_the_push_is_refused_with_the_remote_s_reason() {
+    let gateway = GitGateway::start_https();
+    gateway.seed_repo();
+    let work = gateway.clone("work");
+    let first = gateway.commit_signed(&work, "f", "1\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    let moved = upstream_commit(&gateway, "agent/x", "theirs");
+    gateway.git_ok(
+        &gateway.remote.repo("demo"),
+        &["update-ref", "refs/heads/agent/x", &first],
+    );
+    gateway
+        .https
+        .as_ref()
+        .unwrap()
+        .before_next_push(&["update-ref", "refs/heads/agent/x", &moved]);
+    gateway.commit_signed(&work, "g", "2\n");
+    let out = gateway.git(&work, &["push", "origin", "HEAD:refs/heads/agent/x"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("writ: repo demo: upstream refused the push")
+            && stderr(&out).contains("stale info"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains(HTTPS_TOKEN));
+    assert_eq!(
+        gateway.bare_ref("refs/heads/agent/x").as_deref(),
+        Some(first.as_str())
+    );
+    assert_eq!(
+        gateway.upstream_ref("refs/heads/agent/x").as_deref(),
+        Some(moved.as_str())
+    );
 }

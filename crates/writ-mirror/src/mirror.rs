@@ -18,12 +18,14 @@ use writ_core::names::{KeyId, RepoName};
 use writ_signer::Signer;
 
 use crate::agent::AgentSocket;
-use crate::git::{self, Hooks};
+use crate::credential::{CredentialSocket, UpstreamToken};
+use crate::git::{self, Hooks, Transport};
 use crate::known_hosts::PinnedHosts;
 use crate::process::{self, RunError};
+use crate::proxy::UpstreamProxy;
 use crate::quarantine::Quarantine;
-use crate::upstream::{SshCommand, SshUrl};
-use crate::{MIN_GIT, MirrorError, Result, relay, shown};
+use crate::upstream::{HttpsUrl, SshCommand, SshUrl, Upstream, quote};
+use crate::{MIN_GIT, MIN_GIT_HTTPS, MirrorError, Result, relay, shown};
 
 /// Syncs that may run at once, all mirrors together.
 pub const MAX_SYNCS: usize = 4;
@@ -44,14 +46,19 @@ pub struct MirrorConfig {
     /// The directory holding the mirrors (`<name>.git`).
     pub root: PathBuf,
     /// A private directory for the daemon's upstream files: the pinned host keys as ssh reads
-    /// them, the credentials' public keys, the agent sockets.
+    /// them, the credentials' public keys, the CA certificates as git reads them, the sockets
+    /// of each operation.
     pub run_dir: PathBuf,
-    /// The relay program (`writd`, run as `writd upstream-ssh …`).
+    /// The daemon's own program (`writd`), run by git as `writd upstream-ssh …` (the relay)
+    /// and `writd upstream-credential …` (the credential helper).
     pub relay: PathBuf,
     /// The system's ssh, by absolute path.
     pub ssh: PathBuf,
     /// The upstream host keys the operator pinned.
     pub pinned: PinnedHosts,
+    /// The CA certificates (PEM) an HTTPS upstream's certificate must chain to; `None`: the
+    /// system's.
+    pub ca_certs: Option<String>,
     /// A mirror synced this recently is fresh: a fetch or a push doesn't sync it again.
     pub fresh_for: Duration,
     /// The longest one sync (or upstream push) may take; past it, git and ssh are killed.
@@ -99,21 +106,78 @@ struct Shared {
     config: MirrorConfig,
     signer: Arc<dyn Signer>,
     repos: BTreeMap<RepoName, Arc<Repo>>,
-    agent_dir: PathBuf,
+    /// The sockets of each operation (agent, credential, proxy).
+    socket_dir: PathBuf,
     known_hosts: PathBuf,
+    /// The CA certificates as git reads them, when the operator gave some.
+    ca_file: Option<PathBuf>,
+    /// An empty private directory: the `HOME` of an HTTPS operation's git (no `.netrc`).
+    home: PathBuf,
     syncs: Semaphore,
 }
 
 struct Repo {
     name: RepoName,
     path: PathBuf,
-    upstream: SshUrl,
-    credential: KeyId,
-    public: PublicKey,
-    /// The credential's public key file, which picks it in the agent.
-    identity: PathBuf,
+    reach: Reach,
     format: ObjectFormat,
     state: Arc<Mutex<SyncState>>,
+}
+
+/// How a repo's upstream is reached.
+enum Reach {
+    /// `ssh://`, with a key in the upstream signer.
+    Ssh {
+        url: SshUrl,
+        credential: KeyId,
+        public: PublicKey,
+        /// The credential's public key file, which picks it in the agent.
+        identity: PathBuf,
+    },
+    /// `https://`, with a token from the keystore.
+    Https {
+        url: HttpsUrl,
+        token: Arc<UpstreamToken>,
+    },
+}
+
+impl Reach {
+    fn url(&self) -> &str {
+        match self {
+            Self::Ssh { url, .. } => url.as_str(),
+            Self::Https { url, .. } => url.as_str(),
+        }
+    }
+}
+
+/// How one operation reaches upstream: what its git is given, and what serves it, for this
+/// operation alone (the sockets go when it is dropped).
+struct Access {
+    transport: Transport,
+    config: Vec<String>,
+    env: Vec<(&'static str, String)>,
+    _agent: Option<AgentSocket>,
+    _credential: Option<CredentialSocket>,
+    proxy: Option<UpstreamProxy>,
+}
+
+impl Access {
+    /// Gives git its transport, settings and environment (before its subcommand).
+    fn apply(&self, cmd: &mut tokio::process::Command) {
+        git::allow(cmd, self.transport);
+        for setting in &self.config {
+            cmd.arg("-c").arg(setting);
+        }
+        for (name, value) in &self.env {
+            cmd.env(name, value);
+        }
+    }
+
+    /// Whether upstream sent more than the cap through the proxy (HTTPS; for ssh the relay
+    /// says so in git's stderr).
+    fn too_large(&self) -> bool {
+        self.proxy.as_ref().is_some_and(UpstreamProxy::too_large)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -130,16 +194,20 @@ pub struct MirrorGuard {
 
 impl Mirrors {
     /// Opens the mirror of every repo in `repos`, creating the ones that don't exist yet.
-    /// Refuses (fail closed) an upstream it can't reach as configured: not `ssh://`, a host
-    /// without a pinned key, a credential the signer doesn't hold; and a directory in the
-    /// mirror's place that isn't one the daemon made (another object or ref format, not bare,
-    /// a link).
+    /// Refuses (fail closed) an upstream it can't reach as configured: neither `ssh://` nor
+    /// `https://`, an ssh host without a pinned key, a credential the signer (ssh) or `tokens`
+    /// (HTTPS) don't hold, a git too old for it; and a directory in the mirror's place that
+    /// isn't one the daemon made (another object or ref format, not bare, a link).
     pub async fn open(
         config: MirrorConfig,
         repos: &BTreeMap<RepoName, RepoEntry>,
         signer: Arc<dyn Signer>,
+        tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
     ) -> Result<Self> {
-        check_git_version().await?;
+        let https = repos
+            .values()
+            .any(|entry| matches!(Upstream::parse(&entry.upstream), Ok(Upstream::Https(_))));
+        check_git_version(if https { MIN_GIT_HTTPS } else { MIN_GIT }).await?;
         // git and ssh resolve relative paths from wherever they run: only absolute ones.
         for (what, path) in [("root", &config.root), ("run_dir", &config.run_dir)] {
             if !path.is_absolute() {
@@ -164,17 +232,34 @@ impl Mirrors {
             source,
         })?;
         private(&config.run_dir)?;
-        let agent_dir = config.run_dir.join("agent");
-        private(&agent_dir)?;
-        remove_leftovers(&agent_dir, |name| name.ends_with(".sock"))?;
+        let socket_dir = config.run_dir.join("sockets");
+        private(&socket_dir)?;
+        remove_leftovers(&socket_dir, |name| {
+            [".sock", ".cred", ".proxy"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+        })?;
         let keys_dir = config.run_dir.join("keys");
         private(&keys_dir)?;
+        let home = config.run_dir.join("home");
+        private(&home)?;
         let known_hosts = config.run_dir.join("known_hosts");
         replace_file(&known_hosts, config.pinned.to_file()?.as_bytes())?;
+        let ca_file = config.run_dir.join("ca_certs.pem");
+        let ca_file = match &config.ca_certs {
+            Some(pem) => {
+                replace_file(&ca_file, pem.as_bytes())?;
+                Some(ca_file)
+            }
+            None => {
+                remove_leftovers(&config.run_dir, |name| name == "ca_certs.pem")?;
+                None
+            }
+        };
 
         let mut opened = BTreeMap::new();
         for (name, entry) in repos {
-            let repo = open_repo(&config, &keys_dir, &*signer, name, entry).await?;
+            let repo = open_repo(&config, &keys_dir, &*signer, tokens, name, entry).await?;
             opened.insert(name.clone(), Arc::new(repo));
         }
         Ok(Self {
@@ -182,8 +267,10 @@ impl Mirrors {
                 config,
                 signer,
                 repos: opened,
-                agent_dir,
+                socket_dir,
                 known_hosts,
+                ca_file,
+                home,
                 syncs: Semaphore::new(MAX_SYNCS),
             }),
         })
@@ -274,10 +361,11 @@ impl MirrorGuard {
         let shared = &self.shared;
         let repo = &self.repo;
         let started = Instant::now();
-        let (agent, ssh) = self.reach_upstream()?;
+        let access = self.reach_upstream()?;
+        let upstream = repo.reach.url();
         let fetched = self
             .upstream_git(
-                &ssh,
+                &access,
                 &[
                     "fetch",
                     "--porcelain",
@@ -289,7 +377,7 @@ impl MirrorGuard {
                     "--no-auto-maintenance",
                     "--no-show-forced-updates",
                     "--",
-                    repo.upstream.as_str(),
+                    upstream,
                     "+refs/heads/*:refs/heads/*",
                     "+refs/tags/*:refs/tags/*",
                 ],
@@ -300,43 +388,89 @@ impl MirrorGuard {
         let left = shared.config.timeout.saturating_sub(started.elapsed());
         let head = self
             .upstream_git(
-                &ssh,
-                &[
-                    "ls-remote",
-                    "--symref",
-                    "--",
-                    repo.upstream.as_str(),
-                    "HEAD",
-                ],
+                &access,
+                &["ls-remote", "--symref", "--", upstream, "HEAD"],
                 left,
                 MAX_HEAD_OUTPUT,
             )
             .await?;
-        drop(agent);
+        drop(access);
         self.follow_head(&head).await;
         Ok(parse_moves(&fetched))
     }
 
-    /// An agent socket serving the repo's credential, and the ssh command that uses it (for
-    /// one operation: the socket goes when dropped).
-    fn reach_upstream(&self) -> Result<(AgentSocket, String)> {
+    /// What one operation reaches upstream with. `ssh://`: an agent socket serving the repo's
+    /// key, and the ssh command that uses it through the relay. `https://`: the byte-capping
+    /// proxy, the credential socket serving the token to the daemon's helper, and git's HTTPS
+    /// settings. Each socket goes when the operation ends.
+    fn reach_upstream(&self) -> Result<Access> {
         let shared = &self.shared;
-        let agent = AgentSocket::start(
-            &shared.agent_dir,
-            shared.signer.clone(),
-            self.repo.credential.clone(),
-            &self.repo.public,
-        )?;
-        let ssh = SshCommand {
-            relay: &shared.config.relay,
-            ssh: &shared.config.ssh,
-            known_hosts: &shared.known_hosts,
-            agent: agent.path(),
-            identity: &self.repo.identity,
-            max_bytes: shared.config.max_fetch_bytes,
+        match &self.repo.reach {
+            Reach::Ssh {
+                credential,
+                public,
+                identity,
+                ..
+            } => {
+                let agent = AgentSocket::start(
+                    &shared.socket_dir,
+                    shared.signer.clone(),
+                    credential.clone(),
+                    public,
+                )?;
+                let ssh = SshCommand {
+                    relay: &shared.config.relay,
+                    ssh: &shared.config.ssh,
+                    known_hosts: &shared.known_hosts,
+                    agent: agent.path(),
+                    identity,
+                    max_bytes: shared.config.max_fetch_bytes,
+                }
+                .to_git_ssh_command()?;
+                Ok(Access {
+                    transport: Transport::Ssh,
+                    config: Vec::new(),
+                    env: vec![
+                        ("GIT_SSH_COMMAND", ssh),
+                        ("GIT_SSH_VARIANT", "ssh".to_owned()),
+                    ],
+                    _agent: Some(agent),
+                    _credential: None,
+                    proxy: None,
+                })
+            }
+            Reach::Https { url, token } => {
+                let proxy =
+                    UpstreamProxy::start(&shared.socket_dir, url, shared.config.max_fetch_bytes)?;
+                let credential =
+                    CredentialSocket::start(&shared.socket_dir, url.clone(), token.clone())?;
+                let helper = format!(
+                    "credential.helper=!{} upstream-credential {}",
+                    quote(&shared.config.relay)?,
+                    quote(credential.path())?
+                );
+                let mut config: Vec<String> = git::HTTPS_HARDENING
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect();
+                config.push(helper);
+                config.push(format!("http.proxy={}", proxy.url()));
+                if let Some(ca_file) = &shared.ca_file {
+                    config.push(format!("http.sslCAInfo={}", ca_file.display()));
+                }
+                let home = shared.home.to_str().ok_or_else(|| {
+                    MirrorError::Config(format!("{} is not UTF-8", shared.home.display()))
+                })?;
+                Ok(Access {
+                    transport: Transport::Https,
+                    config,
+                    env: vec![("HOME", home.to_owned())],
+                    _agent: None,
+                    _credential: Some(credential),
+                    proxy: Some(proxy),
+                })
+            }
         }
-        .to_git_ssh_command()?;
-        Ok((agent, ssh))
     }
 
     /// Pushes the accepted updates upstream from the push's quarantine, before git moves the
@@ -349,7 +483,7 @@ impl MirrorGuard {
         quarantine: &Quarantine,
         updates: &[UpstreamUpdate],
     ) -> Result<()> {
-        let (agent, ssh) = self.reach_upstream()?;
+        let access = self.reach_upstream()?;
         let mut args: Vec<String> = [
             "push",
             "--atomic",
@@ -366,7 +500,7 @@ impl MirrorGuard {
             args.push(format!("--force-with-lease={}:{old}", update.name));
         }
         args.push("--".to_owned());
-        args.push(self.repo.upstream.as_str().to_owned());
+        args.push(self.repo.reach.url().to_owned());
         for update in updates {
             args.push(match &update.new {
                 Some(new) => format!("{new}:{}", update.name),
@@ -376,19 +510,19 @@ impl MirrorGuard {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let pushed = self
             .run_upstream(
-                &ssh,
+                &access,
                 &args,
                 Some(quarantine),
                 self.shared.config.timeout,
                 MAX_FETCH_OUTPUT,
             )
             .await;
-        drop(agent);
         let finished = pushed?;
         if finished.status.success() {
             return Ok(());
         }
-        let classified = self.classify(&finished.stderr);
+        let classified = self.classify(&access, &finished.stderr);
+        drop(access);
         Err(match classified {
             MirrorError::Git { repo, .. } => {
                 // What upstream said: the refused refs (porcelain), then its own words.
@@ -400,27 +534,27 @@ impl MirrorGuard {
                     .collect();
                 MirrorError::Rejected {
                     repo,
-                    reason: shown(&refused),
+                    reason: self.clean(&refused),
                 }
             }
             other => other,
         })
     }
 
-    /// Runs git against upstream (`GIT_SSH_COMMAND` = `ssh`), within `deadline`, keeping at
-    /// most `max_stdout` bytes of its output. A failure is classified from its stderr.
+    /// Runs git against upstream through `access`, within `deadline`, keeping at most
+    /// `max_stdout` bytes of its output. A failure is classified from its stderr.
     async fn upstream_git(
         &self,
-        ssh: &str,
+        access: &Access,
         args: &[&str],
         deadline: Duration,
         max_stdout: usize,
     ) -> Result<Vec<u8>> {
         let finished = self
-            .run_upstream(ssh, args, None, deadline, max_stdout)
+            .run_upstream(access, args, None, deadline, max_stdout)
             .await?;
         if !finished.status.success() {
-            return Err(self.classify(&finished.stderr));
+            return Err(self.classify(access, &finished.stderr));
         }
         Ok(finished.stdout)
     }
@@ -428,18 +562,15 @@ impl MirrorGuard {
     /// Runs git against upstream, reading a push's objects when `quarantine` is given.
     async fn run_upstream(
         &self,
-        ssh: &str,
+        access: &Access,
         args: &[&str],
         quarantine: Option<&Quarantine>,
         deadline: Duration,
         max_stdout: usize,
     ) -> Result<process::Finished> {
         let mut cmd = git::command(Hooks::None);
-        cmd.arg("--git-dir")
-            .arg(&self.repo.path)
-            .args(args)
-            .env("GIT_SSH_COMMAND", ssh)
-            .env("GIT_SSH_VARIANT", "ssh");
+        access.apply(&mut cmd);
+        cmd.arg("--git-dir").arg(&self.repo.path).args(args);
         if let Some(quarantine) = quarantine {
             quarantine.objects_env(&mut cmd);
         }
@@ -491,16 +622,23 @@ impl MirrorGuard {
 
     /// The error a failed sync's stderr names. Upstream can print anything there: at worst it
     /// changes which failure is reported, never whether the sync failed.
-    fn classify(&self, stderr: &[u8]) -> MirrorError {
+    fn classify(&self, access: &Access, stderr: &[u8]) -> MirrorError {
         let text = String::from_utf8_lossy(stderr);
         let repo = self.repo.name.clone();
-        if text.contains(relay::TOO_LARGE) {
+        if access.too_large() || text.contains(relay::TOO_LARGE) {
             MirrorError::TooLarge {
                 repo,
                 max: self.shared.config.max_fetch_bytes,
             }
         } else if text.contains("Host key verification failed") {
             MirrorError::HostKey { repo }
+        } else if access.transport == Transport::Https
+            && CERTIFICATE_FAILURES.iter().any(|m| text.contains(m))
+        {
+            MirrorError::Certificate {
+                repo,
+                why: self.clean(stderr),
+            }
         } else if text.contains("mismatched algorithms") {
             MirrorError::ObjectFormat {
                 repo,
@@ -510,8 +648,21 @@ impl MirrorGuard {
             MirrorError::Git {
                 repo,
                 what: "sync",
-                stderr: shown(stderr),
+                stderr: self.clean(stderr),
             }
+        }
+    }
+
+    /// A text from git or upstream made safe for an error ([`shown`]), the token taken out
+    /// first: upstream receives it, and a hostile one could print it back, to the audit log
+    /// and an agent's terminal.
+    fn clean(&self, text: &[u8]) -> String {
+        match &self.repo.reach {
+            Reach::Https { token, .. } => {
+                let text = String::from_utf8_lossy(text).replace(token.expose(), "<redacted>");
+                shown(text.as_bytes())
+            }
+            Reach::Ssh { .. } => shown(text),
         }
     }
 
@@ -607,52 +758,84 @@ async fn local(mut cmd: tokio::process::Command) -> Result<std::process::Output>
     cmd.output().await.map_err(MirrorError::Spawn)
 }
 
-async fn check_git_version() -> Result<()> {
+/// What curl says when an HTTPS upstream's certificate doesn't verify (OpenSSL, GnuTLS and
+/// Secure Transport builds).
+const CERTIFICATE_FAILURES: [&str; 4] = [
+    "SSL certificate problem",
+    "server certificate verification failed",
+    "no alternative certificate subject name",
+    "certificate verify failed",
+];
+
+/// git must be at least `min`.
+async fn check_git_version(min: (u32, u32)) -> Result<()> {
     let mut cmd = git::command(Hooks::None);
     cmd.arg("version");
     let done = local(cmd).await?;
     let text = String::from_utf8_lossy(&done.stdout).into_owned();
     match git::parse_version(&text) {
-        Some(version) if version >= MIN_GIT => Ok(()),
+        Some(version) if version >= min => Ok(()),
         _ => Err(MirrorError::GitTooOld {
             found: shown(text.as_bytes()),
+            needed: format!("{}.{}", min.0, min.1),
         }),
     }
 }
 
-/// Checks a repo's upstream, credential and pin, then opens its mirror (creating it if it
-/// doesn't exist).
+/// Checks a repo's upstream and credential (and the pin of an ssh host), then opens its
+/// mirror (creating it if it doesn't exist).
 async fn open_repo(
     config: &MirrorConfig,
     keys_dir: &Path,
     signer: &dyn Signer,
+    tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
     name: &RepoName,
     entry: &RepoEntry,
 ) -> Result<Repo> {
-    let upstream = SshUrl::parse(&entry.upstream).map_err(|why| MirrorError::Upstream {
+    let upstream = Upstream::parse(&entry.upstream).map_err(|why| MirrorError::Upstream {
         repo: name.clone(),
         upstream: entry.upstream.clone(),
         why: why.to_owned(),
     })?;
-    let host = upstream.known_hosts_name();
-    if !config.pinned.covers(&host) {
-        return Err(MirrorError::HostNotPinned {
-            repo: name.clone(),
-            host,
-        });
-    }
     let credential = entry.upstream_credential.clone();
-    let public = writ_signer::public_key(signer, &credential).map_err(|_| {
-        MirrorError::UnknownCredential {
-            repo: name.clone(),
-            key: credential.clone(),
+    let reach = match upstream {
+        Upstream::Ssh(url) => {
+            let host = url.known_hosts_name();
+            if !config.pinned.covers(&host) {
+                return Err(MirrorError::HostNotPinned {
+                    repo: name.clone(),
+                    host,
+                });
+            }
+            let public = writ_signer::public_key(signer, &credential).map_err(|_| {
+                MirrorError::UnknownCredential {
+                    repo: name.clone(),
+                    key: credential.clone(),
+                }
+            })?;
+            let identity = keys_dir.join(format!("{credential}.pub"));
+            let line = public
+                .to_openssh()
+                .map_err(|_| MirrorError::Config(format!("key {credential}: unencodable")))?;
+            replace_file(&identity, format!("{line}\n").as_bytes())?;
+            Reach::Ssh {
+                url,
+                credential,
+                public,
+                identity,
+            }
         }
-    })?;
-    let identity = keys_dir.join(format!("{credential}.pub"));
-    let line = public
-        .to_openssh()
-        .map_err(|_| MirrorError::Config(format!("key {credential}: unencodable")))?;
-    replace_file(&identity, format!("{line}\n").as_bytes())?;
+        Upstream::Https(url) => {
+            let token = tokens
+                .get(&credential)
+                .ok_or_else(|| MirrorError::UnknownToken {
+                    repo: name.clone(),
+                    key: credential.clone(),
+                })?
+                .clone();
+            Reach::Https { url, token }
+        }
+    };
 
     let path = config.root.join(format!("{name}.git"));
     match std::fs::symlink_metadata(&path) {
@@ -671,10 +854,7 @@ async fn open_repo(
     Ok(Repo {
         name: name.clone(),
         path,
-        upstream,
-        credential,
-        public,
-        identity,
+        reach,
         format: entry.object_format,
         state: Arc::new(Mutex::new(SyncState::default())),
     })

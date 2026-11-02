@@ -7,6 +7,9 @@
 #   (the approver's machine: `writ` and a throwaway ssh-agent holding the approval key).
 # - `runner`: the scenarios (crates/writ-e2e/tests/scenarios), driving the others through
 #   the Docker socket and Forgejo's API.
+# - `tls-front`: Forgejo over HTTPS (`https://forgejo-https:3443`), for the daemon's HTTPS
+#   upstream: socat terminating TLS with a throwaway self-signed certificate made at build
+#   time, in front of Forgejo's plain HTTP.
 #
 # A test image (decided with the user in M4.1): debug builds, because only they take the
 # development keystore until the sealed keystore exists (M5). M8's deploy image (non-root,
@@ -65,3 +68,18 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/scenarios /usr/local/bin/scenarios
 ENTRYPOINT ["/usr/local/bin/scenarios", "--ignored"]
+
+FROM ${DEBIAN_IMAGE} AS tls-front
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends socat openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --no-create-home --shell /bin/sh front \
+    && mkdir /tls && chown front /tls
+USER front
+WORKDIR /tls
+# A throwaway certificate for the front's name, made here (never stored in the repository);
+# the operator setup copies `cert.pem` to the daemon as its `mirrors.ca_certs`.
+RUN openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+        -subj /CN=forgejo-https -addext subjectAltName=DNS:forgejo-https \
+        -keyout key.pem -out cert.pem 2>/dev/null
+CMD ["socat", "OPENSSL-LISTEN:3443,reuseaddr,fork,cert=/tls/cert.pem,key=/tls/key.pem,verify=0", "TCP:forgejo:3000"]

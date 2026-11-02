@@ -36,6 +36,7 @@ minutes): the others run beside it, so a run never takes less than about 5 minut
 | Container | Image (`e2e/Dockerfile` target) | Who's there | Reached as |
 |---|---|---|---|
 | `forgejo` | `codeberg.org/forgejo/forgejo:13.0.5`, pinned by digest | the remote: an admin account `writ` (email `agent@writ.invalid`) owning one repository per scenario | `http://forgejo:3000` (API, web forms), `ssh://git@forgejo` (the daemon's upstream) |
+| `forgejo-https` | `tls-front`: Debian 13, socat and a throwaway self-signed certificate made at build time | Forgejo over HTTPS: TLS in front of `forgejo:3000` | `https://forgejo-https:3443` (the `https` repo's upstream) |
 | `writd` | `writd`: Debian 13, git 2.47, OpenSSH 10.0, the real `writd` | the operator, user `writ`, in `/home/writ` (`writd.yaml`, `policy.yaml`, `approvers`, `readers`, `data/`, `writd.log`) | `writd:2222` (agents), `writd:2223` (approval API, SSH), `writd:8443` (approval API, HTTPS) |
 | `agent` | `agent`: the same base, `writ` and `writ-sign` | user `agent`: one directory and `WRIT_HOME` per scenario's agent (`~/agents/<name>`), and the operator's own git (`user.name Operator`); user `approver`: the approver's machine (`~/.writ`, a throwaway ssh-agent holding the approval key, standing in for Secretive) | `docker exec` |
 | `runner` | `runner`: the scenarios' test binary and the Docker client | the scenarios, driving the others through the Docker socket and Forgejo's API | started by `make e2e` |
@@ -52,8 +53,9 @@ minutes): the others run beside it, so a run never takes less than about 5 minut
   `e2e/config/policy.yaml`: relative paths, the operator's `submissions` and `max_pending`
   raised (every agent submits from one container, one source address), `fresh_for: 0s` (every
   fetch and push asks Forgejo first), one repository per scenario with its own upstream
-  credential (a remote takes a deploy key on one repository only), the template `feature` for
-  them all and `verified` with its own signing key.
+  credential (a remote takes a deploy key on one repository only; `https`'s is a token), the
+  HTTPS front's certificate as `mirrors.ca_certs`, the template `feature` for them all and
+  `verified` with its own signing key.
 
 ## How a run goes
 
@@ -62,7 +64,8 @@ minutes): the others run beside it, so a run never takes less than about 5 minut
 2. The first scenario to need the stack runs **the operator setup** (`crates/writ-e2e/src/setup.rs`),
    once, from nothing, in the order of the [operator guide](guides/operator.md#setting-up-the-daemon):
    the daemon's files; `writd upstream-keys`, each key added on its repository as a deploy key;
-   Forgejo's host key scanned, compared with the one Forgejo publishes, pinned; `writd
+   the `https` repo's token (made on the account for repositories) pasted into the keystore,
+   the HTTPS front's certificate as `upstream_ca.pem`; Forgejo's host key scanned, compared with the one Forgejo publishes, pinned; `writd
    signing-keys`; `writd host-key` and `writd tls-fingerprint`, pinned on the clients; `writ
    reader` on the approver's machine, its line in `readers`; the approval key in its agent,
    its line in `approvers`; `writd run writd.yaml`, from the daemon's directory. Every command
@@ -95,6 +98,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 10 | `restart` | `restart` | The daemon's container restarted keeps leases, mirrors and ledger | alone |
 | 11 | `hostile_upstream` | `hostile` | Forgejo stopped, its host key changed, its deploy key removed: refused with the reason, working again once restored | alone |
 | 12 | `concurrency` | `busy` | Eight agents on one daemon at once (tickets submitted and signed in parallel, each pushing its rounds) while a writer changes Forgejo directly; consistent end state whatever the interleaving | alone |
+| 13 | `https_upstream` | `https` | An HTTPS upstream with a token (Forgejo behind its TLS front, the certificate in `mirrors.ca_certs`): fetch, push, a protected ref refused; the token in its keystore file alone (not in the log, the mirrors, the audit log or on the agent's side) | shared |
 
 Every scenario checks, where it applies: **what the agent reads** (the exit code and the
 words, never just "it failed"), **the audit line** (event, result, code), **Forgejo's state**
@@ -174,6 +178,7 @@ the scenarios (`tool/check-e2e.py`).
 | `writd signing-keys` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
 | `writd hook pre-receive` (every push) | `every_push_denial_leaves_forgejo_and_the_mirror_unchanged`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |
 | `writd upstream-ssh` (every sync and upstream push) | `a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons`, `many_agents_and_a_busy_remote_share_one_daemon` |
+| `writd upstream-credential` (every sync and upstream push of an `https://` upstream) | `a_repo_behind_https_is_fetched_and_pushed_with_a_token_nobody_else_sees` |
 | `writ-sign -Y sign` (every commit under the wiring) | `an_agent_works_through_writ_git_beside_the_operator_s_own_git`, `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
 | `writ-sign -Y verify` (handed to `ssh-keygen`) | `an_agent_works_through_writ_git_beside_the_operator_s_own_git` |
 

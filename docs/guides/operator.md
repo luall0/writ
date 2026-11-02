@@ -24,6 +24,15 @@ before any approver or reader is listed.
    ```sh
    writd upstream-keys writd.yaml
    ```
+
+   An `https://` upstream's credential is a token instead ([below](#https-upstreams-and-tokens)):
+   paste it alone (then Enter, Ctrl-D) into its file in the keystore, readable by the daemon's
+   user only:
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   (umask 077 && mkdir -p data/keys/tokens && cat > data/keys/tokens/<id>)
+   ```
 3. **Each remote's host key**, pinned, then checked against the fingerprints the remote
    publishes (below):
 
@@ -86,6 +95,33 @@ The daemon pushes to and fetches from each repo's `upstream` with that repo's
 3. **Mind the bounds** (`mirrors` in `writd.yaml`): `max_fetch` (1 GiB) caps what one sync
    takes from upstream, `timeout` (5 min) how long it may take; a first sync of a large
    repository may need more.
+
+## HTTPS upstreams and tokens
+
+Where a remote is reachable over HTTPS only, a repo's `upstream` is `https://host[:port]/path`
+and its `upstream_credential` names a **token** ([gateway](../architecture/gateway.md#upstream)):
+
+1. **Make the token as narrow as the remote allows**: on GitHub a fine-grained token for that
+   one repository with "Contents: read and write"; on GitLab a project access token with
+   `write_repository`; on Forgejo or Gitea a token with `write:repository`. A token reaches
+   whatever its scope covers: the daemon's registry is the only per-repo boundary beyond it.
+2. **Put it in the keystore**: alone in `data/keys/tokens/<id>` (the development keystore,
+   until the sealed keystore of M5), mode 0600, with the command above. The daemon refuses to
+   start without it, or with anything but one word of printable ASCII in it. One id is a key
+   or a token, never both.
+3. **The user name**: most remotes take any name with a token (GitHub, GitLab, Forgejo,
+   Gitea); the daemon sends `writ`. A remote that wants a given one has it in the URL
+   (`https://x-token-auth@bitbucket.org/…`). Never a password in the URL: refused.
+4. **The server's certificate** is checked against the system's CAs, or, when the remote's
+   certificate comes from your own CA (a self-hosted Forgejo), against the PEM file
+   `mirrors.ca_certs` names (an authority file, like `known_hosts`: it then replaces the
+   system's). git 2.47 or newer on the daemon's host.
+
+The token stays in the daemon: git gets it for one operation from the daemon's own helper,
+through a socket only the daemon's user reaches; it is never in a command line, an
+environment variable, a URL, the mirror's config or a log. A redirect is refused, and git
+reaches only the registry's host, through a proxy that caps what upstream sends like
+`max_fetch` does for SSH.
 
 ## Wrapper or whole repo
 

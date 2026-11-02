@@ -16,6 +16,7 @@
 //! keystore: { dev: data/keys }       # M2: unsealed dev keystore, test only
 //! mirrors:
 //!   known_hosts: upstream_known_hosts  # required: the remotes' host keys, pinned by hand
+//!   ca_certs: upstream_ca.pem        # HTTPS upstreams: the CAs trusted (default: the system's)
 //!   ssh: /usr/bin/ssh                # the OpenSSH client, by absolute path
 //!   fresh_for: 10s                   # a mirror synced this recently isn't synced again
 //!   sync_every: 5m                   # background sync of every mirror
@@ -138,6 +139,10 @@ fn default_in_all() -> usize {
 pub struct MirrorsConfig {
     /// The upstream host keys, pinned by the operator (an authority file).
     pub known_hosts: PathBuf,
+    /// The CA certificates (PEM) an HTTPS upstream's certificate must chain to, chosen by the
+    /// operator (an authority file); without it, the system's.
+    #[serde(default)]
+    pub ca_certs: Option<PathBuf>,
     /// The OpenSSH client the daemon reaches upstream with, by absolute path (never looked up
     /// in `PATH`); `/usr/bin/ssh` unless the system keeps it elsewhere.
     #[serde(default = "default_ssh")]
@@ -349,6 +354,9 @@ impl Config {
         resolve(&mut config.approvers);
         resolve(&mut config.readers);
         resolve(&mut config.mirrors.known_hosts);
+        if let Some(ca_certs) = &mut config.mirrors.ca_certs {
+            resolve(ca_certs);
+        }
         match &mut config.keystore {
             KeystoreConfig::Dev(dir) => resolve(dir),
         }
@@ -520,7 +528,12 @@ mod tests {
         // be absolute (a relative hooks path would be looked up inside the repository).
         let dir = tempfile::tempdir_in(".").unwrap();
         let name = dir.path().file_name().unwrap().to_owned();
-        std::fs::write(dir.path().join("writd.yaml"), MINIMAL).unwrap();
+        let with_ca = MINIMAL.replace(
+            "mirrors: { known_hosts: upstream_known_hosts }",
+            "mirrors: { known_hosts: upstream_known_hosts, ca_certs: upstream_ca.pem }",
+        );
+        assert_ne!(with_ca, MINIMAL);
+        std::fs::write(dir.path().join("writd.yaml"), with_ca).unwrap();
         let relative = Path::new(&name).join("writd.yaml");
         assert!(relative.is_relative());
         let config = Config::load(&relative).unwrap();
@@ -530,6 +543,7 @@ mod tests {
             &config.approvers,
             &config.readers,
             &config.mirrors.known_hosts,
+            config.mirrors.ca_certs.as_ref().unwrap(),
         ] {
             assert!(path.is_absolute(), "{}", path.display());
             assert!(

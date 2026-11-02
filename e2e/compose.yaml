@@ -11,6 +11,10 @@ services:
       FORGEJO__server__SSH_DOMAIN: forgejo
       FORGEJO__server__ROOT_URL: http://forgejo:3000/
       FORGEJO__service__DISABLE_REGISTRATION: "true"
+  # Forgejo over HTTPS, for the daemon's HTTPS upstream (the `https` repo).
+  forgejo-https:
+    build: { context: .., dockerfile: e2e/Dockerfile, target: tls-front }
+    init: true
   writd:
     build: { context: .., dockerfile: e2e/Dockerfile, target: writd }
     init: true

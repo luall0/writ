@@ -109,6 +109,29 @@ impl Forgejo {
     }
 }
 
+impl Forgejo {
+    /// A new token of the owner's for repositories only (`write:repository`): what an
+    /// operator makes for the daemon's HTTPS upstream.
+    pub fn repository_token(&self, name: &str) -> String {
+        let out = self.container.run_as(
+            "git",
+            &format!(
+                "forgejo admin user generate-access-token --username {OWNER} --token-name {name} \
+                 --scopes write:repository --raw"
+            ),
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let token = stdout(&out)
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        assert_eq!(token.len(), 40, "a token: {token:?}");
+        token
+    }
+}
+
 /// Makes a user and its token.
 fn user(container: &Container, name: &str, email: &str, password: &str, admin: bool) -> String {
     let admin = if admin { "--admin " } else { "" };

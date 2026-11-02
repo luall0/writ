@@ -12,6 +12,7 @@
     clippy::cast_possible_truncation
 )]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -89,6 +90,7 @@ impl Fixture {
             relay: bin("writd"),
             ssh: PathBuf::from("/usr/bin/ssh"),
             pinned: PinnedHosts::parse(&format!("{}\n", self.remote.known_hosts_line())).unwrap(),
+            ca_certs: None,
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
             max_fetch_bytes: 64 << 20,
@@ -103,8 +105,12 @@ impl Fixture {
 
     fn open_with(&self, config: MirrorConfig, format: &str) -> Result<Mirrors, MirrorError> {
         let policy = self.policy(format);
-        self.runtime
-            .block_on(Mirrors::open(config, policy.repos(), self.signer()))
+        self.runtime.block_on(Mirrors::open(
+            config,
+            policy.repos(),
+            self.signer(),
+            &BTreeMap::new(),
+        ))
     }
 
     fn open(&self) -> Mirrors {
@@ -186,7 +192,7 @@ impl Fixture {
     }
 
     fn agent_sockets(&self) -> usize {
-        std::fs::read_dir(self.root().join("mirror/agent"))
+        std::fs::read_dir(self.root().join("mirror/sockets"))
             .unwrap()
             .count()
     }
@@ -551,19 +557,29 @@ fn an_upstream_the_daemon_cannot_reach_as_configured_is_refused_at_start() {
     let f = Fixture::new();
     let open = |upstream: &str, credential: &str| {
         let policy = PolicyConfig::from_yaml(&policy_yaml(upstream, credential, "sha1")).unwrap();
-        f.runtime
-            .block_on(Mirrors::open(f.config(), policy.repos(), f.signer()))
+        f.runtime.block_on(Mirrors::open(
+            f.config(),
+            policy.repos(),
+            f.signer(),
+            &BTreeMap::new(),
+        ))
     };
     // A credential the signer doesn't hold.
     match open(&f.remote.url("demo"), "upstream-02") {
         Err(MirrorError::UnknownCredential { key, .. }) => assert_eq!(key.as_str(), "upstream-02"),
         other => panic!("expected UnknownCredential, got {:?}", other.err()),
     }
-    // An HTTPS upstream (M4.5).
+    // An HTTPS upstream whose credential is no token the keystore holds (here: an ssh key).
     match open("https://example.org/demo.git", "upstream-01") {
-        Err(MirrorError::Upstream { why, .. }) => assert!(why.contains("M4.5"), "{why}"),
-        other => panic!("expected Upstream, got {:?}", other.err()),
+        Err(MirrorError::UnknownToken { key, .. }) => assert_eq!(key.as_str(), "upstream-01"),
+        other => panic!("expected UnknownToken, got {:?}", other.err()),
     }
+    // Plain HTTP: never (the token would travel in clear); the registry refuses it already.
+    let http = PolicyConfig::from_yaml(&policy_yaml("http://example.org/demo.git", "u-1", "sha1"));
+    assert_eq!(
+        http.unwrap_err().to_string(),
+        "repos.demo.upstream: must be an ssh:// or https:// URL"
+    );
     // As configured: opened.
     assert!(open(&f.remote.url("demo"), "upstream-01").is_ok());
 }

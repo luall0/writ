@@ -1,7 +1,9 @@
 //! The gateway in-process, on a temporary state directory, with the approval service on the
 //! test kit: driven by the real `git` and `ssh` over TCP or a Unix socket, with session
 //! certificates from real leases and commits signed through `writ-sign`. Its repo's upstream
-//! is a test remote ([`TestRemote`]), reached through the real mirrors.
+//! is a test remote ([`TestRemote`]), reached through the real mirrors; or, started with
+//! [`GitGateway::start_https`], the same repositories over HTTPS ([`HttpsRemote`]) with a
+//! token.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,7 +32,11 @@ use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, GatedSigner};
 
 use crate::binaries::bin;
+use crate::https_remote::HttpsRemote;
 use crate::remote::{PLACEHOLDER_UPSTREAM, TestRemote};
+
+/// The token of the HTTPS upstream ([`GitGateway::start_https`]).
+pub const HTTPS_TOKEN: &str = "writ-test-gateway-https-token-0123456789";
 
 /// The policy: one repo, `main` and tags protected, one wide template.
 pub const POLICY: &str = r#"
@@ -108,8 +114,10 @@ pub struct GitGateway {
     pub ssh_target: String,
     /// The lease of the first session (`keys/session`).
     pub lease: TicketId,
-    /// The repo's upstream.
+    /// The repo's upstream (its repositories, and its SSH server).
     pub remote: TestRemote,
+    /// The same repositories over HTTPS, when the repo's upstream is `https://`.
+    pub https: Option<HttpsRemote>,
     pub mirrors: writ_mirror::Mirrors,
 }
 
@@ -121,6 +129,17 @@ impl GitGateway {
     /// With another policy (its templates' `signing_key`s are the signer's keys); the first
     /// session (`keys/session`) is a lease for [`TICKET`], which must fit it.
     pub fn start_with(agent_kind: KeyKind, listen: Listen, policy: &str) -> Self {
+        Self::start_full(agent_kind, listen, policy, false)
+    }
+
+    /// With the repo's upstream over HTTPS: the test remote's repositories served by an
+    /// [`HttpsRemote`] taking [`HTTPS_TOKEN`], which the daemon holds for the repo's
+    /// credential; its certificate is the daemon's `ca_certs`.
+    pub fn start_https() -> Self {
+        Self::start_full(KeyKind::Ed25519, Listen::Tcp, POLICY, true)
+    }
+
+    fn start_full(agent_kind: KeyKind, listen: Listen, policy: &str, https: bool) -> Self {
         crate::tools::require();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -146,10 +165,12 @@ impl GitGateway {
             &root.join("remote"),
             upstream_key.public_key().clone(),
         );
-        let (upstream_url, pinned) = (
-            remote.url("demo"),
-            format!("{}\n", remote.known_hosts_line()),
-        );
+        let https = https.then(|| HttpsRemote::start(&runtime, &root.join("remote"), HTTPS_TOKEN));
+        let upstream_url = match &https {
+            Some(https) => https.url("demo"),
+            None => remote.url("demo"),
+        };
+        let pinned = format!("{}\n", remote.known_hosts_line());
         let policy = policy.replace(PLACEHOLDER_UPSTREAM, &upstream_url);
         let policy = policy.as_str();
         let credentials: std::collections::BTreeSet<_> =
@@ -159,6 +180,18 @@ impl GitGateway {
                 .values()
                 .map(|r| r.upstream_credential.clone())
                 .collect();
+        let tokens: std::collections::BTreeMap<_, _> = match &https {
+            Some(_) => credentials
+                .iter()
+                .map(|id| {
+                    let token =
+                        writ_mirror::credential::UpstreamToken::from_bytes(HTTPS_TOKEN.as_bytes())
+                            .unwrap();
+                    (id.clone(), Arc::new(token))
+                })
+                .collect(),
+            None => std::collections::BTreeMap::new(),
+        };
         let upstream_signer: Arc<dyn writ_signer::Signer> = Arc::new(
             SoftwareSigner::new(credentials.into_iter().map(|id| (id, upstream_key.clone())))
                 .unwrap(),
@@ -172,6 +205,7 @@ impl GitGateway {
                     relay: bin("writd"),
                     ssh: PathBuf::from("/usr/bin/ssh"),
                     pinned: writ_mirror::known_hosts::PinnedHosts::parse(&pinned).unwrap(),
+                    ca_certs: https.as_ref().map(|h| h.ca_pem.clone()),
                     // Every fetch and push syncs first: what upstream has, always.
                     fresh_for: std::time::Duration::ZERO,
                     timeout: std::time::Duration::from_secs(60),
@@ -179,6 +213,7 @@ impl GitGateway {
                 },
                 registry.repos(),
                 upstream_signer,
+                &tokens,
             ))
             .unwrap();
         // The system clock: russh checks certificate validity against it itself.
@@ -259,6 +294,7 @@ impl GitGateway {
             url,
             ssh_target,
             remote,
+            https,
             mirrors,
         };
         gateway.lease = gateway.session("session");

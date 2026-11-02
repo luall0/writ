@@ -11,7 +11,9 @@
 //!   on the accounts that show commits as verified.
 //! - `writd hook pre-receive`: the program git's pre-receive hook runs.
 //! - `writd upstream-ssh <max bytes> <ssh> <args…>`: the program git runs as its ssh for
-//!   upstream (it caps what upstream sends).
+//!   an `ssh://` upstream (it caps what upstream sends).
+//! - `writd upstream-credential <socket> <operation>`: the credential helper git runs for an
+//!   `https://` upstream (it asks the daemon for the token, for one operation).
 //!
 //! Only this binary wires the crates together and reads configuration
 //! (docs/architecture/overview.md).
@@ -54,6 +56,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("signing-keys", "<writd.yaml>"),
     ("hook", "pre-receive"),
     ("upstream-ssh", "<max bytes> <ssh> <args…>"),
+    ("upstream-credential", "<socket> <get|store|erase>"),
 ];
 
 /// The usage text: one line per command.
@@ -80,6 +83,11 @@ fn main() -> ExitCode {
         }
         ["upstream-ssh", rest @ ..] => {
             return u8::try_from(writ_mirror::relay::run(rest))
+                .map(ExitCode::from)
+                .unwrap_or(ExitCode::FAILURE);
+        }
+        ["upstream-credential", rest @ ..] => {
+            return u8::try_from(writ_mirror::credential::helper::run(rest))
                 .map(ExitCode::from)
                 .unwrap_or(ExitCode::FAILURE);
         }
@@ -170,6 +178,18 @@ fn load_pinned_hosts(config: &Config) -> anyhow::Result<PinnedHosts> {
     let path = &config.mirrors.known_hosts;
     let text = writ_platform::fs::read_authority(path, "upstream known_hosts")?;
     PinnedHosts::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+}
+
+/// The CA certificates HTTPS upstreams must chain to, when the operator chose some (an
+/// authority file: whoever writes it decides which servers the daemon sends tokens to).
+fn load_ca_certs(config: &Config) -> anyhow::Result<Option<String>> {
+    let Some(path) = &config.mirrors.ca_certs else {
+        return Ok(None);
+    };
+    let text = writ_platform::fs::read_authority(path, "upstream CA certificates")?;
+    writ_crypto::tls::check_ca_certs(&text)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    Ok(Some(text))
 }
 
 /// The repo registry and templates alone: what the commands that print a key need (the
@@ -322,7 +342,9 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let readers = load_readers(&config)?;
     one_key_one_purpose(&approvers, &readers)?;
     let pinned = load_pinned_hosts(&config)?;
+    let ca_certs = load_ca_certs(&config)?;
     let keys = keystore::keys(&config, &policy)?;
+    let tokens = keystore::tokens(&config, &policy)?;
     let signer = platform::signer(keys.signing)?;
     let upstream_signer = platform::upstream_signer(keys.upstream)?;
     let registry = policy.repos().clone();
@@ -342,12 +364,14 @@ fn run(path: &Path) -> anyhow::Result<()> {
                 relay: std::env::current_exe()?,
                 ssh: config.mirrors.ssh.clone(),
                 pinned,
+                ca_certs,
                 fresh_for: Duration::from_secs(config.mirrors.fresh_for.seconds()),
                 timeout: Duration::from_secs(config.mirrors.timeout.seconds()),
                 max_fetch_bytes: config.mirrors.max_fetch.bytes(),
             },
             &registry,
             upstream_signer,
+            &tokens,
         )
         .await?;
         let platform = platform::build(&config).await?;
@@ -487,6 +511,35 @@ mod tests {
         let error = Config::load(&yaml).unwrap_err().to_string();
         assert!(
             error.contains("can be written by group or others"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_upstream_ca_certificates_are_an_authority_file_of_certificates_only() {
+        let (dir, mut config) = setup();
+        assert_eq!(
+            load_ca_certs(&config).unwrap(),
+            None,
+            "the system's by default"
+        );
+        let path = dir.path().join("upstream_ca.pem");
+        config.mirrors.ca_certs = Some(path.clone());
+        let pem = writ_crypto::tls::generate_self_signed().unwrap().cert_pem;
+        std::fs::write(&path, &pem).unwrap();
+        chmod(&path, 0o644);
+        assert_eq!(load_ca_certs(&config).unwrap(), Some(pem.clone()));
+        chmod(&path, 0o666);
+        let error = load_ca_certs(&config).unwrap_err().to_string();
+        assert!(
+            error.contains("can be written by group or others"),
+            "{error}"
+        );
+        chmod(&path, 0o644);
+        std::fs::write(&path, "not a certificate").unwrap();
+        let error = load_ca_certs(&config).unwrap_err().to_string();
+        assert!(
+            error.ends_with("invalid TLS CA certificates (none)"),
             "{error}"
         );
     }

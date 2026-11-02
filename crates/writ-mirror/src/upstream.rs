@@ -109,13 +109,7 @@ impl SshUrl {
     /// Parses an `ssh://` URL: a host that is a plain name or address, an optional port, a
     /// path.
     pub fn parse(url: &str) -> std::result::Result<Self, &'static str> {
-        let rest = match url.strip_prefix("ssh://") {
-            Some(rest) => rest,
-            None if url.starts_with("https://") => {
-                return Err("HTTPS upstreams are not supported yet (M4.5)");
-            }
-            None => return Err("must be an ssh:// URL"),
-        };
+        let rest = url.strip_prefix("ssh://").ok_or("must be an ssh:// URL")?;
         let parts = split_url(url, rest)?;
         if let Some(user) = parts.user
             && (user.is_empty() || user.starts_with('-') || user.contains(':'))
@@ -355,10 +349,7 @@ mod tests {
             assert_eq!(parsed.as_str(), url);
         }
         for (url, why) in [
-            (
-                "https://github.com/user/repo.git",
-                "HTTPS upstreams are not supported yet (M4.5)",
-            ),
+            ("https://github.com/user/repo.git", "must be an ssh:// URL"),
             ("git@github.com:user/repo.git", "must be an ssh:// URL"),
             ("ext::sh -c id", "must be an ssh:// URL"),
             ("ssh://git@github.com", "no repository path"),

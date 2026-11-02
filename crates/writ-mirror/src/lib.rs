@@ -42,9 +42,14 @@ use writ_core::names::{KeyId, RepoName};
 
 /// The oldest git the daemon runs with: reftable (2.45), `fetch --porcelain` (2.41).
 pub const MIN_GIT: (u32, u32) = (2, 45);
+/// The oldest git the daemon runs with for an HTTPS upstream: it reaches upstream through a
+/// proxy on a Unix socket, whose path `http.proxy` keeps from 2.47 (older ones drop it, and
+/// would ask a proxy on `localhost:1080`).
+pub const MIN_GIT_HTTPS: (u32, u32) = (2, 47);
 
 /// Why a mirror couldn't be opened, synced or used. Texts from git or upstream are cut
-/// ([`MAX_SHOWN`] characters) and hold no secret: the daemon's key never leaves the signer.
+/// ([`MAX_SHOWN`] characters) and hold no secret: the daemon's key never leaves the signer,
+/// and an HTTPS upstream's token is taken out of whatever upstream says.
 #[derive(Debug, thiserror::Error)]
 pub enum MirrorError {
     #[error("{what} {path}: {source}")]
@@ -56,8 +61,8 @@ pub enum MirrorError {
     },
     #[error("invalid mirror configuration: {0}")]
     Config(String),
-    #[error("git {found} is too old: the daemon needs git {}.{} or newer", MIN_GIT.0, MIN_GIT.1)]
-    GitTooOld { found: String },
+    #[error("git {found} is too old: the daemon needs git {needed} or newer")]
+    GitTooOld { found: String, needed: String },
     #[error("repo {repo}: upstream {upstream}: {why}")]
     Upstream {
         repo: RepoName,
@@ -66,6 +71,8 @@ pub enum MirrorError {
     },
     #[error("repo {repo}: upstream credential {key} is not in the upstream signer")]
     UnknownCredential { repo: RepoName, key: KeyId },
+    #[error("repo {repo}: upstream credential {key} is not a token the keystore holds")]
+    UnknownToken { repo: RepoName, key: KeyId },
     #[error("repo {repo}: no pinned host key for {host} in the upstream known_hosts")]
     HostNotPinned { repo: RepoName, host: String },
     #[error("repo {repo}: {path} is not a mirror made by writd: {why}")]
@@ -80,6 +87,8 @@ pub enum MirrorError {
     ObjectFormat { repo: RepoName, expected: String },
     #[error("repo {repo}: upstream's host key is not the pinned one")]
     HostKey { repo: RepoName },
+    #[error("repo {repo}: upstream's certificate does not verify: {why}")]
+    Certificate { repo: RepoName, why: String },
     #[error("repo {repo}: upstream sent more than {max} bytes")]
     TooLarge { repo: RepoName, max: u64 },
     #[error("repo {repo}: upstream did not answer within {seconds} s")]

@@ -1,6 +1,6 @@
 # The end-to-end registry and templates (docs/end-to-end.md): one Forgejo repository per
 # scenario, each with its own deploy key (a remote takes a deploy key on one repository
-# only). A new scenario adds its repo here, and to the `feature` template. The wrapper-mode
+# only), but `https`, reached with a token. A new scenario adds its repo here, and to the `feature` template. The wrapper-mode
 # scenario's repo is `demo`, like the development policy's, so it runs the manual check's
 # commands as they are written.
 repos:
@@ -17,9 +17,11 @@ repos:
   restart:    { upstream: "ssh://git@forgejo/writ/restart.git",    upstream_credential: upstream-restart,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
   hostile:    { upstream: "ssh://git@forgejo/writ/hostile.git",    upstream_credential: upstream-hostile,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
   busy:       { upstream: "ssh://git@forgejo/writ/busy.git",       upstream_credential: upstream-busy,       protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  # Over HTTPS, with a Forgejo token the operator puts in the keystore (no deploy key).
+  https:      { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
 templates:
   feature:
-    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, inflight, restart, hostile, busy]
+    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, inflight, restart, hostile, busy, https]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     force_push: true                 # a ticket may ask for it (none does unless it says so)

@@ -1,6 +1,7 @@
 //! The operator setup, from nothing, in the order the operator guide gives it
 //! (docs/guides/operator.md#setting-up-the-daemon): the daemon's files with relative paths,
-//! the upstream credentials added on Forgejo as deploy keys, Forgejo's host key pinned and
+//! the upstream credentials added on Forgejo as deploy keys (and the HTTPS repo's token in the
+//! keystore, its front's certificate trusted), Forgejo's host key pinned and
 //! checked against the one it publishes, the signing keys listed, the daemon's host key and
 //! TLS fingerprint pinned on the clients, the reader and the approver listed, and
 //! `writd run writd.yaml` started from the daemon's directory, on a relative path.
@@ -13,7 +14,7 @@
 
 use std::time::Duration;
 
-use crate::docker::{Host, eventually, stderr, stdout};
+use crate::docker::{Container, Host, eventually, stderr, stdout};
 use crate::forgejo::Forgejo;
 use crate::stack::Stack;
 
@@ -26,6 +27,11 @@ pub const DAEMON: &str = "writd";
 pub const AGENTS_URL: &str = "ssh://writd:2222";
 pub const APPROVALS_SSH: &str = "ssh://writd:2223";
 pub const APPROVALS_HTTPS: &str = "https://writd:8443";
+
+/// The repository reached over HTTPS with a token (`https://forgejo-https:3443`), and its
+/// credential's id.
+pub const HTTPS_REPO: &str = "https";
+pub const HTTPS_CREDENTIAL: &str = "token-https";
 
 /// The reader's name in the daemon's `readers` file.
 pub const READER: &str = "e2e-approver";
@@ -58,6 +64,18 @@ pub struct Report {
 /// 0; its stdout.
 pub fn doc_step(host: &Host, command: &'static str, fill: &[(&str, &str)]) -> String {
     host.ok(&filled(command, fill))
+}
+
+/// The same, with `stdin` written to it (what the operator pastes).
+pub fn doc_step_with(
+    host: &Host,
+    command: &'static str,
+    fill: &[(&str, &str)],
+    stdin: &[u8],
+) -> String {
+    let out = host.run_with(&filled(command, fill), stdin);
+    assert_eq!(out.status.code(), Some(0), "{command}: {}", stderr(&out));
+    stdout(&out)
 }
 
 /// The same, for a step the guide shows failing (a refused push): it must exit `code`; its
@@ -152,6 +170,21 @@ pub fn run() -> Stack {
             forgejo.add_deploy_key(&repo, &key);
         }
     }
+
+    // The HTTPS upstream's token: one made on the account for repositories, alone in its file
+    // in the keystore (pasted, as the guide says); the HTTPS front's certificate is the
+    // daemon's `mirrors.ca_certs` (no system CA signed it).
+    forgejo.create_repo(HTTPS_REPO);
+    let token = forgejo.repository_token("writd-https-upstream");
+    doc_step_with(
+        &operator,
+        "(umask 077 && mkdir -p data/keys/tokens && cat > data/keys/tokens/<id>)",
+        &[("<id>", HTTPS_CREDENTIAL)],
+        format!("{token}\n").as_bytes(),
+    );
+    let front = Container::of("forgejo-https").run_as("front", "cat /tls/cert.pem");
+    assert_eq!(front.status.code(), Some(0), "{}", stderr(&front));
+    operator.write("upstream_ca.pem", &stdout(&front), "0644");
 
     // 3. Forgejo's host key, pinned, and checked against the one it publishes.
     doc_step(

@@ -12,6 +12,7 @@ submissions: { per_source: 300, in_all: 600 }
 keystore: { dev: data/keys }       # unencrypted test keys (the sealed keystore comes in M5)
 mirrors:
   known_hosts: upstream_known_hosts
+  ca_certs: upstream_ca.pem        # the HTTPS front's certificate (the `https` repo)
   fresh_for: 0s                    # every fetch and push asks Forgejo first
 transports:
   agents: [{ tcp: "0.0.0.0:2222", allow: ["0.0.0.0/0"] }]

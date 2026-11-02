@@ -1,7 +1,8 @@
 //! The one way the daemon starts git on its repositories: a clean environment, no system or
-//! global config, no prompt, only the transports the daemon uses, and the checks Writ relies
-//! on set explicitly at the severity it needs ([`HARDENING`]). A library default is never the
-//! decision (`docs/security.md`).
+//! global config, no prompt, no transport at all unless an upstream operation allows its own
+//! ([`allow`]), and the checks Writ relies on set explicitly at the severity it needs
+//! ([`HARDENING`], [`HTTPS_HARDENING`]). A library default is never the decision
+//! (`docs/security.md`).
 
 use std::path::Path;
 
@@ -24,9 +25,9 @@ pub const FSCK_ERRORS: [&str; 6] = [
 
 /// Settings every git the daemon runs gets (`-c`), whatever the repository's own config says.
 pub const HARDENING: &[&str] = &[
-    // Transports: ssh only (upstream); never `ext::`, `file://` or anything a URL could name.
+    // Transports: none (an upstream operation allows its own: [`allow`]); never `ext::`,
+    // `file://` or anything a URL could name.
     "protocol.allow=never",
-    "protocol.ssh.allow=always",
     // Every object checked, from an agent or from upstream.
     "transfer.fsckObjects=true",
     "fetch.fsckObjects=true",
@@ -58,6 +59,47 @@ pub const HARDENING: &[&str] = &[
     "receive.denyNonFastForwards=false",
 ];
 
+/// What an HTTPS upstream operation gets on top of [`HARDENING`], besides its proxy and its
+/// credential helper (per operation): the server's certificate verified, no redirect (the
+/// token goes to the registry's host and nowhere else), no header, cookie or credential from
+/// anywhere but the daemon, never a prompt.
+pub const HTTPS_HARDENING: &[&str] = &[
+    "http.sslVerify=true",
+    "http.followRedirects=false",
+    "http.extraHeader=",
+    "http.cookieFile=",
+    "http.saveCookies=false",
+    "http.emptyAuth=false",
+    "credential.interactive=false",
+    // Resets the list of helpers: only the daemon's, given after it, answers.
+    "credential.helper=",
+];
+
+/// The one transport an upstream operation uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Ssh,
+    Https,
+}
+
+impl Transport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ssh => "ssh",
+            Self::Https => "https",
+        }
+    }
+}
+
+/// Allows `transport`, and only it, to the git `cmd` (before its subcommand): the upstream
+/// operations' git. Every other git the daemon runs reaches nothing.
+pub fn allow(cmd: &mut Command, transport: Transport) {
+    let name = transport.as_str();
+    cmd.arg("-c")
+        .arg(format!("protocol.{name}.allow=always"))
+        .env("GIT_ALLOW_PROTOCOL", name);
+}
+
 /// Where git looks for hooks.
 #[derive(Debug, Clone, Copy)]
 pub enum Hooks<'a> {
@@ -68,8 +110,8 @@ pub enum Hooks<'a> {
 }
 
 /// A `git` with a clean environment (only `PATH` and `TMPDIR`), no system or global config
-/// (the daemon user's git config must not change what the daemon runs), no prompt, ssh as the
-/// only transport, and [`HARDENING`].
+/// (the daemon user's git config must not change what the daemon runs), no prompt, no
+/// transport, and [`HARDENING`].
 pub fn command(hooks: Hooks<'_>) -> Command {
     // PATH: the daemon's own PATH (the environment is cleared but for it); the daemon's host
     // and its PATH are trusted (docs/threat-model.md, boundary 5).
@@ -83,7 +125,6 @@ pub fn command(hooks: Hooks<'_>) -> Command {
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ALLOW_PROTOCOL", "ssh")
         .env("GIT_PROTOCOL_FROM_USER", "0")
         .env("SSH_ASKPASS_REQUIRE", "never");
     for setting in HARDENING {
@@ -143,5 +184,64 @@ mod tests {
         assert!(text.contains("receive.fsck.hasdotgit=error"), "{text}");
         assert!(text.contains("protocol.allow=never"), "{text}");
         assert!(text.contains("core.hookspath=/dev/null"), "{text}");
+    }
+
+    async fn ls_remote(transport: Option<Transport>, url: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cmd = command(Hooks::None);
+        if let Some(transport) = transport {
+            allow(&mut cmd, transport);
+        }
+        cmd.args(["ls-remote", "--", url]).current_dir(dir.path());
+        let out = cmd.output().await.unwrap();
+        assert_eq!(out.status.code(), Some(128), "{url}");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+
+    #[tokio::test]
+    async fn git_reaches_nothing_but_the_one_transport_allowed() {
+        let local = tempfile::tempdir().unwrap();
+        let file = format!("file://{}", local.path().display());
+        for (transport, url, refused) in [
+            (None, file.as_str(), "transport 'file' not allowed"),
+            (
+                None,
+                "ssh://127.0.0.1:1/x.git",
+                "transport 'ssh' not allowed",
+            ),
+            (
+                None,
+                "https://127.0.0.1:1/x.git",
+                "transport 'https' not allowed",
+            ),
+            (
+                Some(Transport::Ssh),
+                "https://127.0.0.1:1/x.git",
+                "transport 'https' not allowed",
+            ),
+            (
+                Some(Transport::Ssh),
+                file.as_str(),
+                "transport 'file' not allowed",
+            ),
+            (
+                Some(Transport::Https),
+                "ssh://127.0.0.1:1/x.git",
+                "transport 'ssh' not allowed",
+            ),
+            (
+                Some(Transport::Https),
+                "http://127.0.0.1:1/x.git",
+                "transport 'http' not allowed",
+            ),
+            (
+                Some(Transport::Https),
+                "ext::sh -c id",
+                "transport 'ext' not allowed",
+            ),
+        ] {
+            let stderr = ls_remote(transport, url).await;
+            assert!(stderr.contains(refused), "{transport:?} {url}: {stderr}");
+        }
     }
 }

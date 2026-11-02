@@ -22,12 +22,14 @@ pub async fn no_repos(dir: &Path) -> Result<Mirrors> {
             relay: PathBuf::from("/usr/bin/false"),
             ssh: PathBuf::from("/usr/bin/ssh"),
             pinned: PinnedHosts::parse(UNREACHABLE_PIN)?,
+            ca_certs: None,
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
             max_fetch_bytes: 1 << 20,
         },
         &BTreeMap::new(),
         Arc::new(signer),
+        &BTreeMap::new(),
     )
     .await
 }
@@ -48,13 +50,15 @@ mod tests {
             relay: PathBuf::from("/usr/bin/false"),
             ssh: PathBuf::from("/usr/bin/ssh"),
             pinned: PinnedHosts::parse(UNREACHABLE_PIN).unwrap(),
+            ca_certs: None,
             fresh_for: Duration::from_secs(1),
             timeout: Duration::from_secs(10),
             max_fetch_bytes: 1 << 20,
         };
         let signer: Arc<dyn writ_signer::Signer> = Arc::new(signer);
         let none = BTreeMap::new();
-        let open = |config: MirrorConfig| Mirrors::open(config, &none, signer.clone());
+        let no_tokens = BTreeMap::new();
+        let open = |config: MirrorConfig| Mirrors::open(config, &none, signer.clone(), &no_tokens);
         match open(config.clone()).await {
             Err(crate::MirrorError::Config(m)) => {
                 assert!(m.contains("root repos must be an absolute path"), "{m}")
