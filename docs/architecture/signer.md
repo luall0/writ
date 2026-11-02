@@ -93,9 +93,14 @@ Gitea also ask for a proof, signed through [`writ prove-key`](approvals.md#provi
 The same interface also holds the **upstream credentials** (the SSH key the daemon uses to
 push to remotes), so those can move to a YubiKey too.
 
-And, from M5, the **HTTPS approval API's TLS key** (P-256): rustls signs each handshake through
-a small adapter that asks the `Signer` for a raw signature and DER-encodes it, and the
-self-signed certificate is made the same way. Its backend is a config choice like any key's
+And, since M5, the **HTTPS approval API's TLS key** (`tls-01`, P-256, in the boot tier):
+rustls signs each handshake through a small adapter (`writ_crypto::tls::remote`: its signing
+key asks a `TlsKey`, which `writ_signer::tls::TlsSigner` implements over a `Signer`; the SSH
+signature's `r` and `s` are DER-encoded for TLS), on its own queue (`writ-tls`, 32 jobs, 5 s
+each), run with the async worker handed over (`block_in_place`) so a slow device never
+stalls the listeners. The self-signed certificate is made the same way, signed through the
+`Signer` (`writ_crypto::tls::remote::self_signed`), and a certificate that isn't the key's is
+refused at start. No PEM key file exists. Its backend is a config choice like any key's
 (software by default, the Secure Enclave from M7.5); a new key means a new certificate, so
 approvers re-pin it once.
 

@@ -17,6 +17,7 @@
 
 pub mod queue;
 pub mod software;
+pub mod tls;
 
 #[cfg(feature = "testing")]
 pub mod contract;

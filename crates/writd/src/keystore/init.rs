@@ -17,7 +17,7 @@ use writ_crypto::ssh_key::{LineEnding, PrivateKey};
 use writ_platform::{DataKey, Passphrase};
 
 use super::sealed::{Layout, seal, write_public};
-use super::{PublicKeys, private_dir, signing_ids, upstream_credentials, write_private};
+use super::{PublicKeys, make_tls, private_dir, signing_ids, upstream_credentials, write_private};
 use crate::config::{Config, KeystoreConfig, SealedConfig};
 
 /// Wraps the identity with the passphrase: the platform's choice (`platform::enroll`), or a
@@ -132,12 +132,10 @@ pub fn make(
     // The boot tier: read at a sealed start.
     let host = generate(KeyKind::Ed25519)?;
     write_private(&layout.host(), host.to_openssh(LineEnding::LF)?.as_bytes())?;
-    let tls = writ_crypto::tls::generate_self_signed()?;
-    write_private(&layout.tls_key(), tls.key_pem.as_bytes())?;
-    write_public(&layout.tls_cert(), &tls.cert_pem)?;
-    let tls_fingerprint = writ_crypto::tls::TlsIdentity::from_pem(&tls.cert_pem, &tls.key_pem)?
-        .fingerprint()
-        .to_owned();
+    let cert_pem = make_tls(&layout.tls_key(), &layout.tls_cert(), &|path, pem| {
+        write_public(path, pem)
+    })?;
+    let tls_fingerprint = writ_crypto::tls::fingerprint_pem(&cert_pem)?;
 
     // Sealed: each its own age file, its public half beside it.
     let sealed_key = |secret: &Path, public: &Path| -> anyhow::Result<PrivateKey> {

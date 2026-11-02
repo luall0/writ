@@ -4009,6 +4009,7 @@ dependencies = [
 name = "writ-signer"
 version = "0.0.0"
 dependencies = [
+ "rustls",
  "signature",
  "ssh-key",
  "thiserror 2.0.21",

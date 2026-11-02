@@ -10,6 +10,7 @@ use anyhow::bail;
 use writ_core::names::KeyId;
 use writ_core::net::Sources;
 use writ_crypto::ssh_key::PrivateKey;
+use writ_crypto::tls::TlsIdentity;
 use writ_platform::attest::network::NetworkAttestor;
 use writ_platform::notify::Notifiers;
 use writ_platform::notify::telegram::{BotToken, TelegramNotifier};
@@ -83,6 +84,56 @@ pub fn upstream_signer(keys: Vec<(KeyId, PrivateKey)>) -> anyhow::Result<Arc<dyn
         },
     )?;
     Ok(Arc::new(queued))
+}
+
+/// Handshake signatures that may wait for the TLS key's backend.
+const TLS_QUEUE: usize = 32;
+
+/// How long a handshake signature waits for the TLS key's backend.
+const TLS_DEADLINE: Duration = Duration::from_secs(5);
+
+/// A TLS key whose signatures may wait for a device: each runs with the async worker thread
+/// handed over to the runtime's other tasks (`block_in_place`), so a slow backend never stalls
+/// the listeners. Outside a multi-thread runtime, it signs in place.
+#[derive(Debug)]
+struct OffAsync(writ_signer::tls::TlsSigner);
+
+impl writ_crypto::tls::remote::TlsKey for OffAsync {
+    fn public_point(&self) -> &[u8] {
+        self.0.public_point()
+    }
+
+    fn sign(&self, message: &[u8]) -> writ_crypto::Result<[u8; 64]> {
+        let multi_thread = tokio::runtime::Handle::try_current()
+            .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+        if multi_thread {
+            tokio::task::block_in_place(|| self.0.sign(message))
+        } else {
+            self.0.sign(message)
+        }
+    }
+}
+
+/// The HTTPS approval API's identity: its certificate, and its key behind a `Signer` of its
+/// own (one queue per use: a device stuck on commit signing never holds up a handshake, nor
+/// the other way round). The key is moved into the backend; rustls asks it for every
+/// handshake signature.
+pub fn tls_identity(tls: crate::keystore::TlsKeyPair) -> anyhow::Result<Arc<TlsIdentity>> {
+    let id: KeyId = crate::keystore::TLS_KEY.parse()?;
+    let backend = SoftwareSigner::new([(id.clone(), tls.key)])?;
+    let queued: Arc<dyn Signer> = Arc::new(QueuedSigner::new(
+        backend,
+        QueueConfig {
+            name: "writ-tls".to_owned(),
+            capacity: TLS_QUEUE,
+            deadline: TLS_DEADLINE,
+        },
+    )?);
+    let key = writ_signer::tls::TlsSigner::new(queued, id)?;
+    Ok(Arc::new(TlsIdentity::with_key(
+        &tls.cert_pem,
+        Arc::new(OffAsync(key)),
+    )?))
 }
 
 /// The file holding the sealed keystore's identity, wrapped with the passphrase.

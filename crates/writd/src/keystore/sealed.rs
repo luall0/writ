@@ -11,7 +11,8 @@
 //!   upstream/<id>.age .pub  the ssh:// upstreams' credentials
 //! keystore.sealed.boot (0700): read at a sealed start
 //!   host                    the SSH host key (OpenSSH, 0600)
-//!   tls-key.pem tls-cert.pem  the HTTPS approval API's key (0600) and certificate
+//!   tls-01 tls-01.crt       the HTTPS approval API's key (P-256, OpenSSH, 0600), its
+//!                           certificate (signed through the `Signer`)
 //! ```
 //!
 //! A secret is read only through [`SecretFiles`]: the one seam that knows which identities may
@@ -24,10 +25,9 @@ use anyhow::{Context, bail};
 use writ_core::config::PolicyConfig;
 use writ_core::names::KeyId;
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
-use writ_crypto::tls::TlsIdentity;
 use zeroize::Zeroizing;
 
-use super::{Keys, PublicKeys, signing_ids, upstream_credentials, write_private};
+use super::{Keys, PublicKeys, TlsKeyPair, signing_ids, upstream_credentials, write_private};
 use crate::config::SealedConfig;
 
 /// The largest secret file read: a key or a token in an age file is a few hundred bytes.
@@ -69,10 +69,10 @@ impl Layout<'_> {
         self.0.boot.join("host")
     }
     pub fn tls_key(&self) -> PathBuf {
-        self.0.boot.join("tls-key.pem")
+        self.0.boot.join("tls-01")
     }
     pub fn tls_cert(&self) -> PathBuf {
-        self.0.boot.join("tls-cert.pem")
+        self.0.boot.join("tls-01.crt")
     }
 }
 
@@ -192,16 +192,25 @@ pub fn host_key(sealed: &SealedConfig) -> anyhow::Result<PrivateKey> {
         .with_context(|| format!("{}: not an OpenSSH private key", path.display()))
 }
 
-/// The boot tier's TLS certificate and key.
-pub fn tls(sealed: &SealedConfig) -> anyhow::Result<TlsIdentity> {
-    let layout = Layout(sealed);
-    let cert_path = layout.tls_cert();
-    let cert = writ_platform::fs::read_authority(&cert_path, "the TLS certificate")?;
-    let key_path = layout.tls_key();
-    let key = writ_platform::fs::read_secret(&key_path, "the TLS key", MAX_SECRET_FILE)?;
-    let key = std::str::from_utf8(&key)
-        .with_context(|| format!("{} is not a PEM key", key_path.display()))?;
-    Ok(TlsIdentity::from_pem(&cert, key)?)
+/// The boot tier's TLS certificate (PEM): public, an authority file (whoever replaced it would
+/// choose what clients pin).
+fn tls_cert(sealed: &SealedConfig) -> anyhow::Result<String> {
+    Ok(writ_platform::fs::read_authority(
+        &Layout(sealed).tls_cert(),
+        "the TLS certificate",
+    )?)
+}
+
+/// The boot tier's TLS key and certificate.
+pub fn tls(sealed: &SealedConfig) -> anyhow::Result<TlsKeyPair> {
+    let path = Layout(sealed).tls_key();
+    let text = writ_platform::fs::read_secret(&path, "the TLS key", MAX_SECRET_FILE)?;
+    let key = PrivateKey::from_openssh(text.as_slice())
+        .with_context(|| format!("{}: not an OpenSSH private key", path.display()))?;
+    Ok(TlsKeyPair {
+        key,
+        cert_pem: tls_cert(sealed)?,
+    })
 }
 
 /// The public halves: the boot tier's keys, and the `.pub` files beside each sealed key, for
@@ -225,7 +234,7 @@ pub fn public(sealed: &SealedConfig, policy: &PolicyConfig) -> anyhow::Result<Pu
         .collect::<anyhow::Result<_>>()?;
     Ok(PublicKeys {
         host: host_key(sealed)?.public_key().clone(),
-        tls_fingerprint: tls(sealed)?.fingerprint().to_owned(),
+        tls_fingerprint: writ_crypto::tls::fingerprint_pem(&tls_cert(sealed)?)?,
         signing,
         upstream,
     })
@@ -424,13 +433,14 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_str().unwrap().to_owned())
             .collect();
-        assert_eq!(boot, ["host", "tls-cert.pem", "tls-key.pem"]);
+        assert_eq!(boot, ["host", "tls-01", "tls-01.crt"]);
         for (path, bits) in [
             (sealed.dir.clone(), 0o700),
             (sealed.boot.clone(), 0o700),
             (sealed.dir.join("signing"), 0o700),
             (sealed.boot.join("host"), 0o600),
-            (sealed.boot.join("tls-key.pem"), 0o600),
+            (sealed.boot.join("tls-01"), 0o600),
+            (sealed.boot.join("tls-01.crt"), 0o644),
         ] {
             assert_eq!(mode(&path), bits, "{}", path.display());
         }
@@ -448,7 +458,10 @@ mod tests {
 
         let keys = keys(&sealed, &policy(), &opened(&sealed, PASSPHRASE).unwrap()).unwrap();
         assert_eq!(*keys.host.public_key(), made.keys.host);
-        assert_eq!(keys.tls.fingerprint(), made.keys.tls_fingerprint);
+        assert_eq!(
+            writ_crypto::tls::fingerprint_pem(&keys.tls.cert_pem).unwrap(),
+            made.keys.tls_fingerprint
+        );
         let ids = |keys: &[(KeyId, PrivateKey)]| -> Vec<String> {
             keys.iter().map(|(id, _)| id.to_string()).collect()
         };

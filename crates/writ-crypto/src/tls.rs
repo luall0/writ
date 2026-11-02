@@ -9,6 +9,8 @@
 //! - clients: [`pinned_client_config`], which accepts exactly the pinned certificate and
 //!   presents the reader key's certificate.
 
+pub mod remote;
+
 use std::sync::Arc;
 
 use base64ct::{Base64Unpadded, Encoding};
@@ -69,6 +71,13 @@ pub fn fingerprint(cert_der: &[u8]) -> String {
     )
 }
 
+/// The pin of a PEM certificate ([`fingerprint`]).
+pub fn fingerprint_pem(cert_pem: &str) -> Result<String> {
+    let cert = CertificateDer::from_pem_slice(cert_pem.as_bytes())
+        .map_err(|_| CryptoError::Pem("certificate"))?;
+    Ok(fingerprint(&cert))
+}
+
 /// The approval API's TLS certificate and key, and the fingerprint clients pin.
 ///
 /// The private key is moved straight into rustls when the identity is made: no other copy is
@@ -126,6 +135,21 @@ impl TlsIdentity {
         let certified =
             CertifiedKey::new(vec![cert], provider().key_provider.load_private_key(key)?);
         // Unlike `from_der`, an unknown consistency is refused too.
+        certified.keys_match()?;
+        Ok(Self {
+            certified: Arc::new(certified),
+            fingerprint,
+        })
+    }
+
+    /// A certificate (PEM) and the key that signs for it elsewhere (the daemon's `Signer`):
+    /// every handshake signature is asked of `key`, which must be the certificate's.
+    pub fn with_key(cert_pem: &str, key: Arc<dyn remote::TlsKey>) -> Result<Self> {
+        let cert = CertificateDer::from_pem_slice(cert_pem.as_bytes())
+            .map_err(|_| CryptoError::Pem("certificate"))?;
+        let fingerprint = fingerprint(&cert);
+        let certified = CertifiedKey::new(vec![cert], Arc::new(remote::RemoteSigningKey(key)));
+        // The certificate's public key must be the key's: a replaced certificate is refused.
         certified.keys_match()?;
         Ok(Self {
             certified: Arc::new(certified),

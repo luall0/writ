@@ -16,7 +16,6 @@ use anyhow::{Context, bail};
 use writ_core::config::PolicyConfig;
 use writ_core::names::KeyId;
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
-use writ_crypto::tls::TlsIdentity;
 use writ_mirror::credential::UpstreamToken;
 use writ_mirror::upstream::Upstream;
 
@@ -47,8 +46,42 @@ pub struct Keys {
     /// The keys the daemon reaches `ssh://` upstreams with, by id (their repos'
     /// `upstream_credential`), for the upstream `Signer`.
     pub upstream: Vec<(KeyId, PrivateKey)>,
-    /// The HTTPS approval API's self-signed certificate and key.
-    pub tls: TlsIdentity,
+    /// The HTTPS approval API's key and self-signed certificate.
+    pub tls: TlsKeyPair,
+}
+
+/// The HTTPS approval API's key id in its `Signer`.
+pub const TLS_KEY: &str = "tls-01";
+
+/// The HTTPS approval API's key (ECDSA P-256, for its `Signer`) and its certificate.
+pub struct TlsKeyPair {
+    pub key: PrivateKey,
+    pub cert_pem: String,
+}
+
+/// Makes the HTTPS approval API's key (written to `key_path`, 0600) and its self-signed
+/// certificate, signed through a `Signer` holding the key, as every handshake is later
+/// (written to `cert_path`, by `write_cert`). The key is moved into that signer, never copied.
+fn make_tls(
+    key_path: &Path,
+    cert_path: &Path,
+    write_cert: &dyn Fn(&Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    use writ_crypto::keys::{KeyKind, generate};
+    let key = generate(KeyKind::P256)?;
+    write_private(
+        key_path,
+        key.to_openssh(writ_crypto::ssh_key::LineEnding::LF)?
+            .as_bytes(),
+    )?;
+    let id: KeyId = TLS_KEY.parse()?;
+    let signer: Arc<dyn writ_signer::Signer> = Arc::new(
+        writ_signer::software::SoftwareSigner::new([(id.clone(), key)])?,
+    );
+    let tls = writ_signer::tls::TlsSigner::new(signer, id)?;
+    let cert_pem = writ_crypto::tls::remote::self_signed(&tls)?;
+    write_cert(cert_path, &cert_pem)?;
+    Ok(cert_pem)
 }
 
 /// The daemon's keys, public halves: what the commands that print a key need. From the sealed
@@ -61,19 +94,19 @@ pub struct PublicKeys {
     pub upstream: Vec<(KeyId, PublicKey)>,
 }
 
-impl From<&Keys> for PublicKeys {
-    fn from(keys: &Keys) -> Self {
+impl PublicKeys {
+    fn of(keys: &Keys) -> anyhow::Result<Self> {
         let public = |keys: &[(KeyId, PrivateKey)]| {
             keys.iter()
                 .map(|(id, key)| (id.clone(), key.public_key().clone()))
                 .collect()
         };
-        Self {
+        Ok(Self {
             host: keys.host.public_key().clone(),
-            tls_fingerprint: keys.tls.fingerprint().to_owned(),
+            tls_fingerprint: writ_crypto::tls::fingerprint_pem(&keys.tls.cert_pem)?,
             signing: public(&keys.signing),
             upstream: public(&keys.upstream),
-        }
+        })
     }
 }
 
@@ -124,7 +157,7 @@ pub fn keys(config: &Config, policy: &PolicyConfig) -> anyhow::Result<Keys> {
 /// The public halves of the daemon's keys, from the configured keystore: no unseal needed.
 pub fn public(config: &Config, policy: &PolicyConfig) -> anyhow::Result<PublicKeys> {
     match &config.keystore {
-        KeystoreConfig::Dev(dir) => Ok(PublicKeys::from(&dev::keys(dir, policy)?)),
+        KeystoreConfig::Dev(dir) => PublicKeys::of(&dev::keys(dir, policy)?),
         KeystoreConfig::Sealed(sealed) => sealed::public(sealed, policy),
     }
 }

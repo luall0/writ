@@ -73,11 +73,16 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
     assert_eq!(dir.ok("cat keys/recipient"), format!("{recipient}\n"));
     assert_eq!(dir.ok("stat -c %a keys boot"), "700\n700\n");
     // The boot tier: the keys a sealed daemon authenticates itself with, and only those.
-    assert_eq!(dir.ok("ls boot"), "host\ntls-cert.pem\ntls-key.pem\n");
-    assert_eq!(
-        dir.ok("stat -c %a boot/host boot/tls-key.pem"),
-        "600\n600\n"
+    assert_eq!(dir.ok("ls boot"), "host\ntls-01\ntls-01.crt\n");
+    // The TLS key is an OpenSSH P-256 key for the daemon's signer: no PEM key file anywhere.
+    let tls_key = dir.ok("ssh-keygen -l -f boot/tls-01");
+    assert!(
+        tls_key.starts_with("256 SHA256:") && tls_key.trim_end().ends_with("(ECDSA)"),
+        "{tls_key}"
     );
+    assert_eq!(dir.ok("find keys boot -name '*.pem'"), "");
+    assert_eq!(dir.ok("grep -c CERTIFICATE boot/tls-01.crt"), "2\n");
+    assert_eq!(dir.ok("stat -c %a boot/host boot/tls-01"), "600\n600\n");
     // No token is ever made: the https repo's comes from the approver (M5).
     assert_eq!(dir.ok("find keys -path '*token*'"), "");
 

@@ -373,7 +373,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
         let authority = CertificateAuthority::new(keys.ca);
         let service = start_service(&config, policy, &approvers, authority, &platform, signer)?;
         let host_public = keys.host.public_key().to_openssh()?;
-        let tls = Arc::new(keys.tls);
+        let tls = platform::tls_identity(keys.tls)?;
         let gateway = Gateway::start(
             GatewayConfig {
                 host_key: keys.host,

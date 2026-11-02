@@ -10,14 +10,13 @@ use writ_core::config::PolicyConfig;
 use writ_core::names::KeyId;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey};
-use writ_crypto::tls::TlsIdentity;
 use writ_mirror::credential::{MAX_TOKEN_FILE, UpstreamToken};
 
-use super::{Keys, private_dir, upstream_credentials, write_private};
+use super::{Keys, TlsKeyPair, make_tls, private_dir, upstream_credentials, write_private};
 
-/// The TLS certificate and key of the dev keystore, generated on first start.
-fn dev_tls(dir: &Path) -> anyhow::Result<TlsIdentity> {
-    let (cert_path, key_path) = (dir.join("tls-cert.pem"), dir.join("tls-key.pem"));
+/// The TLS key and certificate of the dev keystore, made on first start.
+fn dev_tls(dir: &Path) -> anyhow::Result<TlsKeyPair> {
+    let (cert_path, key_path) = (dir.join("tls-01.crt"), dir.join("tls-01"));
     // The key is written first: a cert without its key (or a key alone, after a crash
     // between the two writes) is a pair to make again.
     if !(cert_path.exists() && key_path.exists()) {
@@ -29,17 +28,16 @@ fn dev_tls(dir: &Path) -> anyhow::Result<TlsIdentity> {
                 _ => {}
             }
         }
-        let generated = writ_crypto::tls::generate_self_signed()?;
-        write_private(&key_path, generated.key_pem.as_bytes())?;
-        std::fs::write(&cert_path, &generated.cert_pem)
-            .with_context(|| format!("cannot write {}", cert_path.display()))?;
+        make_tls(&key_path, &cert_path, &|path, pem| {
+            std::fs::write(path, pem).with_context(|| format!("cannot write {}", path.display()))
+        })?;
     }
-    let cert = std::fs::read_to_string(&cert_path)
+    let cert_pem = std::fs::read_to_string(&cert_path)
         .with_context(|| format!("reading {}", cert_path.display()))?;
-    let key = writ_platform::fs::read_secret(&key_path, "the TLS key", 1 << 16)?;
-    let key = std::str::from_utf8(&key)
-        .with_context(|| format!("{} is not a PEM key", key_path.display()))?;
-    Ok(TlsIdentity::from_pem(&cert, key)?)
+    Ok(TlsKeyPair {
+        key: dev_key(dir, "tls-01")?,
+        cert_pem,
+    })
 }
 
 /// The dev keystore's key `name`, generated on first start.
@@ -261,16 +259,19 @@ templates: {}
     #[test]
     fn a_tls_pair_cut_short_by_a_crash_is_made_again() {
         let dir = tempfile::tempdir().unwrap();
-        let first = dev_tls(dir.path()).unwrap().fingerprint().to_owned();
-        assert_eq!(dev_tls(dir.path()).unwrap().fingerprint(), first, "kept");
+        let pin = |dir: &Path| {
+            writ_crypto::tls::fingerprint_pem(&dev_tls(dir).unwrap().cert_pem).unwrap()
+        };
+        let first = pin(dir.path());
+        assert_eq!(pin(dir.path()), first, "kept");
         // The key written, the cert not: a crash between the two writes.
-        std::fs::remove_file(dir.path().join("tls-cert.pem")).unwrap();
-        let second = dev_tls(dir.path()).unwrap().fingerprint().to_owned();
+        std::fs::remove_file(dir.path().join("tls-01.crt")).unwrap();
+        let second = pin(dir.path());
         assert_ne!(second, first);
         // The cert alone.
-        std::fs::remove_file(dir.path().join("tls-key.pem")).unwrap();
-        assert_ne!(dev_tls(dir.path()).unwrap().fingerprint(), second);
-        let mode = std::fs::metadata(dir.path().join("tls-key.pem"))
+        std::fs::remove_file(dir.path().join("tls-01")).unwrap();
+        assert_ne!(pin(dir.path()), second);
+        let mode = std::fs::metadata(dir.path().join("tls-01"))
             .unwrap()
             .permissions()
             .mode();
