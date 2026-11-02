@@ -63,6 +63,8 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
 | [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |
+| [Signature formats and key algorithms](signature-formats-and-key-algorithms.md) | Signers, Clients | feature | L | specified; picked as [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms) |
+| [x509 commit signatures](#x509-commit-signatures) | Signers | feature | M | idea |
 | [Developer ID signed binaries](#developer-id-signed-binaries) | Packaging | improvement | S | idea |
 | [Hardware-wrapped secrets](hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | specified; picked as [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
@@ -111,6 +113,15 @@ HSM, the daemon only asks it for signatures ([Signer](../architecture/signer.md)
   `Signer` contract suite (against the provider's emulator or a local Vault where one exists);
   no provider SDK in the core. The threat model gains a trusted third party (the provider and
   the account holding the keys).
+
+### x509 commit signatures
+
+Git's third signature format (`gpg.format = x509`, `gpgsm`: a CMS signature with an X.509
+certificate), after SSH and OpenPGP ([M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms)
+leaves the seam: one encoder per format, `format` an open enum). To settle: where the
+certificate comes from (a CA the operator runs, an S/MIME certificate from a public CA, which
+GitHub shows as verified, or self-made), its renewal, which remotes verify it, and
+`writ-sign` as `gpg.x509.program`.
 
 ### Developer ID signed binaries
 

@@ -22,6 +22,8 @@ later approver apps.
 | Config | `serde` + `serde-saphyr` 2 (YAML, duplicate keys refused) + `serde_path_to_error` (errors name the field) | Decided (M1): `serde_yaml` is deprecated |
 | CLI | `clap` 4 (derive, env) | Decided (M2) |
 | Errors | `thiserror` in library crates, `anyhow` only in binaries | Decided (M0) |
+| OpenPGP signatures (M5.5) | `pgp` (rPGP, MIT/Apache-2.0) if it signs through the `Signer`, else a minimal v4 writer in `writ-crypto`; never `sequoia-openpgp` (LGPL) | Proposed |
+| RSA keys (M5.5) | `aws-lc-rs`, for RSA only (generation and constant-time signing); the `rsa` crate stays banned (Marvin); `p384` for P-384 | Proposed |
 | Secrets in memory | `zeroize` (decided in M2); `secrecy` | Proposed |
 | Unix file checks | `rustix` 1.1 (`fs`, `process`): opening without following a link or blocking, the effective uid, for the private-file and authority-file checks (`writ_platform::fs`); safe wrappers, so no `unsafe` in the tree, and already a dependency of `tempfile` | Decided (M2.6) |
 | Logging | `tracing` 0.1 in every library crate, `tracing-subscriber` 0.3 (`fmt`, `env-filter`) installed by `writd` only, to stderr, filtered by `WRIT_LOG`; the audit log is separate and never goes through it | Decided (M2.5) |

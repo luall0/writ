@@ -81,7 +81,8 @@ approval is bounded to what the agent keys can do.
 - Personal use (my own projects)
 - Detached mode in Docker with a software signer; signer interface ready for YubiKey
 - Local mode on the Mac
-- SSH commit signing; push/fetch through the daemon's git gateway; upstream over SSH to any
+- SSH and OpenPGP commit signing, each key declared with its algorithm and hash
+  ([M5.5](roadmap.md#m55--signature-formats-and-key-algorithms)); push/fetch through the daemon's git gateway; upstream over SSH to any
   remote (GitHub, Codeberg, Forgejo, GitLab…)
 - Approvals signed by my approver keys (Secretive first, own Secure Enclave signer later)
 - Daemon starts sealed; unsealed with a passphrase + approver signature
@@ -93,7 +94,6 @@ The order in which this is built is the [Roadmap](roadmap.md).
 
 v1 does not do any of these; don't build them unless explicitly asked:
 
-- GPG signing
 - Generic secret-store proxying (API tokens, keychain items). An HTTP credential proxy is a
   v2 idea in the [backlog](backlog/http-credential-proxy.md).
 - Multi-user / team policy (after v1: [M11](roadmap.md#m11--multi-user-daemon), designed in the

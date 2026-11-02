@@ -104,8 +104,8 @@ records every commit signed per lease. Use these words in code, logs and docs.
     property tests seeded) and adversarial (a denial asserts its exact code or error variant,
     never just `is_err()`; every limit tested on both sides; hostile input where input is
     untrusted). A test that can pass by luck is a bug.
-13. **Respect the [non-goals](docs/product.md#non-goals)** (no GPG, no tag signing, no generic
-    secret proxying, no multi-user) unless explicitly asked.
+13. **Respect the [non-goals](docs/product.md#non-goals)** (no tag signing, no generic secret
+    proxying, no multi-user) unless explicitly asked.
 14. **English everywhere** in code, comments, logs, messages and commits.
 15. **Keep docs in sync:** a change to behavior, the lease model, the protocol or the
     architecture updates the matching page in `docs/` in the same change. A new decision gets a

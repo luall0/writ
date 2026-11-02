@@ -99,6 +99,11 @@ self-signed certificate is made the same way. Its backend is a config choice lik
 (software by default, the Secure Enclave from M7.5); a new key means a new certificate, so
 approvers re-pin it once.
 
+Each key signs in SSH today, with the algorithm the development keystore gives it (Ed25519).
+From [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms), each signing key is
+declared with its format (SSH or OpenPGP), algorithm (Ed25519, P-256, P-384, RSA 3072/4096)
+and hash, checked against its backend at start, and `sign` takes the hash to use.
+
 v1 ships the software backend; the others are in the [backlog](../backlog/README.md) (and
 the Secure Enclave in local mode, `se-cryptokit`, in
 [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac)).
