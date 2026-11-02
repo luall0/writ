@@ -37,6 +37,7 @@ an unchanged core.
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
 | M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, unsealing with no passphrase |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts |
+| M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 | M9 | [`proxy` push mode](#m9--proxy-push-mode) | Relayed pushes with the same checks, no mirror |
 | M10 | [`direct_ssh` push mode](#m10--direct_ssh-push-mode) | Lent per-lease ssh-agent socket with a deploy key |
 | M11 | [Multi-user daemon](#m11--multi-user-daemon) (after v1) | Several people on one daemon: users with their own approvers, readers, templates and upstream credentials, admins for admin changes and unsealing |
@@ -330,6 +331,57 @@ Acceptance:
       the process runs as non-root.
 - [ ] Detached is only the detached [configuration preset](architecture/platform.md#configuration-presets)
       and packaging: no change to the core crates beyond bug fixes.
+
+## M8.5 — Non-exportable session keys
+
+[The backlog page](backlog/non-exportable-session-keys.md) holds the design. The session key is
+the lease holder's whole identity, and today it is a file on the agent host: malware there can
+copy it, with the certificate, and act as the lease holder from any address the gateway admits
+until the lease ends. Held by hardware, it can be used on that host during the lease, never
+copied. It matters once agents reach the gateway over TCP (M8); in local mode the socket and the
+process chain already refuse a copied key.
+
+- **The client-side platform seam first** (hard rules 4 and 16): today `writ-platform*` is the
+  daemon's. A seam for where a session key lives, its contract suite and a fake, client
+  platform crates, and the [dependency directions](architecture/overview.md#dependency-directions)
+  and [conventions](conventions.md) updated, before any implementation.
+- **A Writ session agent** on the agent host: it speaks the ssh-agent protocol, so git's `ssh`
+  and `writ` only see a socket (`IdentityAgent`), and makes one key per lease. Backends: the
+  Secure Enclave on a Mac (CryptoKit, no Touch ID, as M7.5) and a TPM 2.0 on Linux. Never the
+  user's own ssh-agent (hard rule 8). The `file` kind stays today's Ed25519 key file.
+- **On when the host can, off when it can't, never switched silently:** the first
+  `writ request` with no recorded choice detects the hardware for real (creates a throwaway
+  key and signs with it), records `hardware` or `file` in `~/.writ/`, and says what it chose
+  and how to change it. `writ session-key` shows the choice and what the host supports;
+  `writ session-key hardware|file` changes it for later leases (current ones keep their key);
+  `WRIT_SESSION_KEY` overrides it. A recorded `hardware` that stops working makes
+  `writ request` refuse with a reason, never fall back to a file.
+- **The kind on the ticket:** the ticket carries the session key's kind (`hardware: secure-enclave`,
+  `hardware: tpm`, `file`), and `writ sign` shows it. A client's claim, shown and never enforced
+  (hard rule 6): the daemon takes Ed25519 and P-256 session keys and can't tell where one
+  lives. Requiring it per template needs attestation (a TPM's), an open question.
+- Docs: [identity](architecture/identity.md), [clients](architecture/clients.md), the
+  [client settings](operators/clients.md), the [lease model](lease-model.md) (the ticket's
+  new field) and the [threat model](threat-model.md); the session agent's binary in
+  AGENTS.md's naming table.
+
+Acceptance:
+- [ ] **The graft test for the daemon:** no change beyond the ticket's new field, its
+      validation and its display.
+- [ ] Every backend passes the session key contract suite (the Secure Enclave, the TPM, the
+      file).
+- [ ] With a hardware session key, the session directory holds no private key; a copy of it
+      on another host can't open a connection to the gateway (refused at authentication).
+- [ ] Detection: a host with a working TPM (`swtpm` in a container) records `hardware`; one
+      with none, or a TPM it can't use, records `file`; both say so and how to change it.
+- [ ] A recorded `hardware` with the hardware gone: `writ request` refuses with its exact
+      reason and writes no key file.
+- [ ] `writ session-key`, both values and `WRIT_SESSION_KEY` used for real by an end-to-end
+      scenario (rule 18), with their rows in the registries (rule 19).
+- [ ] `writ sign` shows the kind; a ticket claiming a kind its key can't be (Ed25519 with
+      `hardware`) is refused with its code.
+- [ ] On the Mac, by hand ([manual checks](guides/manual-checks.md)): a Secure Enclave
+      session key works with no prompt, with the screen locked, and can't be exported.
 
 ## M9 — `proxy` push mode
 

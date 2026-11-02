@@ -9,7 +9,7 @@ Code: the CA in `crates/writ-crypto`, certificate checks in `crates/writ-gateway
 
 1. The harness/CLI generates an **ephemeral session key** (an Ed25519 key file; later, a key
    that can't be exported, held by a hardware-backed agent:
-   [backlog](../backlog/README.md#non-exportable-session-keys)).
+   [M8.5](../roadmap.md#m85--non-exportable-session-keys)).
 2. The lease request is sent over a connection authenticated with that key (SSH user
    `writ`), so the submitter proves it holds it; the ticket records its fingerprint.
 3. On approval, the daemon issues an **SSH user certificate** for that key: valid until the

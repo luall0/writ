@@ -37,9 +37,9 @@ The gateway only accepts SSH certificates issued by the daemon for an active lea
 **Possession of the session key = identity.** Anything on the agent host that can read the key
 can use it, but only within the lease (repo, ops, branches, time, count).
 
-Mitigations: short TTL, one key per lease, revocation list. Later
-([backlog](backlog/README.md#identity)): non-exportable session keys (Secure Enclave, TPM,
-YubiKey) and source-address pinning.
+Mitigations: short TTL, one key per lease, revocation list. Later: non-exportable session
+keys ([M8.5](roadmap.md#m85--non-exportable-session-keys): Secure Enclave, TPM) and
+source-address pinning ([backlog](backlog/README.md#source-address-pinning)).
 
 Local mode adds kernel peer checks (process tree) on the Unix socket.
 
@@ -171,7 +171,7 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | SHA-1 repositories are the default (`object_format: sha1`, as on GitHub and most remotes): there, the paths a commit touches are read from objects the agent sends, identified by SHA-1 | Each object's id is computed with collision detection (git's own `sha1dc` algorithm), which refuses the known attack constructions; a new chosen-prefix collision would cost a lot and only change what the path check sees, within the lease (the signature's other checks don't use these objects); the ledger's commit id includes the daemon's signature, which the agent can't predict; git and the remote rest on the same ids. A push is refused unless the paths are the same when computed again from the objects git verified in the quarantine (M4), so a forged tree never reaches the mirror or upstream through `gateway` (nor `proxy`, M9) | `object_format: sha256` where the remote supports it |
 | A signature that fails, times out or is discarded (its lease revoked, expired or amended while it was being signed) still uses its count and rate slot; a crash between the phases uses one too | It errs toward less: no privilege is added, a failure can't be retried past the limits, and a stuck device holds up only commit signing (16 waiting at most, 10 s each), never approvals or revocations | A new lease, or an amendment raising `max_signatures` |
 | A push that left for upstream before a revocation still lands: the lease is checked again right before the upstream push starts, but a push on its way can't be called back | The window is one upstream push (bounded by `mirrors.timeout`), for a push the policy already accepted under the lease; it reaches only what the lease allowed | — |
-| Session key theft on an agent host | Bounded by lease scope and TTL | Non-exportable session keys, source-address pinning (backlog) |
+| Session key theft on an agent host | Bounded by lease scope and TTL | Non-exportable session keys (M8.5), source-address pinning (backlog) |
 | Daemon is a single point of failure | Fail closed is the right behavior | Local mode as fallback |
 | Upstream keys have account-wide access | Remotes don't scope personal SSH keys per repo | Repo registry + `protected_refs` enforced by the daemon; keys on YubiKey; deploy keys or bot accounts later |
 | An HTTPS upstream's token leaves the daemon's memory for each operation: its own git (and git's `remote-https`) holds it, through pipes, while the operation runs; a token can't stay in a signer, since it doesn't sign | Only the daemon's user reaches those processes and the private socket directory (boundary 5); one operation, then the socket is gone; never a command line, an environment, a URL or a file; the token as narrow as the remote allows | Prefer `ssh://` upstreams (the key never leaves the signer); M5's process hardening; per-operation tokens where a remote issues them (GitHub App installation tokens, backlog) |
