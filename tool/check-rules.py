@@ -30,6 +30,8 @@ PRINT_ALLOWED = {
     "crates/writ-gateway/src/hook/client.rs",
     # The upstream relay runs as its own process (git's ssh); git shows its stderr.
     "crates/writ-mirror/src/relay.rs",
+    # The upstream credential helper runs as its own process (git's); git shows its stderr.
+    "crates/writ-mirror/src/credential/helper.rs",
 }
 CFG_TARGET_OS = re.compile(r"cfg!?\s*\([^)]*target_os")
 PRINT = re.compile(r"\b(e?println!|e?print!|dbg!)")

@@ -22,10 +22,12 @@
 //! runs `upload-pack` and `receive-pack` through the same builder.
 
 pub mod agent;
+pub mod credential;
 pub mod git;
 pub mod known_hosts;
 mod mirror;
 mod process;
+pub mod proxy;
 pub mod quarantine;
 pub mod relay;
 #[cfg(feature = "testing")]

@@ -3958,6 +3958,7 @@ dependencies = [
  "writ-git",
  "writ-platform",
  "writ-signer",
+ "zeroize",
 ]
 
 [[package]]
