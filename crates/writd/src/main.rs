@@ -352,48 +352,14 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
         .with_context(|| format!("cannot create {}", repos.display()))?;
-    let store = Store::open(&config.state_dir.join("leases.db"))?;
-    let audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
-        let mirrors = Mirrors::open(
-            MirrorConfig {
-                root: repos.clone(),
-                run_dir: config.state_dir.join("mirror"),
-                relay: std::env::current_exe()?,
-                git: config.mirrors.git.clone(),
-                ssh: config.mirrors.ssh.clone(),
-                pinned,
-                ca_certs,
-                fresh_for: Duration::from_secs(config.mirrors.fresh_for.seconds()),
-                timeout: Duration::from_secs(config.mirrors.timeout.seconds()),
-                max_fetch_bytes: config.mirrors.max_fetch.bytes(),
-            },
-            &registry,
-            upstream_signer,
-            &tokens,
-        )
-        .await?;
+        let mirror_config = mirror_config(&config, repos, pinned, ca_certs)?;
+        let mirrors = Mirrors::open(mirror_config, &registry, upstream_signer, &tokens).await?;
         let platform = platform::build(&config).await?;
-        let service = Service::new(
-            ServiceConfig {
-                policy,
-                approvers: approvers.clone(),
-                decisions: config.decisions,
-                max_pending: config.max_pending,
-                submissions: config.submissions.limits(),
-            },
-            CertificateAuthority::new(keys.ca),
-            store,
-            audit,
-            ServicePlatform {
-                notifier: platform.notifier.clone(),
-                signer,
-                watcher: platform.watcher.clone(),
-                clock: Arc::new(SystemClock),
-            },
-        )?;
+        let authority = CertificateAuthority::new(keys.ca);
+        let service = start_service(&config, policy, &approvers, authority, &platform, signer)?;
         let host_public = keys.host.public_key().to_openssh()?;
         let tls = Arc::new(keys.tls);
         let gateway = Gateway::start(
@@ -410,20 +376,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
         .await?;
 
         tracing::info!(host_key = %host_public, tls_fingerprint = %tls.fingerprint(), "started");
-        for approver in &approvers {
-            tracing::info!(
-                fingerprint = %approver.fingerprint(),
-                principals = %approver.principals,
-                "approver"
-            );
-        }
-        for reader in &readers {
-            tracing::info!(
-                name = %reader.name,
-                fingerprint = %reader.key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
-                "reader"
-            );
-        }
+        log_access(&approvers, &readers);
         tracing::info!(decisions = ?config.decisions, "decisions");
         if platform.unlock.is_some() {
             tracing::info!("keystore unlock configured (used by the sealed start, M5)");
@@ -434,18 +387,95 @@ fn run(path: &Path) -> anyhow::Result<()> {
             mirrors,
             Duration::from_secs(config.mirrors.sync_every.seconds()),
         );
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("stopping");
-                Ok(())
-            }
-            Some(result) = servers.join_next() => match result {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(anyhow::anyhow!("a listener failed: {e}")),
-                Err(e) => Err(anyhow::anyhow!("a listener stopped: {e}")),
-            },
-        }
+        until_stopped(&mut servers).await
     })
+}
+
+/// The approval service, on the state directory's store and audit log.
+fn start_service(
+    config: &Config,
+    policy: PolicyConfig,
+    approvers: &[AllowedSigner],
+    authority: CertificateAuthority,
+    platform: &platform::Platform,
+    signer: Arc<dyn writ_signer::Signer>,
+) -> anyhow::Result<Arc<Service>> {
+    let store = Store::open(&config.state_dir.join("leases.db"))?;
+    let audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
+    Ok(Service::new(
+        ServiceConfig {
+            policy,
+            approvers: approvers.to_vec(),
+            decisions: config.decisions,
+            max_pending: config.max_pending,
+            submissions: config.submissions.limits(),
+        },
+        authority,
+        store,
+        audit,
+        ServicePlatform {
+            notifier: platform.notifier.clone(),
+            signer,
+            watcher: platform.watcher.clone(),
+            clock: Arc::new(SystemClock),
+        },
+    )?)
+}
+
+/// The mirrors' configuration, from `writd.yaml`'s `mirrors` and the files it names.
+fn mirror_config(
+    config: &Config,
+    root: std::path::PathBuf,
+    pinned: PinnedHosts,
+    ca_certs: Option<String>,
+) -> anyhow::Result<MirrorConfig> {
+    Ok(MirrorConfig {
+        root,
+        run_dir: config.state_dir.join("mirror"),
+        relay: std::env::current_exe()?,
+        git: config.mirrors.git.clone(),
+        ssh: config.mirrors.ssh.clone(),
+        pinned,
+        ca_certs,
+        fresh_for: Duration::from_secs(config.mirrors.fresh_for.seconds()),
+        timeout: Duration::from_secs(config.mirrors.timeout.seconds()),
+        max_fetch_bytes: config.mirrors.max_fetch.bytes(),
+    })
+}
+
+/// Who may sign and who may read, in the log at startup.
+fn log_access(approvers: &[AllowedSigner], readers: &[Reader]) {
+    for approver in approvers {
+        tracing::info!(
+            fingerprint = %approver.fingerprint(),
+            principals = %approver.principals,
+            "approver"
+        );
+    }
+    for reader in readers {
+        tracing::info!(
+            name = %reader.name,
+            fingerprint = %reader.key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+            "reader"
+        );
+    }
+}
+
+/// Runs until Ctrl-C, or until a listener ends (an error: the daemon stops with it).
+async fn until_stopped(
+    servers: &mut tokio::task::JoinSet<writ_gateway::Result<()>>,
+) -> anyhow::Result<()> {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("stopping");
+            Ok(())
+        }
+        Some(result) = servers.join_next() => match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(anyhow::anyhow!("a listener failed: {e}")),
+            Err(e) => Err(anyhow::anyhow!("a listener stopped: {e}")),
+        },
+    }
 }
 
 #[cfg(test)]

@@ -176,6 +176,25 @@ async fn tunnel(mut client: UnixStream, shared: Arc<Shared>) {
 /// Reads git's greeting and request, connects to upstream if it asks for upstream, and
 /// answers. An error ends the connection.
 async fn handshake(client: &mut UnixStream, shared: &Shared) -> std::io::Result<TcpStream> {
+    greet(client).await?;
+    let (command, asked, port) = read_request(client).await?;
+    if command != CONNECT {
+        reply(client, COMMAND_NOT_SUPPORTED).await?;
+        return Err(std::io::Error::other("not a CONNECT"));
+    }
+    if port != shared.port || !asked.is(shared) {
+        tracing::warn!(
+            upstream = %shared.host,
+            "git asked the upstream proxy for another destination: refused"
+        );
+        reply(client, NOT_ALLOWED).await?;
+        return Err(std::io::Error::other("not upstream"));
+    }
+    connect(client, shared).await
+}
+
+/// The greeting: SOCKS5, and no authentication among the methods git offers.
+async fn greet(client: &mut UnixStream) -> std::io::Result<()> {
     let mut greeting = [0u8; 2];
     client.read_exact(&mut greeting).await?;
     let [version, count] = greeting;
@@ -188,8 +207,12 @@ async fn handshake(client: &mut UnixStream, shared: &Shared) -> std::io::Result<
         client.write_all(&[VERSION, NO_ACCEPTABLE_METHOD]).await?;
         return Err(std::io::Error::other("no acceptable method"));
     }
-    client.write_all(&[VERSION, NO_AUTHENTICATION]).await?;
+    client.write_all(&[VERSION, NO_AUTHENTICATION]).await
+}
 
+/// The request: its command, the destination and the port (an unknown address type is
+/// answered and refused).
+async fn read_request(client: &mut UnixStream) -> std::io::Result<(u8, Asked, u16)> {
     let mut head = [0u8; 4];
     client.read_exact(&mut head).await?;
     let [version, command, _reserved, kind] = head;
@@ -221,19 +244,12 @@ async fn handshake(client: &mut UnixStream, shared: &Shared) -> std::io::Result<
     };
     let mut port = [0u8; 2];
     client.read_exact(&mut port).await?;
-    let port = u16::from_be_bytes(port);
-    if command != CONNECT {
-        reply(client, COMMAND_NOT_SUPPORTED).await?;
-        return Err(std::io::Error::other("not a CONNECT"));
-    }
-    if port != shared.port || !asked.is(shared) {
-        tracing::warn!(
-            upstream = %shared.host,
-            "git asked the upstream proxy for another destination: refused"
-        );
-        reply(client, NOT_ALLOWED).await?;
-        return Err(std::io::Error::other("not upstream"));
-    }
+    Ok((command, asked, u16::from_be_bytes(port)))
+}
+
+/// Connects to upstream (by the host the URL names, never what git sent) within
+/// [`CONNECT_DEADLINE`], and tells git how it went.
+async fn connect(client: &mut UnixStream, shared: &Shared) -> std::io::Result<TcpStream> {
     let connected = tokio::time::timeout(
         CONNECT_DEADLINE,
         TcpStream::connect((shared.host.as_str(), shared.port)),

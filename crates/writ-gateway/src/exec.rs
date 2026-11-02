@@ -10,6 +10,7 @@ use russh::Channel;
 use russh::server::Msg;
 use writ_approval::GatewayDenial;
 use writ_core::caller::CallerFacts;
+use writ_core::lease::Lease;
 use writ_core::names::RepoName;
 use writ_core::policy::CertIdentity;
 
@@ -97,7 +98,7 @@ pub(crate) async fn run(gateway: Gateway, request: LeaseRequest, channel: Channe
     }
 }
 
-/// `git-upload-pack` or `git-receive-pack` on a repo of the lease.
+/// `git-upload-pack` or `git-receive-pack` on a repo of the lease: authorized, prepared, run.
 async fn run_git(
     refusing: &Refusing<'_>,
     command: &LeaseCommand,
@@ -106,123 +107,167 @@ async fn run_git(
     channel: Channel<Msg>,
     connection: u64,
 ) {
-    let gateway = refusing.gateway;
-    let lease = match command {
-        // A fetch: the policy's decision and an operation of the rate window (the service
-        // logs the outcome).
-        LeaseCommand::UploadPack { .. } => {
-            match gateway.fetch(refusing.cert, refusing.facts, repo).await {
-                Ok(lease) => lease,
-                Err(denial) => {
-                    refuse(channel, denial.to_string()).await;
-                    // A violation may have revoked the lease: its other sessions go now.
-                    if gateway.service().is_revoked(refusing.cert.serial) {
-                        gateway.drop_sessions_except(refusing.cert.serial, connection);
-                    }
-                    return;
-                }
-            }
-        }
-        // A push: the lease may have ended since the connection was authenticated, check it
-        // again (only a refusal is logged: the push is decided whole, and logged once, at the
-        // pre-receive hook).
-        _ => match gateway.may_push(refusing.cert, refusing.facts, repo).await {
-            Ok(lease) => lease,
-            Err(denial) => {
-                refuse(channel, denial.to_string()).await;
-                if gateway.service().is_revoked(refusing.cert.serial) {
-                    gateway.drop_sessions_except(refusing.cert.serial, connection);
-                }
-                return;
-            }
-        },
+    let ready = match authorize(refusing, command, repo, connection).await {
+        Ok(lease) => prepare(refusing, command, repo, connection)
+            .await
+            .map(|prepared| (lease, prepared)),
+        Err(refusal) => Err(refusal),
     };
+    match ready {
+        Ok((lease, prepared)) => {
+            let max_push_size = lease.ticket.limits.max_push_size.bytes();
+            run_prepared(
+                refusing,
+                repo,
+                git_protocol,
+                max_push_size,
+                prepared,
+                channel,
+            )
+            .await;
+        }
+        Err(refusal) => {
+            let reason = match refusal {
+                Refusal::Logged(reason) => reason,
+                Refusal::Unlogged(reason) => refusing.deny(reason, Some(repo)).await,
+            };
+            refuse(channel, reason).await;
+        }
+    }
+}
+
+/// Why a git command is refused before git runs, for the agent: logged already (a lease
+/// decision the service logged), or to log now.
+enum Refusal {
+    Logged(String),
+    Unlogged(String),
+}
+
+/// The lease, checked for the command: a fetch is the policy's decision and an operation of
+/// the rate window (the service logs the outcome); a push is checked again for its operation
+/// (only a refusal is logged: the push is decided whole, and logged once, at the pre-receive
+/// hook). A violation may have revoked the lease: its other sessions go now. Then the repo
+/// must be the lease's.
+async fn authorize(
+    refusing: &Refusing<'_>,
+    command: &LeaseCommand,
+    repo: &RepoName,
+    connection: u64,
+) -> Result<Lease, Refusal> {
+    let gateway = refusing.gateway;
+    let decided = match command {
+        LeaseCommand::UploadPack { .. } => gateway.fetch(refusing.cert, refusing.facts, repo).await,
+        _ => gateway.may_push(refusing.cert, refusing.facts, repo).await,
+    };
+    let lease = decided.map_err(|denial| {
+        if gateway.service().is_revoked(refusing.cert.serial) {
+            gateway.drop_sessions_except(refusing.cert.serial, connection);
+        }
+        Refusal::Logged(denial.to_string())
+    })?;
     if !lease.ticket.scope.repos.contains(repo) {
-        let reason = format!(
+        return Err(Refusal::Unlogged(format!(
             "outside ticket {}: repo {repo} is not in the lease",
             lease.id
-        );
-        return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
+        )));
     }
-    let Some(path) = git::repo_path(gateway, repo) else {
-        let reason = refusing
-            .deny(format!("unknown repo {repo}"), Some(repo))
-            .await;
-        return refuse(channel, reason).await;
-    };
-    // A fetch serves what upstream has, and a push starts from it: the mirror is synced first
-    // unless it is fresh. A sync that fails refuses the command (fail closed), with its reason.
+    Ok(lease)
+}
+
+/// What git runs on: the repo's mirror, and for a push its registration.
+struct Prepared<'a> {
+    path: std::path::PathBuf,
+    push: Option<git::Push<'a>>,
+}
+
+/// The mirror, synced first unless it is fresh (a fetch serves what upstream has, and a push
+/// starts from it; a sync that fails refuses the command with its reason, fail closed); a
+/// push registered, and refused without its hook in place (git would take it with no check
+/// at all).
+async fn prepare<'a>(
+    refusing: &Refusing<'a>,
+    command: &LeaseCommand,
+    repo: &RepoName,
+    connection: u64,
+) -> Result<Prepared<'a>, Refusal> {
+    let gateway = refusing.gateway;
+    let path = git::repo_path(gateway, repo)
+        .ok_or_else(|| Refusal::Unlogged(format!("unknown repo {repo}")))?;
     if let Err(e) = gateway.shared.config.mirrors.sync_if_stale(repo).await {
-        let reason = format!("cannot sync from upstream: {e}");
-        return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
+        return Err(Refusal::Unlogged(format!("cannot sync from upstream: {e}")));
     }
-    let push = match command {
-        LeaseCommand::ReceivePack { .. } => {
-            let context = PushContext {
-                cert: refusing.cert.clone(),
-                repo: repo.clone(),
-                caller: refusing.facts.clone(),
-                connection,
-                held: std::sync::Arc::new(std::sync::Mutex::new(None)),
-                decided: std::sync::Arc::default(),
-            };
-            match git::Push::register(gateway, context) {
-                Ok(push) => Some(push),
-                Err(reason) => {
-                    return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
-                }
-            }
-        }
-        _ => None,
+    let LeaseCommand::ReceivePack { .. } = command else {
+        return Ok(Prepared { path, push: None });
     };
-    // A push runs only with its hook in place: without it, git would take the push with no
-    // check at all (fail closed, whatever happened to the hooks directory).
-    if let Some(push) = &push
-        && !push.hook_in_place()
-    {
+    let context = PushContext {
+        cert: refusing.cert.clone(),
+        repo: repo.clone(),
+        caller: refusing.facts.clone(),
+        connection,
+        held: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        decided: std::sync::Arc::default(),
+    };
+    let push = git::Push::register(gateway, context).map_err(Refusal::Unlogged)?;
+    if !push.hook_in_place() {
         tracing::error!("the pre-receive hook is missing: pushes are refused");
-        let reason = "internal error: the push hook is missing".to_owned();
-        return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
+        return Err(Refusal::Unlogged(
+            "internal error: the push hook is missing".to_owned(),
+        ));
     }
+    Ok(Prepared {
+        path,
+        push: Some(push),
+    })
+}
+
+/// Runs git bridged to the channel. A push's mirror is released when git exits; a push git
+/// refused before its hook ran is logged, and the mirror marked stale.
+async fn run_prepared(
+    refusing: &Refusing<'_>,
+    repo: &RepoName,
+    git_protocol: Option<String>,
+    max_push_size: u64,
+    prepared: Prepared<'_>,
+    channel: Channel<Msg>,
+) {
+    let gateway = refusing.gateway;
+    let Prepared { path, push } = prepared;
     let cmd = match &push {
-        Some(push) => push.receive_pack(
-            &path,
-            git_protocol,
-            lease.ticket.limits.max_push_size.bytes(),
-        ),
+        Some(push) => push.receive_pack(&path, git_protocol, max_push_size),
         None => git::upload_pack(gateway, &path, git_protocol),
     };
-    match git::spawn(cmd) {
-        Ok(child) => {
-            let bridged = git::bridge(child, channel, || {
-                if let Some(push) = &push {
-                    push.release_mirror();
-                }
-            })
-            .await;
-            // The client sent ref updates (more than the flush of a push with nothing to
-            // send) and the hook never saw them: git refused the push before its checks. Its
-            // reason went to the agent; the refusal goes to the audit log.
-            if let Some(push) = &push
-                && bridged.from_client > FLUSH_ONLY
-                && !push.decided()
-            {
-                let reason = format!(
-                    "the push ended before its checks (exit {}): git refused it (a pack too \
-                     large, an object fsck refuses), or the client went away",
-                    bridged.code
-                );
-                refusing.deny(reason, Some(repo)).await;
-                // Whatever git did without a decision, the next fetch or push syncs the mirror
-                // first: a ref upstream doesn't have is pruned.
-                if let Ok(mut guard) = gateway.shared.config.mirrors.lock(repo).await {
-                    guard.mark_stale();
-                }
-            }
-        }
+    let child = match git::spawn(cmd) {
+        Ok(child) => child,
         Err(reason) => {
             tracing::error!(%reason, "cannot run git");
-            refuse(channel, refusing.deny(reason, Some(repo)).await).await;
+            return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
+        }
+    };
+    let bridged = git::bridge(child, channel, || {
+        if let Some(push) = &push {
+            push.release_mirror();
+        }
+    })
+    .await;
+    // The client sent ref updates (more than the flush of a push with nothing to send) and
+    // the hook never saw them: git refused the push before its checks. Its reason went to the
+    // agent; the refusal goes to the audit log.
+    if let Some(push) = &push
+        && bridged.from_client > FLUSH_ONLY
+        && !push.decided()
+    {
+        let reason = format!(
+            "the push ended before its checks (exit {}): git refused it (a pack too large, an \
+             object fsck refuses), or the client went away",
+            bridged.code
+        );
+        refusing.deny(reason, Some(repo)).await;
+        // Whatever git did without a decision, the next fetch or push syncs the mirror first:
+        // a ref upstream doesn't have is pruned. A mirror busy past its deadline is synced
+        // anyway once `fresh_for` has passed.
+        match gateway.shared.config.mirrors.lock(repo).await {
+            Ok(mut guard) => guard.mark_stale(),
+            Err(e) => tracing::warn!(%repo, error = %e, "cannot mark the mirror stale"),
         }
     }
     // Dropping the push unregisters its token.

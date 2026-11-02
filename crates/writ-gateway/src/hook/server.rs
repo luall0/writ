@@ -79,15 +79,6 @@ impl Refused {
             logged: false,
         }
     }
-
-    fn of(reason: impl Into<String>, context: PushContext, refs: Vec<String>) -> Self {
-        Self {
-            reason: reason.into(),
-            context: Some(Box::new(context)),
-            refs,
-            logged: false,
-        }
-    }
 }
 
 async fn answer(gateway: Gateway, mut stream: UnixStream) {
@@ -162,57 +153,74 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         .decided
         .store(true, std::sync::atomic::Ordering::Release);
     let refs: Vec<String> = updates.iter().map(|u| u.name.to_string()).collect();
-    if updates.is_empty() || updates.len() > MAX_UPDATES {
-        let reason = format!("a push updates from 1 to {MAX_UPDATES} refs");
-        return Err(Refused::of(reason, context, refs));
+    match decide_push(gateway, &context, quarantine, &updates).await {
+        Ok(()) => {
+            tracing::info!(
+                lease = %context.cert.key_id,
+                repo = %context.repo,
+                refs = refs.len(),
+                "push accepted upstream"
+            );
+            Ok(())
+        }
+        Err(denied) => Err(Refused {
+            reason: denied.reason,
+            context: Some(Box::new(context)),
+            refs,
+            logged: denied.logged,
+        }),
     }
-    // The lease again, now that the pack is in: it may have been revoked or have expired
-    // since the push started. Only a refusal is logged here.
-    let lease = match gateway
+}
+
+/// Why a push known to the gateway is refused: the reason, and whether the service logged it
+/// already (a lease decision).
+struct Denied {
+    reason: String,
+    logged: bool,
+}
+
+impl Denied {
+    /// To be logged as the hook's refusal.
+    fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            logged: false,
+        }
+    }
+
+    /// A lease decision, logged by the service.
+    fn logged(denial: &writ_core::policy::Denial) -> Self {
+        Self {
+            reason: denial.to_string(),
+            logged: true,
+        }
+    }
+}
+
+/// The push decided, `docs/flows.md` § 3: the lease again now that the pack is in (it may have
+/// been revoked or have expired since the push started; only a refusal is logged here), the
+/// mirror held and the push read from the quarantine, `Service::push`, then upstream.
+async fn decide_push(
+    gateway: &Gateway,
+    context: &PushContext,
+    quarantine: Option<&str>,
+    updates: &[RefUpdate],
+) -> Result<(), Denied> {
+    if updates.is_empty() || updates.len() > MAX_UPDATES {
+        return Err(Denied::new(format!(
+            "a push updates from 1 to {MAX_UPDATES} refs"
+        )));
+    }
+    let lease = gateway
         .may_push(&context.cert, &context.caller, &context.repo)
         .await
-    {
-        Ok(lease) => lease,
-        Err(denial) => {
-            let mut refused = Refused::of(denial.to_string(), context, refs);
-            refused.logged = true;
-            return Err(refused);
-        }
-    };
-    // The mirror, held until receive-pack exits (the push's `Push` drops it).
-    let guard = match gateway.shared.config.mirrors.lock(&context.repo).await {
-        Ok(guard) => guard,
-        Err(e) => return Err(Refused::of(e.to_string(), context, refs)),
-    };
-    let mirror = guard.path().to_owned();
-    let held = match context.held.lock() {
-        Ok(mut held) => {
-            *held = Some(guard);
-            true
-        }
-        Err(_) => false,
-    };
-    if !held {
-        return Err(Refused::of("internal error", context, refs));
-    }
-    let Some(entry) = gateway.service().policy().repo(&context.repo) else {
-        let reason = format!("repo {} is not in the registry", context.repo);
-        return Err(Refused::of(reason, context, refs));
-    };
-    let quarantine = match Quarantine::open(
-        gateway.shared.config.mirrors.git(),
-        &mirror,
-        quarantine.map(std::path::Path::new),
-        entry.object_format,
-    ) {
-        Ok(quarantine) => quarantine,
-        Err(e) => return Err(Refused::of(e.to_string(), context, refs)),
-    };
+        .map_err(|denial| Denied::logged(&denial))?;
+    let quarantine = hold_mirror(gateway, context, quarantine).await?;
     // Bounded as a whole, the mirror held: each git it runs is killed with its group when the
     // deadline drops it.
     let read = tokio::time::timeout(
         writ_mirror::LOCAL_WORK_DEADLINE,
-        read_push(gateway, &quarantine, &updates, &lease, &context.repo),
+        read_push(gateway, &quarantine, updates, &lease, &context.repo),
     )
     .await
     .unwrap_or_else(|_| {
@@ -221,10 +229,7 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
             writ_mirror::LOCAL_WORK_DEADLINE.as_secs()
         ))
     });
-    let (updates, commits, pack_size) = match read {
-        Ok(read) => read,
-        Err(reason) => return Err(Refused::of(reason, context, refs)),
-    };
+    let (updates, commits, pack_size) = read.map_err(Denied::new)?;
     let pushing = Pushing {
         cert: context.cert.clone(),
         caller: context.caller.clone(),
@@ -238,20 +243,42 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         if gateway.service().is_revoked(context.cert.serial) {
             gateway.drop_sessions_except(context.cert.serial, context.connection);
         }
-        let mut refused = Refused::of(denial.to_string(), context, refs);
-        refused.logged = true;
-        return Err(refused);
+        return Err(Denied::logged(&denial));
     }
-    if let Err(refused) = go_upstream(gateway, &context, &quarantine, &pushing.updates).await {
-        return Err(Refused { refs, ..refused });
-    }
-    tracing::info!(
-        lease = %context.cert.key_id,
-        repo = %context.repo,
-        refs = refs.len(),
-        "push accepted upstream"
-    );
-    Ok(())
+    go_upstream(gateway, context, &quarantine, &pushing.updates).await
+}
+
+/// The repo's mirror, held for the push until receive-pack exits (the push's `Push` releases
+/// it), and the push's quarantine in it.
+async fn hold_mirror(
+    gateway: &Gateway,
+    context: &PushContext,
+    quarantine: Option<&str>,
+) -> Result<Quarantine, Denied> {
+    let guard = gateway
+        .shared
+        .config
+        .mirrors
+        .lock(&context.repo)
+        .await
+        .map_err(|e| Denied::new(e.to_string()))?;
+    let mirror = guard.path().to_owned();
+    *context
+        .held
+        .lock()
+        .map_err(|_| Denied::new("internal error"))? = Some(guard);
+    let entry = gateway
+        .service()
+        .policy()
+        .repo(&context.repo)
+        .ok_or_else(|| Denied::new(format!("repo {} is not in the registry", context.repo)))?;
+    Quarantine::open(
+        gateway.shared.config.mirrors.git(),
+        &mirror,
+        quarantine.map(std::path::Path::new),
+        entry.object_format,
+    )
+    .map_err(|e| Denied::new(e.to_string()))
 }
 
 /// The accepted push, upstream, before git moves the mirror's refs: the lease looked at once
@@ -264,14 +291,12 @@ async fn go_upstream(
     context: &PushContext,
     quarantine: &Quarantine,
     updates: &[policy::RefUpdate],
-) -> Result<(), Refused> {
+) -> Result<(), Denied> {
     if let Err(denial) = gateway
         .may_push(&context.cert, &context.caller, &context.repo)
         .await
     {
-        let mut refused = Refused::of(denial.to_string(), context.clone(), Vec::new());
-        refused.logged = true;
-        return Err(refused);
+        return Err(Denied::logged(&denial));
     }
     let upstream: Vec<writ_mirror::UpstreamUpdate> = updates
         .iter()
@@ -284,7 +309,7 @@ async fn go_upstream(
     // The guard leaves its slot for the push (no lock is held across an await), and goes back.
     let taken = context.held.lock().ok().and_then(|mut held| held.take());
     let Some(mut guard) = taken else {
-        return Err(Refused::of("internal error", context.clone(), Vec::new()));
+        return Err(Denied::new("internal error"));
     };
     let pushed = guard.push_upstream(quarantine, &upstream).await;
     guard.mark_stale();
@@ -293,7 +318,7 @@ async fn go_upstream(
     if let Ok(mut held) = context.held.lock() {
         *held = Some(guard);
     }
-    pushed.map_err(|e| Refused::of(e.to_string(), context.clone(), Vec::new()))
+    pushed.map_err(|e| Denied::new(e.to_string()))
 }
 
 /// The facts of a push, read from the quarantine: the ref updates as the policy sees them,
@@ -307,24 +332,46 @@ async fn read_push(
     lease: &Lease,
     repo: &RepoName,
 ) -> Result<PushFacts, String> {
-    let zero = |id: &str| id.bytes().all(|b| b == b'0');
-    let commit_id = |id: &str| -> Result<Option<CommitId>, String> {
-        if zero(id) {
-            return Ok(None);
-        }
-        id.parse()
-            .map(Some)
-            .map_err(|_| format!("{id} is not an object id"))
-    };
     let tips: Vec<String> = updates
         .iter()
-        .filter(|u| !zero(&u.new))
+        .filter(|u| !is_zero(&u.new))
         .map(|u| u.new.clone())
         .collect();
     let kinds = quarantine.kinds(&tips).await.map_err(|e| e.to_string())?;
     if let Some((tip, kind)) = tips.iter().zip(&kinds).find(|(_, kind)| *kind != "commit") {
         return Err(format!("{tip} is a {kind}, not a commit"));
     }
+    let facts = read_updates(quarantine, updates).await?;
+    let commits = read_commits(gateway, quarantine, &tips, lease, repo).await?;
+    let size_of = quarantine.clone();
+    let pack_size = tokio::task::spawn_blocking(move || size_of.size())
+        .await
+        .map_err(|_| "internal error".to_owned())?
+        .map_err(|e| e.to_string())?;
+    Ok((facts, commits, pack_size))
+}
+
+/// Whether `id` is git's null id (a ref created, or deleted).
+fn is_zero(id: &str) -> bool {
+    id.bytes().all(|b| b == b'0')
+}
+
+/// An id from git's input; `None` for the null id.
+fn commit_id(id: &str) -> Result<Option<CommitId>, String> {
+    if is_zero(id) {
+        return Ok(None);
+    }
+    id.parse()
+        .map(Some)
+        .map_err(|_| format!("{id} is not an object id"))
+}
+
+/// Each ref update as the policy sees it: whether it moves forward, and for a new ref whether
+/// the mirror has one with the same name ignoring case.
+async fn read_updates(
+    quarantine: &Quarantine,
+    updates: &[RefUpdate],
+) -> Result<Vec<policy::RefUpdate>, String> {
     let mut facts = Vec::with_capacity(updates.len());
     for update in updates {
         let (old, new) = (commit_id(&update.old)?, commit_id(&update.new)?);
@@ -350,19 +397,30 @@ async fn read_push(
             case_twin,
         });
     }
+    Ok(facts)
+}
+
+/// The commits the push brings (at most the lease's `max_signatures`, and
+/// [`MAX_PUSH_COMMITS`]), each with the digest of the paths it touches when the ledger holds
+/// it for this lease and repo with its paths: the others are decided without them (refused,
+/// or nothing to compare), so they are never walked.
+async fn read_commits(
+    gateway: &Gateway,
+    quarantine: &Quarantine,
+    tips: &[String],
+    lease: &Lease,
+    repo: &RepoName,
+) -> Result<Vec<(CommitId, Option<String>)>, String> {
     let max = usize::try_from(lease.ticket.limits.max_signatures)
         .unwrap_or(usize::MAX)
         .min(MAX_PUSH_COMMITS);
     let new_commits = quarantine
-        .new_commits(&tips, max)
+        .new_commits(tips, max)
         .await
-        .map_err(|e| format!("{e}: more than lease {} signed", lease.id))?;
-    let new_commits = new_commits
+        .map_err(|e| format!("{e}: more than lease {} signed", lease.id))?
         .iter()
         .map(|id| commit_id(id)?.ok_or_else(|| "a null commit id".to_owned()))
         .collect::<Result<Vec<CommitId>, String>>()?;
-    // Paths are walked only for the commits the ledger holds for this lease and repo with
-    // their paths: the others are decided without them (refused, or nothing to compare).
     let to_check = gateway
         .paths_to_check(&lease.id, repo, new_commits.clone())
         .await?;
@@ -378,12 +436,7 @@ async fn read_push(
         };
         commits.push((id, paths));
     }
-    let size_of = quarantine.clone();
-    let pack_size = tokio::task::spawn_blocking(move || size_of.size())
-        .await
-        .map_err(|_| "internal error".to_owned())?
-        .map_err(|e| e.to_string())?;
-    Ok((facts, commits, pack_size))
+    Ok(commits)
 }
 
 /// Writes the refusal to the audit log (event `push`, denied), off the async threads.

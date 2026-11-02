@@ -6,16 +6,18 @@ through.
 
 ## What it does
 
-- **git** (`git`): the daemon's `git` — a clean environment, no system or global config, no
+- **git** (`git`): the daemon's `git` (`mirrors.git`, an absolute path) — a clean environment, no system or global config, no
   prompt, no transport but the one an upstream operation allows (`ssh` or `https`), and the
   checks Writ relies on stated explicitly
   (`fsckObjects` everywhere, `.git`, `.`, `..`, empty and absolute tree entries at error level,
   packs kept whole, no submodule, hook, maintenance or credential helper). The gateway runs
   `upload-pack` and `receive-pack` through it.
-- **Mirrors** (`Mirrors`): created by the daemon in the repo's object format with reftable
-  refs (or checked to be exactly that), one lock per mirror, synced with `git fetch --atomic
-  --prune` of upstream's branches and tags only; fresh for `fresh_for`, at most 4 syncs at
-  once; a failed sync leaves the refs as they were, its partial pack removed, the mirror stale.
+- **Mirrors** (`Mirrors`, `mirror/open.rs`, `sync.rs`, `push.rs`, `access.rs`,
+  `classify.rs`): created by the daemon in the repo's object format with reftable refs (or
+  checked to be exactly that), one lock per mirror (waited on with a deadline: busy past it),
+  synced with `git fetch --atomic --prune` of upstream's branches and tags only; fresh for
+  `fresh_for`, at most 4 syncs at once; a failed sync leaves the refs as they were, its
+  partial pack removed, the mirror stale.
 - **Upstream** (`upstream`, `known_hosts`, `agent`, `relay`): `ssh://` URLs read strictly; the
   system's OpenSSH with every option stated (`-F /dev/null`), host keys pinned by the operator
   (no wildcard, hashed name or marker); the credential served for one operation by an
@@ -28,7 +30,8 @@ through.
   (`writd upstream-credential`, git's helper: never a command line, environment, URL or
   file); git reaching upstream only through a one-operation SOCKS5 proxy on a Unix socket that
   connects only to the registry's host and port and caps what upstream sends; the
-  certificate verified (the system's CAs or `mirrors.ca_certs`), no redirect, no other
+  certificate verified (the system's CAs, or `mirrors.ca_certs` alone: an empty CA directory
+  beside them), no redirect, no other
   helper, cookie, header or `.netrc`; the token taken out of whatever upstream says.
 
 Tested with the real `git` and `ssh` in `crates/writ-integration/tests/mirror_sync.rs`
