@@ -19,7 +19,7 @@ use tokio::net::{UnixListener, UnixStream};
 use writ_approval::{EventKind, GatewayDenial, Pushing};
 use writ_core::caller::CallerFacts;
 use writ_core::lease::Lease;
-use writ_core::names::CommitId;
+use writ_core::names::{CommitId, RepoName};
 use writ_core::policy;
 use writ_mirror::quarantine::Quarantine;
 use writ_platform::transport::accept_retrying;
@@ -211,7 +211,7 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
     // deadline drops it.
     let read = tokio::time::timeout(
         writ_mirror::LOCAL_WORK_DEADLINE,
-        read_push(&quarantine, &updates, &lease),
+        read_push(gateway, &quarantine, &updates, &lease, &context.repo),
     )
     .await
     .unwrap_or_else(|_| {
@@ -300,9 +300,11 @@ async fn go_upstream(
 type PushFacts = (Vec<policy::RefUpdate>, Vec<(CommitId, Option<String>)>, u64);
 
 async fn read_push(
+    gateway: &Gateway,
     quarantine: &Quarantine,
     updates: &[RefUpdate],
     lease: &Lease,
+    repo: &RepoName,
 ) -> Result<PushFacts, String> {
     let zero = |id: &str| id.bytes().all(|b| b == b'0');
     let commit_id = |id: &str| -> Result<Option<CommitId>, String> {
@@ -354,13 +356,26 @@ async fn read_push(
         .new_commits(&tips, max)
         .await
         .map_err(|e| format!("{e}: more than lease {} signed", lease.id))?;
+    let new_commits = new_commits
+        .iter()
+        .map(|id| commit_id(id)?.ok_or_else(|| "a null commit id".to_owned()))
+        .collect::<Result<Vec<CommitId>, String>>()?;
+    // Paths are walked only for the commits the ledger holds for this lease and repo with
+    // their paths: the others are decided without them (refused, or nothing to compare).
+    let to_check = gateway
+        .paths_to_check(&lease.id, repo, new_commits.clone())
+        .await?;
     let mut commits = Vec::with_capacity(new_commits.len());
     for id in new_commits {
-        let paths = quarantine
-            .touched_paths(&id)
-            .await
-            .map_err(|e| e.to_string())?;
-        commits.push((commit_id(&id)?.ok_or("a null commit id")?, paths));
+        let paths = if to_check.contains(&id) {
+            quarantine
+                .touched_paths(id.as_str())
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            None
+        };
+        commits.push((id, paths));
     }
     let size_of = quarantine.clone();
     let pack_size = tokio::task::spawn_blocking(move || size_of.size())

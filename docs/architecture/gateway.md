@@ -123,9 +123,12 @@ in part. Any failure to reach the daemon refuses the push. The daemon then:
    - for each update, whether it is a fast-forward (`merge-base --is-ancestor`), and for a new
      ref whether the mirror has one with the same name ignoring case;
    - the pack's size on disk;
-   - for each new commit, the paths it touches, computed again with `writ_git::paths` from
-     these objects (the commit without its signature, its first parent, the trees that
-     differ; at most 16 MiB of objects), as a digest;
+   - for each new commit the ledger holds for this lease and repo with its paths
+     (`Service::paths_to_check`, a read), the paths it touches, computed again with
+     `writ_git::paths` from these objects (the commit without its signature, its first
+     parent, the trees that differ; at most 16 MiB of objects), as a digest. The others are
+     never walked: a commit nobody signed here is refused whatever it touches, and one
+     signed with its paths unknown has nothing to compare;
 4. decides with `Service::push`, under one lock: every new commit looked up in the ledger,
    `decide_push` (refs, protected refs, branches, force pushes and deletions, every commit
    signed under this lease for this repo with the same paths as at signing, size, count,

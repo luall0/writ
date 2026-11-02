@@ -4,10 +4,12 @@
 //! up in the ledger and decides with `decide_push`, and takes the push from the lease's
 //! count and rate, all under one lock. Nothing reaches upstream or the mirror before this.
 
+use std::collections::BTreeSet;
+
 use writ_core::caller::CallerFacts;
 use writ_core::config::PushMode;
 use writ_core::lease::Lease;
-use writ_core::names::{CommitId, RepoName};
+use writ_core::names::{CommitId, RepoName, TicketId};
 use writ_core::policy::{
     self, CertIdentity, Context, Denial, DenyCode, LedgerRef, PushRequest, PushedCommit, RefUpdate,
 };
@@ -15,6 +17,7 @@ use writ_core::ticket::Operation;
 use writ_store::{AuditEvent, Counter, EventKind, Outcome};
 
 use super::{Inner, Service, cert_event, internal};
+use crate::ServiceError;
 
 /// A push, as the gateway read it from git's quarantine.
 #[derive(Debug, Clone)]
@@ -141,6 +144,32 @@ impl Service {
             return Err(Denial::new(DenyCode::Invalid, e.to_string()));
         }
         Ok(lease)
+    }
+
+    /// The new commits of a push whose paths the gateway must compute again: those the
+    /// ledger holds for this lease and repo with the paths signing saw. The others need none,
+    /// so a push of commits nobody signed costs no walk of their trees: `decide_push` refuses
+    /// a commit with no entry here whatever its paths, and has nothing to compare for one
+    /// signed with its paths unknown. A read under the state lock (no sweep, nothing logged);
+    /// [`Service::push`] decides on everything again.
+    pub fn paths_to_check(
+        &self,
+        lease: &TicketId,
+        repo: &RepoName,
+        commits: &[CommitId],
+    ) -> Result<BTreeSet<CommitId>, ServiceError> {
+        let inner = self.lock()?;
+        let mut checked = BTreeSet::new();
+        for commit in commits {
+            let entries = inner.store.ledger_entries(commit).map_err(internal)?;
+            if entries
+                .iter()
+                .any(|e| &e.lease == lease && &e.repo == repo && e.paths_digest.is_some())
+            {
+                checked.insert(commit.clone());
+            }
+        }
+        Ok(checked)
     }
 
     /// The policy's view of a push: each new commit with every ledger entry for it.

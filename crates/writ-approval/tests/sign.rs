@@ -1140,3 +1140,42 @@ fn a_lease_amended_while_signing_discards_the_signature() {
     });
     assert!(h.ledger(&lease).is_empty());
 }
+
+#[test]
+fn a_push_s_paths_are_walked_only_for_commits_this_lease_signed_here_with_their_paths() {
+    let h = Harness::new();
+    let (lease, _) = h.lease(FEATURE);
+    let (other_lease, _) = h.lease(FEATURE);
+    let id = |c: char| -> writ_core::names::CommitId { c.to_string().repeat(40).parse().unwrap() };
+    let entry =
+        |commit: char, lease: &TicketId, repo: &str, paths: Option<&str>| writ_store::LedgerEntry {
+            commit: id(commit),
+            lease: lease.clone(),
+            repo: repo.parse().unwrap(),
+            key: "agent-ed25519-01".parse().unwrap(),
+            signed_at: writ_core::units::Timestamp::from_unix(i64::try_from(START).unwrap())
+                .unwrap(),
+            paths_digest: paths.map(str::to_owned),
+        };
+    let store = Store::open(&h.db).unwrap();
+    for e in [
+        entry('a', &lease, "omega-code", Some("digest")),
+        entry('b', &lease, "omega-code", None),
+        entry('c', &other_lease, "omega-code", Some("digest")),
+        entry('d', &lease, "homelab-scripts", Some("digest")),
+    ] {
+        store.ledger_append(&e).unwrap();
+    }
+    let commits: Vec<_> = "abcde".chars().map(id).collect();
+    let to_check = h
+        .service
+        .paths_to_check(&lease, &"omega-code".parse().unwrap(), &commits)
+        .unwrap();
+    // Only `a`: `b`'s paths were unknown at signing (nothing to compare), `c` is another
+    // lease's, `d` another repo's, `e` signed by nobody (all three refused whatever their
+    // paths).
+    assert_eq!(to_check, std::collections::BTreeSet::from([id('a')]));
+    // Nothing logged: a read.
+    assert!(h.events("push", "allowed").is_empty());
+    assert!(h.events("push", "denied").is_empty());
+}

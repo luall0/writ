@@ -257,6 +257,23 @@ impl Gateway {
             .unwrap_or_else(|_| Err(Denial::internal()))
     }
 
+    /// [`Service::paths_to_check`], off the async threads; any failure is an internal error.
+    async fn paths_to_check(
+        &self,
+        lease: &writ_core::names::TicketId,
+        repo: &writ_core::names::RepoName,
+        commits: Vec<writ_core::names::CommitId>,
+    ) -> std::result::Result<std::collections::BTreeSet<writ_core::names::CommitId>, String> {
+        let (service, lease, repo) = (self.service().clone(), lease.clone(), repo.clone());
+        tokio::task::spawn_blocking(move || service.paths_to_check(&lease, &repo, &commits))
+            .await
+            .map_err(|_| "internal error".to_owned())?
+            .map_err(|e| {
+                tracing::error!(error = %e, "cannot read the ledger for a push");
+                "internal error".to_owned()
+            })
+    }
+
     /// Logs a request the gateway turned away on its own ([`Service::gateway_denied`]), off
     /// the async threads.
     async fn log_denial(&self, denial: GatewayDenial, caller: CallerFacts) {
