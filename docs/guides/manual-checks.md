@@ -130,9 +130,12 @@ make github-check REPO=<you>/writ-throwaway EMAIL=<you+agent@example.org>  # and
 
 `tool/github-check.sh` sets a daemon up from nothing in a temporary directory (nothing in
 `dev/` changes), runs steps 2 to 8 with the commands below, prints each check as `ok` or
-`FAIL`, and removes what it made. You touch it twice: Touch ID for the ticket, and your
-GitHub SSH key for the clones and for the "upstream moves" commit, which it pushes from a
-second clone instead of the web editor. With [`gh`](https://cli.github.com/) installed and
+`FAIL`, and removes what it made, `agent/manual-check` on GitHub included. Your approval key
+signs once (the ticket); your GitHub SSH key does your side: the clone before `writ init`,
+reading GitHub's branches to compare, the "upstream moves" commit (pushed from a second clone
+instead of the web editor) and the branch's deletion. Each use of one of your keys is
+announced right before it happens (`[your GitHub key #n] why`, `[your approval key] why`) and
+listed in the summary, so a confirmation without such a line is not the script's. With [`gh`](https://cli.github.com/) installed and
 logged in it adds and removes the deploy key (and the signing key, for "Verified")
 itself; otherwise it prints each key and waits while you add it. `EMAIL` must be one of your
 account's verified emails: it becomes the lease's committer email. The steps by hand follow.

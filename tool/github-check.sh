@@ -9,13 +9,14 @@
 # does (its own writd.yaml, registry, keys, pins and reader), runs it, and drives the check's
 # steps 4 to 8 with the check's own commands, then removes everything it made:
 #
-# - your approval key signs the ticket (Touch ID, once): its public half is
-#   dev/data/client/approver.pub (step 1 of "Approving with Secretive"), or --approver-key;
-#   Secretive's agent, or WRIT_APPROVAL_AGENT;
+# - your approval key signs the ticket (once): its public half is
+#   dev/data/client/approver.pub (step 1 of the manual checks' approval check), or
+#   --approver-key; its agent is the development client's (dev/client.env), or
+#   WRIT_APPROVAL_AGENT;
 # - the daemon's deploy key is added to the repository with `gh` when it is installed and
 #   logged in (and removed at the end), or by you when the script asks;
 # - "upstream moves" is a commit pushed from a second clone with your own git access (your
-#   GitHub SSH key: it may ask for a touch), in place of the web editor;
+#   GitHub SSH key), in place of the web editor;
 # - with --email (one of your account's verified emails, e.g. you+agent@example.org) the
 #   lease's committer email is that address, and the script checks "Verified": unverified
 #   before the lease's signing key is on your account, verified after (`gh` adds the key, or
@@ -24,7 +25,14 @@
 #
 # Your own git and SSH are used only for what the operator does by hand in the check (clone,
 # the other contributor's push, reading the repository's branches); Writ itself never sees
-# them. Nothing in dev/ is changed. --keep leaves the temporary directory for a look.
+# them. Nothing in dev/ is changed. The branch it works on, agent/manual-check, is deleted on
+# GitHub at the end (and at the start, if a run that stopped early left it). --keep leaves the
+# temporary directory and the branch, for a look.
+#
+# Every use of one of your keys is announced on the terminal right before it happens
+# (`[your GitHub key #n] why`, `[your approval key] why`), and the summary lists them: a
+# confirmation your key's agent asks for with no such line just before it is not this
+# script's.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -84,8 +92,8 @@ ask() { # ask <prompt>: waits for Enter on the terminal
 has_gh() { command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; }
 
 # Prerequisites.
-[ -f "$APPROVER_KEY" ] || die "no approval public key at $APPROVER_KEY: do step 1 of \"Approving with Secretive\" in docs/guides/manual-checks.md, or pass --approver-key"
-[ -S "$AGENT_SOCKET" ] || die "no ssh-agent socket at $AGENT_SOCKET (Secretive's): set WRIT_APPROVAL_AGENT"
+[ -f "$APPROVER_KEY" ] || die "no approval public key at $APPROVER_KEY: do step 1 of the approval check in docs/guides/manual-checks.md, or pass --approver-key"
+[ -S "$AGENT_SOCKET" ] || die "no ssh-agent socket at $AGENT_SOCKET (dev/client.env's approval agent): set WRIT_APPROVAL_AGENT"
 if nc -z 127.0.0.1 2222 2>/dev/null || nc -z 127.0.0.1 2223 2>/dev/null || nc -z 127.0.0.1 8443 2>/dev/null; then
     die "a daemon already listens on 2222, 2223 or 8443 (make run?): stop it first"
 fi
@@ -94,15 +102,49 @@ fingerprint=$(ssh-keygen -lf "${TMPDIR:-/tmp}/github-check-host.$$" | awk '{prin
 rm -f "${TMPDIR:-/tmp}/github-check-host.$$"
 [ "$fingerprint" = "$GITHUB_FINGERPRINT" ] || die "GitHub's pinned key has fingerprint $fingerprint, not $GITHUB_FINGERPRINT"
 
-# Your access to the repository, and its main, before anything is built or started.
-if ! main=$(git ls-remote "git@github.com:$REPO.git" refs/heads/main 2>/dev/null); then
+# Every use of your own GitHub access goes through `mine`, which announces it (and why) on
+# the terminal just before it runs, numbered; the count is in the summary. A file, not a
+# variable: some uses run in a subshell, `$(...)`.
+KEY_LOG=$(mktemp "${TMPDIR:-/tmp}/github-check-keys.XXXXXX")
+trap 'rm -f "$KEY_LOG"' EXIT
+mine() { # mine <why> <command…>
+    why=$1
+    shift
+    echo "$why" >> "$KEY_LOG"
+    printf '  [your GitHub key #%s] %s\n' "$(wc -l < "$KEY_LOG" | tr -d ' ')" "$why" > /dev/tty
+    "$@"
+}
+
+# Your access to the repository, its main, and a branch an earlier run left, before anything
+# is built or started (one use of your key for the three).
+BRANCH=agent/manual-check
+if ! refs=$(mine "check that $REPO exists, has a main, and no leftover $BRANCH" \
+    git ls-remote "git@github.com:$REPO.git" refs/heads/main "refs/heads/$BRANCH" 2>/dev/null); then
     die "cannot reach git@github.com:$REPO.git with your own git and SSH: check the name and your access"
 fi
-[ -n "$main" ] || die "$REPO has no main: create it with a README"
+printf '%s\n' "$refs" | grep -q 'refs/heads/main$' || die "$REPO has no main: create it with a README"
+BRANCH_ON_GITHUB=0
+if printf '%s\n' "$refs" | grep -q "refs/heads/$BRANCH\$"; then
+    echo "$BRANCH is on GitHub already (a run that stopped early?): it is deleted first."
+    BRANCH_ON_GITHUB=1
+fi
+
+# Deletes the branch on GitHub (your key: the operator's cleanup), once.
+delete_branch() {
+    [ "$BRANCH_ON_GITHUB" = 1 ] || return 0
+    BRANCH_ON_GITHUB=0
+    if mine "delete $BRANCH on GitHub (cleanup)" \
+        git push -q "git@github.com:$REPO.git" --delete "$BRANCH" 2>/dev/null; then
+        echo "$BRANCH deleted on GitHub."
+    else
+        echo "Could not delete $BRANCH on GitHub: delete it by hand." >&2
+    fi
+}
 
 echo "This runs the GitHub manual check against $REPO."
 echo "Use a THROWAWAY repository: the script pushes branches to it and adds keys."
 ask "Continue?"
+delete_branch
 
 # Everything this run makes, removed on exit.
 # Under /tmp, not $TMPDIR: macOS's is long enough that the daemon's sockets would pass the
@@ -116,9 +158,12 @@ cleanup() {
     status=$?
     trap - EXIT INT TERM
     if [ -n "$DAEMON_PID" ]; then kill -INT "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; fi
+    # A run that stopped early: the branch it pushed, deleted on GitHub (kept with --keep).
+    if [ "$KEEP" != 1 ]; then delete_branch; fi
     if [ -n "$DEPLOY_KEY_ID" ]; then gh repo deploy-key delete "$DEPLOY_KEY_ID" --repo "$REPO" >/dev/null 2>&1 || true; fi
     if [ -n "$SIGNING_KEY_ID" ]; then gh api -X DELETE "user/ssh_signing_keys/$SIGNING_KEY_ID" >/dev/null 2>&1 || true; fi
     if [ "$KEEP" = 1 ]; then echo "kept: $DIR"; else rm -rf "$DIR"; fi
+    rm -f "$KEY_LOG"
     if [ -z "$DEPLOY_KEY_ID" ] && [ -n "${DEPLOY_KEY_ADDED:-}" ]; then
         echo "Remove the deploy key you added (Settings > Deploy keys on $REPO)."
     fi
@@ -209,7 +254,7 @@ else
     ask "Added?"
 fi
 
-step "Step 4: the daemon, and a lease (Touch ID once, for the ticket)"
+step "Step 4: the daemon, and a lease (your approval key, once, for the ticket)"
 writd run writd.yaml 2> "$DIR/writd.log" &
 DAEMON_PID=$!
 tries=0
@@ -222,15 +267,19 @@ done
 cd "$DIR"
 LEASE=$(writ request --no-wait ticket.yaml | sed -n 's/^Ticket \(wrt_[0-9A-Z]*\) submitted.*/\1/p')
 [ -n "$LEASE" ] || die "the ticket was not submitted"
-echo "Review the ticket and answer y (Secretive asks for Touch ID):"
+echo "Review the ticket and answer y:"
+printf '  [your approval key] sign the ticket %s (the one approval of this run)\n' "$LEASE" > /dev/tty
 writ sign "$LEASE" < /dev/tty
 writ wait "$LEASE"
 
 step "Steps 5 to 7: the agent's clone, signed commits, upstream moving, refused pushes"
-git clone -q "git@github.com:$REPO.git" "$DIR/w"
+mine "clone $REPO, as the operator, before writ init (step 5)" \
+    git clone -q "git@github.com:$REPO.git" "$DIR/w"
 cd "$DIR/w"
-MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
-remote_branch() { git ls-remote origin "refs/heads/$1" | cut -f1; }
+remote_branch() { # remote_branch <branch> <why>: where it is on GitHub
+    mine "read GitHub's $1 ($2)" git ls-remote origin "refs/heads/$1" | cut -f1
+}
+MAIN=$(remote_branch main "to check later that it never moves")
 mirror_branch() { git -C "$DIR/daemon/data/repos/demo.git" rev-parse --verify -q "refs/heads/$1" 2>/dev/null || true; }
 # Step 5, the check's commands.
 writ init demo
@@ -238,19 +287,23 @@ writ git fetch origin
 git checkout -q -b agent/manual-check origin/main
 echo hi > notes.txt && writ git add notes.txt
 writ git commit -m "Manual check" --trailer "Writ: $LEASE"
+BRANCH_ON_GITHUB=1 # from here on, the branch is deleted at the end, whatever happens
 writ git push origin HEAD:refs/heads/agent/manual-check
 FIRST=$(git rev-parse HEAD)
-check "the signed commit is on GitHub" test "$(remote_branch agent/manual-check)" = "$FIRST"
+check "the signed commit is on GitHub" test "$(remote_branch agent/manual-check "verify the signed push landed")" = "$FIRST"
 check "and in the daemon's mirror" test "$(mirror_branch agent/manual-check)" = "$FIRST"
 printf '%s %s\n' "$COMMITTER" "$(cat "$DIR/client/sessions/current/signing_key.pub")" > "$DIR/allowed"
 check "it verifies with the lease's key, through writ-sign" \
     writ git -c gpg.ssh.allowedSignersFile="$DIR/allowed" verify-commit HEAD
 # Upstream moves: someone else commits another file on the branch (your git, another clone).
-git clone -q --branch agent/manual-check "git@github.com:$REPO.git" "$DIR/other"
+mine "clone $REPO again, as another contributor (upstream moves, step 6)" \
+    git clone -q --branch agent/manual-check "git@github.com:$REPO.git" "$DIR/other"
 (cd "$DIR/other" && echo theirs > theirs.txt && git add theirs.txt \
     && git -c commit.gpgsign=false -c user.name="Someone else" -c user.email=someone@writ.invalid \
-        commit -q -m "Someone else's change" && git push -q origin agent/manual-check)
-THEIRS=$(remote_branch agent/manual-check)
+        commit -q -m "Someone else's change" \
+    && mine "push the other contributor's commit to GitHub (upstream moves, step 6)" \
+        git push -q origin agent/manual-check)
+THEIRS=$(remote_branch agent/manual-check "note the other contributor's commit")
 # Step 6, the check's commands.
 echo more >> notes.txt && writ git commit -qam "Second" --trailer "Writ: $LEASE"
 if writ git push origin HEAD:refs/heads/agent/manual-check > "$DIR/rejected.txt" 2>&1; then
@@ -258,11 +311,11 @@ if writ git push origin HEAD:refs/heads/agent/manual-check > "$DIR/rejected.txt"
 else
     check "the push behind upstream is rejected" grep -q rejected "$DIR/rejected.txt"
 fi
-check "GitHub keeps the other contributor's commit" test "$(remote_branch agent/manual-check)" = "$THEIRS"
+check "GitHub keeps the other contributor's commit" test "$(remote_branch agent/manual-check "verify the rejected push left it alone")" = "$THEIRS"
 writ git fetch origin && writ git rebase origin/agent/manual-check
 writ git push origin HEAD:refs/heads/agent/manual-check
 REBASED=$(git rev-parse HEAD)
-check "after fetch and rebase (signed again), the push lands" test "$(remote_branch agent/manual-check)" = "$REBASED"
+check "after fetch and rebase (signed again), the push lands" test "$(remote_branch agent/manual-check "verify the rebased push landed")" = "$REBASED"
 check "on top of the other contributor's commit" test "$(git rev-parse HEAD~1)" = "$THEIRS"
 check "the mirror follows" test "$(mirror_branch agent/manual-check)" = "$REBASED"
 # Step 7, the check's commands.
@@ -278,8 +331,9 @@ else
     check "an unsigned commit is refused" grep -q "was not signed under this lease" "$DIR/unsigned.txt"
 fi
 git reset -q --hard HEAD~1
-check "main on GitHub didn't move" test "$(remote_branch main)" = "$MAIN"
-check "the branch on GitHub didn't move" test "$(remote_branch agent/manual-check)" = "$REBASED"
+check "main on GitHub didn't move" test "$(remote_branch main "verify the refused pushes left main alone")" = "$MAIN"
+check "the branch on GitHub didn't move" \
+    test "$(remote_branch agent/manual-check "verify the refused pushes left it alone")" = "$REBASED"
 
 step "Step 8: what to check"
 AUDIT="$DIR/daemon/data/audit.jsonl"
@@ -322,8 +376,17 @@ else
     step "Verified on GitHub: skipped (pass --email <one of your verified emails> to check it)"
 fi
 
+if [ "$KEEP" = 1 ]; then
+    step "Cleanup on GitHub: skipped (--keep): $BRANCH stays on $REPO"
+else
+    step "Cleanup on GitHub"
+    delete_branch
+fi
+
 step "Summary"
 echo "$PASSED passed, $FAILED failed (daemon log: $DIR/writd.log, kept with --keep)"
+echo "Your keys: the approval key once (the ticket), your GitHub key $(wc -l < "$KEY_LOG" | tr -d ' ') times:"
+nl -w4 -s'. ' "$KEY_LOG"
 if [ "$FAILED" -eq 0 ]; then
     echo "Note it under the acceptance items of docs/history/m4-gateway-push-and-fetch.md"
     echo "(and of m4.1-real-end-to-end-scenarios.md for \"Verified\", if checked)."
