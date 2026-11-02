@@ -31,7 +31,7 @@ an unchanged core.
 | M4.5 | [HTTPS upstream](history/m4.5-https-upstream.md) ✅ | Upstream over HTTPS with a token: the daemon's own credential helper fed by a one-operation socket, a one-operation proxy capping bytes and reaching only the registry's host, the certificate verified, no redirect |
 | M4.6 | [Review after M4.5](history/m4.6-review-after-m4.5.md) ✅ | The security and code quality review after M4.5 and its fixes: a push's mirror never held by a client, the mirror lock with a deadline, `mirrors.ca_certs` the only trust, GnuTLS's certificate refusal read, the ledger before a push's walk, `mirrors.git`, `writ-mirror` split by concern |
 | M4.7 | [Ticket link in git notes](history/m4.7-ticket-link-in-git-notes.md) ✅ | `ticket_link: notes`: each pushed commit's lease in a git note (`refs/notes/commits`, or `refs/notes/writ`), written and pushed by the daemon after the branch, merged with the remote's, the commit untouched |
-| M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
+| M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore (one age file per secret, a boot tier for the transport keys), `writd init`, `writ unseal`, signed admin changes to approvers, readers, templates and registry applied live, `writ admin token`, process hardening |
 | M5.5 | [Signature formats and key algorithms](#m55--signature-formats-and-key-algorithms) | OpenPGP commit signatures beside SSH; each signing key declared with its format, algorithm (Ed25519, P-256, P-384, RSA 3072/4096) and hash, checked against its backend at start; `writd keys create` |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
@@ -145,45 +145,151 @@ notes commits; the commits untouched.
 
 [Signer and sealing](architecture/signer.md#startup-and-sealing),
 [Flows § 7](flows.md#7-daemon-startup-sealed). From here, Writ may hold real credentials.
+Settled with the user before building (the [decision log](decisions.md) has the rows).
 
-- age keystore with a random data key; software keys and tokens only inside it (the HTTPS
-  upstreams' tokens, a file the operator writes in the development keystore since M4.5, move
-  into it, and how the operator adds one becomes a signed admin change).
-- **One age file per secret**, not one file for the whole keystore: the data key is an age
-  X25519 identity, itself unlocked by the passphrase at unseal, and each key or token is its
-  own file encrypted to that identity's recipient. Reading a secret goes through one seam
-  (which recipient unwraps this file), so hardware recipients
-  ([M7.6](#m76--hardware-wrapped-secrets)) plug in with no format change and no migration.
-- `writd` starts sealed and serves only the unseal endpoint; `writ unseal` sends the
-  passphrase and an unseal SSHSIG; active leases reloaded after unsealing.
-- Admin changes (approvers, templates, repo registry) only through signed approvals, logged.
-- The HTTPS approval API's TLS key behind the `Signer`, like every other key: it lives in the
-  keystore under a key id (`tls-01`), the self-signed certificate is made by signing through
-  the `Signer`, and rustls signs handshakes through a small adapter (its signing-key trait
-  asking the `Signer`, which returns the raw signature; the adapter DER-encodes it). The
-  software backend (the `p256` crate, wiped on drop) is the default; a hardware backend is a
-  config choice (M7.5). Handshake signatures run off the async threads if the backend is slow.
-- Process hardening for every secret the daemon holds in memory (keys, tokens, the data key,
-  the TLS key): no core dumps, no debugger attach, secret memory locked out of swap. OS
-  calls, so behind a platform interface with its contract suite (hard rule 4), applied at
-  startup before any secret is loaded; a platform that can't apply one says so in the log
-  and the threat model.
+**The keystore.**
+- age keystore with a random data key: the data key is an age X25519 **identity**, wrapped
+  with the passphrase (age scrypt), and **each secret is its own age file** encrypted to that
+  identity's recipient: the CA key, the agent signing keys, the upstream credentials, the
+  HTTPS upstreams' tokens, the authority MAC key (below), and the notification token when the
+  operator seals it. Reading a secret goes through one seam (which identity unwraps this
+  file), so hardware recipients ([M7.6](#m76--hardware-wrapped-secrets)) plug in with no
+  format change and no migration. Public halves sit beside, in clear, so the commands that
+  print a key need no unseal.
+- **The boot tier.** A sealed daemon must still prove who it is to the client that brings the
+  passphrase, so the keys that authenticate it are readable at a sealed start: the SSH host
+  key and the HTTPS approval API's TLS key (with its certificate), in their own directory
+  (`keystore.boot`, mode 0700, files 0600), which can live on another volume or a Docker
+  secret than the keys directory. Nothing else is. Without hardware this can't be avoided:
+  what a daemon uses before any human input can be rebuilt from its disk, so a copy of the
+  boot keys plus an intercepted unseal gives the passphrase away (the threat model's residual
+  risk; closed by a transport key in hardware, M7.5 in local mode).
+- **The notification token, the operator's choice** (`notifiers[].telegram.token: boot |
+  sealed`, required, no default): `boot` sends "writd restarted, sealed" at once, and
+  "unsealed" only from the real daemon (no such message after a `writ unseal` that said it
+  worked means something answered in its place), but whoever holds the boot keys can send
+  as the bot; `sealed` sends nothing until unsealed. Both are written up in the operator
+  guides.
+- `writd init <writd.yaml>` (on the daemon host, as the daemon's user, once): asks for the
+  passphrase twice, makes the identity, the boot keys (the TLS certificate signed through the
+  `Signer`), the CA and every key the policy names; copies the authority files as their first
+  versions in force; prints the host key, the TLS fingerprint, the upstream keys and the
+  signing keys. It refuses an existing keystore.
+
+**Sealed start and unseal.**
+- `writd run` starts sealed: the listeners are up, every request but the unseal fails closed
+  with "daemon sealed" (logged, coalesced per source like the other denials before a lease),
+  and nothing of the keystore but the boot tier is read.
+- `writ unseal` (on the Mac) asks for the passphrase (no echo) and signs a `writ-unseal/1`
+  document with the approval key: it names the daemon's host key fingerprint and a random
+  nonce drawn at each sealed start (`writ info` shows it), so an unseal signature is good for
+  one daemon and one boot only. The daemon checks the signature first (only an approver can
+  make it spend scrypt's second), then unwraps the identity, decrypts every secret, checks the
+  authority versions (below), builds what the sealed start couldn't, reloads the active
+  leases, logs `unseal`. A wrong passphrase or signature is refused and logged; either alone
+  never unseals.
+- The development keystore (`keystore: { dev: … }`, still refused by release builds) starts
+  unsealed, for the integration tests.
+
+**Signed admin changes.**
+- After `writd init`, the policy (repo registry and templates), `approvers` and `readers`
+  change only through `writ admin apply <policy|approvers|readers> <file>`: `writ` fetches the
+  version in force (`writ admin show <target>`), shows the diff (agent-free text, neutralized
+  all the same), and signs a `writ-admin/1` document: the target, the hash of the version in
+  force, the full new text. The daemon checks it is unsealed, the signer is an approver in
+  force, the version in force is still that one (no replay, no lost update), and the new text
+  passes every startup check (approvers not empty, one key one purpose, the policy valid);
+  then stores the version with its signed document, logs `admin` (target, both hashes, the
+  signer), and **applies it live**: approvers and templates swap in the service (leases are
+  re-checked against the current templates on each use already, and a tightened one is
+  denied until amended), readers swap in the gateway (re-checked at each command), and a
+  registry change reopens only the mirrors whose entry changed.
+- **The daemon's state holds the versions in force**, each bound to the keystore by a MAC
+  whose key is a sealed secret: at unseal every version is checked, and one altered, replaced
+  or rolled back by anyone without the passphrase stops the unseal, naming the file.
+- **The files stay in sync:** after each applied change the daemon writes the text in force
+  back to the file `writd.yaml` names, so the host shows what is in force. A hand edit is
+  never applied: at start, a file that differs is moved aside to `<file>.unapplied-<time>`
+  (the edit kept), the text in force written back, and both logged. `writd.yaml` itself stays
+  a host file (listeners, `decisions`, mirrors): it can't make anyone an approver.
+- **Keys:** a signed policy change that names a new agent signing key or `ssh://` upstream
+  credential makes the daemon create it (Ed25519, encrypted to the recipient, loaded into its
+  signer live); the reply and the audit line give the public key to register. No key is ever
+  made on a plain start (M5.5 adds declared algorithms and `writd keys create`).
+- **Tokens:** `writ admin token <id>` reads the token on the Mac (no echo), encrypts it there
+  to the keystore's public recipient, and sends the ciphertext as a signed admin change: the
+  plaintext never touches the daemon host's disk. An `https://` repo without its token
+  doesn't stop the daemon: its syncs and pushes are refused with the command to run. This
+  changes in [M7.6](#m76--hardware-wrapped-secrets): the token is wrapped to the daemon
+  host's hardware recipient and unwrapped there only when used.
+- **Recovery, when every approver key is lost:** `writd recover-approvers <writd.yaml>
+  <file>`, run on the host as the daemon's user with the daemon stopped, asks for the
+  keystore passphrase, replaces the approvers in force (with a new MAC) and logs it. It needs
+  both the host and the passphrase. The operator guide also says to enroll a second approver
+  key from the start (a YubiKey, `sk-ssh-ed25519`).
+
+**The TLS key behind the `Signer`.** Like every other key: under a key id (`tls-01`, P-256)
+in the boot tier, its own `Signer` queue; the self-signed certificate is made by signing
+through the `Signer`, and rustls signs handshakes through a small adapter (its signing-key
+trait asking the `Signer`, which returns the raw signature; the adapter DER-encodes it).
+The software backend (the `p256` crate, wiped on drop) is the default; a hardware backend is
+a config choice (M7.5). Handshake signatures run off the async threads if the backend is
+slow.
+
+**Process hardening, best effort.** For every secret the daemon holds in memory: no core
+dumps (`RLIMIT_CORE` 0; Linux: not dumpable), no debugger attach (Linux: not dumpable, which
+also closes `/proc/<pid>/mem`; macOS: `PT_DENY_ATTACH`), memory locked out of swap (Linux:
+`mlockall` only when the lock limit is unlimited or the daemon has `CAP_IPC_LOCK`: a partial
+lock would make an allocation fail, and the daemon abort, once the limit is reached; macOS has
+no call to lock everything, and encrypts swap). OS calls, so behind a platform interface with
+its contract suite (hard rule 4), in new `writ-platform-linux` and `writ-platform-macos`
+crates, applied at startup before any secret is read. Each one that can't be applied is a
+startup warning saying how to fix it, never a stop; the operator guide lists how to check each
+on the host, and the threat model says what is left without it.
+
+**Tests.** The end-to-end pipeline moves to the sealed keystore (the operator path for real:
+`writd init`, `writ unseal`, admin changes, tokens, recovery, hardening checked in the
+containers); the integration tests keep the development keystore for most scenarios, plus
+dedicated ones on the sealed keystore.
+
+Steps (one commit each, `make ci` green):
+1. The keystore format: the identity, one age file per secret behind the one seam, the boot
+   tier, `writd init`, `keystore: { sealed: … }` in `writd.yaml`.
+2. The TLS key behind the `Signer`: the certificate signed through it, the rustls adapter.
+3. The sealed start and `writ unseal`; the notification token's two modes; leases reloaded.
+4. Admin changes: the versions in force and their MAC, `writ-admin/1`, `writ admin show` and
+   `apply`, applied live, the files written back, `writd recover-approvers`.
+5. Keys and tokens through admin changes: keys made by a policy change, `writ admin token`.
+6. Process hardening: the interface, its contract suite, the two platform crates.
+7. The end-to-end pipeline on the sealed keystore, with the new scenarios.
+8. Docs: architecture pages, operator guides, threat model, history.
 
 Acceptance:
-- [ ] While sealed, every request fails closed with "daemon sealed".
-- [ ] Unsealing needs both the right passphrase and a valid approver signature; either alone
-      fails and is logged.
-- [ ] The keys volume alone reveals no key (checked by inspecting it at rest).
+- [ ] While sealed, every request fails closed with "daemon sealed", and is logged.
+- [ ] Unsealing needs both the right passphrase and a valid approver signature over this
+      boot's `writ-unseal/1`; either alone, or a signature from an earlier boot or for
+      another daemon, fails and is logged.
+- [ ] The keys directory alone reveals no key (checked by inspecting it at rest); the boot
+      directory holds only the host key, the TLS key and certificate, and the notification
+      token when the operator chose `boot`.
 - [ ] Each secret is its own age file; a test adds a second recipient (a fake) for one secret
       and reads it back with no change to the keystore code.
 - [ ] A restart keeps active leases working after unseal; their certificates still expire on time.
-- [ ] An unsigned or wrongly signed admin change is refused; a signed one applies and is logged.
-- [ ] The TLS key is only in the keystore and the `Signer`: no PEM key file, no copy outside
+- [ ] An unsigned or wrongly signed admin change is refused, so is one made against a version
+      no longer in force; a signed one applies live and is logged; a hand-edited authority
+      file is never applied (set aside, the text in force written back); a version altered
+      at rest stops the unseal.
+- [ ] A policy change naming a new signing key or upstream credential creates it and gives
+      its public key; `writ admin token` adds a token that never appears in clear on the
+      daemon host; an `https://` repo without its token is refused with the reason.
+- [ ] `writd recover-approvers` replaces the approvers only with the passphrase, and is logged.
+- [ ] The TLS key is only in the boot tier and the `Signer`: no PEM key file, no copy outside
       the `Signer`; HTTPS approvals work as in M2, with the certificate pinned from
       `writd tls-fingerprint`.
-- [ ] The running daemon leaves no core dump when it crashes, refuses a debugger attaching
-      to it (`lldb -p`, `gdb -p` as the same user), and its secret pages are locked (checked
-      on macOS and on Linux).
+- [ ] Where the platform allows it, the running daemon leaves no core dump when it crashes,
+      refuses a debugger attaching to it (`lldb -p`, `gdb -p` as the same user), and its
+      memory is locked (checked on macOS and on Linux); each one it can't apply is a startup
+      warning with the fix.
 
 ## M5.5 — Signature formats and key algorithms
 
@@ -395,7 +501,9 @@ backend later brings its recipient as one more implementation, as it brings its 
 - Secrets unwrapped per use, zeroized after (no cache in this milestone); the keystore's data
   key wrapped the same way, so unsealing needs the approver's signature and no passphrase.
 - How the operator adds or rotates a secret: encrypted to the printed public recipient, from
-  any machine, through the signed admin change of M5.
+  any machine, through the signed admin change of M5 (`writ admin token`, which then
+  encrypts to the daemon host's hardware recipient: the secret lives on the daemon host,
+  unwrapped there only when used, instead of being decrypted at unseal).
 
 Acceptance:
 - [ ] **The graft test:** the Secure Enclave recipient is a new implementation, `writd`'s

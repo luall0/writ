@@ -28,7 +28,7 @@ guarantee below must be covered by at least one test that tries to break it
 | Approver keys | Secretive (v1), YubiKey, own SE app later | Sign approvals, admin changes and unsealing; listed in the daemon's `approvers` file |
 | Keystore passphrase (v1) | My head / password manager | Needed with an approver signature to unseal |
 | Leases, ledger, audit log | Daemon (SQLite + JSONL) | Must survive an incident for review |
-| Notifier credentials (Telegram bot token) | Daemon, a `0600` file (sealed keystore from M5) | Lets anyone send messages as the bot. Never in an error, `Debug` output or log line |
+| Notifier credentials (Telegram bot token) | Daemon, a `0600` file (from M5: the boot tier or the sealed keystore, the operator's choice) | Lets anyone send messages as the bot. Never in an error, `Debug` output or log line |
 
 ## Trust boundaries
 
@@ -97,7 +97,12 @@ templates) and `writd.yaml` decide who may do what. Whoever can write one become
 approver at the next start, which would bypass signed admin changes. The daemon refuses each
 unless it is a regular file (no link followed, never a FIFO) owned by the daemon's user and
 not writable by group or others; secrets (a bot token, a wrapped key) must also be readable
-by nobody else. From M5, changes to them go through signed admin changes.
+by nobody else. From M5, `approvers`, `readers` and the policy change only through signed
+admin changes: the daemon's state holds the versions in force, each bound to the keystore by
+a MAC keyed by a sealed secret (a version altered, replaced or rolled back without the
+passphrase stops the unseal), and writes them back to the files, where a hand edit is never
+applied ([M5](roadmap.md#m5--sealed-start-and-signed-admin-changes)). `writd.yaml` stays a
+host file: it can't make anyone an approver.
 
 ### 6. Local mode: the daemon vs my own user
 In local mode, agents run as my user. A daemon running as my user can't keep its keys from
@@ -153,6 +158,8 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | ✅ Writ never uses personal keys: only the approval key, in its agent | `writ_sign_never_signs_with_a_private_key_file` |
 | ✅ An agent signing key signs nothing but commits under a lease and the proofs an approver signed, never in `git` or Writ's own namespaces | `a_proof_needs_an_approver_signature_over_exactly_that_document`, `a_proof_in_git_or_writ_s_namespaces_or_over_4_kib_is_refused`, `a_proof_and_a_ticket_approval_never_pass_for_each_other`, `a_proof_for_a_key_no_template_signs_with_is_refused`, `a_proof_the_signer_or_the_audit_log_fails_is_never_handed_out`, `a_hostile_proof_sent_over_the_wire_is_refused_and_logged` |
 | ✅ The approver sees what gets signed, whatever the agent wrote | `a_hostile_ticket_shows_nothing_a_terminal_would_act_on`, `agent_text_cannot_push_the_enforced_terms_off_the_screen` |
+| ✅ The keys directory alone reveals no key: every secret but the boot tier's is its own age file, unwrapped only after an unseal | planned: M5 |
+| ✅ Unsealing and admin changes need an approver signature (and, to unseal, the passphrase); a hand edit or a version altered at rest is never in force | planned: M5 |
 | ✅ Hardware backends: keys non-exportable | planned: M7.5 |
 
 ## What Writ does NOT guarantee
@@ -185,6 +192,9 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | Upstream keys have account-wide access | Remotes don't scope personal SSH keys per repo | Repo registry + `protected_refs` enforced by the daemon; keys on YubiKey; deploy keys or bot accounts later |
 | An HTTPS upstream's token leaves the daemon's memory for each operation: its own git (and git's `remote-https`) holds it, through pipes, while the operation runs; a token can't stay in a signer, since it doesn't sign | Only the daemon's user reaches those processes and the private socket directory (boundary 5); one operation, then the socket is gone; never a command line, an environment, a URL or a file; the token as narrow as the remote allows | Prefer `ssh://` upstreams (the key never leaves the signer); M5's process hardening; per-operation tokens where a remote issues them (GitHub App installation tokens, backlog) |
 | An HTTPS upstream is authenticated by the system's CAs unless the operator narrows them (`mirrors.ca_certs`, then the only ones: the system's CA directory isn't given to git either): any public CA, or one compromised, could vouch for a remote and receive the token | The web PKI is how HTTPS remotes identify themselves (and the operator's own `git push` trusts it already); no redirect is followed; git reaches only the registry's host through the daemon's proxy, so a MITM needs a bad certificate for that very host | `mirrors.ca_certs` with only the remote's CA; certificate pinning (open question Q37); `ssh://` upstreams with a pinned host key |
+| The boot tier (the SSH host key, the TLS key, the notification token with `token: boot`) is readable at rest: a copy of it, plus an intercepted `writ unseal`, lets an impostor pose as the daemon and receive the passphrase, which then opens a copy of the keys directory | A sealed daemon must authenticate itself before any human input, so without hardware what it uses can be rebuilt from its disk; the boot tier can live apart from the keys directory (another volume, a Docker secret); the unseal signature is bound to one daemon and one boot, so it can't be replayed; with `token: boot`, an "unsealed" message comes only from the real daemon | A transport key in hardware (M7.5 in local mode; YubiKey or TPM later); the approval API reached only over a trusted network ([good practice](operators/good-practice.md)) |
+| With `token: boot`, whoever holds the boot tier can send messages as the notification bot | A notification never grants anything; the operator chooses it, knowing this | `token: sealed` |
+| Process hardening is best effort (M5): where a platform or the host's limits don't allow one step (memory locking without an unlimited lock limit or `CAP_IPC_LOCK`; macOS has no call to lock everything), the daemon starts anyway with a warning | Each failure says how to fix it, and the operator guide shows how to check each step; macOS encrypts swap | Set the host up as the operator guide says (M8's compose file does) |
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | [Hardware-wrapped secrets](roadmap.md#m76--hardware-wrapped-secrets) (M7.6) |
 | `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |
