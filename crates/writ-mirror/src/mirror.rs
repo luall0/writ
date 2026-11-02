@@ -651,9 +651,7 @@ impl MirrorGuard {
             }
         } else if text.contains("Host key verification failed") {
             MirrorError::HostKey { repo }
-        } else if access.transport == Transport::Https
-            && CERTIFICATE_FAILURES.iter().any(|m| text.contains(m))
-        {
+        } else if access.transport == Transport::Https && is_certificate_failure(&text) {
             MirrorError::Certificate {
                 repo,
                 why: self.clean(stderr),
@@ -777,14 +775,25 @@ async fn local(mut cmd: tokio::process::Command) -> Result<std::process::Output>
     cmd.output().await.map_err(MirrorError::Spawn)
 }
 
-/// What curl says when an HTTPS upstream's certificate doesn't verify (OpenSSL, GnuTLS and
-/// Secure Transport builds).
-const CERTIFICATE_FAILURES: [&str; 4] = [
+/// What curl says when an HTTPS upstream's certificate doesn't verify, by TLS backend: OpenSSL
+/// (`SSL certificate problem: …`, `no alternative certificate subject name matches …`),
+/// GnuTLS, older and newer (`server certificate verification failed. CAfile: …`,
+/// `server verification failed: certificate signer not trusted. (CAfile: …)`), the name
+/// checks (`SSL: certificate subject name (…) does not match target host name …`), and
+/// Secure Transport (`… certificate verify failed`).
+const CERTIFICATE_FAILURES: [&str; 6] = [
     "SSL certificate problem",
     "server certificate verification failed",
+    "server verification failed",
     "no alternative certificate subject name",
+    "does not match target host name",
     "certificate verify failed",
 ];
+
+/// Whether git's stderr says the server's certificate didn't verify.
+fn is_certificate_failure(stderr: &str) -> bool {
+    CERTIFICATE_FAILURES.iter().any(|m| stderr.contains(m))
+}
 
 /// git must be at least `min`.
 async fn check_git_version(min: (u32, u32)) -> Result<()> {
@@ -999,6 +1008,29 @@ fn replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_tls_backend_s_certificate_failure_is_recognized() {
+        // As curl prints them through git, each backend and version (the GnuTLS ones from
+        // Debian 13's git 2.47, the image `make e2e` and the deployment run).
+        for stderr in [
+            "fatal: unable to access 'https://h/r.git/': SSL certificate problem: self-signed certificate",
+            "fatal: unable to access 'https://h/r.git/': server certificate verification failed. CAfile: /x.pem CRLfile: none",
+            "fatal: unable to access 'https://h/r.git/': server verification failed: certificate signer not trusted. (CAfile: /x.pem CRLfile: none)",
+            "fatal: unable to access 'https://h/r.git/': no alternative certificate subject name matches target host name 'h'",
+            "fatal: unable to access 'https://h/r.git/': SSL: certificate subject name (other) does not match target host name 'h'",
+            "fatal: unable to access 'https://h/r.git/': error:0A000086:SSL routines::certificate verify failed",
+        ] {
+            assert!(is_certificate_failure(stderr), "{stderr}");
+        }
+        for stderr in [
+            "fatal: unable to access 'https://h/r.git/': Failed to connect to h port 443",
+            "fatal: Authentication failed for 'https://h/r.git/'",
+            "remote: Repository not found.",
+        ] {
+            assert!(!is_certificate_failure(stderr), "{stderr}");
+        }
+    }
 
     #[test]
     fn porcelain_lines_become_ref_moves() {
