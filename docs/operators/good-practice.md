@@ -89,3 +89,8 @@ daemon's checks on everything that goes through Writ.
   and no remote credential at all.
 - Local mode's daemon runs as its own user ([M7](../roadmap.md#m7--local-mode-on-the-mac)):
   the agent can't read its keys, though it still runs as you.
+- **One agent per OS user, container or VM** when several agents share a host in detached
+  mode: as one user, each can read the others' session files and act under their leases
+  ([threat model](../threat-model.md#1-agent--daemon-session-certificate)). Each agent gets its
+  own Writ home (`~/.writ`, 0700). From [M6](../roadmap.md#m6--agent-skill-amendments-and-close),
+  `max_active_per_source: 1` holds a host to one active lease.

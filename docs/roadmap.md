@@ -32,7 +32,7 @@ an unchanged core.
 | M4.6 | [Review after M4.5](history/m4.6-review-after-m4.5.md) ✅ | The security and code quality review after M4.5 and its fixes: a push's mirror never held by a client, the mirror lock with a deadline, `mirrors.ca_certs` the only trust, GnuTLS's certificate refusal read, the ledger before a push's walk, `mirrors.git`, `writ-mirror` split by concern |
 | M4.7 | [Ticket link in git notes](history/m4.7-ticket-link-in-git-notes.md) ✅ | `ticket_link: notes`: each pushed commit's lease in a git note (`refs/notes/commits`, or `refs/notes/writ`), written and pushed by the daemon after the branch, merged with the remote's, the commit untouched |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
-| M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
+| M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
 | M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, unsealing with no passphrase |
@@ -201,6 +201,32 @@ The workflow the agent follows ([Clients](architecture/clients.md#client-list),
   stretch a lease.
 - `writ close` and the activity report: commits, pushes, branches, denials, time used vs
   granted, files touched vs `expected_paths`.
+- **Each agent on its own lease.** Today `~/.writ/sessions/current` is one link per Writ
+  home, moved by every granted `writ request`, and a wired repo follows it: two agents sharing
+  a home silently swap leases, and one's work lands under the other's lease when that lease
+  covers it. The session is now chosen, in `writ git`, `writ exec`, `writ init` and
+  `writ-sign`, in this order: `WRIT_SESSION=<lease>`, then the repo's pinned lease
+  (`writ init --lease <id>`, kept in the record; a whole-repo clone gets that lease's paths),
+  then `current`. A chosen session that is unknown or ended is refused with a reason, never
+  replaced by `current`; one command uses one session, so `writ-sign` refuses a commit when
+  `WRIT_SESSION` names another session than the settings git gave it (a whole-repo clone
+  pinned elsewhere). `writ request` prints the `WRIT_SESSION` line for its lease and warns when
+  it moves `current` while another lease in the same home is active. The skill sets
+  `WRIT_SESSION` for every command after its grant.
+- **The host's other leases on the approver's screen.** The ticket records the source it was
+  submitted from (an IPv4 address, an IPv6 /64, as `submissions.per_source` counts them; local
+  mode is one source), and `writ sign` shows the other active leases from that source: id,
+  repos, branches, operations, time left, at most 10 and a count, an overlap with the new
+  ticket flagged (a repo in common and branch patterns that intersect). Display only.
+- **`max_active_per_source`** in `writd.yaml` (no limit by default): the active leases one
+  source may hold at once. Checked at submission (refused early, with its code) and again when
+  the ticket is signed (a lease granted meanwhile makes the signature refused, fail closed); an
+  amendment replaces its lease, it doesn't add one. A host meant for one agent sets `1`, and
+  its agents can't reach each other's leases. Its row in the operator reference and the
+  template, a test of its effect (rule 19).
+- The threat model and the operators' good practice already say, since this milestone was
+  planned, that an agent's reach in detached mode is every active lease on its host unless
+  agents are isolated; M6 checks them against what was built.
 
 Acceptance:
 - [ ] A real feature on a personal repo goes from prompt to pushed branch through Writ, with
@@ -210,6 +236,20 @@ Acceptance:
 - [ ] The activity report matches the audit log for that lease.
 - [ ] An amendment applied minutes before the lease ends doesn't move its end: `writ ls`, the
       lease and the certificate all end at the original time.
+- [ ] Two agents on one host and one Writ home, each with its `WRIT_SESSION`: every signature
+      and push lands under its own lease in the ledger, whichever lease `current` points at.
+      A `WRIT_SESSION` naming an unknown or ended lease is refused with its reason, and
+      nothing goes out under `current`.
+- [ ] `writ init --lease`: a pinned repo uses its lease in both wirings; in a whole-repo clone
+      pinned to one lease, `writ-sign` refuses a commit with `WRIT_SESSION` naming another,
+      with its reason.
+- [ ] `writ sign` lists the source's other active leases and flags an overlap; 11 of them
+      show 10 and the count; a lease from another source isn't listed.
+- [ ] `max_active_per_source`: one below the limit a submission is accepted, at the limit it
+      is refused with its code; a lease granted between submission and signature makes the
+      signature refused; a lease ending frees its slot; an amendment doesn't count twice.
+- [ ] `WRIT_SESSION`, `writ init --lease` and `max_active_per_source` are used for real by
+      end-to-end scenarios, with their rows in the registries (rules 18 and 19).
 
 ## M7 — Local mode on the Mac
 
