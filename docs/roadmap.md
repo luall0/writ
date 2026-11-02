@@ -38,8 +38,10 @@ an unchanged core.
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts |
 | M9 | [`proxy` push mode](#m9--proxy-push-mode) | Relayed pushes with the same checks, no mirror |
 | M10 | [`direct_ssh` push mode](#m10--direct_ssh-push-mode) | Lent per-lease ssh-agent socket with a deploy key |
+| M11 | [Multi-user daemon](#m11--multi-user-daemon) (after v1) | Several people on one daemon: users with their own approvers, readers, templates and upstream credentials, admins for admin changes and unsealing |
 
-After M10, new work comes from the [backlog](backlog/README.md).
+M10 completes v1. M11 is the first idea picked from the [backlog](backlog/README.md) after
+it; new work after M11 comes from there too.
 
 ## M0 — Protocol spike (go/no-go)
 
@@ -137,18 +139,29 @@ a git note, which annotates a commit without changing it (same hash, same signat
 - A note per pushed commit under `refs/notes/writ` (`Writ: <lease id>`, the same text as the
   trailer), written by the daemon from its ledger, never by the agent: agents push branches
   only, and a pushed `refs/notes/…` stays refused (`ref`).
-- The notes ref is shared by every lease on the repo: the daemon fetches it with the mirror,
-  adds the notes for the commits a push brings (only those the ledger holds for that lease
-  and repo), and pushes it upstream after the branch, as a fast-forward, under the mirror
-  lock; a remote that moved it meanwhile gets a fetch, a merge of the notes
-  (`git notes merge -s cat_sort_uniq`) and one retry, then a refusal logged.
+- The notes ref is shared by every lease on the repo. Once upstream took a push, its commits
+  (only those the ledger holds for that lease and repo) are pending a note; a notes job,
+  under the mirror lock, writes a notes commit for every pending note of the repo on top of
+  the mirror's `refs/notes/writ`, and pushes it upstream after the branch, as a
+  fast-forward. A remote that moved it meanwhile (`fetch first`, `non-fast-forward`) gets a
+  fetch of that one ref, a merge of the notes (`git notes merge -s cat_sort_uniq`) and one
+  retry, then a refusal logged. The mirror's sync stays branches and tags only: git refuses
+  a fetch naming a ref upstream doesn't have yet, so a sync fetching `refs/notes/writ` would
+  fail on every repo without notes.
+- Notes commits are **unsigned**, made under a fixed daemon identity (`writd`): no remote
+  verifies or shows a notes commit's signature, and the ledger, not the note, is the
+  reference. The notes push uses the credential of the push that brought the commits (the
+  repo's `upstream_credential` today), passed to the notes job as a parameter, and each
+  pending note records it: [M11](#m11--multi-user-daemon) only decides which credential
+  pushes a batch.
+- The notes job never needs the commits it annotates (a note names a commit by its id): only
+  a repository holding `refs/notes/writ`. M9's `proxy` mode writes notes too, with the same
+  job, from a small notes-only repository per repo.
 - What the remote does with notes: kept by all; shown by Forgejo and Gitea on the commit
   page, not by GitHub's web interface (`git log --notes=writ` after
   `git fetch origin refs/notes/writ:refs/notes/writ`). The operator guide says so.
 - A notes push that fails doesn't undo the branch push (the commit is already upstream and in
   the ledger); it is logged, and the next push of that repo writes the missing notes.
-- Decide before building: whether M9's `proxy` mode (no mirror) writes notes too, or refuses
-  `notes` with `proxy`.
 
 Acceptance:
 - [ ] A repo with `ticket_link: notes` takes commits without a trailer; after a push, the
@@ -329,3 +342,19 @@ Acceptance:
       for another host (`session-bind`), after expiry or over the limits.
 - [ ] A repo whose credential is account-wide is refused unless `allow_account_wide: true`,
       and then `writ sign` shows the warning.
+
+## M11 — Multi-user daemon
+
+After v1. [The backlog page](backlog/multi-user.md) holds the design: users declared in the
+daemon's configuration, each with their approver and reader keys, the templates they own and
+their upstream credential per repo; a lease belongs to one user, whose authority decides who
+may approve, refuse, revoke and read it and which credential pushes it; admins make admin
+changes and unseal. Its open questions are settled with the user, and its plan written, before
+any code; the acceptance below is final then.
+
+Acceptance (draft):
+- [ ] Two users push to the same repo at once under their own credentials: the remote shows
+      each push as its user's, and both get their notes.
+- [ ] Every cross-user attempt (approve, refuse, revoke, `ls`, `show`, push, an admin change
+      by a non-admin) is refused with its exact code and logged with both users named.
+- [ ] A v1 single-user configuration starts unchanged and behaves as before.

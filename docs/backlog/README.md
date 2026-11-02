@@ -56,6 +56,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 |---|---|---|---|---|
 | [LLM task-conformance check](llm-task-conformance.md) | Policy | feature | L | idea, sketched |
 | [HTTP credential proxy (v2)](http-credential-proxy.md) | Credentials | feature | L | idea, sketched |
+| [Multi-user daemon](multi-user.md) | Identity, Approvals, Upstream | feature | L | specified up to its open questions; picked as [M11](../roadmap.md#m11--multi-user-daemon) |
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
 | [Keychain Secure Enclave signer with a paid Apple account](#keychain-secure-enclave-signer-with-a-paid-apple-account) | Signers | feature | M | idea, spiked |

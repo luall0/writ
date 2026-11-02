@@ -96,7 +96,8 @@ v1 does not do any of these; don't build them unless explicitly asked:
 - GPG signing
 - Generic secret-store proxying (API tokens, keychain items). An HTTP credential proxy is a
   v2 idea in the [backlog](backlog/http-credential-proxy.md).
-- Multi-user / team policy
+- Multi-user / team policy (after v1: [M11](roadmap.md#m11--multi-user-daemon), designed in the
+  [backlog](backlog/multi-user.md))
 - Client-work compliance (not used for client projects for now)
 - Tag signing ([Q11](decisions.md)): releases stay a human act
 
