@@ -19,14 +19,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use writ_core::config::PolicyConfig;
+use writ_core::config::{NotesRef, PolicyConfig};
 use writ_core::names::RepoName;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::PrivateKey;
 use writ_integration::binaries::bin;
 use writ_integration::remote::{Mode, TestRemote};
 use writ_mirror::known_hosts::PinnedHosts;
-use writ_mirror::{MirrorConfig, MirrorError, Mirrors, SyncReport};
+use writ_mirror::{
+    MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorError, Mirrors, Note, NotesPushed, SyncReport,
+};
 use writ_signer::Signer;
 use writ_signer::software::SoftwareSigner;
 
@@ -676,4 +678,385 @@ fn a_mirror_held_past_its_deadline_is_busy_never_waited_on_forever() {
         }
         drop(held);
     });
+}
+
+// Notes (M4.7): written in the mirror, pushed upstream as a fast-forward, merged with
+// upstream's when it moved.
+
+fn note(commit: &str, text: &str) -> Note {
+    Note {
+        commit: commit.parse().unwrap(),
+        text: text.to_owned(),
+    }
+}
+
+impl Fixture {
+    /// Notes under `refs/notes/writ`.
+    fn push_notes(
+        &self,
+        mirrors: &Mirrors,
+        credential: &str,
+        notes: &[Note],
+    ) -> Result<NotesPushed, MirrorError> {
+        self.push_notes_to(mirrors, NotesRef::Writ, credential, notes)
+    }
+
+    fn push_notes_to(
+        &self,
+        mirrors: &Mirrors,
+        notes_ref: NotesRef,
+        credential: &str,
+        notes: &[Note],
+    ) -> Result<NotesPushed, MirrorError> {
+        let credential = credential.parse().unwrap();
+        self.runtime.block_on(async {
+            mirrors
+                .lock(&demo())
+                .await?
+                .push_notes(notes_ref, &credential, notes)
+                .await
+        })
+    }
+
+    /// The note of `commit` in `repo` under `refs/notes/writ`, or `None`.
+    fn note_of(&self, repo: &Path, commit: &str) -> Option<String> {
+        let out = self.git(repo, &["notes", "--ref=writ", "show", commit]);
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    fn notes_ref(&self, repo: &Path) -> Option<String> {
+        let out = self.git(repo, &["rev-parse", "--verify", "-q", "refs/notes/writ"]);
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    }
+
+    /// Makes `hooks/pre-receive` of the upstream repo say `words` and refuse, or removes it.
+    fn upstream_refuses(&self, words: Option<&str>) {
+        let hook = self.upstream().join("hooks/pre-receive");
+        match words {
+            Some(words) => {
+                std::fs::write(&hook, format!("#!/bin/sh\necho '{words}' >&2\nexit 1\n")).unwrap();
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            None => std::fs::remove_file(&hook).unwrap(),
+        }
+    }
+}
+
+#[test]
+fn notes_reach_upstream_as_a_fast_forward_the_commits_untouched() {
+    let f = Fixture::new();
+    let first = f.upstream_commit("main", "a");
+    let second = f.upstream_commit("main", "b");
+    let mirrors = f.open();
+    f.sync(&mirrors).unwrap();
+    let before = f.refs(&f.upstream());
+
+    let pushed = f.push_notes(
+        &mirrors,
+        "upstream-01",
+        &[
+            note(&first, "Writ: wrt_A\n"),
+            note(&second, "Writ: wrt_A\n"),
+        ],
+    );
+    assert_eq!(pushed.unwrap(), NotesPushed::FastForward);
+    let upstream = f.upstream();
+    assert_eq!(
+        f.note_of(&upstream, &first).as_deref(),
+        Some("Writ: wrt_A\n")
+    );
+    assert_eq!(
+        f.note_of(&upstream, &second).as_deref(),
+        Some("Writ: wrt_A\n")
+    );
+    // Upstream's notes ref is the mirror's; every other ref as it was.
+    let notes = f.notes_ref(&upstream).expect("a notes ref upstream");
+    assert_eq!(f.notes_ref(&f.mirror()).as_deref(), Some(notes.as_str()));
+    let after: Vec<String> = f
+        .refs(&upstream)
+        .into_iter()
+        .filter(|r| !r.starts_with("refs/notes/writ "))
+        .collect();
+    assert_eq!(after, before);
+    // Unsigned, by the daemon's fixed identity.
+    let commit = f.git_ok(&upstream, &["cat-file", "commit", &notes]);
+    assert!(!commit.contains("gpgsig"), "{commit}");
+    assert!(
+        commit.contains("committer writd <writd@writ.invalid>"),
+        "{commit}"
+    );
+    assert_eq!(f.agent_sockets(), 0);
+
+    // The next batch builds on it: one more fast-forward, a commit's note gains a line.
+    let pushed = f.push_notes(&mirrors, "upstream-01", &[note(&second, "Writ: wrt_B\n")]);
+    assert_eq!(pushed.unwrap(), NotesPushed::FastForward);
+    assert_eq!(
+        f.note_of(&upstream, &second).as_deref(),
+        Some("Writ: wrt_A\nWrit: wrt_B\n")
+    );
+    assert_eq!(
+        f.note_of(&upstream, &first).as_deref(),
+        Some("Writ: wrt_A\n")
+    );
+    let parents = f.git_ok(
+        &upstream,
+        &["rev-list", "--parents", "-n1", "refs/notes/writ"],
+    );
+    assert!(parents.contains(&notes), "built on the last one: {parents}");
+}
+
+#[test]
+fn a_notes_ref_upstream_moved_is_fetched_merged_and_pushed_once_more() {
+    let f = Fixture::new();
+    let first = f.upstream_commit("main", "a");
+    let second = f.upstream_commit("main", "b");
+    let upstream = f.upstream();
+    let mirrors = f.open();
+    f.sync(&mirrors).unwrap();
+    // Notes someone else wrote upstream, on a ref of their own until the push comes.
+    f.git_ok(
+        &upstream,
+        &["notes", "--ref=elsewhere", "add", "-m", "Theirs", &second],
+    );
+    let theirs = f.git_ok(&upstream, &["rev-parse", "refs/notes/elsewhere"]);
+    f.remote
+        .before_next_push(&["update-ref", "refs/notes/writ", &theirs]);
+
+    let pushed = f.push_notes(
+        &mirrors,
+        "upstream-01",
+        &[
+            note(&first, "Writ: wrt_A\n"),
+            note(&second, "Writ: wrt_A\n"),
+        ],
+    );
+    assert_eq!(pushed.unwrap(), NotesPushed::Merged);
+    // Theirs kept, ours added: the lines of both, sorted, each once.
+    assert_eq!(
+        f.note_of(&upstream, &first).as_deref(),
+        Some("Writ: wrt_A\n")
+    );
+    assert_eq!(
+        f.note_of(&upstream, &second).as_deref(),
+        Some("Theirs\nWrit: wrt_A\n")
+    );
+    let notes = f.notes_ref(&upstream).unwrap();
+    assert_eq!(f.notes_ref(&f.mirror()).as_deref(), Some(notes.as_str()));
+    let ancestor = f.git(
+        &upstream,
+        &["merge-base", "--is-ancestor", &theirs, "refs/notes/writ"],
+    );
+    assert!(ancestor.status.success(), "theirs is in the history");
+    assert_eq!(f.remote.receive_packs(), 2, "one push, one retry");
+    assert_eq!(f.agent_sockets(), 0);
+}
+
+#[test]
+fn a_notes_ref_moved_again_before_the_retry_is_refused_after_one_retry() {
+    let f = Fixture::new();
+    let first = f.upstream_commit("main", "a");
+    let upstream = f.upstream();
+    let mirrors = f.open();
+    f.sync(&mirrors).unwrap();
+    f.git_ok(
+        &upstream,
+        &["notes", "--ref=elsewhere", "add", "-m", "1", &first],
+    );
+    let once = f.git_ok(&upstream, &["rev-parse", "refs/notes/elsewhere"]);
+    f.git_ok(
+        &upstream,
+        &["notes", "--ref=elsewhere", "add", "-f", "-m", "2", &first],
+    );
+    let twice = f.git_ok(&upstream, &["rev-parse", "refs/notes/elsewhere"]);
+    f.remote
+        .before_next_push(&["update-ref", "refs/notes/writ", &once]);
+    f.remote
+        .before_next_push(&["update-ref", "refs/notes/writ", &twice]);
+
+    match f.push_notes(&mirrors, "upstream-01", &[note(&first, "Writ: wrt_A\n")]) {
+        Err(MirrorError::Rejected { reason, .. }) => {
+            assert_eq!(
+                reason,
+                "refs/notes/writ moved again while the notes were merged"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(f.remote.receive_packs(), 2, "one retry, no more");
+    assert_eq!(f.notes_ref(&upstream).as_deref(), Some(twice.as_str()));
+    assert_eq!(f.agent_sockets(), 0);
+}
+
+#[test]
+fn a_notes_push_the_remote_refuses_is_an_error_with_its_words_then_goes_through() {
+    let f = Fixture::new();
+    let first = f.upstream_commit("main", "a");
+    let upstream = f.upstream();
+    let mirrors = f.open();
+    f.sync(&mirrors).unwrap();
+    f.upstream_refuses(Some("no notes here"));
+
+    match f.push_notes(&mirrors, "upstream-01", &[note(&first, "Writ: wrt_A\n")]) {
+        Err(MirrorError::Rejected { reason, .. }) => {
+            assert!(
+                reason.contains("refs/notes/writ")
+                    && reason.contains("pre-receive hook declined")
+                    && reason.contains("no notes here"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(f.notes_ref(&upstream), None);
+    assert_eq!(f.remote.receive_packs(), 1, "no retry for a refusal");
+
+    // The remote takes notes again: the next batch carries what didn't go (the caller keeps
+    // the notes waiting and sends them again).
+    f.upstream_refuses(None);
+    let second = f.upstream_commit("main", "b");
+    f.sync(&mirrors).unwrap();
+    let pushed = f.push_notes(
+        &mirrors,
+        "upstream-01",
+        &[
+            note(&first, "Writ: wrt_A\n"),
+            note(&second, "Writ: wrt_B\n"),
+        ],
+    );
+    assert_eq!(pushed.unwrap(), NotesPushed::FastForward);
+    assert_eq!(
+        f.note_of(&upstream, &first).as_deref(),
+        Some("Writ: wrt_A\n")
+    );
+    assert_eq!(
+        f.note_of(&upstream, &second).as_deref(),
+        Some("Writ: wrt_B\n")
+    );
+}
+
+#[test]
+fn a_batch_with_the_wrong_credential_or_malformed_is_refused_before_any_git() {
+    let f = Fixture::new();
+    let first = f.upstream_commit("main", "a");
+    let mirrors = f.open();
+    f.sync(&mirrors).unwrap();
+    let good = note(&first, "Writ: wrt_A\n");
+
+    match f.push_notes(&mirrors, "upstream-02", std::slice::from_ref(&good)) {
+        Err(MirrorError::NotTheCredential { key, .. }) => assert_eq!(key.as_str(), "upstream-02"),
+        other => panic!("expected the wrong credential, got {other:?}"),
+    }
+    let too_long = "x".repeat(MAX_NOTE_TEXT + 1);
+    let longest = "x".repeat(MAX_NOTE_TEXT);
+    for (notes, why) in [
+        (vec![], format!("a batch holds from 1 to {MAX_NOTES} notes")),
+        (
+            vec![good.clone(); MAX_NOTES + 1],
+            format!("a batch holds from 1 to {MAX_NOTES} notes"),
+        ),
+        (
+            vec![note(&first, "")],
+            format!("a note holds from 1 to {MAX_NOTE_TEXT} bytes"),
+        ),
+        (
+            vec![note(&first, &too_long)],
+            format!("a note holds from 1 to {MAX_NOTE_TEXT} bytes"),
+        ),
+        (
+            vec![good.clone(), note(&first, "Writ: wrt_B\n")],
+            format!("two notes for commit {first}"),
+        ),
+    ] {
+        match f.push_notes(&mirrors, "upstream-01", &notes) {
+            Err(MirrorError::Notes(reason)) => assert_eq!(reason, why),
+            other => panic!("expected {why:?}, got {other:?}"),
+        }
+    }
+    assert_eq!(f.notes_ref(&f.mirror()), None);
+    assert_eq!(f.remote.receive_packs(), 0);
+
+    // At the bounds: the longest note goes through.
+    let pushed = f.push_notes(&mirrors, "upstream-01", &[note(&first, &longest)]);
+    assert_eq!(pushed.unwrap(), NotesPushed::FastForward);
+    assert_eq!(
+        f.note_of(&f.upstream(), &first).map(|n| n.len()),
+        Some(MAX_NOTE_TEXT)
+    );
+}
+
+#[test]
+fn a_malformed_notes_ref_upstream_never_lands_and_the_notes_push_fails() {
+    let f = Fixture::new();
+    let main = f.upstream_commit("main", "a");
+    let upstream = f.upstream();
+    let mirrors = f.open();
+    f.sync(&mirrors).unwrap();
+    // Upstream's notes ref, just before the notes push, a malformed commit (a bad committer
+    // line): the push is refused as behind, and the fetch that follows checks what it takes.
+    let blob = f.git_ok(&upstream, &["hash-object", "-w", "/dev/null"]);
+    let tree = mktree(&f, &upstream, &format!("100644 blob {blob}\t{main}\n"));
+    let bad = hash_literally(
+        &f,
+        &upstream,
+        &format!("tree {tree}\nauthor A <a@b> 1 +0000\ncommitter nobody\n\nbad\n"),
+    );
+    f.remote
+        .before_next_push(&["update-ref", "refs/notes/writ", &bad]);
+
+    match f.push_notes(&mirrors, "upstream-01", &[note(&main, "Writ: wrt_A\n")]) {
+        Err(MirrorError::Git { what, stderr, .. }) => {
+            assert_eq!(what, "notes fetch");
+            assert!(
+                stderr.contains("fsck") || stderr.contains("error"),
+                "{stderr}"
+            );
+        }
+        other => panic!("expected a refused notes fetch, got {other:?}"),
+    }
+    let present = f.git(&f.mirror(), &["cat-file", "-e", &bad]);
+    assert_eq!(present.status.code(), Some(1), "the object never landed");
+    assert_ne!(f.notes_ref(&f.mirror()).as_deref(), Some(bad.as_str()));
+    assert!(f.partial_packs().is_empty(), "{:?}", f.partial_packs());
+    assert_eq!(f.agent_sockets(), 0);
+}
+
+#[test]
+fn notes_under_git_s_own_ref_keep_a_person_s_notes_there() {
+    let f = Fixture::new();
+    let first = f.upstream_commit("main", "a");
+    let upstream = f.upstream();
+    // A person's note, under git's default notes ref, before the daemon writes any.
+    f.git_ok(
+        &upstream,
+        &["notes", "add", "-m", "Reviewed by Sam", &first],
+    );
+    let theirs = f.git_ok(&upstream, &["rev-parse", "refs/notes/commits"]);
+    let mirrors = f.open();
+    f.sync(&mirrors).unwrap();
+
+    let pushed = f.push_notes_to(
+        &mirrors,
+        NotesRef::Commits,
+        "upstream-01",
+        &[note(&first, "Writ: wrt_A\n")],
+    );
+    // The mirror had no notes ref: upstream's is fetched, merged, pushed once more.
+    assert_eq!(pushed.unwrap(), NotesPushed::Merged);
+    let shown = f.git_ok(&upstream, &["notes", "show", &first]);
+    assert_eq!(shown, "Reviewed by Sam\nWrit: wrt_A");
+    let ancestor = f.git(
+        &upstream,
+        &["merge-base", "--is-ancestor", &theirs, "refs/notes/commits"],
+    );
+    assert!(
+        ancestor.status.success(),
+        "the person's notes are in the history"
+    );
+    // Nothing under refs/notes/writ: one ref per repo.
+    assert_eq!(f.notes_ref(&upstream), None);
 }

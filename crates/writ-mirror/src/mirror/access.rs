@@ -63,7 +63,7 @@ impl MirrorGuard {
                 identity,
                 ..
             } => ssh_access(&self.shared, credential, public, identity),
-            Reach::Https { url, token } => https_access(&self.shared, url, token),
+            Reach::Https { url, token, .. } => https_access(&self.shared, url, token),
         }
     }
 

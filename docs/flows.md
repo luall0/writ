@@ -115,6 +115,11 @@ sequenceDiagram
     alt upstream ok
       D-->>Q: ok: git moves the mirror's refs
       D-->>G: ok
+      opt ticket_link: notes
+        D->>D: the commits wait for their note; once git gave the mirror back,<br/>the notes job: notes commit, merged into the notes ref
+        D->>F: push the notes ref, fast-forward (moved: fetch, merge, once more)
+        D->>D: log NOTES (allowed, or denied: the notes wait for the next push)
+      end
     else upstream rejects (moved, its hook, an error)
       D->>D: log DENY with the remote's reason
       D-->>G: rejected + upstream reason (the mirror unchanged)
@@ -126,7 +131,9 @@ sequenceDiagram
 ```
 
 If upstream moved, the agent fetches through the daemon, rebases, and the new commits are
-signed again under the same lease. A push already decided keeps its slot of the lease's count
+signed again under the same lease. The notes of a `ticket_link: notes` repo
+([Notes](architecture/gateway.md#notes)) follow the branch on their own: a notes push that
+fails never undoes the branch's. A push already decided keeps its slot of the lease's count
 and rate when the remote refuses it.
 
 ### 3b. Push, `proxy` mode
@@ -149,6 +156,10 @@ agent, and uses them as the boundary.
 The daemon advertises the `no-thin` capability to the agent, so the pack is self-contained: it
 can be indexed and every commit object in it read without having the remote's objects locally.
 Commits in the pack are exactly the new commits to check.
+
+Notes (`ticket_link: notes`) go the same way as in `gateway` mode, from a small notes-only
+repository per repo instead of the mirror: the notes job needs only the notes ref, never
+the annotated commits.
 
 ### 3c. Push, `direct_ssh` mode
 At lease grant, the daemon also exposes a per-lease ssh-agent socket (reachable through the

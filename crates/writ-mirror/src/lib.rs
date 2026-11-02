@@ -40,7 +40,8 @@ pub mod testing;
 pub mod upstream;
 
 pub use mirror::{
-    LOCAL_WORK_DEADLINE, MirrorConfig, MirrorGuard, Mirrors, RefMove, SyncReport, UpstreamUpdate,
+    LOCAL_WORK_DEADLINE, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorGuard, Mirrors,
+    NOTES_AUTHOR, Note, NotesPushed, RefMove, SyncReport, UpstreamUpdate,
 };
 
 use std::path::PathBuf;
@@ -102,6 +103,10 @@ pub enum MirrorError {
     Busy { repo: RepoName, seconds: u64 },
     #[error("repo {repo}: upstream did not answer within {seconds} s")]
     Timeout { repo: RepoName, seconds: u64 },
+    #[error("repo {repo}: credential {key} is not the one this mirror reaches upstream with")]
+    NotTheCredential { repo: RepoName, key: KeyId },
+    #[error("cannot write the notes: {0}")]
+    Notes(String),
     #[error("repo {repo}: upstream refused the push: {reason}")]
     Rejected { repo: RepoName, reason: String },
     #[error("repo {repo}: {what} failed: {stderr}")]

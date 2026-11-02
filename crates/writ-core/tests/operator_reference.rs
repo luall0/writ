@@ -292,6 +292,8 @@ fn the_policy_template_parses_as_is_and_with_every_default_taken_in() {
         line.contains("direct_ssh:")
             || line.contains("hosts:")
             || line.contains("allow_account_wide:")
+            // Only with `ticket_link: notes`, not the default.
+            || line.contains("notes_ref:")
     });
     assert_ne!(taken, POLICY_TEMPLATE);
     let config = PolicyConfig::from_yaml(&taken).unwrap();
@@ -302,10 +304,26 @@ fn the_policy_template_parses_as_is_and_with_every_default_taken_in() {
         config,
         "a commented-out value is not the default"
     );
-    // The direct_ssh section too: refused only for want of the direct_ssh push mode.
+    // notes_ref too: refused only for want of `ticket_link: notes`, and at its default with it.
     let all = uncommented(POLICY_TEMPLATE, &|_| false);
     assert_eq!(
         PolicyConfig::from_yaml(&all).unwrap_err().to_string(),
+        "repos.my-repo.notes_ref: only allowed when ticket_link is notes"
+    );
+    let with_notes = uncommented(POLICY_TEMPLATE, &|line| {
+        line.contains("direct_ssh:")
+            || line.contains("hosts:")
+            || line.contains("allow_account_wide:")
+    })
+    .replacen("ticket_link: ledger_only", "ticket_link: notes", 1);
+    let notes = PolicyConfig::from_yaml(&with_notes).unwrap();
+    let repo = notes.repo(&"my-repo".parse().unwrap()).unwrap();
+    assert_eq!(repo.notes_ref, Some(writ_core::config::NotesRef::Commits));
+    assert_eq!(repo.notes_ref(), writ_core::config::NotesRef::default());
+    // The direct_ssh section too: refused only for want of the direct_ssh push mode.
+    let direct = uncommented(POLICY_TEMPLATE, &|line| line.contains("notes_ref:"));
+    assert_eq!(
+        PolicyConfig::from_yaml(&direct).unwrap_err().to_string(),
         "repos.my-repo.direct_ssh: only allowed when push_modes has direct_ssh"
     );
     assert_template_names(POLICY_TEMPLATE, &policy_keys());

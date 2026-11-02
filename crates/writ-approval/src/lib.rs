@@ -30,7 +30,7 @@ pub use service::{
     MAX_SUBMISSIONS_IN_ALL, MAX_SUBMISSIONS_PER_SOURCE, Pushing, Service, ServiceConfig,
     ServicePlatform, SignObject, SignedCommit, Signing, SubmissionLimits,
 };
-pub use writ_store::EventKind;
+pub use writ_store::{EventKind, PendingNote};
 
 /// The SSH user a session certificate is valid for ([`writ_proto::LEASE_USER`]).
 pub const PRINCIPAL: &str = writ_proto::LEASE_USER;

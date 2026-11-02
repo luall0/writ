@@ -237,6 +237,12 @@ impl GatewayDenial {
         self
     }
 
+    /// The lease it is about, without a certificate (the notes of a push).
+    pub fn lease(mut self, lease: &TicketId) -> Self {
+        self.key_id = Some(lease.to_string());
+        self
+    }
+
     pub fn refs(mut self, refs: impl IntoIterator<Item = String>) -> Self {
         self.refs = refs.into_iter().collect();
         self

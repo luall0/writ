@@ -336,9 +336,11 @@ revives a used-up lease.
 - `ticket_link` (per repo, `ledger_only` by default): with `trailer`, every commit must carry exactly one `Writ: <id>`
   trailer (found the way git finds trailers: the message's last paragraph, the key in any
   case) matching the lease, or signing is refused. The trailer must be in the message **before** signing; the
-  daemon never rewrites commits. With `notes`, the daemon attaches a note under
-  `refs/notes/writ` and pushes it upstream (from [M4.7](roadmap.md#m47--ticket-link-in-git-notes);
-  until then the daemon refuses `notes` when it loads the policy). With `ledger_only`, the link exists only in the
+  daemon never rewrites commits. With `notes`, once upstream took a push, the daemon writes
+  each pushed commit's lease in a note (`Writ: <lease id>`) under the repo's `notes_ref`
+  (`refs/notes/commits` by default, git's own; or `refs/notes/writ`) and pushes
+  it upstream after the branch, the commit untouched ([Notes](architecture/gateway.md#notes)).
+  With `ledger_only`, the link exists only in the
   daemon.
 - `paths_check` (per template): compares files touched by each commit with `expected_paths`.
   `warn` signs and records a warning for the activity report (in the `sign` audit line);

@@ -240,14 +240,22 @@ async fn decide_push(
         commits,
         pack_size,
     };
-    if let Err(denial) = gateway.push(pushing.clone()).await {
-        // A violation may have revoked the lease: its other sessions go now.
-        if gateway.service().is_revoked(context.cert.serial) {
-            gateway.drop_sessions_except(context.cert.serial, context.connection);
+    let lease = match gateway.push(pushing.clone()).await {
+        Ok(lease) => lease,
+        Err(denial) => {
+            // A violation may have revoked the lease: its other sessions go now.
+            if gateway.service().is_revoked(context.cert.serial) {
+                gateway.drop_sessions_except(context.cert.serial, context.connection);
+            }
+            return Err(Denied::logged(&denial));
         }
-        return Err(Denied::logged(&denial));
-    }
-    go_upstream(gateway, context, &quarantine, &pushing.updates).await
+    };
+    go_upstream(gateway, context, &quarantine, &pushing.updates).await?;
+    // Upstream has the commits: their notes, if the repo asks for them, once git gave the
+    // mirror back.
+    let commits = pushing.commits.into_iter().map(|(id, _)| id).collect();
+    crate::notes::after_push(gateway, &lease.id, &context.repo, commits);
+    Ok(())
 }
 
 /// The repo's mirror, held for the push until receive-pack exits (the push's `Push` releases

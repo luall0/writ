@@ -136,7 +136,12 @@ impl GitGateway {
     /// [`HttpsRemote`] taking [`HTTPS_TOKEN`], which the daemon holds for the repo's
     /// credential; its certificate is the daemon's `ca_certs`.
     pub fn start_https() -> Self {
-        Self::start_full(KeyKind::Ed25519, Listen::Tcp, POLICY, true)
+        Self::start_https_with(POLICY)
+    }
+
+    /// [`GitGateway::start_https`], with another policy.
+    pub fn start_https_with(policy: &str) -> Self {
+        Self::start_full(KeyKind::Ed25519, Listen::Tcp, policy, true)
     }
 
     fn start_full(agent_kind: KeyKind, listen: Listen, policy: &str, https: bool) -> Self {
@@ -467,6 +472,23 @@ impl GitGateway {
         file: &str,
         content: &str,
     ) -> String {
+        self.commit_signed_full(key, Some(lease), work, file, content)
+    }
+
+    /// [`GitGateway::commit_signed_as`] without a `Writ:` trailer (a repo whose `ticket_link`
+    /// isn't `trailer`).
+    pub fn commit_signed_plain(&self, key: &str, work: &Path, file: &str, content: &str) -> String {
+        self.commit_signed_full(key, None, work, file, content)
+    }
+
+    fn commit_signed_full(
+        &self,
+        key: &str,
+        trailer: Option<&TicketId>,
+        work: &Path,
+        file: &str,
+        content: &str,
+    ) -> String {
         self.wire_signing(work);
         fs::write(work.join(file), content).unwrap();
         let ok = |args: &[&str]| {
@@ -479,8 +501,15 @@ impl GitGateway {
             String::from_utf8_lossy(&out.stdout).trim().to_owned()
         };
         ok(&["add", file]);
-        let trailer = format!("Writ: {lease}");
-        ok(&["commit", "-q", "-S", "-m", file, "--trailer", &trailer]);
+        match trailer {
+            Some(lease) => {
+                let trailer = format!("Writ: {lease}");
+                ok(&["commit", "-q", "-S", "-m", file, "--trailer", &trailer]);
+            }
+            None => {
+                ok(&["commit", "-q", "-S", "-m", file]);
+            }
+        }
         ok(&["rev-parse", "HEAD"])
     }
 
@@ -540,6 +569,57 @@ impl GitGateway {
     /// A ref of the upstream repo.
     pub fn upstream_ref(&self, name: &str) -> Option<String> {
         self.ref_in(&self.remote.repo("demo"), name)
+    }
+
+    /// The note of `commit` upstream under `refs/notes/commits` (the default `notes_ref`), or
+    /// `None`.
+    pub fn upstream_note(&self, commit: &str) -> Option<String> {
+        self.upstream_note_in("refs/notes/commits", commit)
+    }
+
+    /// The note of `commit` upstream under `notes_ref`, or `None`.
+    pub fn upstream_note_in(&self, notes_ref: &str, commit: &str) -> Option<String> {
+        let out = self.git(
+            &self.remote.repo("demo"),
+            &["notes", &format!("--ref={notes_ref}"), "show", commit],
+        );
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// The audit log's lines with this event and result.
+    pub fn audited(&self, event: &str, result: &str) -> Vec<serde_json::Value> {
+        let text = fs::read_to_string(self.root().join("audit.jsonl")).unwrap_or_default();
+        crate::audit_events(&text, event, result)
+    }
+
+    /// Waits until the audit log holds `count` lines with this event and result, at most
+    /// `limit`, and returns them. What writes them (a notes job) runs on its own after the
+    /// push that started it, and a file gives no signal: polled, bounded by `limit`.
+    pub fn wait_for_audit(
+        &self,
+        event: &str,
+        result: &str,
+        count: usize,
+        limit: std::time::Duration,
+    ) -> Vec<serde_json::Value> {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            let lines = self.audited(event, result);
+            if lines.len() >= count {
+                return lines;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} {event} {result} lines within {limit:?}, expected {count}:\n{}",
+                lines.len(),
+                fs::read_to_string(self.root().join("audit.jsonl")).unwrap_or_default()
+            );
+            // poll: the line is written by a task of the daemon's that runs on its own (a
+            // notes job); the audit file gives no signal. Bounded by `limit`.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     fn ref_in(&self, repo: &Path, name: &str) -> Option<String> {

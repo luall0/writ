@@ -236,7 +236,11 @@ fn reach(
                     key: credential.clone(),
                 })?
                 .clone();
-            Ok(Reach::Https { url, token })
+            Ok(Reach::Https {
+                url,
+                credential,
+                token,
+            })
         }
     }
 }

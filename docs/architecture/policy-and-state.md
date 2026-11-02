@@ -80,13 +80,13 @@ signature is settled. A violation under `on_violation: revoke_lease` revokes the
 
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
-Tables (`writ_store::Store`, schema version in `PRAGMA user_version`, now 2; an older one is migrated in one transaction, a newer one is refused):
+Tables (`writ_store::Store`, schema version in `PRAGMA user_version`, now 5; an older one is migrated in one transaction, a newer one is refused):
 
 | Table | Holds |
 |---|---|
 | `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with (schema 2). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, and `current_ticket`: the row whose terms are in force (itself, or the last applied amendment), and the certificate issued for it (schema 2) |
 | `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s). The daemon's timer sweep deletes rows an hour past the window (`Store::prune_ops`): a clock set back by up to an hour still counts what it must |
-| `ledger` | `(commit, lease, repo)` → signer key id, time, the digest of the paths the commit touched as signing computed them (`writ_git::paths::digest`; none when unknown, schema 4). The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry |
+| `ledger` | `(commit, lease, repo)` → signer key id, time, the digest of the paths the commit touched as signing computed them (`writ_git::paths::digest`; none when unknown, schema 4). The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry. Under `ticket_link: notes` (schema 5), each entry's `note`: none (not asked for), `pending` once upstream took the commit (with `note_credential`, the credential of that push, which pushes the note), `written` once the note is upstream; a written note stays written |
 
 - Stored tickets are decoded strictly (canonical bytes only), and an approval must be complete
   and under `writ-approval`: a record edited by hand fails closed.
@@ -109,11 +109,13 @@ caller ([Identity](identity.md#local-mode-process-chain-checks)).
 
 Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`,
 `refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `prove` (an agent
-signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `admin`,
-`seal`, `unseal`), `result` (`allowed`, `denied`, `done`), `lease`, `ticket`, `cert`,
-`approver`, `repo`, `commit`, `refs`, `committer`, `key`, `namespace`, `message_sha256` (a
-proof's key, namespace and the digest of its message, never the message), `code`, `reason`,
-`warnings`, `source_addr`, `process_chain`.
+signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `notes`
+(a lease's [notes](gateway.md#notes) pushed upstream, or not, one line per lease and push of
+the notes ref), `admin`, `seal`, `unseal`), `result` (`allowed`, `denied`, `done`), `lease`,
+`ticket`, `cert`, `approver`, `repo`, `commit`, `refs`, `committer`, `key` (a proof's key, the
+credential that pushed notes), `namespace`, `message_sha256` (a proof's namespace and the
+digest of its message, never the message), `count` (how many notes a `notes` line is about),
+`code`, `reason`, `warnings`, `source_addr`, `process_chain`.
 
 - Every text field is cut to 2,048 characters (`…`) when the line is written
   (`writ_store::MAX_FIELD_CHARS`), so what a request carries can't make a line large.

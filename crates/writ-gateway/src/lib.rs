@@ -40,6 +40,7 @@ mod handler;
 mod hook;
 mod https;
 mod limits;
+mod notes;
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;

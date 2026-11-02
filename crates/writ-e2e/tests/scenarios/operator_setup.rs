@@ -26,6 +26,7 @@ const REPOS: &[&str] = &[
     "restart",
     "hostile",
     "busy",
+    "notes",
 ];
 
 #[test]

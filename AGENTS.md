@@ -36,7 +36,7 @@ gets its page (the template there) written up to its plan before any code.
 | Lease / ticket ids | `wrt_` + ULID (e.g. `wrt_01JD8X…`) |
 | Approval SSHSIG namespace | `writ-approval` |
 | Commit trailer (`ticket_link: trailer`) | `Writ: wrt_…` |
-| Git notes ref (`ticket_link: notes`) | `refs/notes/writ` |
+| Git notes ref (`ticket_link: notes`) | `refs/notes/commits` (git's own, the default), or `refs/notes/writ` (`notes_ref: writ`) |
 | Git remote on agent hosts | `writ` |
 | Agent host session files | `~/.writ/sessions/<lease>/` (`current` → active one) |
 | Daemon data (container) | `/var/lib/writ/` (keystore in `/var/lib/writ/keys/`) |

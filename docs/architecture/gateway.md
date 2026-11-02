@@ -143,7 +143,10 @@ in part. Any failure to reach the daemon refuses the push. The daemon then:
    remote took it does the hook answer `ok`, and git move the mirror's refs. A remote that
    refuses (upstream moved, its own hook, any error) gets the push refused with its reason
    (`upstream refused the push: …`, cut and cleaned), logged as a `push` denial; the mirror
-   never holds a ref the remote didn't take, and is marked stale after every upstream push.
+   never holds a ref the remote didn't take, and is marked stale after every upstream push;
+6. once upstream took the push, for a repo whose `ticket_link` is `notes`, its commits wait
+   for their note, and the repo's notes job starts ([Notes](#notes)): off the hook's path, it
+   never delays the agent.
 
 On a refusal git drops the quarantine and shows the agent `remote: writ: <reason>`; a
 violation under `on_violation: revoke_lease` revokes the lease, and its other sessions are
@@ -292,6 +295,58 @@ from, empty for a new ref), so a ref upstream moved since the mirror's sync is r
 remote's state rather than overwritten, and the agent fetches, rebases, has the commits signed
 again and pushes again. The mirror's refs are updated **only after** upstream accepted the
 push. Before each push `receive-pack` starts from a mirror synced unless fresh.
+
+## Notes
+
+A repo with `ticket_link: notes` ([lease model](../lease-model.md#rules)) gets each pushed
+commit's lease on the remote without changing the commit: a git note, `Writ: <lease id>` (the
+trailer's text), written by the daemon from its ledger, under the repo's `notes_ref`:
+`refs/notes/commits` by default (git's own notes ref: `git log` shows it, and it is the only
+one Forgejo and Gitea show on a commit's page and in their notes API, checked on Forgejo
+13), or `refs/notes/writ`, Writ's notes apart from anyone else's. The commit keeps its hash and its signature: a note is a separate commit on a
+separate ref, which names the commits it annotates by their ids and never contains them
+([Q25](../decisions.md)).
+
+1. **Waiting.** Once upstream took a push, `Service::notes_to_write` marks its commits (the
+   ledger's entries for that lease and repo; every one of a push is) as waiting for their note,
+   with the credential of that push, which will push the note (the repo's `upstream_credential`
+   today, [M11](../roadmap.md#m11--multi-user-daemon) may make it the user's). A note already
+   written stays written.
+2. **The notes job** (`writ-gateway/src/notes.rs`) starts after the push and takes the
+   repo's mirror lock, so it runs once the push's `receive-pack` gave the mirror back, and
+   never beside another push or sync of the repo. It writes every note waiting on the repo, at
+   most 10,000 (`writ_mirror::MAX_NOTES`; the rest go with the next push), one batch per
+   credential: one note per commit, a `Writ:` line per lease it waits under.
+3. **Writing** (`writ_mirror` `mirror/notes.rs`): the batch becomes a commit of its own (a
+   tree naming each annotated commit's id, each note at most 64 KiB, no parent), merged into
+   the mirror's notes ref with `git notes merge -s cat_sort_uniq` (a note a commit already
+   has keeps its lines, a person's under `refs/notes/commits` too, each line once). Notes commits are **unsigned**, by
+   `writd <writd@writ.invalid>`: no remote verifies or shows a notes commit's signature, and
+   the ledger, not the note, is the reference.
+4. **Pushing**: the notes ref upstream, without force, with the batch's credential
+   (anything but the repo's is refused). A remote whose notes ref moved meanwhile refuses it
+   (`fetch first`, `non-fast-forward`): that one ref is fetched from upstream into the mirror's
+   (forced: upstream's is the one to build on; checked and bounded like a sync, its partial
+   pack removed when it fails), the batch merged into it again, and the push tried once more;
+   a second refusal is the job's failure. All of it within one operation: `mirrors.timeout`
+   for what reaches upstream, 10 minutes for the local work.
+5. **The outcome**: pushed, the notes are marked written and each lease gets an allowed
+   `notes` line (`count`, `key`: the credential, `refs`); not pushed (refused, unreachable,
+   the mirror busy), each lease gets a denied one with the reason, and the notes stay waiting:
+   the repo's next push writes them. The branch push stands either way: its commits are
+   upstream and in the ledger.
+
+The mirror's sync takes branches and tags only, never a notes ref: git refuses a fetch naming
+a ref upstream doesn't have (a repo without notes yet), so the notes job keeps the mirror's
+notes ref in step itself. Agents fetch it from the mirror like any ref
+(`git fetch origin refs/notes/commits:refs/notes/commits` through the URL rewrite) and can
+never push it, nor any ref outside `refs/heads/` (`ref`). The job never needs the annotated commits, only a repository holding
+the notes ref: M9's `proxy` mode writes notes the same way, from a notes-only repository.
+
+What remotes do with notes: all keep them; Forgejo and Gitea show those under
+`refs/notes/commits` on the commit page, GitHub's web interface shows none
+(`git fetch origin refs/notes/commits:refs/notes/commits`, then `git log`; for
+`refs/notes/writ`, `git log --notes=writ`).
 
 ## Push modes (per repo)
 

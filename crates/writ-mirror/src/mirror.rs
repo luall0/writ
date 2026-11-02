@@ -7,11 +7,13 @@
 //!
 //! - [`open`]: opening the mirrors at startup;
 //! - [`access`]: how one operation reaches upstream, and git run through it;
-//! - [`sync`]: syncing from upstream; [`push`]: the upstream push;
+//! - [`sync`]: syncing from upstream; [`push`]: the upstream push; [`notes`]: the daemon's
+//!   notes, written and pushed upstream (`ticket_link: notes`);
 //! - [`classify`]: what a failure says, and upstream's words made safe to show.
 
 mod access;
 mod classify;
+mod notes;
 mod open;
 mod push;
 mod sync;
@@ -32,6 +34,8 @@ use crate::credential::UpstreamToken;
 use crate::known_hosts::PinnedHosts;
 use crate::upstream::{HttpsUrl, SshUrl};
 use crate::{MirrorError, Result};
+
+pub use notes::{MAX_NOTE_TEXT, MAX_NOTES, NOTES_AUTHOR, Note, NotesPushed};
 
 /// Syncs that may run at once, all mirrors together.
 pub const MAX_SYNCS: usize = 4;
@@ -156,6 +160,7 @@ enum Reach {
     /// `https://`, with a token from the keystore.
     Https {
         url: HttpsUrl,
+        credential: KeyId,
         token: Arc<UpstreamToken>,
     },
 }
@@ -165,6 +170,13 @@ impl Reach {
         match self {
             Self::Ssh { url, .. } => url.as_str(),
             Self::Https { url, .. } => url.as_str(),
+        }
+    }
+
+    /// The registry's credential id for this upstream.
+    fn credential(&self) -> &KeyId {
+        match self {
+            Self::Ssh { credential, .. } | Self::Https { credential, .. } => credential,
         }
     }
 }

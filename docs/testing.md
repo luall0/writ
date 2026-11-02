@@ -183,7 +183,8 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: repos.<name>.upstream_credential` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_credential_the_remote_does_not_take_is_refused`, `an_https_upstream_syncs_with_the_token_which_nothing_else_holds` |
 | `policy.yaml: repos.<name>.protected_refs` | `fetch_and_push_through_the_gateway`, `every_push_denial_leaves_forgejo_and_the_mirror_unchanged` |
 | `policy.yaml: repos.<name>.push_modes` | `push_modes_without_gateway_refuse_a_gateway_push`; the value proxy planned: M9, the value direct_ssh planned: M10 |
-| `policy.yaml: repos.<name>.ticket_link` | `ticket_link_trailer_is_required_only_when_the_repo_asks`, `what_the_commit_says_is_checked`; the value notes planned: M4.7 |
+| `policy.yaml: repos.<name>.notes_ref` | `a_push_leaves_a_note_per_commit_upstream_the_commits_untouched`, `notes_go_under_refs_notes_writ_when_the_repo_says_so` |
+| `policy.yaml: repos.<name>.ticket_link` | `ticket_link_trailer_is_required_only_when_the_repo_asks`, `what_the_commit_says_is_checked`, `a_push_leaves_a_note_per_commit_upstream_the_commits_untouched`, `a_repo_without_notes_gets_none` |
 | `policy.yaml: repos.<name>.object_format` | `an_upstream_in_another_object_format_is_refused`, `a_sync_mirrors_branches_and_tags_only_and_follows_upstream` |
 | `policy.yaml: repos.<name>.direct_ssh.hosts` | planned: M10 |
 | `policy.yaml: repos.<name>.direct_ssh.allow_account_wide` | planned: M10 |

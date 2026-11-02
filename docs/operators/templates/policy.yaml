@@ -8,7 +8,8 @@ repos:
     upstream_credential: upstream-my-repo-01   # `writd upstream-keys` prints it (a deploy key)
     # protected_refs: []           # full refs no lease may push, e.g. ["refs/heads/main", "refs/tags/*"]
     # push_modes: [gateway]        # gateway | proxy (M9) | direct_ssh (M10)
-    # ticket_link: ledger_only     # ledger_only | trailer (a `Writ: <lease>` line) | notes (M4.7)
+    # ticket_link: ledger_only     # ledger_only | trailer (a `Writ: <lease>` line) | notes (a git note)
+    # notes_ref: commits           # only with ticket_link notes: commits (refs/notes/commits) | writ (refs/notes/writ)
     # object_format: sha1          # sha1 | sha256
     # direct_ssh:                  # only with push_modes [direct_ssh] (M10)
     #   hosts: [github.com]

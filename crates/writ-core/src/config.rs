@@ -41,11 +41,41 @@ impl fmt::Display for PushMode {
 pub enum TicketLink {
     /// Every commit carries `Writ: <lease id>`, checked before signing.
     Trailer,
-    /// A git note under `refs/notes/writ`: refused when the policy is loaded until M4.7.
+    /// A git note (`Writ: <lease id>`) under the repo's `notes_ref`, written by the daemon from
+    /// its ledger and pushed upstream after the branch; the commit untouched.
     Notes,
     /// Only the daemon's ledger.
     #[default]
     LedgerOnly,
+}
+
+/// The ref a repo's notes are written under (`ticket_link: notes`). `commits` by default:
+/// git's own notes ref, the one `git log` shows and the only one Forgejo and Gitea show on a
+/// commit's page; `writ` keeps Writ's notes apart from anyone else's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotesRef {
+    /// `refs/notes/commits`.
+    #[default]
+    Commits,
+    /// `refs/notes/writ`.
+    Writ,
+}
+
+impl NotesRef {
+    /// The full ref name.
+    pub fn as_ref_name(self) -> &'static str {
+        match self {
+            NotesRef::Commits => "refs/notes/commits",
+            NotesRef::Writ => "refs/notes/writ",
+        }
+    }
+}
+
+impl fmt::Display for NotesRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_ref_name())
+    }
 }
 
 /// The hash a repository names its objects with. A repository's commits are signed only in
@@ -106,11 +136,22 @@ pub struct RepoEntry {
     pub push_modes: BTreeSet<PushMode>,
     #[serde(default)]
     pub ticket_link: TicketLink,
+    /// Where notes go with `ticket_link: notes` ([`RepoEntry::notes_ref`]); only allowed then.
+    #[serde(default)]
+    pub notes_ref: Option<NotesRef>,
     /// The repository's object format (`sha1`, the default, or `sha256`).
     #[serde(default)]
     pub object_format: ObjectFormat,
     #[serde(default)]
     pub direct_ssh: Option<DirectSsh>,
+}
+
+impl RepoEntry {
+    /// The ref this repo's notes are written under: `notes_ref`, `refs/notes/commits` unless
+    /// it says otherwise.
+    pub fn notes_ref(&self) -> NotesRef {
+        self.notes_ref.unwrap_or_default()
+    }
 }
 
 /// A template: the largest ticket it accepts. Every limit is required.
@@ -261,11 +302,10 @@ fn validate_repo(name: &RepoName, repo: &RepoEntry) -> Result<(), FieldError> {
             "must list at least one push mode",
         ));
     }
-    // Taken, it would ask for no trailer and write no note: less than the operator asked for.
-    if repo.ticket_link == TicketLink::Notes {
+    if repo.notes_ref.is_some() && repo.ticket_link != TicketLink::Notes {
         return Err(FieldError::at(
-            at("ticket_link"),
-            "notes are not written yet (M4.7): use ledger_only (the default) or trailer",
+            at("notes_ref"),
+            "only allowed when ticket_link is notes",
         ));
     }
     let wants_direct = repo.push_modes.contains(&PushMode::DirectSsh);

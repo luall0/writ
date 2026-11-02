@@ -343,6 +343,49 @@ impl Forgejo {
         (verification["verified"] == true, verification)
     }
 
+    /// The note Forgejo shows for `sha` (its notes API reads `refs/notes/commits` only), or
+    /// `None` when it has none.
+    pub fn note(&self, repo: &str, sha: &str) -> Option<String> {
+        let (status, json) = self.api(
+            "GET",
+            &format!("/repos/{OWNER}/{repo}/git/notes/{sha}"),
+            None,
+        );
+        match status {
+            200 => Some(json["message"].as_str().unwrap_or_default().to_owned()),
+            404 => None,
+            other => panic!("GET the note of {sha}: {other}: {json}"),
+        }
+    }
+
+    /// The page of commit `sha`, as the owner sees it in a browser (logged in).
+    pub fn commit_page(&self, repo: &str, sha: &str) -> String {
+        let mut cookies = self.login();
+        cookies.get(&format!("{BASE}/{OWNER}/{repo}/commit/{sha}"))
+    }
+
+    /// Where `name` (a full ref) points on Forgejo, or `None`.
+    pub fn git_ref(&self, repo: &str, name: &str) -> Option<String> {
+        let path = name.strip_prefix("refs/").unwrap_or(name);
+        let (status, json) = self.api(
+            "GET",
+            &format!("/repos/{OWNER}/{repo}/git/refs/{path}"),
+            None,
+        );
+        match status {
+            200 => {
+                let one = if json.is_array() {
+                    json[0].clone()
+                } else {
+                    json
+                };
+                (one["ref"] == name).then(|| one["object"]["sha"].as_str().unwrap().to_owned())
+            }
+            404 => None,
+            other => panic!("GET {name}: {other}: {json}"),
+        }
+    }
+
     /// Adds `key` (OpenSSH text) to the account (Forgejo has one kind of SSH key: it signs
     /// and authenticates). Its fingerprint, as Forgejo shows it.
     pub fn add_account_key(&self, key: &str) -> String {

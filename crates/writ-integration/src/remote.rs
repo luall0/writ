@@ -36,8 +36,9 @@ struct State {
     /// git commands run (or taken, in another mode), by name.
     upload_packs: AtomicUsize,
     receive_packs: AtomicUsize,
-    /// A git command run in the repo before the next push is served (upstream moving meanwhile).
-    before_push: Mutex<Option<Vec<String>>>,
+    /// git commands run in the repo before the next pushes are served, one per push, in
+    /// order (upstream moving meanwhile).
+    before_push: Mutex<std::collections::VecDeque<Vec<String>>>,
 }
 
 /// A running test remote.
@@ -59,7 +60,7 @@ impl TestRemote {
             mode: Mutex::new(Mode::Serve),
             upload_packs: AtomicUsize::new(0),
             receive_packs: AtomicUsize::new(0),
-            before_push: Mutex::new(None),
+            before_push: Mutex::new(std::collections::VecDeque::new()),
         });
         let listener = runtime
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
@@ -127,10 +128,14 @@ impl TestRemote {
     }
 
     /// Runs `git <args>` in the pushed repo right before the next push is served: upstream
-    /// moving between the daemon's sync and its push.
+    /// moving between the daemon's sync and its push. Called again before that push, it
+    /// queues one more, for the push after.
     pub fn before_next_push(&self, args: &[&str]) {
-        *self.state.before_push.lock().unwrap() =
-            Some(args.iter().map(|a| (*a).to_owned()).collect());
+        self.state
+            .before_push
+            .lock()
+            .unwrap()
+            .push_back(args.iter().map(|a| (*a).to_owned()).collect());
     }
 
     /// How many fetches (`git-upload-pack`) it took.
@@ -222,7 +227,7 @@ impl russh::server::Handler for Handler {
         let mode = *self.state.mode.lock().unwrap();
         let repo = self.state.root.join(path);
         if program == "git-receive-pack"
-            && let Some(args) = self.state.before_push.lock().unwrap().take()
+            && let Some(args) = self.state.before_push.lock().unwrap().pop_front()
         {
             let done = std::process::Command::new("git")
                 .args(&args)

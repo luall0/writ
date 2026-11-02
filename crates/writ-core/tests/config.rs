@@ -12,7 +12,7 @@
 mod common;
 
 use common::*;
-use writ_core::config::{ObjectFormat, PathsCheck, PolicyConfig, PushMode, TicketLink};
+use writ_core::config::{NotesRef, ObjectFormat, PathsCheck, PolicyConfig, PushMode, TicketLink};
 use writ_core::ticket::Operation;
 use writ_core::ticket::TicketRequest;
 
@@ -40,6 +40,30 @@ fn the_test_policy_parses_with_defaults() {
     // Not written: the ledger only (a project's commit conventions may not allow a trailer).
     assert!(!POLICY.contains("dotfiles:\n    ticket_link"));
     assert_eq!(dotfiles.ticket_link, TicketLink::LedgerOnly, "the default");
+    // Notes are written by the daemon (M4.7): taken.
+    let notes =
+        PolicyConfig::from_yaml(&POLICY.replacen("ticket_link: trailer", "ticket_link: notes", 1))
+            .unwrap();
+    let omega = notes.repo(&"omega-code".parse().unwrap()).unwrap();
+    assert_eq!(omega.ticket_link, TicketLink::Notes);
+    // Under git's own notes ref unless the repo says otherwise.
+    assert_eq!(omega.notes_ref, None);
+    assert_eq!(omega.notes_ref(), NotesRef::Commits);
+    assert_eq!(omega.notes_ref().as_ref_name(), "refs/notes/commits");
+    for (value, expected, name) in [
+        ("commits", NotesRef::Commits, "refs/notes/commits"),
+        ("writ", NotesRef::Writ, "refs/notes/writ"),
+    ] {
+        let set = PolicyConfig::from_yaml(&POLICY.replacen(
+            "ticket_link: trailer",
+            &format!("ticket_link: notes\n    notes_ref: {value}"),
+            1,
+        ))
+        .unwrap();
+        let omega = set.repo(&"omega-code".parse().unwrap()).unwrap();
+        assert_eq!(omega.notes_ref(), expected);
+        assert_eq!(omega.notes_ref().as_ref_name(), name);
+    }
     let quick = config.template(&"quick-fix".parse().unwrap()).unwrap();
     assert_eq!(quick.paths_check, PathsCheck::Deny);
     // Defaults: push modes gateway only, no force push, expected paths not required.
@@ -161,11 +185,23 @@ fn errors_name_the_field() {
             "repos.omega-code.ticket_link: ",
         ),
         (
-            // Parsed, never taken: it would ask for no trailer and write no note.
-            "notes, not written yet",
-            POLICY.replacen("ticket_link: trailer", "ticket_link: notes", 1),
-            "repos.omega-code.ticket_link: notes are not written yet (M4.7): use ledger_only \
-             (the default) or trailer",
+            // Where notes go means nothing without notes: a mistake, not a setting.
+            "notes_ref without notes",
+            POLICY.replacen(
+                "ticket_link: trailer",
+                "ticket_link: trailer\n    notes_ref: writ",
+                1,
+            ),
+            "repos.omega-code.notes_ref: only allowed when ticket_link is notes",
+        ),
+        (
+            "unknown notes ref",
+            POLICY.replacen(
+                "ticket_link: trailer",
+                "ticket_link: notes\n    notes_ref: refs/notes/writ",
+                1,
+            ),
+            "repos.omega-code.notes_ref: ",
         ),
         (
             "unknown object format",

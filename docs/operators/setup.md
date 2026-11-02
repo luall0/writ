@@ -124,3 +124,33 @@ through a socket only the daemon's user reaches; it is never in a command line, 
 environment variable, a URL, the mirror's config or a log. A redirect is refused, and git
 reaches only the registry's host, through a proxy that caps what upstream sends like
 `max_fetch` does for SSH.
+
+## Notes on the remote
+
+A repo with `ticket_link: notes` ([reference](policy-yaml.md#the-repo-registry-reposname))
+gets a git note per pushed commit, `Writ: <lease id>`, written and pushed by the daemon after
+each push ([how](../architecture/gateway.md#notes)), under `refs/notes/commits` (git's own
+notes ref) unless `notes_ref: writ` says `refs/notes/writ`:
+
+1. **The credential pushes one more ref.** The repo's upstream key or token must be allowed to
+   push the notes ref, not only branches: write access does it on GitHub, Codeberg,
+   Forgejo and Gitea; a rule that limits which refs may be pushed must let it through. A
+   refused notes push leaves the branch pushed, writes a denied `notes` line in the audit log
+   with the remote's reason, and the next push of the repo writes the missing notes.
+2. **Reading them.** Forgejo and Gitea show the notes under `refs/notes/commits` on a
+   commit's page. GitHub's web interface shows none; from a clone, `git log` shows them once
+   fetched:
+
+   <!-- e2e: crates/writ-e2e/tests/scenarios/notes.rs -->
+   ```sh
+   git fetch origin refs/notes/commits:refs/notes/commits
+   git log
+   ```
+
+   With `notes_ref: writ`, fetch `refs/notes/writ` and read them with
+   `git log --notes=writ`. Under `refs/notes/commits`, notes a person wrote there stay: the
+   daemon adds its lines to theirs.
+
+3. **What a note is worth.** Notes commits are unsigned (`writd <writd@writ.invalid>`), and
+   anyone who can push to the remote can write one: a note is a readable copy of the link,
+   the daemon's ledger is the reference.
