@@ -418,6 +418,12 @@ impl Config {
                 path.display()
             );
         }
+        if config.max_pending == 0 {
+            return Err(fail(
+                "max_pending: 0, must be at least 1 (no ticket could ever wait for the approver)"
+                    .to_owned(),
+            ));
+        }
         config.submissions.limits().check().map_err(fail)?;
         config.mirrors.check().map_err(fail)?;
         let per_lease = config.sign_requests.per_lease;
@@ -637,6 +643,18 @@ mod tests {
         let without = MINIMAL.replace("mirrors: { known_hosts: upstream_known_hosts }\n", "");
         let error = format!("{:#}", load(&without).unwrap_err());
         assert!(error.contains("mirrors"), "{error}");
+    }
+
+    #[test]
+    fn max_pending_is_at_least_one() {
+        let with = |yaml: &str| load(&format!("{MINIMAL}{yaml}\n"));
+        assert_eq!(with("max_pending: 1").unwrap().max_pending, 1);
+        assert_eq!(with("max_pending: 100000").unwrap().max_pending, 100_000);
+        let error = format!("{:#}", with("max_pending: 0").unwrap_err());
+        assert!(
+            error.contains("max_pending: 0, must be at least 1"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ conventions, hard rules and commands, and points here for details.
   (and the tests that try to break each guarantee) and what it doesn't, residual risks.
 - [Security conventions](security.md): the rules every change follows, the security
   checklist, the untrusted inputs and their bounds, how each rule is enforced.
-- [Roadmap](roadmap.md): milestones M0–M10 (with M4.5, M7.5) to v1, in order, with acceptance checklists.
+- [Roadmap](roadmap.md): milestones M0–M10 (with M4.5, M4.7, M7.5) to v1, in order, with acceptance checklists.
 - [Backlog](backlog/README.md): ideas beyond v1 and how one becomes work.
 - [History](history/README.md): what was built, in order.
 - [Decisions](decisions.md): decision log (Q1–Q32) and open questions.

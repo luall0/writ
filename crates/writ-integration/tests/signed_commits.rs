@@ -24,13 +24,15 @@ use writ_integration::{audit_events, stderr};
 /// git's status when the signing program fails.
 const SIGNING_FAILED: i32 = 128;
 
-/// One repo, `main` and tags protected, a template that refuses paths outside the ticket's.
+/// One repo, `main` and tags protected, its commits carrying their `Writ:` trailer; a
+/// template that refuses paths outside the ticket's.
 const STRICT: &str = r#"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
     protected_refs: ["refs/heads/main", "refs/tags/*"]
+    ticket_link: trailer
 templates:
   strict:
     repos: [demo]

@@ -7,7 +7,7 @@ repos:
   setup:      { upstream: "ssh://git@forgejo/writ/setup.git",      upstream_credential: upstream-setup,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
   lifecycle:  { upstream: "ssh://git@forgejo/writ/lifecycle.git",  upstream_credential: upstream-lifecycle,  protected_refs: ["refs/heads/main", "refs/tags/*"] }
   narrowing:  { upstream: "ssh://git@forgejo/writ/narrowing.git",  upstream_credential: upstream-narrowing,  protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  demo:       { upstream: "ssh://git@forgejo/writ/demo.git",       upstream_credential: upstream-demo,          protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  demo:       { upstream: "ssh://git@forgejo/writ/demo.git",       upstream_credential: upstream-demo,          protected_refs: ["refs/heads/main", "refs/tags/*"], ticket_link: trailer }
   whole:      { upstream: "ssh://git@forgejo/writ/whole.git",      upstream_credential: upstream-whole,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
   denials:    { upstream: "ssh://git@forgejo/writ/denials.git",    upstream_credential: upstream-denials,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
   moved:      { upstream: "ssh://git@forgejo/writ/moved.git",      upstream_credential: upstream-moved,      protected_refs: ["refs/heads/main", "refs/tags/*"] }

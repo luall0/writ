@@ -24,7 +24,7 @@ repos:
     upstream_credential: upstream-github-01   # SSH key on my GitHub account (account-wide access), id in the signer
     protected_refs: ["refs/heads/main", "refs/tags/*"]   # never pushable by any lease
     push_modes: [gateway]                     # default
-    ticket_link: trailer                      # trailer | notes | ledger_only
+    ticket_link: trailer                      # ledger_only (default) | trailer | notes
     object_format: sha1                       # sha1 (default) | sha256: commits signed only in it
   homelab-scripts:
     upstream: ssh://git@forgejo.home/user/homelab-scripts.git
@@ -44,7 +44,8 @@ repos:
       allow_account_wide: false               # refuse if the credential isn't repo-scoped
 ```
 
-Defaults: `protected_refs: []`, `push_modes: [gateway]`, `ticket_link: trailer`,
+Defaults: `protected_refs: []`, `push_modes: [gateway]`, `ticket_link: ledger_only` (many
+projects' commit conventions don't allow an extra trailer),
 `object_format: sha1` (GitHub and most remotes have only SHA-1 repositories; a commit is
 signed only in its repo's format, so a SHA-256 repository never gets SHA-1 objects signed). The
 `direct_ssh` section is required with the `direct_ssh` push mode and refused without it.
@@ -329,11 +330,12 @@ revives a used-up lease.
   protects it.
 - Signing names the repo the commit is for; the ledger records it, and a push only accepts
   commits signed under the same lease **for the same repo**.
-- `ticket_link` (per repo): with `trailer`, every commit must carry exactly one `Writ: <id>`
+- `ticket_link` (per repo, `ledger_only` by default): with `trailer`, every commit must carry exactly one `Writ: <id>`
   trailer (found the way git finds trailers: the message's last paragraph, the key in any
   case) matching the lease, or signing is refused. The trailer must be in the message **before** signing; the
   daemon never rewrites commits. With `notes`, the daemon attaches a note under
-  `refs/notes/writ` and pushes it upstream. With `ledger_only`, the link exists only in the
+  `refs/notes/writ` and pushes it upstream (from [M4.7](roadmap.md#m47--ticket-link-in-git-notes);
+  until then the daemon refuses `notes` when it loads the policy). With `ledger_only`, the link exists only in the
   daemon.
 - `paths_check` (per template): compares files touched by each commit with `expected_paths`.
   `warn` signs and records a warning for the activity report (in the `sign` audit line);

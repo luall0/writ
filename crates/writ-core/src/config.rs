@@ -33,15 +33,18 @@ impl fmt::Display for PushMode {
     }
 }
 
-/// How a commit is linked to its ticket on the remote.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How a commit is linked to its ticket on the remote. `ledger_only` by default: many
+/// projects' commit conventions don't allow an extra trailer, and the ledger links every
+/// commit to its lease whatever this says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TicketLink {
     /// Every commit carries `Writ: <lease id>`, checked before signing.
     Trailer,
-    /// A git note under `refs/notes/writ`.
+    /// A git note under `refs/notes/writ`: refused when the policy is loaded until M4.7.
     Notes,
     /// Only the daemon's ledger.
+    #[default]
     LedgerOnly,
 }
 
@@ -101,7 +104,7 @@ pub struct RepoEntry {
     pub protected_refs: BTreeSet<RefPattern>,
     #[serde(default = "default_push_modes")]
     pub push_modes: BTreeSet<PushMode>,
-    #[serde(default = "default_ticket_link")]
+    #[serde(default)]
     pub ticket_link: TicketLink,
     /// The repository's object format (`sha1`, the default, or `sha256`).
     #[serde(default)]
@@ -142,10 +145,6 @@ pub struct Template {
 
 fn default_push_modes() -> BTreeSet<PushMode> {
     BTreeSet::from([PushMode::Gateway])
-}
-
-fn default_ticket_link() -> TicketLink {
-    TicketLink::Trailer
 }
 
 fn default_paths_check() -> PathsCheck {
@@ -260,6 +259,13 @@ fn validate_repo(name: &RepoName, repo: &RepoEntry) -> Result<(), FieldError> {
         return Err(FieldError::at(
             at("push_modes"),
             "must list at least one push mode",
+        ));
+    }
+    // Taken, it would ask for no trailer and write no note: less than the operator asked for.
+    if repo.ticket_link == TicketLink::Notes {
+        return Err(FieldError::at(
+            at("ticket_link"),
+            "notes are not written yet (M4.7): use ledger_only (the default) or trailer",
         ));
     }
     let wants_direct = repo.push_modes.contains(&PushMode::DirectSsh);

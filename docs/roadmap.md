@@ -30,6 +30,7 @@ an unchanged core.
 | M4.1 | [Real end-to-end scenarios](history/m4.1-real-end-to-end-scenarios.md) ✅ | The operator's and the agent's paths run for real in containers against Forgejo, in CI: every command and flag in a scenario, the guides' commands the ones the pipeline runs, heavy concurrency; `writ prove-key` and verified commits on the account |
 | M4.5 | [HTTPS upstream](history/m4.5-https-upstream.md) ✅ | Upstream over HTTPS with a token: the daemon's own credential helper fed by a one-operation socket, a one-operation proxy capping bytes and reaching only the registry's host, the certificate verified, no redirect |
 | M4.6 | [Review after M4.5](history/m4.6-review-after-m4.5.md) ✅ | The security and code quality review after M4.5 and its fixes: a push's mirror never held by a client, the mirror lock with a deadline, `mirrors.ca_certs` the only trust, GnuTLS's certificate refusal read, the ledger before a push's walk, `mirrors.git`, `writ-mirror` split by concern |
+| M4.7 | [Ticket link in git notes](#m47--ticket-link-in-git-notes) | `ticket_link: notes`: the daemon writes each signed commit's lease in a note under `refs/notes/writ` and pushes it upstream itself, the commit untouched |
 | M5 | [Sealed start and admin changes](#m5--sealed-start-and-signed-admin-changes) | Encrypted keystore, `writ unseal`, signed changes to approvers, templates, registry |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
@@ -126,6 +127,39 @@ GnuTLS's certificate refusal recognized; the ledger read before a push's objects
 `mirrors.git`; one `MirrorError` per cause; the arithmetic lint in `writ-mirror` and
 `writ-gateway`; `mirror.rs` split by concern), and the review loop's.
 
+## M4.7 — Ticket link in git notes
+
+[Lease model § rules](lease-model.md#rules), [Q25](decisions.md). `ticket_link: notes` is
+refused at load until this milestone. Projects whose commit conventions don't allow a
+`Writ:` trailer still get the lease link on the remote, readable without asking the daemon:
+a git note, which annotates a commit without changing it (same hash, same signature).
+
+- A note per pushed commit under `refs/notes/writ` (`Writ: <lease id>`, the same text as the
+  trailer), written by the daemon from its ledger, never by the agent: agents push branches
+  only, and a pushed `refs/notes/…` stays refused (`ref`).
+- The notes ref is shared by every lease on the repo: the daemon fetches it with the mirror,
+  adds the notes for the commits a push brings (only those the ledger holds for that lease
+  and repo), and pushes it upstream after the branch, as a fast-forward, under the mirror
+  lock; a remote that moved it meanwhile gets a fetch, a merge of the notes
+  (`git notes merge -s cat_sort_uniq`) and one retry, then a refusal logged.
+- What the remote does with notes: kept by all; shown by Forgejo and Gitea on the commit
+  page, not by GitHub's web interface (`git log --notes=writ` after
+  `git fetch origin refs/notes/writ:refs/notes/writ`). The operator guide says so.
+- A notes push that fails doesn't undo the branch push (the commit is already upstream and in
+  the ledger); it is logged, and the next push of that repo writes the missing notes.
+- Decide before building: whether M9's `proxy` mode (no mirror) writes notes too, or refuses
+  `notes` with `proxy`.
+
+Acceptance:
+- [ ] A repo with `ticket_link: notes` takes commits without a trailer; after a push, the
+      remote has a note under `refs/notes/writ` for each pushed commit naming its lease, and
+      every commit's hash and signature are unchanged.
+- [ ] Two leases pushing to one repo at once both get their notes; none is lost.
+- [ ] A notes ref moved upstream meanwhile is merged and pushed again; a remote that refuses
+      the notes push leaves the branch pushed, an audit line, and the notes written next time.
+- [ ] An agent pushing `refs/notes/writ` (or any `refs/notes/…`) is refused (`ref`).
+- [ ] End to end against Forgejo: the note shows on the commit page.
+
 ## M5 — Sealed start and signed admin changes
 
 [Signer and sealing](architecture/signer.md#startup-and-sealing),
@@ -171,7 +205,8 @@ The workflow the agent follows ([Clients](architecture/clients.md#client-list),
 - `skill/writ/SKILL.md`: think through the scope, write and submit the ticket, wait, revise on
   refusal, amend on an out-of-ticket denial, close with a summary. One skill for both
   wirings: the agent always runs git through `writ git …` (any command; plain git is the
-  same in a `--whole-repo` clone), and adds the `Writ:` trailer; decided in M3.
+  same in a `--whole-repo` clone), and adds the `Writ:` trailer where the repo's `ticket_link`
+  is `trailer`; decided in M3.
 - Amendments (`amends: <id>`): the original lease runs while pending, replaced once signed.
   An amendment changes scope, not time (decided after the M3.5 review,
   [M3.6](history/m3.6-review-after-m3.5.md)): its `expires_at` is capped at the lease's, so

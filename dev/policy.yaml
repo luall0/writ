@@ -4,6 +4,7 @@ repos:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-dev-01
     protected_refs: ["refs/heads/main", "refs/tags/*"]
+    ticket_link: trailer             # each commit carries `Writ: <lease id>` (the manual checks)
 templates:
   feature-branch:
     repos: [demo]

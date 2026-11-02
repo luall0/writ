@@ -37,6 +37,9 @@ fn the_test_policy_parses_with_defaults() {
     );
     let dotfiles = config.repo(&repo("dotfiles")).unwrap();
     assert!(dotfiles.direct_ssh.is_some());
+    // Not written: the ledger only (a project's commit conventions may not allow a trailer).
+    assert!(!POLICY.contains("dotfiles:\n    ticket_link"));
+    assert_eq!(dotfiles.ticket_link, TicketLink::LedgerOnly, "the default");
     let quick = config.template(&"quick-fix".parse().unwrap()).unwrap();
     assert_eq!(quick.paths_check, PathsCheck::Deny);
     // Defaults: push modes gateway only, no force push, expected paths not required.
@@ -156,6 +159,13 @@ fn errors_name_the_field() {
             "unknown ticket link",
             POLICY.replacen("ticket_link: trailer", "ticket_link: footer", 1),
             "repos.omega-code.ticket_link: ",
+        ),
+        (
+            // Parsed, never taken: it would ask for no trailer and write no note.
+            "notes, not written yet",
+            POLICY.replacen("ticket_link: trailer", "ticket_link: notes", 1),
+            "repos.omega-code.ticket_link: notes are not written yet (M4.7): use ledger_only \
+             (the default) or trailer",
         ),
         (
             "unknown object format",
