@@ -316,6 +316,15 @@ pub struct TelegramConfig {
     pub api_base: Option<String>,
 }
 
+/// The directory a configuration file is in: `.` for a bare name (`writd.yaml`), whose
+/// parent is the empty path, not none.
+fn directory_of(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
 impl Config {
     /// Reads the file and resolves relative paths against its directory.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
@@ -326,7 +335,7 @@ impl Config {
         // Absolute: the daemon hands these paths to git, which resolves a relative one from
         // wherever it runs (a relative `core.hooksPath` is looked up inside the repository,
         // where there is no hook, and git then takes the push unchecked).
-        let base = std::path::absolute(path.parent().unwrap_or(Path::new("."))).map_err(|e| {
+        let base = std::path::absolute(directory_of(path)).map_err(|e| {
             anyhow::anyhow!("{}: cannot resolve its directory: {e}", path.display())
         })?;
         let base = base.as_path();
@@ -487,6 +496,22 @@ mod tests {
             let error = format!("{:#}", with(yaml).unwrap_err());
             assert!(error.contains(expected), "{yaml}: {error}");
         }
+    }
+
+    #[test]
+    fn a_bare_config_name_is_in_the_current_directory() {
+        // `writd run writd.yaml`, as the operator guide says it (found by `make e2e`: the
+        // empty parent of a bare name could not be made absolute).
+        assert_eq!(directory_of(Path::new("writd.yaml")), Path::new("."));
+        assert_eq!(directory_of(Path::new("dev/writd.yaml")), Path::new("dev"));
+        assert_eq!(
+            directory_of(Path::new("/etc/writd.yaml")),
+            Path::new("/etc")
+        );
+        assert_eq!(directory_of(Path::new("/")), Path::new("."));
+        assert!(std::path::absolute(directory_of(Path::new("writd.yaml"))).is_ok());
+        // any error: the standard library refuses an empty path; that refusal was the bug.
+        assert!(std::path::absolute(Path::new("")).is_err());
     }
 
     #[test]
