@@ -222,11 +222,14 @@ Settled with the user before building (the [decision log](decisions.md) has the 
   doesn't stop the daemon: its syncs and pushes are refused with the command to run. This
   changes in [M7.6](#m76--hardware-wrapped-secrets): the token is wrapped to the daemon
   host's hardware recipient and unwrapped there only when used.
-- **Recovery, when every approver key is lost:** `writd recover-approvers <writd.yaml>
-  <file>`, run on the host as the daemon's user with the daemon stopped, asks for the
-  keystore passphrase, replaces the approvers in force (with a new MAC) and logs it. It needs
-  both the host and the passphrase. The operator guide also says to enroll a second approver
-  key from the start (a YubiKey, `sk-ssh-ed25519`).
+- **Recovery, when every approver or reader key is lost, or to apply a file edited on the
+  host:** `writd recover <writd.yaml> <policy|approvers|readers> <file>`, run on the host as
+  the daemon's user with the daemon stopped, asks for the keystore passphrase, checks the file
+  like an admin change, puts it in force as a new version (its own MAC, the reason "recovered
+  on the host") and logs it (`admin`, no approver). It needs both the host and the
+  passphrase, which together open every secret already: it gives an attacker nothing new.
+  The operator guide also says to enroll a second approver key from the start (a YubiKey,
+  `sk-ssh-ed25519`) and a second reader key.
 
 **The TLS key behind the `Signer`.** Like every other key: under a key id (`tls-01`, P-256)
 in the boot tier, its own `Signer` queue; the self-signed certificate is made by signing
@@ -258,7 +261,7 @@ Steps (one commit each, `make ci` green):
 2. The TLS key behind the `Signer`: the certificate signed through it, the rustls adapter.
 3. The sealed start and `writ unseal`; the notification token's two modes; leases reloaded.
 4. Admin changes: the versions in force and their MAC, `writ-admin/1`, `writ admin show` and
-   `apply`, applied live, the files written back, `writd recover-approvers`.
+   `apply`, applied live, the files written back, `writd recover`.
 5. Keys and tokens through admin changes: keys made by a policy change, `writ admin token`.
 6. Process hardening: the interface, its contract suite, the two platform crates.
 7. The end-to-end pipeline on the sealed keystore, with the new scenarios.
@@ -282,7 +285,8 @@ Acceptance:
 - [ ] A policy change naming a new signing key or upstream credential creates it and gives
       its public key; `writ admin token` adds a token that never appears in clear on the
       daemon host; an `https://` repo without its token is refused with the reason.
-- [ ] `writd recover-approvers` replaces the approvers only with the passphrase, and is logged.
+- [ ] `writd recover` replaces the policy, approvers or readers only with the passphrase,
+      checked like an admin change, and is logged; without the passphrase it changes nothing.
 - [ ] The TLS key is only in the boot tier and the `Signer`: no PEM key file, no copy outside
       the `Signer`; HTTPS approvals work as in M2, with the certificate pinned from
       `writd tls-fingerprint`.
@@ -504,6 +508,25 @@ backend later brings its recipient as one more implementation, as it brings its 
   any machine, through the signed admin change of M5 (`writ admin token`, which then
   encrypts to the daemon host's hardware recipient: the secret lives on the daemon host,
   unwrapped there only when used, instead of being decrypted at unseal).
+- **Auto-unseal, opt-in** (`unseal: auto`, never the default): the daemon starts open, with
+  no passphrase and no approver, only when nothing on the host opens a secret without a
+  human. Every signing key in a hardware backend (the agent signing keys, the `ssh://`
+  upstream credentials, and the CA key, moved behind the `Signer` for this), and every secret
+  wrapped only to hardware recipients or the offline recovery identity (the tokens, the
+  authority MAC key, the keystore's identity). Exempt: the notification token and the boot
+  tier's transport keys, which may stay software. Anything else still software: the daemon
+  refuses to start, naming each one (refused, never adjusted). The start is logged (`unseal`,
+  "automatic") and notified. With the sealed start of M5 and software keys, there is no way
+  to start unsealed.
+- **The boot tier in hardware, as an option:** the TLS key on the Secure Enclave (M7.5's
+  backend), and the SSH host key behind the `Signer` (an adapter so the gateway signs its host
+  key proofs through it), so a copy of the boot tier reveals no key either.
+- `writd recover` with auto-unseal takes the offline recovery identity (or the passphrase if
+  one is kept), never the hardware alone: host access must not replace signed admin changes.
+- **The operator guide** gets a step-by-step section for auto-unseal ([sealing](operators/sealing.md#starting-without-a-human-auto-unseal-m76)):
+  moving each key and secret to hardware, making and checking the recovery identity, the
+  `writd.yaml` change, checking the daemon took it, and the refusal when something is still
+  software; its commands run in the end-to-end pipeline.
 
 Acceptance:
 - [ ] **The graft test:** the Secure Enclave recipient is a new implementation, `writd`'s
@@ -518,6 +541,14 @@ Acceptance:
       operation that needs one is refused with a reason, the daemon keeps running.
 - [ ] A secret's plaintext is not in the daemon's memory between operations (checked on a
       memory dump of the idle daemon).
+- [ ] `unseal: auto` starts the daemon open with every key and secret in hardware (the
+      notification token and the transport keys aside), logged and notified; with any one
+      still software it refuses to start, naming it; `writd recover` then needs the recovery
+      identity, never the hardware alone.
+- [ ] The boot tier in hardware: the TLS key on the Secure Enclave and the SSH host key behind
+      the `Signer` work as the software ones, pinned the same way.
+- [ ] The operator guide's auto-unseal section, followed as written, reaches a daemon that
+      starts open, and its refusal when one secret is left in software.
 
 ## M8 — Detached deployment
 

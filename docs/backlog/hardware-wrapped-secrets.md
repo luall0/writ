@@ -32,6 +32,14 @@ The keystore's data key is one more wrapped secret, so unsealing needs the appro
 and no passphrase. A recovery recipient (an age X25519 identity kept offline) keeps one lost
 device from losing everything.
 
+**Auto-unseal (`unseal: auto`, opt-in):** decided with the user. The daemon starts open with
+no human only when nothing on the host opens a secret without one: every signing key in
+hardware (the CA key moved behind the `Signer`), every secret wrapped only to hardware
+recipients or the offline recovery identity; the notification token and the boot tier's
+transport keys exempt (the boot tier gets a hardware option). Anything else: refused at start,
+naming it. `writd recover` then takes the recovery identity, never the hardware alone. The
+operator guide gets a step-by-step section ([sealing](../operators/sealing.md)).
+
 ## Scope and non-goals
 
 - In M7.6: the unwrap interface and its contract suite, the passphrase identity (M5's) and a

@@ -12,7 +12,9 @@ against the lease, and is the only thing that pushes upstream.
 2. Copy the templates and fill them in: [`writd.yaml`](templates/writd.yaml),
    [`policy.yaml`](templates/policy.yaml). Required keys are set; optional ones are commented
    out at their default.
-3. [Work beside an agent](good-practice.md): wrapper or whole repo, keeping your own keys
+3. [Seal, unseal, recover](sealing.md): the keystore, `writ unseal` after each start, the
+   notification token's choice, getting access back, and (from M7.6) starting without a human.
+4. [Work beside an agent](good-practice.md): wrapper or whole repo, keeping your own keys
    yours, guardrails, checking what landed.
 
 ## Reference
