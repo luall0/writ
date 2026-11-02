@@ -40,7 +40,7 @@ pub mod testing;
 pub mod upstream;
 
 pub use mirror::{
-    LOCAL_WORK_DEADLINE, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorGuard, Mirrors,
+    LOCAL_WORK_DEADLINE, MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorGuard, Mirrors,
     NOTES_AUTHOR, Note, NotesPushed, RefMove, SyncReport, UpstreamUpdate,
 };
 

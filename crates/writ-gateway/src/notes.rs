@@ -2,14 +2,20 @@
 //! took a push to a repo that asks for notes, its commits wait for their note in the ledger,
 //! and a job writes and pushes every waiting note of the repo, under the mirror lock, after the
 //! push (it waits for the push's `receive-pack` to give the mirror back). A job that fails
-//! leaves the notes waiting: the repo's next push writes them.
+//! leaves the notes waiting: the repo's next push writes them, or the next reconcile.
+//!
+//! The reconcile ([`reconcile`], after each sync of a mirror: at the daemon's start and every
+//! `sync_every`) catches what a push's own job can't: the ledger's commits for a notes repo
+//! that the mirror holds (so upstream has them) but that were never recorded as waiting (a
+//! daemon stopped between upstream taking a push and the record; commits pushed before the
+//! repo asked for notes: a backfill), and notes left waiting by a job that failed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use writ_approval::{EventKind, GatewayDenial, PendingNote};
 use writ_core::caller::CallerFacts;
 use writ_core::names::{CommitId, KeyId, RepoName, TicketId};
-use writ_mirror::{MAX_NOTES, Note};
+use writ_mirror::{MAX_LOOKUPS, MAX_NOTES, Note};
 
 use crate::Gateway;
 
@@ -45,6 +51,58 @@ pub(crate) fn after_push(
             Err(_) => tracing::error!(repo = %repo, "recording a push's notes panicked"),
         }
     });
+}
+
+/// Brings `repo`'s notes up to date, when it asks for notes: its ledger commits with no note
+/// state that the mirror holds (the newest [`MAX_LOOKUPS`]) recorded as waiting, then the notes
+/// job for everything waiting.
+pub(crate) async fn reconcile(gateway: &Gateway, repo: &RepoName) {
+    let unrecorded = {
+        let (service, repo) = (gateway.service().clone(), repo.clone());
+        tokio::task::spawn_blocking(move || service.notes_unrecorded(&repo, MAX_LOOKUPS)).await
+    };
+    let unrecorded = match unrecorded {
+        Ok(Ok(Some(unrecorded))) => unrecorded,
+        Ok(Ok(None)) => return,
+        Ok(Err(e)) => {
+            tracing::error!(repo = %repo, error = %e, "cannot read the ledger for notes");
+            return;
+        }
+        Err(_) => return,
+    };
+    if !unrecorded.is_empty() {
+        let ids: Vec<CommitId> = unrecorded.iter().map(|(id, _)| id.clone()).collect();
+        let held = match gateway.shared.config.mirrors.lock(repo).await {
+            Ok(guard) => guard.held_commits(&ids).await,
+            Err(e) => Err(e),
+        };
+        let held = match held {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::warn!(repo = %repo, error = %e, "cannot look the ledger's commits up for notes");
+                return;
+            }
+        };
+        let mut by_lease: BTreeMap<TicketId, Vec<CommitId>> = BTreeMap::new();
+        for (commit, lease) in unrecorded {
+            if held.contains(&commit) {
+                by_lease.entry(lease).or_default().push(commit);
+            }
+        }
+        for (lease, commits) in by_lease {
+            tracing::info!(repo = %repo, lease = %lease, notes = commits.len(), "notes found missing");
+            let (service, for_repo) = (gateway.service().clone(), repo.clone());
+            let recorded = tokio::task::spawn_blocking(move || {
+                service.notes_to_write(&lease, &for_repo, &commits)
+            })
+            .await;
+            if !matches!(recorded, Ok(Ok(_))) {
+                tracing::error!(repo = %repo, "cannot record missing notes");
+                return;
+            }
+        }
+    }
+    write(gateway, repo).await;
 }
 
 /// Writes and pushes the notes waiting on `repo` (at most [`MAX_NOTES`]; the rest go with the

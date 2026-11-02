@@ -35,7 +35,7 @@ use crate::known_hosts::PinnedHosts;
 use crate::upstream::{HttpsUrl, SshUrl};
 use crate::{MirrorError, Result};
 
-pub use notes::{MAX_NOTE_TEXT, MAX_NOTES, NOTES_AUTHOR, Note, NotesPushed};
+pub use notes::{MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, NOTES_AUTHOR, Note, NotesPushed};
 
 /// Syncs that may run at once, all mirrors together.
 pub const MAX_SYNCS: usize = 4;

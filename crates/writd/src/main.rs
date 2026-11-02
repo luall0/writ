@@ -302,8 +302,10 @@ fn spawn_sweeper(service: Arc<Service>) {
 
 /// Syncs every mirror from upstream every `every` (the first right away), one after the other,
 /// unless a fetch or a push synced it more recently. A failure is logged and the mirror stays
-/// stale: fetches and pushes then try again, and are refused if they fail too.
-fn spawn_mirror_sync(mirrors: Mirrors, every: Duration) {
+/// stale: fetches and pushes then try again, and are refused if they fail too. After a mirror
+/// synced (or was fresh), its notes are brought up to date (`Gateway::reconcile_notes`): at
+/// start, and every `every`.
+fn spawn_mirror_sync(mirrors: Mirrors, gateway: Gateway, every: Duration) {
     tokio::spawn(async move {
         let mut ticks = tokio::time::interval(every);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -316,8 +318,12 @@ fn spawn_mirror_sync(mirrors: Mirrors, every: Duration) {
                         tracing::info!(%repo, moved = moved.len().saturating_add(more), "mirror synced");
                     }
                     Ok(_) => tracing::debug!(%repo, "mirror up to date"),
-                    Err(e) => tracing::warn!(%repo, error = %e, "mirror sync failed"),
+                    Err(e) => {
+                        tracing::warn!(%repo, error = %e, "mirror sync failed");
+                        continue;
+                    }
                 }
+                gateway.reconcile_notes(&repo).await;
             }
         }
     });
@@ -385,6 +391,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
         spawn_sweeper(service);
         spawn_mirror_sync(
             mirrors,
+            gateway.clone(),
             Duration::from_secs(config.mirrors.sync_every.seconds()),
         );
         until_stopped(&mut servers).await

@@ -136,8 +136,13 @@ notes ref) unless `notes_ref: writ` says `refs/notes/writ`:
    push the notes ref, not only branches: write access does it on GitHub, Codeberg,
    Forgejo and Gitea; a rule that limits which refs may be pushed must let it through. A
    refused notes push leaves the branch pushed, writes a denied `notes` line in the audit log
-   with the remote's reason, and the next push of the repo writes the missing notes.
-2. **Reading them.** Forgejo and Gitea show the notes under `refs/notes/commits` on a
+   with the remote's reason, and the missing notes are written by the repo's next push or the
+   next background sync (`sync_every`), which tries again until the remote takes them (one
+   denied line per lease each time).
+2. **Switching a repo to notes backfills it.** Commits the daemon signed and pushed to the
+   repo before it asked for notes get theirs at the next background sync (or at start), from
+   the ledger: their lease is known.
+3. **Reading them.** Forgejo and Gitea show the notes under `refs/notes/commits` on a
    commit's page. GitHub's web interface shows none; from a clone, `git log` shows them once
    fetched:
 
@@ -151,6 +156,6 @@ notes ref) unless `notes_ref: writ` says `refs/notes/writ`:
    `git log --notes=writ`. Under `refs/notes/commits`, notes a person wrote there stay: the
    daemon adds its lines to theirs.
 
-3. **What a note is worth.** Notes commits are unsigned (`writd <writd@writ.invalid>`), and
+4. **What a note is worth.** Notes commits are unsigned (`writd <writd@writ.invalid>`), and
    anyone who can push to the remote can write one: a note is a readable copy of the link,
    the daemon's ledger is the reference.

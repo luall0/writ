@@ -34,6 +34,8 @@ pub const NOTES_AUTHOR: (&str, &str) = ("writd", "writd@writ.invalid");
 pub const MAX_NOTES: usize = 10_000;
 /// The most bytes of one note's text.
 pub const MAX_NOTE_TEXT: usize = 64 * 1024;
+/// The most commits [`MirrorGuard::held_commits`] looks up at once.
+pub const MAX_LOOKUPS: usize = 100_000;
 /// The most of a local git's output read (an object id, a merge's words).
 const MAX_LOCAL_OUTPUT: usize = 64 * 1024;
 
@@ -110,6 +112,53 @@ impl MirrorGuard {
                 reason: format!("{notes_ref} moved again while the notes were merged"),
             }),
         }
+    }
+
+    /// Which of `commits` (at most [`MAX_LOOKUPS`]) the mirror holds as commits. Only
+    /// upstream's objects (a sync) and those of pushes upstream took (git moves a push's
+    /// objects out of its quarantine only after the daemon's yes, which comes after upstream's)
+    /// get there: a commit the mirror holds is one upstream has, or had. One `cat-file`.
+    pub async fn held_commits(&self, commits: &[CommitId]) -> Result<BTreeSet<CommitId>> {
+        if commits.len() > MAX_LOOKUPS {
+            return Err(MirrorError::Notes(format!(
+                "at most {MAX_LOOKUPS} commits looked up at once"
+            )));
+        }
+        if commits.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let mut input = String::new();
+        for commit in commits {
+            let _ = writeln!(input, "{commit}");
+        }
+        let until = from_now(LOCAL_WORK_DEADLINE);
+        let max_output = commits.len().saturating_mul(96).max(MAX_LOCAL_OUTPUT);
+        let mut cmd = git::command(&self.shared.config.git, Hooks::None);
+        cmd.arg("--git-dir")
+            .arg(&self.repo.path)
+            .args(["cat-file", "--batch-check"]);
+        let left = until.saturating_duration_since(Instant::now());
+        let done = match process::run(cmd, Some(input.into_bytes()), left, max_output).await {
+            Ok(done) => done,
+            Err(RunError::Timeout) => {
+                return Err(MirrorError::ReadTimeout {
+                    seconds: LOCAL_WORK_DEADLINE.as_secs(),
+                });
+            }
+            Err(RunError::Spawn(e) | RunError::Wait(e)) => return Err(MirrorError::Spawn(e)),
+        };
+        if !done.status.success() {
+            return Err(MirrorError::Git {
+                repo: self.repo.name.clone(),
+                what: "cat-file",
+                stderr: crate::shown(&done.stderr),
+            });
+        }
+        let asked: BTreeSet<&CommitId> = commits.iter().collect();
+        Ok(held(&done.stdout)
+            .into_iter()
+            .filter(|id| asked.contains(id))
+            .collect())
     }
 
     /// The batch as a commit of its own: each note's text a blob (one per distinct text), a
@@ -303,6 +352,21 @@ impl MirrorGuard {
     }
 }
 
+/// The commits `cat-file --batch-check` found: its `<id> commit <size>` lines (`<id> missing`
+/// and any other kind left out).
+fn held(stdout: &[u8]) -> Vec<CommitId> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split(' ');
+            match (words.next(), words.next()) {
+                (Some(id), Some("commit")) => id.parse().ok(),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Whether a push's porcelain output says the remote refused the notes ref because it holds
 /// something ours doesn't (`[rejected] (fetch first)` or `(non-fast-forward)`).
 fn is_behind(stdout: &[u8], notes_ref: &str) -> bool {
@@ -368,6 +432,20 @@ mod tests {
         let commits = "!\trefs/notes/commits:refs/notes/commits\t[rejected] (fetch first)";
         assert!(is_behind(commits.as_bytes(), "refs/notes/commits"));
         assert!(!is_behind(commits.as_bytes(), "refs/notes/writ"));
+    }
+
+    #[test]
+    fn only_the_commits_cat_file_found_are_held() {
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let c = "c".repeat(40);
+        let out = format!("{a} commit 210\n{b} missing\n{c} tree 30\ngarbage\n");
+        let found: Vec<String> = held(out.as_bytes())
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        assert_eq!(found, [a]);
+        assert!(held(b"").is_empty());
     }
 
     #[test]

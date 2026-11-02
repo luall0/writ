@@ -566,6 +566,40 @@ fn a_pushed_commit_waits_for_its_note_until_written() {
 }
 
 #[test]
+fn commits_with_no_note_state_are_listed_newest_first() {
+    let store = Store::open_in_memory().unwrap();
+    let a = active_lease(&store, 1);
+    let b = active_lease(&store, 2);
+    let (omega, other) = ("omega-code".parse().unwrap(), "other".parse().unwrap());
+    for n in [1, 2, 3] {
+        store.ledger_append(&entry(n, &a.id, "omega-code")).unwrap();
+    }
+    store.ledger_append(&entry(4, &b.id, "omega-code")).unwrap();
+    store.ledger_append(&entry(5, &a.id, "other")).unwrap();
+    let up = credential("upstream-01");
+    // 2 waits, 3 is written: neither is unrecorded.
+    store
+        .notes_add_pending(&a.id, &omega, &[commit(2), commit(3)], &up)
+        .unwrap();
+    store
+        .notes_written(&omega, &[note(3, &a.id, "upstream-01")])
+        .unwrap();
+    assert_eq!(
+        store.notes_unrecorded(&omega, 10).unwrap(),
+        [(commit(4), b.id.clone()), (commit(1), a.id.clone())]
+    );
+    assert_eq!(
+        store.notes_unrecorded(&omega, 1).unwrap(),
+        [(commit(4), b.id.clone())]
+    );
+    assert!(store.notes_unrecorded(&omega, 0).unwrap().is_empty());
+    assert_eq!(
+        store.notes_unrecorded(&other, 10).unwrap(),
+        [(commit(5), a.id.clone())]
+    );
+}
+
+#[test]
 fn a_pending_note_without_its_credential_is_refused_as_corrupt() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("writ.db");

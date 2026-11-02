@@ -27,7 +27,8 @@ use writ_integration::binaries::bin;
 use writ_integration::remote::{Mode, TestRemote};
 use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{
-    MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorError, Mirrors, Note, NotesPushed, SyncReport,
+    MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorError, Mirrors, Note, NotesPushed,
+    SyncReport,
 };
 use writ_signer::Signer;
 use writ_signer::software::SoftwareSigner;
@@ -1059,4 +1060,45 @@ fn notes_under_git_s_own_ref_keep_a_person_s_notes_there() {
     );
     // Nothing under refs/notes/writ: one ref per repo.
     assert_eq!(f.notes_ref(&upstream), None);
+}
+
+#[test]
+fn the_mirror_says_which_commits_it_holds() {
+    let f = Fixture::new();
+    let first = f.upstream_commit("main", "a");
+    let mirrors = f.open();
+    f.sync(&mirrors).unwrap();
+    let later = f.upstream_commit("main", "b");
+    let tree = f.git_ok(&f.mirror(), &["rev-parse", &format!("{first}^{{tree}}")]);
+    let held = |ids: &[&str]| -> Result<Vec<String>, MirrorError> {
+        let ids: Vec<writ_core::names::CommitId> =
+            ids.iter().map(|id| id.parse().unwrap()).collect();
+        f.runtime.block_on(async {
+            let set = mirrors.lock(&demo()).await?.held_commits(&ids).await?;
+            Ok(set.iter().map(ToString::to_string).collect())
+        })
+    };
+    // Synced: the first; upstream's later one not yet; a tree is no commit.
+    assert_eq!(
+        held(&[&first, &later, &tree]).unwrap(),
+        std::slice::from_ref(&first)
+    );
+    assert!(held(&[]).unwrap().is_empty());
+    f.sync(&mirrors).unwrap();
+    let mut both = vec![first.clone(), later.clone()];
+    both.sort();
+    assert_eq!(held(&[&later, &first]).unwrap(), both);
+    // At most MAX_LOOKUPS at once, on both sides.
+    let many: Vec<String> = (0..=MAX_LOOKUPS).map(|n| format!("{n:040x}")).collect();
+    let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+    match held(&refs) {
+        Err(MirrorError::Notes(reason)) => {
+            assert_eq!(
+                reason,
+                format!("at most {MAX_LOOKUPS} commits looked up at once")
+            );
+        }
+        other => panic!("expected the bound, got {other:?}"),
+    }
+    assert!(held(&refs[..MAX_LOOKUPS]).unwrap().is_empty());
 }

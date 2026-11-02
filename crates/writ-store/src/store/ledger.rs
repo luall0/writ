@@ -120,6 +120,33 @@ impl Store {
         .collect()
     }
 
+    /// The ledger's commits for `repo` with no note state yet (signed, not known to be
+    /// upstream; or from before the repo asked for notes), newest first, at most `limit`,
+    /// each with its lease.
+    pub fn notes_unrecorded(
+        &self,
+        repo: &RepoName,
+        limit: usize,
+    ) -> Result<Vec<(CommitId, TicketId)>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut statement = self.conn.prepare(
+            "SELECT commit_id, lease_id FROM ledger
+             WHERE repo = ?1 AND note IS NULL ORDER BY signed_at DESC, rowid DESC LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![repo.as_str(), limit], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (commit, lease) = row?;
+            let bad = |e: &dyn std::fmt::Display| corrupt(&commit, format!("ledger: {e}"));
+            Ok((
+                commit.parse().map_err(|e| bad(&e))?,
+                lease.parse().map_err(|e| bad(&e))?,
+            ))
+        })
+        .collect()
+    }
+
     /// Marks `notes` of `repo` written: upstream has them. One transaction.
     pub fn notes_written(&self, repo: &RepoName, notes: &[PendingNote]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;

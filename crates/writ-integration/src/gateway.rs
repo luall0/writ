@@ -119,6 +119,8 @@ pub struct GitGateway {
     /// The same repositories over HTTPS, when the repo's upstream is `https://`.
     pub https: Option<HttpsRemote>,
     pub mirrors: writ_mirror::Mirrors,
+    /// The gateway itself (what `writd` calls besides serving: the notes reconcile).
+    pub gateway: Gateway,
 }
 
 impl GitGateway {
@@ -302,6 +304,7 @@ impl GitGateway {
             remote,
             https,
             mirrors,
+            gateway,
         };
         gateway.lease = gateway.session("session");
         gateway

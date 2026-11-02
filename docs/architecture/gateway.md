@@ -333,8 +333,18 @@ separate ref, which names the commits it annotates by their ids and never contai
 5. **The outcome**: pushed, the notes are marked written and each lease gets an allowed
    `notes` line (`count`, `key`: the credential, `refs`); not pushed (refused, unreachable,
    the mirror busy), each lease gets a denied one with the reason, and the notes stay waiting:
-   the repo's next push writes them. The branch push stands either way: its commits are
-   upstream and in the ledger.
+   the repo's next push writes them, or the next reconcile. The branch push stands either way:
+   its commits are upstream and in the ledger.
+6. **The reconcile** (`Gateway::reconcile_notes`), after each sync of a notes repo's mirror
+   (`writd`: at start, then every `sync_every`; not after a failed sync): the ledger's commits
+   for the repo with no note state (the newest 100,000), looked up in the mirror in one
+   `git cat-file --batch-check`; those it holds are upstream's (only upstream's objects and
+   those of pushes upstream took reach the mirror), recorded as waiting with the repo's
+   credential; then the notes job, for those and every note still waiting. It catches a push
+   whose notes were never recorded (the daemon stopped between upstream taking it and the
+   record), commits pushed before the repo asked for notes (a backfill: switching a repo to
+   `notes` notes the commits the daemon signed and pushed before), and notes a failed job left
+   waiting, without waiting for another push. A commit signed and never pushed gets no note.
 
 The mirror's sync takes branches and tags only, never a notes ref: git refuses a fetch naming
 a ref upstream doesn't have (a repo without notes yet), so the notes job keeps the mirror's

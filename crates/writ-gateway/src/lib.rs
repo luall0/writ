@@ -205,6 +205,13 @@ impl Gateway {
         &self.shared.service
     }
 
+    /// Brings the notes of `repo` up to date when it asks for notes (`ticket_link: notes`): the
+    /// ledger's commits upstream has whose note was never recorded, and every note still
+    /// waiting, written and pushed ([`notes`]). Run after each sync of the repo's mirror.
+    pub async fn reconcile_notes(&self, repo: &writ_core::names::RepoName) {
+        notes::reconcile(self, repo).await;
+    }
+
     /// [`Service::authorize`], off the async threads (it reads the store and syncs the audit
     /// log).
     async fn authorize(

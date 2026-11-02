@@ -39,6 +39,26 @@ impl Service {
         Ok(true)
     }
 
+    /// For a repo that asks for notes, the ledger's commits for it with no note state yet,
+    /// newest first, at most `limit`, each with its lease (the notes reconcile looks for those
+    /// upstream has); `None` for a repo that doesn't ask for notes.
+    pub fn notes_unrecorded(
+        &self,
+        repo: &RepoName,
+        limit: usize,
+    ) -> Result<Option<Vec<(CommitId, TicketId)>>, ServiceError> {
+        match self.config.policy.repo(repo) {
+            Some(entry) if entry.ticket_link == TicketLink::Notes => {}
+            _ => return Ok(None),
+        }
+        let inner = self.lock()?;
+        inner
+            .store
+            .notes_unrecorded(repo, limit)
+            .map(Some)
+            .map_err(internal)
+    }
+
     /// The notes waiting on `repo`, oldest first, at most `limit`.
     pub fn pending_notes(
         &self,

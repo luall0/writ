@@ -339,7 +339,8 @@ revives a used-up lease.
   daemon never rewrites commits. With `notes`, once upstream took a push, the daemon writes
   each pushed commit's lease in a note (`Writ: <lease id>`) under the repo's `notes_ref`
   (`refs/notes/commits` by default, git's own; or `refs/notes/writ`) and pushes
-  it upstream after the branch, the commit untouched ([Notes](architecture/gateway.md#notes)).
+  it upstream after the branch, the commit untouched; a reconcile after each mirror sync
+  writes any note missing, older commits' too ([Notes](architecture/gateway.md#notes)).
   With `ledger_only`, the link exists only in the
   daemon.
 - `paths_check` (per template): compares files touched by each commit with `expected_paths`.

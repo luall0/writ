@@ -171,6 +171,13 @@ fn a_repo_without_notes_gets_none() {
     assert_eq!(gateway.upstream_note(&head), None);
     assert!(gateway.audited("notes", "allowed").is_empty());
     assert!(gateway.audited("notes", "denied").is_empty());
+    // Its reconcile does nothing either.
+    let pushes = gateway.remote.receive_packs();
+    gateway
+        .runtime
+        .block_on(gateway.gateway.reconcile_notes(&"demo".parse().unwrap()));
+    assert_eq!(gateway.remote.receive_packs(), pushes);
+    assert_eq!(gateway.upstream_ref("refs/notes/commits"), None);
 }
 
 #[test]
@@ -376,4 +383,96 @@ fn notes_go_under_refs_notes_writ_when_the_repo_says_so() {
     assert_eq!(gateway.upstream_ref("refs/notes/commits"), None);
     let line = gateway.audited("notes", "allowed").pop().unwrap();
     assert_eq!(line["refs"][0], "refs/notes/writ");
+}
+
+/// Forgets the note state of these commits in the ledger: what a daemon stopped between
+/// upstream taking a push and recording its notes leaves, or a commit pushed before the repo
+/// asked for notes.
+fn forget_notes(gateway: &GitGateway, commits: &[&str]) {
+    let db = rusqlite::Connection::open(gateway.root().join("leases.db")).unwrap();
+    for commit in commits {
+        let changed = db
+            .execute(
+                "UPDATE ledger SET note = NULL, note_credential = NULL WHERE commit_id = ?1",
+                [commit],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "{commit}");
+    }
+}
+
+fn reconcile(gateway: &GitGateway) {
+    gateway
+        .runtime
+        .block_on(gateway.gateway.reconcile_notes(&"demo".parse().unwrap()));
+}
+
+#[test]
+fn commits_upstream_whose_notes_were_never_recorded_get_them_at_the_reconcile() {
+    let (gateway, work) = setup();
+    let upstream = gateway.remote.repo("demo");
+    // Upstream takes the branch, not the notes: the push's own job leaves them waiting...
+    write_hook(
+        &upstream,
+        "#!/bin/sh\nwhile read old new ref; do case \"$ref\" in refs/notes/*) exit 1;; esac; \
+         done\nexit 0\n",
+    );
+    let first = gateway.commit_signed_plain("session", &work, "f", "1\n");
+    let second = gateway.commit_signed_plain("session", &work, "g", "2\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    gateway.wait_for_audit("notes", "denied", 1, NOTES_WITHIN);
+    fs::remove_file(upstream.join("hooks/pre-receive")).unwrap();
+    // ...and the record of them is lost (a daemon stopped at the wrong moment, or commits
+    // pushed before the repo asked for notes).
+    forget_notes(&gateway, &[&first, &second]);
+    // Signed, never pushed: upstream doesn't have it, it gets no note.
+    let unpushed = gateway.commit_signed_plain("session", &work, "h", "3\n");
+
+    reconcile(&gateway);
+    assert_eq!(
+        gateway.upstream_note(&first),
+        Some(note_for(&gateway.lease))
+    );
+    assert_eq!(
+        gateway.upstream_note(&second),
+        Some(note_for(&gateway.lease))
+    );
+    assert_eq!(gateway.upstream_note(&unpushed), None);
+    assert_eq!(notes_pushed(&gateway), 2);
+    // Once written, a reconcile has nothing more to do.
+    let pushes = gateway.remote.receive_packs();
+    reconcile(&gateway);
+    assert_eq!(gateway.remote.receive_packs(), pushes);
+    assert_eq!(notes_pushed(&gateway), 2);
+    // Pushed now, it is noted by its push's job.
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    wait_for_notes(&gateway, 3);
+    assert_eq!(
+        gateway.upstream_note(&unpushed),
+        Some(note_for(&gateway.lease))
+    );
+}
+
+#[test]
+fn notes_left_waiting_go_at_the_reconcile_without_another_push() {
+    let (gateway, work) = setup();
+    let upstream = gateway.remote.repo("demo");
+    write_hook(
+        &upstream,
+        "#!/bin/sh\nwhile read old new ref; do case \"$ref\" in refs/notes/*) exit 1;; esac; \
+         done\nexit 0\n",
+    );
+    let head = gateway.commit_signed_plain("session", &work, "f", "1\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    gateway.wait_for_audit("notes", "denied", 1, NOTES_WITHIN);
+    assert_eq!(gateway.upstream_note(&head), None);
+    // Still refused: another denied line, still waiting.
+    reconcile(&gateway);
+    assert_eq!(gateway.audited("notes", "denied").len(), 2);
+    assert_eq!(gateway.upstream_note(&head), None);
+    // The remote takes notes again: the next reconcile writes it, no push needed.
+    fs::remove_file(upstream.join("hooks/pre-receive")).unwrap();
+    reconcile(&gateway);
+    assert_eq!(gateway.upstream_note(&head), Some(note_for(&gateway.lease)));
+    assert_eq!(notes_pushed(&gateway), 1);
 }

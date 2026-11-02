@@ -20,6 +20,7 @@ mod hostile_upstream;
 mod https_upstream;
 mod narrowing;
 mod notes;
+mod notes_reconcile;
 mod operator_setup;
 mod push_denials;
 mod remote_protection;
