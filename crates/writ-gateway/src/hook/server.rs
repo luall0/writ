@@ -153,9 +153,10 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         .decided
         .store(true, std::sync::atomic::Ordering::Release);
     let refs: Vec<String> = updates.iter().map(|u| u.name.to_string()).collect();
-    match decide_push(gateway, &context, quarantine, &updates).await {
+    let decided = decide_push(gateway, &context, quarantine, &updates).await;
+    super::after_decision(&context.held, decided.is_ok());
+    match decided {
         Ok(()) => {
-            super::release_after(context.held.clone(), super::REF_UPDATE_GRACE);
             tracing::info!(
                 lease = %context.cert.key_id,
                 repo = %context.repo,

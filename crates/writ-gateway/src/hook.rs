@@ -41,14 +41,26 @@ pub(crate) const MAX_UPDATES: usize = 1_000;
 /// checked it there too).
 pub(crate) const REF_UPDATE_GRACE: Duration = Duration::from_secs(10);
 
-/// Drops what `held` holds once `grace` has passed, if it still holds anything (a push's
-/// mirror is released at receive-pack's exit, whichever comes first).
-pub(crate) fn release_after<T: Send + 'static>(held: Arc<Mutex<Option<T>>>, grace: Duration) {
-    tokio::spawn(async move {
-        tokio::time::sleep(grace).await;
-        // Released even from a poisoned lock: a held mirror stops every other push and sync.
-        held.lock().unwrap_or_else(PoisonError::into_inner).take();
-    });
+/// What a push's decision does with the mirror `held` holds (released at receive-pack's exit
+/// too, whichever comes first): a refused push moves no ref, so it is released now (receive-pack
+/// still writes a report, which a client that doesn't read could make it wait on); an accepted
+/// one keeps it for [`REF_UPDATE_GRACE`], while git moves its refs.
+pub(crate) fn after_decision<T: Send + 'static>(held: &Arc<Mutex<Option<T>>>, accepted: bool) {
+    if accepted {
+        let held = held.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(REF_UPDATE_GRACE).await;
+            release(&held);
+        });
+    } else {
+        release(held);
+    }
+}
+
+/// Drops what `held` holds. Even from a poisoned lock: a held mirror stops every other push
+/// and sync of the repo.
+fn release<T>(held: &Mutex<Option<T>>) {
+    held.lock().unwrap_or_else(PoisonError::into_inner).take();
 }
 
 /// What the daemon knows about a push in progress.
@@ -142,11 +154,11 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_decided_push_keeps_its_mirror_for_the_grace_and_no_longer() {
+    async fn an_accepted_push_keeps_its_mirror_for_the_grace_a_refused_one_not_at_all() {
         let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let held = Arc::new(Mutex::new(Some(Guard(dropped.clone()))));
-        release_after(held.clone(), REF_UPDATE_GRACE);
         let released = || dropped.load(std::sync::atomic::Ordering::Acquire);
+        let held = Arc::new(Mutex::new(Some(Guard(dropped.clone()))));
+        after_decision(&held, true);
         tokio::task::yield_now().await;
         tokio::time::advance(REF_UPDATE_GRACE - Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
@@ -158,10 +170,17 @@ mod tests {
 
         // Released at receive-pack's exit first: the grace finds the slot empty.
         let held = Arc::new(Mutex::new(Some(Guard(Arc::default()))));
-        release_after(held.clone(), REF_UPDATE_GRACE);
+        after_decision(&held, true);
         held.lock().unwrap().take();
         tokio::time::advance(REF_UPDATE_GRACE).await;
         tokio::task::yield_now().await;
+        assert!(held.lock().unwrap().is_none());
+
+        // Refused: released at once, no time passing.
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held = Arc::new(Mutex::new(Some(Guard(dropped.clone()))));
+        after_decision(&held, false);
+        assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
         assert!(held.lock().unwrap().is_none());
     }
 }

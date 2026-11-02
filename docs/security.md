@@ -170,7 +170,8 @@ A new input is added here in the same change.
   revocation never waits behind one; what the first phase reserved is never given back.
 - **A lock that serializes leases is held by the work, never by a peer, and waited on with a
   deadline**: a push's mirror is released when `receive-pack` exits, not when the client has
-  read its output, and 10 s after the hook's yes at the latest; what a holder does under it is bounded in time (an upstream operation,
+  read its output, at once when the push is refused, and 10 s after the hook's yes at the
+  latest; what a holder does under it is bounded in time (an upstream operation,
   `LOCAL_WORK_DEADLINE` for a repack or the reading of a push); a caller waits for it at most
   that long, then is refused (`the mirror is busy`).
 - **An amendment keeps the lease's whole subject** (session key and bound process).
