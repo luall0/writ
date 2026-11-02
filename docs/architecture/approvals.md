@@ -107,7 +107,7 @@ recorded by the daemon. `writ revoke` on a pending ticket withdraws it.
 ## Proving a signing key to a remote
 
 A remote shows a commit as **verified** when its signing key is registered on the account and
-the committer email is one of the account's ([M4.1](../roadmap.md#m41--real-end-to-end-scenarios)).
+the committer email is one of the account's ([M4.1](../history/m4.1-real-end-to-end-scenarios.md)).
 `writd signing-keys <writd.yaml>` prints each agent signing key, to add on the account as a
 **signing** key. GitHub asks for nothing more. Forgejo and Gitea ask for a **proof**: a
 challenge (a 64-hex token, shown in the web UI only) signed with the key, in namespace

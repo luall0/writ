@@ -5,7 +5,7 @@ a real Forgejo as the remote, the operator's setup done with the operator guide'
 commands, and agents and an approver using `writ` and git as the docs tell them to. It
 exists because the in-process harnesses take shortcuts a person never takes (absolute paths,
 keys made in-process, files written in another order): M4's GitHub check found two bugs that
-way, on paths only a real operator takes ([M4.1](roadmap.md#m41--real-end-to-end-scenarios)).
+way, on paths only a real operator takes ([M4.1](history/m4.1-real-end-to-end-scenarios.md)).
 The next such bug fails the pipeline, not a person.
 
 **The rule** ([AGENTS.md](../AGENTS.md#hard-rules), rule 18): every command and every flag
