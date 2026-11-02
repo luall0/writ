@@ -194,7 +194,12 @@ async fn run_git(
     };
     match git::spawn(cmd) {
         Ok(child) => {
-            let bridged = git::bridge(child, channel).await;
+            let bridged = git::bridge(child, channel, || {
+                if let Some(push) = &push {
+                    push.release_mirror();
+                }
+            })
+            .await;
             // The client sent ref updates (more than the flush of a push with nothing to
             // send) and the hook never saw them: git refused the push before its checks. Its
             // reason went to the agent; the refusal goes to the audit log.

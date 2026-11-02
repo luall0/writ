@@ -632,3 +632,47 @@ fn hash_literally(f: &Fixture, repo: &Path, content: &str) -> String {
         ],
     )
 }
+
+#[test]
+fn a_mirror_held_past_its_deadline_is_busy_never_waited_on_forever() {
+    let f = Fixture::new();
+    let mirrors = f.open();
+    let deadline = mirrors.lock_deadline();
+    assert_eq!(
+        deadline,
+        Duration::from_secs(60) + writ_mirror::LOCAL_WORK_DEADLINE,
+        "one upstream operation and the local work around it"
+    );
+    // The clock is a fake from here: the mirror is open, nothing below starts a process.
+    let paused = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    paused.block_on(async {
+        // A second before the deadline the caller still waits, and gets the mirror once the
+        // holder lets go.
+        let held = mirrors.lock(&demo()).await.unwrap();
+        let waiter = {
+            let mirrors = mirrors.clone();
+            tokio::spawn(async move { mirrors.lock(&demo()).await.map(drop) })
+        };
+        tokio::task::yield_now().await;
+        tokio::time::advance(deadline - Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "still waiting before the deadline");
+        drop(held);
+        assert!(matches!(waiter.await.unwrap(), Ok(())));
+
+        // Held past the deadline: busy, with the reason.
+        let held = mirrors.lock(&demo()).await.unwrap();
+        match mirrors.lock(&demo()).await {
+            Err(MirrorError::Busy { repo, seconds }) => {
+                assert_eq!(repo, demo());
+                assert_eq!(seconds, deadline.as_secs());
+            }
+            other => panic!("expected Busy, got {:?}", other.err()),
+        }
+        drop(held);
+    });
+}

@@ -34,7 +34,9 @@ pub mod relay;
 pub mod testing;
 pub mod upstream;
 
-pub use mirror::{MirrorConfig, MirrorGuard, Mirrors, RefMove, SyncReport, UpstreamUpdate};
+pub use mirror::{
+    LOCAL_WORK_DEADLINE, MirrorConfig, MirrorGuard, Mirrors, RefMove, SyncReport, UpstreamUpdate,
+};
 
 use std::path::PathBuf;
 
@@ -91,6 +93,8 @@ pub enum MirrorError {
     Certificate { repo: RepoName, why: String },
     #[error("repo {repo}: upstream sent more than {max} bytes")]
     TooLarge { repo: RepoName, max: u64 },
+    #[error("repo {repo}: the mirror is busy (held for more than {seconds} s); try again")]
+    Busy { repo: RepoName, seconds: u64 },
     #[error("repo {repo}: upstream did not answer within {seconds} s")]
     Timeout { repo: RepoName, seconds: u64 },
     #[error("repo {repo}: upstream refused the push: {reason}")]

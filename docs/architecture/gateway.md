@@ -109,8 +109,11 @@ in part. Any failure to reach the daemon refuses the push. The daemon then:
    (`Service::may_push`): a lease revoked or expired while the pack was coming in moves no
    ref, nothing is read for it, and revoking a lease forgets its pushes in progress;
 2. holds the repo's mirror (no sync, no other push) until `receive-pack` has moved the refs
-   and exited;
-3. reads the push from the objects git verified (`writ_mirror::quarantine`), believing the
+   and exited: released at its exit, not when the client has read its output (a client that
+   keeps its SSH window shut holds nothing; what is left of the output gets 30 s, then the
+   channel closes);
+3. reads the push from the objects git verified (`writ_mirror::quarantine`), within 10
+   minutes in all (`LOCAL_WORK_DEADLINE`, each git killed with its group past it), believing the
    quarantine path only if it is a directory, not a link, right under the mirror's `objects`
    with git's prefix, and running git there with `GIT_QUARANTINE_PATH` set (nothing it runs
    can move a ref):
@@ -183,7 +186,10 @@ A **sync** fetches upstream's branches and tags, nothing else (`+refs/heads/*` a
 deleted goes). It runs on a fetch and on a push when the mirror is older than `fresh_for`
 (10 s), and in the background every `sync_every` (5 min) (no webhooks,
 [Q19](../decisions.md)). One lock per mirror serializes syncs and pushes; concurrent callers
-wait for one sync and find the mirror fresh; at most 4 syncs run at once, daemon-wide. A sync
+wait for one sync and find the mirror fresh; at most 4 syncs run at once, daemon-wide. A caller
+waits for the lock at most `mirrors.timeout` plus 10 minutes (what a holder doing its job takes:
+one upstream operation, and a repack or the reading of a push); past it the fetch or push is
+refused, `the mirror is busy`, never left waiting. A sync
 that fails leaves the mirror's refs as they were, removes its partial pack, and marks the
 mirror stale; the fetch or push that asked for it is refused with the reason (fail closed).
 Past 50 packs, a sync repacks the mirror.

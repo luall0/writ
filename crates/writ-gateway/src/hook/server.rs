@@ -207,7 +207,20 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
         Ok(quarantine) => quarantine,
         Err(e) => return Err(Refused::of(e.to_string(), context, refs)),
     };
-    let (updates, commits, pack_size) = match read_push(&quarantine, &updates, &lease).await {
+    // Bounded as a whole, the mirror held: each git it runs is killed with its group when the
+    // deadline drops it.
+    let read = tokio::time::timeout(
+        writ_mirror::LOCAL_WORK_DEADLINE,
+        read_push(&quarantine, &updates, &lease),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(format!(
+            "reading the push took more than {} s",
+            writ_mirror::LOCAL_WORK_DEADLINE.as_secs()
+        ))
+    });
+    let (updates, commits, pack_size) = match read {
         Ok(read) => read,
         Err(reason) => return Err(Refused::of(reason, context, refs)),
     };

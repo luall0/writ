@@ -37,8 +37,9 @@ pub const MAX_PACKS: usize = 50;
 const MAX_FETCH_OUTPUT: usize = 1 << 20;
 /// The most of upstream's `HEAD` read (one or two lines).
 const MAX_HEAD_OUTPUT: usize = 4096;
-/// How long a repack may take.
-const REPACK_DEADLINE: Duration = Duration::from_secs(600);
+/// The longest local work done under a mirror's lock may take: a repack after a sync, or the
+/// gateway reading a push in its quarantine.
+pub const LOCAL_WORK_DEADLINE: Duration = Duration::from_secs(600);
 
 /// What the mirrors need.
 #[derive(Debug, Clone)]
@@ -286,7 +287,9 @@ impl Mirrors {
         self.shared.repos.keys()
     }
 
-    /// Holds the mirror of `repo` (waits for a sync or a push in progress).
+    /// Holds the mirror of `repo`, waiting for a sync or a push in progress, at most
+    /// [`Mirrors::lock_deadline`]: past it the mirror is busy ([`MirrorError::Busy`]), refused
+    /// with the reason rather than waited on forever.
     pub async fn lock(&self, repo: &RepoName) -> Result<MirrorGuard> {
         let found = self
             .shared
@@ -294,12 +297,28 @@ impl Mirrors {
             .get(repo)
             .ok_or_else(|| MirrorError::UnknownRepo(repo.clone()))?
             .clone();
-        let state = found.state.clone().lock_owned().await;
+        let deadline = self.lock_deadline();
+        let state = tokio::time::timeout(deadline, found.state.clone().lock_owned())
+            .await
+            .map_err(|_| MirrorError::Busy {
+                repo: repo.clone(),
+                seconds: deadline.as_secs(),
+            })?;
         Ok(MirrorGuard {
             shared: self.shared.clone(),
             repo: found,
             state,
         })
+    }
+
+    /// How long [`Mirrors::lock`] waits: a holder doing its job keeps a mirror for one upstream
+    /// operation (`timeout`) and the local work around it ([`LOCAL_WORK_DEADLINE`]), a sync's
+    /// repack or the reading of a push.
+    pub fn lock_deadline(&self) -> Duration {
+        self.shared
+            .config
+            .timeout
+            .saturating_add(LOCAL_WORK_DEADLINE)
     }
 
     /// Syncs `repo` unless it is fresh (synced within `fresh_for`). Concurrent callers wait for
@@ -694,7 +713,7 @@ impl MirrorGuard {
         cmd.arg("--git-dir")
             .arg(&self.repo.path)
             .args(["repack", "-a", "-d", "-q"]);
-        match process::run(cmd, None, REPACK_DEADLINE, 0).await {
+        match process::run(cmd, None, LOCAL_WORK_DEADLINE, 0).await {
             Ok(done) if done.status.success() => {}
             Ok(done) => tracing::warn!(
                 repo = %self.repo.name,
