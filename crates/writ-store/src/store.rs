@@ -13,7 +13,7 @@ mod ledger;
 mod rows;
 mod schema;
 
-pub use ledger::LedgerEntry;
+pub use ledger::{LedgerEntry, PendingNote};
 
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;

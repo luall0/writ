@@ -51,6 +51,9 @@ pub enum EventKind {
     /// An agent signing key signed a remote's message, with an approver's signature over the
     /// `writ-proof/1` document (allowed), or the proof was refused (denied).
     Prove,
+    /// The notes of a repo with `ticket_link: notes` pushed upstream under `refs/notes/writ`
+    /// (allowed), or not (denied, with the reason: they stay pending), one line per lease.
+    Notes,
     Admin,
     Seal,
     Unseal,
@@ -89,7 +92,7 @@ pub struct AuditEvent {
     pub refs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub committer: Option<String>,
-    /// The signer key a proof asked for (`prove`).
+    /// The signer key a proof asked for (`prove`), the credential that pushed notes (`notes`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<KeyId>,
     /// The SSHSIG namespace of a proof (`prove`).
@@ -99,6 +102,9 @@ pub struct AuditEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_sha256: Option<String>,
     /// The denial's category (`DenyCode`).
+    /// How many notes a `notes` line is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -129,6 +135,7 @@ impl AuditEvent {
             key: None,
             namespace: None,
             message_sha256: None,
+            count: None,
             code: None,
             reason: None,
             warnings: Vec::new(),
@@ -187,6 +194,19 @@ impl AuditEvent {
         self.key = Some(key.clone());
         self.namespace = Some(namespace.clone());
         self.message_sha256 = Some(message_sha256);
+        self
+    }
+
+    /// How many notes the line is about (`notes`).
+    pub fn count(mut self, count: u64) -> Self {
+        self.count = Some(count);
+        self
+    }
+
+    /// The signer key or credential the line names (`prove`: the key a proof asked for;
+    /// `notes`: the credential that pushed them).
+    pub fn key(mut self, key: &KeyId) -> Self {
+        self.key = Some(key.clone());
         self
     }
 

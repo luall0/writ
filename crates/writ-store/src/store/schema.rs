@@ -4,7 +4,7 @@ use rusqlite::Connection;
 
 use crate::{Result, StoreError};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// How long a write waits for another connection's transaction before failing.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -44,7 +44,7 @@ CREATE INDEX ledger_lease ON ledger(lease_id);
 ";
 
 /// Migrations, in order: `MIGRATIONS[n]` takes version `n + 1` to `n + 2`.
-const MIGRATIONS: [&str; 3] = [
+const MIGRATIONS: [&str; 4] = [
     // 2: the session public key of each ticket, the certificate of each lease.
     "ALTER TABLE tickets ADD COLUMN session_pubkey TEXT;
      ALTER TABLE tickets ADD COLUMN certificate TEXT;",
@@ -52,6 +52,11 @@ const MIGRATIONS: [&str; 3] = [
     "ALTER TABLE tickets ADD COLUMN feedback_by TEXT;",
     // 4: the digest of the paths each commit touched when it was signed (none: unknown).
     "ALTER TABLE ledger ADD COLUMN paths_digest TEXT;",
+    // 5: each commit's note under `ticket_link: notes` (none: not asked for), and the
+    // credential of the push that took the commit upstream (it pushes the note).
+    "ALTER TABLE ledger ADD COLUMN note TEXT CHECK (note IN ('pending', 'written'));
+     ALTER TABLE ledger ADD COLUMN note_credential TEXT;
+     CREATE INDEX ledger_notes_pending ON ledger(repo) WHERE note = 'pending';",
 ];
 
 /// Sets the connection up (busy timeout, foreign keys, full sync, WAL) and brings the schema

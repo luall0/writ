@@ -1,4 +1,5 @@
-//! The ledger: every commit signed under a lease, for which repo, with which key.
+//! The ledger: every commit signed under a lease, for which repo, with which key; and, for a
+//! repo whose `ticket_link` is `notes`, whether each pushed commit's note is upstream yet.
 
 use rusqlite::params;
 use writ_core::names::{CommitId, KeyId, RepoName, TicketId};
@@ -22,6 +23,15 @@ pub struct LedgerEntry {
     /// `None` when they were unknown; a push compares it with the paths computed again from
     /// the objects git verified.
     pub paths_digest: Option<String>,
+}
+
+/// A note waiting to be pushed: a commit upstream took, the lease it was signed under, and the
+/// credential of the push that took it (the note goes upstream with it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingNote {
+    pub commit: CommitId,
+    pub lease: TicketId,
+    pub credential: KeyId,
 }
 
 impl Store {
@@ -51,6 +61,83 @@ impl Store {
     /// Every commit signed under a lease, in signing order.
     pub fn ledger_for_lease(&self, lease: &TicketId) -> Result<Vec<LedgerEntry>> {
         self.ledger_where("lease_id = ?1", lease.as_str())
+    }
+
+    /// Marks the commits a push took upstream as waiting for their note, pushed with
+    /// `credential`: only the ledger's entries for this lease and repo (a commit nobody signed
+    /// here gets no note), and a note already written stays written. One transaction.
+    pub fn notes_add_pending(
+        &self,
+        lease: &TicketId,
+        repo: &RepoName,
+        commits: &[CommitId],
+        credential: &KeyId,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut statement = tx.prepare(
+                "UPDATE ledger SET note = 'pending', note_credential = ?4
+                 WHERE lease_id = ?1 AND repo = ?2 AND commit_id = ?3
+                   AND (note IS NULL OR note = 'pending')",
+            )?;
+            for commit in commits {
+                statement.execute(params![
+                    lease.as_str(),
+                    repo.as_str(),
+                    commit.as_str(),
+                    credential.as_str()
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The notes waiting on `repo`, oldest signature first, at most `limit`.
+    pub fn notes_pending(&self, repo: &RepoName, limit: usize) -> Result<Vec<PendingNote>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut statement = self.conn.prepare(
+            "SELECT commit_id, lease_id, note_credential FROM ledger
+             WHERE repo = ?1 AND note = 'pending' ORDER BY signed_at, rowid LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![repo.as_str(), limit], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (commit, lease, credential) = row?;
+            let bad = |e: &dyn std::fmt::Display| corrupt(&commit, format!("ledger note: {e}"));
+            let credential = credential.ok_or_else(|| bad(&"a pending note without credential"))?;
+            Ok(PendingNote {
+                commit: commit.parse().map_err(|e| bad(&e))?,
+                lease: lease.parse().map_err(|e| bad(&e))?,
+                credential: credential.parse().map_err(|e| bad(&e))?,
+            })
+        })
+        .collect()
+    }
+
+    /// Marks `notes` of `repo` written: upstream has them. One transaction.
+    pub fn notes_written(&self, repo: &RepoName, notes: &[PendingNote]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut statement = tx.prepare(
+                "UPDATE ledger SET note = 'written'
+                 WHERE repo = ?1 AND commit_id = ?2 AND lease_id = ?3 AND note = 'pending'",
+            )?;
+            for note in notes {
+                statement.execute(params![
+                    repo.as_str(),
+                    note.commit.as_str(),
+                    note.lease.as_str()
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     fn ledger_where(&self, condition: &str, value: &str) -> Result<Vec<LedgerEntry>> {

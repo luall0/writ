@@ -20,11 +20,13 @@ use writ_core::fit::{self, Submission};
 use writ_core::lease::{
     self, APPROVAL_NAMESPACE, Approval, Lease, LifecycleError, State, TicketRecord,
 };
-use writ_core::names::{CommitId, KeyFingerprint, TicketId};
+use writ_core::names::{CommitId, KeyFingerprint, KeyId, TicketId};
 use writ_core::policy::RATE_WINDOW_SECONDS;
 use writ_core::ticket::{Ticket, TicketRequest};
 use writ_core::units::Timestamp;
-use writ_store::{Counter, LedgerEntry, OPS_KEPT_PAST_WINDOW_SECONDS, Store, StoreError};
+use writ_store::{
+    Counter, LedgerEntry, OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, Store, StoreError,
+};
 
 /// Stand-ins: the store keeps these as text and never parses them.
 const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIStandInSessionKey";
@@ -473,6 +475,125 @@ fn an_amendment_of_an_ended_lease_changes_nothing() {
     );
 }
 
+fn credential(name: &str) -> KeyId {
+    name.parse().unwrap()
+}
+
+fn note(commit_n: u64, lease: &TicketId, key: &str) -> PendingNote {
+    PendingNote {
+        commit: commit(commit_n),
+        lease: lease.clone(),
+        credential: credential(key),
+    }
+}
+
+#[test]
+fn a_pushed_commit_waits_for_its_note_until_written() {
+    let store = Store::open_in_memory().unwrap();
+    let a = active_lease(&store, 1);
+    let b = active_lease(&store, 2);
+    let (omega, other) = ("omega-code".parse().unwrap(), "other".parse().unwrap());
+    for n in [1, 2, 3] {
+        store.ledger_append(&entry(n, &a.id, "omega-code")).unwrap();
+    }
+    store.ledger_append(&entry(4, &b.id, "omega-code")).unwrap();
+    store.ledger_append(&entry(5, &a.id, "other")).unwrap();
+    let up = credential("upstream-01");
+
+    // Only the ledger's entries for this lease and repo: commit 4 is b's, 5 another repo's,
+    // 9 nobody's.
+    store
+        .notes_add_pending(
+            &a.id,
+            &omega,
+            &[commit(1), commit(2), commit(4), commit(5), commit(9)],
+            &up,
+        )
+        .unwrap();
+    assert_eq!(
+        store.notes_pending(&omega, 10).unwrap(),
+        [note(1, &a.id, "upstream-01"), note(2, &a.id, "upstream-01")]
+    );
+    assert!(store.notes_pending(&other, 10).unwrap().is_empty());
+
+    // Another lease's push adds its own; oldest signature first, at most `limit`.
+    store
+        .notes_add_pending(&b.id, &omega, &[commit(4)], &up)
+        .unwrap();
+    store
+        .notes_add_pending(&a.id, &omega, &[commit(3)], &up)
+        .unwrap();
+    assert_eq!(
+        store.notes_pending(&omega, 2).unwrap(),
+        [note(1, &a.id, "upstream-01"), note(2, &a.id, "upstream-01")]
+    );
+    assert_eq!(store.notes_pending(&omega, 4).unwrap().len(), 4);
+    assert!(store.notes_pending(&omega, 0).unwrap().is_empty());
+
+    // Written: no longer waiting, and pushed again (another branch) it stays written.
+    store
+        .notes_written(
+            &omega,
+            &[note(1, &a.id, "upstream-01"), note(4, &b.id, "upstream-01")],
+        )
+        .unwrap();
+    assert_eq!(
+        store.notes_pending(&omega, 10).unwrap(),
+        [note(2, &a.id, "upstream-01"), note(3, &a.id, "upstream-01")]
+    );
+    store
+        .notes_add_pending(&a.id, &omega, &[commit(1)], &up)
+        .unwrap();
+    assert_eq!(store.notes_pending(&omega, 10).unwrap().len(), 2);
+
+    // Still waiting, pushed again by another credential: that one pushes its note.
+    store
+        .notes_add_pending(&a.id, &omega, &[commit(2)], &credential("upstream-02"))
+        .unwrap();
+    assert_eq!(
+        store.notes_pending(&omega, 1).unwrap(),
+        [note(2, &a.id, "upstream-02")]
+    );
+
+    // Marking written only touches that repo's pending notes of that lease.
+    store
+        .notes_written(&other, &[note(2, &a.id, "upstream-02")])
+        .unwrap();
+    store
+        .notes_written(&omega, &[note(3, &b.id, "upstream-01")])
+        .unwrap();
+    assert_eq!(store.notes_pending(&omega, 10).unwrap().len(), 2);
+}
+
+#[test]
+fn a_pending_note_without_its_credential_is_refused_as_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("writ.db");
+    let store = Store::open(&path).unwrap();
+    let a = active_lease(&store, 1);
+    store.ledger_append(&entry(1, &a.id, "omega-code")).unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("UPDATE ledger SET note = 'pending'", [])
+        .unwrap();
+    let repo = "omega-code".parse().unwrap();
+    assert!(matches!(
+        store.notes_pending(&repo, 10),
+        Err(StoreError::Corrupt { .. })
+    ));
+    // A state the schema doesn't know is refused when written.
+    let other = rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("UPDATE ledger SET note = 'sent'", []);
+    match other {
+        Err(rusqlite::Error::SqliteFailure(e, Some(message))) => {
+            assert_eq!(e.code, rusqlite::ErrorCode::ConstraintViolation);
+            assert!(message.contains("CHECK constraint failed"), "{message}");
+        }
+        other => panic!("expected the CHECK constraint, got {other:?}"),
+    }
+}
+
 #[test]
 fn the_ledger_keeps_the_first_entry() {
     let store = Store::open_in_memory().unwrap();
@@ -551,11 +672,11 @@ fn a_newer_schema_is_refused() {
     drop(Store::open(&path).unwrap());
     rusqlite::Connection::open(&path)
         .unwrap()
-        .pragma_update(None, "user_version", 5)
+        .pragma_update(None, "user_version", 6)
         .unwrap();
     assert!(matches!(
         Store::open(&path),
-        Err(StoreError::SchemaTooNew(5))
+        Err(StoreError::SchemaTooNew(6))
     ));
 }
 
@@ -631,7 +752,7 @@ fn a_version_1_database_is_migrated() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     // The ledger gained its paths digest column: an entry keeps one, or none.
     let lease = active_lease(&store, 2);
     for n in [1, 2] {
@@ -646,4 +767,11 @@ fn a_version_1_database_is_migrated() {
         .map(|e| e.paths_digest)
         .collect();
     assert_eq!(kept, [None, Some("digest-2".to_owned())]);
+    // And its note columns: none asked for, then pending once pushed.
+    let repo = "omega-code".parse().unwrap();
+    assert!(store.notes_pending(&repo, 10).unwrap().is_empty());
+    store
+        .notes_add_pending(&lease.id, &repo, &[commit(1)], &credential("upstream-01"))
+        .unwrap();
+    assert_eq!(store.notes_pending(&repo, 10).unwrap().len(), 1);
 }

@@ -96,6 +96,12 @@ fn lifecycle() -> Vec<AuditEvent> {
         AuditEvent::new(t(96), EventKind::Fetch, Outcome::Allowed)
             .lease(&lease)
             .repo(&repo),
+        AuditEvent::new(t(97), EventKind::Notes, Outcome::Allowed)
+            .lease(&lease)
+            .repo(&repo)
+            .refs(["refs/notes/writ".to_owned()])
+            .key(&"upstream-01".parse().unwrap())
+            .count(3),
         AuditEvent::new(t(100), EventKind::Refuse, Outcome::Done)
             .ticket(&lease)
             .reason("Don't touch billing"),
@@ -140,6 +146,13 @@ fn one_json_line_per_event() {
         lines[4],
         format!(
             r#"{{"time":"2026-10-31T14:03:41Z","event":"sign","result":"allowed","lease":"{id}","cert":1842,"repo":"omega-code","commit":"9e1c2f0000000000000000000000000000000000","committer":"user+agent@example.org","warnings":["files outside expected_paths: src/billing/x.rs"],"process_chain":["/usr/local/bin/writ-sign","/Applications/Omega Code.app/Contents/MacOS/omega"]}}"#,
+            id = lease_id()
+        )
+    );
+    assert_eq!(
+        lines[7],
+        format!(
+            r#"{{"time":"2026-10-31T14:03:48Z","event":"notes","result":"allowed","lease":"{id}","repo":"omega-code","refs":["refs/notes/writ"],"key":"upstream-01","count":3}}"#,
             id = lease_id()
         )
     );
