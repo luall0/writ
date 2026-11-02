@@ -87,6 +87,7 @@ Gitea also ask for a proof, signed through [`writ prove-key`](approvals.md#provi
 | **YubiKey PIV** | P-256, P-384, ed25519 (recent firmware) | No | Touch policy must be `never` for unattended agent keys; USB passthrough to the container |
 | **Secure Enclave** | P-256 | No | Local mode on a Mac only. v1: a CryptoKit key under the dedicated `_writd` user (`se-cryptokit`, M7.5); a keychain access group (`se-keychain`) needs a paid Apple account. See [macOS Secure Enclave](macos-secure-enclave.md) |
 | **TPM 2.0** | P-256 | No | Possible future backend on the server |
+| **Cloud KMS** (AWS, Google Cloud, Azure, Vault Transit…) | P-256, ed25519 on some | No | Possible future backend for a host with no hardware: a network call per signature, and a credential for the service on the daemon ([backlog](../backlog/README.md#cloud-kms-signer-backend)) |
 | **ssh-agent** (any socket: Secretive, yubikey-agent, 1Password…) | Whatever the agent holds | Depends on what backs it | Lets the daemon reuse an existing agent. Caveat: if agents run as the same user and can reach that socket, they can bypass Writ; only safe when the socket is out of the agents' reach (other user, other host) |
 
 The same interface also holds the **upstream credentials** (the SSH key the daemon uses to
@@ -112,7 +113,9 @@ unlocked ([Q17](../decisions.md)).
   approval with Secretive. Both travel over the authenticated channel; the daemon decrypts in
   memory only.
 - Later: the data key is wrapped to hardware recipients (age plugins for the Secure Enclave or
-  YubiKey), so unsealing needs no passphrase. Secretive can't do this part because SSH keys
+  YubiKey), so unsealing needs no passphrase, and the tokens with it, each unwrapped only
+  when used ([M7.6](../roadmap.md#m76--hardware-wrapped-secrets)). M5 makes each secret its
+  own age file for this. Secretive can't do this part because SSH keys
   only sign; they can't decrypt.
 - A recovery recipient (offline YubiKey or paper key) avoids losing everything with one device.
 - Hardware signer backends (YubiKey, TPM) don't need the keystore; sealing then only gates the

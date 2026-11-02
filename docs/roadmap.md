@@ -35,6 +35,7 @@ an unchanged core.
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
+| M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, unsealing with no passphrase |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts |
 | M9 | [`proxy` push mode](#m9--proxy-push-mode) | Relayed pushes with the same checks, no mirror |
 | M10 | [`direct_ssh` push mode](#m10--direct_ssh-push-mode) | Lent per-lease ssh-agent socket with a deploy key |
@@ -146,6 +147,11 @@ notes commits; the commits untouched.
 - age keystore with a random data key; software keys and tokens only inside it (the HTTPS
   upstreams' tokens, a file the operator writes in the development keystore since M4.5, move
   into it, and how the operator adds one becomes a signed admin change).
+- **One age file per secret**, not one file for the whole keystore: the data key is an age
+  X25519 identity, itself unlocked by the passphrase at unseal, and each key or token is its
+  own file encrypted to that identity's recipient. Reading a secret goes through one seam
+  (which recipient unwraps this file), so hardware recipients
+  ([M7.6](#m76--hardware-wrapped-secrets)) plug in with no format change and no migration.
 - `writd` starts sealed and serves only the unseal endpoint; `writ unseal` sends the
   passphrase and an unseal SSHSIG; active leases reloaded after unsealing.
 - Admin changes (approvers, templates, repo registry) only through signed approvals, logged.
@@ -166,6 +172,8 @@ Acceptance:
 - [ ] Unsealing needs both the right passphrase and a valid approver signature; either alone
       fails and is logged.
 - [ ] The keys volume alone reveals no key (checked by inspecting it at rest).
+- [ ] Each secret is its own age file; a test adds a second recipient (a fake) for one secret
+      and reads it back with no change to the keystore code.
 - [ ] A restart keeps active leases working after unseal; their certificates still expire on time.
 - [ ] An unsigned or wrongly signed admin change is refused; a signed one applies and is logged.
 - [ ] The TLS key is only in the keystore and the `Signer`: no PEM key file, no copy outside
@@ -264,6 +272,41 @@ Acceptance:
       old pin is refused.
 - [ ] Going back to the software backend is a config change only.
 - [ ] A corrupted blob is refused with a reason and the daemon keeps running.
+
+## M7.6 — Hardware-wrapped secrets
+
+[The backlog page](backlog/hardware-wrapped-secrets.md) holds the design. Every secret the
+daemon holds but can't keep in a signer (the HTTPS upstreams' tokens, later the HTTP credential
+proxy's, the keystore's data key) is wrapped to a hardware key that alone can unwrap it, and
+unwrapped only when used. The interface is the common one: a YubiKey, a TPM or a cloud KMS
+backend later brings its recipient as one more implementation, as it brings its `Signer`.
+
+- The unwrap interface first (hard rule 4): `KeystoreUnlock` generalized into a recipient that
+  unwraps one secret's file key, its contract suite, a fake, and
+  [platform.md](architecture/platform.md) updated. M5's passphrase-unlocked identity becomes
+  its first implementation.
+- The Secure Enclave recipient in `writ-platform-macos`: P-256 key agreement through M7.5's
+  Swift component, no prompt, the key under `_writd`.
+- A recovery recipient (an age X25519 identity kept offline, on paper or a spare device), so
+  one lost device doesn't lose every secret.
+- Secrets unwrapped per use, zeroized after (no cache in this milestone); the keystore's data
+  key wrapped the same way, so unsealing needs the approver's signature and no passphrase.
+- How the operator adds or rotates a secret: encrypted to the printed public recipient, from
+  any machine, through the signed admin change of M5.
+
+Acceptance:
+- [ ] **The graft test:** the Secure Enclave recipient is a new implementation, `writd`'s
+      wiring and config; the keystore, the gateway and the mirrors don't change.
+- [ ] Every recipient passes the unwrap contract suite (the passphrase identity, the recovery
+      identity, the Secure Enclave).
+- [ ] With the real daemon: an HTTPS push unwraps its token with no prompt, after a reboot
+      and with the screen locked; another process, and my user, can't unwrap it.
+- [ ] A copy of the keys volume, with the passphrase, unwraps nothing that was wrapped to the
+      Secure Enclave; the recovery identity alone unwraps everything.
+- [ ] Removing the Secure Enclave key makes every secret wrapped only to it unreadable: the
+      operation that needs one is refused with a reason, the daemon keeps running.
+- [ ] A secret's plaintext is not in the daemon's memory between operations (checked on a
+      memory dump of the idle daemon).
 
 ## M8 — Detached deployment
 

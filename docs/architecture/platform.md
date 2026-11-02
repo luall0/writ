@@ -17,7 +17,7 @@ a YubiKey) means writing an implementation of an existing interface and register
 | `Transport` | How clients reach the daemon; every transport carries the same SSH protocol | TCP (SSH gateway); Unix socket (local mode) | — |
 | `CallerAttestor` | What the network or the kernel says about the caller, as `CallerFacts` | Network (source address); macOS process chain (local mode) | Linux process chain |
 | `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS (local mode) | Linux |
-| `KeystoreUnlock` | How the keystore's data key is recovered at unseal | Passphrase + approver signature | age plugin recipients (Secure Enclave, YubiKey), recovery recipient |
+| `KeystoreUnlock` | How the keystore's data key is recovered at unseal | Passphrase + approver signature | M7.6: generalized into a recipient unwrapping one secret ([hardware-wrapped secrets](../backlog/hardware-wrapped-secrets.md)); the Secure Enclave, a recovery identity; later YubiKey, TPM, cloud KMS |
 | `Notifier` | How I'm told something is waiting or went wrong | Telegram (Bot API) | Native macOS notifications, approver apps, any other sink |
 | `Clock` | What time it is: every expiry, rate window and certificate validity | The system clock | — |
 

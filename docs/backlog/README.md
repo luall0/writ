@@ -59,8 +59,9 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Multi-user daemon](multi-user.md) | Identity, Approvals, Upstream | feature | L | specified up to its open questions; picked as [M11](../roadmap.md#m11--multi-user-daemon) |
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
+| [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |
 | [Keychain Secure Enclave signer with a paid Apple account](#keychain-secure-enclave-signer-with-a-paid-apple-account) | Signers | feature | M | idea, spiked |
-| [Hardware unseal recipients](#hardware-unseal-recipients) | Sealing | feature | M | idea |
+| [Hardware-wrapped secrets](hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | specified; picked as [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
 | [Secure Enclave session keys](#secure-enclave-session-keys) | Identity | hardening | M | idea |
@@ -82,6 +83,31 @@ to Plan D for local mode. The Secure Enclave signer itself is on the roadmap (M7
 ### TPM signer backend
 
 Same, on the server's TPM 2.0 (P-256), keys bound to that machine.
+
+### Cloud KMS signer backend
+
+Agent signing keys and `ssh://` upstream credentials in a cloud key service (AWS KMS, Google
+Cloud KMS, Azure Key Vault or Managed HSM, HashiCorp Vault Transit…), for a daemon on a VPS or
+a server with no YubiKey, TPM or Secure Enclave: the private key never leaves the provider's
+HSM, the daemon only asks it for signatures ([Signer](../architecture/signer.md)).
+
+- **Algorithms:** P-256 on all of them, Ed25519 on some; the backend's `capabilities` say
+  which, and the daemon refuses to start on a template whose key the service can't hold.
+- **It moves the secret, it doesn't remove it:** the daemon still needs a credential for the
+  service. Best is a workload identity (instance role, OIDC federation) with nothing on disk;
+  otherwise it sits in the sealed keystore like a token. Root on the host can sign while the
+  daemon holds it, but can never copy the key, and the provider's own audit log and
+  revocation add a second record and a kill switch outside the host.
+- **Network on the signing path:** one round trip per signature (tens of ms) and a new
+  availability dependency. An unreachable service fails closed behind the signer queue's
+  timeout; no fallback to a software key.
+- **Signs only:** an `https://` repo's token still lives in the keystore, and unsealing is
+  unchanged (a KMS that can decrypt is one more recipient of
+  [hardware-wrapped secrets](hardware-wrapped-secrets.md)).
+- One implementation per provider behind a Cargo feature in `writ-signer`, each passing the
+  `Signer` contract suite (against the provider's emulator or a local Vault where one exists);
+  no provider SDK in the core. The threat model gains a trusted third party (the provider and
+  the account holding the keys).
 
 ### Keychain Secure Enclave signer with a paid Apple account
 
@@ -105,14 +131,6 @@ project is archived in commit `3485f40`, `spikes/secure-enclave/keychain-app/`);
 
 Most of what it needs (SSHSIG conversion, the `Signer` contract suite, key creation) comes
 with the CryptoKit backend in [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac).
-
-## Sealing
-
-### Hardware unseal recipients
-
-Wrap the keystore's data key to age plugin recipients (Secure Enclave, YubiKey) so unsealing
-needs no passphrase, plus a recovery recipient (offline YubiKey or paper key) so one lost
-device doesn't lose everything ([Startup and sealing](../architecture/signer.md#startup-and-sealing)).
 
 ## Approvals
 
