@@ -1,0 +1,58 @@
+//! The end-to-end scenarios (docs/end-to-end.md#scenarios), run by `make e2e` in the runner
+//! container: one module per scenario, each on its own Forgejo repository and its own agent,
+//! each checking what the agent reads, the audit line, Forgejo's state through its API, and
+//! the daemon's mirror. Ignored outside the pipeline (`cargo test` compiles them only).
+//!
+//! Every scenario takes the stack shared ([`Stack::shared`]) or alone
+//! ([`Stack::exclusive`]: it stops or restarts a container), and leaves it working.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::cast_possible_truncation
+)]
+
+mod concurrency;
+mod hostile_upstream;
+mod narrowing;
+mod operator_setup;
+mod push_denials;
+mod remote_protection;
+mod restart;
+mod revocation_and_expiry;
+mod ticket_lifecycle;
+mod upstream_moved;
+mod verified_commits;
+mod whole_repo;
+mod wrapper_mode;
+
+use std::process::Output;
+
+use writ_e2e::agent::{Agent, expect, ticket};
+use writ_e2e::{Stack, stderr};
+
+/// A lease for `repo` (branches `agent/*`, one hour) and a clone of it from Forgejo, wired in
+/// wrapper mode (`writ init <repo>`): the lease id and the clone's directory.
+fn wired(stack: &Stack, agent: &Agent, repo: &str) -> (String, String) {
+    let lease = agent.lease(stack, &ticket(&[repo], &["agent/*"], "1h", ""));
+    agent.clone_from_forgejo(stack, repo, "work");
+    agent.ok_in("work", &format!("writ init {repo}"));
+    (lease, "work".to_owned())
+}
+
+/// A push refused by the daemon: git's exit 1, the reason the agent reads, and the last
+/// `push denied` line of the lease with its code.
+fn assert_push_refused(stack: &Stack, lease: &str, out: &Output, reason: &str, code: &str) {
+    expect(out, 1, reason);
+    assert!(
+        stderr(out).contains(reason),
+        "expected {reason:?} in:\n{}",
+        stderr(out)
+    );
+    let denied = stack.audited(lease, "push", "denied");
+    let last = denied.last().expect("a push denied line");
+    assert_eq!(last["code"], code, "{last}");
+}

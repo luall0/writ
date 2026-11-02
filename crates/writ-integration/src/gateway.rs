@@ -64,14 +64,6 @@ ticket:
   task: Exercise the gateway
 "#;
 
-/// A repo's upstream outside the test process: its URL, its pinned host keys (`known_hosts`
-/// lines), and the credential it takes.
-pub struct ExternalUpstream {
-    pub url: String,
-    pub known_hosts: String,
-    pub key: PrivateKey,
-}
-
 pub enum Listen {
     Tcp,
     Unix,
@@ -129,17 +121,6 @@ impl GitGateway {
     /// With another policy (its templates' `signing_key`s are the signer's keys); the first
     /// session (`keys/session`) is a lease for [`TICKET`], which must fit it.
     pub fn start_with(agent_kind: KeyKind, listen: Listen, policy: &str) -> Self {
-        Self::start_against(agent_kind, listen, policy, None)
-    }
-
-    /// With the repo's upstream elsewhere (a real remote, `make e2e`) rather than the test
-    /// remote (which is still started, unused).
-    pub fn start_against(
-        agent_kind: KeyKind,
-        listen: Listen,
-        policy: &str,
-        external: Option<ExternalUpstream>,
-    ) -> Self {
         crate::tools::require();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -159,22 +140,16 @@ impl GitGateway {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         // The repo's upstream: a test remote, its host key pinned, the daemon's credential
         // (one key per credential the policy names) authorized on it.
-        let upstream_key = match &external {
-            Some(external) => external.key.clone(),
-            None => generate(KeyKind::Ed25519).unwrap(),
-        };
+        let upstream_key = generate(KeyKind::Ed25519).unwrap();
         let remote = TestRemote::start(
             &runtime,
             &root.join("remote"),
             upstream_key.public_key().clone(),
         );
-        let (upstream_url, pinned) = match &external {
-            Some(external) => (external.url.clone(), external.known_hosts.clone()),
-            None => (
-                remote.url("demo"),
-                format!("{}\n", remote.known_hosts_line()),
-            ),
-        };
+        let (upstream_url, pinned) = (
+            remote.url("demo"),
+            format!("{}\n", remote.known_hosts_line()),
+        );
         let policy = policy.replace(PLACEHOLDER_UPSTREAM, &upstream_url);
         let policy = policy.as_str();
         let credentials: std::collections::BTreeSet<_> =

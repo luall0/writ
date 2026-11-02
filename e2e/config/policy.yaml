@@ -1,0 +1,45 @@
+# The end-to-end registry and templates (docs/end-to-end.md): one Forgejo repository per
+# scenario, each with its own deploy key (a remote takes a deploy key on one repository
+# only). A new scenario adds its repo here, and to the `feature` template. The wrapper-mode
+# scenario's repo is `demo`, like the development policy's, so it runs the manual check's
+# commands as they are written.
+repos:
+  setup:      { upstream: "ssh://git@forgejo/writ/setup.git",      upstream_credential: upstream-setup,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  lifecycle:  { upstream: "ssh://git@forgejo/writ/lifecycle.git",  upstream_credential: upstream-lifecycle,  protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  narrowing:  { upstream: "ssh://git@forgejo/writ/narrowing.git",  upstream_credential: upstream-narrowing,  protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  demo:       { upstream: "ssh://git@forgejo/writ/demo.git",       upstream_credential: upstream-demo,          protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  whole:      { upstream: "ssh://git@forgejo/writ/whole.git",      upstream_credential: upstream-whole,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  denials:    { upstream: "ssh://git@forgejo/writ/denials.git",    upstream_credential: upstream-denials,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  moved:      { upstream: "ssh://git@forgejo/writ/moved.git",      upstream_credential: upstream-moved,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  protection: { upstream: "ssh://git@forgejo/writ/protection.git", upstream_credential: upstream-protection, protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  verified:   { upstream: "ssh://git@forgejo/writ/verified.git",   upstream_credential: upstream-verified,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  inflight:   { upstream: "ssh://git@forgejo/writ/inflight.git",   upstream_credential: upstream-inflight,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  restart:    { upstream: "ssh://git@forgejo/writ/restart.git",    upstream_credential: upstream-restart,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  hostile:    { upstream: "ssh://git@forgejo/writ/hostile.git",    upstream_credential: upstream-hostile,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  busy:       { upstream: "ssh://git@forgejo/writ/busy.git",       upstream_credential: upstream-busy,       protected_refs: ["refs/heads/main", "refs/tags/*"] }
+templates:
+  feature:
+    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, inflight, restart, hostile, busy]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    force_push: true                 # a ticket may ask for it (none does unless it says so)
+    committer_emails: ["agent@writ.invalid", "second@writ.invalid"]
+    signing_key: agent-e2e
+    max_ttl: 4h
+    max_signatures: 100
+    max_pushes: 50
+    max_ops_per_minute: 200
+    max_push_size: 50MB
+  # Its own signing key: the one scenario that registers and proves a key on the Forgejo
+  # account (verified_commits) leaves every other scenario's commits unverified.
+  verified:
+    repos: [verified]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ.invalid"]
+    signing_key: agent-e2e-verify
+    max_ttl: 4h
+    max_signatures: 100
+    max_pushes: 50
+    max_ops_per_minute: 200
+    max_push_size: 50MB

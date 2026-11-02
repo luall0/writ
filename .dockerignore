@@ -1,0 +1,10 @@
+# The build context of e2e/Dockerfile (the repository): only what the build needs.
+target/
+.git/
+dev/data/
+dev/approvers
+dev/readers
+dev/telegram-token
+.claude/
+.build/
+**/.DS_Store

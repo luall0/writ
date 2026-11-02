@@ -65,7 +65,9 @@ for crate in sorted(p for p in CRATES.iterdir() if p.is_dir()):
         platform_ok = crate.name.startswith("writ-platform") or rel == "crates/writd/src/platform.rs"
         library_src = crate.name not in BINARIES and "/src/" in rel
         test_file = (
-            "/tests/" in rel or crate.name == "writ-integration" or rel in TEST_SUPPORT
+            "/tests/" in rel
+            or crate.name in ("writ-integration", "writ-e2e")
+            or rel in TEST_SUPPORT
         )
         lines = text.splitlines()
         in_tests = test_file

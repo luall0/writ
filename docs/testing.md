@@ -10,9 +10,12 @@ a test that passes by luck is no test at all.
 |---|---|---|---|
 | **Unit** | One crate alone: its unit tests (`#[cfg(test)]`) and its `tests/`, on the platform fakes (`writ_platform::testing`) and the test kits (`writ_approval::testing`) | nothing | `make test` |
 | **Integration** | The crates and the binaries together (`crates/writ-integration`): the real `writd`, `writ` and `writ-sign`, the real `git` and OpenSSH, a throwaway `ssh-agent` standing in for the approver's, a fake Telegram Bot API; temporary `HOME` and git config | the local tools only (checked at start: `git` ≥ 2.45, OpenSSH ≥ 8.9, `nc`); upstream is a test remote, an SSH server in the test process (`writ_integration::remote`) that can also misbehave (never answer, flood) | `make test` |
-| **End to end** | Real external services: Forgejo in Docker (`tool/e2e.sh`, `crates/writ-integration/tests/e2e_forgejo.rs`), a throwaway GitHub repo by hand ([manual checks](guides/manual-checks.md#a-throwaway-github-repo-m4)) | Docker, network | `make e2e` |
+| **End to end** | The documented paths themselves ([end-to-end](end-to-end.md)): the real Linux binaries in their own containers (`writd`, an agent host with the approver), a real Forgejo, the operator setup with the operator guide's commands, every command and flag of `writ`, `writd` and `writ-sign` used by a scenario (`crates/writ-e2e`); a throwaway GitHub repo by hand ([manual checks](guides/manual-checks.md#a-throwaway-github-repo-m4)) | Docker | `make e2e`, and CI's `e2e` job |
 
-Each milestone's acceptance items become integration scenarios (end-to-end ones from M4).
+Each milestone's acceptance items become integration scenarios, and what a person or an
+agent reaches through a binary becomes an end-to-end scenario too: every command and flag has
+one ([the rule and its registry](end-to-end.md#coverage-every-command-and-flag), checked by
+`make check` and `make test`; [adding a scenario](end-to-end.md#adding-a-scenario)).
 What needs a human stays manual: the approver's real agent (`make test-agent`, Touch ID) and
 the [manual checks](guides/manual-checks.md).
 
@@ -89,7 +92,7 @@ These rules hold for every test, at every level.
 | `writ-platform*` | One contract suite per interface (`Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnlock`, `Notifier`), run by every implementation, portable or platform-only. Fakes for each, used by the core crates' tests, so the core is tested without any real platform. Platform-only suites run on their OS (`cfg`-gated). |
 | Clients | `writ sign`'s display neutralizes control sequences; `writ-sign` forwards verify calls to `ssh-keygen`, prints denial reasons escaped and explains a refused session from its certificate; `writ init` writes exactly the documented config (`writes_exactly_the_documented_config`), in wrapper mode through the environment after the caller's own entries; in `writ_init.rs`, the operator's git (key, email, remotes) untouched beside `writ git`, a commit `writ exec` makes in another clone refused, a rebase signed again, `--undo` restoring the config exactly. |
 | Integration | `crates/writ-integration`: each milestone's acceptance scenarios with the real binaries and local tools. |
-| End to end | Forgejo in Docker (`codeberg.org/forgejo/forgejo:13.0.5`, random local ports, removed afterwards) as upstream, with a deploy key the daemon holds and its host key pinned: clone, signed push, a protected ref refused, upstream moved then fetch, rebase, re-sign and push. Not part of `make test` (needs Docker): `make e2e`. |
+| End to end | `crates/writ-e2e`, run by `make e2e` against Forgejo in Docker: the scenarios and the coverage registry of [end-to-end](end-to-end.md). Not part of `make test` (needs Docker); CI runs it as a job of its own. |
 
 The integration scenarios (`crates/writ-integration/tests/`) run the real `git` and `ssh`
 against an in-process gateway (`gateway_git.rs`; `signed_commits.rs` for signing, every

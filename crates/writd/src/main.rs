@@ -505,6 +505,30 @@ mod tests {
     }
 
     #[test]
+    fn every_writd_command_is_in_the_end_to_end_registry() {
+        // Every command `main` dispatches is used for real by an end-to-end scenario
+        // (AGENTS.md rule 18): its row in docs/end-to-end.md names it.
+        let doc = include_str!("../../../docs/end-to-end.md");
+        let (_, section) = doc
+            .split_once("## Coverage: every command and flag")
+            .unwrap();
+        for (name, args) in COMMANDS {
+            // A fixed word is part of the command (`hook pre-receive`), a `<value>` isn't.
+            let feature = if args.starts_with('<') {
+                format!("writd {name}")
+            } else {
+                format!("writd {name} {args}")
+            };
+            assert!(
+                section.contains(&format!("| `{feature}`")),
+                "{feature} is not in docs/end-to-end.md's coverage registry"
+            );
+        }
+        // And what main dispatches is that table: an unknown command gets the usage.
+        assert_eq!(usage().lines().count(), COMMANDS.len());
+    }
+
+    #[test]
     fn the_commands_that_print_a_key_need_no_approvers_file() {
         // `writd host-key`, `tls-fingerprint` and `upstream-keys` run before the approver is
         // set up (the manual checks pin the daemon, then list the approver).

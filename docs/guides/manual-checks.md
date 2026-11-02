@@ -117,7 +117,7 @@ When it passes, note it under the acceptance item in
 
 [M4](../history/m4-gateway-push-and-fetch.md)'s acceptance against a real hosted remote:
 pushes and fetches through the daemon to GitHub, with a deploy key the daemon holds. `make
-e2e` runs the same flow against Forgejo in Docker; this one needs your GitHub account, so it
+e2e` runs the same agent commands against Forgejo in Docker; this one needs your GitHub account, so it
 is done by hand. Use a **throwaway private repository**, never a real one.
 
 **1. The repository.** On GitHub, create a private repository (say `writ-throwaway`) with a
@@ -148,35 +148,49 @@ Add the printed `upstream-dev-01` key to the repository: Settings → Deploy key
 `writ request dev/ticket.yaml`, `writ sign`). Its log shows `mirror created repo=demo`, then
 a sync of `main` (and nothing about `remote.invalid`).
 
-**5. An agent's clone.** In terminal 2 (with `dev/client.env` sourced), clone with your own
-access, then wire it:
+**5. An agent's clone.** In terminal 2 (with `dev/client.env` sourced), put the built `writ`
+first in `PATH`, clone with your own access, then wire it:
 
 ```sh
-writ="$PWD/target/debug/writ"; cargo build -q -p writ-cli -p writ-sign
+cargo build -q -p writ-cli -p writ-sign && export PATH="$PWD/target/debug:$PATH"
 git clone -q git@github.com:<you>/writ-throwaway.git "$(mktemp -d)/w" && cd "$_"
-"$writ" init demo          # prints that `writ git push origin` goes through the daemon
-"$writ" git fetch origin   # through the daemon
-git checkout -q -b agent/manual-check origin/main
-echo hi > notes.txt && "$writ" git add notes.txt
-"$writ" git commit -m "Manual check" --trailer "Writ: <lease id>"
-"$writ" git push origin HEAD:refs/heads/agent/manual-check
 ```
+
+<!-- e2e: crates/writ-e2e/tests/scenarios/wrapper_mode.rs -->
+```sh
+writ init demo          # prints that `writ git push origin` goes through the daemon
+writ git fetch origin   # through the daemon
+git checkout -q -b agent/manual-check origin/main
+echo hi > notes.txt && writ git add notes.txt
+writ git commit -m "Manual check" --trailer "Writ: <lease id>"
+writ git push origin HEAD:refs/heads/agent/manual-check
+```
+
+`make e2e` runs these steps (5 to 7) with the same commands against Forgejo
+(`wrapper_mode`, [end-to-end](../end-to-end.md#commands-the-docs-show)).
 
 **6. Upstream moves.** On GitHub, on `agent/manual-check`, add a file (`theirs.txt`, any
 content) in the web editor and commit; another file than the agent's, so the rebase below
-applies cleanly (editing `notes.txt` there makes it conflict: resolve it, then `"$writ" git
-add notes.txt && "$writ" git rebase --continue`, which signs the commit again). Then:
+applies cleanly (editing `notes.txt` there makes it conflict: resolve it, then `writ git
+add notes.txt && writ git rebase --continue`, which signs the commit again). Then:
 
+<!-- e2e: crates/writ-e2e/tests/scenarios/wrapper_mode.rs -->
 ```sh
-echo more >> notes.txt && "$writ" git commit -qam "Second" --trailer "Writ: <lease id>"
-"$writ" git push origin HEAD:refs/heads/agent/manual-check    # rejected: upstream moved
-"$writ" git fetch origin && "$writ" git rebase origin/agent/manual-check   # signed again
-"$writ" git push origin HEAD:refs/heads/agent/manual-check    # accepted
+echo more >> notes.txt && writ git commit -qam "Second" --trailer "Writ: <lease id>"
+writ git push origin HEAD:refs/heads/agent/manual-check    # rejected: upstream moved
+writ git fetch origin && writ git rebase origin/agent/manual-check   # signed again
+writ git push origin HEAD:refs/heads/agent/manual-check    # accepted
 ```
 
-**7. Refused pushes.** `"$writ" git push origin HEAD:refs/heads/main` is refused (`main` is
-protected in `dev/policy.yaml`), and a plain `git commit --no-gpg-sign` pushed with `writ git`
-is refused as not signed under the lease; `main` on GitHub doesn't move.
+**7. Refused pushes.** `main` is protected in `dev/policy.yaml`, and a plain commit isn't
+signed under the lease; `main` on GitHub doesn't move:
+
+<!-- e2e: crates/writ-e2e/tests/scenarios/wrapper_mode.rs -->
+```sh
+writ git push origin HEAD:refs/heads/main                  # refused: main is protected
+git commit -q --allow-empty --no-gpg-sign -m "Unsigned"
+writ git push origin HEAD:refs/heads/agent/manual-check    # refused: not signed under the lease
+```
 
 **8. What to check.**
 
@@ -186,6 +200,10 @@ is refused as not signed under the lease; `main` on GitHub doesn't move.
   for the refused ones (with the remote's reason for the rejection in step 6), and no key.
 - The agent side holds no GitHub credential: `dev/data/client/sessions/` holds only the
   session key and certificate, and `writ git push` worked without your SSH agent.
+- With the lease's signing key added on your account as a **signing** key (`writd
+  signing-keys dev/writd.yaml` prints it) and `agent@writ.invalid` a verified email of the
+  account, GitHub shows the commits pushed after as "Verified"; without them, as unverified
+  (GitHub asks no proof; Forgejo does: `make e2e`'s `verified_commits`).
 
 **9. Clean up.** Stop `make run`, delete the deploy key and the repository on GitHub, then:
 

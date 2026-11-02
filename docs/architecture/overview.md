@@ -115,7 +115,11 @@ crates/
   writ-cli/             the `writ` binary
   writ-sign/            the `writ-sign` shim
   writ-integration/     test-only: the crates working together, through the binaries
-tool/                   check scripts run by `make check`
+  writ-e2e/             test-only: the end-to-end scenarios, run by `make e2e` in a container,
+                        driving the binaries in theirs (depends on no internal crate)
+e2e/                    the end-to-end images (Dockerfile), stack (compose) and the daemon's
+                        configuration the operator setup installs (docs/end-to-end.md)
+tool/                   check scripts run by `make check`, `make e2e`'s script
 dev/                    the development daemon's configuration
 docs/
 ```
@@ -127,7 +131,7 @@ crates/
   writ-platform-macos/  macOS-only implementations (process chain, kqueue, Secure Enclave; M7)
   writ-platform-linux/  Linux-only implementations (later)
 skill/writ/SKILL.md     the agent skill (M6)
-deploy/                 Dockerfile, compose.yaml (M8)
+deploy/                 Dockerfile, compose.yaml (M8, built on e2e/'s images)
 spikes/                 throwaway spike code, outside the workspace, removed once done
 ```
 

@@ -48,10 +48,18 @@ for name, package in members.items():
     if name in CORE and internal & PLATFORM_ONLY:
         errors.append(f"{name} must use platform traits, not {sorted(internal & PLATFORM_ONLY)}")
 
-# The integration crate is test-only: nothing may depend on it, not even for its tests.
+# The integration and end-to-end crates are test-only: nothing may depend on them, not even
+# for its tests. The end-to-end crate depends on no internal crate either: it drives the
+# binaries from outside, as people do.
 for name, package in members.items():
-    if any(d["name"] == "writ-integration" for d in package["dependencies"]):
-        errors.append(f"{name} must not depend on writ-integration (test-only)")
+    for test_only in ("writ-integration", "writ-e2e"):
+        if any(d["name"] == test_only for d in package["dependencies"]):
+            errors.append(f"{name} must not depend on {test_only} (test-only)")
+e2e = members.get("writ-e2e")
+if e2e:
+    internal = {d["name"] for d in e2e["dependencies"] if d["name"] in members}
+    if internal:
+        errors.append(f"writ-e2e must not depend on internal crates: {sorted(internal)}")
 
 for e in errors:
     print(f"check-deps: {e}", file=sys.stderr)

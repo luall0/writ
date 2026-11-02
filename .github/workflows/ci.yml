@@ -1,7 +1,9 @@
 # CI: `make ci`, the one definition of green, on Linux. macOS-only code is tested by the same
-# target on the Mac, which the pre-push hook requires (`make hooks`). No third-party action is
-# used: the repository is fetched with git and the job's read-only token, so nothing outside
-# this repo and GitHub's runner image runs here.
+# target on the Mac, which the pre-push hook requires (`make hooks`). And `make e2e`, the
+# end-to-end pipeline (docs/end-to-end.md), as a job of its own: Docker on the runner, the
+# images pinned by digest in e2e/. No third-party action is used: the repository is fetched
+# with git and the job's read-only token, so nothing outside this repo, GitHub's runner image
+# and those pinned images runs here.
 name: ci
 
 on:
@@ -41,3 +43,25 @@ jobs:
 
       - name: make ci
         run: make ci
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Fetch the commit
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          git -c "http.extraHeader=Authorization: basic ${auth}" fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+      - name: Docker
+        run: |
+          docker version
+          docker compose version
+
+      - name: make e2e
+        run: make e2e

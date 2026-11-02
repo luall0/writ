@@ -5,6 +5,68 @@ what. Writ guards what the agent does **through the daemon**; what an agent runn
 user could reach on your machine is yours to protect. See the
 [threat model](../threat-model.md#what-writ-does-not-guarantee).
 
+## Setting up the daemon
+
+From nothing, on the daemon's host, in the directory that holds its files (`make e2e` runs
+these steps, with these commands, before every scenario: [end-to-end](../end-to-end.md#commands-the-docs-show)).
+The order matters only in that the daemon starts last: every command that prints a key works
+before any approver or reader is listed.
+
+1. **The configuration**: `writd.yaml`, with paths relative to it (`state_dir: data`,
+   `policy: policy.yaml`, `approvers: approvers`, `readers: readers`,
+   `mirrors.known_hosts: upstream_known_hosts`; the [development one](../../dev/writd.yaml)
+   is a commented example), and `policy.yaml`, the repo registry and the templates
+   ([lease model](../lease-model.md)). Both 0644 or stricter, owned by the daemon's user.
+2. **The upstream credentials**, each added on its remote (below: a deploy key with write
+   access on its repository):
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   writd upstream-keys writd.yaml
+   ```
+3. **Each remote's host key**, pinned, then checked against the fingerprints the remote
+   publishes (below):
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   ssh-keyscan -t ed25519 <host> >> upstream_known_hosts
+   ssh-keygen -lf upstream_known_hosts
+   ```
+4. **The agent signing keys**, to add on the account as signing keys if the remote should
+   show the commits as verified ([proving a key](../architecture/approvals.md#proving-a-signing-key-to-a-remote)
+   when the remote asks for it, as Forgejo and Gitea do):
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   writd signing-keys writd.yaml
+   ```
+5. **The daemon's identity, pinned on every client**: its host key in `~/.writ/known_hosts`
+   (`[<daemon>]:2222 <key>` for agents, `[<daemon>]:2223 <key>` for the approver), its TLS
+   certificate's fingerprint in the approver's `~/.writ/tls_pins` (`[<daemon>]:8443 SHA256:…`):
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   writd host-key writd.yaml
+   writd tls-fingerprint writd.yaml
+   ```
+6. **The approver's machine**: its reader key (the approval API lets only readers in), whose
+   printed line goes into the daemon's `readers` file; and the approval key's public half
+   (Secretive's dedicated key) into `approvers`, as `<name> <key>`:
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   writ reader <name>
+   ```
+7. **Start it**, from its directory:
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   writd run writd.yaml
+   ```
+
+   It logs its host key, TLS fingerprint, each approver's and reader's fingerprint, and its
+   listeners; check the fingerprints against what you pinned and listed.
+
 ## Upstream keys and host keys
 
 The daemon pushes to and fetches from each repo's `upstream` with that repo's

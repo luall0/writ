@@ -1,0 +1,23 @@
+[package]
+name = "writ-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Test-only: the end-to-end scenarios (docs/end-to-end.md), run by `make e2e` in the runner
+# container against the real binaries in theirs and a real Forgejo. Nothing depends on this
+# crate; `make test` compiles its scenarios but runs none (they are ignored outside the
+# pipeline).
+
+[dependencies]
+base64ct.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+
+[[test]]
+name = "scenarios"
+path = "tests/scenarios/main.rs"
+
+[lints]
+workspace = true

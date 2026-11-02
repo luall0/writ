@@ -119,6 +119,15 @@ records every commit signed per lease. Use these words in code, logs and docs.
     see, a dependency or a guarantee: in the commit message, and for a milestone on its
     history page. A new untrusted input joins the inventory there, with its bounds and a
     hostile-input test. `make check` enforces what a script can; review enforces the rest.
+18. **Every command and flag is tested end to end.** Each command and flag of `writ`, `writd`
+    and `writ-sign` is used for real by a scenario of the end-to-end pipeline (`make e2e`:
+    the binaries in their own containers, a real Forgejo, the documented commands). A new
+    one comes with its scenario and its row in the
+    [coverage registry](docs/end-to-end.md#coverage-every-command-and-flag), in the same
+    change (`make test` fails on a command or flag without a row, `make check` on a row
+    without a scenario); [adding a scenario](docs/end-to-end.md#adding-a-scenario). A
+    command a guide shows is the command the pipeline runs (`<!-- e2e: … -->` blocks,
+    checked both ways).
 
 ## Definition of done
 
@@ -126,7 +135,8 @@ records every commit signed per lease. Use these words in code, logs and docs.
 property-test passes), the [security checklist](docs/security.md#the-security-checklist) is
 answered, and the milestone's acceptance items touched by the change were exercised for real:
 as integration scenarios in `crates/writ-integration` (real `git`, real `ssh`, the daemon
-running), plus the [manual checks](docs/guides/manual-checks.md) for what needs a human
+running), as end-to-end scenarios when a binary's behavior changed (`make e2e` passes,
+rule 18), plus the [manual checks](docs/guides/manual-checks.md) for what needs a human
 (Touch ID). State in your summary what you ran.
 
 ## Commands
@@ -137,7 +147,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 |---|---|
 | Everything CI runs (`check` then `test`); on a clean working tree, a pass stamps the tree for the `pre-push` hook | `make ci` |
 | `make ci` (skipped if it already passed on this tree), then `git push`; the way to push | `make push [ARGS="origin main"]` |
-| Lint, format check, dependency directions, source rules, doc links, no test-only feature in the binaries, `cargo deny` | `make check` |
+| Lint, format check, dependency directions, source rules, doc links, no test-only feature in the binaries, the guarantee and end-to-end registries, `cargo deny` | `make check` |
 | Tests: unit and integration, property tests with the fixed seed and a random one | `make test` |
 | Property tests with one seed (replay a failure) | `make test-props SEED=<number\|random>` |
 | Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
@@ -145,7 +155,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Format | `make fmt` |
 | Install the git hooks (`pre-push` allows only a tree `make ci` passed on) | `make hooks` |
 | Run the development daemon on `dev/writd.yaml` (test keys in `dev/data`, your approval public key in `dev/approvers`; `writd host-key dev/writd.yaml` / `writd tls-fingerprint dev/writd.yaml` print what to pin) | `make run` |
-| End-to-end scenarios against the test remote (Docker, from M4) | `make e2e` |
+| End-to-end scenarios: the binaries in containers against Forgejo, every command and flag (Docker; `ARGS=<filter>`, `WRIT_E2E_KEEP=1` keeps the stack) | `make e2e [ARGS=<scenario>]` |
 | Build the Docker image (from M8) | `make docker` |
 | Add a dependency | add its version to `[workspace.dependencies]` in the root `Cargo.toml`, then `dep.workspace = true` in the crate |
 
@@ -175,6 +185,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Docker, compose, network exposure, host hardening, launchd | [docs/architecture/deployment.md](docs/architecture/deployment.md) |
 | Crates, external tool versions, pinning | [docs/stack.md](docs/stack.md) |
 | Tests: levels, hardening rules, fixtures, guarantee tests, property-test seeds | [docs/testing.md](docs/testing.md) |
+| End-to-end scenarios: running, the stack, the coverage registry, adding a scenario | [docs/end-to-end.md](docs/end-to-end.md) |
 | Code conventions: crates, modules, errors, secrets, logging, docs | [docs/conventions.md](docs/conventions.md) |
 | Bootstrapping an empty repo | [docs/guides/initialization.md](docs/guides/initialization.md) |
 | Upgrading a crate, the toolchain, `cargo-deny` or a tool; answering an advisory | [docs/guides/dependency-upgrades.md](docs/guides/dependency-upgrades.md) |

@@ -1,0 +1,26 @@
+# The end-to-end stack (docs/end-to-end.md), run by `make e2e` (tool/e2e.sh) under a project
+# name of its own, removed afterwards. No port is published: everything talks on the
+# project's network, the runner included.
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:13.0.5@sha256:d05b9e587f02a746784d42c815c486b1d4f138646128f990a841833f513fe088
+    environment:
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__server__DOMAIN: forgejo
+      FORGEJO__server__SSH_DOMAIN: forgejo
+      FORGEJO__server__ROOT_URL: http://forgejo:3000/
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+  writd:
+    build: { context: .., dockerfile: e2e/Dockerfile, target: writd }
+    init: true
+    # writd stops on SIGINT (Ctrl-C), logging it; a restart keeps its home (the container's).
+    stop_signal: SIGINT
+  agent:
+    build: { context: .., dockerfile: e2e/Dockerfile, target: agent }
+    init: true
+  runner:
+    build: { context: .., dockerfile: e2e/Dockerfile, target: runner }
+    profiles: [runner]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

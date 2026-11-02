@@ -51,6 +51,8 @@ conventions, hard rules and commands, and points here for details.
 
 ## Engineering
 - [Stack](stack.md): technology choices (decided and proposed), external tools, pinning.
+- [End-to-end scenarios](end-to-end.md): `make e2e`, the stack, the scenarios, the rule that
+  every command and flag has one (its registry), and how to add a scenario.
 - [Testing](testing.md): the three levels (unit, integration, end to end), the hardened-test
   rules, property-test seeds, what to test in each crate, guarantee tests.
 - [Code conventions](conventions.md): crate and module layout, interfaces and their

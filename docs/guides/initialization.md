@@ -82,7 +82,7 @@ cargo new --bin crates/writ-sign
 | `make test` | The shipped binaries built on their own (`-p writd -p writ-cli -p writ-sign`, in `target/bins`), then `cargo test --workspace` (the integration tests run those binaries); everything `--locked`. Since M2.6: `make ci` runs `check` then `test`, and `make check` also runs `cargo deny` and the source, feature and guarantee checks (see the [Makefile](../../Makefile)) |
 | `make fmt` | `cargo fmt --all` |
 | `make run` | `writd` with the dev config in `dev/` (test keys and test repos only) |
-| `make e2e` | End-to-end scenarios against the test remote in Docker (from M4) |
+| `make e2e` | End-to-end scenarios: the binaries in containers against Forgejo ([end-to-end](../end-to-end.md), from M4.1) |
 | `make docker` | Build the `writd` image (from M8) |
 
 Then update the commands table in [AGENTS.md](../../AGENTS.md#commands) so it matches.

@@ -391,6 +391,59 @@ pub(crate) fn error_of<T>(result: anyhow::Result<T>) -> String {
 mod tests {
     use super::*;
 
+    /// The features `docs/end-to-end.md`'s coverage registry lists (first cell of each row,
+    /// up to its first parenthesis), for one binary.
+    pub(crate) fn registry(binary: &str) -> std::collections::BTreeSet<String> {
+        let doc = include_str!("../../../docs/end-to-end.md");
+        let (_, section) = doc
+            .split_once("## Coverage: every command and flag")
+            .expect("the registry section");
+        let section = section
+            .split_once("\n## ")
+            .map_or(section, |(body, _)| body);
+        section
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|rest| rest.split('`').next())
+            .filter(|feature| feature.split(' ').next() == Some(binary))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn every_command_and_flag_is_in_the_end_to_end_registry() {
+        // Every subcommand and every long flag (global ones too) is used for real by an
+        // end-to-end scenario (AGENTS.md rule 18): its row names it (`tool/check-e2e.py`
+        // checks the scenarios exist).
+        let cli = <Cli as clap::CommandFactory>::command();
+        let mut features = Vec::new();
+        let flags = |command: &clap::Command| -> Vec<String> {
+            command
+                .get_arguments()
+                .filter_map(|arg| arg.get_long())
+                .filter(|long| !matches!(*long, "help" | "version"))
+                .map(|long| format!("--{long}"))
+                .collect()
+        };
+        features.extend(flags(&cli).into_iter().map(|flag| format!("writ {flag}")));
+        for sub in cli.get_subcommands() {
+            let name = sub.get_name();
+            features.push(format!("writ {name}"));
+            features.extend(
+                flags(sub)
+                    .into_iter()
+                    .map(|flag| format!("writ {name} {flag}")),
+            );
+        }
+        assert!(features.len() > 40, "{features:?}");
+        let registry = registry("writ");
+        let missing: Vec<&String> = features.iter().filter(|f| !registry.contains(*f)).collect();
+        assert!(
+            missing.is_empty(),
+            "not in docs/end-to-end.md's coverage registry (add a scenario and its row): {missing:?}"
+        );
+    }
+
     #[test]
     fn the_command_line_is_well_formed() {
         // clap checks its definition only when a command is parsed: every subcommand here.

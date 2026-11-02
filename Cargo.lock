@@ -3872,6 +3872,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-e2e"
+version = "0.0.0"
+dependencies = [
+ "base64ct",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "writ-gateway"
 version = "0.0.0"
 dependencies = [

@@ -1,6 +1,7 @@
 .PHONY: ci push check test test-props test-agent e2e fmt run dev-client hooks
 
-# Lint, format check, dependency directions, source rules, doc links.
+# Lint, format check, dependency directions, source rules, doc links, the guarantee and
+# end-to-end registries.
 # Each library is also linted alone: the workspace build turns on the `testing` features the
 # tests ask for, which could hide code that only compiles with them.
 LIBRARIES := writ-core writ-proto writ-crypto writ-git writ-mirror writ-signer writ-platform writ-store writ-approval writ-gateway
@@ -34,6 +35,7 @@ check:
 	python3 -I tool/check-links.py
 	python3 -I tool/check-features.py
 	python3 -I tool/check-guarantees.py
+	python3 -I tool/check-e2e.py
 	cargo deny --locked check
 
 # The integration tests run the binaries (writd, writ, writ-sign) as they ship, built first on
@@ -59,10 +61,12 @@ test-agent:
 	WRIT_TEST_AGENT_KEY="$(KEY)" SSH_AUTH_SOCK="$(or $(AGENT),$(SSH_AUTH_SOCK))" \
 		WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo test --locked -p writ-integration --test interop -- --ignored --exact your_agent_key_signs_approvals_rust_verifies
 
-# End to end against a real remote: a throwaway Forgejo in Docker (tool/e2e.sh). Not part of
-# `make ci` (it needs Docker).
+# End to end (docs/end-to-end.md): the real binaries in their own containers against a real
+# Forgejo, every scenario run from a runner container, everything removed afterwards
+# (tool/e2e.sh). Not part of `make ci` (it needs Docker): CI runs it as a job of its own.
+# A filter for the scenarios: make e2e ARGS=wrapper_mode.
 e2e:
-	sh tool/e2e.sh
+	sh tool/e2e.sh $(ARGS)
 
 fmt:
 	cargo fmt --all

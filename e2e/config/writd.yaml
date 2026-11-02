@@ -1,0 +1,23 @@
+# The end-to-end daemon (docs/end-to-end.md): the operator's writd.yaml, with paths relative
+# to it, installed and started by the operator setup (crates/writ-e2e/src/setup.rs) in the
+# writd container's home. Test keys and the throwaway Forgejo only.
+state_dir: data
+policy: policy.yaml
+approvers: approvers
+readers: readers
+decisions: signed
+# Every scenario's agent submits from the agent container: one source address.
+max_pending: 50
+submissions: { per_source: 300, in_all: 600 }
+keystore: { dev: data/keys }       # unencrypted test keys (the sealed keystore comes in M5)
+mirrors:
+  known_hosts: upstream_known_hosts
+  fresh_for: 0s                    # every fetch and push asks Forgejo first
+transports:
+  agents: [{ tcp: "0.0.0.0:2222", allow: ["0.0.0.0/0"] }]
+  approvals:
+    ssh: [{ tcp: "0.0.0.0:2223" }]
+    https: [{ tcp: "0.0.0.0:8443" }]
+attestor: network
+session_watcher: none
+notifiers: []
