@@ -9,33 +9,45 @@ for agents and keeping your own keys yours: [good practice](good-practice.md).
 
 On the daemon's host, in the directory that holds its files (`make e2e` runs
 these steps, with these commands, before every scenario: [end-to-end](../end-to-end.md#commands-the-docs-show)).
-The order matters only in that the daemon starts last: every command that prints a key works
-before any approver or reader is listed.
+The approvers and readers come before the keystore (`writd init` puts the three files in force
+as their first versions); the daemon starts last, sealed, and the approver unseals it.
 
 1. **The configuration**: `writd.yaml`, with paths relative to it (`state_dir: data`,
    `policy: policy.yaml`, `approvers: approvers`, `readers: readers`,
+   `keystore: { sealed: { dir: data/keys, boot: data/boot } }`,
    `mirrors.known_hosts: upstream_known_hosts`; the [development one](../../dev/writd.yaml)
    is a commented example; [every key](writd-yaml.md), a [template](templates/writd.yaml) to
    start from), and `policy.yaml`, the repo registry and the templates ([every key](policy-yaml.md),
    a [template](templates/policy.yaml)). Both 0644 or stricter, owned by
-   the daemon's user.
-2. **The upstream credentials**, each added on its remote (below: a deploy key with write
-   access on its repository):
+   the daemon's user. The boot tier (`keystore.sealed.boot`) can live on another volume
+   ([sealing](sealing.md)).
+2. **The approver's machine**: its reader key (the approval API lets only readers in), whose
+   printed line goes into the daemon's `readers` file; and the approval key's public half
+   (Secretive's dedicated key) into `approvers`, as `<name> <key>`. Enroll a second approval
+   key and a second reader from the start if you can ([recovery](recovery.md)):
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   writ reader <name>
+   ```
+3. **The keystore**, made once, as the daemon's user: it asks for the passphrase twice (one
+   line of stdin when it isn't a terminal; at least 12 characters), makes the keys the
+   policy names, records the three files in force, and prints the recipient and every key to
+   register. Keep the passphrase somewhere safe: the approver types it at each unseal.
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   writd init writd.yaml
+   ```
+4. **The upstream credentials**, each added on its remote (below: a deploy key with write
+   access on its repository); an `https://` upstream's credential is a token, added once the
+   daemon runs (step 10):
 
    <!-- e2e: crates/writ-e2e/src/setup.rs -->
    ```sh
    writd upstream-keys writd.yaml
    ```
-
-   An `https://` upstream's credential is a token instead ([below](#https-upstreams-and-tokens)):
-   paste it alone (then Enter, Ctrl-D) into its file in the keystore, readable by the daemon's
-   user only:
-
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
-   ```sh
-   (umask 077 && mkdir -p data/keys/tokens && cat > data/keys/tokens/<id>)
-   ```
-3. **Each remote's host key**, pinned, then checked against the fingerprints the remote
+5. **Each remote's host key**, pinned, then checked against the fingerprints the remote
    publishes (below):
 
    <!-- e2e: crates/writ-e2e/src/setup.rs -->
@@ -43,7 +55,7 @@ before any approver or reader is listed.
    ssh-keyscan -t ed25519 <host> >> upstream_known_hosts
    ssh-keygen -lf upstream_known_hosts
    ```
-4. **The agent signing keys**, to add on the account as signing keys if the remote should
+6. **The agent signing keys**, to add on the account as signing keys if the remote should
    show the commits as verified ([proving a key](../architecture/approvals.md#proving-a-signing-key-to-a-remote)
    when the remote asks for it, as Forgejo and Gitea do):
 
@@ -51,32 +63,41 @@ before any approver or reader is listed.
    ```sh
    writd signing-keys writd.yaml
    ```
-5. **The daemon's identity, pinned on every client**: its host key in `~/.writ/known_hosts`
+7. **The daemon's identity, pinned on every client**: its host key in `~/.writ/known_hosts`
    (`[<daemon>]:2222 <key>` for agents, `[<daemon>]:2223 <key>` for the approver), its TLS
-   certificate's fingerprint in the approver's `~/.writ/tls_pins` (`[<daemon>]:8443 SHA256:…`):
+   certificate's fingerprint in the approver's `~/.writ/tls_pins` (`[<daemon>]:8443 SHA256:…`).
+   These commands, like the two before, read public halves: no passphrase.
 
    <!-- e2e: crates/writ-e2e/src/setup.rs -->
    ```sh
    writd host-key writd.yaml
    writd tls-fingerprint writd.yaml
    ```
-6. **The approver's machine**: its reader key (the approval API lets only readers in), whose
-   printed line goes into the daemon's `readers` file; and the approval key's public half
-   (Secretive's dedicated key) into `approvers`, as `<name> <key>`:
-
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
-   ```sh
-   writ reader <name>
-   ```
-7. **Start it**, from its directory:
+8. **Start it**, from its directory:
 
    <!-- e2e: crates/writ-e2e/src/setup.rs -->
    ```sh
    writd run writd.yaml
    ```
 
-   It logs its host key, TLS fingerprint, each approver's and reader's fingerprint, and its
+   It starts sealed ([sealing](sealing.md)), hardened ([process hardening](hardening.md)), and
+   logs its host key, TLS fingerprint, each approver's and reader's fingerprint, and its
    listeners; check the fingerprints against what you pinned and listed.
+9. **Unseal it**, from the approver's machine: the passphrase, then one signature with the
+   approval key. After every start of the daemon, the same:
+
+   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   ```sh
+   writ unseal
+   ```
+10. **The `https://` upstreams' tokens**, from the approver's machine
+    ([below](#https-upstreams-and-tokens)): paste the token (it isn't shown), then sign. It is
+    encrypted there to the daemon's keystore and used at once:
+
+    <!-- e2e: crates/writ-e2e/src/setup.rs -->
+    ```sh
+    writ admin token <id>
+    ```
 
 ## Upstream keys and host keys
 
@@ -107,10 +128,12 @@ and its `upstream_credential` names a **token** ([gateway](../architecture/gatew
    one repository with "Contents: read and write"; on GitLab a project access token with
    `write_repository`; on Forgejo or Gitea a token with `write:repository`. A token reaches
    whatever its scope covers: the daemon's registry is the only per-repo boundary beyond it.
-2. **Put it in the keystore**: alone in `data/keys/tokens/<id>` (the development keystore,
-   until the sealed keystore of M5), mode 0600, with the command above. The daemon refuses to
-   start without it, or with anything but one word of printable ASCII in it. One id is a key
-   or a token, never both.
+2. **Add it from the approver's machine**: `writ admin token <id>` (step 10), once the daemon
+   is unsealed; run it again to rotate the token. It reaches the daemon encrypted, and is
+   written there sealed (`tokens/<id>.age`). Until it is added, the repo's syncs and pushes
+   are refused with that command; the rest of the daemon works. Anything but one word of
+   printable ASCII is refused. One id is a key or a token, never both. (The development
+   keystore, for tests, takes it as a file instead: `<keys>/tokens/<id>`, 0600.)
 3. **The user name**: most remotes take any name with a token (GitHub, GitLab, Forgejo,
    Gitea); the daemon sends `writ`. A remote that wants a given one has it in the URL
    (`https://x-token-auth@bitbucket.org/…`). Never a password in the URL: refused.

@@ -9,7 +9,7 @@ decisions: signed
 # Every scenario's agent submits from the agent container: one source address.
 max_pending: 50
 submissions: { per_source: 300, in_all: 600 }
-keystore: { dev: data/keys }       # unencrypted test keys (the sealed keystore comes in M5)
+keystore: { sealed: { dir: data/keys, boot: data/boot } }   # made by `writd init`, opened by `writ unseal`
 mirrors:
   known_hosts: upstream_known_hosts
   ca_certs: upstream_ca.pem        # the HTTPS front's certificate (the `https` repo)

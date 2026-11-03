@@ -1,10 +1,11 @@
-//! Scenario 10, restart: the `writd` container restarted (the daemon starts again from its
+//! Scenario 10, restart: the `writd` container restarted (the daemon starts again, sealed, and
+//! the approver unseals it; it starts from its
 //! entrypoint, the same way, on the same relative path) keeps its leases, its mirrors and its
 //! ledger: a commit signed before the restart is pushed after it.
 
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
-use writ_e2e::setup::wait_started;
+use writ_e2e::setup::{unseal, wait_started};
 
 use crate::wired;
 
@@ -32,6 +33,8 @@ fn a_restarted_daemon_keeps_leases_mirrors_and_ledger() {
         .count();
     stack.operator.container.lifecycle("restart");
     wait_started(&stack.operator, starts + 1);
+    // It starts sealed: the approver unseals it, as after every start.
+    unseal(&stack.approver);
 
     // The lease, still active; the mirror, still holding the first push.
     let active = stack.approver.ok("writ ls");

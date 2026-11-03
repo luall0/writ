@@ -1,10 +1,12 @@
 //! The operator setup, from nothing, in the order the operator guide gives it
-//! (docs/operators/setup.md): the daemon's files with relative paths,
-//! the upstream credentials added on Forgejo as deploy keys (and the HTTPS repo's token in the
-//! keystore, its front's certificate trusted), Forgejo's host key pinned and
-//! checked against the one it publishes, the signing keys listed, the daemon's host key and
-//! TLS fingerprint pinned on the clients, the reader and the approver listed, and
-//! `writd run writd.yaml` started from the daemon's directory, on a relative path.
+//! (docs/operators/setup.md): the daemon's files with relative paths, the approver's machine
+//! (the reader and the approval key listed), the sealed keystore made by `writd init` (the
+//! passphrase on stdin), the upstream credentials added on Forgejo as deploy keys (the HTTPS
+//! front's certificate trusted), Forgejo's host key pinned and checked against the one it
+//! publishes, the signing keys listed, the daemon's host key and TLS fingerprint pinned on the
+//! clients, `writd run writd.yaml` started from the daemon's directory on a relative path,
+//! `writ unseal` from the approver's machine, and the HTTPS repo's token added from there with
+//! `writ admin token`.
 //!
 //! Every command the guide shows runs through [`doc_step`], with its text exactly as the
 //! guide writes it (placeholders such as `<host>` filled in): `tool/check-e2e.py` checks that
@@ -41,14 +43,20 @@ pub const SYSTEM_REPO: &str = "https-system";
 /// The reader's name in the daemon's `readers` file.
 pub const READER: &str = "e2e-approver";
 
+/// The keystore's passphrase, as the operator types it at `writd init` and the approver at
+/// each `writ unseal` (a throwaway stack's).
+pub const PASSPHRASE: &str = "the end-to-end stack's passphrase";
+
 /// What the setup saw: the `operator_setup` scenario checks it.
 #[derive(Debug, Clone)]
 pub struct Report {
     /// The configuration path `writd` was started on (relative, from its directory).
     pub config_path: String,
-    /// The commands that print a key, and what each printed, all run while no approvers
-    /// (and no readers) file existed yet.
-    pub before_approvers: Vec<(String, String)>,
+    /// What `writd init` printed (the recipient, the keys to register).
+    pub init_printed: String,
+    /// The commands that print a key, and what each printed, all run before the daemon
+    /// started: no passphrase.
+    pub printed: Vec<(String, String)>,
     /// `<id> <key> (repos: …)` lines of `writd upstream-keys`.
     pub upstream_keys: Vec<String>,
     /// `<id> <key> (templates: …)` lines of `writd signing-keys`.
@@ -62,6 +70,9 @@ pub struct Report {
     pub upstream_fingerprint: String,
     /// The line `writ reader` printed.
     pub reader_line: String,
+    /// The `https` repo's Forgejo token, as the approver pasted it into `writ admin token`
+    /// (the scenarios check it is in clear nowhere on the daemon's host).
+    pub https_token: String,
 }
 
 /// Runs a command the operator guide shows, exactly as written there (`command` is checked
@@ -140,6 +151,18 @@ pub fn wait_started(operator: &Host, times: usize) {
     });
 }
 
+/// `writ unseal` on the approver's machine, the passphrase typed: after the setup's start and
+/// after each restart of the daemon.
+pub fn unseal(approver: &Host) {
+    let said = doc_step_with(
+        approver,
+        "writ unseal",
+        &[],
+        format!("{PASSPHRASE}\n").as_bytes(),
+    );
+    assert!(said.contains("Unsealed (signed by SHA256:"), "{said}");
+}
+
 /// The whole setup, from nothing; the stack ready for the scenarios.
 pub fn run() -> Stack {
     let forgejo = Forgejo::create_accounts();
@@ -147,23 +170,56 @@ pub fn run() -> Stack {
     let approver_home = Host::new("agent", "approver", "/home/approver");
     let agents_home = Host::new("agent", "agent", "/home/agent");
     let nothing_yet = || {
-        let out = operator.run("test ! -e approvers && test ! -e readers");
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "approvers or readers exist already"
-        );
+        let out = operator.run("test ! -e approvers && test ! -e readers && test ! -e data");
+        assert_eq!(out.status.code(), Some(0), "a daemon's files exist already");
     };
 
     // 1. The daemon's files, with paths relative to its configuration.
     nothing_yet();
     operator.write("writd.yaml", WRITD_YAML, "0644");
     operator.write("policy.yaml", POLICY_YAML, "0644");
-    let mut before_approvers = Vec::new();
 
-    // 2. The upstream credentials, each added on its repository as a deploy key.
+    // 2. The approver's machine: its reader key (in `readers`) and its approval key (in
+    // `approvers`, held by a throwaway ssh-agent standing in for Secretive). `writd init`
+    // records both files as their first versions in force.
+    approver_home.ok("mkdir -m 700 -p .writ");
+    approver_home.write(
+        "client.env",
+        &format!(
+            "export WRIT_HOME=\"$HOME/.writ\"\n\
+             export WRIT_APPROVAL_URL={APPROVALS_HTTPS}\n\
+             export WRIT_APPROVAL_AGENT=\"$HOME/agent.sock\"\n"
+        ),
+        "0644",
+    );
+    let approver = approver_home.with("/home/approver", Some("client.env"));
+    let reader_line = doc_step(&approver, "writ reader <name>", &[("<name>", READER)])
+        .trim()
+        .to_owned();
+    operator.write("readers", &format!("{reader_line}\n"), "0644");
+    approver.ok("ssh-agent -a \"$WRIT_APPROVAL_AGENT\" >/dev/null && \
+         ssh-keygen -q -t ed25519 -N '' -C approval -f .writ/approval && \
+         SSH_AUTH_SOCK=\"$WRIT_APPROVAL_AGENT\" ssh-add -q .writ/approval && \
+         rm .writ/approval && mv .writ/approval.pub .writ/approver.pub");
+    let approval_key = approver.read(".writ/approver.pub");
+    operator.write(
+        "approvers",
+        &format!("{READER} {}\n", approval_key.trim()),
+        "0644",
+    );
+
+    // 3. The sealed keystore, the passphrase typed once (on stdin, one line).
+    let init_printed = doc_step_with(
+        &operator,
+        "writd init writd.yaml",
+        &[],
+        format!("{PASSPHRASE}\n").as_bytes(),
+    );
+    let mut printed = Vec::new();
+
+    // 4. The upstream credentials, each added on its repository as a deploy key.
     let upstream = doc_step(&operator, "writd upstream-keys writd.yaml", &[]);
-    before_approvers.push((
+    printed.push((
         "writd upstream-keys writd.yaml".to_owned(),
         upstream.clone(),
     ));
@@ -175,18 +231,11 @@ pub fn run() -> Stack {
             forgejo.add_deploy_key(&repo, &key);
         }
     }
-
-    // The HTTPS upstream's token: one made on the account for repositories, alone in its file
-    // in the keystore (pasted, as the guide says); the HTTPS front's certificate is the
+    // The HTTPS repository, and its token made on the account for repositories (the approver
+    // adds it once the daemon is unsealed, step 10); the HTTPS front's certificate is the
     // daemon's `mirrors.ca_certs` (no system CA signed it).
     forgejo.create_repo(HTTPS_REPO);
-    let token = forgejo.repository_token("writd-https-upstream");
-    doc_step_with(
-        &operator,
-        "(umask 077 && mkdir -p data/keys/tokens && cat > data/keys/tokens/<id>)",
-        &[("<id>", HTTPS_CREDENTIAL)],
-        format!("{token}\n").as_bytes(),
-    );
+    let https_token = forgejo.repository_token("writd-https-upstream");
     let front = Container::of("forgejo-https").run_as("front", "cat /tls/cert.pem");
     assert_eq!(front.status.code(), Some(0), "{}", stderr(&front));
     operator.write("upstream_ca.pem", &stdout(&front), "0644");
@@ -204,7 +253,7 @@ pub fn run() -> Stack {
     );
     assert_eq!(installed.status.code(), Some(0), "{}", stderr(&installed));
 
-    // 3. Forgejo's host key, pinned, and checked against the one it publishes.
+    // 5. Forgejo's host key, pinned, and checked against the one it publishes.
     doc_step(
         &operator,
         "ssh-keyscan -t ed25519 <host> >> upstream_known_hosts",
@@ -221,24 +270,23 @@ pub fn run() -> Stack {
         "the scan is not the key Forgejo publishes"
     );
 
-    // 4. The agent signing keys (to register on an account, for verified commits).
+    // 6. The agent signing keys (to register on an account, for verified commits).
     let signing = doc_step(&operator, "writd signing-keys writd.yaml", &[]);
-    before_approvers.push(("writd signing-keys writd.yaml".to_owned(), signing.clone()));
+    printed.push(("writd signing-keys writd.yaml".to_owned(), signing.clone()));
     let signing_keys: Vec<String> = signing.lines().map(str::to_owned).collect();
 
-    // 5. The daemon's identity, pinned on the clients.
+    // 7. The daemon's identity, pinned on the clients.
     let host_key = doc_step(&operator, "writd host-key writd.yaml", &[])
         .trim()
         .to_owned();
-    before_approvers.push(("writd host-key writd.yaml".to_owned(), host_key.clone()));
+    printed.push(("writd host-key writd.yaml".to_owned(), host_key.clone()));
     let tls_fingerprint = doc_step(&operator, "writd tls-fingerprint writd.yaml", &[])
         .trim()
         .to_owned();
-    before_approvers.push((
+    printed.push((
         "writd tls-fingerprint writd.yaml".to_owned(),
         tls_fingerprint.clone(),
     ));
-    nothing_yet();
     agents_home.ok("mkdir -m 700 -p .writ agents");
     agents_home.write(
         ".writ/known_hosts",
@@ -248,48 +296,36 @@ pub fn run() -> Stack {
     agents_home.ok("git config --global user.name Operator && \
          git config --global user.email operator@writ.invalid && \
          git config --global init.defaultBranch main");
-    approver_home.ok("mkdir -m 700 -p .writ");
-    approver_home.write(
+    approver.write(
         ".writ/known_hosts",
         &format!("[{DAEMON}]:2223 {host_key}\n"),
         "0644",
     );
-    approver_home.write(
+    approver.write(
         ".writ/tls_pins",
         &format!("[{DAEMON}]:8443 {tls_fingerprint}\n"),
         "0644",
     );
-    approver_home.write(
-        "client.env",
-        &format!(
-            "export WRIT_HOME=\"$HOME/.writ\"\n\
-             export WRIT_APPROVAL_URL={APPROVALS_HTTPS}\n\
-             export WRIT_APPROVAL_AGENT=\"$HOME/agent.sock\"\n"
-        ),
-        "0644",
-    );
-    let approver = approver_home.with("/home/approver", Some("client.env"));
 
-    // 6. The reader (the approver's machine's key for the approval API) and the approver
-    // (the approval key, in a throwaway ssh-agent standing in for Secretive).
-    let reader_line = doc_step(&approver, "writ reader <name>", &[("<name>", READER)])
-        .trim()
-        .to_owned();
-    operator.write("readers", &format!("{reader_line}\n"), "0644");
-    approver.ok("ssh-agent -a \"$WRIT_APPROVAL_AGENT\" >/dev/null && \
-         ssh-keygen -q -t ed25519 -N '' -C approval -f .writ/approval && \
-         SSH_AUTH_SOCK=\"$WRIT_APPROVAL_AGENT\" ssh-add -q .writ/approval && \
-         rm .writ/approval && mv .writ/approval.pub .writ/approver.pub");
-    let approval_key = approver.read(".writ/approver.pub");
-    operator.write(
-        "approvers",
-        &format!("{READER} {}\n", approval_key.trim()),
-        "0644",
-    );
-
-    // 7. The daemon, started from its directory on a relative path.
+    // 8. The daemon, started from its directory on a relative path: sealed.
     doc_step_detached(&operator, "writd run writd.yaml", &[], "writd.log");
     wait_started(&operator, 1);
+
+    // 9. Unsealed from the approver's machine.
+    unseal(&approver);
+
+    // 10. The HTTPS upstream's token, added from the approver's machine (pasted, then the
+    // change signed): encrypted there, sealed on the daemon's host.
+    let said = doc_step_with(
+        &approver,
+        "writ admin token <id>",
+        &[("<id>", HTTPS_CREDENTIAL)],
+        format!("{https_token}\ny\n").as_bytes(),
+    );
+    assert!(
+        said.contains(&format!("Token {HTTPS_CREDENTIAL} in force (file sha256 ")),
+        "{said}"
+    );
 
     Stack {
         operator,
@@ -298,7 +334,8 @@ pub fn run() -> Stack {
         forgejo,
         report: Report {
             config_path: "writd.yaml".to_owned(),
-            before_approvers,
+            init_printed,
+            printed,
             upstream_keys,
             signing_keys,
             host_key,
@@ -307,6 +344,7 @@ pub fn run() -> Stack {
             published_upstream,
             upstream_fingerprint,
             reader_line,
+            https_token,
         },
     }
 }

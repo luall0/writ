@@ -13,8 +13,8 @@
 #   `forgejo-https` (in the daemon's `mirrors.ca_certs`) and for `forgejo-https-system` (in
 #   the daemon container's system store only, `TLS_NAME`).
 #
-# A test image (decided with the user in M4.1): debug builds, because only they take the
-# development keystore until the sealed keystore exists (M5). M8's deploy image (non-root,
+# A test image (decided with the user in M4.1): debug builds, on the sealed keystore as an
+# operator runs it (M5), without the development keystore. M8's deploy image (non-root,
 # minimal, read-only, compose) builds on it. Base images are pinned by digest (multi-arch
 # indexes: the same pin on arm64 and amd64); every cargo build is --locked.
 
@@ -27,13 +27,13 @@ FROM ${RUST_IMAGE} AS build
 ENV RUSTUP_TOOLCHAIN=1.99.1 CARGO_TERM_COLOR=never
 WORKDIR /src
 COPY . .
-# The binaries as they ship (built on their own, so no test-only feature reaches them; writd
-# with the development keystore), then the scenarios' test binary. The caches only make a
+# The binaries as they ship (built on their own, so no test-only feature reaches them, nor the
+# development keystore), then the scenarios' test binary. The caches only make a
 # second build faster: what is built is the copied tree and Cargo.lock.
 RUN --mount=type=cache,id=writ-e2e-cargo,target=/usr/local/cargo/registry \
     --mount=type=cache,id=writ-e2e-target,target=/src/target \
     set -eu; \
-    cargo build --locked -p writd -p writ-cli -p writ-sign --features writd/dev-keystore; \
+    cargo build --locked -p writd -p writ-cli -p writ-sign; \
     mkdir -p /out; \
     cp target/debug/writd target/debug/writ target/debug/writ-sign /out/; \
     cargo test --locked -p writ-e2e --test scenarios --no-run --message-format=json \

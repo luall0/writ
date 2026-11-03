@@ -16,7 +16,7 @@ use std::time::Duration;
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
 use writ_e2e::docker::eventually;
-use writ_e2e::setup::wait_started;
+use writ_e2e::setup::{unseal, wait_started};
 
 use crate::wired;
 
@@ -49,6 +49,8 @@ fn restart(stack: &Stack) {
         .count();
     stack.operator.container.lifecycle("restart");
     wait_started(&stack.operator, starts + 1);
+    // It starts sealed: the approver unseals it, as after every start.
+    unseal(&stack.approver);
 }
 
 #[test]

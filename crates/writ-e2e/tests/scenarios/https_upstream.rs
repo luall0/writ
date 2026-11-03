@@ -1,10 +1,10 @@
 //! Scenario 13, an HTTPS upstream (M4.5): the `https` repository, reached through Forgejo's
-//! HTTPS front with a token the operator pasted into the keystore (its certificate trusted
+//! HTTPS front with a token the approver added with `writ admin token` (its certificate trusted
 //! through `mirrors.ca_certs`). The agent fetches, commits and pushes through the daemon as
 //! with any repository; the branch lands on Forgejo and in the mirror; the registry's
-//! protected ref is still refused; and the token is in its keystore file alone: not in the
-//! daemon's log, its mirrors or their configuration, the audit log, or anything on the
-//! agent's side. git ran the daemon's credential helper (`writd upstream-credential`) for it.
+//! protected ref is still refused; and the token is sealed in its keystore file, in clear
+//! nowhere: not in the daemon's files, log, mirrors or their configuration, the audit log, or
+//! anything on the agent's side. git ran the daemon's credential helper (`writd upstream-credential`) for it.
 //!
 //! And `mirrors.ca_certs` is the only trust: the `https-system` repository, the same Forgejo
 //! repository behind a second front whose certificate the daemon container's system store
@@ -64,15 +64,20 @@ fn a_repo_behind_https_is_fetched_and_pushed_with_a_token_nobody_else_sees() {
         Some(main.as_str())
     );
 
-    // The token: in its file, readable by the daemon's user alone, and nowhere else.
-    let file = format!("data/keys/tokens/{HTTPS_CREDENTIAL}");
+    // The token: sealed in its file (the approver added it with `writ admin token`), readable
+    // by the daemon's user alone, and in clear nowhere on the daemon's host.
+    let file = format!("data/keys/tokens/{HTTPS_CREDENTIAL}.age");
     assert_eq!(
         stack.operator.ok(&format!("stat -c %a {file}")).trim(),
         "600"
     );
-    let token = stack.operator.read(&file).trim().to_owned();
+    assert_eq!(
+        stack.operator.ok(&format!("grep -c '^-> X25519 ' {file}")),
+        "1\n"
+    );
+    let token = stack.report.https_token.clone();
     assert_eq!(token.len(), 40, "a Forgejo token");
-    let grep = format!("grep -rlF -e '{token}' . --exclude-dir=tokens");
+    let grep = format!("grep -rlF -e '{token}' .");
     let found = stack.operator.run(&grep);
     assert_eq!(
         found.status.code(),

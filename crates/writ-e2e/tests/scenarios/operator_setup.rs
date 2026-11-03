@@ -1,10 +1,11 @@
 //! Scenario 1, the operator setup from nothing (docs/operators/setup.md):
 //! the setup runs once per stack, with the guide's own commands ([`writ_e2e::setup`]); this
-//! checks what it saw and that the daemon it started checks every push. The two bugs M4's
-//! GitHub check found fail here: a command that prints a key needing the approvers file
-//! (fixed in 5658e4e: the setup runs them before any approver exists), and a daemon started on
-//! a relative configuration path running pushes with no hook (fixed in fd57274: the protected
-//! ref below would go through).
+//! checks what it saw and that the daemon it started checks every push. Since M5 the daemon
+//! runs on a sealed keystore: `writd init` (the approvers and readers listed first), the
+//! commands that print a key with no passphrase (before the daemon starts), `writ unseal`,
+//! and the HTTPS repo's token through `writ admin token`. A daemon started on a relative
+//! configuration path running pushes with no hook (M4's GitHub check, fixed in fd57274) fails
+//! here: the protected ref below would go through.
 
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
@@ -36,12 +37,19 @@ fn the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says() {
     let stack = Stack::shared();
     let report = &stack.report;
 
-    // The commands that print a key ran before any approvers or readers file existed.
-    let ran: Vec<&str> = report
-        .before_approvers
-        .iter()
-        .map(|(c, _)| c.as_str())
-        .collect();
+    // `writd init` made the keystore and printed what to register; the commands that print a
+    // key ran after it, before the daemon started: no passphrase.
+    assert!(
+        report.init_printed.starts_with("keystore made: /"),
+        "{}",
+        report.init_printed
+    );
+    assert!(
+        report.init_printed.contains("recipient: age1"),
+        "{}",
+        report.init_printed
+    );
+    let ran: Vec<&str> = report.printed.iter().map(|(c, _)| c.as_str()).collect();
     assert_eq!(
         ran,
         [

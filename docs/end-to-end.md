@@ -44,9 +44,9 @@ minutes): the others run beside it, so a run never takes less than about 5 minut
 
 - **The images** are built from the repository by `e2e/Dockerfile`: a builder stage on the
   pinned Rust image (`rust:1.99.1-slim-trixie`, the toolchain `rust-toolchain.toml` pins)
-  builds the binaries as they ship (`-p writd -p writ-cli -p writ-sign --locked`, `writd`
-  with the development keystore: a **debug** build, the only kind that takes it until the
-  sealed keystore, M5) and the scenarios' test binary, then each target copies what its host
+  builds the binaries as they ship (`-p writd -p writ-cli -p writ-sign --locked`, debug
+  builds, without the development keystore: the daemon runs on the sealed keystore, as an
+  operator's does) and the scenarios' test binary, then each target copies what its host
   needs. A test image, decided with the user: M8's deploy image builds on it.
 - **No port is published**: everything talks on the project's network, by name. Fixed ports
   inside it are fine (nothing else binds there).
@@ -64,12 +64,15 @@ minutes): the others run beside it, so a run never takes less than about 5 minut
    `e2e/writd-start.sh`, waits for the operator) and `agent`, then runs the runner.
 2. The first scenario to need the stack runs **the operator setup** (`crates/writ-e2e/src/setup.rs`),
    once, from nothing, in the order of the [operator setup](operators/setup.md):
-   the daemon's files; `writd upstream-keys`, each key added on its repository as a deploy key;
-   the `https` repo's token (made on the account for repositories) pasted into the keystore,
-   the HTTPS front's certificate as `upstream_ca.pem`; Forgejo's host key scanned, compared with the one Forgejo publishes, pinned; `writd
-   signing-keys`; `writd host-key` and `writd tls-fingerprint`, pinned on the clients; `writ
-   reader` on the approver's machine, its line in `readers`; the approval key in its agent,
-   its line in `approvers`; `writd run writd.yaml`, from the daemon's directory. Every command
+   the daemon's files; `writ reader` on the approver's machine, its line in `readers`; the
+   approval key in its agent, its line in `approvers`; `writd init` (the passphrase on
+   stdin); `writd upstream-keys`, each key added on its repository as a deploy key; the
+   HTTPS front's certificate as `upstream_ca.pem`; Forgejo's host key scanned, compared with
+   the one Forgejo publishes, pinned; `writd signing-keys`; `writd host-key` and `writd
+   tls-fingerprint`, pinned on the clients; `writd run writd.yaml`, from the daemon's
+   directory, sealed; `writ unseal`; the `https` repo's token (made on the account for
+   repositories) added with `writ admin token`. A scenario that restarts the daemon unseals it
+   again. Every command
    the guide shows runs exactly as written there ([below](#commands-the-docs-show)). A setup
    that fails fails every scenario with its reason.
 3. The scenarios run side by side ([`Stack::shared`]), each with its own agent and its own
@@ -86,7 +89,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 
 | # | Module | Repo | What it proves | Stack |
 |---|---|---|---|---|
-| 1 | `operator_setup` | `setup` | The setup from nothing, as the guide gives it: the print commands before any approver, the daemon on a relative path from its directory, every mirror's hook at an absolute path, a protected push refused and an allowed one landing | shared |
+| 1 | `operator_setup` | `setup` | The setup from nothing, as the guide gives it: the approvers and readers, `writd init`, the print commands with no passphrase, `writ unseal`, the `https` token through `writ admin token`, the daemon on a relative path from its directory, every mirror's hook at an absolute path, a protected push refused and an allowed one landing | shared |
 | 2 | `ticket_lifecycle` | `lifecycle` | Rejected, requested and waited for, listed, signed over SSH and HTTPS, refused (flag and prompt) and revised, `n` and withdrawn, `--full`, an amendment with `--lease`, revoked; an unsigned ticket expiring; every client setting as a flag | shared |
 | 2b | `narrowing` | `narrowing` | Every narrowing flag of `writ sign`, the agent told, the lease holding to each (a push past the count, a dropped operation revoking the lease) | shared |
 | 3 | `wrapper_mode` | `demo` | The GitHub manual check's steps 5-7 verbatim: `writ init`, fetch, signed commit, push, verification through `writ-sign`, `writ exec`, upstream moved (clean rebase), the refused pushes; the operator's plain git untouched | shared |
@@ -96,10 +99,10 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 7 | `remote_protection` | `protection` | Forgejo's own branch protection: its reason relayed, the mirror unchanged | shared |
 | 8 | `verified_commits` | `verified` | Unverified, then registered (`writd signing-keys`), then proven (`writ prove-key` through Forgejo's form, on a terminal and with `--yes`): verified | shared |
 | 9 | `revocation_and_expiry` | `inflight` | A session in flight dropped on revocation and on expiry; the certificate refused afterwards | shared |
-| 10 | `restart` | `restart` | The daemon's container restarted keeps leases, mirrors and ledger | alone |
+| 10 | `restart` | `restart` | The daemon's container restarted (sealed, then unsealed) keeps leases, mirrors and ledger | alone |
 | 11 | `hostile_upstream` | `hostile` | Forgejo stopped, its host key changed, its deploy key removed: refused with the reason, working again once restored | alone |
 | 12 | `concurrency` | `busy` | Eight agents on one daemon at once (tickets submitted and signed in parallel, each pushing its rounds) while a writer changes Forgejo directly; consistent end state whatever the interleaving | alone |
-| 13 | `https_upstream` | `https`, `https-system` | An HTTPS upstream with a token (Forgejo behind its TLS front, the certificate in `mirrors.ca_certs`): fetch, push, a protected ref refused; the token in its keystore file alone (not in the log, the mirrors, the audit log or on the agent's side); a second front whose certificate the system store trusts (plain git reaches it) refused by the daemon, which trusts `mirrors.ca_certs` alone | shared |
+| 13 | `https_upstream` | `https`, `https-system` | An HTTPS upstream with a token (Forgejo behind its TLS front, the certificate in `mirrors.ca_certs`): fetch, push, a protected ref refused; the token sealed in its keystore file, in clear nowhere (not in the daemon's files, the log, the mirrors, the audit log or on the agent's side); a second front whose certificate the system store trusts (plain git reaches it) refused by the daemon, which trusts `mirrors.ca_certs` alone | shared |
 | 14 | `notes` | `notes` | `ticket_link: notes` under heavy concurrency: eight agents pushing at once while a person writes notes on the same `refs/notes/commits` with plain git; every agent commit gets exactly its lease's note on Forgejo (API and commit page), the person's notes kept, the commits untouched, each lease's notes counted once, the mirror's notes ref Forgejo's, an agent's notes push refused (`ref`), the guide's commands to read them | alone |
 | 15 | `notes_reconcile` | `backfill` | The notes reconcile at start: a repo with pushed commits switched to `ticket_link: notes` (a signed admin change, `writ admin apply policy`) and the daemon restarted; both pushed commits' notes on Forgejo (API and page) from the ledger, none for a commit signed and never pushed (until its push), the policy put back | alone |
 | 16 | `sealed_keystore` | — | `writd init` as the operator runs it: the keys directory at rest reveals no key (one age file per secret to the recipient, the identity to the passphrase, only public halves in clear), the boot tier holds the host and TLS keys alone, the commands that print a key read the public halves with no passphrase; a second `writd init` and a short passphrase refused, nothing left behind; a second daemon started sealed and hardened (`writd init` too: no warning with the compose file's unlimited `memlock`; the daemon's `/proc` entries owned by root while it runs as `writ`, its memory unreadable, its core limit 0, its memory locked, each step in its log): every request refused until `writ unseal` (a wrong passphrase over HTTPS refused, then over SSH unsealed), each logged; unsealed without its `https://` repo's token (said in the log), the token then added with `writ admin token` (sealed on the daemon's host, never there in clear, an unused id refused); `writ admin show` and `apply` (a second approval key, written back to the daemon's file), `writd recover` with the daemon stopped (a wrong passphrase refused, the right one putting the first approvers back), unsealed again | shared |
@@ -169,7 +172,7 @@ the scenarios (`tool/check-e2e.py`).
 | `writ revoke --approval-url` | `every_client_setting_works_as_a_flag` |
 | `writ revoke --key` | `every_client_setting_works_as_a_flag` |
 | `writ revoke --agent` | `every_client_setting_works_as_a_flag` |
-| `writ unseal` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
+| `writ unseal` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `a_restarted_daemon_keeps_leases_mirrors_and_ledger`, `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ unseal --approval-url` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ unseal --key` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ unseal --agent` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
@@ -180,7 +183,7 @@ the scenarios (`tool/check-e2e.py`).
 | `writ admin apply --approval-url` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ admin apply --key` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ admin apply --agent` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
-| `writ admin token` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
+| `writ admin token` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ admin token --yes` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ admin token --approval-url` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ admin token --key` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
@@ -192,7 +195,7 @@ the scenarios (`tool/check-e2e.py`).
 | `writ prove-key --key` | `every_client_setting_works_as_a_flag` |
 | `writ prove-key --agent` | `every_client_setting_works_as_a_flag` |
 | `writd run` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `a_restarted_daemon_keeps_leases_mirrors_and_ledger` |
-| `writd init` | `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
+| `writd init` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
 | `writd recover` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writd host-key` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |
 | `writd tls-fingerprint` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |

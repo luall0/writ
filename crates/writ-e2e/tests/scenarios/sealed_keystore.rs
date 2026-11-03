@@ -281,11 +281,7 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
 
     // The token, added from the approver's machine (every flag of `writ admin token`): read
     // on stdin, encrypted there, sealed on the daemon's host, never in clear there.
-    let token = home.read(&format!(
-        "data/keys/tokens/{}",
-        writ_e2e::setup::HTTPS_CREDENTIAL
-    ));
-    let token = token.trim();
+    let token = stack.report.https_token.as_str();
     let out = approver.run_with(
         &format!("{writ} admin token token-sealed --yes --approval-url {https} {signer}"),
         format!("{token}\n").as_bytes(),
