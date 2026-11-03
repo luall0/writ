@@ -151,6 +151,7 @@ pub fn sign_request(lease: &Lease) -> SignRequest {
         object: ObjectKind::Commit,
         object_format: Some(ObjectFormat::Sha1),
         committer_email: AGENT_EMAIL.to_owned(),
+        author_email: AGENT_EMAIL.to_owned(),
         writ_trailers: vec![lease.id.to_string()],
         touched_paths: Some(vec!["src/auth/login.rs".to_owned()]),
     }

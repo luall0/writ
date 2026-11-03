@@ -51,6 +51,7 @@ pub struct Commit {
     algo: HashAlgo,
     tree: ObjectId,
     parents: Vec<ObjectId>,
+    author_email: String,
     committer_email: String,
     /// Where the message starts in `bytes`.
     message: usize,
@@ -85,7 +86,9 @@ impl Commit {
         let author = lines
             .value(b"author")
             .ok_or(CommitError::Missing("author"))?;
-        email(author).ok_or(CommitError::Ident("author"))?;
+        let author_email = email(author)
+            .and_then(|e| String::from_utf8(e.to_vec()).ok())
+            .ok_or(CommitError::Ident("author"))?;
         let committer = lines
             .value(b"committer")
             .ok_or(CommitError::Missing("committer"))?;
@@ -112,6 +115,7 @@ impl Commit {
             algo,
             tree,
             parents,
+            author_email,
             committer_email,
             message,
         })
@@ -132,6 +136,11 @@ impl Commit {
 
     pub fn parents(&self) -> &[ObjectId] {
         &self.parents
+    }
+
+    /// The author's email, as written (compared exactly by the policy, like the committer's).
+    pub fn author_email(&self) -> &str {
+        &self.author_email
     }
 
     /// The committer's email, as written (compared exactly by the policy).
@@ -255,6 +264,7 @@ mod tests {
         assert_eq!(c.parents().len(), 1);
         assert_eq!(c.parents()[0].as_str(), PARENT);
         assert_eq!(c.committer_email(), "agent@writ");
+        assert_eq!(c.author_email(), "a@x");
         assert_eq!(c.message(), b"Subject\n\nWrit: wrt_X\n");
         assert_eq!(c.writ_trailers(), vec!["wrt_X".to_owned()]);
         assert_eq!(c.algo(), HashAlgo::Sha1);

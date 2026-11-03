@@ -1,11 +1,11 @@
 //! The files that grant authority, as the daemon holds them since M5: the policy (repo
 //! registry and templates), `approvers` and `readers`. After `writd init` they change only by
-//! an approver's signed admin change (`writ-admin/1`, [`crate::signed::Admin`]) or
+//! an approver's signed admin change (`writ-admin/2`, [`crate::signed::Admin`]) or
 //! `writd recover` on the host; the daemon keeps every version, and names each by the SHA-256
 //! of its text ([`TextDigest`]).
 //!
 //! And the sealed tokens (an `https://` upstream's, a notifier's kept sealed): added from the
-//! approver's machine, encrypted there to the keystore's recipient, by a signed `writ-token/1`
+//! approver's machine, encrypted there to the keystore's recipient, by a signed `writ-token/2`
 //! ([`crate::signed::Token`]) naming the token file it replaces ([`PreviousToken`]) and
 //! carrying the ciphertext ([`SealedToken`]).
 
@@ -170,7 +170,7 @@ impl From<AdminText> for String {
     }
 }
 
-/// The longest sealed token a `writ-token/1` may carry, in characters of base64: an age file
+/// The longest sealed token a `writ-token/2` may carry, in characters of base64: an age file
 /// holding a token of at most 1 KiB, to one recipient, is a few hundred bytes.
 pub const MAX_SEALED_TOKEN: usize = 8 * 1024;
 
@@ -222,7 +222,7 @@ impl From<SealedToken> for String {
     }
 }
 
-/// The token file a `writ-token/1` replaces: none yet (`none`), or the one whose bytes have
+/// The token file a `writ-token/2` replaces: none yet (`none`), or the one whose bytes have
 /// this digest. Replayed, or signed against a file no longer there, a change does nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]

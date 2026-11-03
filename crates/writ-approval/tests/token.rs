@@ -1,4 +1,4 @@
-//! Sealed tokens on the platform fakes: an approver's `writ-token/1` signature, against the
+//! Sealed tokens on the platform fakes: an approver's `writ-token/2` signature, against the
 //! token file in force, is logged and answered (the daemon writes the file); unsigned,
 //! wrongly signed, malformed, stale or replayed changes are refused and logged; a sealed
 //! service takes none; no line ever holds the token or its ciphertext.
@@ -36,8 +36,9 @@ fn facts() -> CallerFacts {
     }
 }
 
-fn token(previous: PreviousToken) -> Token {
+fn token(h: &TestService, previous: PreviousToken) -> Token {
     Token::new(
+        h.service.daemon().clone(),
         "token-01".parse().unwrap(),
         previous,
         SealedToken::try_from(SEALED.to_owned()).unwrap(),
@@ -51,8 +52,8 @@ fn signed(signer: &PrivateKey, document: &[u8]) -> TokenRequest {
     }
 }
 
-fn request(signer: &PrivateKey, previous: PreviousToken) -> TokenRequest {
-    signed(signer, &token(previous).canonical_bytes().unwrap())
+fn request(h: &TestService, previous: PreviousToken) -> TokenRequest {
+    signed(&h.approver, &token(h, previous).canonical_bytes().unwrap())
 }
 
 fn refused<T: std::fmt::Debug>(result: Result<T, ServiceError>, code: RefusalCode) -> String {
@@ -76,7 +77,7 @@ fn nothing_sealed_logged(h: &TestService) {
 fn a_signed_token_against_the_file_in_force_is_logged_and_a_replay_is_stale() {
     let dir = tempfile::tempdir().unwrap();
     let h = TestServiceBuilder::new(POLICY).build(dir.path());
-    let first = request(&h.approver, PreviousToken::None);
+    let first = request(&h, PreviousToken::None);
     let checked = h.service.check_token(&first, &facts()).unwrap();
     assert_eq!(checked.token.id.as_str(), "token-01");
     let file = TextDigest::of_bytes(b"the new age file");
@@ -114,7 +115,7 @@ fn a_signed_token_against_the_file_in_force_is_logged_and_a_replay_is_stale() {
         "{message}"
     );
     // A rotation against the file in force: fine.
-    let rotation = request(&h.approver, PreviousToken::File(file.clone()));
+    let rotation = request(&h, PreviousToken::File(file.clone()));
     let checked = h.service.check_token(&rotation, &facts()).unwrap();
     let next = TextDigest::of_bytes(b"the next age file");
     h.service
@@ -144,12 +145,12 @@ fn an_unsigned_wrongly_signed_or_malformed_token_is_refused_and_logged() {
     let dir = tempfile::tempdir().unwrap();
     let h = TestServiceBuilder::new(POLICY).build(dir.path());
     let stranger = generate(KeyKind::Ed25519).unwrap();
-    let document = token(PreviousToken::None).canonical_bytes().unwrap();
+    let document = token(&h, PreviousToken::None).canonical_bytes().unwrap();
     let mut no_signature = signed(&h.approver, &document);
     no_signature.signature = String::new();
     let mut other_bytes = signed(&h.approver, &document);
     other_bytes.document = String::from_utf8(
-        token(PreviousToken::File(TextDigest::of_bytes(b"x")))
+        token(&h, PreviousToken::File(TextDigest::of_bytes(b"x")))
             .canonical_bytes()
             .unwrap(),
     )
@@ -159,8 +160,12 @@ fn an_unsigned_wrongly_signed_or_malformed_token_is_refused_and_logged() {
         document: String::from_utf8(document.clone()).unwrap(),
     };
     let admin = Admin::new(
+        h.service.daemon().clone(),
         writ_core::authority::AdminTarget::Readers,
-        TextDigest::of(""),
+        writ_core::signed::Replaced {
+            version: 1,
+            digest: TextDigest::of(""),
+        },
         writ_core::authority::AdminText::try_from(String::new()).unwrap(),
     )
     .canonical_bytes()
@@ -198,12 +203,34 @@ fn an_unsigned_wrongly_signed_or_malformed_token_is_refused_and_logged() {
             RefusalCode::Admin,
         ));
     }
-    let count = cases.len();
+    // Signed for another daemon (one with the same approver): refused before anything else.
+    let elsewhere = Token::new(
+        "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+            .parse()
+            .unwrap(),
+        "token-01".parse().unwrap(),
+        PreviousToken::None,
+        SealedToken::try_from(SEALED.to_owned()).unwrap(),
+    )
+    .canonical_bytes()
+    .unwrap();
+    let message = refused(
+        h.service
+            .check_token(&signed(&h.approver, &elsewhere), &facts()),
+        RefusalCode::Admin,
+    );
+    assert!(
+        message.contains(
+            "the token change names daemon SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU, not this one"
+        ),
+        "{message}"
+    );
+    let count = cases.len() + 1;
     for (what, request, code) in cases {
         let message = refused(h.service.check_token(&request, &facts()), code);
         if code == RefusalCode::Admin {
             assert!(
-                message.contains("not a writ-token/1 document"),
+                message.contains("not a writ-token/2 document"),
                 "{what}: {message}"
             );
         }
@@ -226,7 +253,7 @@ fn a_sealed_service_takes_no_token() {
     let h = TestServiceBuilder::new(POLICY).sealed().build(dir.path());
     let message = refused(
         h.service
-            .check_token(&request(&h.approver, PreviousToken::None), &facts()),
+            .check_token(&request(&h, PreviousToken::None), &facts()),
         RefusalCode::Sealed,
     );
     assert_eq!(message, writ_core::policy::SEALED);

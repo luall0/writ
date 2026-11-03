@@ -1,4 +1,4 @@
-//! Sealed tokens: an approver's signed `writ-token/1` puts a token (encrypted on their machine
+//! Sealed tokens: an approver's signed `writ-token/2` puts a token (encrypted on their machine
 //! to the keystore's recipient) in place of the token file in force for one credential. The
 //! service checks the document and its signature ([`Service::check_token`]); the daemon, which
 //! holds the token files, opens the ciphertext and checks it is a token, then has the change
@@ -30,7 +30,7 @@ fn refused(reason: impl Into<String>) -> ServiceError {
 
 impl Service {
     /// Checks a token change's document and signature: the daemon open, the document a
-    /// `writ-token/1` decoded strictly, signed by an approver in force. A refusal is logged.
+    /// `writ-token/2` decoded strictly, signed by an approver in force. A refusal is logged.
     pub fn check_token(
         &self,
         request: &TokenRequest,
@@ -46,7 +46,13 @@ impl Service {
 
     fn token_document(&self, request: &TokenRequest) -> Result<CheckedToken, ServiceError> {
         let token = Token::from_canonical(request.document.as_bytes())
-            .map_err(|e| refused(format!("not a writ-token/1 document: {e}")))?;
+            .map_err(|e| refused(format!("not a writ-token/2 document: {e}")))?;
+        if token.daemon != self.boot.daemon {
+            return Err(refused(format!(
+                "the token change names daemon {}, not this one ({})",
+                token.daemon, self.boot.daemon
+            )));
+        }
         let approver = self
             .verify_approver(request.document.as_bytes(), &request.signature)
             .map_err(|reason| ServiceError::refused(RefusalCode::Signature, reason))?;

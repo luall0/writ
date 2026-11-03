@@ -70,7 +70,7 @@ sequenceDiagram
   S->>D: writ-sign git <repo>: the commit + those objects, over SSH, session cert
   D->>D: cert → active lease, commit_sign, repo (before reading the body)
   D->>D: objects read by the ids computed from their bytes → touched paths
-  D->>D: cert → lease, object type, committer email,<br/>Writ trailer (if ticket_link = trailer), paths vs expected_paths, count, rate
+  D->>D: cert → lease, object type, committer and author emails,<br/>Writ trailer (if ticket_link = trailer), paths vs expected_paths, count, rate
   alt allowed
     D->>D: under the lock: count and rate slot taken (never given back)
     D->>SG: outside the lock, through the queue (deadline): sign(SSHSIG signed data), key = template's signing_key

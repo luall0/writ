@@ -254,7 +254,7 @@ any field changes the bytes. A new format gets a new `kind`.
 | Pushed commits signed under this lease | Pack vs ledger | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
 | Repo (direct_ssh) | Remote, via a repo-scoped deploy key | 🟢 if deploy key · 🔴 account-wide otherwise |
 | Push host (direct_ssh) | `session-bind` host key | 🟢 Strong |
-| Committer / author identity | Commit bytes parsed by the daemon | 🟢 Strong |
+| Committer and author identity (both emails in `committer_emails`) | Commit bytes parsed by the daemon | 🟢 Strong |
 | Caller = lease holder | Session certificate | 🟡 Strong-ish (bearer; bounded by scope + TTL) |
 | Origin host | Source address / hint | 🟠 Advisory |
 | Process tree (local mode only) | Kernel peer credentials, via the `CallerAttestor` ([platform](architecture/platform.md)) | 🟢 Strong (extra layer) |

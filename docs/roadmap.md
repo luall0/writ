@@ -167,8 +167,7 @@ Decided with the user:
   `GIT_PROTOCOL` is not passed to `upload-pack`; `uploadpack.allowReachableSHA1InWant=true`
   keeps `git fetch origin <sha>` of a reachable commit working, an unreachable one refused.
 - **Removing an approver revokes the leases it signed** (L5), in the same admin change: one
-  audit line each, their certificates barred at once, named in the change's reply; its pending
-  signed tickets too.
+  audit line each, their certificates barred at once, named in the change's reply.
 - **The author is checked like the committer** (D2): its email must be in the lease's
   `committer_emails`, denied with its own code.
 - **A note a commit already has keeps its form** (L11): the `Writ:` line is appended once, the

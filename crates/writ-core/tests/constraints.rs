@@ -612,6 +612,28 @@ fn committer_identity_and_object() {
             |_, r| r.committer_email.clear(),
             Some(DenyCode::Committer),
         ),
+        // The author is checked like the committer: a commit signed under the lease can't
+        // name someone else (the user's personal identity) as its author.
+        (
+            "author: personal email",
+            |_, r| r.author_email = "user@example.org".to_owned(),
+            Some(DenyCode::Author),
+        ),
+        (
+            "author: case differs",
+            |_, r| r.author_email = "User+agent@example.org".to_owned(),
+            Some(DenyCode::Author),
+        ),
+        (
+            "author: allowed by the template, not by the ticket",
+            |_, r| r.author_email = "user+fix@example.org".to_owned(),
+            Some(DenyCode::Author),
+        ),
+        (
+            "author: empty email",
+            |_, r| r.author_email.clear(),
+            Some(DenyCode::Author),
+        ),
         (
             "a tag",
             |_, r| r.object = ObjectKind::Tag,

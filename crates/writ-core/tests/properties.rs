@@ -316,6 +316,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
                 object,
                 object_format: Some(ObjectFormat::Sha1),
                 committer_email: email.to_owned(),
+                author_email: email.to_owned(),
                 writ_trailers: trailers,
                 touched_paths: touched.map(|t| t.into_iter().map(str::to_owned).collect()),
             })
@@ -523,7 +524,8 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
                         repo: repo_name,
                         object: ObjectKind::Commit,
                         object_format: Some(ObjectFormat::Sha1),
-                        committer_email: email,
+                        committer_email: email.clone(),
+                        author_email: email,
                         writ_trailers: vec![id.to_string()],
                         touched_paths: touched,
                     }),

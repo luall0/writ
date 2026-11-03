@@ -176,6 +176,32 @@ fn what_the_commit_says_is_checked() {
         &format!("writ: outside ticket {id}: committer email \"me@personal.example\" not allowed"),
         Some("committer"),
     );
+    // The committer allowed, the author someone else (the user's personal identity): the
+    // author is checked like the committer.
+    let out = gw.git(
+        &work,
+        &[
+            "commit",
+            "-q",
+            "-S",
+            "--allow-empty",
+            "--author",
+            "Me <me@personal.example>",
+            "-m",
+            "x",
+            "--trailer",
+            &format!("Writ: {id}"),
+        ],
+    );
+    assert_refused(
+        &gw,
+        &out,
+        &format!(
+            "writ: outside ticket {id}: author email \"me@personal.example\" not allowed (the \
+             author, like the committer, must be one of the lease's committer_emails)"
+        ),
+        Some("author"),
+    );
 
     // The `Writ:` trailer: missing, another lease's, twice.
     let out = gw.git(

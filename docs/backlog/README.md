@@ -188,7 +188,7 @@ applied.
   <target> --host` (name to settle): a new approval-API command has the daemon read its own
   file now (`read_authority`: regular file, owned by its user, no link, bounded, UTF-8
   without control characters) and return it; `writ` shows the diff against the version in
-  force, saying it comes from the host file; one signature, an ordinary `writ-admin/1` over
+  force, saying it comes from the host file; one signature, an ordinary `writ-admin/2` over
   exactly that text naming the version in force, applied through the existing path.
 - **The signature covers what was shown, not the file:** an edit made between the diff and
   the signature is not applied (set aside when the text in force is written back).

@@ -22,7 +22,7 @@ Every request → find the single lease matching the caller's certificate → al
 | Function | Input facts | Checks, in order |
 |---|---|---|
 | `resolve_lease` | Certificate key id, serial, session key fingerprint | Exactly one lease matches all three |
-| `decide_sign` | Repo, object kind, committer email, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
+| `decide_sign` | Repo, object kind, committer and author emails, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, author email in the lease's committer emails (`author`), the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
 | `decide_push` | Repo, push mode, ref updates (old, new, fast-forward, a twin ignoring case), new commits with their ledger entries and the digest of the paths each touches (computed again from the objects git verified), pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, updated once (ignoring case), without a twin ignoring case in the repo, not protected, a branch, within the lease's branches, no force push or deletion unless allowed; every new commit in the ledger for this lease and repo, touching the paths signing saw (when it saw them); size; `max_pushes`; rate |
 | `decide_fetch` | Repo | Common checks, rate (`Service::fetch` then takes one operation of the rate window under the same lock) |
 
@@ -34,9 +34,8 @@ current config. Counts and rate come last, so an out-of-scope request gets the o
 reason.
 
 Each denial has a code (`DenyCode`). Out-of-scope codes (operation, repo, push mode, object
-type, committer, ticket link, paths, ref, protected ref, force push, unsigned commit, paths
-changed since signing, size)
-are **violations** and trigger the lease's `on_violation`; running out of time, counts or
+type, committer, author, ticket link, paths, ref, protected ref, force push, unsigned
+commit, paths changed since signing, size) are **violations** and trigger the lease's `on_violation`; running out of time, counts or
 rate, a wrong caller or a config change are not.
 
 Around them: `fit::submit` (a request → a complete ticket fitting one template, or every

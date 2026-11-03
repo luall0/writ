@@ -1,18 +1,18 @@
-//! Admin changes: an approver's signed `writ-admin/1` document replaces the policy,
+//! Admin changes: an approver's signed `writ-admin/2` document replaces the policy,
 //! `approvers` or `readers` in force. The service checks the document and its signature
 //! ([`Service::check_admin`]), then, once the daemon parsed and checked the new text against
 //! the rest of its configuration, records the new version under the keystore's MAC and puts
 //! it in force ([`Service::commit_admin`]): the audit line first, the store next, the swap
 //! last. Every attempt is one `admin` line.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::caller::CallerFacts;
 use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
-use writ_core::names::KeyFingerprint;
+use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::signed::Admin;
 use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::authority::HeadEntry;
@@ -102,6 +102,7 @@ impl Service {
             .map_err(internal)?
             .ok_or_else(|| internal(format!("{target} version {version} is missing")))?;
         Ok(AdminShown {
+            daemon: self.boot.daemon.clone(),
             target,
             version,
             digest: row.digest,
@@ -110,7 +111,7 @@ impl Service {
     }
 
     /// Checks an admin change's document and signature: the daemon open, the document a
-    /// `writ-admin/1` decoded strictly, signed by an approver in force, against the version in
+    /// `writ-admin/2` decoded strictly, signed by an approver in force, against the version in
     /// force. A refusal is logged.
     pub fn check_admin(
         &self,
@@ -127,11 +128,11 @@ impl Service {
 
     fn admin_document(&self, request: &AdminRequest) -> Result<CheckedAdmin, ServiceError> {
         let admin = Admin::from_canonical(request.document.as_bytes())
-            .map_err(|e| refused(format!("not a writ-admin/1 document: {e}")))?;
+            .map_err(|e| refused(format!("not a writ-admin/2 document: {e}")))?;
         let approver = self
             .verify_approver(request.document.as_bytes(), &request.signature)
             .map_err(|reason| ServiceError::refused(RefusalCode::Signature, reason))?;
-        self.current(admin.target, &admin.previous)?;
+        self.current(&admin)?;
         Ok(CheckedAdmin {
             admin,
             document: request.document.clone(),
@@ -140,18 +141,29 @@ impl Service {
         })
     }
 
-    /// The version of `target` in force, if its digest is `previous`; a refusal naming it
-    /// otherwise.
-    fn current(&self, target: AdminTarget, previous: &TextDigest) -> Result<u64, ServiceError> {
+    /// The version of the change's target in force, if the change was signed for this daemon
+    /// and replaces exactly that version (its number and its text's digest); a refusal naming
+    /// what differs otherwise. Versions only grow, so a change applied once, or one made for
+    /// another daemon, never applies again, even when the text comes back to what it was.
+    fn current(&self, admin: &Admin) -> Result<u64, ServiceError> {
+        let target = admin.target;
+        if admin.daemon != self.boot.daemon {
+            return Err(refused(format!(
+                "the change names daemon {}, not this one ({})",
+                admin.daemon, self.boot.daemon
+            )));
+        }
         let in_force = self.in_force();
         let (version, digest) = in_force
             .versions
             .get(&target)
             .ok_or_else(|| internal(format!("no version of {target} in force")))?;
-        if digest != previous {
+        if admin.version != *version || &admin.previous != digest {
             return Err(refused(format!(
-                "the {target} in force is version {version}, not the one this change replaces: \
-                 it changed since it was shown (writ admin show {target}, then apply again)"
+                "the {target} in force is version {version}, not the one this change replaces \
+                 (version {}): it changed since it was shown, or the change was applied \
+                 already (writ admin show {target}, then apply again)",
+                admin.version
             )));
         }
         Ok(*version)
@@ -175,6 +187,17 @@ impl Service {
             return Err(internal("an admin change parsed as another file"));
         }
         let opened = self.opened()?;
+        // The approvers the change keeps, if it changes them: a lease another key signed is
+        // revoked once the change is in force.
+        let kept = match &parsed {
+            AdminParsed::Approvers(approvers) => Some(
+                approvers
+                    .iter()
+                    .map(|a| super::fingerprint(&a.key))
+                    .collect::<Result<BTreeSet<_>, _>>()?,
+            ),
+            AdminParsed::Policy(_) | AdminParsed::Readers => None,
+        };
         if let AdminParsed::Policy(policy) = &parsed
             && let Err(e) = signing_keys_exist(policy, &*opened.signer)
         {
@@ -219,7 +242,7 @@ impl Service {
         });
         let (now, mut inner) = self.begin()?;
         // Checked again under the lock: two changes of one file never both apply.
-        let old = match self.current(target, &checked.admin.previous) {
+        let old = match self.current(&checked.admin) {
             Ok(old) => old,
             Err(e) => {
                 drop(inner);
@@ -311,6 +334,10 @@ impl Service {
             AdminParsed::Readers => {}
         }
         drop(inner);
+        let revoked = match kept {
+            Some(kept) => self.revoke_unapproved(&kept, version),
+            None => Vec::new(),
+        };
         self.changed.notify_waiters();
         Ok(AdminApplied {
             target,
@@ -318,7 +345,52 @@ impl Service {
             digest,
             signed_by: checked.approver.clone(),
             created,
+            revoked,
         })
+    }
+
+    /// Revokes every active lease signed by an approver key not in `kept` (the approvers
+    /// `version` put in force): removing a key takes back what it granted. Each lease is
+    /// revoked as the daemon revokes on a violation (its certificate barred first, its audit
+    /// line, its sessions dropped); the ids revoked are returned for the change's reply. A
+    /// revocation that can't be recorded leaves the certificate refused in memory, and is
+    /// logged.
+    fn revoke_unapproved(&self, kept: &BTreeSet<KeyFingerprint>, version: u64) -> Vec<TicketId> {
+        let active = match self.lock().and_then(|inner| {
+            inner
+                .store
+                .leases(writ_core::lease::State::Active)
+                .map_err(internal)
+        }) {
+            Ok(active) => active,
+            Err(e) => {
+                tracing::error!(
+                    error = %e.detail(),
+                    "cannot list the leases a removed approver signed; revoke them by hand"
+                );
+                return Vec::new();
+            }
+        };
+        let mut revoked = Vec::new();
+        for lease in active
+            .into_iter()
+            .filter(|lease| !kept.contains(&lease.approval.approver))
+        {
+            let reason = format!(
+                "its approver {} was removed from approvers (version {version})",
+                lease.approval.approver
+            );
+            match self.revoke_by_daemon(&lease.id, &reason, super::sweep::Announce::Now) {
+                Ok(()) => revoked.push(lease.id),
+                Err(e) => tracing::error!(
+                    lease = %lease.id,
+                    error = %e.detail(),
+                    "cannot record the revocation of a lease whose approver was removed; its \
+                     certificate is refused"
+                ),
+            }
+        }
+        revoked
     }
 
     /// Something about the authority files worth a line of its own (a hand-edited file set

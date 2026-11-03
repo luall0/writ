@@ -76,7 +76,7 @@ the agent gets every reason.
 | `templates.<name>.branches` | Branch patterns | `[]` | The branches a ticket may ask for: short names, at most one trailing `*` (`agent/*`, `agent/fix-*`). Required with `commit_sign` or `push` |
 | `templates.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | The [push modes](#push-modes) its leases may use, within each repo's |
 | `templates.<name>.force_push` | Boolean | `false` | Whether a ticket may ask for force pushes and branch deletions |
-| `templates.<name>.committer_emails` | Emails | `[]` | The committer emails a ticket may use (printable ASCII). Required with `commit_sign` |
+| `templates.<name>.committer_emails` | Emails | `[]` | The emails a ticket may use as a commit's committer and author (printable ASCII). Required with `commit_sign` |
 | `templates.<name>.signing_key` | Key id | — | The key that signs commits under this template (`writd signing-keys` prints it). Required with `commit_sign` |
 | `templates.<name>.max_ttl` | Duration, at least `writd.yaml`'s `min_ttl` | **required** | The longest lease, counted from submission: time waiting for you counts |
 | `templates.<name>.max_signatures` | Count | **required** | The most commits one lease may sign |

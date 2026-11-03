@@ -49,7 +49,7 @@ pub struct AuthorityVersion {
     pub text: String,
     pub digest: TextDigest,
     pub how: AuthorityHow,
-    /// The signed `writ-admin/1` document and its SSHSIG, and who signed (an admin change).
+    /// The signed `writ-admin/2` document and its SSHSIG, and who signed (an admin change).
     pub document: Option<String>,
     pub signature: Option<String>,
     pub approver: Option<KeyFingerprint>,

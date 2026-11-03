@@ -641,6 +641,12 @@ impl Service {
         }
     }
 
+    /// This daemon: the fingerprint of its SSH host key, which every signed document bound to
+    /// one daemon names (`writ-unseal/1`, `writ-admin/2`, `writ-token/2`).
+    pub fn daemon(&self) -> &KeyFingerprint {
+        &self.boot.daemon
+    }
+
     /// How this daemon takes decisions.
     pub fn info(&self) -> Info {
         Info {

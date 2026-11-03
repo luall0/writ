@@ -62,10 +62,13 @@ at unseal). They change only by:
 
 - **`writ admin apply <target> <file>`**: `writ` fetches the version in force (`writ admin
   show`), shows what changes line by line (every line cleaned of what a terminal would act
-  on), and signs a `writ-admin/1` document (`{target, previous, text}`: the digest of the
-  version it replaces, the new text, at most 100 KiB without control characters but newlines
-  and tabs). The service checks the document and the approver's signature, and that
-  `previous` is still in force (a replay, or a change made meanwhile, is refused); the daemon
+  on), and signs a `writ-admin/2` document (`{daemon, target, version, previous, text}`: the
+  daemon's SSH host key fingerprint, the number and the digest of the version it replaces, the
+  new text, at most 100 KiB without control characters but newlines and tabs). The service
+  checks the document and the approver's signature, that it names this daemon, and that
+  `version` and `previous` are still the version in force: a change made meanwhile, a replay
+  (versions only grow, so a change applies once, even when a later change brings the text
+  back to what it replaced) and a change signed for another daemon are refused. The daemon
   checks the new text as a start would (it parses; an approver and a reader remain; no key is
   both; a template's signing key is held; a changed repo's mirror opens); then the `admin`
   line is written, the version and its head recorded under the MAC, and the change swapped in
@@ -73,6 +76,10 @@ at unseal). They change only by:
   each SSH command and HTTPS request, so a removed reader is turned away on a live
   connection), the mirrors (`Mirrors::with_registry`: unchanged repos keep their mirror and
   its lock). The file `writd.yaml` names is written back. One change at a time.
+- **Removing an approver takes back what it granted**: a change of `approvers` revokes, once
+  in force, every active lease signed by a key it no longer holds, as the daemon revokes on a
+  violation (the certificate barred first, a `revoke` line each naming the removed approver
+  and the version, the lease's sessions dropped). `writ admin apply` lists the leases revoked.
   A policy that names an agent signing key or an `ssh://` upstream credential the keystore
   lacks makes the daemon create it before the checks (Ed25519, sealed to the keystore's
   recipient with its `.pub`, handed to the running signer through
@@ -99,14 +106,16 @@ keystore from the Mac, never in clear on the daemon host's disk.
    `GET /v1/tokens/<id>`: the digest, or none; never the token);
 2. reads the token (no echo; one line of stdin when it isn't a terminal), encrypts it to the
    recipient (age, armored), and wipes its copies;
-3. signs a `writ-token/1` document `{id, previous, sealed}` with the approval key: `previous`
-   is the digest of the `tokens/<id>.age` it replaces (`none` for a first one), `sealed` the
-   armored ciphertext (at most 8 KiB);
+3. signs a `writ-token/2` document `{daemon, id, previous, sealed}` with the approval key:
+   `daemon` the daemon's SSH host key fingerprint, `previous` the digest of the
+   `tokens/<id>.age` it replaces (`none` for a first one), `sealed` the armored ciphertext (at
+   most 8 KiB);
 4. sends the document and its SSHSIG (`POST /v1/tokens`).
 
-The service checks the daemon is open, the document decodes strictly, the signer is an
-approver in force, and `previous` is still the file in force (a replay, or a token changed
-meanwhile, is refused). The daemon checks the id is one an `https://` repo or a sealed
+The service checks the daemon is open, the document decodes strictly and names this daemon,
+the signer is an approver in force, and `previous` is still the file in force (a replay, or a
+token changed meanwhile, is refused: each file is encrypted afresh, so its digest never comes
+back; only `none` could, were a token file removed by hand on the host). The daemon checks the id is one an `https://` repo or a sealed
 notifier uses, opens the ciphertext with the keystore's identity (kept open after unseal) and
 checks it is a token; then the `admin` line is written (the id, both digests, the approver:
 never the token), `tokens/<id>.age` written (the old one replaced), and the token used at

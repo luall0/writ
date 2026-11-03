@@ -36,13 +36,13 @@ pub enum Command {
     /// `writ admin show <target>`: the version in force of the policy, `approvers` or
     /// `readers`. Reply: [`AdminShown`].
     AdminShow { target: AdminTarget },
-    /// `writ admin apply`: an approver's signed `writ-admin/1` change ([`AdminRequest`] on
+    /// `writ admin apply`: an approver's signed `writ-admin/2` change ([`AdminRequest`] on
     /// stdin). Reply: [`AdminApplied`].
     AdminApply,
     /// `writ admin token <id>`, first step: the token file in force for the credential `id`
     /// (its digest, never the token). Reply: [`TokenShown`].
     TokenShow { id: KeyId },
-    /// `writ admin token <id>`: an approver's signed `writ-token/1` ([`TokenRequest`] on
+    /// `writ admin token <id>`: an approver's signed `writ-token/2` ([`TokenRequest`] on
     /// stdin). Reply: [`TokenApplied`].
     TokenApply,
 }

@@ -3,7 +3,8 @@
 //! the account **and** proven (Forgejo's challenge, signed through `writ prove-key`, an
 //! approval); then verified, the committer email being the account's. The proof is answered
 //! `n` once on a terminal (nothing signed), then `y`, and once more with `--yes` over SSH:
-//! Ed25519 signs the same message the same way, so both signatures are the same bytes.
+//! Ed25519 signs the same message the same way, so both signatures are the same bytes. A
+//! commit authored as someone else is refused at signing (`author`).
 
 use writ_e2e::Stack;
 use writ_e2e::agent::{expect, ticket};
@@ -123,6 +124,30 @@ fn commits_are_verified_once_the_signing_key_is_registered_and_proven() {
     let (verified, why) = stack.forgejo.verification("verified", &third);
     assert!(verified, "{why}");
     assert_eq!(why["signer"]["email"], "agent@writ.invalid", "{why}");
+
+    // A commit authored as someone else (the operator's own identity), with the agent as its
+    // committer: refused at signing, with its code, so Forgejo never shows a verified commit
+    // under another person's name.
+    let out = agent.in_dir(
+        "work",
+        &format!(
+            "printf 'x\\n' > four.txt && writ git add four.txt && writ git commit -q \
+             --author 'Operator <operator@writ.invalid>' -m 'Change four.txt' \
+             --trailer 'Writ: {lease}'"
+        ),
+    );
+    let (_, err) = expect(&out, 128, "a commit authored as someone else");
+    assert!(
+        err.contains("author email \"operator@writ.invalid\" not allowed"),
+        "{err}"
+    );
+    let denied = stack
+        .audit()
+        .into_iter()
+        .rfind(|e| e["event"] == "sign" && e["result"] == "denied")
+        .unwrap();
+    assert_eq!(denied["code"], "author", "{denied}");
+    agent.ok_in("work", "git reset -q --hard");
 
     // Each proof logged: the key, the namespace, the challenge's digest, never the challenge.
     let digest = agent

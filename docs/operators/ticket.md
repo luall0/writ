@@ -31,7 +31,7 @@ it or refuse it. The full signed ticket and its lifecycle:
 | `scope.operations` | `fetch`, `commit_sign`, `push` | **required** | The operations, within the template's |
 | `scope.branches` | Branch patterns | `[]` | Each within one of the template's patterns. Needed for `commit_sign` and `push` |
 | `scope.force_push` | Boolean | `false` | Force pushes and branch deletions, if the template allows them |
-| `scope.committer_emails` | Emails | the template's | The committer emails commits may carry, within the template's |
+| `scope.committer_emails` | Emails | the template's | The emails commits may carry as committer and as author, within the template's |
 | `ticket.title` | Text | **required** | One line. Shown first, to you and in notifications |
 | `ticket.task` | Text | **required** | What the agent was asked to do |
 | `ticket.plan` | List of steps | `[]` | The agent's steps, in order |

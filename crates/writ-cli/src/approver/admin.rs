@@ -1,9 +1,9 @@
 //! `writ admin show <target>` and `writ admin apply <target> <file>`: the policy, `approvers`
 //! or `readers` in force, and a signed change of one. `apply` fetches the version in force,
 //! shows what changes line by line (every line cleaned of what a terminal would act on), and
-//! signs a `writ-admin/1` document naming that version: a change made meanwhile is refused by
+//! signs a `writ-admin/2` document naming that version: a change made meanwhile is refused by
 //! the daemon, never overwritten. And `writ admin token <id>`: a token read here, encrypted
-//! here to the daemon keystore's recipient, and signed as a `writ-token/1` naming the token
+//! here to the daemon keystore's recipient, and signed as a `writ-token/2` naming the token
 //! file it replaces: the daemon host never sees it in clear on its disk.
 
 use std::io::Write as _;
@@ -13,7 +13,7 @@ use anyhow::{Context, bail};
 use writ_core::authority::{AdminTarget, AdminText, SealedToken};
 use writ_core::canonical::Canonical;
 use writ_core::names::KeyId;
-use writ_core::signed::{Admin, Token};
+use writ_core::signed::{Admin, Replaced, Token};
 use writ_crypto::passphrase::PassphraseError;
 use writ_proto::{
     AdminApplied, AdminRequest, AdminShown, Command, Info, TokenApplied, TokenRequest, TokenShown,
@@ -86,8 +86,12 @@ pub async fn apply(
                     return Ok(Exit::Ok);
                 }
             }
-            let document =
-                Admin::new(target, shown.digest.clone(), text.clone()).canonical_bytes()?;
+            let replaced = Replaced {
+                version: shown.version,
+                digest: shown.digest.clone(),
+            };
+            let document = Admin::new(shown.daemon.clone(), target, replaced, text.clone())
+                .canonical_bytes()?;
             let request = AdminRequest {
                 signature: signer.sign(&document)?,
                 document: String::from_utf8(document)?,
@@ -99,6 +103,9 @@ pub async fn apply(
                 "Applied: {} is version {} (sha256 {}), signed by {}.",
                 applied.target, applied.version, applied.digest, applied.signed_by
             );
+            for lease in &applied.revoked {
+                println!("Revoked lease {lease}: the approver key that signed it was removed.");
+            }
             for key in &applied.created {
                 println!(
                     "New {} {} (register it on the remote): {}",
@@ -114,7 +121,7 @@ pub async fn apply(
 
 /// `writ admin token <id>`: the keystore's recipient from `writ info`, the token file in force
 /// for `id`, the token (asked for with no echo, or one line of stdin), encrypted here, then one
-/// signature over the `writ-token/1` document.
+/// signature over the `writ-token/2` document.
 pub async fn token(
     paths: &Paths,
     url: &str,
@@ -160,7 +167,8 @@ pub async fn token(
                     return Ok(Exit::Ok);
                 }
             }
-            let document = Token::new(id.clone(), shown.previous, sealed).canonical_bytes()?;
+            let document =
+                Token::new(shown.daemon, id.clone(), shown.previous, sealed).canonical_bytes()?;
             let request = TokenRequest {
                 signature: signer.sign(&document)?,
                 document: String::from_utf8(document)?,

@@ -65,6 +65,8 @@ pub enum DenyCode {
     ObjectType,
     /// The committer email is not in the lease (`committer`, a violation).
     Committer,
+    /// The author email is not in the lease's committer emails (`author`, a violation).
+    Author,
     /// The commit's object format isn't its repo's (`object_format`). Not a violation: a
     /// repository of the other format, never anything the ticket allowed.
     ObjectFormat,
@@ -114,6 +116,7 @@ impl DenyCode {
                 | DenyCode::PushMode
                 | DenyCode::ObjectType
                 | DenyCode::Committer
+                | DenyCode::Author
                 | DenyCode::TicketLink
                 | DenyCode::Paths
                 | DenyCode::Ref
@@ -141,6 +144,7 @@ impl DenyCode {
             DenyCode::ObjectType => "object_type",
             DenyCode::ObjectFormat => "object_format",
             DenyCode::Committer => "committer",
+            DenyCode::Author => "author",
             DenyCode::TicketLink => "ticket_link",
             DenyCode::Paths => "paths",
             DenyCode::Ref => "ref",
@@ -323,6 +327,9 @@ pub struct SignRequest {
     pub object_format: Option<ObjectFormat>,
     /// The committer email from the commit object.
     pub committer_email: String,
+    /// The author email from the commit object: checked like the committer's, so a commit
+    /// can't be signed as written by someone the lease doesn't name.
+    pub author_email: String,
     /// The values of every `Writ:` trailer in the commit message.
     pub writ_trailers: Vec<String>,
     /// Paths the commit changes relative to its parents, if the daemon could compute them.
@@ -498,6 +505,23 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
             format_args!(
                 "committer email {:?} not allowed",
                 text::shown(&request.committer_email, VALUE_SHOWN)
+            ),
+        ));
+    }
+    let author_allowed = lease
+        .ticket
+        .scope
+        .committer_emails
+        .iter()
+        .any(|e| e.as_str() == request.author_email);
+    if !author_allowed {
+        return Err(outside(
+            id,
+            DenyCode::Author,
+            format_args!(
+                "author email {:?} not allowed (the author, like the committer, must be one \
+                 of the lease's committer_emails)",
+                text::shown(&request.author_email, VALUE_SHOWN)
             ),
         ));
     }

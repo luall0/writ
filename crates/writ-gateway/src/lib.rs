@@ -119,7 +119,7 @@ pub trait Unsealer: Send + Sync {
 /// wiring; the gateway calls it one change at a time.
 ///
 /// It holds the sealed tokens too: which file is in force for a credential
-/// ([`AdminApplier::token_show`]), and a checked `writ-token/1` put in force
+/// ([`AdminApplier::token_show`]), and a checked `writ-token/2` put in force
 /// ([`AdminApplier::apply_token`]: opened and checked to be a token, logged by the service
 /// against the file in force ([`Service::commit_token`]), written, used at once).
 pub trait AdminApplier: Send + Sync {

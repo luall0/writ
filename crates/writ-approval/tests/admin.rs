@@ -1,4 +1,4 @@
-//! Admin changes on the platform fakes: an approver's `writ-admin/1` signature over a change
+//! Admin changes on the platform fakes: an approver's `writ-admin/2` signature over a change
 //! against the version in force applies it at once (a new approver key signs, the old one no
 //! longer; a tightened template denies its leases), recorded under the keystore's MAC and
 //! logged; unsigned, wrongly signed, stale or replayed changes, a policy naming a key the
@@ -21,14 +21,16 @@ use writ_core::caller::CallerFacts;
 use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
 use writ_core::lease::{APPROVAL_NAMESPACE, State};
+use writ_core::names::KeyFingerprint;
 use writ_core::policy::DenyCode;
-use writ_core::signed::Admin;
+use writ_core::signed::{Admin, Replaced};
 use writ_core::ticket::Ticket;
 use writ_crypto::allowed_signers;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::PrivateKey;
 use writ_crypto::sshsig;
 use writ_proto::AdminRequest;
+use writ_proto::AdminShown;
 
 const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 
@@ -52,16 +54,31 @@ fn facts() -> CallerFacts {
     }
 }
 
+/// The version a change replaces, on the daemon that shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Base {
+    daemon: KeyFingerprint,
+    version: u64,
+    digest: TextDigest,
+}
+
+fn base(shown: &AdminShown) -> Base {
+    Base {
+        daemon: shown.daemon.clone(),
+        version: shown.version,
+        digest: shown.digest.clone(),
+    }
+}
+
 /// A change of `target` to `text`, against `previous`, signed by `signer`.
-fn change(
-    signer: &PrivateKey,
-    target: AdminTarget,
-    previous: TextDigest,
-    text: &str,
-) -> AdminRequest {
+fn change(signer: &PrivateKey, target: AdminTarget, previous: Base, text: &str) -> AdminRequest {
     let document = Admin::new(
+        previous.daemon,
         target,
-        previous,
+        Replaced {
+            version: previous.version,
+            digest: previous.digest,
+        },
         AdminText::try_from(text.to_owned()).unwrap(),
     )
     .canonical_bytes()
@@ -72,8 +89,8 @@ fn change(
     }
 }
 
-fn current(h: &TestService, target: AdminTarget) -> TextDigest {
-    h.service.admin_show(target).unwrap().digest
+fn current(h: &TestService, target: AdminTarget) -> Base {
+    base(&h.service.admin_show(target).unwrap())
 }
 
 fn parsed_approvers(text: &str) -> AdminParsed {
@@ -102,6 +119,11 @@ fn pending(h: &TestService) -> Ticket {
 
 /// An active lease (submitted, approved, waited for) and its certificate's identity.
 fn lease(h: &TestService) -> writ_core::policy::CertIdentity {
+    lease_by(h, &h.approver)
+}
+
+/// An active lease approved by `approver`, and its certificate's identity.
+fn lease_by(h: &TestService, approver: &PrivateKey) -> writ_core::policy::CertIdentity {
     use writ_crypto::ssh_key::{Certificate, HashAlg};
     let key = generate(KeyKind::Ed25519).unwrap();
     let submitted = h
@@ -110,7 +132,11 @@ fn lease(h: &TestService) -> writ_core::policy::CertIdentity {
         .unwrap();
     let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
     h.service
-        .approve(&ticket.id, &h.approval(&ticket), &facts())
+        .approve(
+            &ticket.id,
+            &writ_approval::testing::sign_approval(approver, &ticket),
+            &facts(),
+        )
         .unwrap();
     let decision = tokio::runtime::Runtime::new()
         .unwrap()
@@ -142,12 +168,7 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
 
     let next = generate(KeyKind::Ed25519).unwrap();
     let text = format!("next {}\n", next.public_key().to_openssh().unwrap());
-    let request = change(
-        &h.approver,
-        AdminTarget::Approvers,
-        shown.digest.clone(),
-        &text,
-    );
+    let request = change(&h.approver, AdminTarget::Approvers, base(&shown), &text);
     let checked: CheckedAdmin = h.service.check_admin(&request, &facts()).unwrap();
     let applied = h
         .service
@@ -195,17 +216,16 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
         RefusalCode::Signature,
     );
     assert!(message.contains("which is not in approvers"), "{message}");
-    let again = change(
-        &next,
-        AdminTarget::Approvers,
-        TextDigest::of(&shown.text).clone(),
-        &text,
-    );
-    // Signed by the key in force, but against version 1's digest: stale.
+    let again = change(&next, AdminTarget::Approvers, base(&shown), &text);
+    // Signed by the key in force, but against version 1: stale.
     let stale = change(
         &next,
         AdminTarget::Approvers,
-        checked.admin.previous.clone(),
+        Base {
+            version: 1,
+            digest: checked.admin.previous.clone(),
+            ..base(&shown)
+        },
         &text,
     );
     let message = refused(h.service.check_admin(&stale, &facts()), RefusalCode::Admin);
@@ -243,6 +263,136 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
             )),
         "{}",
         lines.last().unwrap()
+    );
+}
+
+/// The ABA replay: approvers go from A to B and back to A, a text whose digest is the one the
+/// first change named. That change, replayed (its document and signature are in the state's
+/// history, and in every backup of it), must not apply again: a change names the version it
+/// replaces, and versions only grow.
+#[test]
+fn a_change_replayed_after_the_text_came_back_never_applies_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let a = h.service.admin_show(AdminTarget::Approvers).unwrap();
+    let lost = generate(KeyKind::Ed25519).unwrap();
+    let b = format!(
+        "{}lost {}\n",
+        a.text,
+        lost.public_key().to_openssh().unwrap()
+    );
+    let apply = |request: &AdminRequest, text: &str| {
+        let checked = h.service.check_admin(request, &facts()).unwrap();
+        h.service
+            .commit_admin(
+                &checked,
+                parsed_approvers(text),
+                vec![],
+                Default::default(),
+                &facts(),
+            )
+            .unwrap()
+    };
+    // A → B (version 2), then B → A again (version 3): the lost key is out.
+    let first = change(&h.approver, AdminTarget::Approvers, base(&a), &b);
+    assert_eq!(apply(&first, &b).version, 2);
+    let back = change(
+        &h.approver,
+        AdminTarget::Approvers,
+        current(&h, AdminTarget::Approvers),
+        &a.text,
+    );
+    assert_eq!(apply(&back, &a.text).version, 3);
+    let now = h.service.admin_show(AdminTarget::Approvers).unwrap();
+    assert_eq!(now.digest, a.digest, "the text in force is A's again");
+
+    // The first change, replayed: its digest matches the text in force, its version doesn't.
+    let message = refused(h.service.check_admin(&first, &facts()), RefusalCode::Admin);
+    assert!(
+        message.contains(
+            "the approvers in force is version 3, not the one this change replaces (version 1)"
+        ),
+        "{message}"
+    );
+    let denied = h.events("admin", "denied");
+    assert_eq!(denied.len(), 1, "{denied:?}");
+    assert!(
+        denied[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not the one this change replaces (version 1)"),
+        "{}",
+        denied[0]
+    );
+    // Nothing changed: the lost key approves nothing.
+    let shown = h.service.admin_show(AdminTarget::Approvers).unwrap();
+    assert_eq!((shown.version, shown.digest), (3, a.digest.clone()));
+    let ticket = pending(&h);
+    let by_lost = writ_approval::testing::sign_approval(&lost, &ticket);
+    let error = h
+        .service
+        .approve(&ticket.id, &by_lost, &facts())
+        .unwrap_err();
+    assert_eq!(error.code(), Some(RefusalCode::Signature), "{error}");
+}
+
+/// Removing an approver takes back what it granted: every active lease its key signed is
+/// revoked by the same change (one `revoke` line each, named in the reply), and its
+/// certificate refused at once; a lease another approver signed keeps working.
+#[test]
+fn removing_an_approver_revokes_the_leases_it_signed() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let shown = h.service.admin_show(AdminTarget::Approvers).unwrap();
+    let other = generate(KeyKind::Ed25519).unwrap();
+    let both = format!(
+        "{}other {}\n",
+        shown.text,
+        other.public_key().to_openssh().unwrap()
+    );
+    let apply = |text: &str| {
+        let request = change(
+            &h.approver,
+            AdminTarget::Approvers,
+            current(&h, AdminTarget::Approvers),
+            text,
+        );
+        let checked = h.service.check_admin(&request, &facts()).unwrap();
+        h.service
+            .commit_admin(
+                &checked,
+                parsed_approvers(text),
+                vec![],
+                Default::default(),
+                &facts(),
+            )
+            .unwrap()
+    };
+    // Adding a key revokes nothing.
+    assert_eq!(apply(&both).revoked, vec![]);
+    let by_other = lease_by(&h, &other);
+    let by_me = lease(&h);
+    let repo = "omega-code".parse().unwrap();
+    assert!(h.service.fetch(&by_other, &facts(), &repo).is_ok());
+
+    // `other` removed: its lease is revoked by the change, mine is not.
+    let applied = apply(&shown.text);
+    assert_eq!(applied.revoked.len(), 1, "{:?}", applied.revoked);
+    let revoked = &applied.revoked[0];
+    assert_eq!(revoked.as_str(), by_other.key_id);
+    let denial = h.service.fetch(&by_other, &facts(), &repo).unwrap_err();
+    assert_eq!(denial.code, DenyCode::NotActive, "{denial:?}");
+    assert!(h.service.fetch(&by_me, &facts(), &repo).is_ok());
+    let lines = h.events("revoke", "done");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["lease"], revoked.as_str());
+    let other_fp = other
+        .public_key()
+        .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
+        .to_string();
+    assert_eq!(
+        lines[0]["reason"],
+        format!("its approver {other_fp} was removed from approvers (version 3)")
     );
 }
 
@@ -299,24 +449,57 @@ fn an_unsigned_wrongly_signed_or_stale_change_is_refused_and_logged() {
                 ..ok.clone()
             },
             RefusalCode::Admin,
-            "not a writ-admin/1 document",
+            "not a writ-admin/2 document",
         ),
         (
             "stale",
             change(
                 &h.approver,
                 AdminTarget::Readers,
-                TextDigest::of("old\n"),
+                Base {
+                    digest: TextDigest::of("old\n"),
+                    ..previous.clone()
+                },
                 "x\n",
             ),
             RefusalCode::Admin,
             "not the one this change replaces",
         ),
+        (
+            "the text in force, under another version number",
+            change(
+                &h.approver,
+                AdminTarget::Readers,
+                Base {
+                    version: previous.version + 1,
+                    ..previous.clone()
+                },
+                "x\n",
+            ),
+            RefusalCode::Admin,
+            "not the one this change replaces (version 2)",
+        ),
+        (
+            "another daemon",
+            change(
+                &h.approver,
+                AdminTarget::Readers,
+                Base {
+                    daemon: "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+                        .parse()
+                        .unwrap(),
+                    ..previous.clone()
+                },
+                "x\n",
+            ),
+            RefusalCode::Admin,
+            "the change names daemon SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU, not this one",
+        ),
     ] {
         let message = refused(h.service.check_admin(&request, &facts()), code);
         assert!(message.contains(reason), "{what}: {message}");
     }
-    assert_eq!(h.events("admin", "denied").len(), 6);
+    assert_eq!(h.events("admin", "denied").len(), 8);
     assert_eq!(h.events("admin", "allowed").len(), 0);
     assert_eq!(
         current(&h, AdminTarget::Readers),

@@ -431,12 +431,13 @@ impl Opener {
         let open = self.0.open.get().ok_or("the daemon is not open")?;
         let previous = open.live.token_in_force(id).map_err(|e| format!("{e:#}"))?;
         Ok(TokenShown {
+            daemon: self.0.service.daemon().clone(),
             id: id.clone(),
             previous,
         })
     }
 
-    /// Puts a checked `writ-token/1` in force: its id one a repo or a notifier uses, its
+    /// Puts a checked `writ-token/2` in force: its id one a repo or a notifier uses, its
     /// ciphertext opened by the keystore's identity and a token; logged by the service against
     /// the file in force; then written, and used at once (the mirrors that use it opened
     /// again, the notifier started with it). A refusal is logged once.

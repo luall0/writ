@@ -185,70 +185,99 @@ impl Unseal {
     }
 }
 
-/// Only `"writ-admin/1"`.
+/// Only `"writ-admin/2"` (`writ-admin/1` named the version it replaced by its digest alone,
+/// so a change could be applied again once the text came back to that version).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum AdminKind {
     #[default]
-    #[serde(rename = "writ-admin/1")]
-    V1,
+    #[serde(rename = "writ-admin/2")]
+    V2,
 }
 
-/// The approver replaces the authority file `target`: the version whose text has digest
-/// `previous` (the one in force when this was signed) by `text`. Replayed, or signed against
-/// a version no longer in force, it changes nothing.
+/// The approver replaces, on the daemon `daemon` (its SSH host key's fingerprint), the
+/// authority file `target`: version `version`, whose text has digest `previous` (the one in
+/// force when this was signed), by `text`. Versions only grow, so a change applies once:
+/// replayed, sent to another daemon, or signed against a version no longer in force, it
+/// changes nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Admin {
     pub kind: AdminKind,
+    pub daemon: KeyFingerprint,
     pub target: AdminTarget,
+    pub version: u64,
     pub previous: TextDigest,
     pub text: AdminText,
 }
 
 impl Canonical for Admin {
-    const KIND: &'static str = "writ-admin/1";
+    const KIND: &'static str = "writ-admin/2";
+}
+
+/// The version an admin change replaces: its number and its text's digest, as
+/// `writ admin show` reports them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replaced {
+    pub version: u64,
+    pub digest: TextDigest,
 }
 
 impl Admin {
-    pub fn new(target: AdminTarget, previous: TextDigest, text: AdminText) -> Self {
+    pub fn new(
+        daemon: KeyFingerprint,
+        target: AdminTarget,
+        replaced: Replaced,
+        text: AdminText,
+    ) -> Self {
         Self {
-            kind: AdminKind::V1,
+            kind: AdminKind::V2,
+            daemon,
             target,
-            previous,
+            version: replaced.version,
+            previous: replaced.digest,
             text,
         }
     }
 }
 
-/// Only `"writ-token/1"`.
+/// Only `"writ-token/2"` (`writ-token/1` named no daemon).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TokenKind {
     #[default]
-    #[serde(rename = "writ-token/1")]
-    V1,
+    #[serde(rename = "writ-token/2")]
+    V2,
 }
 
-/// The approver puts the token `sealed` (encrypted to the keystore's recipient on their
-/// machine) in place of the token file `previous` for the credential `id`: an `https://`
-/// upstream's, or a notifier's kept sealed. Replayed, or signed against a file no longer
-/// there, it changes nothing.
+/// The approver puts, on the daemon `daemon`, the token `sealed` (encrypted to the keystore's
+/// recipient on their machine) in place of the token file `previous` for the credential
+/// `id`: an `https://` upstream's, or a notifier's kept sealed. Replayed, sent to another
+/// daemon, or signed against a file no longer there, it changes nothing. (`previous` is the
+/// digest of a file encrypted afresh each time, so it never comes back; only `none`, a
+/// credential's first token, could: a file removed by hand on the host.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Token {
     pub kind: TokenKind,
+    pub daemon: KeyFingerprint,
     pub id: KeyId,
     pub previous: PreviousToken,
     pub sealed: SealedToken,
 }
 
 impl Canonical for Token {
-    const KIND: &'static str = "writ-token/1";
+    const KIND: &'static str = "writ-token/2";
 }
 
 impl Token {
-    pub fn new(id: KeyId, previous: PreviousToken, sealed: SealedToken) -> Self {
+    pub fn new(
+        daemon: KeyFingerprint,
+        id: KeyId,
+        previous: PreviousToken,
+        sealed: SealedToken,
+    ) -> Self {
         Self {
-            kind: TokenKind::V1,
+            kind: TokenKind::V2,
+            daemon,
             id,
             previous,
             sealed,
@@ -415,19 +444,29 @@ mod tests {
         );
     }
 
+    const DAEMON: &str = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+
+    fn daemon() -> KeyFingerprint {
+        DAEMON.parse().unwrap()
+    }
+
     #[test]
     fn an_admin_change_is_pinned_strict_and_bounded() {
         let previous = TextDigest::of("me ssh-ed25519 AAAA\n");
         let change = Admin::new(
+            daemon(),
             AdminTarget::Approvers,
-            previous.clone(),
+            Replaced {
+                version: 7,
+                digest: previous.clone(),
+            },
             AdminText::try_from("me ssh-ed25519 BBBB\n".to_owned()).unwrap(),
         );
         let bytes = change.canonical_bytes().unwrap();
         assert_eq!(
             String::from_utf8(bytes.clone()).unwrap(),
             format!(
-                r#"{{"kind":"writ-admin/1","target":"approvers","previous":"{previous}","text":"me ssh-ed25519 BBBB\n"}}"#
+                r#"{{"kind":"writ-admin/2","daemon":"{DAEMON}","target":"approvers","version":7,"previous":"{previous}","text":"me ssh-ed25519 BBBB\n"}}"#
             )
         );
         assert_eq!(Admin::from_canonical(&bytes).unwrap(), change);
@@ -444,6 +483,23 @@ mod tests {
             ),
             (text.replace(previous.as_str(), "abc"), "64 lowercase hex"),
             (text.replace("BBBB\\n", "BBBB\\u001b"), "control character"),
+            // The first format, which named no daemon and no version number: refused.
+            (
+                text.replace("writ-admin/2", "writ-admin/1"),
+                "unknown variant",
+            ),
+            (
+                text.replace(r#""version":7,"#, ""),
+                "missing field `version`",
+            ),
+            (
+                text.replace(r#""version":7"#, r#""version":-1"#),
+                "invalid value",
+            ),
+            (
+                text.replace(&format!(r#""daemon":"{DAEMON}","#), ""),
+                "missing field `daemon`",
+            ),
         ] {
             let error = Admin::from_canonical(bad.as_bytes())
                 .unwrap_err()
@@ -456,6 +512,7 @@ mod tests {
     fn a_token_change_is_pinned_strict_and_bounded() {
         let previous = PreviousToken::File(TextDigest::of_bytes(b"the old age file"));
         let change = Token::new(
+            daemon(),
             "token-01".parse().unwrap(),
             previous.clone(),
             SealedToken::try_from("YWdlLWVuY3J5cHRpb24=".to_owned()).unwrap(),
@@ -464,11 +521,12 @@ mod tests {
         assert_eq!(
             String::from_utf8(bytes.clone()).unwrap(),
             format!(
-                r#"{{"kind":"writ-token/1","id":"token-01","previous":"{previous}","sealed":"YWdlLWVuY3J5cHRpb24="}}"#
+                r#"{{"kind":"writ-token/2","daemon":"{DAEMON}","id":"token-01","previous":"{previous}","sealed":"YWdlLWVuY3J5cHRpb24="}}"#
             )
         );
         assert_eq!(Token::from_canonical(&bytes).unwrap(), change);
         let first = Token::new(
+            daemon(),
             "token-01".parse().unwrap(),
             PreviousToken::None,
             SealedToken::try_from("YWdl".to_owned()).unwrap(),
@@ -494,6 +552,15 @@ mod tests {
             (
                 text.replace("}", r#","token":"in clear"}"#),
                 "unknown field",
+            ),
+            // The first format, which named no daemon: refused.
+            (
+                text.replace("writ-token/2", "writ-token/1"),
+                "unknown variant",
+            ),
+            (
+                text.replace(&format!(r#""daemon":"{DAEMON}","#), ""),
+                "missing field `daemon`",
             ),
         ] {
             let error = Token::from_canonical(bad.as_bytes())

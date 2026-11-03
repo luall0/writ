@@ -210,6 +210,14 @@ fn signatures_only_for_allowed_committer_identities() {
             DenyCode::Committer,
             "{email:?}"
         );
+        // The same emails as the author, the committer allowed: the author is checked too.
+        let mut request = sign_request(&world.lease);
+        request.author_email = email.to_owned();
+        assert_eq!(
+            code(policy::decide_sign(&world.ctx(), &request)),
+            DenyCode::Author,
+            "author {email:?}"
+        );
     }
     assert!(policy::decide_sign(&world.ctx(), &sign_request(&world.lease)).is_ok());
     // And only commits: never a tag (a violation), a tree, a blob or anything else (a

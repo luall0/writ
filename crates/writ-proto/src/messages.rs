@@ -128,9 +128,13 @@ pub struct UnsealRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminShown {
+    /// The fingerprint of the daemon's SSH host key: what a `writ-admin/2` change names as
+    /// `daemon`.
+    pub daemon: KeyFingerprint,
     pub target: AdminTarget,
+    /// What a `writ-admin/2` change names as `version`.
     pub version: u64,
-    /// The digest of its text: what a `writ-admin/1` change names as `previous`.
+    /// The digest of its text: what a `writ-admin/2` change names as `previous`.
     pub digest: TextDigest,
     pub text: String,
 }
@@ -139,8 +143,8 @@ pub struct AdminShown {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminRequest {
-    /// The canonical bytes of the `writ-admin/1` document: the file, the version it replaces,
-    /// the new text.
+    /// The canonical bytes of the `writ-admin/2` document: the daemon, the file, the version
+    /// it replaces, the new text.
     pub document: String,
     /// The approver's armored SSHSIG over them, namespace `writ-approval`.
     pub signature: String,
@@ -158,6 +162,10 @@ pub struct AdminApplied {
     /// register on the remotes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created: Vec<CreatedKey>,
+    /// The leases revoked because the approver key that signed them is no longer in
+    /// `approvers` (a change of `approvers` only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revoked: Vec<TicketId>,
 }
 
 /// A key a signed policy change made.
@@ -195,8 +203,10 @@ impl KeyRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenShown {
+    /// The fingerprint of the daemon's SSH host key: what a `writ-token/2` names as `daemon`.
+    pub daemon: KeyFingerprint,
     pub id: KeyId,
-    /// What a `writ-token/1` replacing it names as `previous`.
+    /// What a `writ-token/2` replacing it names as `previous`.
     pub previous: PreviousToken,
 }
 
@@ -204,8 +214,8 @@ pub struct TokenShown {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenRequest {
-    /// The canonical bytes of the `writ-token/1` document: the credential, the file it
-    /// replaces, the token sealed to the keystore's recipient.
+    /// The canonical bytes of the `writ-token/2` document: the daemon, the credential, the
+    /// file it replaces, the token sealed to the keystore's recipient.
     pub document: String,
     /// The approver's armored SSHSIG over them, namespace `writ-approval`.
     pub signature: String,

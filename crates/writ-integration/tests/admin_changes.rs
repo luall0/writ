@@ -108,6 +108,7 @@ fn a_signed_change_applies_at_once_and_is_written_back_to_its_file() {
         );
         // At once: the second key signs a ticket.
         let request = daemon.request("by-second", TICKET);
+        let request_id = request.id.clone();
         let out = daemon.run(
             &[
                 "sign",
@@ -121,10 +122,40 @@ fn a_signed_change_applies_at_once_and_is_written_back_to_its_file() {
         assert!(out.status.success(), "{}", stderr(&out));
         let (status, _, err) = request.finish();
         assert_eq!(status.code(), Some(0), "{err}");
+        let by_second = daemon.session(&request_id);
+        assert!(daemon.ls_remote(&by_second).status.success());
 
         // Nothing to change: said, nothing signed.
         let out = apply(&daemon, "approvers", &both, &[]);
         assert!(stdout(&out).contains("already holds this text: nothing to change"));
+
+        // The second key removed again: the lease it signed is revoked by the same change,
+        // named in its output, and refused at once. Then the key is added back (version 4).
+        let out = apply(&daemon, "approvers", &before, &[]);
+        assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+        let said = stdout(&out);
+        assert!(
+            said.contains(&format!(
+                "Revoked lease {request_id}: the approver key that signed it was removed."
+            )),
+            "{said}"
+        );
+        let refused = daemon.ls_remote(&by_second);
+        assert_eq!(refused.status.code(), Some(128), "{}", stderr(&refused));
+        let audit = daemon.audit();
+        let revoked = audit_events(&audit, "revoke", "done");
+        assert_eq!(revoked.len(), 1, "{audit}");
+        assert_eq!(revoked[0]["lease"], request_id.as_str());
+        assert!(
+            revoked[0]["reason"]
+                .as_str()
+                .unwrap()
+                .ends_with("was removed from approvers (version 3)"),
+            "{}",
+            revoked[0]
+        );
+        let out = apply(&daemon, "approvers", &both, &[]);
+        assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
 
         // A stranger's key: refused, nothing changed.
         let stranger = generate(KeyKind::Ed25519).unwrap();
@@ -149,7 +180,7 @@ fn a_signed_change_applies_at_once_and_is_written_back_to_its_file() {
         );
 
         let audit = daemon.audit();
-        assert_eq!(audit_events(&audit, "admin", "allowed").len(), 1, "{audit}");
+        assert_eq!(audit_events(&audit, "admin", "allowed").len(), 3, "{audit}");
         assert_eq!(audit_events(&audit, "admin", "denied").len(), 1, "{audit}");
     }
 }
