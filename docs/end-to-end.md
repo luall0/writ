@@ -24,8 +24,13 @@ WRIT_E2E_KEEP=1 make e2e        # keep the stack afterwards, to look at it (the 
 It needs Docker with compose, and make: everything else (the Rust toolchain included) runs in
 containers, and nothing touches your own git, SSH or remotes. It starts from nothing (a
 compose project of its own, `writ-e2e-<pid>`) and removes everything it made (containers,
-network, volumes, images) whatever happens; only Docker's build cache stays, so a second run
-compiles incrementally. CI runs it as a job of its own on every push (`.github/workflows/ci.yml`,
+network, volumes, images) whatever happens, and the layers it left in Docker's build cache
+(the binaries' copies built from that tree and the steps on top of them, matched by
+patterns of `e2e/Dockerfile`'s steps: `BUILD_CACHE_STEPS` in `tool/e2e.sh`). Only the cargo caches stay (the registry and a
+`target/` pruned to the last build by `tool/target-cache.py`, as `make test` does), so a
+second run compiles incrementally. Docker Desktop's own GC caps none of this unless told to:
+its default `builder.gc.defaultKeepStorage` is the space it *keeps*, not a maximum; set
+`defaultMaxUsedSpace` in Settings → Docker Engine for a cap. CI runs it as a job of its own on every push (`.github/workflows/ci.yml`,
 job `e2e`); it is not part of `make ci`, and the pre-push hook doesn't wait for it.
 
 The longest scenario waits for an unsigned ticket to expire (a ticket asks for at least 5

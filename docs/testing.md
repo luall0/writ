@@ -56,7 +56,8 @@ the [manual checks](guides/manual-checks.md).
   compilation directories can't be matched to a build, so for each crate the newest ones are
   kept, as many as the recorded builds of that crate. Deleting one is always safe: that crate
   compiles once without reuse. A profile no record names (`target/release`) is left alone,
-  and so is everything when there is no record yet.
+  and so is everything when there is no record yet. The end-to-end image's build prunes its own
+  cargo cache the same way ([end-to-end](end-to-end.md)).
 
 ## Hardened tests
 
