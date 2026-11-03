@@ -30,8 +30,7 @@ pub fn git() -> PathBuf {
 
 /// Mirrors of no repo at all, in `dir`: every repo is unknown to them.
 pub async fn no_repos(dir: &Path) -> Result<Mirrors> {
-    let signer = writ_signer::software::SoftwareSigner::new(Vec::new())
-        .map_err(|e| crate::MirrorError::Config(e.to_string()))?;
+    let signer = writ_signer::software::SoftwareSigner::empty();
     Mirrors::open(
         MirrorConfig {
             root: dir.join("repos"),
@@ -61,7 +60,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mirrors = no_repos(dir.path()).await;
         assert!(mirrors.is_ok(), "absolute: opened");
-        let signer = writ_signer::software::SoftwareSigner::new(Vec::new()).unwrap();
+        let signer = writ_signer::software::SoftwareSigner::empty();
         let mut config = MirrorConfig {
             root: PathBuf::from("repos"),
             run_dir: dir.path().join("mirror"),
@@ -102,7 +101,7 @@ mod tests {
         std::fs::write(&plain, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
         let signer: Arc<dyn writ_signer::Signer> =
-            Arc::new(writ_signer::software::SoftwareSigner::new(Vec::new()).unwrap());
+            Arc::new(writ_signer::software::SoftwareSigner::empty());
         let config = MirrorConfig {
             root: dir.path().join("repos"),
             run_dir: dir.path().join("mirror"),

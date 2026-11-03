@@ -28,7 +28,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use writ_core::names::KeyId;
-use writ_crypto::ssh_key::{PrivateKey, Signature};
+use writ_crypto::algorithm::SignerHash;
+use writ_crypto::keypair::{KeyPair, RawSignature};
 
 use crate::{Capabilities, KeyInfo, Signer, SignerError};
 
@@ -43,18 +44,19 @@ pub struct QueueConfig {
     pub deadline: Duration,
 }
 
-type Answer = Result<Signature, SignerError>;
+type Answer = Result<RawSignature, SignerError>;
 
 /// What a job asks the backend for.
 enum Work {
     Sign {
         data: Vec<u8>,
+        hash: SignerHash,
         /// Room for one answer: the worker never blocks on a caller that left.
         answer: SyncSender<Answer>,
     },
     Add {
         /// Boxed: a key is far larger than a signature job.
-        key: Box<PrivateKey>,
+        key: Box<KeyPair>,
         answer: SyncSender<Result<KeyInfo, SignerError>>,
     },
 }
@@ -145,6 +147,7 @@ impl QueuedSigner {
         &self,
         id: &KeyId,
         data: &[u8],
+        hash: SignerHash,
         deadline: Duration,
     ) -> Result<Pending, SignerError> {
         if !self.known().keys.iter().any(|k| &k.id == id) {
@@ -156,6 +159,7 @@ impl QueuedSigner {
         let (answer, reply) = std::sync::mpsc::sync_channel(1);
         let work = Work::Sign {
             data: data.to_vec(),
+            hash,
             answer,
         };
         let abandoned = self.queue(id, work)?;
@@ -214,8 +218,9 @@ fn work(name: &str, backend: &dyn Signer, inbox: &Receiver<Job>, known: &RwLock<
         // called again.
         // The caller may have left meanwhile (its deadline passed): an answer is then dropped.
         let survived = match work {
-            Work::Sign { data, answer } => {
-                match std::panic::catch_unwind(AssertUnwindSafe(|| backend.sign(&id, &data))) {
+            Work::Sign { data, hash, answer } => {
+                match std::panic::catch_unwind(AssertUnwindSafe(|| backend.sign(&id, &data, hash)))
+                {
                     Ok(signed) => {
                         let _ = answer.try_send(signed);
                         true
@@ -272,8 +277,8 @@ impl Signer for QueuedSigner {
         Ok(self.known().keys.clone())
     }
 
-    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError> {
-        self.submit(id, data, self.deadline)?.wait()
+    fn sign(&self, id: &KeyId, data: &[u8], hash: SignerHash) -> Answer {
+        self.submit(id, data, hash, self.deadline)?.wait()
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -284,7 +289,7 @@ impl Signer for QueuedSigner {
     /// caller gets [`SignerError::Timeout`]; the worker skips the key if it hasn't reached it
     /// yet, or adds it all the same if it has (then it is listed, and adding it again is
     /// [`SignerError::DuplicateKey`]).
-    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+    fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         if !self.known().capabilities.takes_keys {
             drop(key);
             return Err(SignerError::CannotTakeKeys(id));

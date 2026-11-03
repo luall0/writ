@@ -19,6 +19,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
 use writ_core::names::KeyId;
+use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignerHash};
 use writ_signer::Signer;
 
 use crate::{MirrorError, Result};
@@ -191,7 +192,8 @@ async fn respond(served: &Served, message: &[u8]) -> Vec<u8> {
 async fn sign(served: &Served, body: &[u8]) -> Option<Vec<u8>> {
     let (blob, rest) = take_string(body)?;
     let (data, rest) = take_string(rest)?;
-    if rest.len() != 4 || blob != served.blob.as_slice() {
+    let flags = u32::from_be_bytes(<[u8; 4]>::try_from(rest).ok()?);
+    if blob != served.blob.as_slice() {
         return None;
     }
     let taken = served
@@ -204,17 +206,40 @@ async fn sign(served: &Served, body: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let (signer, key, data) = (served.signer.clone(), served.key.clone(), data.to_vec());
-    let signature = tokio::task::spawn_blocking(move || signer.sign(&key, &data))
-        .await
-        .ok()?
-        .map_err(
-            |e| tracing::warn!(key = %served.key, error = %e, "upstream credential did not sign"),
-        )
-        .ok()?;
-    let encoded = signature.encode_vec().ok()?;
+    let signature = tokio::task::spawn_blocking(move || {
+        let algorithm = writ_signer::key_algorithm(&*signer, &key)?;
+        signer.sign(&key, &data, ssh_hash(algorithm, flags))
+    })
+    .await
+    .ok()?
+    .map_err(|e| tracing::warn!(key = %served.key, error = %e, "upstream credential did not sign"))
+    .ok()?;
+    let encoded = signature.to_ssh().ok()?.encode_vec().ok()?;
     let mut reply = vec![SIGN_RESPONSE];
     put_string(&mut reply, &encoded);
     Some(reply)
+}
+
+/// The agent protocol's flags asking an RSA key for `rsa-sha2-256` and `rsa-sha2-512`.
+const RSA_SHA2_256: u32 = 2;
+const RSA_SHA2_512: u32 = 4;
+
+/// The hash an SSH signature of `algorithm` is made with: none for Ed25519, the curve's for
+/// ECDSA, what the flags ask for RSA (SHA-512 when they ask for nothing: never `ssh-rsa`'s
+/// SHA-1).
+fn ssh_hash(algorithm: KeyAlgorithm, flags: u32) -> SignerHash {
+    match algorithm {
+        KeyAlgorithm::Ed25519 => None,
+        KeyAlgorithm::P256 => Some(Hash::Sha256),
+        KeyAlgorithm::P384 => Some(Hash::Sha384),
+        KeyAlgorithm::Rsa3072 | KeyAlgorithm::Rsa4096 => {
+            if flags & RSA_SHA2_256 != 0 && flags & RSA_SHA2_512 == 0 {
+                Some(Hash::Sha256)
+            } else {
+                Some(Hash::Sha512)
+            }
+        }
+    }
 }
 
 fn put_string(out: &mut Vec<u8>, bytes: &[u8]) {

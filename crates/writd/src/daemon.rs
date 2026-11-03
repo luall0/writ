@@ -340,6 +340,7 @@ impl Opener {
                     continue;
                 }
                 let (key, made) = live.key_or_make(role, &id)?;
+                let key = writ_crypto::keypair::KeyPair::from_ssh(key)?;
                 let info = signer
                     .add_key(id.clone(), key)
                     .with_context(|| format!("{} {id}", role.as_str()))?;

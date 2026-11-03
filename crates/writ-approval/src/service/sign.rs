@@ -240,6 +240,7 @@ impl Service {
             &*self.opened().map_err(super::as_denial)?.signer,
             &reserved.key,
             GIT_NAMESPACE,
+            writ_crypto::sshsig::DEFAULT_HASH,
             reserved.commit.bytes(),
         );
         self.settle(signing, &request, reserved, signed)

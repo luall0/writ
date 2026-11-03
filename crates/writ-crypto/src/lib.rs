@@ -12,9 +12,11 @@
 // checked, saturating, or allowed with the reason it can't overflow.
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod algorithm;
 pub mod allowed_signers;
 pub mod authority;
 pub mod ca;
+pub mod keypair;
 pub mod keys;
 pub mod passphrase;
 pub mod readers;
@@ -35,6 +37,9 @@ pub enum CryptoError {
     UnknownSigner(String),
     #[error("the key failed to sign")]
     SigningFailed,
+    /// An algorithm, hash or key kind Writ doesn't sign with (named, never replaced).
+    #[error("not supported: {0}")]
+    Unsupported(String),
     #[error("signature does not match the signed data")]
     BadSignature,
     /// A security-key (`sk-*`) signature made without the user-presence flag: the key was not

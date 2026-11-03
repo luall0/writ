@@ -5,19 +5,51 @@ use signature::Signer as _;
 use ssh_key::public::KeyData;
 use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey, PublicKey, Signature, SshSig};
 
+use crate::algorithm::Hash;
 use crate::{CryptoError, Result};
 
-/// Hash algorithm used for every signature Writ makes (the one `ssh-keygen` uses).
+/// Hash algorithm of the SSHSIGs Writ makes with its own keys (the one `ssh-keygen` uses).
 pub const HASH_ALG: HashAlg = HashAlg::Sha512;
 
-/// The exact bytes a key must sign to produce an SSHSIG over `msg` in `namespace`.
+/// [`HASH_ALG`] as a declared hash: an SSH key's when its declaration leaves `hash` out.
+pub const DEFAULT_HASH: Hash = Hash::Sha512;
+
+/// The SSHSIG message hash for a declared hash: SHA-256 or SHA-512 (OpenSSH knows no other).
+pub fn hash_alg(hash: Hash) -> Result<HashAlg> {
+    match hash {
+        Hash::Sha256 => Ok(HashAlg::Sha256),
+        Hash::Sha512 => Ok(HashAlg::Sha512),
+        Hash::Sha384 => Err(CryptoError::Unsupported(
+            "an SSHSIG with sha384 (sha256 or sha512)".to_owned(),
+        )),
+    }
+}
+
+/// The exact bytes a key must sign to produce an SSHSIG over `msg` in `namespace`, with
+/// [`HASH_ALG`].
 pub fn signed_data(namespace: &str, msg: &[u8]) -> Result<Vec<u8>> {
     Ok(SshSig::signed_data(namespace, HASH_ALG, msg)?)
+}
+
+/// [`signed_data`] with the message hash `hash`.
+pub fn signed_data_with(namespace: &str, hash: Hash, msg: &[u8]) -> Result<Vec<u8>> {
+    Ok(SshSig::signed_data(namespace, hash_alg(hash)?, msg)?)
 }
 
 /// Wraps a raw signature over [`signed_data`] into an armored SSHSIG.
 pub fn assemble(public_key: &KeyData, namespace: &str, signature: Signature) -> Result<String> {
     let sig = SshSig::new(public_key.clone(), namespace, HASH_ALG, signature)?;
+    Ok(sig.to_pem(LineEnding::LF)?)
+}
+
+/// Wraps a raw signature over [`signed_data_with`] (the same `hash`) into an armored SSHSIG.
+pub fn assemble_with(
+    public_key: &KeyData,
+    namespace: &str,
+    hash: Hash,
+    signature: Signature,
+) -> Result<String> {
+    let sig = SshSig::new(public_key.clone(), namespace, hash_alg(hash)?, signature)?;
     Ok(sig.to_pem(LineEnding::LF)?)
 }
 

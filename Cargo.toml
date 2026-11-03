@@ -86,7 +86,7 @@ serde_path_to_error = "0.1.20"
 # the gateway, never left to the library's defaults.
 russh = { version = "0.65.0", default-features = false, features = ["ring"] }
 # Pinned to the exact version russh uses, so certificates and keys are the same types.
-ssh-key = { version = "=0.7.0-rc.11", features = ["alloc", "std", "ed25519", "p256", "getrandom"] }
+ssh-key = { version = "=0.7.0-rc.11", features = ["alloc", "std", "ed25519", "p256", "p384", "getrandom"] }
 sha2 = "0.10.9"
 # SHA-1 with collision detection (the algorithm of git's sha1dc): object ids of SHA-1 repos,
 # computed from objects an agent sends.

@@ -25,7 +25,9 @@ pub mod contract;
 pub mod testing;
 
 use writ_core::names::KeyId;
-use writ_crypto::ssh_key::{Algorithm, PrivateKey, PublicKey, Signature};
+use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat, SignerHash};
+use writ_crypto::keypair::{KeyPair, RawSignature};
+use writ_crypto::ssh_key::PublicKey;
 
 /// Why a signer didn't sign. Never holds key material.
 #[derive(Debug, thiserror::Error)]
@@ -34,8 +36,10 @@ pub enum SignerError {
     UnknownKey(KeyId),
     #[error("the signer has two keys named {0}")]
     DuplicateKey(KeyId),
-    #[error("key {id}: algorithm {algorithm} is not supported by this backend")]
-    Unsupported { id: KeyId, algorithm: String },
+    /// What the key or the backend doesn't do (an algorithm, an algorithm with a hash),
+    /// named, never replaced by something else.
+    #[error("key {id}: {what} is not supported by this backend")]
+    Unsupported { id: KeyId, what: String },
     /// The backend failed (a device error, a refused operation). The cause stays out of the
     /// message: a backend's error could say more than a client should see.
     #[error("the signer failed to sign with key {0}")]
@@ -66,8 +70,10 @@ pub struct KeyInfo {
 /// What a backend can do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Capabilities {
-    /// The algorithms of the keys it holds.
-    pub algorithms: Vec<Algorithm>,
+    /// The (algorithm, signer hash) pairs it supports: it can hold a key of that algorithm and
+    /// sign with that hash (`None`: Ed25519, which signs the bytes themselves). What the
+    /// daemon checks each declared key against at start.
+    pub pairs: Vec<(KeyAlgorithm, SignerHash)>,
     /// Whether its keys can be read out (software keys can, by whoever holds the daemon's
     /// memory or keystore; a hardware key can't).
     pub exportable: bool,
@@ -83,9 +89,13 @@ pub struct Capabilities {
 pub trait Signer: Send + Sync {
     /// The keys this backend exposes (public parts only).
     fn list_keys(&self) -> Result<Vec<KeyInfo>, SignerError>;
-    /// Signs raw `data` with the key `id`. The caller builds what is signed (an SSHSIG's
-    /// signed data) and wraps the signature; the signature is in SSH encoding.
-    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError>;
+    /// Signs `data` with the key `id` and the signer hash `hash`: the backend hashes `data`
+    /// with it and signs the digest (ECDSA: truncated to the curve; RSA: PKCS#1 v1.5 with the
+    /// hash's `DigestInfo`), or, with `None`, signs `data` itself (Ed25519). The caller builds
+    /// what is signed (an SSHSIG's signed data, an OpenPGP hashed part) and wraps the
+    /// signature. A pair the backend or the key doesn't sign with is
+    /// [`SignerError::Unsupported`], never signed with something else.
+    fn sign(&self, id: &KeyId, data: &[u8], hash: SignerHash) -> Result<RawSignature, SignerError>;
     /// What this backend can do.
     fn capabilities(&self) -> Capabilities;
     /// Takes `key`, made outside the backend, under `id` (moved in, never copied), usable at
@@ -93,7 +103,7 @@ pub trait Signer: Send + Sync {
     /// an algorithm it doesn't hold [`SignerError::Unsupported`]. A backend that takes no key
     /// from outside (a device makes its own: M7.5 brings that verb) keeps this default,
     /// [`SignerError::CannotTakeKeys`], and says so in [`Capabilities::takes_keys`].
-    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+    fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         drop(key);
         Err(SignerError::CannotTakeKeys(id))
     }
@@ -105,15 +115,15 @@ impl<S: Signer + ?Sized> Signer for std::sync::Arc<S> {
         (**self).list_keys()
     }
 
-    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError> {
-        (**self).sign(id, data)
+    fn sign(&self, id: &KeyId, data: &[u8], hash: SignerHash) -> Result<RawSignature, SignerError> {
+        (**self).sign(id, data, hash)
     }
 
     fn capabilities(&self) -> Capabilities {
         (**self).capabilities()
     }
 
-    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+    fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         (**self).add_key(id, key)
     }
 }
@@ -128,17 +138,41 @@ pub fn public_key(signer: &dyn Signer, id: &KeyId) -> Result<PublicKey, SignerEr
         .ok_or_else(|| SignerError::UnknownKey(id.clone()))
 }
 
-/// An SSHSIG over `msg` in `namespace`, signed by the key `id` through `signer`: the armored
-/// text git's `ssh-keygen -Y sign` would write.
+/// The algorithm of the key `id`, from its public half.
+pub fn key_algorithm(signer: &dyn Signer, id: &KeyId) -> Result<KeyAlgorithm, SignerError> {
+    let public = public_key(signer, id)?;
+    KeyAlgorithm::of_public(public.key_data()).ok_or_else(|| SignerError::Unsupported {
+        id: id.clone(),
+        what: format!("a {} key", public.algorithm()),
+    })
+}
+
+/// An SSHSIG over `msg` in `namespace` with the message hash `hash` (`sha256` or `sha512`),
+/// signed by the key `id` through `signer`: the armored text git's `ssh-keygen -Y sign` would
+/// write. The signer is asked for the key's own SSH hash (none for Ed25519, the curve's for
+/// ECDSA, `hash` for RSA: `rsa-sha2-256` or `rsa-sha2-512`).
 pub fn sshsig(
     signer: &dyn Signer,
     id: &KeyId,
     namespace: &str,
+    hash: Hash,
     msg: &[u8],
 ) -> Result<String, SignerError> {
     let public = public_key(signer, id)?;
+    let algorithm = key_algorithm(signer, id)?;
+    if !writ_crypto::algorithm::hashes(SignatureFormat::Ssh, algorithm).contains(&hash) {
+        return Err(SignerError::Unsupported {
+            id: id.clone(),
+            what: format!("an SSHSIG with {hash}"),
+        });
+    }
+    let signer_hash = writ_crypto::algorithm::signer_hash(SignatureFormat::Ssh, algorithm, hash);
     let failed = |_| SignerError::Failed(id.clone());
-    let data = writ_crypto::sshsig::signed_data(namespace, msg).map_err(failed)?;
-    let signature = signer.sign(id, &data)?;
-    writ_crypto::sshsig::assemble(public.key_data(), namespace, signature).map_err(failed)
+    let data = writ_crypto::sshsig::signed_data_with(namespace, hash, msg).map_err(failed)?;
+    let signature = signer
+        .sign(id, &data, signer_hash)?
+        .to_ssh()
+        .map_err(failed)?;
+    writ_crypto::sshsig::assemble_with(public.key_data(), namespace, hash, signature)
+        .map_err(failed)
 }

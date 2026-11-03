@@ -93,7 +93,7 @@ impl Fixture {
 
     fn open_at(&self, config: MirrorConfig, url: &str) -> Result<Mirrors, MirrorError> {
         let policy = PolicyConfig::from_yaml(&policy_yaml(url)).unwrap();
-        let signer = Arc::new(SoftwareSigner::new(Vec::new()).unwrap());
+        let signer = Arc::new(SoftwareSigner::empty());
         let tokens = BTreeMap::from([(
             "token-01".parse::<KeyId>().unwrap(),
             Arc::new(UpstreamToken::from_bytes(TOKEN.as_bytes()).unwrap()),

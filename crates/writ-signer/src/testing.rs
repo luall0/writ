@@ -17,8 +17,9 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use writ_core::names::KeyId;
+use writ_crypto::algorithm::SignerHash;
+use writ_crypto::keypair::{KeyPair, RawSignature};
 use writ_crypto::keys::{KeyKind, generate};
-use writ_crypto::ssh_key::{PrivateKey, Signature};
 
 use crate::software::SoftwareSigner;
 use crate::{Capabilities, KeyInfo, Signer, SignerError};
@@ -27,9 +28,14 @@ use crate::{Capabilities, KeyInfo, Signer, SignerError};
 pub fn software_signer(ids: &[&str], kind: KeyKind) -> SoftwareSigner {
     SoftwareSigner::new(
         ids.iter()
-            .map(|id| (id.parse::<KeyId>().unwrap(), generate(kind).unwrap())),
+            .map(|id| (id.parse::<KeyId>().unwrap(), keypair(kind))),
     )
     .unwrap()
+}
+
+/// A fresh [`KeyPair`] of `kind`.
+pub fn keypair(kind: KeyKind) -> KeyPair {
+    KeyPair::from_ssh(generate(kind).unwrap()).unwrap()
 }
 
 /// The error a [`FailingSigner`] answers, made from the key asked for.
@@ -67,18 +73,18 @@ impl<S: Signer> Signer for FailingSigner<S> {
         self.inner.list_keys()
     }
 
-    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError> {
+    fn sign(&self, id: &KeyId, data: &[u8], hash: SignerHash) -> Result<RawSignature, SignerError> {
         if let Some(failure) = *self.failure.lock().unwrap() {
             return Err(failure(id));
         }
-        self.inner.sign(id, data)
+        self.inner.sign(id, data, hash)
     }
 
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
 
-    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+    fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         self.inner.add_key(id, key)
     }
 }
@@ -195,7 +201,7 @@ impl<S: Signer> Signer for GatedSigner<S> {
         self.inner.list_keys()
     }
 
-    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError> {
+    fn sign(&self, id: &KeyId, data: &[u8], hash: SignerHash) -> Result<RawSignature, SignerError> {
         let mut gate = self.gate.lock().unwrap();
         let call = gate.calls;
         gate.calls += 1;
@@ -214,14 +220,14 @@ impl<S: Signer> Signer for GatedSigner<S> {
             gate.released.remove(&call);
         }
         drop(gate);
-        self.inner.sign(id, data)
+        self.inner.sign(id, data, hash)
     }
 
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
 
-    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+    fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         self.inner.add_key(id, key)
     }
 }

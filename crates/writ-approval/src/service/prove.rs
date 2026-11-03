@@ -49,8 +49,14 @@ impl Service {
         let message = proof.message.as_str().as_bytes();
         let signer = &*self.opened()?.signer;
         let signed = writ_signer::public_key(signer, &proof.key).and_then(|public| {
-            writ_signer::sshsig(signer, &proof.key, proof.namespace.as_str(), message)
-                .map(|signature| (public, signature))
+            writ_signer::sshsig(
+                signer,
+                &proof.key,
+                proof.namespace.as_str(),
+                writ_crypto::sshsig::DEFAULT_HASH,
+                message,
+            )
+            .map(|signature| (public, signature))
         });
         let (now, mut inner) = self.begin()?;
         let (public, signature) = match signed {

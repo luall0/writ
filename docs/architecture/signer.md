@@ -13,17 +13,51 @@ Keys sit behind an interface; the daemon never depends on the backend.
 pub trait Signer: Send + Sync {
     /// The keys this backend exposes (public parts only): `KeyInfo { id, public_key }`.
     fn list_keys(&self) -> Result<Vec<KeyInfo>, SignerError>;
-    /// Signs raw `data` with the key `id`. The caller builds what is signed (an SSHSIG's
-    /// signed data) and wraps the signature; the signature is in SSH encoding.
-    fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError>;
-    /// What this backend can do (algorithms, exportability, touch requirement).
+    /// Signs `data` with the key `id` and the signer hash `hash`: the backend hashes `data`
+    /// and signs the digest (ECDSA, RSA PKCS#1 v1.5), or with `None` signs `data` itself
+    /// (Ed25519). A pair it doesn't sign with is `Unsupported`, named, never replaced.
+    fn sign(&self, id: &KeyId, data: &[u8], hash: Option<Hash>)
+        -> Result<RawSignature, SignerError>;
+    /// What this backend can do: the (algorithm, signer hash) pairs it supports,
+    /// exportability, touch requirement, whether it takes keys made outside it.
     fn capabilities(&self) -> Capabilities;
     /// Takes a key made outside the backend (moved in, never copied) under `id`, usable at
     /// once. A backend that can't take one (a device makes its own keys) answers
-    /// `Unsupported`, the default; an id it holds already is `DuplicateKey`.
-    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError>;
+    /// `CannotTakeKeys`, the default; an id it holds already is `DuplicateKey`.
+    fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError>;
 }
 ```
+
+### Formats, algorithms and hashes
+
+Since [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms) the caller names the
+hash (`writ_crypto::algorithm`). Two hashes are at play:
+
+- the **format's hash**, the one a key is declared with: the SSHSIG message hash (`ssh`), or
+  the digest an OpenPGP signature covers (`openpgp`);
+- the **signer hash**, what the `Signer` is asked for: `None` for Ed25519 (it signs the
+  SSHSIG's data, or the OpenPGP digest, itself), the curve's own hash for ECDSA (P-256 with
+  SHA-256, P-384 with SHA-384, in both formats), the declared hash for RSA (PKCS#1 v1.5:
+  `rsa-sha2-256` or `rsa-sha2-512` in SSH, never `ssh-rsa`'s SHA-1).
+
+| Format | Algorithms | Format's hashes (left out: the strongest the backend allows) |
+|---|---|---|
+| `ssh` | `ed25519`, `p256`, `p384`, `rsa3072`, `rsa4096` | `sha256`, `sha512` |
+| `openpgp` | `ed25519` (EdDSA, algorithm 22), `rsa3072`, `rsa4096` | `sha256`, `sha384`, `sha512` |
+| `openpgp` | `p256` / `p384` (ECDSA) | `sha256` / `sha384` only (RFC 6637's pairing) |
+
+`writ_crypto::algorithm::check` takes a declared key (format, algorithm, optional hash) and
+a backend's pairs, and answers the hash to use or why the combination is refused (the format
+doesn't take the algorithm, the format doesn't take the hash with it, the backend can't
+sign the algorithm or the signer hash): refused, never adjusted. RSA under 3072 bits has no
+name to declare (`rsa2048` is refused with the reason).
+
+The keys are `writ_crypto::keypair::KeyPair`, Writ's own private key type: Ed25519, P-256 and
+P-384 through `ssh-key` (pure Rust), RSA through `aws-lc-rs` (constant time; `ssh-key` signs
+RSA only through the banned `rsa` crate). A signature comes back as a `RawSignature`: the
+algorithm, the signer hash, and the signature in one fixed encoding (Ed25519's 64 bytes,
+ECDSA's `r ‖ s`, RSA's `s`), which adapters turn into an SSH signature (`to_ssh`), TLS's
+DER, or OpenPGP's MPIs; `writ_crypto::keypair::verify` checks one against a public key.
 
 **Adding a key live** (M5): a signed policy change that names an agent signing key or an
 `ssh://` upstream credential the keystore lacks makes the daemon create it (Ed25519), seal
@@ -42,11 +76,15 @@ and answers `Unsupported` for the other, the daemon picks by backend. Both miles
 this interface first (its contract tests, this page), as hard rule 4 asks.
 
 `writ_signer::sshsig` builds an SSHSIG (what `ssh-keygen -Y sign` writes) through any
-backend. Errors never carry key material (`SignerError`), and every backend runs the
-contract suite (`writ_signer::contract`): its signatures verify with the public key it lists,
-only for the bytes signed, and an unknown key is refused by name. The software backend
-(`writ_signer::software::SoftwareSigner`) holds Ed25519 and P-256 keys moved in by whoever
-loaded them, wiped on drop, never printed.
+backend, with the message hash it is given (`sha256` or `sha512`). Errors never carry key
+material (`SignerError`), and every backend runs the contract suite
+(`writ_signer::contract`): for each key it holds, every pair it declares for that key's
+algorithm signs, the signature verifies with the public key it lists only for the bytes
+signed, and its SSHSIGs verify; a pair it doesn't declare is refused by name
+(`Unsupported`), never signed with something else; an unknown key is refused by name. The
+software backend (`writ_signer::software::SoftwareSigner`) holds `KeyPair`s moved in by
+whoever loaded them, wiped on drop, never printed, and declares every pair Writ signs with;
+its tests hold one key of each algorithm.
 
 ### The queue in front of a backend
 
@@ -104,7 +142,7 @@ Gitea also ask for a proof, signed through [`writ prove-key`](approvals.md#provi
 
 | Backend | Algorithms | Key exportable? | Notes |
 |---|---|---|---|
-| **Software** (v1) | ed25519, P-256 | While unsealed, by root on the host | Encrypted keystore at rest, sealed start |
+| **Software** (v1) | ed25519, P-256, P-384 (RSA 3072/4096 next in M5.5) | While unsealed, by root on the host | Encrypted keystore at rest, sealed start |
 | **YubiKey PIV** | P-256, P-384, ed25519 (recent firmware) | No | Touch policy must be `never` for unattended agent keys; USB passthrough to the container |
 | **Secure Enclave** | P-256 | No | Local mode on a Mac only. v1: a CryptoKit key under the dedicated `_writd` user (`se-cryptokit`, M7.5); a keychain access group (`se-keychain`) is [parked](../backlog/parked/keychain-secure-enclave-signer.md). See [macOS Secure Enclave](macos-secure-enclave.md) |
 | **TPM 2.0** | P-256 | No | Possible future backend on the server |
