@@ -13,6 +13,7 @@ with the portable implementations.
 | `KeystoreUnlock`: recovering the keystore's data key | `unlock::passphrase::PassphraseUnlock` |
 | `Notifier`: telling the approver something happened | `notify::telegram::TelegramNotifier` |
 | `Clock`: what time it is | `clock::system::SystemClock` |
+| `ProcessHardening`: no core dump, no debugger, memory out of swap | `harden::none::NoHardening` (refuses every step: Linux and macOS have theirs) |
 
 Each interface is a module (the trait and its types); each implementation a file in it. Also:
 `fs`, private files for the daemon (0700 directories, new 0600 files, a check that a secret

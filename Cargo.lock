@@ -3992,6 +3992,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-platform-linux"
+version = "0.0.0"
+dependencies = [
+ "rustix",
+ "writ-platform",
+]
+
+[[package]]
+name = "writ-platform-macos"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "rustix",
+ "writ-platform",
+]
+
+[[package]]
 name = "writ-proto"
 version = "0.0.0"
 dependencies = [
@@ -4058,6 +4075,8 @@ dependencies = [
  "writ-gateway",
  "writ-mirror",
  "writ-platform",
+ "writ-platform-linux",
+ "writ-platform-macos",
  "writ-proto",
  "writ-signer",
  "writ-store",

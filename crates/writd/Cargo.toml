@@ -29,6 +29,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 
+# Each platform's implementations, picked in src/platform.rs.
+[target.'cfg(target_os = "linux")'.dependencies]
+writ-platform-linux.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+writ-platform-macos.workspace = true
+
 [dev-dependencies]
 age-core.workspace = true
 tempfile.workspace = true

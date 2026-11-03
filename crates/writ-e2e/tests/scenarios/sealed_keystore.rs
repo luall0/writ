@@ -5,7 +5,8 @@
 //! halves with no passphrase, and print what `writd init` printed; a second `writd init`, and
 //! a short passphrase, are refused and leave nothing behind. Then a second daemon on its own
 //! ports, started sealed: every request refused with "daemon sealed" until the approver runs
-//! `writ unseal` (a wrong passphrase refused first, over HTTPS; the right one over SSH).
+//! `writ unseal` (a wrong passphrase refused first, over HTTPS; the right one over SSH), and
+//! hardened before it read anything (not dumpable, no core, its memory locked).
 
 use std::time::Duration;
 
@@ -183,7 +184,7 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     dir.write("writd.yaml", &yaml, "0644");
     dir.write("policy.yaml", SEALED_POLICY, "0644");
     let passphrase = "the sealed run's passphrase";
-    expect(
+    let (_, warned) = expect(
         &dir.run_with(
             "writd init writd.yaml",
             format!("{passphrase}\n").as_bytes(),
@@ -191,12 +192,43 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
         0,
         "init",
     );
+    // `writd init` hardens itself too: with the compose file's unlimited lock limit, nothing
+    // to warn about.
+    assert!(!warned.contains("not applied"), "{warned}");
     let host_key = dir.ok("writd host-key writd.yaml").trim().to_owned();
     let pin = dir.ok("writd tls-fingerprint writd.yaml").trim().to_owned();
     dir.ok("nohup writd run writd.yaml > writd.log 2>&1 & echo $! > writd.pid");
     eventually("the sealed daemon started", Duration::from_secs(30), || {
         dir.run("grep -q 'sealed=true' writd.log").status.success()
     });
+
+    // Hardened before it read anything (docs/operators/hardening.md): not dumpable (its /proc
+    // entries owned by root while it runs as `writ`, its memory unreadable to `writ`), no core
+    // dump, its memory locked (the compose file's unlimited `memlock`); each step in its log.
+    let pid = dir.ok("cat writd.pid").trim().to_owned();
+    assert_eq!(dir.ok("id -un"), "writ\n");
+    assert_eq!(dir.ok(&format!("stat -c %U /proc/{pid}/status")), "root\n");
+    let mem = dir.run(&format!("head -c1 /proc/{pid}/mem"));
+    let (_, why) = expect(&mem, 1, "reading the daemon's memory");
+    assert!(why.contains("Permission denied"), "{why}");
+    let core = dir.ok(&format!("grep 'Max core file size' /proc/{pid}/limits"));
+    let limits: Vec<&str> = core.split_whitespace().collect();
+    assert_eq!(limits.get(4..6), Some(&["0", "0"][..]), "{core}");
+    let locked = dir.ok(&format!("grep VmLck /proc/{pid}/status"));
+    let kb: u64 = locked
+        .split_whitespace()
+        .nth(1)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_default();
+    assert!(kb > 0, "{locked}");
+    let log = dir.read("writd.log");
+    for step in ["no core dumps", "no debugger", "memory locked"] {
+        assert!(
+            log.contains(&format!("process hardening applied step={step}")),
+            "{step}: {log}"
+        );
+    }
+    assert!(!log.contains("not applied"), "{log}");
 
     // The approver pins it, and uses every flag of `writ unseal`.
     let approver = &stack.approver;

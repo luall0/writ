@@ -24,6 +24,7 @@
 mod authority;
 mod config;
 mod daemon;
+mod hardening;
 mod keystore;
 mod platform;
 mod recover;
@@ -95,15 +96,20 @@ fn main() -> ExitCode {
                 .unwrap_or(ExitCode::FAILURE);
         }
         ["upstream-credential", rest @ ..] => {
+            // It receives a token: hardened first, quietly (once per git operation).
+            if let Err(e) = hardening::harden(hardening::Say::Refusals) {
+                eprintln!("writd: {e:#}");
+                return ExitCode::FAILURE;
+            }
             return u8::try_from(writ_mirror::credential::helper::run(rest))
                 .map(ExitCode::from)
                 .unwrap_or(ExitCode::FAILURE);
         }
-        ["init", config] => keystore::init(Path::new(config)),
+        ["init", config] => hardening::harden(hardening::Say::Stderr)
+            .and_then(|()| keystore::init(Path::new(config))),
         ["run", config] => run(Path::new(config)),
-        ["recover", config, target, file] => {
-            recover::recover(Path::new(config), target, Path::new(file))
-        }
+        ["recover", config, target, file] => hardening::harden(hardening::Say::Stderr)
+            .and_then(|()| recover::recover(Path::new(config), target, Path::new(file))),
         ["upstream-keys", config] => upstream_keys(Path::new(config)),
         ["host-key", config] => host_key(Path::new(config)),
         ["tls-fingerprint", config] => tls_fingerprint(Path::new(config)),
@@ -327,6 +333,8 @@ fn init_logging() {
 
 fn run(path: &Path) -> anyhow::Result<()> {
     init_logging();
+    // Before any secret is read: a refused step stops the daemon here.
+    hardening::harden(hardening::Say::Log)?;
     let config = Arc::new(Config::load(path)?);
     keystore::private_dir(&config.state_dir)?;
     let store = Store::open(&config.state_dir.join("leases.db"))?;

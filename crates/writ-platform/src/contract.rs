@@ -11,6 +11,7 @@
 //! | [`SessionWatcher`] | [`session_watcher`] |
 //! | [`KeystoreUnlock`] | [`keystore_unlock`], or [`keystore_unlock_passphrase`] |
 //! | [`Notifier`] | [`notifier`] and [`notifier_unreachable`] |
+//! | [`ProcessHardening`](crate::ProcessHardening) | [`process_hardening`] (in a test binary of its own: it changes the process) |
 
 #![allow(
     clippy::unwrap_used,
@@ -806,4 +807,60 @@ pub fn notifier_unreachable<N: Notifier + ?Sized>(notifier: &N, max: Duration) {
             "attempt {attempt}: failing took {elapsed:?}, more than {max:?}"
         );
     }
+}
+
+/// The `ProcessHardening` contract. It hardens the calling process, so it runs in a test
+/// binary of its own. Checks:
+/// - every step reported once, in order;
+/// - the same outcomes when applied again (idempotent);
+/// - a reason for every step not applied, and a fix for one the host decides;
+/// - a required step (only the process decides it) is applied or refused, never left as a
+///   warning, except `NoDebugger` in a debug build (a traced process on macOS);
+/// - when `NoCoreDumps` is applied, `RLIMIT_CORE` is 0, soft and hard.
+///
+/// Returns the outcomes, for the implementation's own checks.
+pub fn process_hardening(hardening: &dyn crate::ProcessHardening) -> Vec<crate::Hardened> {
+    use crate::{HardeningOutcome, HardeningStep};
+    let first = hardening.harden();
+    let steps: Vec<HardeningStep> = first.iter().map(|h| h.step).collect();
+    assert_eq!(steps, HardeningStep::ALL, "every step once, in order");
+    assert_eq!(
+        hardening.harden(),
+        first,
+        "the same outcomes when applied again"
+    );
+    for hardened in &first {
+        let step = hardened.step;
+        match &hardened.outcome {
+            HardeningOutcome::Applied => {}
+            HardeningOutcome::Refused { why } | HardeningOutcome::Unavailable { why } => {
+                assert!(!why.trim().is_empty(), "{step}: a reason");
+            }
+            HardeningOutcome::NotApplied { why, fix } => {
+                assert!(!why.trim().is_empty(), "{step}: a reason");
+                assert!(!fix.trim().is_empty(), "{step}: a fix");
+                assert!(
+                    !step.required()
+                        || (step == HardeningStep::NoDebugger && cfg!(debug_assertions)),
+                    "{step} is required: applied or refused, not a warning"
+                );
+            }
+        }
+        if matches!(hardened.outcome, HardeningOutcome::Unavailable { .. }) {
+            assert!(!step.required(), "{step} is required: applied or refused");
+        }
+    }
+    let core = first
+        .iter()
+        .find(|h| h.step == HardeningStep::NoCoreDumps)
+        .unwrap();
+    if core.outcome == HardeningOutcome::Applied {
+        let limit = rustix::process::getrlimit(rustix::process::Resource::Core);
+        assert_eq!(
+            (limit.current, limit.maximum),
+            (Some(0), Some(0)),
+            "RLIMIT_CORE 0, soft and hard"
+        );
+    }
+    first
 }

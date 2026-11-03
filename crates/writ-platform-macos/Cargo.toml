@@ -1,0 +1,21 @@
+[package]
+name = "writ-platform-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# macOS-only implementations of the platform interfaces. On another OS the crate is empty.
+
+[target.'cfg(target_os = "macos")'.dependencies]
+writ-platform.workspace = true
+# The core limit (`process`).
+rustix = { workspace = true, features = ["process"] }
+# `ptrace(PT_DENY_ATTACH)` and `proc_pidinfo`, in the one `unsafe` module (`sys`).
+libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+writ-platform = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

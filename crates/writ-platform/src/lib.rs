@@ -12,6 +12,7 @@
 //! | [`SessionWatcher`] | [`watch::none::NoSessionWatcher`] |
 //! | [`KeystoreUnlock`] | [`unlock::passphrase::PassphraseUnlock`] |
 //! | [`Notifier`] | [`notify::telegram::TelegramNotifier`] (and [`notify::Notifiers`], a list of them) |
+//! | [`ProcessHardening`] | [`harden::none::NoHardening`] (refuses: Linux and macOS have theirs) |
 //!
 //! Platform-only implementations live in `writ-platform-<os>` crates, laid out the same way.
 //!
@@ -24,6 +25,7 @@
 pub mod attest;
 pub mod clock;
 pub mod fs;
+pub mod harden;
 pub mod notify;
 pub mod transport;
 pub mod unlock;
@@ -36,6 +38,7 @@ pub mod testing;
 
 pub use attest::CallerAttestor;
 pub use clock::Clock;
+pub use harden::{Hardened, HardeningOutcome, HardeningStep, ProcessHardening};
 pub use notify::{Notification, Notifier, Priority};
 pub use transport::{AsyncStream, BoxFuture, Connection, PeerInfo, Transport};
 pub use unlock::{DataKey, KeystoreUnlock, Passphrase, UnsealRequest};

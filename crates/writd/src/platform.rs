@@ -138,6 +138,17 @@ pub fn tls_identity(tls: crate::keystore::TlsKeyPair) -> anyhow::Result<Arc<TlsI
     )?))
 }
 
+/// The process hardening of this OS (docs/operators/hardening.md): Linux's or macOS's, or
+/// `NoHardening` (every step refused) on another OS.
+pub fn hardening() -> Box<dyn writ_platform::ProcessHardening> {
+    #[cfg(target_os = "linux")]
+    return Box::new(writ_platform_linux::hardening::Hardening);
+    #[cfg(target_os = "macos")]
+    return Box::new(writ_platform_macos::hardening::Hardening);
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return Box::new(writ_platform::harden::none::NoHardening);
+}
+
 /// The file holding the sealed keystore's identity, wrapped with the passphrase.
 fn identity_file(sealed: &SealedConfig) -> std::path::PathBuf {
     sealed.dir.join("identity.age")

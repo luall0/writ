@@ -26,6 +26,11 @@ FORBIDDEN = {
     # Platform traits and implementations: below every core crate but writ-core.
     "writ-platform": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
                       "writ-cli", "writ-git", "writ-mirror"},
+    # Platform-only implementations: below every core crate, like writ-platform.
+    "writ-platform-linux": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
+                            "writ-cli", "writ-sign", "writ-git", "writ-mirror"},
+    "writ-platform-macos": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
+                            "writ-cli", "writ-sign", "writ-git", "writ-mirror"},
     # The daemon's repositories and upstream: below the gateway, beside the approval service.
     "writ-mirror": {"writ-store", "writ-gateway", "writ-approval", "writd", "writ-cli",
                     "writ-sign"},

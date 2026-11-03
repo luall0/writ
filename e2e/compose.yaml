@@ -29,6 +29,10 @@ services:
     init: true
     # writd stops on SIGINT (Ctrl-C), logging it; a restart keeps its home (the container's).
     stop_signal: SIGINT
+    # The daemon's memory locked out of swap (docs/operators/hardening.md): its lock limit
+    # unlimited, for this service only.
+    ulimits:
+      memlock: -1
   agent:
     build: { context: .., dockerfile: e2e/Dockerfile, target: agent }
     init: true

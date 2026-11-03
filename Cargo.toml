@@ -32,6 +32,8 @@ writ-crypto = { path = "crates/writ-crypto" }
 writ-gateway = { path = "crates/writ-gateway" }
 writ-store = { path = "crates/writ-store" }
 writ-platform = { path = "crates/writ-platform" }
+writ-platform-linux = { path = "crates/writ-platform-linux" }
+writ-platform-macos = { path = "crates/writ-platform-macos" }
 writ-proto = { path = "crates/writ-proto" }
 writ-approval = { path = "crates/writ-approval" }
 writ-git = { path = "crates/writ-git" }
@@ -64,6 +66,9 @@ proptest = "1.12.0"
 # Safe wrappers over the Unix calls the private-file checks need (open without following a
 # link, the effective uid), and the terminal's echo, off while a passphrase is typed; already
 # in the tree (tempfile).
+# macOS calls rustix has no wrapper for (`ptrace`, `proc_pidinfo`), in writ-platform-macos's one
+# `unsafe` module. Already in the tree (tokio, rustix's libc backend).
+libc = "0.2.191"
 rustix = { version = "1.1.6", default-features = false, features = ["fs", "process", "std", "termios"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
