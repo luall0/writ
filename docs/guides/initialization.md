@@ -79,7 +79,7 @@ cargo new --bin crates/writ-sign
 | Target | Runs |
 |---|---|
 | `make check` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the dependency-direction check (`tool/check-deps.py`, over `cargo metadata`: see [dependency directions](../architecture/overview.md#dependency-directions)) |
-| `make test` | The shipped binaries built on their own (`-p writd -p writ-cli -p writ-sign`, in `target/bins`), then `cargo test --workspace` (the integration tests run those binaries); everything `--locked`. Since M2.6: `make ci` runs `check` then `test`, and `make check` also runs `cargo deny` and the source, feature and guarantee checks (see the [Makefile](../../Makefile)) |
+| `make test` | The shipped binaries built on their own (`-p writd -p writ-cli -p writ-sign`, in `target/bins`), then `cargo test --workspace` (the integration tests run those binaries); everything `--locked`. Since M2.6: `make ci` runs `check` then `test`, and `make check` also runs `cargo deny` and the source, feature and guarantee checks (see the [Makefile](../../Makefile)). Since M5: the tests run under `cargo-nextest`, and `make test` prunes `target/` to the last builds at its end ([how `make test` runs](../testing.md#how-make-test-runs)) |
 | `make fmt` | `cargo fmt --all` |
 | `make run` | `writd` with the dev config in `dev/` (test keys and test repos only) |
 | `make e2e` | End-to-end scenarios: the binaries in containers against Forgejo ([end-to-end](../end-to-end.md), from M4.1) |

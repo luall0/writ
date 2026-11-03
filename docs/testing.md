@@ -21,6 +21,43 @@ its effect ([the rule and its registry](#configuration-coverage-every-key)).
 What needs a human stays manual: the approver's real agent (`make test-agent`, Touch ID) and
 the [manual checks](guides/manual-checks.md).
 
+## How `make test` runs
+
+- **The runner is [cargo-nextest](https://nexte.st)** (pinned in [stack](stack.md#version-pinning)):
+  every test of the workspace (unit, each crate's `tests/`, integration) in a process of its
+  own, all test binaries at once. `cargo test` ran the binaries one after another, so the
+  slowest few set the pace. Its settings are in `.config/nextest.toml`: **a test is never
+  retried** (a test that passes on a second try passes by luck: [hardened tests](#hardened-tests)),
+  every failure is reported rather than the first one, and a test still running after five
+  minutes is killed and fails. The tests don't depend on the runner: `cargo test` by hand
+  runs them too.
+- **Property tests**: only the fixed-seed pass, with everything else. The random-seed pass
+  runs in CI ([property tests](#property-tests)).
+- **No backtraces** (`RUST_BACKTRACE=0`, whatever the shell sets): symbolizing a deliberate
+  panic in a test (a backend that panics, a poisoned lock) took 5 to 8 seconds each on a Mac.
+  A failing test still prints its message and `file:line`. For a backtrace, run the one test
+  by hand: `RUST_BACKTRACE=1 cargo nextest run --workspace -E 'test(=<name>)'`.
+- **No doctests yet.** There are none, and nextest doesn't run them. We want them: the first
+  doc example that runs comes with a `cargo test --locked --workspace --doc` step in
+  `make test`, in the same change.
+- **Debug info is line tables only** (`[profile.dev] debug = "line-tables-only"`): a cold
+  build is about a quarter faster and `target/` smaller, and backtraces keep their file and
+  line. A debugger shows no local variables: build with `CARGO_PROFILE_DEV_DEBUG=full` for
+  that session (a full rebuild).
+- **The build cache keeps the last builds only.** Cargo never deletes anything from
+  `target/`: each toolchain, dependency version, feature set or `cargo … -p` by hand leaves a
+  full build behind, and on macOS a debug build keeps its object files beside it (the debug
+  info lives there). `target/` had grown to 116 GB, 820,000 files in `target/debug/deps` that
+  every `rustc` call listed (5 seconds each), before this. Now every cargo build in the
+  Makefile records what it built or reused, from cargo's own JSON messages
+  (`tool/target-cache.py record`, in `target/writ-cache/`). At its end, `make test` deletes
+  from `target/` and `target/bins/` every artifact no recorded build uses
+  (`tool/target-cache.py prune`). A record is replaced each time its command runs. Incremental
+  compilation directories can't be matched to a build, so for each crate the newest ones are
+  kept, as many as the recorded builds of that crate. Deleting one is always safe: that crate
+  compiles once without reuse. A profile no record names (`target/release`) is left alone,
+  and so is everything when there is no record yet.
+
 ## Hardened tests
 
 These rules hold for every test, at every level.
@@ -72,15 +109,19 @@ These rules hold for every test, at every level.
 
 ## Property tests
 
-`proptest` runs in two passes, both in `make test`:
+`proptest` runs in two passes:
 
-1. **Fixed seed**: the same inputs every run, plus every case in the regressions files
-   (`crates/writ-core/tests/properties.proptest-regressions`,
+1. **Fixed seed**, in `make test`: the same inputs every run, plus every case in the
+   regressions files (`crates/writ-core/tests/properties.proptest-regressions`,
    `crates/writ-approval/tests/sign_phases.proptest-regressions`: each failure ever found).
-2. **Random seed**: new inputs each run. The seed is printed
-   (`proptest seed: … (replay with WRIT_PROPTEST_SEED=…)`), so a failure is replayed exactly
-   with `make test-props SEED=<seed>`; the failing case is also saved to the regressions file,
-   which is committed, so the fixed pass checks it from then on.
+2. **Random seed**, in CI only (`make test-props SEED=random`, a step after `make ci`): new
+   inputs on every push, a slow search spread over all of them. It took about 20 seconds of
+   every local `make test` (mostly `sign_phases`), and it had added no case to the regressions
+   files since they were written. `make test-props` draws the seed and prints it
+   (`proptest seed: …`), and a failing test prints it too, so a failure is replayed exactly
+   with `make test-props SEED=<seed>`. Replayed locally, the failing case is saved to the
+   regressions file: commit it with the fix, and the fixed pass checks it from then on. Run
+   it by hand to explore more.
 
 | Area | What to test |
 |---|---|
@@ -110,7 +151,7 @@ shipped graph in `make check`).
 
 `make ci` (`make check` then `make test`) is the one definition of green: GitHub Actions runs
 it on Linux for every push and pull request (`.github/workflows/ci.yml`, no third-party
-action), and on the Mac, where macOS-only code is tested, the `pre-push` hook (`make hooks`)
+action), then the random-seed property pass ([property tests](#property-tests)), and on the Mac, where macOS-only code is tested, the `pre-push` hook (`make hooks`)
 allows a push only of a tree `make ci` passed on. The hook doesn't run CI itself: git runs it
 with the connection to the remote already open, and a hook as long as `make ci` made the
 remote close it. Instead, `make ci` on a clean working tree (no change, no untracked file,

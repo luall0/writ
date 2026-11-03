@@ -184,6 +184,7 @@ build: upgrade russh 0.65 → 0.66 and ssh-key to its pin
 | Tool | Where its version lives | On upgrade |
 |---|---|---|
 | `cargo-deny` | `.github/workflows/ci.yml` (`cargo install --locked cargo-deny --version …`), [stack.md](../stack.md) | Install the new version locally with `--locked`, run `cargo deny --locked check`, adapt `deny.toml` to any schema change, update both places in one commit |
+| `cargo-nextest` | `.github/workflows/ci.yml` (`cargo install --locked cargo-nextest --version …`), `.config/nextest.toml` (`nextest-version`), [stack.md](../stack.md) | Install the new version locally with `--locked`, run `make test`, read its changelog for changes to retries, timeouts or the config schema, update the three places in one commit |
 | The CI runner | `runs-on: ubuntu-24.04` in the workflow (pinned, never `latest`) | Check its git, OpenSSH and `nc` meet the minimums below; run CI on a branch first |
 | git, OpenSSH | Minimums in `crates/writ-integration/src/tools.rs` (`MIN_GIT`, `MIN_OPENSSH`) and [stack.md](../stack.md) § External tools | Raising a minimum is a decision (users must have it); the integration tests check it at start |
 | `/usr/bin/ssh-keygen` | The default in `writ sign` (`WRIT_SSH_KEYGEN` overrides) | Needs OpenSSH ≥ 8.9 for `-U`; check macOS and Linux still ship it there |

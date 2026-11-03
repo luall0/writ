@@ -157,8 +157,8 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Everything CI runs (`check` then `test`); on a clean working tree, a pass stamps the tree for the `pre-push` hook | `make ci` |
 | `make ci` (skipped if it already passed on this tree), then `git push`; the way to push | `make push [ARGS="origin main"]` |
 | Lint, format check, dependency directions, source rules, doc links, no test-only feature in the binaries, the guarantee, end-to-end and configuration registries, `cargo deny` | `make check` |
-| Tests: unit and integration, property tests with the fixed seed and a random one | `make test` |
-| Property tests with one seed (replay a failure) | `make test-props SEED=<number\|random>` |
+| Tests under `cargo-nextest`: unit and integration, property tests with the fixed seed; then `target/` pruned to the last builds | `make test` |
+| Property tests with one seed (replay a failure; `random` is CI's pass) | `make test-props SEED=<number\|random>` |
 | Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
 | The GitHub manual check as one command (by hand: Touch ID; a throwaway repo; `gh` optional) | `make github-check REPO=<owner>/<repo> [EMAIL=<verified email>]` |
 | Pin the development daemon for the client (`dev/data/client/`), before the [manual checks](docs/guides/manual-checks.md) | `make dev-client` |
