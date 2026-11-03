@@ -79,7 +79,7 @@ fn a_signed_token_against_the_file_in_force_is_logged_and_a_replay_is_stale() {
     let h = TestServiceBuilder::new(POLICY).build(dir.path());
     let first = request(&h, PreviousToken::None);
     let checked = h.service.check_token(&first, &facts()).unwrap();
-    assert_eq!(checked.token.id.as_str(), "token-01");
+    assert_eq!(checked.token().id.as_str(), "token-01");
     let file = TextDigest::of_bytes(b"the new age file");
     let applied = h
         .service
@@ -87,11 +87,11 @@ fn a_signed_token_against_the_file_in_force_is_logged_and_a_replay_is_stale() {
         .unwrap();
     assert_eq!(
         (&applied.digest, &applied.replaced, &applied.signed_by),
-        (&file, &PreviousToken::None, &checked.approver)
+        (&file, &PreviousToken::None, checked.approver())
     );
     let lines = h.events("admin", "allowed");
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["approver"], checked.approver.as_str());
+    assert_eq!(lines[0]["approver"], checked.approver().as_str());
     assert_eq!(
         lines[0]["reason"],
         format!("token token-01: sha256 {file} replaces none")

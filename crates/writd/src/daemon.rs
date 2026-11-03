@@ -240,12 +240,12 @@ impl Opener {
     ) -> Result<AdminApplied, String> {
         let inner = &self.0;
         let gateway = inner.gateway.get().ok_or("the daemon is not started yet")?;
-        let target = checked.admin.target;
-        let text = checked.admin.text.as_str().to_owned();
+        let target = checked.admin().target;
+        let text = checked.admin().text.as_str().to_owned();
         let refuse = |reason: String| {
             inner
                 .service
-                .admin_failed(Some(&checked.approver), Some(target), &reason, &caller);
+                .admin_failed(Some(checked.approver()), Some(target), &reason, &caller);
             reason
         };
         enum Ready {
@@ -447,12 +447,12 @@ impl Opener {
         caller: CallerFacts,
     ) -> Result<TokenApplied, String> {
         let inner = &self.0;
-        let id = checked.token.id.clone();
+        let id = checked.token().id.clone();
         let refuse = |reason: String| {
             let reason = format!("token {id}: {reason}");
             inner
                 .service
-                .admin_failed(Some(&checked.approver), None, &reason, &caller);
+                .admin_failed(Some(checked.approver()), None, &reason, &caller);
             reason
         };
         let gateway = inner.gateway.get().ok_or("the daemon is not started yet")?;
@@ -461,7 +461,7 @@ impl Opener {
             .get()
             .ok_or_else(|| refuse("the daemon is not open".to_owned()))?;
         let used = self.token_use(&id).map_err(refuse)?;
-        let file = writ_crypto::sealed::decode(checked.token.sealed.as_str())
+        let file = writ_crypto::sealed::decode(checked.token().sealed.as_str())
             .map_err(|e| refuse(e.to_string()))?;
         let plaintext = open
             .live

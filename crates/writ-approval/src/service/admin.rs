@@ -45,14 +45,27 @@ impl InForce {
 }
 
 /// An admin change whose document and signature passed: what the daemon checks the new text
-/// of before [`Service::commit_admin`].
+/// of before [`Service::commit_admin`]. Only [`Service::check_admin`] makes one (its fields
+/// are private), so holding one proves the check ran.
 #[derive(Debug, Clone)]
 pub struct CheckedAdmin {
-    pub admin: Admin,
+    admin: Admin,
     /// The canonical document and the SSHSIG over it, kept with the version.
-    pub document: String,
-    pub signature: String,
-    pub approver: KeyFingerprint,
+    document: String,
+    signature: String,
+    approver: KeyFingerprint,
+}
+
+impl CheckedAdmin {
+    /// The change, as checked.
+    pub fn admin(&self) -> &Admin {
+        &self.admin
+    }
+
+    /// The approver key that signed it.
+    pub fn approver(&self) -> &KeyFingerprint {
+        &self.approver
+    }
 }
 
 /// The new text, as the daemon parsed and checked it: what the service puts in force itself

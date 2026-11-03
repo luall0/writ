@@ -17,11 +17,24 @@ use super::Service;
 use crate::{RefusalCode, ServiceError};
 
 /// A token change whose document and signature passed: what the daemon opens and checks
-/// before [`Service::commit_token`].
+/// before [`Service::commit_token`]. Only [`Service::check_token`] makes one (its fields are
+/// private), so holding one proves the check ran.
 #[derive(Debug, Clone)]
 pub struct CheckedToken {
-    pub token: Token,
-    pub approver: KeyFingerprint,
+    token: Token,
+    approver: KeyFingerprint,
+}
+
+impl CheckedToken {
+    /// The change, as checked.
+    pub fn token(&self) -> &Token {
+        &self.token
+    }
+
+    /// The approver key that signed it.
+    pub fn approver(&self) -> &KeyFingerprint {
+        &self.approver
+    }
 }
 
 fn refused(reason: impl Into<String>) -> ServiceError {

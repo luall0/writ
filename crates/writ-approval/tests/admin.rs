@@ -189,7 +189,7 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
     assert_eq!((shown.version, shown.text.as_str()), (2, text.as_str()));
     let lines = h.events("admin", "allowed");
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["approver"], checked.approver.as_str());
+    assert_eq!(lines[0]["approver"], checked.approver().as_str());
     assert!(
         lines[0]["reason"]
             .as_str()
@@ -223,7 +223,7 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
         AdminTarget::Approvers,
         Base {
             version: 1,
-            digest: checked.admin.previous.clone(),
+            digest: checked.admin().previous.clone(),
             ..base(&shown)
         },
         &text,
