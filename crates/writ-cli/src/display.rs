@@ -7,10 +7,14 @@
 //! never pass for a line `writ sign` wrote itself. Warnings come from `writ sign`, never from
 //! the ticket.
 //!
-//! The display is bounded: each agent field shows at most [`MAX_BLOCK_LINES`] lines (runs of
-//! blank lines collapsed) unless `--full` is asked, and the enforced terms are repeated in a
-//! short summary right before the prompt ([`summary`]), so no amount of agent text can push
-//! what gets signed off the screen.
+//! The display is bounded in both directions. Every row it prints fits [`WIDTH`] columns (a
+//! non-ASCII character counted as two), so a terminal of 80 columns never wraps one: a long
+//! line is cut into rows here, each continuation behind the gutter, and a row the terminal
+//! wrapped can't start with agent text that reads like a line of `writ sign`'s (the review
+//! after M5.5, S2). Each agent field shows at most [`MAX_BLOCK_LINES`] rows (runs of blank
+//! lines collapsed) unless `--full` is asked, the expected paths too, and the enforced terms
+//! are repeated in a summary of one row each right before the prompt ([`summary`]), so no
+//! amount of agent text can push what gets signed off the screen.
 
 use std::fmt::Write as _;
 
@@ -22,8 +26,67 @@ use writ_core::units::Timestamp;
 /// The gutter in front of every line of agent-written text.
 pub const GUTTER: &str = "│ ";
 
-/// The most lines one agent field shows without `--full`.
+/// The most rows one agent field shows without `--full`.
 pub const MAX_BLOCK_LINES: usize = 40;
+
+/// The widest row the display prints, in columns: an 80-column terminal never wraps it.
+pub const WIDTH: usize = 78;
+
+/// The columns `c` takes on a terminal, counted high: 1 for ASCII, 2 for anything else (a
+/// wide character takes 2, and the rest no more).
+fn columns(c: char) -> usize {
+    if c.is_ascii() { 1 } else { 2 }
+}
+
+/// The columns `text` takes.
+pub fn width(text: &str) -> usize {
+    text.chars().map(columns).sum()
+}
+
+/// One line of text (already [`clean`]ed) cut into rows of at most `width` columns (at least
+/// one row, possibly empty).
+fn cut(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for c in text.chars() {
+        let w = columns(c);
+        if used + w > width {
+            rows.push(String::new());
+            used = 0;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push(c);
+        }
+        used += w;
+    }
+    rows
+}
+
+/// `text` (already [`clean`]ed) as one row of at most `width` columns: cut, with `…` and
+/// `more` when it doesn't fit.
+fn one_row(text: &str, width: usize, more: &str) -> String {
+    if self::width(text) <= width {
+        return text.to_owned();
+    }
+    let tail = format!("… {more}");
+    let room = width.saturating_sub(self::width(&tail));
+    let mut out = cut(text, room).into_iter().next().unwrap_or_default();
+    out.push_str(&tail);
+    out
+}
+
+/// A labelled row (`  label              value`), the value cut into rows that fit [`WIDTH`]:
+/// each continuation indented under the value, behind the gutter.
+fn labelled(out: &mut String, label: &str, value: &str) {
+    let head = format!("  {label:<18} ");
+    let rest = format!("{}{GUTTER}", " ".repeat(head.len()));
+    let mut rows = cut(value, WIDTH.saturating_sub(width(&rest))).into_iter();
+    let _ = writeln!(out, "{head}{}", rows.next().unwrap_or_default());
+    for row in rows {
+        let _ = writeln!(out, "{rest}{row}");
+    }
+}
 
 /// Agent text made safe for one line of the terminal: every hidden character as `\u{…}`
 /// (newlines included), and `\` as `\\`, so a typed `\u{1b}` can't pass for an escaped one.
@@ -47,8 +110,9 @@ pub fn clean_lines(text: &str) -> String {
     text.lines().map(clean).collect::<Vec<_>>().join("\n")
 }
 
-/// Agent text over several lines, each behind the gutter and indented: runs of blank lines
-/// shown as one, and, unless `full`, at most [`MAX_BLOCK_LINES`] lines, then how many more.
+/// Agent text over several lines, each behind the gutter and indented, cut into rows that
+/// fit [`WIDTH`] (each row behind the gutter too): runs of blank lines shown as one, and,
+/// unless `full`, at most [`MAX_BLOCK_LINES`] rows, then how many more.
 pub fn block(text: &str, indent: &str, full: bool) -> String {
     let mut lines: Vec<&str> = Vec::new();
     for line in text.split('\n') {
@@ -58,20 +122,31 @@ pub fn block(text: &str, indent: &str, full: bool) -> String {
         }
         lines.push(line);
     }
+    let room = WIDTH.saturating_sub(width(indent) + width(GUTTER));
+    let rows: Vec<String> = lines
+        .iter()
+        .flat_map(|line| cut(&clean(line), room))
+        .collect();
+    gutter_rows(&rows, indent, full)
+}
+
+/// `rows` behind `indent` and the gutter: at most [`MAX_BLOCK_LINES`] unless `full`, then
+/// how many more.
+fn gutter_rows(rows: &[String], indent: &str, full: bool) -> String {
     let shown = if full {
-        lines.len()
+        rows.len()
     } else {
-        lines.len().min(MAX_BLOCK_LINES)
+        rows.len().min(MAX_BLOCK_LINES)
     };
     let mut out = String::new();
-    for line in lines.iter().take(shown) {
-        let _ = writeln!(out, "{indent}{GUTTER}{}", clean(line));
+    for row in rows.iter().take(shown) {
+        let _ = writeln!(out, "{indent}{GUTTER}{row}");
     }
-    if shown < lines.len() {
+    if shown < rows.len() {
         let _ = writeln!(
             out,
             "{indent}… {} more lines not shown (writ sign --full shows them)",
-            lines.len() - shown
+            rows.len() - shown
         );
     }
     out
@@ -118,21 +193,23 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
         } else {
             String::new()
         };
-        let _ = writeln!(
-            out,
+        let line = format!(
             "{}  {:<9} r{}  {:<14} {:<10} {}{lease}",
             t.id,
-            t.state.to_string(),
+            t.state,
             t.revision,
-            t.template.to_string(),
+            clean(t.template.as_str()),
             left,
-            t.repos
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(","),
+            clean(
+                &t.repos
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         );
-        let _ = writeln!(out, "    {GUTTER}{}", clean(&t.title));
+        let _ = writeln!(out, "{}", one_row(&line, WIDTH, "(writ show)"));
+        out.push_str(&block(&t.title, "    ", true));
     }
     out
 }
@@ -300,10 +377,12 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     } else {
         "Ticket"
     };
+    let _ = writeln!(out, "{kind} {}", ticket.id);
     let _ = writeln!(
         out,
-        "{kind} {} · revision {} · template {} · {state}",
-        ticket.id, t.revision, ticket.template
+        "  revision {} · template {} · {state}",
+        t.revision,
+        clean(ticket.template.as_str())
     );
     let _ = writeln!(
         out,
@@ -318,9 +397,7 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     if let Some(revised) = &t.revises {
         let _ = writeln!(out, "  revises ticket {revised}");
     }
-    let row = |out: &mut String, f: Field| {
-        let _ = writeln!(out, "  {:<18} {}", f.label(), field(ticket, f));
-    };
+    let row = |out: &mut String, f: Field| labelled(out, f.label(), &field(ticket, f));
     out.push_str("\nWho\n");
     for f in [Field::SessionKey, Field::Caller] {
         row(&mut out, f);
@@ -347,9 +424,13 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     if t.expected_paths.is_empty() {
         let _ = writeln!(out, "    (none: not checked)");
     }
-    for path in &t.expected_paths {
-        let _ = writeln!(out, "    {GUTTER}{}", quoted([path.as_str()]));
-    }
+    let room = WIDTH.saturating_sub(4 + width(GUTTER));
+    let rows: Vec<String> = t
+        .expected_paths
+        .iter()
+        .flat_map(|path| cut(&quoted([path.as_str()]), room))
+        .collect();
+    out.push_str(&gutter_rows(&rows, "    ", full));
     out.push_str("\nLimits (enforced)\n");
     for f in [
         Field::MaxSignatures,
@@ -394,30 +475,54 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
 /// wrote above, this is what gets signed.
 pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
     let mut out = String::from("\nYou are signing (enforced):\n");
+    let _ = writeln!(out, "  {}", ticket.id);
     let _ = writeln!(
         out,
-        "  {} · template {} · expires {}",
-        ticket.id, ticket.template, ticket.limits.expires_at
+        "  template {} · expires {}",
+        clean(ticket.template.as_str()),
+        ticket.limits.expires_at
     );
+    // One row each: what doesn't fit says so, and is shown whole above.
+    let room = WIDTH.saturating_sub(21);
     for f in [
         Field::Repos,
         Field::Operations,
         Field::Branches,
         Field::ForcePush,
         Field::CommitterEmails,
-        Field::ExpectedPaths,
     ] {
-        let _ = writeln!(out, "  {:<18} {}", f.label(), field(ticket, f));
+        let _ = writeln!(
+            out,
+            "  {:<18} {}",
+            f.label(),
+            one_row(&field(ticket, f), room, "(see above)")
+        );
     }
+    let paths = &ticket.text.expected_paths;
+    let shown = if paths.is_empty() {
+        "(none: not checked)".to_owned()
+    } else {
+        one_row(
+            &format!("{}: {}", paths.len(), field(ticket, Field::ExpectedPaths)),
+            room,
+            "(see above)",
+        )
+    };
+    let _ = writeln!(out, "  {:<18} {shown}", Field::ExpectedPaths.label());
     let limits = &ticket.limits;
     let _ = writeln!(
         out,
-        "  {:<18} {} signatures, {} pushes, {}/min, {} per push, {}",
+        "  {:<18} {} signatures, {} pushes, {}/min, {} per push",
         "limits",
         limits.max_signatures,
         limits.max_pushes,
         limits.max_ops_per_minute,
         limits.max_push_size,
+    );
+    let _ = writeln!(
+        out,
+        "  {:<18} {}",
+        Field::OnViolation.label(),
         field(ticket, Field::OnViolation)
     );
     if narrowed {
@@ -432,10 +537,16 @@ pub fn changes(title: &str, changes: &[(&'static str, String, String)]) -> Strin
     if changes.is_empty() {
         out.push_str("  (no change)\n");
     }
+    // `    - ` or `    │ ` in front: 7 columns at most (`│` counted two).
+    let room = WIDTH.saturating_sub(4 + width("│ "));
     for (label, before, after) in changes {
         let _ = writeln!(out, "  {label}");
-        let _ = writeln!(out, "    - {before}");
-        let _ = writeln!(out, "    + {after}");
+        for (sign, value) in [("-", before), ("+", after)] {
+            for (i, row) in cut(value, room).into_iter().enumerate() {
+                let mark = if i == 0 { sign } else { "│" };
+                let _ = writeln!(out, "    {mark} {row}");
+            }
+        }
     }
     out
 }
@@ -509,6 +620,108 @@ mod tests {
         Ticket::from_canonical(FULL).unwrap()
     }
 
+    /// The review after M5.5 (S2): lines longer than the terminal wrapped there, and the rows
+    /// the terminal made started at column 0, without the gutter: 100 expected paths of 1 KiB
+    /// padded with spaces read as forged scope rows, and the summary's single line of every
+    /// path pushed the real terms hundreds of rows up. Every row now fits an 80-column
+    /// terminal, agent text is behind the gutter on each of them, and the summary is a few
+    /// rows of one line each.
+    #[test]
+    fn no_row_is_wider_than_the_terminal_and_long_agent_text_cannot_forge_a_row() {
+        let mut t = full_ticket();
+        let forged = format!("{}  repos              docs-site", " ".repeat(57));
+        let long = forged.repeat(14);
+        t.text.expected_paths = (0..100)
+            .map(|i| {
+                format!("p{i:02}/{}", long.chars().take(1019).collect::<String>())
+                    .parse()
+                    .unwrap()
+            })
+            .collect();
+        t.text.expected_paths.insert("**".parse().unwrap());
+        t.text.task = forged.repeat(60);
+        t.text.plan = vec![forged.repeat(8); 50];
+        t.text.title = "日本".repeat(50);
+        t.scope.branches = (0..50)
+            .map(|i| format!("agent/{}{i}", "x".repeat(200)).parse().unwrap())
+            .collect();
+        for full in [false, true] {
+            let mut shown = ticket(&t, State::Pending, t.created_at, full);
+            shown.push_str(&summary(&t, false));
+            shown.push_str(&changes("Changed", &diff(&full_ticket(), &t)));
+            for line in shown.lines() {
+                assert!(width(line) <= WIDTH, "{} columns: {line:?}", width(line));
+                // No row of agent text reads like a row of the display's own.
+                if line.contains("docs-site") {
+                    assert!(
+                        !line.starts_with("  repos"),
+                        "a forged row at column 0: {line:?}"
+                    );
+                }
+            }
+            // The summary, right above the prompt: one row per term, the real ones.
+            let lines: Vec<&str> = shown.lines().collect();
+            let start = lines
+                .iter()
+                .rposition(|l| *l == "You are signing (enforced):")
+                .unwrap();
+            let summary: Vec<&str> = lines[start..]
+                .iter()
+                .take_while(|l| !l.is_empty())
+                .copied()
+                .collect();
+            assert!(summary.len() <= 12, "{summary:#?}");
+            assert!(
+                summary
+                    .iter()
+                    .any(|l| l.starts_with("  expected paths     101: ")
+                        && l.ends_with("… (see above)")),
+                "{summary:#?}"
+            );
+            assert!(
+                summary
+                    .iter()
+                    .any(|l| l.starts_with("  branches           ")),
+                "{summary:#?}"
+            );
+        }
+        // Without --full, the expected paths are bounded like any agent field.
+        let shown = ticket(&t, State::Pending, t.created_at, false);
+        assert!(
+            shown.lines().count() < 400,
+            "{} rows",
+            shown.lines().count()
+        );
+        assert!(shown.contains("more lines not shown (writ sign --full shows them)"));
+    }
+
+    #[test]
+    fn rows_are_cut_at_the_width_and_wide_characters_count_two() {
+        assert_eq!(cut("abcdef", 3), ["abc", "def"]);
+        assert_eq!(cut("abcdefg", 3), ["abc", "def", "g"]);
+        assert_eq!(cut("", 3), [""]);
+        // 2 columns each: two of them fit 4, not 5 half-columns.
+        assert_eq!(cut("日本語", 4), ["日本", "語"]);
+        assert_eq!(cut("a日本", 4), ["a日", "本"]);
+        assert_eq!(one_row("short", 10, "more"), "short");
+        let cut_row = one_row(&"x".repeat(20), 10, "more");
+        // `…` is not ASCII: 2 columns.
+        assert_eq!(cut_row, "xxx… more");
+        assert!(width(&cut_row) <= 10);
+        // A block's rows: at the width exactly, each behind the gutter.
+        let room = WIDTH - 4 - width(GUTTER);
+        let at = block(&"y".repeat(room), "    ", false);
+        assert_eq!(at.lines().count(), 1);
+        let over = block(&"y".repeat(room + 1), "    ", false);
+        assert_eq!(
+            over.lines().collect::<Vec<_>>(),
+            [
+                format!("    {GUTTER}{}", "y".repeat(room)),
+                format!("    {GUTTER}y")
+            ]
+        );
+    }
+
     #[test]
     fn agent_text_cannot_push_the_enforced_terms_off_the_screen() {
         let mut t = full_ticket();
@@ -522,7 +735,16 @@ mod tests {
         assert!(lines.len() < 300, "{} lines", lines.len());
         assert!(shown.contains("more lines not shown (writ sign --full shows them)"));
         // The last lines, right above the prompt, are the enforced terms, from the ticket.
-        let tail = lines[lines.len() - 9..].join("\n");
+        let start = lines
+            .iter()
+            .rposition(|l| *l == "You are signing (enforced):")
+            .unwrap();
+        assert!(
+            lines.len() - start <= 12,
+            "{} rows of summary",
+            lines.len() - start
+        );
+        let tail = lines[start..].join("\n");
         assert!(tail.starts_with("You are signing (enforced):"), "{tail}");
         assert!(tail.contains(&format!("repos              {}", field(&t, Field::Repos))));
         assert!(tail.contains("limits"), "{tail}");

@@ -224,9 +224,12 @@ A new input is added here in the same change.
   turn every hidden character into a visible `\u{…}`, and `writ-sign` does the same to what
   the daemon and ssh say (a denial lists the commit's paths, which can hold anything). The hidden set is generated from
   Unicode categories (`tool/gen-hidden-chars.py`), never written by hand.
-- **The trusted display is bounded** (40 lines per agent field unless `--full`) and **ends
-  on the enforced terms**, right above the prompt. Lists are quoted so two different lists
-  never read the same.
+- **The trusted display is bounded** in rows (40 per agent field unless `--full`, the
+  expected paths too) and in width (every row 78 columns at most, a non-ASCII character
+  counted as two; a longer line cut by the display, each continuation behind the gutter,
+  never left to the terminal to wrap), and **ends on the enforced terms**, one row each,
+  right above the prompt. Lists are quoted so two different lists never read the same. A
+  new line of the display that holds agent text goes through `display::cut` or `block`.
 - **Enforced identities are ASCII** (committer emails), so look-alikes and invisibles can't
   pass for another.
 - **No agent text leaves the network** in a notification, and nothing in a notification

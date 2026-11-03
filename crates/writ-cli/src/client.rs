@@ -359,12 +359,13 @@ mod tests {
 
     #[test]
     fn an_unreadable_pins_file_is_an_error_not_an_empty_one() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read_pins(&dir.path().join("missing")).unwrap(), "");
-        let locked = dir.path().join("known_hosts");
-        std::fs::write(&locked, "host ssh-ed25519 AAAA\n").unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Unreadable for any user, root included (a mode of 000 isn't, for root): a path
+        // under a regular file (`ENOTDIR`).
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, "host ssh-ed25519 AAAA\n").unwrap();
+        let locked = file.join("known_hosts");
         let error = format!("{:#}", pinned_host_key(&locked, "host").unwrap_err());
         assert!(error.starts_with("cannot read"), "{error}");
         assert!(!error.contains("not pinned"), "{error}");

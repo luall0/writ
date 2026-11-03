@@ -1,7 +1,8 @@
 //! Scenario 2, the ticket lifecycle: a ticket outside every template rejected; requested and
 //! waited for, listed and signed over SSH; submitted from stdin without waiting, refused with
 //! signed feedback, revised and signed at the prompt over HTTPS; refused at the prompt, its
-//! long text cut unless `--full`; left unsigned (`n`) and withdrawn; an amendment signed and
+//! long text cut unless `--full`; left unsigned (`n`) and withdrawn; a task of one long line
+//! cut into rows that fit 80 columns; an amendment signed and
 //! waited for with `--lease`; a lease revoked; a ticket left unsigned until it expires; and
 //! every client setting given as a flag instead of the environment.
 
@@ -176,6 +177,33 @@ fn tickets_are_requested_signed_refused_revised_amended_and_revoked() {
     let out = agent.run(&format!("writ wait {fifth}"));
     let (out, _) = expect(&out, 5, "withdrawn");
     assert!(out.contains("was withdrawn or its lease revoked"), "{out}");
+
+    // A task of one long line padded so that, wrapped by an 80-column terminal, its rows
+    // would read like the display's own (the review after M5.5, S2): `writ sign` cuts it
+    // itself, every row within 78 columns and behind the gutter.
+    let forged = format!("{}  repos              docs-site", " ".repeat(57));
+    let wide = agent.submit(
+        "wide",
+        &lifecycle(
+            "Wide",
+            &format!("  task: \"{}\"\n", forged.repeat(40)),
+            "1h",
+        ),
+    );
+    let out = stack
+        .approver
+        .run_with(&format!("writ sign {wide} --full"), b"n\n");
+    let (out, _) = expect(&out, 6, "a wide ticket answered no");
+    let columns = |l: &str| -> usize { l.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum() };
+    for line in out.lines() {
+        assert!(columns(line) <= 78, "{} columns: {line:?}", columns(line));
+        assert!(
+            !(line.starts_with("  repos") && line.contains("docs-site")),
+            "a forged row: {line:?}"
+        );
+    }
+    assert!(out.contains("Nothing signed."), "{out}");
+    stack.approver.ok(&format!("writ revoke {wide}"));
 
     // An amendment of the revised lease: submitted without waiting, signed, then waited for
     // with --lease (its session is the lease's).

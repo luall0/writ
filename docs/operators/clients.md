@@ -25,6 +25,10 @@ lists them.
 Every command and its arguments: [clients](../architecture/clients.md). `writ sign`'s
 narrowing flags: [approvals](../architecture/approvals.md).
 
+Approve from a terminal at least 80 columns wide. `writ sign` keeps every row within that
+width, so the terminal never wraps one; a narrower terminal would wrap rows again, and a
+wrapped row loses the `│` mark that shows text the agent wrote.
+
 ## Files
 
 | Path | Where | What it is |

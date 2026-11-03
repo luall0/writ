@@ -41,13 +41,18 @@ triggering the signature; it is the trusted display
   sign` neutralizes terminal control sequences and other invisible characters so an agent
   can't hide or overwrite part of the ticket on screen. Warnings (e.g. `direct_ssh` with an
   account-wide key) are printed by `writ sign` itself, never taken from the ticket.
-- The display is bounded: each agent field shows at most 40 lines (runs of blank lines
-  collapsed), then how many more there are (`writ sign --full` shows everything). Expected
-  paths are shown under the enforced scope, one quoted item per line, and lists are quoted
-  so two different lists never read the same. The enforced terms (id, template, expiry,
-  repos, operations, branches, force push, emails, expected paths, limits) are repeated in a
-  short summary right before the prompt: no amount of agent text can push what gets signed
-  off the screen.
+- The display is bounded in both directions. Every row fits 78 columns (a non-ASCII
+  character counted as two), so an 80-column terminal never wraps one: a longer line is cut
+  into rows by `writ sign`, each continuation behind the gutter, so a row the terminal made
+  can't start with agent text that reads like one of `writ sign`'s (`  repos  …`). Each agent
+  field shows at most 40 rows (runs of blank lines collapsed), then how many more there are
+  (`writ sign --full` shows everything); the expected paths too, under the enforced scope,
+  one quoted item per line. Lists are quoted so two different lists never read the same.
+  The enforced terms (id, template, expiry, repos, operations, branches, force push,
+  emails, expected paths with their count, limits, on violation) are repeated in a summary
+  of one row each right before the prompt (a list too long for its row is cut, `… (see
+  above)`): no amount of agent text can push what gets signed off the screen. A terminal
+  narrower than 80 columns wraps rows again: approve from one at least that wide.
 - `writ sign --yes` (sign without asking) needs a named ticket: it never signs whichever
   ticket happens to be the only one waiting.
 - It signs exactly the canonical bytes it displayed (fetched from the daemon, then decoded and
