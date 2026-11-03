@@ -81,7 +81,12 @@ objects) and decoded strictly at the edge (`exec/sign.rs`), then, off the async 
    commit adding a `.git` entry (in any case, with the characters HFS+ ignores, NTFS's
    trailing dots and spaces or short name, as git's `verify_path` reads it) is refused
    whatever `paths_check` says; an agent leaving that tree out hides it, and the push-time
-   `fsck` stops it then (M4).
+   `fsck` stops it then (M4). So is a tree entry with a mode git doesn't write (only
+   `100644`, `100755`, `120000`, `40000` and `160000` are read): git reads a mode by its
+   type bits, so `40755` or a zero-padded `040000` is a directory to it, and a walk reading
+   it as a file would miss what is under it (`.github/evil.yml` listed as `.github`, inside
+   `expected_paths: ["*"]`). Left out, that tree too is stopped by the push-time `fsck`
+   (`badFilemode`, `zeroPaddedFilemode` at error level).
 3. `Service::sign`, in three phases ([Policy and state](policy-and-state.md#policy-engine)):
    under the service's lock, the single active lease, the policy's `decide_sign` and the
    signature counted; outside it, the signature through the `Signer` (its queue and
@@ -173,9 +178,11 @@ the command line rather than left to git's defaults:
 
 - every object checked (`transfer`, `fetch` and `receive.fsckObjects`), and the `fsck`
   messages git only warns about raised to errors where they matter: a tree entry named
-  `.git`, `.` or `..`, an empty or absolute name, a null id (`hasDotgit`, `hasDot`,
-  `hasDotdot`, `emptyName`, `fullPathname`, `nullSha1`), whether the objects come from an
-  agent or from upstream;
+  `.git`, `.` or `..`, an empty or absolute name, a null id, a mode git doesn't write or a
+  zero-padded one (`hasDotgit`, `hasDot`, `hasDotdot`, `emptyName`, `fullPathname`,
+  `nullSha1`, `badFilemode`, `zeroPaddedFilemode`), whether the objects come from an agent
+  or from upstream (so the paths walk never meets a tree git reads otherwise than it does;
+  an upstream whose history holds such a tree can't be mirrored);
 - a fetched pack kept whole (`fetch.unpackLimit = 1`): its objects land only once all are
   checked;
 - no hook but the gateway's own pre-receive (`core.hooksPath`), no submodule, no automatic

@@ -19,6 +19,10 @@ use writ_proto::sign::{EvidenceKind, MAX_SIGN_INPUT, SignInput};
 
 use crate::{Gateway, limits};
 
+/// The reason a commit whose trees hold a mode git doesn't write is refused.
+const NON_STANDARD_MODE: &str = "cannot sign: a tree entry has a non-standard mode (git writes \
+                                 only 100644, 100755, 120000, 40000 and 160000)";
+
 /// Why the gateway turned a request down before the service saw it, or the service's denial.
 pub(super) enum Refused {
     /// Refused by the gateway (logged by the caller): the body or the object is unreadable,
@@ -112,6 +116,14 @@ fn parse(input: SignInput) -> Result<SignObject, String> {
         Err(PathsError::Tree(_, TreeError::DotGit)) => {
             return Err("cannot sign: the commit adds a .git entry to a tree".to_owned());
         }
+        // Refused whatever paths_check says too: git reads such a mode by its type bits (a
+        // `40755` entry is a directory to it), git itself never writes one, and the mirror
+        // takes none (its fsck refuses `badFilemode` and `zeroPaddedFilemode`), from an agent
+        // or from upstream. (Left out, the tree leaves the paths unknown; the push-time fsck
+        // stops it then.)
+        Err(PathsError::Tree(_, TreeError::NonStandardMode)) => {
+            return Err(NON_STANDARD_MODE.to_owned());
+        }
         Err(e) => {
             tracing::debug!(error = %e, "the commit's paths are unknown");
             None
@@ -160,5 +172,54 @@ mod tests {
             parse(input(".GIT")).map(|_| ()),
             Err("cannot sign: the commit adds a .git entry to a tree".to_owned())
         );
+    }
+
+    #[test]
+    fn a_non_standard_mode_is_refused_whatever_paths_check_says() {
+        let algo = HashAlgo::Sha1;
+        let raw = |id: &writ_git::ObjectId| -> Vec<u8> {
+            (0..20)
+                .map(|i| {
+                    u8::from_str_radix(id.as_str().get(2 * i..2 * i + 2).unwrap(), 16).unwrap()
+                })
+                .collect()
+        };
+        let blob = algo.hash(ObjectType::Blob, b"x").unwrap();
+        let mut inner = b"100644 evil.yml\0".to_vec();
+        inner.extend(raw(&blob));
+        let inner_id = algo.hash(ObjectType::Tree, &inner).unwrap();
+        let input = |mode: &str| {
+            let mut top = format!("{mode} .github\0").into_bytes();
+            top.extend(raw(&inner_id));
+            let id = algo.hash(ObjectType::Tree, &top).unwrap();
+            SignInput {
+                object: format!(
+                    "tree {id}\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nm\n"
+                )
+                .into_bytes(),
+                evidence: vec![
+                    (EvidenceKind::Tree, top),
+                    (EvidenceKind::Tree, inner.clone()),
+                ],
+            }
+        };
+        let SignObject::Commit { touched_paths, .. } = parse(input("40000")).unwrap() else {
+            panic!("a commit");
+        };
+        assert_eq!(touched_paths, Some(vec![".github/evil.yml".to_owned()]));
+        for mode in ["40755", "040000", "100664"] {
+            assert_eq!(
+                parse(input(mode)).map(|_| ()),
+                Err(NON_STANDARD_MODE.to_owned()),
+                "{mode}"
+            );
+        }
+        // Without the tree, the paths are unknown (and paths_check decides).
+        let mut missing = input("40755");
+        missing.evidence.clear();
+        let SignObject::Commit { touched_paths, .. } = parse(missing).unwrap() else {
+            panic!("a commit");
+        };
+        assert_eq!(touched_paths, None);
     }
 }

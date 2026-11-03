@@ -406,9 +406,19 @@ fn malformed_or_dangerous_objects_from_upstream_never_land() {
         &upstream,
         &format!("tree {inner}\nparent {main}\nauthor A <a@b> 1 +0000\ncommitter nobody\n\nbad\n"),
     );
-    for (branch, id) in [("evil", evil.as_str()), ("bad", bad.as_str())] {
+    // And a directory with a mode git reads as one but never writes (`40755`), on a third.
+    let mode_tree = mktree(&f, &upstream, &format!("40755 tree {inner}\t.github\n"));
+    let mode = f.git_ok(
+        &upstream,
+        &["commit-tree", &mode_tree, "-p", &main, "-m", "mode"],
+    );
+    for (branch, id, check) in [
+        ("evil", evil.as_str(), "hasDotgit"),
+        ("bad", bad.as_str(), "error"),
+        ("mode", mode.as_str(), "badFilemode"),
+    ] {
         // One at a time: each refused on its own.
-        for other in ["evil", "bad"] {
+        for other in ["evil", "bad", "mode"] {
             let _ = f.git(
                 &upstream,
                 &["update-ref", "-d", &format!("refs/heads/{other}")],
@@ -420,10 +430,7 @@ fn malformed_or_dangerous_objects_from_upstream_never_land() {
         );
         match f.sync(&mirrors) {
             Err(MirrorError::Git { stderr, .. }) => {
-                assert!(
-                    stderr.contains("fsck") || stderr.contains("error"),
-                    "{branch}: {stderr}"
-                );
+                assert!(stderr.contains(check), "{branch}: {stderr}");
             }
             other => panic!("{branch}: expected a refused sync, got {other:?}"),
         }

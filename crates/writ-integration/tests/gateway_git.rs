@@ -93,14 +93,45 @@ fn malformed_objects_never_land() {
     let blob = gateway.git_ok(&work, &["hash-object", "-w", "README"]);
     let blob = blob.trim();
     let inner = mktree(&gateway, &work, &format!("100644 blob {blob}\tconfig\n"));
-    for (listing, check) in [
+    let mut trees: Vec<(String, String, &str)> = [
         (format!("100644 blob {blob}\t.GIT\n"), "hasDotgit"),
         (format!("040000 tree {inner}\t.git\n"), "hasDotgit"),
         (format!("040000 tree {inner}\t..\n"), "hasDotdot"),
         (format!("040000 tree {inner}\t.\n"), "hasDot"),
-    ] {
-        let tree = mktree(&gateway, &work, &listing);
-        let commit = gateway.git_ok(&work, &["commit-tree", &tree, "-p", "HEAD", "-m", "bad"]);
+        // Modes git reads by their type bits but never writes: a directory `40755` (its
+        // files hidden from a reader of the mode as written), a file `100664`.
+        (format!("40755 tree {inner}\t.github\n"), "badFilemode"),
+        (format!("100664 blob {blob}\tREADME\n"), "badFilemode"),
+    ]
+    .into_iter()
+    .map(|(listing, check)| (mktree(&gateway, &work, &listing), listing, check))
+    .collect();
+    // A zero-padded directory mode (`mktree` would write `40000`): the bytes as they are.
+    let mut padded = b"040000 .github\0".to_vec();
+    padded.extend(
+        (0..inner.len() / 2).map(|i| u8::from_str_radix(&inner[2 * i..2 * i + 2], 16).unwrap()),
+    );
+    let path = gateway.root().join("padded-tree");
+    fs::write(&path, &padded).unwrap();
+    let tree = gateway.git_ok(
+        &work,
+        &[
+            "hash-object",
+            "-t",
+            "tree",
+            "-w",
+            "--literally",
+            path.to_str().unwrap(),
+        ],
+    );
+    trees.push((
+        tree.trim().to_owned(),
+        "040000 tree .github".to_owned(),
+        "zeroPaddedFilemode",
+    ));
+    for (tree, listing, check) in &trees {
+        let tree = tree.as_str();
+        let commit = gateway.git_ok(&work, &["commit-tree", tree, "-p", "HEAD", "-m", "bad"]);
         let out = gateway.git(
             &work,
             &[
@@ -120,7 +151,7 @@ fn malformed_objects_never_land() {
     // Each refusal, made by git before the hook, is in the audit log.
     let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
     let refused = audit_events(&audit, "push", "denied");
-    assert_eq!(refused.len(), 4, "{refused:?}");
+    assert_eq!(refused.len(), trees.len(), "{refused:?}");
     assert!(
         refused.iter().all(|e| e["reason"]
             .as_str()

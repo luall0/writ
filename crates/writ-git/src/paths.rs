@@ -589,6 +589,56 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_with_a_non_standard_mode_hides_nothing() {
+        // git reads `40755` as a directory (its type bits): `.github/evil.yml` is in this
+        // commit for git. Read as a leaf, the walk would list `.github` alone; it refuses the
+        // tree instead, on either side of the comparison.
+        let (inner, inner_content) = tree(&[("100644", "evil.yml", &blob("x"))]);
+        for mode in ["40755", "040000", "41777"] {
+            let (top, top_content) =
+                tree(&[("100644", "README", &blob("r")), (mode, ".github", &inner)]);
+            let sent = vec![
+                (ObjectType::Tree, top_content.clone()),
+                (ObjectType::Tree, inner_content.clone()),
+            ];
+            assert_eq!(
+                root_paths(&top, sent, Limits::DEFAULT),
+                Err(PathsError::Tree(top.clone(), TreeError::NonStandardMode)),
+                "{mode}"
+            );
+            // As the parent's tree: the commit puts the directory back as `40000`.
+            let parent = commit_object(&top, &[]);
+            let parent_id = ALGO.hash(ObjectType::Commit, &parent).unwrap();
+            let (fixed, fixed_content) = tree(&[
+                ("100644", "README", &blob("r")),
+                ("40000", ".github", &inner),
+            ]);
+            let commit = Commit::parse(commit_object(&fixed, &[&parent_id])).unwrap();
+            let sent = vec![
+                (ObjectType::Commit, parent),
+                (ObjectType::Tree, top_content),
+                (ObjectType::Tree, fixed_content),
+                (ObjectType::Tree, inner_content.clone()),
+            ];
+            assert_eq!(
+                touched(&commit, &Evidence::new(ALGO, sent)),
+                Err(PathsError::Tree(top, TreeError::NonStandardMode)),
+                "{mode} in the parent"
+            );
+        }
+        // With `40000`, the file under it is listed.
+        let (top, top_content) = tree(&[("40000", ".github", &inner)]);
+        let sent = vec![
+            (ObjectType::Tree, top_content),
+            (ObjectType::Tree, inner_content),
+        ];
+        assert_eq!(
+            root_paths(&top, sent, Limits::DEFAULT),
+            Ok(vec![".github/evil.yml".to_owned()])
+        );
+    }
+
+    #[test]
     fn depth_is_bounded_on_both_sides() {
         let nested = |levels: usize| {
             let mut sent = Vec::new();

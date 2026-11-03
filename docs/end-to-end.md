@@ -100,7 +100,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 2b | `narrowing` | `narrowing` | Every narrowing flag of `writ sign`, the agent told, the lease holding to each (a push past the count, a dropped operation revoking the lease) | shared |
 | 3 | `wrapper_mode` | `demo` | The GitHub manual check's steps 5-7 verbatim: `writ init`, fetch, signed commit, push, verification through `writ-sign`, `writ exec`, upstream moved (clean rebase), the refused pushes; the operator's plain git untouched | shared |
 | 4 | `whole_repo` | `whole` | `writ init --whole-repo --email --url`, plain git as the agent's, a second wiring refused, `--undo` exact | shared |
-| 5 | `push_denials` | `denials` | Every push denial (protected ref, branch, force push, deletion, unsigned, unsigned parent, another lease's, over `max_push_size`, case, fetch without `fetch`), Forgejo and the mirror unchanged | shared |
+| 5 | `push_denials` | `denials` | Every push denial (protected ref, branch, force push, deletion, unsigned, unsigned parent, another lease's, over `max_push_size`, a tree with a non-standard mode, case, fetch without `fetch`), Forgejo and the mirror unchanged | shared |
 | 6 | `upstream_moved` | `moved` | Upstream moved with a conflict: refused, fetch, rebase, resolved, signed again, pushed | shared |
 | 7 | `remote_protection` | `protection` | Forgejo's own branch protection: its reason relayed, the mirror unchanged | shared |
 | 8 | `verified_commits` | `verified` | Unverified, then registered (`writd signing-keys`), then proven (`writ prove-key` through Forgejo's form, on a terminal and with `--yes`): verified | shared |

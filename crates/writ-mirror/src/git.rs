@@ -13,14 +13,19 @@ const ENV_KEPT: [&str; 2] = ["PATH", "TMPDIR"];
 
 /// `fsck` messages that only warn by default and refuse the objects here: a tree entry named
 /// `.git`, `.`, `..`, empty, an absolute path, or a null id never lands in a mirror, whether it
-/// comes from an agent's push or from upstream.
-pub const FSCK_ERRORS: [&str; 6] = [
+/// comes from an agent's push or from upstream; nor does a mode git doesn't write (`40755`,
+/// `100664`…, `badFilemode`) or a zero-padded one (`040000`, `zeroPaddedFilemode`), which git
+/// reads by its type bits and `writ_git::tree` refuses: the paths a commit touches are never
+/// computed from a tree git would read otherwise.
+pub const FSCK_ERRORS: [&str; 8] = [
     "hasDotgit",
     "hasDot",
     "hasDotdot",
     "emptyName",
     "fullPathname",
     "nullSha1",
+    "badFilemode",
+    "zeroPaddedFilemode",
 ];
 
 /// Settings every git the daemon runs gets (`-c`), whatever the repository's own config says.

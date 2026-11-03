@@ -257,6 +257,59 @@ fn a_missing_tree_leaves_the_paths_unknown() {
 }
 
 #[test]
+fn a_mode_git_reads_as_a_directory_is_refused_not_read_as_a_file() {
+    use writ_git::paths::PathsError;
+    use writ_git::tree::TreeError;
+    for format in ["sha1", "sha256"] {
+        let repo = Repo::new(format);
+        repo.write(".github/evil.yml", "on: push\n");
+        repo.git(&["add", "-A"]);
+        let inner = repo
+            .git(&["write-tree", "--prefix=.github/"])
+            .trim()
+            .to_owned();
+        for mode in ["40755", "41777", "040000"] {
+            // A root tree with `<mode> .github`, written as is (git's own commands would
+            // write `40000`).
+            let mut content = format!("{mode} .github\0").into_bytes();
+            let id_hex = inner.as_bytes();
+            let raw_id: Vec<u8> = (0..id_hex.len() / 2)
+                .map(|i| {
+                    u8::from_str_radix(std::str::from_utf8(&id_hex[2 * i..2 * i + 2]).unwrap(), 16)
+                        .unwrap()
+                })
+                .collect();
+            content.extend(raw_id);
+            let mut child = repo
+                .command(&["hash-object", "-t", "tree", "-w", "--literally", "--stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(&content).unwrap();
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success());
+            let top = String::from_utf8(out.stdout).unwrap().trim().to_owned();
+            let commit = repo
+                .git(&["commit-tree", &top, "-m", mode])
+                .trim()
+                .to_owned();
+            // git sees the file under the directory.
+            assert_eq!(repo.git_touched(&commit), [".github/evil.yml"], "{mode}");
+            // The walk refuses the tree rather than list `.github` alone.
+            let error = touched(&repo.parse(&commit), &repo.evidence(&commit)).unwrap_err();
+            let top_id =
+                writ_git::ObjectId::parse_hex(repo.parse(&commit).algo(), top.as_bytes()).unwrap();
+            assert_eq!(
+                error,
+                PathsError::Tree(top_id, TreeError::NonStandardMode),
+                "{format} {mode}"
+            );
+        }
+    }
+}
+
+#[test]
 fn commits_git_writes_parse() {
     let repo = Repo::new("sha1");
     repo.write("f", "x\n");

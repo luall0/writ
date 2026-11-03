@@ -23,6 +23,8 @@ use writ_integration::{audit_events, stderr};
 
 /// git's status when the signing program fails.
 const SIGNING_FAILED: i32 = 128;
+/// `git commit-tree`'s status when the signing program fails.
+const COMMIT_TREE_FAILED: i32 = 1;
 
 /// One repo, `main` and tags protected, its commits carrying their `Writ:` trailer; a
 /// template that refuses paths outside the ticket's.
@@ -257,6 +259,112 @@ fn paths_outside_the_ticket_are_refused_with_paths_check_deny() {
         Some("paths"),
     );
     assert_eq!(gw.ledger(&lease).len(), 1);
+}
+
+/// `git mktree` in `work` (it writes the modes it is given, `40755` included).
+fn mktree(gw: &GitGateway, work: &Path, listing: &str) -> String {
+    use std::io::Write as _;
+    let mut child = gw
+        .git_command("false", work, &["mktree"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(listing.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "mktree {listing}");
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn a_directory_with_a_non_standard_mode_cannot_hide_its_files() {
+    // `*` covers `.github` but not `.github/evil.yml`: read as a file, the `40755` directory
+    // would pass. git reads it as a directory (its type bits), and so would a checkout.
+    for check in ["deny", "warn"] {
+        let policy = STRICT.replace("paths_check: deny", &format!("paths_check: {check}"));
+        let gw = GitGateway::start_with(KeyKind::Ed25519, Listen::Tcp, &policy);
+        gw.seed_repo();
+        let work = gw.clone("work");
+        gw.wire_signing(&work);
+        let lease = gw.session_with("paths", &ticket("  expected_paths: [\"*\"]\n"));
+        let id = lease.as_str();
+        let blob = gw.git_ok(&work, &["hash-object", "-w", "README"]);
+        let inner = mktree(
+            &gw,
+            &work,
+            &format!("100644 blob {}\tevil.yml\n", blob.trim()),
+        );
+        let readme = gw.git_ok(&work, &["rev-parse", "HEAD:README"]);
+        let sign = |mode: &str| {
+            let tree = mktree(
+                &gw,
+                &work,
+                &format!(
+                    "100644 blob {}\tREADME\n{mode} tree {inner}\t.github\n",
+                    readme.trim()
+                ),
+            );
+            let message = format!("change\n\nWrit: {id}\n");
+            gw.git_as(
+                "paths",
+                &work,
+                &["commit-tree", "-S", &tree, "-p", "HEAD", "-m", &message],
+            )
+        };
+
+        let out = sign("40755");
+        assert_eq!(
+            out.status.code(),
+            Some(COMMIT_TREE_FAILED),
+            "{check}: {}",
+            stderr(&out)
+        );
+        let reason = "cannot sign: a tree entry has a non-standard mode (git writes only \
+                      100644, 100755, 120000, 40000 and 160000)";
+        assert!(stderr(&out).contains(reason), "{check}: {}", stderr(&out));
+        let audit = fs::read_to_string(gw.root().join("audit.jsonl")).unwrap();
+        let denied = audit_events(&audit, "sign", "denied");
+        assert_eq!(denied.len(), 1, "{check}: {denied:?}");
+        assert_eq!(denied[0]["reason"], reason, "{check}");
+        assert_eq!(denied[0]["lease"], id, "{check}");
+        assert_eq!(denied[0]["repo"], "demo", "{check}");
+        assert!(gw.ledger(&lease).is_empty(), "{check}");
+
+        // The same directory as git writes it: its file is seen, outside `*`.
+        let out = sign("40000");
+        let audit = fs::read_to_string(gw.root().join("audit.jsonl")).unwrap();
+        if check == "deny" {
+            assert_eq!(
+                out.status.code(),
+                Some(COMMIT_TREE_FAILED),
+                "{}",
+                stderr(&out)
+            );
+            let reason = format!(
+                "writ: outside ticket {id}: files outside expected_paths: .github/evil.yml. If \
+                 needed, submit an amendment (ticket.amends: {id})"
+            );
+            assert!(stderr(&out).contains(&reason), "{}", stderr(&out));
+            let denied = audit_events(&audit, "sign", "denied");
+            assert_eq!(denied.len(), 2, "{denied:?}");
+            assert_eq!(denied[1]["code"], "paths");
+            assert!(gw.ledger(&lease).is_empty());
+        } else {
+            assert!(out.status.success(), "{check}: {}", stderr(&out));
+            let signed = audit_events(&audit, "sign", "allowed");
+            assert_eq!(signed.len(), 1, "{signed:?}");
+            assert_eq!(
+                signed[0]["warnings"],
+                serde_json::json!(["files outside expected_paths: .github/evil.yml"])
+            );
+            assert_eq!(gw.ledger(&lease).len(), 1);
+        }
+    }
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Scenario 5, every push denial: a protected ref, a branch outside the lease, a force push,
 //! a deletion, an unsigned commit, a signed commit on an unsigned parent, another lease's
-//! commit, a pack over `max_push_size`, a ref differing only in case, and a fetch under a
+//! commit, a pack over `max_push_size`, a tree with a mode git doesn't write (refused to sign,
+//! then by the mirror's `fsck`), a ref differing only in case, and a fetch under a
 //! lease without `fetch`. Each refused with what the agent reads and its audit code, Forgejo
 //! and the mirror unchanged, with the allowed push beside them.
 
@@ -161,6 +162,50 @@ fn every_push_denial_leaves_forgejo_and_the_mirror_unchanged() {
         "{denied:?}"
     );
     unchanged("agent/big", None);
+
+    // A directory with a mode git reads as one but never writes (`40755`): read as a file,
+    // `.github/evil.yml` would pass as `.github`. Signing it is refused whatever paths_check
+    // says; pushed unsigned, the mirror's fsck refuses it before the hook (`badFilemode`).
+    agent.ok_in(w, &format!("git reset -q --hard {base}"));
+    let inner = agent.ok_in(
+        w,
+        "printf '100644 blob %s\\tevil.yml\\n' \"$(git hash-object -w a.txt)\" | git mktree",
+    );
+    let tree = agent.ok_in(
+        w,
+        &format!(
+            "{{ git ls-tree HEAD; printf '40755 tree %s\\t.github\\n' {}; }} | git mktree",
+            inner.trim()
+        ),
+    );
+    let tree = tree.trim();
+    let out = agent.in_dir(
+        w,
+        &format!("writ git commit-tree -S {tree} -p HEAD -m Mode -m 'Writ: {lease}'"),
+    );
+    expect(&out, 1, "signing a tree with a non-standard mode");
+    let reason = "cannot sign: a tree entry has a non-standard mode (git writes only 100644, \
+                  100755, 120000, 40000 and 160000)";
+    assert!(stderr(&out).contains(reason), "{}", stderr(&out));
+    let denied = stack.audited(&lease, "sign", "denied");
+    assert_eq!(denied.last().unwrap()["reason"], reason, "{denied:?}");
+    let unsigned_mode = agent.ok_in(w, &format!("git commit-tree {tree} -p HEAD -m Mode"));
+    let out = push(&format!("{}:refs/heads/agent/mode", unsigned_mode.trim()));
+    expect(&out, 1, "a tree with a non-standard mode");
+    assert!(stderr(&out).contains("badFilemode"), "{}", stderr(&out));
+    let denied = stack.audited(&lease, "push", "denied");
+    assert!(
+        denied.last().unwrap()["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("the push ended before its checks"),
+        "{denied:?}"
+    );
+    unchanged("agent/mode", None);
+    assert!(
+        !stack.mirror_has("denials", unsigned_mode.trim()),
+        "a refused commit reached the mirror"
+    );
 
     // A ref that differs only in case from one the repository has.
     agent.ok_in(w, &format!("git reset -q --hard {base}"));
