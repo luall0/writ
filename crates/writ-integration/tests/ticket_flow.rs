@@ -177,9 +177,16 @@ fn rejected_signed_narrowed_and_refused_tickets_end_to_end() {
         );
     }
     assert!(!looks_secret(&daemon.audit()), "{}", daemon.audit());
-    // Clients that come and go (writ, ssh, git) leave no error in the daemon's log.
+    // Clients that come and go (writ, ssh, git) leave no error in the daemon's log. The one
+    // warning a host may give, whatever the clients do: the memory lock not applied at start,
+    // on Linux under a lock limit (a CI runner's `ulimit -l`); scenario 17 checks it end to end.
     let log = daemon.log();
-    assert!(!log.contains("ERROR") && !log.contains("WARN"), "{log}");
+    let host_s = "WARN writd::hardening: process hardening not applied step=memory locked";
+    let unexpected: Vec<&str> = log
+        .lines()
+        .filter(|l| (l.contains("ERROR") || l.contains("WARN")) && !l.contains(host_s))
+        .collect();
+    assert!(unexpected.is_empty(), "{unexpected:#?}\n{log}");
 }
 
 #[test]
