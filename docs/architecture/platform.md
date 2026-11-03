@@ -20,6 +20,7 @@ a YubiKey) means writing an implementation of an existing interface and register
 | `KeystoreUnlock` | How the keystore's data key is recovered at unseal | Passphrase + approver signature | M7.6: generalized into a recipient unwrapping one secret ([hardware-wrapped secrets](../backlog/hardware-wrapped-secrets.md)); the Secure Enclave, a recovery identity; later YubiKey, TPM, cloud KMS |
 | `Notifier` | How I'm told something is waiting or went wrong | Telegram (Bot API) | Native macOS notifications, approver apps, any other sink |
 | `Clock` | What time it is: every expiry, rate window and certificate validity | The system clock | — |
+| `ProcessHardening` | Keeping the secrets in a process's memory away from the OS's ways out: core dumps, a debugger, swap | Linux (`RLIMIT_CORE` 0 and not dumpable, required; `mlockall` when the lock limit allows it), macOS (`RLIMIT_CORE` 0 and `PT_DENY_ATTACH`, required), `NoHardening` elsewhere (refuses) | — |
 
 Shapes (as in `crates/writ-platform`, kept in sync here; the traits are used as trait objects, so `accept` returns a boxed future):
 
@@ -112,6 +113,43 @@ difference between modes, as far as the policy is concerned. The constraint matc
 process in the chain (the caller included) has the same executable path, pid and generation,
 and the same code identity if the constraint names one (`writ_core::caller::check`).
 
+```rust
+/// What a process does, first thing, so the secrets it will hold don't leave through the OS.
+/// Each step is per process, never a setting of the whole system.
+pub trait ProcessHardening: Send + Sync {
+    /// Applies every step this platform has to the calling process (idempotent), and says
+    /// how each went.
+    fn harden(&self) -> Vec<Hardened>;
+}
+
+pub struct Hardened {
+    pub step: HardeningStep, // NoCoreDumps, NoDebugger, MemoryLocked: each reported once
+    pub outcome: HardeningOutcome,
+}
+
+pub enum HardeningOutcome {
+    Applied,
+    /// A required step (nothing but the process decides it) that failed: the process stops
+    /// before it reads a secret.
+    Refused { why: String },
+    /// A step the host's limits decide (memory locking on Linux), not allowed there: a
+    /// warning, with the optional fix. Also a traced debug build on macOS.
+    NotApplied { why: String, fix: String },
+    /// The platform has no call for it (memory locking on macOS): one info line.
+    Unavailable { why: String },
+}
+```
+
+`writd/src/platform.rs` picks `writ_platform_linux::Hardening`, `writ_platform_macos::Hardening`
+or `NoHardening` (every step `Refused`) by target OS; `writd`'s `main` applies it before any
+subcommand that reads a secret and stops on a `Refused` one
+([operator guide](../operators/hardening.md)). The contract suite
+(`writ_platform::contract::hardening_contract`) runs in a test binary of its own, since it
+changes the process: each step reported once, the same outcome when applied twice, a reason
+for each step not applied (and a fix when the host decides it), and, when `NoCoreDumps` is
+applied, `RLIMIT_CORE` 0 soft and hard; each platform's own tests check the rest (Linux: not dumpable, the memory locked; macOS:
+attach refused).
+
 ## Where the code lives
 
 | Crate | Holds |
@@ -119,8 +157,8 @@ and the same code identity if the constraint names one (`writ_core::caller::chec
 | `writ-core` | `CallerFacts`, `ProcessRef` and the caller checks (pure) |
 | `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, Telegram notifier, passphrase unlock, system clock), and, behind a `testing` feature, fakes of each trait and the contract suites (`writ_platform::contract`) every implementation runs |
 | `writ-signer` | The `Signer` trait, the software backend, cross-platform hardware backends behind Cargo features (YubiKey) |
-| `writ-platform-macos` | Everything macOS-only: Unix socket transport extras, process chain attestor (libproc, code signature), kqueue watcher, the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and later `KeystoreUnlock` |
-| `writ-platform-linux` | Linux-only implementations (later: `SO_PEERCRED` + `/proc` attestor, pidfd watcher, TPM) |
+| `writ-platform-macos` | Everything macOS-only: process hardening (M5: `PT_DENY_ATTACH` in its one `unsafe` module), later Unix socket transport extras, process chain attestor (libproc, code signature), kqueue watcher, the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and `KeystoreUnlock` |
+| `writ-platform-linux` | Linux-only implementations: process hardening (M5, through `rustix`, no `unsafe`); later `SO_PEERCRED` + `/proc` attestor, pidfd watcher, TPM |
 | `writd` | `platform.rs`: builds the set of implementations from the configuration and the target OS. The **only** place outside the platform crates with `#[cfg(target_os = …)]` |
 
 The Unix socket transport itself is portable (Unix), so it lives in `writ-platform`; what is

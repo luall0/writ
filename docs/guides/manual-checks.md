@@ -243,3 +243,17 @@ When it passes, note it under the acceptance item in
 `make test-agent KEY=<public key .pub> [AGENT=<socket>]` signs a random message with a key in
 your agent and verifies it in Rust (checked in [M0](../history/m0-protocol-spike.md) with a
 Secure Enclave key). It doesn't need the daemon.
+
+## Process hardening on the Mac (M5)
+
+The contract suite checks the core limit and that the hardening reports each step; a
+debugger being refused needs a real one. With the development daemon running (`make run`):
+
+```sh
+lldb -p "$(pgrep -n writd)" --batch -o detach    # refused: attach failed (… Operation not permitted)
+```
+
+Then start one under the debugger (`lldb -- target/debug/writd run dev/writd.yaml`, `run`):
+a debug build keeps running, its log saying `PT_DENY_ATTACH` was skipped because the process
+is traced; a release build (`cargo build --release -p writd`, then under `lldb` the same way)
+refuses to start, saying it is traced. When both pass, note it under the acceptance item in M5's history page.

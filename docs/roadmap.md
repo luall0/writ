@@ -270,6 +270,33 @@ its contract suite (hard rule 4), in new `writ-platform-linux` and `writ-platfor
 crates, applied at startup before any secret is read. Each one that can't be applied is a
 startup warning saying how to fix it, never a stop; the operator guide lists how to check each
 on the host, and the threat model says what is left without it.
+Settled in step 6 ([decision log](decisions.md)):
+- **Every `writd` process that holds a secret hardens itself:** `run`, `init` and `recover`
+  (the passphrase, every key) and the git credential helper `upstream-credential` (a token,
+  for one operation), first thing, before any secret is read. Only `run`, `init` and `recover`
+  say what they couldn't apply; the helper stays quiet (it runs once per git operation).
+- **Never a system setting:** every step is per process (a limit, a flag, a call); Writ never
+  changes, nor asks for, a setting of the whole system (no sysctl, no SIP, no kernel option,
+  no security framework to install), so a development Mac or a shared host runs it as it is.
+- **Enforced where nothing but the process decides, best effort where the host does:** the
+  per-process steps (`RLIMIT_CORE` 0 on both, not dumpable on Linux, `PT_DENY_ATTACH` on
+  macOS) are required: one that fails stops the process before it reads a secret, with the
+  reason (fail closed). Memory locking on Linux depends on the host's lock limit or
+  `CAP_IPC_LOCK`: a warning naming the optional fix (`ulimit -l unlimited`,
+  `LimitMEMLOCK=infinity`, compose `ulimits: { memlock: -1 }`, or the capability); macOS has
+  no call for it: one info line.
+- **Linux** locks with `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)`: pages are locked
+  as they are touched, so the address space the runtime reserves is never filled in.
+- **macOS** checks first whether the process is being traced (`PT_DENY_ATTACH` would kill a
+  traced process): a release build refuses to start traced; a debug build (developing writd
+  under `lldb`) skips the call with a warning, which hard rule 2 allows (no bypass in release
+  builds).
+- The interface is `ProcessHardening` (`writ-platform`, its contract suite there); a build for
+  another OS gets `NoHardening`, which says so. Checked on Linux in the end-to-end daemon's
+  container (`/proc`: owned by root while the daemon runs as `writ`, a core limit of 0, locked
+  memory with the compose file's unlimited `memlock`), and on macOS by the contract suite and a
+  manual `lldb -p` check. `NoHardening` (another OS) can apply none of the required steps, so
+  a release build there refuses to start.
 
 **Tests.** The end-to-end pipeline moves to the sealed keystore (the operator path for real:
 `writd init`, `writ unseal`, admin changes, tokens, recovery, hardening checked in the
@@ -313,10 +340,10 @@ Acceptance:
 - [ ] The TLS key is only in the boot tier and the `Signer`: no PEM key file, no copy outside
       the `Signer`; HTTPS approvals work as in M2, with the certificate pinned from
       `writd tls-fingerprint`.
-- [ ] Where the platform allows it, the running daemon leaves no core dump when it crashes,
-      refuses a debugger attaching to it (`lldb -p`, `gdb -p` as the same user), and its
-      memory is locked (checked on macOS and on Linux); each one it can't apply is a startup
-      warning with the fix.
+- [ ] The running daemon leaves no core dump when it crashes and refuses a debugger
+      attaching to it (`lldb -p`, `gdb -p` as the same user), or doesn't start (release
+      build); its memory is locked where the host's lock limit allows it, a warning with the
+      fix otherwise (checked on macOS and on Linux).
 
 ## M5.5 — Signature formats and key algorithms
 

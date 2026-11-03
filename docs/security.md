@@ -354,8 +354,7 @@ allowed without a test.
 
 ## Known gaps
 
-What this page doesn't cover yet, with the milestone that does: process hardening (no core
-dumps, no debugger attach, secrets out of swap: M5), the TLS key behind the `Signer` (M5,
-M7.5), the shared `~/.writ/sessions/current` pointer (M6/M7), macOS-only code tested only by
+What this page doesn't cover yet, with the milestone that does: the TLS key in hardware
+(M7.5), the shared `~/.writ/sessions/current` pointer (M6/M7), macOS-only code tested only by
 `make ci` on the Mac, which the pre-push hook requires (CI is Linux). The [residual risks](threat-model.md#residual-risks-v1) list
 the rest.

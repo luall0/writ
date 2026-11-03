@@ -108,6 +108,9 @@ crates/
                         relay) or HTTPS (the token through a one-operation credential
                         socket, the byte-capping proxy)
   writ-signer/          the `Signer` trait, the software backend, its contract suite
+  writ-platform-linux/  Linux-only implementations: process hardening (M5)
+  writ-platform-macos/  macOS-only implementations: process hardening (M5; process chain,
+                        kqueue, Secure Enclave from M7)
   writ-gateway/         russh server: git upload/receive-pack, sign, lease commands, the
                         approval API over SSH and HTTPS
   writ-approval/        the approval service: tickets, approvals, refusals, revocations,
@@ -129,8 +132,6 @@ Planned, created by the milestone that needs them:
 
 ```
 crates/
-  writ-platform-macos/  macOS-only implementations (process chain, kqueue, Secure Enclave; M7)
-  writ-platform-linux/  Linux-only implementations (later)
 skill/writ/SKILL.md     the agent skill (M6)
 deploy/                 Dockerfile, compose.yaml (M8, built on e2e/'s images)
 spikes/                 throwaway spike code, outside the workspace, removed once done

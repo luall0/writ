@@ -16,7 +16,9 @@ against the lease, and is the only thing that pushes upstream.
    notification token's choice, changing the policy, approvers and readers, and (from M7.6)
    starting without a human. [Recovery](recovery.md): what to prepare, and how to get access
    back on each platform when a key or a passphrase is lost.
-4. [Work beside an agent](good-practice.md): wrapper or whole repo, keeping your own keys
+4. [Process hardening](hardening.md): what each `writd` process does so its secrets stay in
+   memory, how to check it on the host, the optional fix for each step it couldn't apply.
+5. [Work beside an agent](good-practice.md): wrapper or whole repo, keeping your own keys
    yours, guardrails, checking what landed.
 
 ## Reference
