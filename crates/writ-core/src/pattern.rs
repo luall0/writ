@@ -226,7 +226,10 @@ impl BranchPattern {
 }
 
 impl RefPattern {
-    pub fn matches(&self, name: &RefName) -> bool {
+    /// Case-sensitive: for tests only. A protected ref is checked with [`RefPattern::protects`],
+    /// which ignores case; nothing else matches a `RefPattern`.
+    #[cfg(test)]
+    pub(crate) fn matches(&self, name: &RefName) -> bool {
         self.0.matches(name.as_str())
     }
 
@@ -259,8 +262,10 @@ impl PathPattern {
         &self.0
     }
 
-    /// Matches a path relative to the repository root (`src/auth/login.rs`).
-    pub fn matches(&self, path: &str) -> bool {
+    /// Matches a path relative to the repository root (`src/auth/login.rs`): for tests only,
+    /// since it compiles the glob each call; the policy matches through a [`PathSet`].
+    #[cfg(test)]
+    pub(crate) fn matches(&self, path: &str) -> bool {
         build_glob(&self.0).is_ok_and(|glob| glob.compile_matcher().is_match(path))
     }
 }

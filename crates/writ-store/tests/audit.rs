@@ -208,6 +208,55 @@ fn every_text_in_a_line_is_bounded_on_both_sides() {
     assert!(text.lines().nth(1).unwrap().len() < 8 * (MAX_FIELD_CHARS + 16) + 256);
 }
 
+/// The review after M5.5 (L20): a line's lists were bounded per item only, so a caller
+/// passing many refs made one long line. Each list holds at most MAX_LIST_ITEMS, then a count.
+#[test]
+fn every_list_in_a_line_is_bounded_on_both_sides() {
+    use writ_store::MAX_LIST_ITEMS;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let mut log = AuditLog::open(&path).unwrap();
+    let items = |n: usize| {
+        (0..n)
+            .map(|i| format!("refs/heads/agent/{i}"))
+            .collect::<Vec<_>>()
+    };
+    for n in [MAX_LIST_ITEMS, MAX_LIST_ITEMS + 1, 100_000] {
+        let mut event = AuditEvent::new(t(0), EventKind::Push, Outcome::Denied)
+            .refs(items(n))
+            .warnings(items(n));
+        event.process_chain = Some(items(n));
+        log.append(&event).unwrap();
+    }
+    let text = fs::read_to_string(&path).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    for (line, more) in lines
+        .iter()
+        .zip([None, Some(1), Some(100_000 - MAX_LIST_ITEMS)])
+    {
+        for key in ["refs", "warnings", "process_chain"] {
+            let list = line[key].as_array().unwrap();
+            match more {
+                None => {
+                    assert_eq!(list.len(), MAX_LIST_ITEMS, "{key}");
+                    assert_eq!(
+                        list[MAX_LIST_ITEMS - 1],
+                        format!("refs/heads/agent/{}", MAX_LIST_ITEMS - 1)
+                    );
+                }
+                Some(more) => {
+                    assert_eq!(list.len(), MAX_LIST_ITEMS + 1, "{key}");
+                    assert_eq!(list[MAX_LIST_ITEMS], format!("… and {more} more"), "{key}");
+                }
+            }
+        }
+    }
+    assert!(text.lines().nth(2).unwrap().len() < 3 * MAX_LIST_ITEMS * 64 + 1024);
+}
+
 #[test]
 fn the_log_only_grows() {
     let dir = tempfile::tempdir().unwrap();

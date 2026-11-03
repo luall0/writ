@@ -234,10 +234,18 @@ The approval signs the ticket's **canonical bytes**, defined once in `writ-core`
 `writ sign` and the daemon always sign and verify the same bytes:
 
 - compact JSON (no whitespace), fields in the order above, `kind` first;
-- set-like lists (`repos`, `operations`, `branches`, `committer_emails`, `expected_paths`)
-  sorted and deduplicated; `plan` keeps its order;
+- set-like lists deduplicated and sorted, each in its own order (an independent client must
+  use exactly these; the fixtures pin them):
+  - `repos`, `committer_emails`, `expected_paths`: by the bytes of their UTF-8 text;
+  - `operations`: `fetch`, `commit_sign`, `push`, in that order (not alphabetical);
+  - `branches`: every exact name first, then every `prefix*` pattern, each group by the
+    bytes of its text (`["main", "agent/*"]`, not `["agent/*", "main"]`);
+- `plan` keeps its order;
 - absent values as `null`; timestamps as `YYYY-MM-DDTHH:MM:SSZ`; sizes in bytes;
-- strings as JSON escapes them (control characters escaped, other characters as UTF-8).
+- strings as JSON escapes them: `"` as `\"`, `\` as `\\`, U+0008, U+0009, U+000A,
+  U+000C, U+000D as `\b`, `\t`, `\n`, `\f`, `\r`, the other characters under U+0020 as
+  `\u00xx` (lowercase hex); everything else, DEL (U+007F) and the C1 controls included, as
+  its UTF-8 bytes, never escaped.
 
 Decoding accepts only bytes that re-encode to exactly themselves: another key order,
 whitespace, an unsorted set, an unknown field or another `kind` is refused. Any change to

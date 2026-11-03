@@ -910,3 +910,31 @@ fn feedback_is_bounded_in_the_core() {
         ));
     }
 }
+
+/// The review after M5.5 (L21): with no template named, a template the request can't be built
+/// against (here: its `max_ttl`, the default TTL, runs past the end of time) was the end of the
+/// search, and the request was rejected though another template fits it.
+#[test]
+fn a_template_the_request_cannot_be_built_against_does_not_hide_one_it_fits() {
+    let policy = POLICY.replacen("    max_ttl: 4h\n", "    max_ttl: 99999999d\n", 1);
+    assert_ne!(policy, POLICY, "the fixture changed");
+    let config = writ_core::config::PolicyConfig::from_yaml(&policy).unwrap();
+    // No template named, no TTL: feature-branch's default overflows; quick-fix fits.
+    let yaml = REQUEST
+        .replace("template: feature-branch\n", "")
+        .replace("agent/oauth-*", "agent/fix-*")
+        .replace("  ttl: 2h\n", "");
+    let ticket = fit::submit(&config, &request(&yaml), &submission(1)).unwrap();
+    assert_eq!(ticket.template.as_str(), "quick-fix");
+    // When none fits, the one that can't be built is one reason among the others.
+    let none = yaml.replace("agent/fix-*", "main");
+    let error = fit::submit(&config, &request(&none), &submission(1)).unwrap_err();
+    assert!(
+        error
+            .reasons
+            .contains(&"feature-branch: limits.ttl is too long".to_owned()),
+        "{:?}",
+        error.reasons
+    );
+    assert_eq!(error.reasons[0], "the ticket fits no template");
+}

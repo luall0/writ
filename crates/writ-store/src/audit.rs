@@ -24,6 +24,10 @@ use crate::Result;
 /// a line large, whoever built the event.
 pub const MAX_FIELD_CHARS: usize = 2048;
 
+/// The most items a list of a line holds (`refs`, `warnings`, `process_chain`): the rest are
+/// counted in a last item, `… and N more`. Every line is bounded whatever its callers pass.
+pub const MAX_LIST_ITEMS: usize = 64;
+
 /// What happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,8 +55,9 @@ pub enum EventKind {
     /// An agent signing key signed a remote's message, with an approver's signature over the
     /// `writ-proof/1` document (allowed), or the proof was refused (denied).
     Prove,
-    /// The notes of a repo with `ticket_link: notes` pushed upstream under `refs/notes/writ`
-    /// (allowed), or not (denied, with the reason: they stay pending), one line per lease.
+    /// The notes of a repo with `ticket_link: notes` pushed upstream under its `notes_ref`
+    /// (`refs/notes/commits` by default, or `refs/notes/writ`) (allowed), or not (denied, with
+    /// the reason: they stay pending), one line per lease.
     Notes,
     Admin,
     Seal,
@@ -103,10 +108,10 @@ pub struct AuditEvent {
     /// The SHA-256 of what a proof signed, in hex (`prove`): never the message itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_sha256: Option<String>,
-    /// The denial's category (`DenyCode`).
     /// How many notes a `notes` line is about.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<u64>,
+    /// The denial's category (`DenyCode`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,19 +236,24 @@ impl AuditEvent {
         self
     }
 
-    /// The event with every text cut to [`MAX_FIELD_CHARS`].
+    /// The event with every text cut to [`MAX_FIELD_CHARS`] and every list to
+    /// [`MAX_LIST_ITEMS`].
     fn bounded(&self) -> AuditEvent {
         let cut = |text: &String| writ_core::text::shown(text, MAX_FIELD_CHARS);
+        let list = |items: &[String]| -> Vec<String> {
+            let mut out: Vec<String> = items.iter().take(MAX_LIST_ITEMS).map(cut).collect();
+            if let Some(more) = items.len().checked_sub(MAX_LIST_ITEMS).filter(|n| *n > 0) {
+                out.push(format!("… and {more} more"));
+            }
+            out
+        };
         let mut event = self.clone();
         event.committer = event.committer.as_ref().map(cut);
         event.code = event.code.as_ref().map(cut);
         event.reason = event.reason.as_ref().map(cut);
-        event.refs = event.refs.iter().map(cut).collect();
-        event.warnings = event.warnings.iter().map(cut).collect();
-        event.process_chain = event
-            .process_chain
-            .as_ref()
-            .map(|chain| chain.iter().map(cut).collect());
+        event.refs = list(&event.refs);
+        event.warnings = list(&event.warnings);
+        event.process_chain = event.process_chain.as_deref().map(list);
         event
     }
 

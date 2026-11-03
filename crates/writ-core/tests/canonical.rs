@@ -293,3 +293,39 @@ fn only_canonical_bytes_decode() {
         );
     }
 }
+
+/// The orders and escapes lease-model.md specifies for an independent client (the review after
+/// M5.5, D3): sets by their own order, not always by text; only C0 escaped.
+#[test]
+fn the_documented_orders_and_escapes_are_the_encoded_ones() {
+    let mut t = full();
+    t.scope.operations = [Operation::Push, Operation::Fetch, Operation::CommitSign].into();
+    t.scope.branches = ["agent/*", "main", "a/*", "zeta"]
+        .iter()
+        .map(|b| b.parse().unwrap())
+        .collect();
+    t.scope.repos = ["omega-code", "Omega", "alpha"]
+        .iter()
+        .map(|r| r.parse().unwrap())
+        .collect();
+    t.text.title = "q\"b\\s\u{8}\t\n\u{c}\r\u{1}\u{1f} \u{7f}\u{85}é".to_owned();
+    let text = String::from_utf8(t.canonical_bytes().unwrap()).unwrap();
+    assert!(
+        text.contains(r#""operations":["fetch","commit_sign","push"]"#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""branches":["main","zeta","a/*","agent/*"]"#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""repos":["Omega","alpha","omega-code"]"#),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"title\":\"q\\\"b\\\\s\\b\\t\\n\\f\\r\\u0001\\u001f \u{7f}\u{85}é\""),
+        "{text}"
+    );
+    // And it decodes back to itself.
+    assert_eq!(Ticket::from_canonical(text.as_bytes()).unwrap(), t);
+}

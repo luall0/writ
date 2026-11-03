@@ -298,18 +298,34 @@ pub fn submit(
 
     let mut fitting = Vec::new();
     let mut reasons = Vec::new();
+    let only = candidates.len() == 1;
     for name in candidates {
         let Some(template) = config.template(name) else {
             continue;
         };
-        let ticket = build(
+        // A template the request can't be built against (a TTL past it, an overflow) is
+        // one reason among the others, not the end of the search.
+        let ticket = match build(
             request,
             submission,
             name,
             template,
             revision,
             previous_feedback.clone(),
-        )?;
+        ) {
+            Ok(ticket) => ticket,
+            // The one template there is: its reasons, as they are.
+            Err(rejection) if only => return Err(rejection),
+            Err(rejection) => {
+                reasons.extend(
+                    rejection
+                        .reasons
+                        .into_iter()
+                        .map(|r| format!("{name}: {r}")),
+                );
+                continue;
+            }
+        };
         match fits(config, &ticket) {
             Ok(()) => fitting.push(ticket),
             Err(why) => reasons.push(format!("{name}: {why}")),
