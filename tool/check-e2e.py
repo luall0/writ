@@ -8,10 +8,14 @@
 - the scenarios table: every module in crates/writ-e2e/tests/scenarios/ is a row, and every
   row is a module;
 - every scenario test is marked to run only in the pipeline;
-- the commands the docs show: each command line of a fenced block right after a
-  `<!-- e2e: <file> -->` marker is run by that file through `doc_step*` with exactly that
-  text, and every `doc_step*` literal in the e2e crate is a line of a block marked for its
-  file. A step changed in one is changed in the other.
+- the commands the docs show, both ways, so a step changed in one is changed in the other:
+  - a page listed in the "Commands the docs show" table: every command line of each of its
+    `sh` blocks is run through `doc_step*` with exactly that text by one of the files its row
+    names. Operator pages are listed there and carry no marker (they are read by people);
+  - elsewhere (a developer guide where only some blocks are run): each command line of a
+    fenced block right after a `<!-- e2e: <file> -->` marker is run by that file;
+  - every `doc_step*` literal in the e2e crate is a line its file is shown with, by a listed
+    page or a marked block.
 """
 
 import pathlib
@@ -105,11 +109,62 @@ def command(line: str) -> str:
 
 
 shown: dict[str, set[str]] = {}
+
+# Pages run whole: the table's rows, `[page](path) | `file`, `file``.
+listed_pages = 0
+for cells in table_rows(section("Commands the docs show")):
+    link = re.search(r"\]\(([^)#]+)\)", cells[0]) if cells else None
+    files = re.findall(r"`([^`]+)`", cells[1]) if len(cells) == 2 else []
+    if not link or not files:
+        errors.append(f"malformed commands row: {cells}")
+        continue
+    page = (DOC.parent / link.group(1)).resolve()
+    if not page.is_file():
+        errors.append(f"commands row: {link.group(1)} does not exist")
+        continue
+    for target in files:
+        if not (ROOT / target).is_file():
+            errors.append(f"commands row for {link.group(1)}: {target} does not exist")
+    listed_pages += 1
+    lines = page.read_text().splitlines()
+    commands = set()
+    j = 0
+    while j < len(lines):
+        if re.fullmatch(r"```sh", lines[j].strip()):
+            j += 1
+            while j < len(lines) and not lines[j].strip().startswith("```"):
+                body = lines[j].strip()
+                if body and not body.startswith("#"):
+                    commands.add(command(body))
+                j += 1
+        j += 1
+    if not commands:
+        errors.append(f"{page.relative_to(ROOT)}: listed in the commands table, and shows no sh block")
+    run_by = set()
+    for target in files:
+        if (ROOT / target).is_file():
+            run_by |= {unescape(l) for l in LITERAL.findall((ROOT / target).read_text())}
+        shown.setdefault(target, set())
+    for line in sorted(commands - run_by):
+        errors.append(f"{page.relative_to(ROOT)} shows `{line}`, which none of {', '.join(files)} runs through doc_step")
+    for target in files:
+        shown[target] |= commands
+if not listed_pages:
+    errors.append("no commands rows: the table moved or changed shape")
+
+# Marked blocks, in developer guides only: each line run by the file its marker names.
+marked: dict[str, set[str]] = {}
 for doc in sorted((ROOT / "docs").rglob("*.md")):
     lines = doc.read_text().splitlines()
     for i, line in enumerate(lines):
         match = re.fullmatch(r"<!-- e2e: (\S+) -->", line.strip())
         if not match:
+            continue
+        if doc.is_relative_to(ROOT / "docs/operators"):
+            errors.append(
+                f"{doc.relative_to(ROOT)}:{i + 1}: no e2e marker on an operator page: "
+                "list the page in docs/end-to-end.md#commands-the-docs-show instead"
+            )
             continue
         target = match.group(1)
         if not (ROOT / target).is_file():
@@ -125,6 +180,7 @@ for doc in sorted((ROOT / "docs").rglob("*.md")):
         while j < len(lines) and not lines[j].strip().startswith("```"):
             body = lines[j].strip()
             if body and not body.startswith("#"):
+                marked.setdefault(target, set()).add(command(body))
                 shown.setdefault(target, set()).add(command(body))
             j += 1
 
@@ -134,12 +190,12 @@ for path in sorted(CRATE.rglob("*.rs")):
     for literal in LITERAL.findall(path.read_text()):
         run.setdefault(rel, set()).add(unescape(literal))
 
-for target, commands in sorted(shown.items()):
+for target, commands in sorted(marked.items()):
     for line in sorted(commands - run.get(target, set())):
         errors.append(f"docs show `{line}` for {target}, which doesn't run it through doc_step")
 for target, commands in sorted(run.items()):
     for line in sorted(commands - shown.get(target, set())):
-        errors.append(f"{target} runs `{line}` as a documented step, which no marked block shows")
+        errors.append(f"{target} runs `{line}` as a documented step, which no listed page or marked block shows")
 
 for e in errors:
     print(f"check-e2e: {e}", file=sys.stderr)

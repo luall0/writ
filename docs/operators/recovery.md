@@ -1,83 +1,83 @@
-# Recovery: getting access back
+# Recovery
 
-What to do when something that opens or runs the daemon is lost: an approval key, a reader
-key, the Mac that held both, the keystore's passphrase, or a file that changed on the host. It
-starts with what to prepare **before** anything is lost, because some losses can't be undone
-after.
-
-The model, in one paragraph. After `writd init`, the daemon holds the files that grant
-authority (the policy, `approvers`, `readers`) as versions in force in its state, under a MAC
-keyed by a secret of the keystore ([sealing](sealing.md)). They change only by an approver's
-signed admin change (`writ admin apply`, over the approval API) or by `writd recover` on the
-daemon host, with the passphrase. The files `writd.yaml` names are written back with the text
-in force; editing one by hand changes nothing (it is set aside at the next start).
+What to do when you lose an approval key, a reader key, the Mac that held both, or the
+passphrase. Read [before anything is lost](#before-anything-is-lost) first: some losses can't
+be fixed afterwards.
 
 ## Before anything is lost
 
 | Prepare | Why | How |
 |---|---|---|
-| A second approver key | Losing the only one leaves no signed way to change anything | A YubiKey (`ssh-keygen -t ed25519-sk`), added with `writ admin apply approvers` while you still can |
-| A second reader key | A lost Mac takes its reader key, and nobody reaches the approval API without one | `writ reader <name>` on another machine, added with `writ admin apply readers` |
-| The passphrase, somewhere else than your head | Nothing recovers the keystore without it; `writd recover` needs it too | A password manager |
-| Backups of the state and the keys | A lost disk loses the leases, the ledger, the audit log and the keys | `state_dir` (copy `leases.db` with `sqlite3 leases.db .backup`, not while it is written), `keystore.sealed.dir` (encrypted: safe to copy anywhere), the boot tier (secret: keep it as such) |
-| The current files, outside the host | To edit and recover from | `writ admin show policy > policy.yaml` (and `approvers`, `readers`) from your machine |
+| A second approval key | With only one, losing it leaves no way to sign any change | A YubiKey (`ssh-keygen -t ed25519-sk`), added with `writ admin apply approvers` |
+| A second reader key | A lost Mac takes its reader key, and without one nobody reaches the approval API | `writ reader <name>` on another machine, added with `writ admin apply readers` |
+| The passphrase, written down somewhere safe | Nothing opens the keystore without it, not even `writd recover` | A password manager |
+| Backups | A lost disk loses the leases, the ledger, the audit log and the keys | `state_dir` (copy `leases.db` with `sqlite3 leases.db .backup`), `keystore.sealed.dir` (encrypted: safe anywhere), the boot directory (secret: keep it safe) |
+| A copy of the current files | Something to edit and recover from | `writ admin show policy > policy.yaml`, and the same for `approvers` and `readers` |
 
 ## What happened, and what to do
 
-| You lost / found | You still have | Do |
-|---|---|---|
-| One approver key | Another approver key | `writ admin apply approvers` without the lost key, signed with the other one |
-| Every approver key | The passphrase and the host | [Recover](#writd-recover-step-by-step) `approvers` with a new key |
-| One reader key | Another reader key | `writ admin apply readers` without it |
-| Every reader key (a lost Mac: both kinds of key) | The passphrase and the host | [Recover](#writd-recover-step-by-step) `readers` (and `approvers`) with new keys |
-| A file edited by hand on the host | — | It was set aside at the start (`<file>.unapplied-<time>`, in the log and the audit log) and never applied. To apply it: `writ admin apply` from your machine, or [recover](#writd-recover-step-by-step) with it |
-| The daemon refuses to unseal: "altered at rest" | The passphrase and the host | Someone changed the versions in force in the state without the keystore's key. Find out how (the audit log, the host's own logs), then [recover](#writd-recover-step-by-step) each file you trust, or put back a backup of `state_dir` |
-| The daemon refuses to start: "no authority files in force" | The files | The state lost its versions (a new or emptied `state_dir`). Put back a backup of `state_dir`; a state that never had any takes a fresh `writd init` |
-| The passphrase | — | The keystore can't be opened, by design, and `writd recover` can't run. Start over: a new `writd init` in empty directories (and a new `state_dir`), the new keys registered on the remotes (`writd upstream-keys`, `writd signing-keys`), new pins on the clients, the leases gone. From M7.6, the offline recovery identity opens the keystore instead |
-| The keys directory, the boot tier, or the whole host | A backup of each | Put them back as they were (same paths, the daemon's user owning them, modes kept), then start and unseal |
+| What happened | Do |
+|---|---|
+| Lost one approval key, you still have another | `writ admin apply approvers` without the lost key, signed with the other one |
+| Lost every approval key | [`writd recover`](#writd-recover-step-by-step) `approvers` with a new key |
+| Lost one reader key, you still have another | `writ admin apply readers` without the lost key |
+| Lost every reader key (a lost Mac usually means both kinds) | [`writd recover`](#writd-recover-step-by-step) `readers`, and `approvers` if needed |
+| Found `<file>.unapplied-<time>` on the host | Someone edited that file by hand. It was never applied. To apply it: `writ admin apply`, or `writd recover` |
+| The daemon won't unseal: "altered at rest" | Someone changed the daemon's copies of the files without the keystore. Find out how (audit log, host logs). Then `writd recover` each file you trust, or restore a backup of `state_dir` |
+| The daemon won't start: "no authority files in force" | Its state lost its copies (a new or emptied `state_dir`). Restore a backup of `state_dir`, or run `writd init` if it was never initialized |
+| Lost the passphrase | It can't be recovered, by design. [Start over](#starting-over) |
+| Lost the keys directory, the boot directory or the host, and you have backups | Restore them at the same paths, same owner, same modes. Then start and unseal |
 
-A note on backups: putting `state_dir` back from an older copy puts older versions in force
-(they carry a valid MAC: they were the keystore's). That is how a backup works; it is also why
-the backup must be kept as carefully as the state itself.
+**About backups:** restoring an older `state_dir` also restores the older policy, approvers
+and readers it held. That's how a backup works, and why it must be guarded like the state
+itself.
 
 ## `writd recover`, step by step
 
-`writd recover <writd.yaml> <policy|approvers|readers> <file>` puts `<file>` in force from the
-daemon host. It needs the host and the passphrase, which together open every secret already:
-it gives nobody anything new.
+`writd recover <writd.yaml> <policy|approvers|readers> <file>` puts `<file>` in force, from the
+daemon host. It needs access to the host and the passphrase. Together they already open every
+secret, so it gives nobody anything new.
 
-1. **Stop the daemon.** Two writers on one state would refuse each other's versions.
-2. **Write the file.** Start from the text in force, which is in the file `writd.yaml` names
-   (written back by the daemon). For `approvers`: the new approval key's line
-   (`<name> <public key>`); for `readers`: the line `writ reader <name>` printed on the new
-   machine. Keep the file owned by the daemon's user, not writable by group or others.
-3. **Run it, as the daemon's user** (see [the platforms](#the-daemons-user-on-each-platform)):
+1. **Stop the daemon.**
+2. **Write the new file.** Start from the current file on the host: the daemon keeps it up to
+   date. For `approvers`, add the new key's line `<name> <public key>`. For `readers`, add the
+   line `writ reader <name>` printed on the new machine. Keep the file owned by the daemon's
+   user and not writable by group or others.
+3. **Run it, as the daemon's user** ([how, per platform](#the-daemons-user-on-each-platform)):
 
    ```sh
    writd recover writd.yaml approvers approvers.new
    ```
 
-   It asks for the passphrase (one line of stdin when it isn't a terminal), checks the file as
-   an admin change would (it parses; there is still an approver and a reader; no key is both),
-   records it as a new version under the keystore's MAC, writes one `admin` line to the audit
-   log ("recovered on the host"), and writes the text to the file `writd.yaml` names. A wrong
-   passphrase changes nothing.
+   It asks for the passphrase, then checks the file like a signed change would: it must
+   parse, keep at least one approver and one reader, and no key may be both. Then it puts the
+   file in force, writes an `admin` line to the audit log ("recovered on the host"), and
+   writes the file back. A wrong passphrase changes nothing.
 4. **Start the daemon and unseal it** with the new key: `writ unseal --key <new key>.pub`.
-5. **Check:** `writ admin show approvers` from your machine shows the recovered version; the
-   audit log has its line.
+5. **Check** from your machine: `writ admin show approvers` shows the new version.
+
+## Starting over
+
+Without the passphrase, the keystore is lost:
+
+1. Run `writd init` in empty directories, with a new `state_dir`.
+2. Register the new keys on the remotes: `writd upstream-keys`, `writd signing-keys`.
+3. Pin the daemon's new identity on every client ([setup, step 7](setup.md#steps)).
+
+The leases are gone. From M7.6, an offline recovery identity will open the keystore instead.
 
 ## The daemon's user on each platform
 
-`writd recover` (like `writd init`) runs as the user the daemon runs as, so the files it writes
-stay that user's and the keystore stays readable by the daemon only. Never run it as root on
-files the daemon owns: the daemon refuses files owned by another user than itself or root,
-and a root-owned file the daemon can't rewrite stops the write-back.
+Run `writd recover` (and `writd init`) as the daemon's user, **never as root**. The daemon
+refuses files owned by any user but itself or root, and can't rewrite the files root owns.
 
-### macOS, local mode
+Until M7, the daemon runs as your own user: stop your `writd run`, and run `writd recover` as
+yourself.
 
-From [M7](../roadmap.md#m7--local-mode-on-the-mac), the local daemon is a LaunchDaemon running
-as the dedicated user `_writd`, isolated from your user (your user can't read its files, by
-design). Its label and paths are the ones M7's installer sets; with that layout:
+### macOS, local mode (M7)
+
+The daemon is a LaunchDaemon running as the dedicated user `_writd`. Your user can't read its
+files, by design. The label and paths are the ones M7's installer sets:
 
 ```sh
 sudo launchctl bootout system/<label>               # 1. stop the daemon
@@ -87,18 +87,15 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/<label>.plist   # 4. star
 writ unseal --key ~/.writ/new-approval.pub          #    and unseal from your user
 ```
 
-`sudo -u _writd` asks for your password: an admin account is needed, which is the line between
-you and the daemon's keys (your user must not have passwordless `sudo`,
-[threat model](../threat-model.md#6-local-mode-the-daemon-vs-my-own-user)). Until M7 the
-daemon runs as your own user while it is developed (M0 to M6): run `writd recover` as
-yourself, after stopping the `writd run` you started.
+`sudo` asks for your password. That password is what separates you (and any agent running as
+you) from the daemon's keys, so your user must not have passwordless `sudo`
+([threat model](../threat-model.md#6-local-mode-the-daemon-vs-my-own-user)).
 
-### Docker, detached mode
+### Docker, detached mode (M8)
 
-From [M8](../roadmap.md#m8--detached-deployment), the daemon runs in its container as the
-image's non-root user, with the state and the keys in volumes. Run `writd recover` in a
-one-off container of the same image, as that user, with the same volumes, the daemon's
-container stopped:
+The daemon runs in its container as the image's non-root user, its state and keys in volumes.
+Run `writd recover` in a one-off container of the same image, with the same volumes, while the
+daemon's container is stopped:
 
 ```sh
 docker compose stop writd                                       # 1.
@@ -108,13 +105,14 @@ docker compose start writd                                      # 4.
 writ unseal --key ~/.writ/new-approval.pub
 ```
 
-`-it` gives the passphrase prompt a terminal. A copied file may come in owned by root: set its
-owner to the image's user first (`docker compose run --rm --user root writd chown …`), never
-run `writd recover` itself as root.
+- `-it` gives the passphrase prompt a terminal.
+- A copied file may arrive owned by root. Fix its owner first
+  (`docker compose run --rm --user root writd chown …`), but never run `writd recover` itself
+  as root.
 
 ### Linux, natively
 
-A dedicated system user (for example `writd`), the daemon under systemd:
+The daemon runs under systemd as a dedicated system user, for example `writd`:
 
 ```sh
 sudo systemctl stop writd                                       # 1.
@@ -126,8 +124,7 @@ writ unseal --key ~/.writ/new-approval.pub
 
 ## What recovery can't do
 
-- Open the keystore without the passphrase (or, from M7.6, the offline recovery identity).
-- Bring back leases, the ledger or the audit log from a lost `state_dir`: only its backup can.
-- Undo what a lost key did while it was valid: a lost approval key could sign until it was
-  removed; read the audit log (`grant`, `admin` lines) for what it approved, and revoke
-  (`writ revoke`) what you don't recognize.
+- Open the keystore without the passphrase.
+- Bring back leases, the ledger or the audit log from a lost `state_dir`. Only a backup can.
+- Undo what a lost key did while it was still listed. Read the audit log's `grant` and `admin`
+  lines for what it approved, and `writ revoke` what you don't recognize.

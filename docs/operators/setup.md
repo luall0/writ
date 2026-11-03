@@ -1,184 +1,235 @@
-# Setting up the daemon
+# Setup
 
-From nothing to a running `writd`: its files, the upstream credentials and host keys, the
-pins on every client. Every key of the files it reads:
-[`writd.yaml`](writd-yaml.md) and [`policy.yaml`](policy-yaml.md). Once it runs, wiring repos
-for agents and keeping your own keys yours: [good practice](good-practice.md).
+From nothing to a running, unsealed `writd`. Two machines are involved (they can be the same):
 
-## The steps
+- **The daemon host**, where `writd` runs and keeps its files.
+- **Your machine**, the approver's: `writ`, and your approval key in Secretive.
 
-On the daemon's host, in the directory that holds its files (`make e2e` runs
-these steps, with these commands, before every scenario: [end-to-end](../end-to-end.md#commands-the-docs-show)).
-The approvers and readers come before the keystore (`writd init` puts the three files in force
-as their first versions); the daemon starts last, sealed, and the approver unseals it.
+These are the exact commands `make e2e` runs before every scenario, so they are known to work
+([end-to-end](../end-to-end.md#commands-the-docs-show)).
 
-1. **The configuration**: `writd.yaml`, with paths relative to it (`state_dir: data`,
-   `policy: policy.yaml`, `approvers: approvers`, `readers: readers`,
-   `keystore: { sealed: { dir: data/keys, boot: data/boot } }`,
-   `mirrors.known_hosts: upstream_known_hosts`; the [development one](../../dev/writd.yaml)
-   is a commented example; [every key](writd-yaml.md), a [template](templates/writd.yaml) to
-   start from), and `policy.yaml`, the repo registry and the templates ([every key](policy-yaml.md),
-   a [template](templates/policy.yaml)). Both 0644 or stricter, owned by
-   the daemon's user. The boot tier (`keystore.sealed.boot`) can live on another volume
-   ([sealing](sealing.md)).
-2. **The approver's machine**: its reader key (the approval API lets only readers in), whose
-   printed line goes into the daemon's `readers` file; and the approval key's public half
-   (Secretive's dedicated key) into `approvers`, as `<name> <key>`. Enroll a second approval
-   key and a second reader from the start if you can ([recovery](recovery.md)):
+## What you end up with
 
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+One directory on the daemon host, owned by the daemon's user:
+
+| Path | What it is | Made by |
+|---|---|---|
+| `writd.yaml` | The daemon's configuration | You, from the [template](templates/writd.yaml) |
+| `policy.yaml` | The repos agents may use, and the templates that cap tickets | You, from the [template](templates/policy.yaml) |
+| `approvers` | The keys that may sign tickets | You (step 2) |
+| `readers` | The keys that may use the approval API | You (step 2) |
+| `upstream_known_hosts` | The remotes' SSH host keys | You (step 5) |
+| `data/keys/` | Every secret, encrypted | `writd init` (step 3) |
+| `data/boot/` | The keys the daemon needs before it is unsealed | `writd init` (step 3) |
+| `data/` | Leases, ledger, audit log, mirrors | `writd run` (step 8) |
+
+`data/boot/` may live on another volume ([why](sealing.md#how-the-keystore-works)).
+
+## Steps
+
+1. **Write `writd.yaml` and `policy.yaml`** on the daemon host, from the templates. The paths
+   in it are relative to `writd.yaml`, for example:
+
+   ```yaml
+   state_dir: data
+   policy: policy.yaml
+   approvers: approvers
+   readers: readers
+   keystore: { sealed: { dir: data/keys, boot: data/boot } }
+   mirrors: { known_hosts: upstream_known_hosts }
+   ```
+
+   Both files mode 0644 or stricter. Every key: [`writd.yaml`](writd-yaml.md),
+   [`policy.yaml`](policy-yaml.md). A commented example: the
+   [development configuration](../../dev/writd.yaml).
+
+2. **List your keys** in two files on the daemon host. On your machine, make your reader key:
+
    ```sh
    writ reader <name>
    ```
-3. **The keystore**, made once, as the daemon's user: it asks for the passphrase twice (one
-   line of stdin when it isn't a terminal; at least 12 characters), makes the keys the
-   policy names, records the three files in force, and prints the recipient and every key to
-   register. Keep the passphrase somewhere safe: the approver types it at each unseal.
 
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   - Put the line it prints into `readers`.
+   - Put your approval key's public half into `approvers`, as `<name> <public key>`.
+
+   If you can, add a second approval key (a YubiKey) and a second reader on another machine
+   now. Losing your only one is painful ([recovery](recovery.md)).
+
+3. **Create the keystore**, on the daemon host, as the daemon's user:
+
    ```sh
    writd init writd.yaml
    ```
-4. **The upstream credentials**, each added on its remote (below: a deploy key with write
-   access on its repository); an `https://` upstream's credential is a token, added once the
-   daemon runs (step 10):
 
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   It asks for a passphrase twice (12 characters or more; one line of stdin when it isn't a
+   terminal). Keep it in a password manager: you type it at every unseal, and nothing
+   recovers a lost one. It creates the keys the policy names and prints what to register.
+   From now on, `policy.yaml`, `approvers` and `readers` change only with
+   [`writ admin apply`](sealing.md#changing-the-policy-the-approvers-or-the-readers).
+
+4. **Register the upstream keys** on the remotes:
+
    ```sh
    writd upstream-keys writd.yaml
    ```
-5. **Each remote's host key**, pinned, then checked against the fingerprints the remote
-   publishes (below):
 
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   It prints each key and the repos that use it. Add each one as a **deploy key with write
+   access** on its repository ([why](#upstream-keys-and-host-keys)). An `https://` repo uses
+   a token instead, added at step 10.
+
+5. **Pin each remote's host key**:
+
    ```sh
    ssh-keyscan -t ed25519 <host> >> upstream_known_hosts
    ssh-keygen -lf upstream_known_hosts
    ```
-6. **The agent signing keys**, to add on the account as signing keys if the remote should
-   show the commits as verified ([proving a key](../architecture/approvals.md#proving-a-signing-key-to-a-remote)
-   when the remote asks for it, as Forgejo and Gitea do):
 
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   Compare the fingerprints with the ones the remote publishes. Never trust a scan alone.
+
+6. **Register the agent signing keys** on your remote account, so agent commits show as
+   verified (optional):
+
    ```sh
    writd signing-keys writd.yaml
    ```
-7. **The daemon's identity, pinned on every client**: its host key in `~/.writ/known_hosts`
-   (`[<daemon>]:2222 <key>` for agents, `[<daemon>]:2223 <key>` for the approver), its TLS
-   certificate's fingerprint in the approver's `~/.writ/tls_pins` (`[<daemon>]:8443 SHA256:…`).
-   These commands, like the two before, read public halves: no passphrase.
 
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   Forgejo and Gitea ask you to prove the key: [proving a signing key](../architecture/approvals.md#proving-a-signing-key-to-a-remote).
+
+7. **Pin the daemon's identity** on every client. Print it:
+
    ```sh
    writd host-key writd.yaml
    writd tls-fingerprint writd.yaml
    ```
-8. **Start it**, from its directory:
 
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   Then add these lines:
+
+   | Where | File | Line |
+   |---|---|---|
+   | Each agent host | `~/.writ/known_hosts` | `[<daemon>]:2222 <key>` |
+   | Your machine | `~/.writ/known_hosts` | `[<daemon>]:2223 <key>` |
+   | Your machine | `~/.writ/tls_pins` | `[<daemon>]:8443 SHA256:…` |
+
+   Steps 4 to 7 only read public keys: no passphrase needed.
+
+8. **Start the daemon**, from its directory:
+
    ```sh
    writd run writd.yaml
    ```
 
-   It starts sealed ([sealing](sealing.md)), hardened ([process hardening](hardening.md)), and
-   logs its host key, TLS fingerprint, each approver's and reader's fingerprint, and its
-   listeners; check the fingerprints against what you pinned and listed.
-9. **Unseal it**, from the approver's machine: the passphrase, then one signature with the
-   approval key. After every start of the daemon, the same:
+   It starts sealed and [hardened](hardening.md). Its log shows its host key, its TLS
+   fingerprint, the fingerprint of each approver and reader, and its listeners. Check them
+   against what you pinned and listed.
 
-   <!-- e2e: crates/writ-e2e/src/setup.rs -->
+9. **Unseal it**, from your machine. You'll do this after every restart:
+
    ```sh
    writ unseal
    ```
-10. **The `https://` upstreams' tokens**, from the approver's machine
-    ([below](#https-upstreams-and-tokens)): paste the token (it isn't shown), then sign. It is
-    encrypted there to the daemon's keystore and used at once:
 
-    <!-- e2e: crates/writ-e2e/src/setup.rs -->
+   It asks for the passphrase, then one Touch ID.
+
+10. **Add the tokens** of `https://` repos, from your machine ([details](#https-upstreams-and-tokens)):
+
     ```sh
     writ admin token <id>
     ```
 
+    Paste the token (it isn't shown), then sign.
+
+Done. Next: [wire a repo for an agent](good-practice.md).
+
 ## Upstream keys and host keys
 
-The daemon pushes to and fetches from each repo's `upstream` with that repo's
-`upstream_credential`, a key in its signer ([gateway](../architecture/gateway.md#upstream)).
+The daemon fetches from and pushes to each repo's `upstream` with that repo's
+`upstream_credential`, a key it holds ([gateway](../architecture/gateway.md#upstream)).
 
-1. **Add each credential on its remote.** `writd upstream-keys writd.yaml` prints each key
-   and the repos that use it. Prefer a **deploy key** with write access on that one repository
-   (GitHub, Codeberg, Forgejo and GitLab all have them): the remote then scopes the key to the
-   repo. A key added on your account reaches every repository you can push to; the daemon's
-   registry is then the only per-repo boundary.
-2. **Pin each remote's host key** in the file `mirrors.known_hosts` names, one line per host:
-   `github.com ssh-ed25519 AAAA…`, or `[forgejo.home]:2222 ssh-ed25519 AAAA…` off port 22.
-   Take the key from the remote's published fingerprints (GitHub, Codeberg and GitLab publish
-   theirs) or from `ssh-keyscan -t ed25519 <host>` checked against them; never trust a scan
-   alone. The daemon refuses to start when a repo's host has no pin, and refuses a sync when
-   the host shows another key. Wildcards, hashed names and `@cert-authority` lines are refused.
-3. **Mind the bounds** ([`mirrors`](writd-yaml.md#mirrors-and-upstream) in `writd.yaml`): `max_fetch` (1 GiB) caps what one sync
-   takes from upstream, `timeout` (5 min) how long it may take; a first sync of a large
-   repository may need more.
+**Use deploy keys.** GitHub, Codeberg, Forgejo and GitLab all have them. A deploy key reaches
+one repository. A key added to your account reaches every repository you can push to, and
+then only the daemon's policy stops an agent from reaching the others.
+
+**Pin host keys by hand.** One line per host in `upstream_known_hosts`:
+
+```text
+github.com ssh-ed25519 AAAA…
+[forgejo.home]:2222 ssh-ed25519 AAAA…
+```
+
+- The daemon refuses to start if a repo's host has no pin.
+- It refuses a sync if the host shows a different key.
+- Wildcards, hashed names and `@cert-authority` lines are refused.
+
+**Large repositories.** One sync may take at most `mirrors.max_fetch` (1 GiB) and
+`mirrors.timeout` (5 min). A first sync of a big repository may need more
+([`mirrors`](writd-yaml.md#mirrors-and-upstream)).
 
 ## HTTPS upstreams and tokens
 
-Where a remote is reachable over HTTPS only, a repo's `upstream` is `https://host[:port]/path`
-and its `upstream_credential` names a **token** ([gateway](../architecture/gateway.md#upstream)):
+For a remote reachable only over HTTPS: set `upstream: https://host[:port]/path`, and
+`upstream_credential` names a token.
 
-1. **Make the token as narrow as the remote allows**: on GitHub a fine-grained token for that
-   one repository with "Contents: read and write"; on GitLab a project access token with
-   `write_repository`; on Forgejo or Gitea a token with `write:repository`. A token reaches
-   whatever its scope covers: the daemon's registry is the only per-repo boundary beyond it.
-2. **Add it from the approver's machine**: `writ admin token <id>` (step 10), once the daemon
-   is unsealed; run it again to rotate the token. It reaches the daemon encrypted, and is
-   written there sealed (`tokens/<id>.age`). Until it is added, the repo's syncs and pushes
-   are refused with that command; the rest of the daemon works. Anything but one word of
-   printable ASCII is refused. One id is a key or a token, never both. (The development
-   keystore, for tests, takes it as a file instead: `<keys>/tokens/<id>`, 0600.)
-3. **The user name**: most remotes take any name with a token (GitHub, GitLab, Forgejo,
-   Gitea); the daemon sends `writ`. A remote that wants a given one has it in the URL
-   (`https://x-token-auth@bitbucket.org/…`). Never a password in the URL: refused.
-4. **The server's certificate** is checked against the system's CAs, or, when the remote's
-   certificate comes from your own CA (a self-hosted Forgejo), against the PEM file
-   `mirrors.ca_certs` names (an authority file, like `known_hosts`: it then replaces the
-   system's). git 2.47 or newer on the daemon's host.
+**Make the token as narrow as the remote allows:**
 
-The token stays in the daemon: git gets it for one operation from the daemon's own helper,
-through a socket only the daemon's user reaches; it is never in a command line, an
-environment variable, a URL, the mirror's config or a log. A redirect is refused, and git
-reaches only the registry's host, through a proxy that caps what upstream sends like
-`max_fetch` does for SSH.
+| Remote | Token |
+|---|---|
+| GitHub | Fine-grained, for that one repository, "Contents: read and write" |
+| GitLab | Project access token with `write_repository` |
+| Forgejo, Gitea | Token with `write:repository` |
+
+**Add it**, once the daemon is unsealed: `writ admin token <id>`. Run it again to rotate the
+token. Until it is added, that repo's syncs and pushes are refused (with the command to run);
+everything else works.
+
+**Good to know:**
+
+- The token is encrypted on your machine before it is sent. The daemon stores it as
+  `tokens/<id>.age`.
+- It must be one word of printable ASCII. An id is either a key or a token, never both.
+- The daemon sends the user name `writ`, which most remotes accept. If yours wants a specific
+  one, put it in the URL (`https://x-token-auth@bitbucket.org/…`). A password in the URL is
+  refused.
+- The server's certificate is checked against the system's CAs. For a self-hosted remote
+  behind your own CA, point `mirrors.ca_certs` at its PEM file (it then replaces the system's
+  CAs).
+- Needs git 2.47 or newer on the daemon host.
+- The development keystore (tests only) reads the token from the file `<keys>/tokens/<id>`
+  (0600) instead.
+
+**How the token is protected:** git gets it for one operation at a time, from the daemon's own
+credential helper, through a socket only the daemon's user can reach. It never appears in a
+command line, an environment variable, a URL, a config file or a log. Redirects are refused,
+and git can only reach the policy's host, through a proxy that caps how much it downloads.
 
 ## Notes on the remote
 
-A repo with `ticket_link: notes` ([reference](policy-yaml.md#the-repo-registry-reposname))
-gets a git note per pushed commit, `Writ: <lease id>`, written and pushed by the daemon after
-each push ([how](../architecture/gateway.md#notes)), under `refs/notes/commits` (git's own
-notes ref) unless `notes_ref: writ` says `refs/notes/writ`:
+With `ticket_link: notes` ([reference](policy-yaml.md#linking-commits-to-leases-ticket_link)),
+the daemon adds a git note `Writ: <lease id>` to each commit it pushes, under
+`refs/notes/commits` (or `refs/notes/writ` with `notes_ref: writ`).
 
-1. **The credential pushes one more ref.** The repo's upstream key or token must be allowed to
-   push the notes ref, not only branches: write access does it on GitHub, Codeberg,
-   Forgejo and Gitea; a rule that limits which refs may be pushed must let it through. A
-   refused notes push leaves the branch pushed, writes a denied `notes` line in the audit log
-   with the remote's reason, and the missing notes are written by the repo's next push or the
-   next background sync (`sync_every`), which tries again until the remote takes them (one
-   denied line per lease each time).
-2. **Switching a repo to notes backfills it.** Commits the daemon signed and pushed to the
-   repo before it asked for notes get theirs at the next background sync (or at start), from
-   the ledger: their lease is known.
-3. **Reading them.** Forgejo and Gitea show the notes under `refs/notes/commits` on a
-   commit's page. GitHub's web interface shows none; from a clone, `git log` shows them once
-   fetched:
+**The upstream credential must be allowed to push the notes ref.** Write access does it on
+GitHub, Codeberg, Forgejo and Gitea. A rule limiting which refs may be pushed must let it
+through. If the remote refuses a note:
 
-   <!-- e2e: crates/writ-e2e/tests/scenarios/notes.rs -->
-   ```sh
-   git fetch origin refs/notes/commits:refs/notes/commits
-   git log
-   ```
+- the branch is still pushed;
+- the audit log gets a denied `notes` line with the remote's reason;
+- the note is retried at the next push or background sync, until it goes through.
 
-   With `notes_ref: writ`, fetch `refs/notes/writ` and read them with
-   `git log --notes=writ`. Under `refs/notes/commits`, notes a person wrote there stay: the
-   daemon adds its lines to theirs.
+**Turning notes on later** is fine: commits the daemon pushed before get their notes at the
+next background sync (or the next start).
 
-4. **What a note is worth.** Notes commits are unsigned (`writd <writd@writ.invalid>`), and
-   anyone who can push to the remote can write one: a note is a readable copy of the link,
-   the daemon's ledger is the reference.
+**Reading them.** Forgejo and Gitea show them on a commit's page. GitHub's web interface
+doesn't. From a clone:
+
+```sh
+git fetch origin refs/notes/commits:refs/notes/commits
+git log
+```
+
+With `notes_ref: writ`, fetch `refs/notes/writ` instead and read with `git log --notes=writ`.
+Notes someone else wrote under `refs/notes/commits` are kept: the daemon adds its line to
+theirs.
+
+**A note is not proof.** Notes are unsigned (`writd <writd@writ.invalid>`), and anyone who can
+push to the remote can write one. They are a readable copy. The daemon's ledger is the
+reference.

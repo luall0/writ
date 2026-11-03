@@ -108,7 +108,9 @@ records every commit signed per lease. Use these words in code, logs and docs.
     proxying, no multi-user) unless explicitly asked.
 14. **English everywhere** in code, comments, logs, messages and commits.
 15. **Keep docs in sync:** a change to behavior, the lease model, the protocol or the
-    architecture updates the matching page in `docs/` in the same change. A new decision gets a
+    architecture updates the matching page in `docs/` in the same change. The operator pages
+    (`docs/operators/`) stay readable by a human: follow the
+    [writing rules](docs/conventions.md#writing-operator-docs). A new decision gets a
     row at the end of the [decision log](docs/decisions.md); a new question goes under its open
     questions.
 16. **Follow the [code conventions](docs/conventions.md)** (crate and module layout,
@@ -127,8 +129,9 @@ records every commit signed per lease. Use these words in code, logs and docs.
     [coverage registry](docs/end-to-end.md#coverage-every-command-and-flag), in the same
     change (`make test` fails on a command or flag without a row, `make check` on a row
     without a scenario); [adding a scenario](docs/end-to-end.md#adding-a-scenario). A
-    command a guide shows is the command the pipeline runs (`<!-- e2e: … -->` blocks,
-    checked both ways).
+    command a guide shows is the command the pipeline runs, checked both ways
+    ([commands the docs show](docs/end-to-end.md#commands-the-docs-show): operator pages
+    listed whole, never a marker in them).
 19. **Every configuration key is documented and tested.** A key, value, default or bound
     added to or changed in `writd.yaml`, `policy.yaml` or the ticket file, or an environment
     variable a binary reads, updates its row in the [operator reference](docs/operators/README.md)

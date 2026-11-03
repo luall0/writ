@@ -1,49 +1,50 @@
-# Working beside an agent: good practice
+# Working beside an agent
 
-How to wire a repository for an agent while keeping your own git workflow, and what protects
-what. Writ guards what the agent does **through the daemon**; what an agent running as your
-user could reach on your machine is yours to protect. See the
-[threat model](../threat-model.md#what-writ-does-not-guarantee).
+Writ controls what an agent does **through the daemon**. It can't stop an agent running as your
+user from using what is on your machine: that part is up to you. This page covers both
+([threat model](../threat-model.md#what-writ-does-not-guarantee)).
 
-## Wrapper or whole repo
+## Wiring a repo: wrapper or whole repo
 
-`writ init <repo>` ([repo setup](../architecture/clients.md#repo-setup-on-an-agent-host)):
+`writ init <repo>` wires a clone for an agent, in one of two modes
+([details](../architecture/clients.md#repo-setup-on-an-agent-host)):
 
-| Mode | Use it for | What changes |
+| | Wrapper (default) | Whole repo (`--whole-repo`) |
 |---|---|---|
-| **Wrapper** (default) | Your own clone, shared with an agent | Nothing in the repo's git config. The agent runs every git command through `writ git …` (rebase, cherry-pick, `commit --amend` and push included) or a program that runs git through `writ exec -- …`; your plain `git` keeps your key, email and remotes |
-| **Whole repo** (`--whole-repo`) | A clone dedicated to an agent (a VM, a container, a separate directory) | The repo's git config: plain `git` there is the agent's git, and `origin` goes through the daemon |
+| For | Your own clone, shared with an agent | A clone only the agent uses: a VM, a container, a separate directory |
+| The agent runs | `writ git …` (every git command, rebase and push included), or `writ exec -- <program>` for a tool that runs git | Plain `git` |
+| Your own `git` | Unchanged: your key, your email, your remotes | — |
+| The repo's git config | Untouched | Changed |
 
-`writ init --undo` takes either back exactly. One wiring per clone: a repo already wired must
-be undone first. In both modes the clone's `origin` URL is rewritten to the daemon under the
-wiring (only that URL, never in your global config), so the agent pushes to `origin` as usual;
-in wrapper mode your own `git push origin` still goes straight to the remote.
+In both modes, the agent's `origin` goes through the daemon, so it pushes to `origin` as
+usual. In wrapper mode, your own `git push origin` still goes straight to the remote.
 
-In wrapper mode, keep the agent working in its own branch (`agent/…`) and don't work in the
-same files at the same time: you share a working tree.
+- `writ init --undo` reverts either mode exactly.
+- One wiring per clone: undo it before switching modes.
 
-The wiring lives in the environment of what `writ git` and `writ exec` start, so **every git
-that process runs gets it**, in any repository: a build script or a tool that commits in
-another clone has that commit refused by `writ-sign` (the settings name the wired
-repository's git directory, `writ.gitdir`), and its SSH remotes are reached with the
-session's key (and fail on the daemon's pinned host key). Run only the work for the wired
-repo under `writ exec`.
+**In wrapper mode:**
+
+- Keep the agent on its own branch (`agent/…`), and don't edit the same files at the same
+  time: you share one working tree.
+- Everything started under `writ git` or `writ exec` is wired, in any repository. A build
+  script that commits in another clone gets refused, and its SSH remotes fail. Run only the
+  work on the wired repo under `writ exec`.
 
 ## Protect your own credentials
 
-On a machine you share with an agent as the same user, the agent can run anything you can:
-your `git`, `ssh-keygen`, `ssh`, your tools. What keeps your keys yours is that using them
-needs **you**:
+An agent running as your user can run anything you can: `git`, `ssh`, `ssh-keygen`, your
+tools. Your keys stay yours only if using them needs **you**:
 
-- **Your commit signing key** behind user presence: Secretive with "Require authentication"
-  (Touch ID), or a security key (`sk-ssh-ed25519`, a touch per signature).
-- **Your push credential** the same way: the SSH key your remotes (GitHub, Codeberg,
-  Forgejo, GitLab…) accept, in Secretive with Touch ID or on a security key.
-- **No credential that answers silently**: no HTTPS credential helper that hands out a token
-  without asking (`osxkeychain`, `gh auth setup-git`), no remote token in the environment
-  (`GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`), no logged-in CLI the agent can drive.
+- **Your commit signing key** requires your presence: Secretive with "Require
+  authentication" (Touch ID), or a security key (`sk-ssh-ed25519`, a touch per signature).
+- **Your push key** too, the same way.
+- **No credential that answers silently:**
+  - no credential helper that hands out a token without asking (`osxkeychain`,
+    `gh auth setup-git`);
+  - no remote token in the environment (`GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`);
+  - no logged-in CLI the agent could drive.
 
-Checks:
+Check:
 
 ```sh
 git config --show-origin --get-all credential.helper   # expect nothing, or a helper that prompts
@@ -51,14 +52,13 @@ ssh-add -l                                              # every key here should 
 env | grep -iE 'token|secret'                           # nothing a remote accepts
 ```
 
-With both keys behind Touch ID, an agent that runs plain `git commit -S` or `git push origin`
-gets a prompt you won't approve, or nothing.
+Then an agent running plain `git commit -S` or `git push origin` gets a Touch ID prompt you
+won't approve, or nothing.
 
 ## Guardrails in the agent's configuration
 
-Agent harnesses let you deny commands. Deny the plain ones and allow the wrapper, so a sloppy
-agent is stopped and told to use `writ git`. For example, Claude Code's
-`.claude/settings.json`:
+Most agent harnesses can deny commands. Deny the plain ones and allow the wrapper, so a sloppy
+agent is told to use `writ git`. For Claude Code, in `.claude/settings.json`:
 
 ```json
 {
@@ -69,28 +69,29 @@ agent is stopped and told to use `writ git`. For example, Claude Code's
 }
 ```
 
-These are **guardrails, not a boundary**: a determined or prompt-injected agent can go around
-a deny list (`/usr/bin/git commit`, `git -C . commit`, `sh -c "git push"`, a script it writes,
-an alias, a tool that runs git). The boundaries are your keys needing your touch, and the
-daemon's checks on everything that goes through Writ.
+**This is a guardrail, not a boundary.** A determined agent gets around a deny list easily:
+`/usr/bin/git commit`, `git -C . commit`, `sh -c "git push"`, a script it writes. The real
+boundaries are your keys needing your touch, and the daemon checking everything that goes
+through Writ.
 
 ## Check what landed
 
-- `git verify-commit <rev>` with the agent's key in an allowed-signers file
-  (`<WRIT_HOME>/sessions/<lease>/signing_key.pub`); `git log --show-signature`.
-- The `Writ: wrt_…` trailer names the lease each commit was signed under; the daemon's ledger
-  and audit log hold every signature, with its lease and key.
-- Agent commits carry the agent's email (`user+agent@…`), yours carry yours.
+- **Signatures:** `git verify-commit <rev>` with the agent's key in an allowed-signers file
+  (the key is `<WRIT_HOME>/sessions/<lease>/signing_key.pub`), or `git log --show-signature`.
+- **Which lease:** a `Writ: wrt_…` trailer or git note, if the repo's `ticket_link` asks for one. The
+  daemon's ledger and audit log record every signature with its lease and key either way.
+- **Who:** agent commits carry the agent's email (`user+agent@…`), yours carry yours.
 
 ## More isolation
 
-- A clone dedicated to the agent, in a VM or a container, against a daemon on another host
-  (detached mode, [M8](../roadmap.md#m8--detached-deployment)): the agent host holds no key
-  and no remote credential at all.
-- Local mode's daemon runs as its own user ([M7](../roadmap.md#m7--local-mode-on-the-mac)):
-  the agent can't read its keys, though it still runs as you.
-- **One agent per OS user, container or VM** when several agents share a host in detached
-  mode: as one user, each can read the others' session files and act under their leases
-  ([threat model](../threat-model.md#1-agent--daemon-session-certificate)). Each agent gets its
-  own Writ home (`~/.writ`, 0700). From [M6](../roadmap.md#m6--agent-skill-amendments-and-close),
-  `max_active_per_source: 1` holds a host to one active lease.
+- **The agent on another machine** (a VM, a container) against a daemon on another host:
+  detached mode ([M8](../roadmap.md#m8--detached-deployment)). The agent host then holds no
+  key and no remote credential at all.
+- **A daemon running as its own user** on your Mac: local mode
+  ([M7](../roadmap.md#m7--local-mode-on-the-mac)). The agent can't read the daemon's keys,
+  though it still runs as you.
+- **One agent per OS user, container or VM** when several agents share a host. Under one user,
+  each could read the others' session files and use their leases
+  ([threat model](../threat-model.md#1-agent--daemon-session-certificate)). Each gets its own
+  `~/.writ` (0700). From [M6](../roadmap.md#m6--agent-skill-amendments-and-close),
+  `max_active_per_source: 1` limits a host to one active lease.

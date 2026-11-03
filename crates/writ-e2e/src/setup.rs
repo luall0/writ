@@ -10,8 +10,8 @@
 //!
 //! Every command the guide shows runs through [`doc_step`], with its text exactly as the
 //! guide writes it (placeholders such as `<host>` filled in): `tool/check-e2e.py` checks that
-//! each command in the guide's marked blocks is run here and each one run here is in the
-//! guide, so a step changed in one is changed in the other. The setup runs once per stack
+//! each command of the guide's `sh` blocks is run here (or by the `notes` scenario) and each
+//! one run here is in the guide, so a step changed in one is changed in the other. The setup runs once per stack
 //! ([`crate::stack`]); what it saw is the [`Report`] the `operator_setup` scenario checks.
 
 use std::time::Duration;

@@ -217,24 +217,36 @@ the scenarios (`tool/check-e2e.py`).
 ## Commands the docs show
 
 The commands the operator guide and the manual checks show are the ones the pipeline runs.
-A fenced block right after a marker comment names the file that runs it:
+The test files run each command through `doc_step`, `doc_step_fails` or `doc_step_detached`
+(`writ_e2e::setup`), with the doc's text as a string literal, exactly (placeholders such as
+`<host>`, `<name>` or `<lease id>` filled in at run time, a trailing `# comment` ignored).
+
+**Operator pages are listed here, whole, and carry no marker** (people read them): every
+command line of every `sh` block on the page is run by one of the files its row names.
+A block that isn't run doesn't belong on such a page as `sh` (a `yaml` or `text` block is
+not checked).
+
+| Page | Run by |
+|---|---|
+| [Setup](operators/setup.md) | `crates/writ-e2e/src/setup.rs`, `crates/writ-e2e/tests/scenarios/notes.rs` |
+
+**Developer guides, where only some blocks are run**, mark each run block with the file that
+runs it, on the line before:
 
 ````markdown
-<!-- e2e: crates/writ-e2e/src/setup.rs -->
+<!-- e2e: crates/writ-e2e/tests/scenarios/wrapper_mode.rs -->
 ```sh
-writd upstream-keys writd.yaml
+writ git fetch origin
 ```
 ````
 
-and that file runs each of its lines through `doc_step`, `doc_step_fails` or
-`doc_step_detached` (`writ_e2e::setup`), with the line's text as a string literal, exactly
-(placeholders such as `<host>`, `<name>` or `<lease id>` filled in at run time, a trailing
-`# comment` ignored). `tool/check-e2e.py` checks both ways: every command line of a marked
-block is run by that file, and every `doc_step…` literal is a line of a block marked for its
-file. So a step changed in the docs is changed in the pipeline, and the other way round.
-Today: the operator guide's [setup](operators/setup.md) (`setup.rs`)
-and the [GitHub manual check](guides/manual-checks.md#a-throwaway-github-repo-m4)'s agent
+Today: the [GitHub manual check](guides/manual-checks.md#a-throwaway-github-repo-m4)'s agent
 steps (`wrapper_mode.rs`).
+
+`tool/check-e2e.py` checks both ways: every command a listed page or a marked block shows
+is run by its file, and every `doc_step…` literal is shown by a page or a block for its
+file. So a step changed in the docs is changed in the pipeline, and the other way round. A
+marker on an operator page is refused.
 
 ## Rules for a scenario
 
@@ -283,9 +295,11 @@ found on a path no scenario takes:
 4. **Register what it covers**: a new command or flag gets a row in the
    [coverage registry](#coverage-every-command-and-flag) naming the test; an existing row
    may name it too.
-5. **Doc-linked commands**: when the scenario runs commands a guide shows, put a
-   `<!-- e2e: <the scenario's file> -->` marker before the guide's block and run each line
-   through `doc_step` with the same text.
+5. **Doc-linked commands**: when the scenario runs commands a guide shows, run each line
+   through `doc_step` with the same text, and link the two
+   ([commands the docs show](#commands-the-docs-show)): an operator page gets the file in its
+   row of the table, a developer guide a `<!-- e2e: <the scenario's file> -->` marker before
+   the block.
 6. **Run it**: `make e2e ARGS=<name>` while writing it, then `make e2e` once before the
    commit (it runs beside the others). `make check` runs `tool/check-e2e.py`.
 

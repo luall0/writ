@@ -216,6 +216,61 @@ commented-out setting taken in (`writd`'s and `writ-core`'s `every_…_key_is_in
 and `the_…_template_parses_…`); `make check` fails when a test the registry names doesn't
 exist, or a planned milestone is already done (`tool/check-config.py`).
 
+## Writing operator docs
+
+The [operator documentation](operators/README.md) is read by a person setting Writ up or
+fixing it, often in a hurry. It must stay readable by a human. The design pages (`architecture/`,
+`threat-model.md`, `security.md`) can be dense; these can't. A change that touches a page in
+`docs/operators/` follows these rules, and review checks them.
+
+**Sentences**
+
+- **One idea per sentence.** Short sentences. No chains of clauses joined by colons and
+  semicolons; no parentheses inside parentheses. If a sentence needs a second colon, split it.
+- **Plain words, addressed to the reader**: "you sign", "your machine", "the daemon refuses".
+  Not "the approver's machine" when the reader is the approver.
+- **Say each thing once.** A rule that applies to several keys or pages is written in one
+  place and linked (the "after `writd init`" note in `writd-yaml.md`, the terms in the index).
+- **Define a recurring term once**, in the index's "Words used in these pages", and use it
+  without re-explaining it.
+
+**Guides** (`setup.md`, `sealing.md`, `recovery.md`, `hardening.md`, `good-practice.md`)
+
+- **Action first**: a bold line saying what to do, then the command, then what to expect
+  (what it asks, what it prints, what to check). Numbered steps for a sequence.
+- **The reason in one line**, with a link for more ([threat model](threat-model.md),
+  [architecture](architecture/overview.md)). The guide says what to do; the design pages
+  say why.
+- **Tables and lists for choices and comparisons** (wrapper vs whole repo, boot vs sealed,
+  a token per remote), not a paragraph that walks through each case.
+- **A page starts with what it is for** in a sentence or two, and the index routes by task
+  ("I want to…").
+
+**References** (`writd-yaml.md`, `policy-yaml.md`, `ticket.md`, `clients.md`)
+
+- **One table per section, four columns**: Key, Accepts, Default, What it does. "Accepts"
+  holds the type, the bounds and every enumerated value; "Default" the default, or
+  **required**.
+- **Short cells**: one or two sentences. An explanation longer than that goes in a list or a
+  short subsection under the table, linked from the cell (push modes, `ticket_link`,
+  `paths_check`, `allow`).
+- **The page's common rules first**, as a short bulleted list: when the file is read, unknown
+  keys refused, units, who may write it.
+- **Machine-checked shape** (configuration keys above): every line starting with `` | ` `` on
+  these pages is read as a key row, so value explanations are lists, never another table
+  whose first cell is in backticks.
+
+**Status**
+
+- **Not built yet** is said in bold with its milestone and a roadmap link ("**Refused by this
+  build** ([M7](roadmap.md#m7--local-mode-on-the-mac))"), and nowhere else: no milestone
+  history, no internal names (crates, functions, test names) unless the reader needs them.
+- **Commands the pipeline runs keep their exact text** (hard rule 18): every `sh` block of a
+  page listed in [commands the docs show](end-to-end.md#commands-the-docs-show) is run by
+  `make e2e`. Reword around a command, never the command. No `<!-- e2e -->` marker or other
+  tooling comment on these pages: the link lives in that table. A command the pipeline doesn't
+  run goes in a `text` block, or the page leaves the table.
+
 ## Tests
 
 The rules for tests (determinism, what each level tests, how to try to break a guarantee) are

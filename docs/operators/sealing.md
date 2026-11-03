@@ -1,63 +1,45 @@
-# Sealing, unsealing and recovery
+# Daily operations
 
-The daemon keeps every secret it holds (the CA key, the agent signing keys, the upstream
-credentials and tokens) in a **sealed keystore**: each secret its own age file, opened only
-when an approver unseals the daemon. This page is what an operator does about it: making the
-keystore, choosing where the notification token lives, unsealing after each start, getting
-access back when a key is lost, and (from M7.6) starting without a human.
+Once the daemon runs: unseal it after a restart, change what it allows, add tokens.
 
-## Making the keystore
+## How the keystore works
 
-Once, on the daemon host, as the daemon's user, beside a `writd.yaml` whose `keystore` is
-`sealed` ([reference](writd-yaml.md)):
+Every secret the daemon holds is encrypted on disk: the CA key, the agent signing keys, the
+upstream keys and tokens. The daemon always starts **sealed**: it can't use any of them until
+you unseal it.
 
-```sh
-writd init writd.yaml
-```
+`writd init` makes two directories:
 
-It asks for the passphrase twice (12 characters at least; keep it in a password manager: it
-opens every secret, and nothing recovers a lost one), and prints what to pin on the clients
-and register on the remotes. The two directories it fills:
-
-- `keystore.sealed.dir`: every secret, encrypted. A copy of it alone reveals no key.
-- `keystore.sealed.boot`: the **boot tier**, the keys the daemon authenticates itself with
-  before it is unsealed (the SSH host key, the HTTPS approval API's TLS key). Readable at
-  start, by design. Keep it apart from the keys directory where you can (another volume, a
-  Docker secret): a copy of it, together with an intercepted `writ unseal`, would let someone
-  pose as the daemon and receive the passphrase ([threat model](../threat-model.md#residual-risks-v1)).
-
-## The notification token: boot or sealed
-
-`notifiers[].telegram.token` has no default: you choose.
-
-| | `token: { boot: <file> }` | `token: { sealed: <id> }` |
+| Directory | Holds | Copied by someone else |
 |---|---|---|
-| Where | A file of its own (the token alone, mode 0600), in the boot tier's directory | Sealed with the other secrets (`writ admin token <id>`) |
-| After a restart | "writd started, sealed" at once | Nothing until unsealed |
-| After `writ unseal` | "writd unsealed", from the real daemon only: if `writ unseal` said it worked and no such message comes, something answered in the daemon's place | "writd unsealed" |
-| If the boot tier is copied | Whoever has it can send messages as the bot | Nothing |
+| `keystore.sealed.dir` | Every secret, encrypted | Reveals nothing without the passphrase |
+| `keystore.sealed.boot` | The SSH host key and the TLS key, not encrypted: the daemon needs them to prove who it is before it is unsealed | They could pose as the daemon, and catch your passphrase at the next `writ unseal` |
 
-`boot` suits a daemon that restarts unattended (you want to know it is waiting); `sealed`
-suits one where the bot's token matters more than a missed restart.
+So keep the boot directory apart from the keys directory if you can: another volume, a Docker
+secret ([threat model](../threat-model.md#residual-risks-v1)).
 
 ## Unsealing
 
-After every start the daemon is sealed: every request but `writ info` and `writ unseal` is
-refused with "daemon sealed", and logged. On your machine, with the approval key in its agent:
+After every start of the daemon, from your machine:
 
 ```sh
 writ unseal
 ```
 
-It shows the daemon and the start it unseals, asks for the passphrase, and asks your approval
-key for one signature (Touch ID with Secretive). Both are needed: the signature is checked
-first, then the passphrase. A signature is good for that start of that daemon only. Active
-leases are served again as soon as it is open; their certificates still expire when they did.
+It shows which daemon and which start you are unsealing, then asks for the passphrase and one
+Touch ID. Both are needed.
+
+- Until then, everything but `writ info` and `writ unseal` is refused with "daemon sealed".
+- A signature unseals that one start of that daemon, never another.
+- Active leases come back as they were. Their expiry doesn't move.
 
 ## Changing the policy, the approvers or the readers
 
-After `writd init`, `policy.yaml`, `approvers` and `readers` change only through signed admin
-changes, applied at once:
+After `writd init`, the daemon keeps its own copy of `policy.yaml`, `approvers` and
+`readers`. **Editing the files on the host does nothing**: at the next start, an edited file
+is moved aside (`<file>.unapplied-<time>`) and the daemon's copy is written back.
+
+To change one, from your machine:
 
 ```sh
 writ admin show approvers > approvers     # the version in force
@@ -65,67 +47,64 @@ $EDITOR approvers
 writ admin apply approvers approvers      # shows what changes, then one signature
 ```
 
-The daemon writes the text in force back to its files on the host; editing them there changes
-nothing (a hand edit is set aside at the next start, never applied).
+The change applies at once, and the daemon writes it back to its file on the host. If the file
+changed in between (someone else applied a change), yours is refused: start again from
+`writ admin show`.
 
-## Tokens
+What a policy change does:
 
-An `https://` upstream's token, and a notifier's with `token: { sealed: <id> }`, are added
-from your machine, with the daemon unsealed:
+- **A new signing key or `ssh://` credential** named in the policy: the daemon creates it, and
+  `writ` prints its public key to register on the remote.
+- **A tighter template**: its active leases are denied until amended.
+- **A changed repo**: its mirror is reopened. Other repos keep theirs.
+
+Lost every approval or reader key? See [recovery](recovery.md).
+
+## Adding or rotating a token
+
+For an `https://` repo, or a notifier with `token: { sealed: <id> }`. The daemon must be
+unsealed:
 
 ```sh
 writ admin token <id>      # asks for the token (no echo), then one signature
 ```
 
-`writ` encrypts the token to the keystore's recipient (from `writ info`) before it leaves your
-machine: the daemon writes the ciphertext as `tokens/<id>.age` and uses it at once (the
-repos that use it sync again; the notifier starts). Run it again to rotate one. The id must
-be one your policy's `https://` repos or a sealed notifier name. Until a repo's token is
-there, its syncs and pushes are refused with the command to run, and the rest of the daemon
-works.
+The token is encrypted on your machine before it is sent. The daemon stores it as
+`tokens/<id>.age` and uses it at once. Run the command again to rotate it.
 
-New signing keys and `ssh://` credentials need no command of their own: apply a policy that
-names them (`writ admin apply policy`), and the daemon makes each one, and `writ` prints its
-public key to register on the remote.
+## The notification token: boot or sealed
 
-## Getting access back
+A Telegram notifier's token (`notifiers[].telegram.token`) has no default: you choose where it
+lives.
 
-The whole guide is [recovery](recovery.md). In short, to keep from locking yourself out:
+| | `token: { boot: <file> }` | `token: { sealed: <id> }` |
+|---|---|---|
+| Stored | In its own file (mode 0600) in the boot directory | With the other secrets, added with `writ admin token <id>` |
+| After a restart | "writd started, sealed", at once | Nothing until you unseal |
+| After `writ unseal` | "writd unsealed" | "writd unsealed" |
+| If the boot directory is copied | The copier can send messages as the bot | Nothing |
 
-- enroll a **second approver key** from the start (a YubiKey, `sk-ssh-ed25519`), and a second
-  reader key on another machine;
-- if every approver or reader key is lost anyway: `writd recover <writd.yaml>
-  <policy|approvers|readers> <file>` on the daemon host, as its user, with the daemon stopped.
-  It asks for the keystore's passphrase, checks the file like an admin change, puts it in force
-  and logs it. It is also the way to apply a file you edited on the host. It needs both the
-  host and the passphrase, which together open every secret already, so it gives nobody
-  anything new. On macOS's local mode it runs as `_writd`, in Docker in a one-off container:
-  [the platforms](recovery.md#the-daemons-user-on-each-platform).
-- if the passphrase is lost too, the keystore can't be opened: a new `writd init`, new keys to
-  register on the remotes, the leases gone. M7.6's recovery identity (below) is the safeguard.
+- **Choose `boot`** if the daemon restarts unattended: you want to know it is waiting for you.
+  Bonus: "writd unsealed" can only come from the real daemon. If `writ unseal` says it worked
+  and that message doesn't come, something answered in the daemon's place.
+- **Choose `sealed`** if the bot's token matters more to you than a missed restart.
 
 ## Starting without a human: auto-unseal (M7.6)
 
-Not in this build: [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) brings it, with a
-step-by-step guide here. What it will require, so you can plan for it:
+Not built yet: [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) brings it. What it will
+require, so you can plan:
 
 - **Opt-in:** `unseal: auto` in `writd.yaml`. Never the default.
-- **Hardware for everything that can open or use a secret,** so nothing on the host opens one
-  without a human:
-  - every signing key in a hardware backend: the agent signing keys, the `ssh://` upstream
-    credentials, the CA key;
-  - every secret in the store wrapped only to hardware recipients (the Secure Enclave, a TPM,
-    a YubiKey, a cloud KMS): the upstream tokens, the key protecting the authority files, the
-    keystore's identity itself;
-  - except the notification token (it may stay in the boot tier) and the boot tier's
-    transport keys (the SSH host key, the TLS key), which may stay software files; keeping
-    them in hardware too is possible and recommended.
-- **A recovery identity** made and checked first: an age identity kept offline (paper, a spare
-  device), to which every secret is also wrapped. It alone recovers the keystore if the
-  hardware is lost, and `writd recover` takes it instead of a passphrase in this mode (never
-  the hardware alone: host access must not replace signed admin changes).
-- **Refused, never adjusted:** if anything above is still software, the daemon refuses to
-  start and names each key or secret that isn't hardware-protected.
-- **What you give up:** anyone who can restart the daemon, or who takes the whole machine with
-  its hardware, gets a running daemon without asking you. Leases still need your signature and
-  fit their templates; the start is logged (`unseal`, "automatic") and notified.
+- **Hardware for every secret:** every signing key (agent keys, `ssh://` credentials, the CA
+  key) in a hardware backend, and every stored secret (tokens, the keystore's own identity)
+  wrapped to hardware only: Secure Enclave, TPM, YubiKey or a cloud KMS. Only the notification
+  token and the boot directory's host and TLS keys may stay software files.
+- **An offline recovery identity**, made first and kept on paper or a spare device. It
+  recovers the keystore if the hardware is lost, and `writd recover` takes it instead of the
+  passphrase. The hardware alone never replaces a signed change.
+- **No silent downgrade:** if anything is still software, the daemon refuses to start and
+  names it.
+
+The trade-off: anyone who can restart the daemon, or steal the whole machine, gets a running
+daemon without asking you. Leases still need your signature, and every automatic start is
+logged and notified.
