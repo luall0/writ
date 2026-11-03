@@ -206,8 +206,14 @@ One commit per step on `main`, each with `make ci` (and `make e2e` when a binary
 
 ## Left for later milestones
 
-- `docs/operators/recovery.md`'s platform commands wait for M7's installer (launchd label,
-  paths) and M8's image (Docker paths, the image's user); the page says which brings them.
-- `writd recover` assumes the daemon is stopped; nothing checks it (two writers would refuse
-  each other's versions). A lock file could make it explicit: not settled.
-- Q38: binding each sealed secret file to the state, since the recipient is public.
+Each is now an item, with its acceptance, in the milestone that brings it:
+
+- `docs/operators/recovery.md`'s platform commands: the macOS ones in
+  [M7](../roadmap.md#m7--local-mode-on-the-mac) (launchd label, paths), the Docker ones in
+  [M8](../roadmap.md#m8--detached-deployment) (paths in the image, its user).
+- `writd recover` checking the daemon is stopped (today it assumes it; two writers would
+  refuse each other's versions): [M7](../roadmap.md#m7--local-mode-on-the-mac), where a
+  service manager starts the daemon.
+- Q38, binding each sealed secret file to the state (the recipient is public): settled before
+  building [M8](../roadmap.md#m8--detached-deployment), where the keys directory sits on a
+  volume.

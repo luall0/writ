@@ -295,6 +295,14 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
   files don't. Created and removed by `make install` / `make uninstall`, like the spike's
   `plan-b/` scripts.
 - `writ try` with `--dry-run`, restoring everything on Ctrl-C.
+- **`writd recover` checks the daemon is stopped** (left open by M5): today it assumes it,
+  and two writers would only refuse each other's versions. For example, `writd run` holds an
+  advisory lock on a file in its state directory (released by the kernel when the process
+  ends, so a crash leaves none stale) and `writd recover` refuses while it is held, naming it.
+  Settled with the user before building.
+- **The recovery guide's macOS commands**: `docs/operators/recovery.md`'s placeholders (the
+  LaunchDaemon's label, the daemon's directory and its `writd.yaml`) filled with what
+  `make install` makes, and run for real as a manual check.
 
 Acceptance:
 - [ ] **The graft test:** no change in `writ-core`, `writ-store`, `writ-git`, `writ-gateway`,
@@ -309,6 +317,9 @@ Acceptance:
 - [ ] `writ try` leaves the repo and the machine exactly as before after Ctrl-C.
 - [ ] My user (so any agent) can't read the daemon's keystore or attach to the daemon
       (`cat` and `lldb -p` refused), and the daemon starts again after a reboot.
+- [ ] `writd recover` refuses while the daemon runs, naming why, and works once it is
+      stopped (both sides tested, a crashed daemon's leftover not blocking it); the recovery
+      guide's macOS steps run as written.
 
 ## M7.5 — Secure Enclave signer on the Mac
 
@@ -424,6 +435,13 @@ LAN or VPN.
 - Notifications (the configured `Notifier`) for sealed restarts, denials and violations
   (waiting tickets already notify since M2).
 - Backup guidance for the ledger and the audit log.
+- **Q38 first** ([open questions](decisions.md#open-questions), left open by M5): the
+  keystore's recipient is public, so whoever can write the keys directory, here a Docker
+  volume, can plant a secret of their choosing. Settled with the user before building:
+  whether each sealed secret file is bound to the state (e.g. a MAC over its digest with the
+  authority key, checked at unseal and on every live read); if kept, it is built here.
+- **The recovery guide's Docker commands**: `docs/operators/recovery.md`'s placeholders (the
+  paths in the image, its user) filled in, and run end to end against the deploy image.
 
 Acceptance:
 - [ ] `docker compose up` on the homelab → sealed → `writ unseal` from the Mac → agents on a
@@ -433,6 +451,9 @@ Acceptance:
       the process runs as non-root.
 - [ ] Detached is only the detached [configuration preset](architecture/platform.md#configuration-presets)
       and packaging: no change to the core crates beyond bug fixes.
+- [ ] Q38 settled before building; if kept, a secret file planted or swapped in the keys
+      directory (a key with its matching `.pub`, a token) stops the unseal, naming the file.
+- [ ] The recovery guide's Docker steps run as written, end to end (`make e2e`).
 
 ## M8.5 — Non-exportable session keys
 
