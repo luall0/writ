@@ -348,6 +348,206 @@ fn a_fetch_goes_through_the_policy_and_counts_against_the_rate() {
 }
 
 #[test]
+fn a_fetch_by_id_gets_only_what_refs_reach_whatever_the_protocol_asked() {
+    let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
+    gateway.seed_repo();
+    // Upstream: main one commit further, and a branch `gone`.
+    let seed = gateway.root().join("seed");
+    let bare = gateway.remote.repo("demo");
+    let bare = bare.to_str().unwrap();
+    let first = gateway
+        .git_ok(&seed, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    gateway.git_ok(&seed, &["commit", "-q", "--allow-empty", "-m", "second"]);
+    gateway.git_ok(&seed, &["checkout", "-q", "-b", "gone"]);
+    gateway.git_ok(&seed, &["commit", "-q", "--allow-empty", "-m", "gone"]);
+    let gone = gateway
+        .git_ok(&seed, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    gateway.git_ok(&seed, &["push", "-q", bare, "main", "gone"]);
+    // The mirror syncs both, then `gone` is deleted upstream: the next sync prunes the ref,
+    // its commit stays in the mirror's objects, reached by no ref.
+    let work = gateway.clone("work");
+    assert_eq!(
+        gateway.bare_ref("refs/heads/gone").as_deref(),
+        Some(gone.as_str())
+    );
+    gateway.git_ok(&seed, &["push", "-q", bare, ":gone"]);
+    gateway.git_ok(&work, &["fetch", "-q", "--prune", "origin"]);
+    assert_eq!(gateway.bare_ref("refs/heads/gone"), None);
+    gateway.git_ok(
+        &gateway.root().join("repos/demo.git"),
+        &["cat-file", "-e", &gone],
+    );
+
+    for version in ["2", "1", "0"] {
+        let probe = gateway.root().join(format!("probe-v{version}"));
+        gateway.git_ok(gateway.root(), &["init", "-q", probe.to_str().unwrap()]);
+        let url = format!("{}/demo.git", gateway.url);
+        let protocol = format!("protocol.version={version}");
+        // A reachable commit that isn't a tip: served by its id.
+        let out = gateway.git(&probe, &["-c", &protocol, "fetch", "-q", &url, &first]);
+        assert!(out.status.success(), "v{version}: {}", stderr(&out));
+        gateway.git_ok(&probe, &["cat-file", "-e", &first]);
+        // The commit no ref reaches: refused, even when the client asks for protocol v2
+        // (where git would serve any object it holds): the gateway's upload-pack speaks v0.
+        let out = gateway.git(&probe, &["-c", &protocol, "fetch", "-q", &url, &gone]);
+        assert_eq!(out.status.code(), Some(128), "v{version}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains(&format!("upload-pack: not our ref {gone}")),
+            "v{version}: {}",
+            stderr(&out)
+        );
+        let missing = gateway.git(&probe, &["cat-file", "-e", &gone]);
+        assert_eq!(
+            missing.status.code(),
+            Some(1),
+            "v{version}: the object never came"
+        );
+    }
+    // Each fetch went through the policy: the clone, the pruning fetch, two per version.
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    assert_eq!(audit_events(&audit, "fetch", "allowed").len(), 8);
+    assert!(audit_events(&audit, "fetch", "denied").is_empty());
+}
+
+#[test]
+fn every_protocol_version_a_client_asks_for_works_served_in_v0() {
+    let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
+    gateway.seed_repo();
+    let seed = gateway.root().join("seed");
+    let bare = gateway.remote.repo("demo");
+    fs::write(seed.join("second.txt"), "second\n").unwrap();
+    gateway.git_ok(&seed, &["add", "second.txt"]);
+    gateway.git_ok(&seed, &["commit", "-q", "-m", "second"]);
+    gateway.git_ok(&seed, &["push", "-q", bare.to_str().unwrap(), "main"]);
+    let url = format!("{}/demo.git", gateway.url);
+    let root = gateway.root();
+
+    // Clones with git's default (it asks for v2) and each version asked: the same refs and
+    // content.
+    let mut listings = Vec::new();
+    for (name, config) in [
+        ("default", None),
+        ("v2", Some("protocol.version=2")),
+        ("v1", Some("protocol.version=1")),
+        ("v0", Some("protocol.version=0")),
+    ] {
+        let dir = root.join(format!("clone-{name}"));
+        let mut args = Vec::new();
+        if let Some(config) = config {
+            args.extend(["-c", config]);
+        }
+        args.extend(["clone", "-q", &url, dir.to_str().unwrap()]);
+        gateway.git_ok(root, &args);
+        assert_eq!(
+            fs::read_to_string(dir.join("second.txt")).unwrap(),
+            "second\n",
+            "{name}"
+        );
+        listings.push(gateway.git_ok(
+            &dir,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/remotes",
+            ],
+        ));
+    }
+    assert!(listings.iter().all(|l| l == &listings[0]), "{listings:?}");
+    assert!(
+        listings[0].contains("refs/remotes/origin/main"),
+        "{listings:?}"
+    );
+
+    // ls-remote with v2 asked.
+    let main = gateway.bare_ref("refs/heads/main").unwrap();
+    let listed = gateway.git_ok(root, &["-c", "protocol.version=2", "ls-remote", &url]);
+    assert!(
+        listed.contains(&format!("{main}\trefs/heads/main")),
+        "{listed}"
+    );
+
+    // A shallow clone, then deepened by one commit.
+    let shallow = root.join("shallow");
+    gateway.git_ok(
+        root,
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &url,
+            shallow.to_str().unwrap(),
+        ],
+    );
+    let count = |dir: &std::path::Path| {
+        gateway
+            .git_ok(dir, &["rev-list", "--count", "HEAD"])
+            .trim()
+            .to_owned()
+    };
+    assert_eq!(count(&shallow), "1");
+    gateway.git_ok(&shallow, &["fetch", "-q", "--deepen", "1", "origin"]);
+    assert_eq!(count(&shallow), "2");
+
+    // A partial clone: the gateway advertises no filter; git says so and clones it whole.
+    let filtered = root.join("filtered");
+    let out = gateway.git(
+        root,
+        &[
+            "clone",
+            "--filter=blob:none",
+            &url,
+            filtered.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("filtering not recognized by server"),
+        "{}",
+        stderr(&out)
+    );
+    let missing = gateway.git_ok(
+        &filtered,
+        &["rev-list", "--objects", "--missing=print", "--all"],
+    );
+    assert!(!missing.lines().any(|l| l.starts_with('?')), "{missing}");
+
+    // A push right after a v2 fetch.
+    let work = root.join("clone-default");
+    gateway.git_ok(
+        &work,
+        &["-c", "protocol.version=2", "fetch", "-q", "origin"],
+    );
+    let head = gateway.commit_signed(&work, "mine.txt", "mine\n");
+    gateway.git_ok(
+        &work,
+        &[
+            "-c",
+            "protocol.version=2",
+            "push",
+            "-q",
+            "origin",
+            "HEAD:refs/heads/agent/v2",
+        ],
+    );
+    assert_eq!(
+        gateway.bare_ref("refs/heads/agent/v2").as_deref(),
+        Some(head.as_str())
+    );
+    assert_eq!(
+        gateway.upstream_ref("refs/heads/agent/v2").as_deref(),
+        Some(head.as_str())
+    );
+    let audit = fs::read_to_string(root.join("audit.jsonl")).unwrap();
+    assert!(audit_events(&audit, "fetch", "denied").is_empty());
+    assert_eq!(audit_events(&audit, "push", "allowed").len(), 1);
+}
+
+#[test]
 fn a_fetch_is_refused_when_upstream_refuses_the_sync() {
     let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
     gateway.seed_repo();

@@ -22,15 +22,10 @@ pub(super) fn repo_path(gateway: &Gateway, repo: &RepoName) -> Option<PathBuf> {
     gateway.mirrors().ok()?.path(repo).map(Path::to_path_buf)
 }
 
-/// `git upload-pack` (fetch) on the repository at `path`.
-pub(super) fn upload_pack(
-    gateway: &Gateway,
-    path: &Path,
-    git_protocol: Option<String>,
-) -> tokio::process::Command {
-    let mut cmd = git(gateway, Hooks::None, git_protocol);
-    cmd.arg("upload-pack").arg("--strict").arg(path);
-    cmd
+/// `git upload-pack` (fetch) on the repository at `path`, in protocol v0 whatever the client
+/// asked for ([`writ_mirror::git::upload_pack`]).
+pub(super) fn upload_pack(gateway: &Gateway, path: &Path) -> tokio::process::Command {
+    writ_mirror::git::upload_pack(&git_program(gateway), path)
 }
 
 /// A push in progress: its token is known to the hook server until this is dropped.
@@ -81,14 +76,10 @@ impl<'a> Push<'a> {
     /// checked (`fsck`, with `.git`, `.` and `..` entries at error level: malformed objects
     /// and `.git` or `.gitmodules` tricks never land in a repository other leases fetch from),
     /// and the pack is refused past `max_bytes`.
-    pub(super) fn receive_pack(
-        &self,
-        path: &Path,
-        git_protocol: Option<String>,
-        max_bytes: u64,
-    ) -> tokio::process::Command {
+    pub(super) fn receive_pack(&self, path: &Path, max_bytes: u64) -> tokio::process::Command {
         let shared = &self.gateway.shared;
-        let mut cmd = git(self.gateway, Hooks::Dir(&shared.hooks_dir), git_protocol);
+        let mut cmd =
+            writ_mirror::git::command(&git_program(self.gateway), Hooks::Dir(&shared.hooks_dir));
         cmd.arg("-c")
             .arg(format!("receive.maxInputSize={max_bytes}"))
             .arg("receive-pack")
@@ -145,24 +136,16 @@ impl Drop for Push<'_> {
     }
 }
 
-/// The daemon's `git` ([`writ_mirror::git::command`], `mirrors.git`), with `GIT_PROTOCOL` if the
-/// client asked for one (the only thing taken from the client's environment).
-fn git(
-    gateway: &Gateway,
-    hooks: Hooks<'_>,
-    git_protocol: Option<String>,
-) -> tokio::process::Command {
+/// The daemon's `git` (`mirrors.git`), run through [`writ_mirror::git::command`]: nothing from
+/// the client's environment reaches it (no `GIT_PROTOCOL`: `upload-pack` speaks protocol v0,
+/// where `uploadpack.allow*SHA1InWant` hold; `receive-pack` has no v2 anyway).
+fn git_program(gateway: &Gateway) -> PathBuf {
     // Sealed, there is no git to run: an empty path never starts (fail closed). A command is
     // only built after the service allowed it, which a sealed service never does.
-    let git = gateway
+    gateway
         .mirrors()
         .map(|mirrors| mirrors.git().to_path_buf())
-        .unwrap_or_default();
-    let mut cmd = writ_mirror::git::command(&git, hooks);
-    if let Some(protocol) = git_protocol {
-        cmd.env("GIT_PROTOCOL", protocol);
-    }
-    cmd
+        .unwrap_or_default()
 }
 
 /// Starts git with its stdin, stdout and stderr piped.

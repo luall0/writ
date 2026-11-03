@@ -50,9 +50,13 @@ pub const HARDENING: &[&str] = &[
     "receive.autogc=false",
     "credential.helper=",
     "core.fsmonitor=false",
-    // What upload-pack serves an agent: only what refs reach, no filter.
+    // What upload-pack serves an agent: only what refs reach, no filter. In protocol v0, the
+    // only one it speaks ([`upload_pack`]): in v2, git ignores `allow*SHA1InWant` and serves
+    // any object the mirror holds by its id. A commit reachable from a ref may be asked for by
+    // its id (`git fetch writ <sha>`), any other object is refused ("not our ref"). The order
+    // matters: `allowAnySHA1InWant=false` clears the reachable bit too, so it comes first.
     "uploadpack.allowAnySHA1InWant=false",
-    "uploadpack.allowReachableSHA1InWant=false",
+    "uploadpack.allowReachableSHA1InWant=true",
     "uploadpack.allowTipSHA1InWant=false",
     "uploadpack.allowFilter=false",
     // What receive-pack takes: no shallow update, no push option; the pre-receive hook
@@ -149,6 +153,16 @@ pub fn command(program: &Path, hooks: Hooks<'_>) -> Command {
     cmd
 }
 
+/// `git upload-pack` on the repository at `repo` (a fetch through the gateway), with the
+/// daemon's `git` at `program`: [`command`]'s clean environment, so `GIT_PROTOCOL` never
+/// reaches it, whatever the client asked for, and it speaks protocol v0, where
+/// [`HARDENING`]'s `uploadpack.allow*SHA1InWant` hold (in v2, git ignores them).
+pub fn upload_pack(program: &Path, repo: &Path) -> Command {
+    let mut cmd = command(program, Hooks::None);
+    cmd.arg("upload-pack").arg("--strict").arg(repo);
+    cmd
+}
+
 /// `git version` → `(major, minor)`, e.g. `git version 2.54.0 (Apple Git-157)` → `(2, 54)`.
 pub fn parse_version(text: &str) -> Option<(u32, u32)> {
     let version = text.trim().strip_prefix("git version ")?;
@@ -189,6 +203,94 @@ mod tests {
         assert!(text.contains("receive.fsck.hasdotgit=error"), "{text}");
         assert!(text.contains("protocol.allow=never"), "{text}");
         assert!(text.contains("core.hookspath=/dev/null"), "{text}");
+    }
+
+    /// A git command on a test repository, outside the daemon's settings.
+    fn plain_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new(crate::testing::git())
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "A")
+            .env("GIT_AUTHOR_EMAIL", "a@x")
+            .env("GIT_COMMITTER_NAME", "A")
+            .env("GIT_COMMITTER_EMAIL", "a@x")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// A pkt-line.
+    fn pkt(line: &str) -> Vec<u8> {
+        let mut bytes = format!("{:04x}", line.len().checked_add(4).unwrap()).into_bytes();
+        bytes.extend_from_slice(line.as_bytes());
+        bytes
+    }
+
+    /// Asks [`upload_pack`] for `want` as a protocol v0 client does; its exit code and output.
+    async fn want(repo: &Path, want: &str) -> (Option<i32>, String) {
+        use tokio::io::AsyncWriteExt as _;
+        let mut cmd = upload_pack(&crate::testing::git(), repo);
+        // The daemon's own environment asking for v2 changes nothing: it never reaches git.
+        assert!(
+            cmd.as_std()
+                .get_envs()
+                .all(|(name, _)| name != "GIT_PROTOCOL"),
+            "GIT_PROTOCOL set"
+        );
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut request = pkt(&format!("want {want}\n"));
+        request.extend_from_slice(b"0000");
+        request.extend(pkt("done\n"));
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(&request).await.unwrap();
+        drop(stdin);
+        let out = child.wait_with_output().await.unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    }
+
+    #[tokio::test]
+    async fn upload_pack_serves_what_refs_reach_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        plain_git(&work, &["init", "-q", "-b", "main"]);
+        let commit = |message: &str| {
+            plain_git(&work, &["commit", "-q", "--allow-empty", "-m", message]);
+            plain_git(&work, &["rev-parse", "HEAD"])
+        };
+        let first = commit("first");
+        let tip = commit("tip");
+        // A commit on a branch deleted since: still in the repository, reached by no ref.
+        plain_git(&work, &["checkout", "-q", "-b", "gone"]);
+        let gone = commit("gone");
+        plain_git(&work, &["checkout", "-q", "main"]);
+        plain_git(&work, &["branch", "-q", "-D", "gone"]);
+        let repo = work.join(".git");
+        assert_eq!(plain_git(&repo, &["cat-file", "-t", &gone]), "commit");
+
+        // A tip, and a commit only reachable from one: served (NAK, then the pack).
+        for id in [&tip, &first] {
+            let (code, out) = want(&repo, id).await;
+            assert_eq!(code, Some(0), "{id}: {out}");
+            assert!(out.contains("NAK") && out.contains("PACK"), "{id}: {out}");
+        }
+        // Reached by no ref: refused.
+        let (code, out) = want(&repo, &gone).await;
+        assert_eq!(code, Some(128), "{out}");
+        assert!(
+            out.contains(&format!("ERR upload-pack: not our ref {gone}")),
+            "{out}"
+        );
+        assert!(!out.contains("PACK"), "{out}");
     }
 
     async fn ls_remote(transport: Option<Transport>, url: &str) -> String {

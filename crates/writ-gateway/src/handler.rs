@@ -41,7 +41,6 @@ pub(crate) struct Connection {
     /// [`MAX_CHANNELS`] slots (a running command keeps its slot until it ends).
     channels: HashMap<ChannelId, (Channel<Msg>, OwnedSemaphorePermit)>,
     channel_slots: Arc<Semaphore>,
-    git_protocol: Option<String>,
     /// Set once authenticated: the gateway disconnects a connection that isn't in time.
     authenticated: Arc<AtomicBool>,
 }
@@ -62,7 +61,6 @@ impl Connection {
             identity: None,
             channels: HashMap::new(),
             channel_slots: Arc::new(Semaphore::new(MAX_CHANNELS)),
-            git_protocol: None,
             authenticated,
         }
     }
@@ -248,23 +246,18 @@ impl russh::server::Handler for Connection {
         Ok(())
     }
 
-    /// Only `GIT_PROTOCOL` (protocol v2 negotiation) is taken from the client's environment.
+    /// Nothing is taken from the client's environment, `GIT_PROTOCOL` included: every request
+    /// is refused, and nothing of it kept. `upload-pack` speaks protocol v0 only, where
+    /// `uploadpack.allow*SHA1InWant` hold (in v2, git ignores them and serves any object the
+    /// mirror holds by its id); a client asking for v2 gets v0 (git falls back on its own).
     async fn env_request(
         &mut self,
         channel: ChannelId,
-        name: &str,
-        value: &str,
+        _name: &str,
+        _value: &str,
         session: &mut Session,
     ) -> Result<(), GatewayError> {
-        let valid = value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '=' | ':' | '.'));
-        if name == "GIT_PROTOCOL" && valid && value.len() < 64 {
-            self.git_protocol = Some(value.to_owned());
-            session.channel_success(channel)?;
-        } else {
-            session.channel_failure(channel)?;
-        }
+        session.channel_failure(channel)?;
         Ok(())
     }
 
@@ -287,7 +280,6 @@ impl russh::server::Handler for Connection {
                     cert,
                     facts,
                     command,
-                    git_protocol: self.git_protocol.clone(),
                     connection: self.number,
                 };
                 tokio::spawn(async move {

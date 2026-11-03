@@ -54,9 +54,15 @@ anything else happens. Git itself is not reimplemented: the daemon shells out to
 
 Anything else is refused with a reason on stderr, and logged (event `command`). Repos are
 registry names, with or without `.git` (`omega-code.git`), never paths; git runs only on a repo
-in the lease's `scope.repos`, at `<repos_root>/<name>.git`. Only `GIT_PROTOCOL` is taken from
-the client's environment, and git runs with a clean environment (`PATH` and `TMPDIR` only),
-without the daemon user's system or global git config.
+in the lease's `scope.repos`, at `<repos_root>/<name>.git`. Nothing is taken from the client's
+environment (every SSH `env` request is refused, `GIT_PROTOCOL` included), and git runs with a
+clean environment (`PATH` and `TMPDIR` only), without the daemon user's system or global git
+config. So `upload-pack` speaks protocol v0 whatever the client asks: in v2, git ignores
+`uploadpack.allow*SHA1InWant` and serves any object the mirror holds by its id (a commit on a
+branch deleted upstream, still in the mirror's objects). A client asking for v2 gets v0 (git
+falls back on its own: clones, fetches, `ls-remote`, shallow clones work as before; a
+`--filter` clone is made whole, the gateway advertising no filter). `receive-pack` has no v2:
+a push is v0 either way.
 
 ## Signing
 
@@ -188,7 +194,9 @@ the command line rather than left to git's defaults:
 - no hook but the gateway's own pre-receive (`core.hooksPath`), no submodule, no automatic
   maintenance, no credential helper (but the daemon's own, for an HTTPS upstream's
   operation), no file system monitor;
-- `upload-pack` serves only what refs reach (no `allow*SHA1InWant`, no filter);
+- `upload-pack` serves only what refs reach, in protocol v0 (above): a commit reachable from a
+  ref may be asked for by its id (`uploadpack.allowReachableSHA1InWant`, so `git fetch writ
+  <sha>` works), any other object is refused ("not our ref"); no filter;
   `receive-pack` takes no shallow update and no push option, and leaves deletions and force
   pushes to the pre-receive hook.
 

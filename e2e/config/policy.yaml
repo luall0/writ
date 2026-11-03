@@ -15,6 +15,8 @@ repos:
   verified:   { upstream: "ssh://git@forgejo/writ/verified.git",   upstream_credential: upstream-verified,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Signed in OpenPGP, the key proven on the account through Forgejo's GPG check (scenario 18).
   openpgp:    { upstream: "ssh://git@forgejo/writ/openpgp.git",    upstream_credential: upstream-openpgp,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  # Fetched with every protocol version a client asks for, served in v0 (scenario 19).
+  protocols:  { upstream: "ssh://git@forgejo/writ/protocols.git",  upstream_credential: upstream-protocols,  protected_refs: ["refs/heads/main", "refs/tags/*"] }
   inflight:   { upstream: "ssh://git@forgejo/writ/inflight.git",   upstream_credential: upstream-inflight,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
   restart:    { upstream: "ssh://git@forgejo/writ/restart.git",    upstream_credential: upstream-restart,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
   hostile:    { upstream: "ssh://git@forgejo/writ/hostile.git",    upstream_credential: upstream-hostile,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
@@ -30,7 +32,7 @@ repos:
   https-system: { upstream: "https://forgejo-https-system:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
 templates:
   feature:
-    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, inflight, restart, hostile, busy, notes, backfill, https, https-system]
+    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, protocols, inflight, restart, hostile, busy, notes, backfill, https, https-system]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     force_push: true                 # a ticket may ask for it (none does unless it says so)

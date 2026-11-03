@@ -22,6 +22,7 @@ const REPOS: &[&str] = &[
     "denials",
     "moved",
     "protection",
+    "protocols",
     "openpgp",
     "verified",
     "inflight",

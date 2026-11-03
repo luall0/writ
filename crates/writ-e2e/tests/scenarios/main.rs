@@ -24,6 +24,7 @@ mod notes;
 mod notes_reconcile;
 mod openpgp_commits;
 mod operator_setup;
+mod protocol_versions;
 mod push_denials;
 mod remote_protection;
 mod restart;

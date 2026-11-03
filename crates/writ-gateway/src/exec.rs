@@ -47,7 +47,6 @@ pub(crate) struct LeaseRequest {
     pub(crate) cert: CertIdentity,
     pub(crate) facts: CallerFacts,
     pub(crate) command: LeaseCommand,
-    pub(crate) git_protocol: Option<String>,
     /// The connection it came on (the gateway's number for it).
     pub(crate) connection: u64,
 }
@@ -57,7 +56,6 @@ pub(crate) async fn run(gateway: Gateway, request: LeaseRequest, channel: Channe
         cert,
         facts,
         command,
-        git_protocol,
         connection,
     } = request;
     let refusing = Refusing {
@@ -68,7 +66,7 @@ pub(crate) async fn run(gateway: Gateway, request: LeaseRequest, channel: Channe
     };
     match &command {
         LeaseCommand::UploadPack { repo } | LeaseCommand::ReceivePack { repo } => {
-            run_git(&refusing, &command, repo, git_protocol, channel, connection).await;
+            run_git(&refusing, &command, repo, channel, connection).await;
         }
         LeaseCommand::Sign { repo, format } => {
             let (mut rx, tx) = channel.split();
@@ -104,7 +102,6 @@ async fn run_git(
     refusing: &Refusing<'_>,
     command: &LeaseCommand,
     repo: &RepoName,
-    git_protocol: Option<String>,
     channel: Channel<Msg>,
     connection: u64,
 ) {
@@ -117,15 +114,7 @@ async fn run_git(
     match ready {
         Ok((lease, prepared)) => {
             let max_push_size = lease.ticket.limits.max_push_size.bytes();
-            run_prepared(
-                refusing,
-                repo,
-                git_protocol,
-                max_push_size,
-                prepared,
-                channel,
-            )
-            .await;
+            run_prepared(refusing, repo, max_push_size, prepared, channel).await;
         }
         Err(refusal) => {
             let reason = match refusal {
@@ -227,7 +216,6 @@ async fn prepare<'a>(
 async fn run_prepared(
     refusing: &Refusing<'_>,
     repo: &RepoName,
-    git_protocol: Option<String>,
     max_push_size: u64,
     prepared: Prepared<'_>,
     channel: Channel<Msg>,
@@ -235,8 +223,8 @@ async fn run_prepared(
     let gateway = refusing.gateway;
     let Prepared { path, push } = prepared;
     let cmd = match &push {
-        Some(push) => push.receive_pack(&path, git_protocol, max_push_size),
-        None => git::upload_pack(gateway, &path, git_protocol),
+        Some(push) => push.receive_pack(&path, max_push_size),
+        None => git::upload_pack(gateway, &path),
     };
     let child = match git::spawn(cmd) {
         Ok(child) => child,
