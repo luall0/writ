@@ -1,5 +1,6 @@
-# CI: `make ci`, the one definition of green, on Linux. macOS-only code is tested by the same
-# target on the Mac, which the pre-push hook requires (`make hooks`). And `make e2e`, the
+# CI: `make ci`, the one definition of green, on Linux, then the property tests with a random
+# seed. macOS-only code is tested by the same target on the Mac, which the pre-push hook
+# requires (`make hooks`). And `make e2e`, the
 # end-to-end pipeline (docs/end-to-end.md), as a job of its own: Docker on the runner, the
 # images pinned by digest in e2e/. No third-party action is used: the repository is fetched
 # with git and the job's read-only token, so nothing outside this repo, GitHub's runner image
@@ -35,6 +36,9 @@ jobs:
       - name: cargo-deny (pinned)
         run: cargo install --locked cargo-deny --version 0.20.2
 
+      - name: cargo-nextest (pinned)
+        run: cargo install --locked cargo-nextest --version 0.9.151
+
       - name: Tools the integration tests use
         run: |
           command -v nc || sudo apt-get install -y netcat-openbsd
@@ -43,6 +47,11 @@ jobs:
 
       - name: make ci
         run: make ci
+
+      # New inputs on every push (docs/testing.md#property-tests): a failure prints its seed,
+      # replayed locally with `make test-props SEED=<seed>`.
+      - name: Property tests with a random seed
+        run: make test-props SEED=random
 
   e2e:
     runs-on: ubuntu-24.04

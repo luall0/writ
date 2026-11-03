@@ -10,6 +10,14 @@ LIBRARIES := writ-core writ-proto writ-crypto writ-git writ-mirror writ-signer w
 # features the integration crate asks for.
 BINARIES := -p writd -p writ-cli -p writ-sign
 
+# Every cargo build here records what it built or reused, so `make test` can prune target/ to
+# the last builds at its end: `$(RECORD) <record name> <cargo subcommand> [arguments]`
+# (tool/target-cache.py, docs/testing.md#how-make-test-runs).
+RECORD := python3 -I tool/target-cache.py record
+
+# The property tests, selected from the workspace's test build (no build of their own).
+PROPERTIES := binary_id(writ-core::properties) | binary_id(writ-approval::sign_phases)
+
 # What CI runs (GitHub Actions on Linux, by hand or `make push` on the Mac): the one definition
 # of green. Everything is --locked: Cargo.lock is what gets built, never a fresh resolution.
 # On a clean working tree, a pass stamps the tree (tool/ci-stamp.sh): the pre-push hook allows
@@ -28,8 +36,8 @@ push:
 
 check:
 	cargo fmt --all --check
-	cargo clippy --locked --workspace --all-targets -- -D warnings
-	for crate in $(LIBRARIES); do cargo clippy --locked -q -p $$crate --lib -- -D warnings || exit 1; done
+	$(RECORD) clippy clippy --locked --workspace --all-targets -- -D warnings
+	for crate in $(LIBRARIES); do $(RECORD) clippy-$$crate clippy --locked -q -p $$crate --lib -- -D warnings || exit 1; done
 	python3 -I tool/check-deps.py
 	python3 -I tool/check-rules.py
 	python3 -I tool/check-links.py
@@ -40,27 +48,32 @@ check:
 	cargo deny --locked check
 
 # The integration tests run the binaries (writd, writ, writ-sign) as they ship, built first on
-# their own in target/bins (writd with the dev keystore the tests use). The property tests
-# run twice: with the fixed seed (the same inputs every run), then with a new random seed,
-# printed so a failure can be replayed with `make test-props SEED=…`.
+# their own in target/bins (writd with the dev keystore the tests use). Every test runs under
+# cargo-nextest, in a process of its own (.config/nextest.toml), without backtraces (a
+# deliberate panic would cost seconds); the property tests with the fixed seed only (CI adds
+# a random one). Then target/ is pruned to the last builds (docs/testing.md#how-make-test-runs).
 test:
-	CARGO_TARGET_DIR=target/bins cargo build --locked $(BINARIES) --features writd/dev-keystore
-	WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo test --locked --workspace
-	WRIT_PROPTEST_SEED=random cargo test --locked -q -p writ-core --test properties -- --nocapture
-	WRIT_PROPTEST_SEED=random cargo test --locked -q -p writ-approval --test sign_phases -- --nocapture
+	CARGO_TARGET_DIR=target/bins $(RECORD) bins build --locked $(BINARIES) --features writd/dev-keystore
+	$(RECORD) test test --locked --workspace --no-run
+	WRIT_BIN_DIR=$(CURDIR)/target/bins/debug RUST_BACKTRACE=0 cargo nextest run --locked --workspace
+	python3 -I tool/target-cache.py prune
 
-# The property tests with one seed (a number from a failed run, or `random`).
+# The property tests with one seed: a number from a failed run, or `random` (CI's pass), drawn
+# here and printed, so every property gets the same one.
 test-props:
 	@test -n "$(SEED)" || { echo "usage: make test-props SEED=<number|random>"; exit 2; }
-	WRIT_PROPTEST_SEED="$(SEED)" cargo test --locked -p writ-core --test properties -- --nocapture
-	WRIT_PROPTEST_SEED="$(SEED)" cargo test --locked -p writ-approval --test sign_phases -- --nocapture
+	@seed="$(SEED)"; \
+		if [ "$$seed" = random ]; then seed=$$(python3 -I -c 'import secrets; print(secrets.randbits(64))'); fi; \
+		echo "proptest seed: $$seed (replay with make test-props SEED=$$seed)"; \
+		WRIT_PROPTEST_SEED="$$seed" RUST_BACKTRACE=0 cargo nextest run --locked --workspace -E '$(PROPERTIES)'
 
 # Opt-in: an approval signed by a key in your own ssh-agent (may ask for Touch ID or a touch).
 # make test-agent KEY=<public key .pub> [AGENT=<agent socket, default $$SSH_AUTH_SOCK>]
 test-agent:
 	@test -n "$(KEY)" || { echo "usage: make test-agent KEY=<public key .pub> [AGENT=<socket>]"; exit 2; }
 	WRIT_TEST_AGENT_KEY="$(KEY)" SSH_AUTH_SOCK="$(or $(AGENT),$(SSH_AUTH_SOCK))" \
-		WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo test --locked -p writ-integration --test interop -- --ignored --exact your_agent_key_signs_approvals_rust_verifies
+		WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo nextest run --locked --workspace --run-ignored only \
+		-E 'binary_id(writ-integration::interop) & test(=your_agent_key_signs_approvals_rust_verifies)'
 
 # End to end (docs/end-to-end.md): the real binaries in their own containers against a real
 # Forgejo, every scenario run from a runner container, everything removed afterwards
@@ -82,6 +95,7 @@ fmt:
 # The development daemon on dev/writd.yaml (test keys in dev/data, approver key in
 # dev/approvers, both gitignored).
 run:
+	$(RECORD) writd-dev build --locked -p writd --features dev-keystore
 	cargo run --locked -p writd --features dev-keystore -- run dev/writd.yaml
 
 # Pins the development daemon's host key and TLS certificate for the client
@@ -89,6 +103,8 @@ run:
 # dev/readers (see docs/guides/manual-checks.md).
 dev-client:
 	@mkdir -p dev/data/client
+	@$(RECORD) writd-dev build --locked -q -p writd --features dev-keystore
+	@$(RECORD) writ-dev build --locked -q -p writ-cli
 	@WRIT_HOME=dev/data/client cargo run --locked -q -p writ-cli -- reader dev > dev/readers
 	@host=$$(cargo run --locked -q -p writd --features dev-keystore -- host-key dev/writd.yaml) && \
 		printf '[127.0.0.1]:2222 %s\n[127.0.0.1]:2223 %s\n' "$$host" "$$host" > dev/data/client/known_hosts

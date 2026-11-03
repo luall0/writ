@@ -22,6 +22,11 @@ indexing_slicing = "deny"
 string_slice = "deny"
 cast_possible_truncation = "deny"
 
+[profile.dev]
+# Line tables only: backtraces keep file and line, builds are faster and target/ smaller
+# (docs/testing.md#how-make-test-runs). CARGO_PROFILE_DEV_DEBUG=full for a debugger session.
+debug = "line-tables-only"
+
 [profile.release]
 # An overflow is a crash, never a wrapped value in a limit or a counter.
 overflow-checks = true
