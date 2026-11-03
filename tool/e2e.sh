@@ -14,6 +14,19 @@ cd "$(dirname "$0")/.."
 PROJECT="writ-e2e-$$"
 compose() { docker compose -p "$PROJECT" -f e2e/compose.yaml "$@"; }
 
+# The layers this run left in Docker's build cache, built from this tree and never reused by a
+# run on another one: the build's output (`mount / from exec …` of the RUN that records
+# `e2e-binaries`), the binaries' COPY steps and the steps after them in each image (a layer
+# is released only once the layers on top of it are, so the chain goes in one call). One
+# filter, matching only steps of e2e/Dockerfile. Never the cargo cache mounts, which keep the
+# next build incremental: their description (`cached mount …` of that RUN) matches none of
+# these patterns, and a type filter can't protect them (`docker buildx prune` matches no plain
+# layer by type). The copied tree (a few MB) is left to Docker's own GC.
+BUILD_CACHE_STEPS='^mount...from.exec.*e2e-binaries|out.writd|out.writ-sign|writd-start|usr.local.bin.scenarios|WORKDIR..home.writ$|WORKDIR..home.agent$'
+prune_build_cache() {
+    docker buildx prune --all --force --filter "description~=$BUILD_CACHE_STEPS" >/dev/null 2>&1 || true
+}
+
 cleanup() {
     status=$?
     trap - EXIT INT TERM
@@ -25,6 +38,7 @@ cleanup() {
         echo "e2e: the stack is kept: docker compose -p $PROJECT -f e2e/compose.yaml --profile runner down -v --rmi local" >&2
     else
         compose --profile runner down -v --remove-orphans --rmi local >/dev/null 2>&1 || true
+        prune_build_cache
     fi
     exit "$status"
 }

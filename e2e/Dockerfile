@@ -25,21 +25,29 @@ FROM ${RUST_IMAGE} AS build
 # The toolchain the image ships (the one rust-toolchain.toml pins), without its extra
 # components: nothing is downloaded here.
 ENV RUSTUP_TOOLCHAIN=1.99.1 CARGO_TERM_COLOR=never
+# Python, for tool/target-cache.py: the target cache below keeps the last build only.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
 # The binaries as they ship (built on their own, so no test-only feature reaches them, nor the
 # development keystore), then the scenarios' test binary. The caches only make a
-# second build faster: what is built is the copied tree and Cargo.lock.
+# second build faster: what is built is the copied tree and Cargo.lock. Each build is
+# recorded, then the target cache pruned to them (docs/testing.md#how-make-test-runs): it
+# would otherwise keep every build it ever held.
 RUN --mount=type=cache,id=writ-e2e-cargo,target=/usr/local/cargo/registry \
     --mount=type=cache,id=writ-e2e-target,target=/src/target \
     set -eu; \
-    cargo build --locked -p writd -p writ-cli -p writ-sign; \
+    python3 -I tool/target-cache.py record e2e-binaries build --locked -p writd -p writ-cli -p writ-sign; \
     mkdir -p /out; \
     cp target/debug/writd target/debug/writ target/debug/writ-sign /out/; \
+    python3 -I tool/target-cache.py record e2e-scenarios test --locked -p writ-e2e --test scenarios --no-run; \
     cargo test --locked -p writ-e2e --test scenarios --no-run --message-format=json \
         | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' > /tmp/scenarios; \
     test "$(wc -l < /tmp/scenarios)" -eq 1; \
-    cp "$(cat /tmp/scenarios)" /out/scenarios
+    cp "$(cat /tmp/scenarios)" /out/scenarios; \
+    python3 -I tool/target-cache.py prune
 
 FROM ${DEBIAN_IMAGE} AS runtime
 # git ≥ 2.45 (the daemon's mirrors; Debian 13 has 2.47) and OpenSSH (Debian 13: 10.0).
