@@ -1,7 +1,7 @@
 # Upgrading dependencies
 
 How to move anything Writ is built from or tested with: crates, the Rust toolchain,
-`cargo-deny`, the external tools, the Unicode table, the CI runner. Writ is a security tool: an
+`cargo-deny` and `cargo-nextest` (and the binaries CI downloads of them), the external tools, the Unicode table, the CI runner. Writ is a security tool: an
 upgrade is a change like any other, reviewed, tested and committed on its own, and it answers
 the [security checklist](../security.md#the-security-checklist) (item 8 above all). The rules
 it applies are in [security.md § Dependencies](../security.md#dependencies); the versions and
@@ -12,7 +12,8 @@ why each crate was chosen are in [stack.md](../stack.md).
 - **An advisory fails `cargo deny`** (`make check` on your machine or in CI): same day, before
   any other work ([below](#when-cargo-deny-reports-an-advisory)). `main` stays green.
 - **Routinely**: once per milestone, at its start, a lockfile refresh (semver-compatible
-  versions only) and a look at what's newer in the manifest.
+  versions only) and a look at what's newer in the manifest and of `cargo-deny` and
+  `cargo-nextest`.
 - **When a milestone needs it**: a new version that brings a feature, or the first use of a
   crate (it becomes "Decided" in [stack.md](../stack.md) first).
 
@@ -26,7 +27,8 @@ Never as a side effect: no version change inside a feature commit.
 | Manifest bump | A version in `[workspace.dependencies]` (a new minor in 0.x, a new major, a pre-release) | One crate (or one coupled group) per commit |
 | Coupled pins | Crates that must move together ([table](#coupled-pins)) | Together, in one commit, never one alone |
 | Toolchain | `rust-toolchain.toml` | Its own commit ([below](#the-rust-toolchain)) |
-| Tools | `cargo-deny`, git, OpenSSH, Python, the CI image | [Below](#tools-outside-cargo) |
+| Tools | `cargo-deny`, `cargo-nextest`, git, OpenSSH, Python, the CI image | [Below](#tools-outside-cargo) |
+| CI's tool binaries | `tool/ci-tools.sh`: the version and SHA-256 of each tool CI downloads | With that tool's version, in the same commit ([below](#the-tool-binaries-ci-downloads)) |
 
 ## Coupled pins
 
@@ -183,13 +185,59 @@ build: upgrade russh 0.65 → 0.66 and ssh-key to its pin
 
 | Tool | Where its version lives | On upgrade |
 |---|---|---|
-| `cargo-deny` | `.github/workflows/ci.yml` (`cargo install --locked cargo-deny --version …`), [stack.md](../stack.md) | Install the new version locally with `--locked`, run `cargo deny --locked check`, adapt `deny.toml` to any schema change, update both places in one commit |
-| `cargo-nextest` | `.github/workflows/ci.yml` (`cargo install --locked cargo-nextest --version …`), `.config/nextest.toml` (`nextest-version`), [stack.md](../stack.md) | Install the new version locally with `--locked`, run `make test`, read its changelog for changes to retries, timeouts or the config schema, update the three places in one commit |
-| The CI runner | `runs-on: ubuntu-24.04` in the workflow (pinned, never `latest`) | Check its git, OpenSSH and `nc` meet the minimums below; run CI on a branch first |
+| `cargo-deny` | `tool/ci-tools.sh` (`DENY_VERSION`, `DENY_SHA256`: CI's release binary), [stack.md](../stack.md) | Install the new version locally with `--locked`, run `cargo deny --locked check`, adapt `deny.toml` to any schema change. Move CI's pin ([below](#the-tool-binaries-ci-downloads)); update both places in one commit |
+| `cargo-nextest` | `tool/ci-tools.sh` (`NEXTEST_VERSION`, `NEXTEST_SHA256`: CI's release binary), `.config/nextest.toml` (`nextest-version`), [stack.md](../stack.md) | Install the new version locally with `--locked`, run `make test`, read its changelog for changes to retries, timeouts or the config schema. Move CI's pin ([below](#the-tool-binaries-ci-downloads)); update the three places in one commit |
+| The CI runner | `runs-on: ubuntu-24.04` in the workflow (pinned, never `latest`) | Check its git, OpenSSH and `nc` meet the minimums below; another architecture needs new pins in `tool/ci-tools.sh` (they are for x86_64 Linux, and the script refuses anything else); run CI on a branch first |
 | git, OpenSSH | Minimums in `crates/writ-integration/src/tools.rs` (`MIN_GIT`, `MIN_OPENSSH`) and [stack.md](../stack.md) § External tools | Raising a minimum is a decision (users must have it); the integration tests check it at start |
 | `/usr/bin/ssh-keygen` | The default in `writ sign` (`WRIT_SSH_KEYGEN` overrides) | Needs OpenSSH ≥ 8.9 for `-U`; check macOS and Linux still ship it there |
 | Python (Unicode data) | The table in `crates/writ-core/src/text/hidden.rs`, generated from Python's `unicodedata` | After a Python upgrade with a newer Unicode version: `python3 -I tool/gen-hidden-chars.py`, review the diff (a newly assigned character leaves the table only if it is visible), `make ci`, commit with the Unicode version in the message. Re-check the default-ignorable list in the script against `DerivedCoreProperties.txt` of that version |
 | `proptest` regressions | `crates/writ-core/tests/properties.proptest-regressions`, `crates/writ-approval/tests/sign_phases.proptest-regressions` | Kept across upgrades: a `proptest` upgrade must still read it (the fixed-seed pass fails otherwise) |
+
+## The tool binaries CI downloads
+
+CI doesn't compile `cargo-deny` and `cargo-nextest`: `tool/ci-tools.sh` downloads their release
+binaries for the runner (x86_64 Linux) and checks each against a SHA-256 pinned in the script
+before anything is unpacked. A developer's machine installs the same versions with
+`cargo install --locked` ([stack.md](../stack.md#version-pinning)). So every version move of
+either tool moves its pin too, in the same commit, or CI fails on the version check (nextest's
+`nextest-version`) or runs another version than the developers.
+
+1. **The asset.** `cargo-deny`: `cargo-deny-<v>-x86_64-unknown-linux-musl.tar.gz` (the project
+   ships no gnu build), release tag `<v>`. `cargo-nextest`:
+   `cargo-nextest-<v>-x86_64-unknown-linux-gnu.tar.gz`, release tag `cargo-nextest-<v>`. Check
+   the archive still holds the binary where the script expects it (`tar tzf`): `cargo-deny`
+   in a `cargo-deny-<v>-x86_64-unknown-linux-musl/` folder, `cargo-nextest` at the top.
+2. **Its SHA-256, from three sources that must agree**: GitHub's digest of the release asset,
+   the project's own published checksum, and your own hash of the file, downloaded into an
+   empty folder (never run):
+
+   ```sh
+   v=0.9.151 repo=nextest-rs/nextest tag=cargo-nextest-$v asset=cargo-nextest-$v-x86_64-unknown-linux-gnu
+   # cargo-deny: v=0.20.2 repo=EmbarkStudios/cargo-deny tag=$v asset=cargo-deny-$v-x86_64-unknown-linux-musl
+   curl -fsSL "https://api.github.com/repos/$repo/releases/tags/$tag" \
+     | python3 -I -c 'import json,sys; [print(a["digest"]) for a in json.load(sys.stdin)["assets"] if a["name"] == sys.argv[1]]' "$asset.tar.gz"
+   curl -fsSL "https://github.com/$repo/releases/download/$tag/$asset.sha256"         # cargo-nextest
+   curl -fsSL "https://github.com/$repo/releases/download/$tag/$asset.tar.gz.sha256"  # cargo-deny
+   mkdir -p /tmp/pin && cd /tmp/pin && curl -fsSLO "https://github.com/$repo/releases/download/$tag/$asset.tar.gz" \
+     && shasum -a 256 "$asset.tar.gz"
+   ```
+
+   Any disagreement: stop, and pin nothing.
+3. **Update** `DENY_VERSION`/`DENY_SHA256` or `NEXTEST_VERSION`/`NEXTEST_SHA256` in
+   `tool/ci-tools.sh`, with the tool's other places (the [table above](#tools-outside-cargo)).
+4. **Run it** where CI runs it, an x86_64 Linux with cargo, from the repository:
+
+   ```sh
+   docker run --rm --platform linux/amd64 -v "$PWD/tool:/tool:ro" rust:1.99.1-slim-trixie \
+     sh -c 'apt-get update -qq && apt-get install -yqq curl >/dev/null && sh /tool/ci-tools.sh'
+   docker image rm --force --platform linux/amd64 rust:1.99.1-slim-trixie   # only that variant
+   ```
+
+   It prints both tools' versions, the new one included. A wrong pin stops it before
+   anything is installed (`sha256sum: … did NOT match`).
+5. **Commit** with the tool's version move, the security checklist's item 8 naming the three
+   sources that agreed. The first CI run after it is the end-to-end check: its log shows
+   both versions.
 
 ## Removing a dependency
 

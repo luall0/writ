@@ -152,7 +152,9 @@ shipped graph in `make check`).
 
 `make ci` (`make check` then `make test`) is the one definition of green: GitHub Actions runs
 it on Linux for every push and pull request (`.github/workflows/ci.yml`, no third-party
-action), then the random-seed property pass ([property tests](#property-tests)), and on the Mac, where macOS-only code is tested, the `pre-push` hook (`make hooks`)
+action; cargo-deny and cargo-nextest from their release binaries pinned by SHA-256,
+`tool/ci-tools.sh`; incremental compilation off, since every CI build is cold), then the
+random-seed property pass ([property tests](#property-tests)), and on the Mac, where macOS-only code is tested, the `pre-push` hook (`make hooks`)
 allows a push only of a tree `make ci` passed on. The hook doesn't run CI itself: git runs it
 with the connection to the remote already open, and a hook as long as `make ci` made the
 remote close it. Instead, `make ci` on a clean working tree (no change, no untracked file,

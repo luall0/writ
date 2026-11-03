@@ -19,6 +19,9 @@ jobs:
   ci:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # Every build here is cold: incremental compilation would only cost time and disk.
+    env:
+      CARGO_INCREMENTAL: "0"
     steps:
       - name: Fetch the commit
         env:
@@ -33,11 +36,10 @@ jobs:
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install
 
-      - name: cargo-deny (pinned)
-        run: cargo install --locked cargo-deny --version 0.20.2
-
-      - name: cargo-nextest (pinned)
-        run: cargo install --locked cargo-nextest --version 0.9.151
+      # Their release binaries, each checked against the SHA-256 pinned in the script, instead of
+      # compiling them on every run.
+      - name: cargo-deny and cargo-nextest (pinned by SHA-256)
+        run: sh tool/ci-tools.sh
 
       - name: Tools the integration tests use
         run: |
