@@ -250,7 +250,7 @@ The contract suite checks the core limit and that the hardening reports each ste
 debugger being refused needs a real one. With the development daemon running (`make run`):
 
 ```sh
-lldb -p "$(pgrep -n writd)" --batch -o detach    # refused: attach failed (… Operation not permitted)
+lldb -p "$(pgrep -n writd)" --batch -o detach    # refused: attach failed (lost connection)
 ```
 
 Then start one under the debugger (`lldb -- target/debug/writd run dev/writd.yaml`, `run`):

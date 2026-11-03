@@ -22,7 +22,7 @@ guarantee below must be covered by at least one test that tries to break it
 |---|---|---|
 | My personal keys | Secretive (Secure Enclave) | **Never touched by Writ** |
 | Agent signing keys | Signer backend | Software (v1), YubiKey / SE / TPM later |
-| Upstream remote credentials | Daemon: SSH keys behind the signer interface; HTTPS tokens in the keystore (a `0600` file until M5) | SSH keys on my remote accounts: **account-wide access**, not per repo; tokens as narrow as the remote allows (GitHub: one repository). Agents never see them; a token reaches only the daemon's own git, for one operation |
+| Upstream remote credentials | Daemon: SSH keys behind the signer interface; HTTPS tokens sealed in the keystore (`tokens/<id>.age`), added from the approver's machine (`writ admin token`) | SSH keys on my remote accounts: **account-wide access**, not per repo; tokens as narrow as the remote allows (GitHub: one repository). Agents never see them; a token reaches only the daemon's own git, for one operation |
 | Repo mirrors | Daemon host | Personal projects only for now |
 | Session keys + certificates | Agent hosts | Short-lived, one per lease |
 | Approver keys | Secretive (v1), YubiKey, own SE app later | Sign approvals, admin changes and unsealing; listed in the daemon's `approvers` file |
@@ -101,7 +101,7 @@ by nobody else. From M5, `approvers`, `readers` and the policy change only throu
 admin changes: the daemon's state holds the versions in force, each bound to the keystore by
 a MAC keyed by a sealed secret (a version altered, replaced or swapped for another one without
 the passphrase stops the unseal), and writes them back to the files, where a hand edit is never
-applied ([M5](roadmap.md#m5--sealed-start-and-signed-admin-changes)). `writd.yaml` stays a
+applied ([M5](history/m5-sealed-start-and-signed-admin-changes.md)). `writd.yaml` stays a
 host file: it can't make anyone an approver.
 
 ### 6. Local mode: the daemon vs my own user

@@ -61,7 +61,7 @@ head -c1 /proc/$pid/mem                  # as the daemon's user: Permission deni
 **macOS**:
 
 ```sh
-lldb -p "$(pgrep -n writd)" --batch -o detach    # attach failed: Operation not permitted
+lldb -p "$(pgrep -n writd)" --batch -o detach    # attach failed: lost connection
 ```
 
 `writd run`'s log says, at start, each step applied, not applied (a warning, with the fix) or

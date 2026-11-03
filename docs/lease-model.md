@@ -36,7 +36,7 @@ repos:
     push_modes: [gateway, proxy]              # proxy: no mirror, refs and commits still checked
   some-https-only-repo:
     upstream: https://git.example.org/user/some-repo.git   # https://[user@]host[:port]/path
-    upstream_credential: token-example-01     # a token in the keystore (`<keys>/tokens/<id>` until M5)
+    upstream_credential: token-example-01     # a token in the keystore (`writ admin token token-example-01`)
     push_modes: [gateway]
   dotfiles:
     upstream: ssh://git@github.com/user/dotfiles.git
