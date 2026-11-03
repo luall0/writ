@@ -18,8 +18,28 @@ pub trait Signer: Send + Sync {
     fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError>;
     /// What this backend can do (algorithms, exportability, touch requirement).
     fn capabilities(&self) -> Capabilities;
+    /// Takes a key made outside the backend (moved in, never copied) under `id`, usable at
+    /// once. A backend that can't take one (a device makes its own keys) answers
+    /// `Unsupported`, the default; an id it holds already is `DuplicateKey`.
+    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError>;
 }
 ```
+
+**Adding a key live** (M5): a signed policy change that names an agent signing key or an
+`ssh://` upstream credential the keystore lacks makes the daemon create it (Ed25519), seal
+it to the keystore's recipient with its public half, and hand it to the running signer
+through `add_key`. The software backend holds its keys behind a lock and takes the key by
+move. `QueuedSigner` sends it through its worker, so it lands in order with the signatures
+queued before it, then refreshes the key list it answers `list_keys` from. The contract
+suite checks a key added is listed and signs, an id held already is refused by name, and a
+backend without the verb answers `Unsupported` and lists nothing new.
+
+`add_key` is the verb for a key made outside the backend, which only a software backend can
+take. A device that makes its own keys (the Secure Enclave, a YubiKey) gets its own verb
+with its milestone (M7.5: e.g. `create_key(id, algorithm)`), and M5.5's declared
+algorithms and formats may reshape `add_key`: each backend implements the verb that fits it
+and answers `Unsupported` for the other, the daemon picks by backend. Both milestones change
+this interface first (its contract tests, this page), as hard rule 4 asks.
 
 `writ_signer::sshsig` builds an SSHSIG (what `ssh-keygen -Y sign` writes) through any
 backend. Errors never carry key material (`SignerError`), and every backend runs the
@@ -41,8 +61,9 @@ doesn't change:
   `SignerError::Busy`, so nothing piles up behind a stuck device;
 - **a deadline per job**: the caller gets `SignerError::Timeout` past it; a job whose caller
   gave up is skipped (nothing is signed for nobody), and a late result is thrown away;
-- **`list_keys` and `capabilities` from a cache** filled at startup: they never wait behind
-  the device (the approval service lists keys to show the lease's public key).
+- **`list_keys` and `capabilities` from a cache** filled at startup and refreshed when a key
+  is added: they never wait behind the device (the approval service lists keys to show the
+  lease's public key).
 - **a backend that panics is not trusted again**: the worker answers that job
   `SignerError::Unavailable`, writes one error line to the daemon's log (the queue and the
   key), and stops; every later signature through that queue is `Unavailable` until the
@@ -136,6 +157,13 @@ unlocked ([Q17](../decisions.md)).
   directories (a failure leaves them empty): the passphrase twice (at least 12 characters,
   one line of stdin when it isn't a terminal), the identity, the boot tier, the CA key and
   every key the policy names. It never makes a token.
+- **After unseal the identity stays open**, in memory wiped on drop, behind the same seam:
+  a key a signed policy change creates is sealed to the recipient, and a token
+  [`writ admin token`](approvals.md#writ-admin-token) brings is opened through it, as a
+  start would. Every secret it opens is already in memory once unsealed; what holding it adds
+  (a memory read opens the secrets added afterwards too) is a
+  [residual risk](../threat-model.md#residual-risks-v1), closed by hardware recipients
+  (M7.6).
 - v1: `writ unseal` on the Mac asks for the keystore passphrase **and** signs an unseal
   approval with Secretive. Both travel over the authenticated channel; the daemon decrypts in
   memory only.

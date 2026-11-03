@@ -215,15 +215,34 @@ Settled with the user before building (the [decision log](decisions.md) has the 
   (the edit kept), the text in force written back, and both logged. `writd.yaml` itself stays
   a host file (listeners, `decisions`, mirrors): it can't make anyone an approver.
 - **Keys:** a signed policy change that names a new agent signing key or `ssh://` upstream
-  credential makes the daemon create it (Ed25519, encrypted to the recipient, loaded into its
-  signer live); the reply and the audit line give the public key to register. No key is ever
-  made on a plain start (M5.5 adds declared algorithms and `writd keys create`).
-- **Tokens:** `writ admin token <id>` reads the token on the Mac (no echo), encrypts it there
-  to the keystore's public recipient, and sends the ciphertext as a signed admin change: the
-  plaintext never touches the daemon host's disk. An `https://` repo without its token
-  doesn't stop the daemon: its syncs and pushes are refused with the command to run. This
-  changes in [M7.6](#m76--hardware-wrapped-secrets): the token is wrapped to the daemon
-  host's hardware recipient and unwrapped there only when used.
+  credential makes the daemon create it (Ed25519, encrypted to the recipient with its public
+  half beside it), and hand it to its signer live through **`Signer::add_key`**: the
+  interface's verb for a key made outside the backend (the software backend takes it by move;
+  `QueuedSigner` passes it through its worker, in order with the signatures queued before,
+  then refreshes its key list; a backend that can't take one answers `Unsupported`, the
+  default). The reply (`AdminApplied`) and the `admin` audit line give each created key's
+  public key to register. A key the keystore already holds (made by a change that failed
+  after) is loaded, not made again. No key is ever made on a plain start (M5.5 adds declared
+  algorithms and `writd keys create`; M7.5 a verb for keys a device makes itself).
+- **The identity stays open:** after unseal the daemon keeps the keystore's identity in memory
+  (wiped on drop), behind the one seam (`SecretFiles`), so a secret added later is opened as a
+  start opens it. Every secret it opens is in memory already once unsealed; what it adds is in
+  the threat model (closed by M7.6's hardware recipients).
+- **Tokens:** `writ admin token <id>` fetches the keystore's public recipient (`writ info`),
+  reads the token on the Mac (no echo; one line of stdin when it isn't a terminal), encrypts
+  it there, and signs a `writ-token/1` document `{id, previous, sealed}`: the armored age
+  ciphertext, and the digest of the `tokens/<id>.age` it replaces (`none` for a first one), so
+  a replay or a lost update is refused as an admin change's is. The id must be one an
+  `https://` repo or a sealed notifier (`token.sealed`) uses. The daemon checks the
+  ciphertext opens to a token, writes `tokens/<id>.age`, logs `admin` (the id and both
+  digests, never the token), and uses it at once: the mirrors of the repos that use it
+  reopen, the notifier starts or takes the new token. The plaintext never touches the daemon
+  host's disk. An `https://` repo without its token doesn't stop the unseal: its syncs and
+  pushes are refused with "add it with `writ admin token <id>`"; a sealed notifier without
+  its token stays off, with a warning. The development keystore refuses `writ admin token`
+  (its tokens are files the operator writes). This changes in
+  [M7.6](#m76--hardware-wrapped-secrets): the token is wrapped to the daemon host's hardware
+  recipient and unwrapped there only when used.
 - **Recovery, when every approver or reader key is lost, or to apply a file edited on the
   host:** `writd recover <writd.yaml> <policy|approvers|readers> <file>`, run on the host as
   the daemon's user with the daemon stopped, asks for the keystore passphrase, checks the file
@@ -284,9 +303,11 @@ Acceptance:
       no longer in force; a signed one applies live and is logged; a hand-edited authority
       file is never applied (set aside, the text in force written back); a version altered
       at rest stops the unseal.
-- [ ] A policy change naming a new signing key or upstream credential creates it and gives
-      its public key; `writ admin token` adds a token that never appears in clear on the
-      daemon host; an `https://` repo without its token is refused with the reason.
+- [ ] A policy change naming a new signing key or upstream credential creates it, gives its
+      public key, and signs or reaches upstream with it at once (`Signer::add_key`, passing the
+      contract suite); `writ admin token` adds a token that never appears in clear on the
+      daemon host and is used at once; a replayed or stale `writ-token/1` is refused; an
+      `https://` repo without its token is refused with the reason, the daemon unsealed.
 - [ ] `writd recover` replaces the policy, approvers or readers only with the passphrase,
       checked like an admin change, and is logged; without the passphrase it changes nothing.
 - [ ] The TLS key is only in the boot tier and the `Signer`: no PEM key file, no copy outside
@@ -320,6 +341,13 @@ certificate lives in M5's keystore.
 - **`writd keys create <writd.yaml> <id>`:** makes the declared key, writes it to the
   keystore, logs it, prints the SSH public key or the armored OpenPGP certificate to register.
   The development keystore follows the declarations.
+- **The key-creation verbs may change shape here.** M5 gives the `Signer` one verb for a key
+  made outside the backend, `add_key(id, PrivateKey)`, used by a signed policy change that
+  names a new key (Ed25519). Declared algorithms and formats may reshape it (an OpenPGP key
+  carries its creation time and UIDs; the declaration says what to make): change the
+  interface, its contract tests and the [signer page](architecture/signer.md) first, as for
+  `sign`'s hash. Settled in M5 ([decision log](decisions.md)), so M5.5 doesn't have to keep
+  `add_key` as it is.
 - **OpenPGP signatures** (v4, built in `writ-crypto`, never parsed from an agent): the
   certificate with its stored creation time and UID self-signatures; the sign command carries
   the format git asked for, a mismatch with the lease's key denied
@@ -467,6 +495,14 @@ Secure Enclave key whose blob lives in `_writd`'s directory. A `Signer` implemen
 `writ-platform-macos` calling a small Swift component (CryptoKit has no C or Rust API) and a
 config value; nothing else changes.
 
+- **The key-creation verb first** (hard rule 4): M5's `Signer::add_key` takes a key made
+  outside the backend, and a Secure Enclave can't take one: it makes its own. So M7.5 adds the
+  verb for that (e.g. `create_key(id, algorithm) -> KeyInfo`, the daemon storing the blob or
+  handle the backend returns), or merges both into one verb if that reads better then: the
+  interface, its contract tests and the [signer page](architecture/signer.md) change before
+  the backend. Each backend implements the verb that fits it and answers `Unsupported` for
+  the other; the daemon picks by backend. Settled in M5 ([decision log](decisions.md)); the
+  graft test below counts from the interface as M7.5 leaves it.
 - The backend, and key creation for it (agent signing keys, the HTTPS approval API's TLS key,
   optionally the upstream credential). The Secure Enclave does P-256, the TLS certificate's
   curve. Moving the TLS key to it makes a new key, so a new certificate: approvers re-pin it

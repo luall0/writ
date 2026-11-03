@@ -153,8 +153,12 @@ signing_keys:
   methods), settled with the contract tests before any backend changes.
 - Whether the upstream credentials (`ssh://` repos) get the same declaration (algorithm,
   backend), or stay as M4 makes them.
-- Whether a key can also be created through the running daemon (a signed admin change), on
-  top of `writd keys create`.
+- How a key created through the running daemon follows its declaration. Since M5 a signed
+  policy change naming a key the keystore lacks makes it (Ed25519) and hands it to the
+  signer through `Signer::add_key(id, PrivateKey)`, the verb for a key made outside the
+  backend. M5.5 is free to reshape that verb (the declaration says the algorithm and format;
+  an OpenPGP key carries its creation time and UIDs): the interface, its contract tests and
+  the signer page change first ([decision log](../decisions.md), 2026-11-03).
 - Certificate expiry (an OpenPGP key expiration subpacket), renewed by a signed admin change:
   wanted, or left out?
 - P-256 with SHA-384 or SHA-512 in OpenPGP: GnuPG accepts it; to be checked on GitHub and

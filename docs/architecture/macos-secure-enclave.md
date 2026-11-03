@@ -169,7 +169,11 @@ Notes for M7 and M7.5:
 
 ## Signer backends this maps to
 
-All plans plug into the existing `Signer` interface:
+All plans plug into the existing `Signer` interface. One verb is added first: M5's
+`Signer::add_key` takes a key made outside the backend, which the Secure Enclave can't take
+(it makes its own keys), so M7.5 adds the verb for that (e.g. `create_key(id, algorithm)`,
+the daemon keeping the blob it returns), or merges both into one, with its contract tests,
+before the backend ([signer](signer.md#signer-interface), decision log 2026-11-03):
 
 | Backend id | Used by |
 |---|---|

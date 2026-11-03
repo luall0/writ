@@ -68,6 +68,26 @@ writ admin apply approvers approvers      # shows what changes, then one signatu
 The daemon writes the text in force back to its files on the host; editing them there changes
 nothing (a hand edit is set aside at the next start, never applied).
 
+## Tokens
+
+An `https://` upstream's token, and a notifier's with `token: { sealed: <id> }`, are added
+from your machine, with the daemon unsealed:
+
+```sh
+writ admin token <id>      # asks for the token (no echo), then one signature
+```
+
+`writ` encrypts the token to the keystore's recipient (from `writ info`) before it leaves your
+machine: the daemon writes the ciphertext as `tokens/<id>.age` and uses it at once (the
+repos that use it sync again; the notifier starts). Run it again to rotate one. The id must
+be one your policy's `https://` repos or a sealed notifier name. Until a repo's token is
+there, its syncs and pushes are refused with the command to run, and the rest of the daemon
+works.
+
+New signing keys and `ssh://` credentials need no command of their own: apply a policy that
+names them (`writ admin apply policy`), and the daemon makes each one, and `writ` prints its
+public key to register on the remote.
+
 ## Getting access back
 
 The whole guide is [recovery](recovery.md). In short, to keep from locking yourself out:

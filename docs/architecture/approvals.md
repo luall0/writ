@@ -73,12 +73,49 @@ at unseal). They change only by:
   each SSH command and HTTPS request, so a removed reader is turned away on a live
   connection), the mirrors (`Mirrors::with_registry`: unchanged repos keep their mirror and
   its lock). The file `writd.yaml` names is written back. One change at a time.
+  A policy that names an agent signing key or an `ssh://` upstream credential the keystore
+  lacks makes the daemon create it before the checks (Ed25519, sealed to the keystore's
+  recipient with its `.pub`, handed to the running signer through
+  [`Signer::add_key`](signer.md#signer-interface)); the reply (`AdminApplied.created`) and
+  the `admin` line give each one's id and public key, and `writ admin apply` prints them to
+  register on the remotes. A key made for a change that then fails stays in the keystore and
+  is loaded, not made again, by the next change that names it.
 - **`writd recover`** on the host, with the passphrase ([recovery](../operators/recovery.md)).
 
 A file edited on the host is never applied: at the next start it is set aside
 (`<file>.unapplied-<time>`, an `admin` line, done) and the text in force written back. A
 version altered in the state without the keystore's key keeps the daemon sealed. The whole
 state put back from an older copy is a restored backup: it carries a valid MAC.
+
+## `writ admin token`
+
+The `https://` upstreams' tokens and the notifiers' sealed tokens (`token.sealed`) reach the
+keystore from the Mac, never in clear on the daemon host's disk.
+`writ admin token <id> [--yes]`:
+
+1. reads the keystore's public recipient from `writ info` (over the pinned channel, so it is
+   the daemon's), and the digest of the token file in force (`writ admin token <id>` asks
+   `GET /v1/tokens/<id>`: the digest, or none; never the token);
+2. reads the token (no echo; one line of stdin when it isn't a terminal), encrypts it to the
+   recipient (age, armored), and wipes its copies;
+3. signs a `writ-token/1` document `{id, previous, sealed}` with the approval key: `previous`
+   is the digest of the `tokens/<id>.age` it replaces (`none` for a first one), `sealed` the
+   armored ciphertext (at most 8 KiB);
+4. sends the document and its SSHSIG (`POST /v1/tokens`).
+
+The service checks the daemon is open, the document decodes strictly, the signer is an
+approver in force, and `previous` is still the file in force (a replay, or a token changed
+meanwhile, is refused). The daemon checks the id is one an `https://` repo or a sealed
+notifier uses, opens the ciphertext with the keystore's identity (kept open after unseal) and
+checks it is a token; then the `admin` line is written (the id, both digests, the approver:
+never the token), `tokens/<id>.age` written (the old one replaced), and the token used at
+once: the mirrors of the repos that use it reopen (`Mirrors::with_tokens`), the notifier with
+that token starts or takes it. The development keystore refuses it (its tokens are files the
+operator writes, `<keys>/tokens/<id>`).
+
+An `https://` repo whose token isn't in the keystore yet doesn't stop the unseal: its mirror
+is served, and its syncs and pushes are refused with "add it with `writ admin token <id>`".
+A sealed notifier without its token stays off, with a warning at unseal.
 
 ## `writ unseal`
 

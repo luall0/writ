@@ -256,10 +256,14 @@ host ([operator guide](../operators/setup.md#https-upstreams-and-tokens)).
 - The URL is the registry's `https://[user@]host[:port]/path`, read strictly: a plain host
   name or address, no password (refused: the token is in the keystore), no query or fragment.
   Never `http://`.
-- The token (until M5, alone in `<keys>/tokens/<id>`, 0600, written by the operator; 1 to
-  1,024 printable ASCII characters, no space) is read at startup into memory wiped on drop,
-  never printed; a missing or malformed one stops the daemon. One credential id is a key or
-  a token, never both.
+- The token (1 to 1,024 printable ASCII characters, no space) is in the keystore: sealed
+  (`tokens/<id>.age`, added from the Mac with [`writ admin token <id>`](approvals.md#writ-admin-token),
+  used at once), or, in the development keystore, alone in `<keys>/tokens/<id>` (0600,
+  written by the operator). It is read into memory wiped on drop, never printed. In the
+  sealed keystore a missing one doesn't stop the unseal: the repo's syncs and pushes are
+  refused with "add it with `writ admin token <id>`" until it is added; a malformed one is
+  refused when it is added. (The development keystore still stops on a missing one.) One
+  credential id is a key or a token, never both.
 - git gets it from its credential helper, the daemon's own program
   (`writd upstream-credential <socket> <operation>`), which asks a **credential socket**
   (`writ_mirror::credential`) served for the operation in a private directory: it answers
