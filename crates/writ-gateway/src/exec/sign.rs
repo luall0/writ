@@ -33,6 +33,8 @@ pub(super) struct SignCommand<'a> {
     pub cert: &'a CertIdentity,
     pub facts: &'a CallerFacts,
     pub repo: &'a RepoName,
+    /// The format git asked for.
+    pub format: writ_crypto::algorithm::SignatureFormat,
 }
 
 /// The signed commit, or why not.
@@ -60,7 +62,11 @@ pub(super) async fn sign(
         .await
         .map_err(Refused::Gateway)?;
     let (cert, caller) = (command.cert.clone(), command.facts.clone());
-    let (repo, service) = (command.repo.clone(), gateway.service().clone());
+    let (repo, service, format) = (
+        command.repo.clone(),
+        gateway.service().clone(),
+        command.format,
+    );
     // Off the async threads: hashing the evidence and walking the trees is bounded but can
     // take a while, and the service reads the store and syncs the audit log.
     tokio::task::spawn_blocking(move || {
@@ -72,6 +78,7 @@ pub(super) async fn sign(
             cert,
             caller,
             repo,
+            format,
             object,
         };
         service.sign(&signing).map_err(Refused::Denied)

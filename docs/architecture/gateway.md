@@ -15,7 +15,7 @@ each listener has a role:
 
 | Listener (role) | SSH user and authentication | Commands |
 |---|---|---|
-| agents | `git` + an **SSH user certificate** issued by the daemon for an active lease ([Identity](identity.md#session-identity)) | **git** `upload-pack` (fetch) and `receive-pack` (push), so a plain `git fetch/push writ` works; **sign** for the `writ-sign` shim: `writ-sign git <repo>` (the commit and its evidence in, armored SSHSIG out; [signing](#signing)) |
+| agents | `git` + an **SSH user certificate** issued by the daemon for an active lease ([Identity](identity.md#session-identity)) | **git** `upload-pack` (fetch) and `receive-pack` (push), so a plain `git fetch/push writ` works; **sign** for the `writ-sign` shim: `writ-sign git <repo>` or `writ-sign openpgp <repo>` (the commit and its evidence in, the armored SSHSIG or OpenPGP signature out; [signing](#signing)) |
 | agents | `writ` + a plain key: the session key of a ticket | **lease** commands: `writ request` (submit the ticket on stdin), `writ wait <id>` |
 | approvals (SSH) | any user, a key listed in the daemon's `readers` file (a certificate is refused) | the approval API: `writ info`, `ls`, `show`, `approve`, `refuse`, `revoke` ([Approvals](approvals.md#reaching-the-daemon)) |
 | approvals (HTTPS) | mutual TLS 1.3: the daemon's pinned self-signed certificate, and a client certificate for a key in `readers` | the same API as `GET`/`POST` routes (`crates/writ-gateway/src/https.rs`) |
@@ -60,7 +60,9 @@ without the daemon user's system or global git config.
 
 ## Signing
 
-`writ-sign git <repo>` ([Flows § 2](../flows.md#2-signed-commit)): the repo is a registry
+`writ-sign git <repo>`, or `writ-sign openpgp <repo>` for a lease whose key signs in OpenPGP
+([Flows § 2](../flows.md#2-signed-commit); a format that isn't the lease's key's is denied,
+`signature_format`: [signer](signer.md#openpgp-keys)): the repo is a registry
 name (git config `writ.repo` on the agent host), the body a `writ-sign/1` request
 (`writ_proto::sign`): the object git asked to sign, then the first parent commit and the trees
 the daemon needs to compute the paths the commit touches. Before reading it, the gateway asks

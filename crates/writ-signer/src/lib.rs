@@ -176,3 +176,83 @@ pub fn sshsig(
     writ_crypto::sshsig::assemble_with(public.key_data(), namespace, hash, signature)
         .map_err(failed)
 }
+
+/// The OpenPGP key of `id` (its public half, made at `created`).
+pub fn openpgp_key(
+    signer: &dyn Signer,
+    id: &KeyId,
+    created: u32,
+) -> Result<writ_crypto::openpgp::OpenpgpKey, SignerError> {
+    let public = public_key(signer, id)?;
+    writ_crypto::openpgp::OpenpgpKey::new(&public, created).map_err(|_| SignerError::Unsupported {
+        id: id.clone(),
+        what: format!("an OpenPGP {} key", public.algorithm()),
+    })
+}
+
+/// Signs a prepared OpenPGP signature through `signer`: its packet.
+fn openpgp_packet(
+    signer: &dyn Signer,
+    id: &KeyId,
+    prepared: &writ_crypto::openpgp::ToSign,
+) -> Result<Vec<u8>, SignerError> {
+    let (data, hash) = prepared.signer_input();
+    let signature = signer.sign(id, data, hash)?;
+    prepared
+        .packet(&signature)
+        .map_err(|_| SignerError::Failed(id.clone()))
+}
+
+/// An armored OpenPGP detached signature of `data` (git's `gpg -bsau`) by the key `id`, made
+/// at `created`, with the hash `hash`, at `time` (seconds since the epoch).
+pub fn openpgp_signature(
+    signer: &dyn Signer,
+    id: &KeyId,
+    created: u32,
+    hash: Hash,
+    data: &[u8],
+    time: u32,
+) -> Result<String, SignerError> {
+    let key = openpgp_key(signer, id, created)?;
+    let prepared = writ_crypto::openpgp::detached(&key, hash, data, time).map_err(|_| {
+        SignerError::Unsupported {
+            id: id.clone(),
+            what: format!(
+                "an OpenPGP signature of a {} key with {hash}",
+                key.algorithm()
+            ),
+        }
+    })?;
+    let packet = openpgp_packet(signer, id, &prepared)?;
+    Ok(writ_crypto::openpgp::armor(
+        writ_crypto::openpgp::Armor::Signature,
+        &packet,
+    ))
+}
+
+/// The armored OpenPGP certificate of the key `id` (made at `created`) with `uids`, each
+/// certified through `signer` with `hash`. Every self-signature carries the key's creation
+/// time: the same key, time and user ids give the same certificate.
+pub fn openpgp_certificate(
+    signer: &dyn Signer,
+    id: &KeyId,
+    created: u32,
+    hash: Hash,
+    uids: &[&str],
+) -> Result<String, SignerError> {
+    let key = openpgp_key(signer, id, created)?;
+    let mut certified = Vec::with_capacity(uids.len());
+    for uid in uids {
+        let prepared = writ_crypto::openpgp::certification(&key, hash, uid).map_err(|_| {
+            SignerError::Unsupported {
+                id: id.clone(),
+                what: format!(
+                    "an OpenPGP certification of a {} key with {hash}",
+                    key.algorithm()
+                ),
+            }
+        })?;
+        certified.push((*uid, openpgp_packet(signer, id, &prepared)?));
+    }
+    writ_crypto::openpgp::certificate(&key, &certified).map_err(|_| SignerError::Failed(id.clone()))
+}

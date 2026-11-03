@@ -186,16 +186,25 @@ fn upstream_keys(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Prints each agent signing key's public key and the templates that name it: the key to
-/// register on an account (as a signing key) so the remote shows its commits as verified.
+/// Prints each agent signing key and the templates that name it: what to register on an
+/// account so the remote shows its commits as verified. An SSH key's public key; an OpenPGP
+/// key's fingerprint, then its certificate (as the daemon last made it).
 fn signing_keys(path: &Path) -> anyhow::Result<()> {
     let (config, declared, policy) = load_checked(path)?;
-    for (id, key, _) in keystore::public(&config, &declared, &policy)?.signing {
+    for (id, key, meta) in keystore::public(&config, &declared, &policy)?.signing {
         println!(
-            "{id} {} (templates: {})",
-            key.to_openssh()?,
+            "{} (templates: {})",
+            signing::describe(&id, &key, &meta)?,
             templates_using(&policy, &id).join(", ")
         );
+        if meta.created.is_some() {
+            match keystore::read_certificate(&config, &id)? {
+                Some(certificate) => print!("{certificate}"),
+                None => println!(
+                    "(no certificate yet: give {id} user ids in the policy's signing_keys)"
+                ),
+            }
+        }
     }
     Ok(())
 }
@@ -222,10 +231,22 @@ fn keys_create(path: &Path, id: &str) -> anyhow::Result<()> {
         .append(&line)
         .context("the audit log can't be written: the key is made all the same")?;
     println!(
-        "{id} {} (templates: {})",
-        made.key.public_key().to_openssh()?,
+        "{} (templates: {})",
+        signing::describe(&id, &made.key.public_key(), &made.meta)?,
         templates_using(&policy, &id).join(", ")
     );
+    if made.meta.created.is_some() {
+        match signing::certificate(&made, declaration, policy.uids(&id))? {
+            Some(certificate) => {
+                keystore::write_certificate(&config, &id, &certificate)?;
+                print!("{certificate}");
+            }
+            None => println!(
+                "(no certificate yet: give {id} user ids in the policy's signing_keys, with \
+                 `writ admin apply policy`)"
+            ),
+        }
+    }
     Ok(())
 }
 

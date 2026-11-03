@@ -8,6 +8,9 @@
 //! (`Signer::add_key`), and a token an approver sealed on their machine is opened with the
 //! identity kept open, written, and used at once.
 
+/// The creation time of each OpenPGP key a change added to the signer.
+type Created = std::collections::BTreeMap<KeyId, u32>;
+
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 use std::time::Duration;
 
@@ -127,6 +130,11 @@ impl Opener {
             tokens,
             mut bot_tokens,
         } = keystore;
+        let openpgp: std::collections::BTreeMap<KeyId, u32> = keys
+            .signing
+            .iter()
+            .filter_map(|k| k.meta.created.map(|created| (k.id.clone(), created)))
+            .collect();
         let signer = platform::signer(keys.signing)?;
         let upstream = platform::upstream_signer(keys.upstream)?;
         let mirrors = Mirrors::open(
@@ -140,6 +148,7 @@ impl Opener {
             ca: CertificateAuthority::new(keys.ca),
             signer: signer.clone(),
             authority,
+            openpgp,
         };
         let (service, approver_owned, caller_owned) =
             (inner.service.clone(), approver.cloned(), caller.clone());
@@ -157,6 +166,7 @@ impl Opener {
             tokens: RwLock::new(tokens),
         });
         self.sync_files();
+        self.write_certificates();
         // Open: the notifiers whose token was sealed join the others; one whose token isn't
         // in the keystore yet stays off until `writ admin token` adds it.
         for notifier in &inner.config.notifiers {
@@ -243,7 +253,7 @@ impl Opener {
             Readers(Vec<writ_crypto::readers::Reader>),
             Approvers,
         }
-        let mut created = Vec::new();
+        let (mut created, mut openpgp_created) = (Vec::new(), Created::new());
         let (parsed, ready) = match target {
             AdminTarget::Policy => {
                 let policy = crate::authority::parse_policy(&text, inner.config.min_ttl)
@@ -257,7 +267,7 @@ impl Opener {
                     .open
                     .get()
                     .ok_or_else(|| refuse("the daemon is not open".to_owned()))?;
-                created = self
+                (created, openpgp_created) = self
                     .keys_for(&policy)
                     .await
                     .map_err(|e| refuse(format!("{e:#}")))?;
@@ -293,13 +303,22 @@ impl Opener {
         let (service, checked_owned, caller_owned) =
             (inner.service.clone(), checked.clone(), caller.clone());
         let applied = tokio::task::spawn_blocking(move || {
-            service.commit_admin(&checked_owned, parsed, created, &caller_owned)
+            service.commit_admin(
+                &checked_owned,
+                parsed,
+                created,
+                openpgp_created,
+                &caller_owned,
+            )
         })
         .await
         .map_err(|_| "the change stopped".to_owned())?
         .map_err(|e| e.to_string())?;
         match ready {
-            Ready::Policy(mirrors) => gateway.set_mirrors(mirrors),
+            Ready::Policy(mirrors) => {
+                gateway.set_mirrors(mirrors);
+                self.write_certificates();
+            }
             Ready::Readers(readers) => gateway.readers().replace(readers),
             Ready::Approvers => {}
         }
@@ -317,7 +336,7 @@ impl Opener {
     /// Hands the signers every key `policy` names that they don't hold yet: from the
     /// keystore, or made there now (a signing key as `writd.yaml` declares it, an upstream
     /// credential Ed25519). The keys new to the signers, to register.
-    async fn keys_for(&self, policy: &PolicyConfig) -> anyhow::Result<Vec<CreatedKey>> {
+    async fn keys_for(&self, policy: &PolicyConfig) -> anyhow::Result<(Vec<CreatedKey>, Created)> {
         let open = self.0.open.get().context("the daemon is not open")?;
         let declared = crate::signing::declarations(&self.0.config)?;
         let (upstream_ids, _) = keystore::upstream_credentials(policy)?;
@@ -345,6 +364,7 @@ impl Opener {
         // Files, and a signer's queue: off the async threads.
         tokio::task::spawn_blocking(move || {
             let mut added = Vec::new();
+            let mut openpgp = Created::new();
             for (role, id) in wanted {
                 let signer = match role {
                     KeyRole::Signing => &signing,
@@ -357,6 +377,9 @@ impl Opener {
                     KeyRole::Signing => {
                         let declared = crate::signing::declared(&declared, &id)?;
                         let (key, made) = live.signing_key_or_make(&id, declared)?;
+                        if let Some(created) = key.meta.created {
+                            openpgp.insert(id.clone(), created);
+                        }
                         (key.key, made)
                     }
                     KeyRole::Upstream => {
@@ -376,7 +399,7 @@ impl Opener {
                     public_key: info.public_key.to_openssh()?,
                 });
             }
-            Ok(added)
+            Ok((added, openpgp))
         })
         .await
         .context("the change stopped")?
@@ -505,6 +528,23 @@ impl Opener {
             }
         }
         Ok(applied)
+    }
+
+    /// Writes each OpenPGP key's certificate, as the service made it (at unseal, on a policy
+    /// change), beside the key: what `writd signing-keys` prints. Best effort: the certificate
+    /// a lease gets comes from the service, never from this file.
+    fn write_certificates(&self) {
+        let inner = &self.0;
+        let Ok(declared) = crate::signing::declarations(&inner.config) else {
+            return;
+        };
+        for id in declared.keys() {
+            if let Some(certificate) = inner.service.openpgp_certificate(id)
+                && let Err(e) = keystore::write_certificate(&inner.config, id, &certificate)
+            {
+                tracing::warn!(key = %id, error = %format!("{e:#}"), "cannot write the certificate");
+            }
+        }
     }
 
     /// Opens the sealed keystore with `passphrase` (scrypt: off the async threads): every key

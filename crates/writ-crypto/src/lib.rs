@@ -19,6 +19,7 @@ pub mod ca;
 pub mod keyfile;
 pub mod keypair;
 pub mod keys;
+pub mod openpgp;
 pub mod passphrase;
 pub mod readers;
 pub mod sealed;

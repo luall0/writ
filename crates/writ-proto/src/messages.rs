@@ -28,12 +28,18 @@ pub enum Decision {
         lease: String,
         certificate: String,
         signing_key: Option<String>,
+        /// The signing key's armored OpenPGP certificate, when it signs in OpenPGP: git
+        /// verifies the lease's commits with it, and its fingerprint is `user.signingkey`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signing_certificate: Option<String>,
     },
     /// A signed amendment, now the terms of its lease (the certificate doesn't change), with
     /// the signing key of its terms.
     Applied {
         lease: String,
         signing_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signing_certificate: Option<String>,
     },
     /// Refused, with feedback, and who signed the refusal: `None` when nobody did (a daemon
     /// with `decisions: open`), so the feedback may not be the approver's.

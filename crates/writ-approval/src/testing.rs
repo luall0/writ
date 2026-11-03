@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use writ_crypto::algorithm::{Hash, KeyAlgorithm};
+use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat};
 use writ_crypto::keypair::KeyPair;
 
 use writ_core::authority::{AdminTarget, TextDigest};
@@ -45,6 +45,10 @@ use crate::{InForce, Opened, Service, ServiceConfig, ServicePlatform, Submission
 /// The boot nonce of every [`TestService`].
 pub const NONCE: [u8; 16] = [7; 16];
 
+/// The creation time of the OpenPGP signing keys of a [`TestService`]: a day before
+/// [`START`].
+pub const OPENPGP_CREATED: u32 = 1_799_913_600;
+
 /// The time a [`TestService`] starts at by default: 2027-01-15T08:00:00Z.
 pub const START: u64 = 1_800_000_000;
 
@@ -56,8 +60,8 @@ pub struct TestServiceBuilder {
     policy: PolicyConfig,
     policy_text: String,
     signer_kind: KeyKind,
-    /// Another algorithm and SSHSIG hash for the signing keys than `signer_kind`'s.
-    signing: Option<(KeyAlgorithm, Hash)>,
+    /// Another format, algorithm and hash for the signing keys than `signer_kind`'s SSH.
+    signing: Option<(SignatureFormat, KeyAlgorithm, Hash)>,
     decisions: Decisions,
     max_pending: usize,
     submissions: SubmissionLimits,
@@ -131,7 +135,14 @@ impl TestServiceBuilder {
     /// The signing keys' algorithm and SSHSIG hash, as `writd.yaml` would declare them (any
     /// algorithm Writ signs with, RSA included).
     pub fn signing(mut self, algorithm: KeyAlgorithm, hash: Hash) -> Self {
-        self.signing = Some((algorithm, hash));
+        self.signing = Some((SignatureFormat::Ssh, algorithm, hash));
+        self
+    }
+
+    /// The signing keys in OpenPGP, of `algorithm`, signing with `hash`, made at
+    /// [`OPENPGP_CREATED`].
+    pub fn openpgp(mut self, algorithm: KeyAlgorithm, hash: Hash) -> Self {
+        self.signing = Some((SignatureFormat::Openpgp, algorithm, hash));
         self
     }
 
@@ -185,7 +196,7 @@ impl TestServiceBuilder {
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         let backend = match self.signing {
             None => software_signer(&ids, self.signer_kind),
-            Some((algorithm, _)) => SoftwareSigner::new(
+            Some((_, algorithm, _)) => SoftwareSigner::new(
                 ids.iter()
                     .map(|id| (id.parse().unwrap(), KeyPair::generate(algorithm).unwrap())),
             )
@@ -193,10 +204,14 @@ impl TestServiceBuilder {
         };
         let key_use = match self.signing {
             None => crate::KeyUse::SSH,
-            Some((_, hash)) => crate::KeyUse {
-                format: writ_crypto::algorithm::SignatureFormat::Ssh,
-                hash,
-            },
+            Some((format, _, hash)) => crate::KeyUse { format, hash },
+        };
+        let openpgp_created = if key_use.format == SignatureFormat::Openpgp {
+            ids.iter()
+                .map(|id| (id.parse().unwrap(), OPENPGP_CREATED))
+                .collect()
+        } else {
+            std::collections::BTreeMap::new()
         };
         let signer = Arc::new(GatedSigner::new(FailingSigner::new(backend)));
         let service = Service::new(
@@ -237,6 +252,7 @@ impl TestServiceBuilder {
             store_breaker,
             audit_path,
             signer,
+            openpgp_created,
             daemon,
             authority: *authority.as_bytes(),
         };
@@ -315,6 +331,8 @@ pub struct TestService {
     /// The signer commits are signed with: `close()` holds each signature until the test
     /// releases it, `set_failing(true)` makes it refuse.
     pub signer: Arc<GatedSigner<FailingSigner<SoftwareSigner>>>,
+    /// The creation time of each OpenPGP signing key (none for SSH keys).
+    pub openpgp_created: std::collections::BTreeMap<writ_core::names::KeyId, u32>,
     /// What an unseal names: the daemon's host key fingerprint.
     pub daemon: writ_core::names::KeyFingerprint,
     /// The authority MAC's key the kit hands at open.
@@ -338,6 +356,7 @@ impl TestService {
             ca: self.ca(),
             signer: self.signer.clone(),
             authority: writ_crypto::authority::AuthorityKey::from_bytes(&self.authority).unwrap(),
+            openpgp: self.openpgp_created.clone(),
         }
     }
 

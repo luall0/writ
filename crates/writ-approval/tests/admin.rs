@@ -151,7 +151,13 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
     let checked: CheckedAdmin = h.service.check_admin(&request, &facts()).unwrap();
     let applied = h
         .service
-        .commit_admin(&checked, parsed_approvers(&text), vec![], &facts())
+        .commit_admin(
+            &checked,
+            parsed_approvers(&text),
+            vec![],
+            Default::default(),
+            &facts(),
+        )
         .unwrap();
     assert_eq!(
         (applied.target, applied.version),
@@ -221,6 +227,7 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
             &checked,
             parsed_approvers(&text),
             vec![made.clone()],
+            Default::default(),
             &facts(),
         )
         .unwrap();
@@ -334,7 +341,8 @@ fn a_tightened_template_denies_its_leases_and_a_key_the_signer_lacks_is_refused(
     let checked = h.service.check_admin(&request, &facts()).unwrap();
     let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&unknown).unwrap());
     let message = refused(
-        h.service.commit_admin(&checked, parsed, vec![], &facts()),
+        h.service
+            .commit_admin(&checked, parsed, vec![], Default::default(), &facts()),
         RefusalCode::Admin,
     );
     assert!(
@@ -350,7 +358,7 @@ fn a_tightened_template_denies_its_leases_and_a_key_the_signer_lacks_is_refused(
     let checked = h.service.check_admin(&request, &facts()).unwrap();
     let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&tight).unwrap());
     h.service
-        .commit_admin(&checked, parsed, vec![], &facts())
+        .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
         .unwrap();
     let denial = h.service.fetch(&cert, &facts(), &repo).unwrap_err();
     assert_eq!(denial.code, DenyCode::Config, "{denial:?}");
@@ -371,7 +379,13 @@ fn a_change_the_audit_log_cannot_take_changes_nothing() {
     h.audit_breaker.set_broken(true);
     let error = h
         .service
-        .commit_admin(&checked, AdminParsed::Readers, vec![], &facts())
+        .commit_admin(
+            &checked,
+            AdminParsed::Readers,
+            vec![],
+            Default::default(),
+            &facts(),
+        )
         .unwrap_err();
     assert!(matches!(error, ServiceError::AuditLog(_)), "{error}");
     h.audit_breaker.set_broken(false);
@@ -413,4 +427,73 @@ fn versions_whose_mac_is_not_the_keystore_s_keep_the_daemon_sealed() {
     let h = TestServiceBuilder::new(POLICY).sealed().build(dir.path());
     let message = refused(h.open(), RefusalCode::Unseal);
     assert!(message.contains("altered at rest"), "{message}");
+}
+
+#[test]
+fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_logged() {
+    use writ_crypto::algorithm::{Hash, KeyAlgorithm};
+    let one = "uids: [\"Agent <user+agent@example.org>\"]";
+    let policy = format!("{POLICY}\nsigning_keys:\n  agent-ed25519-01:\n    {one}\n");
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(&policy)
+        .openpgp(KeyAlgorithm::Ed25519, Hash::Sha512)
+        .build(dir.path());
+    let id = "agent-ed25519-01".parse().unwrap();
+    let before = h.service.openpgp_certificate(&id).unwrap();
+    let previous = current(&h, AdminTarget::Policy);
+    let two = policy.replace(
+        one,
+        "uids: [\"Agent <user+agent@example.org>\", \"Fix <user+fix@example.org>\"]",
+    );
+
+    // Signed by a key that isn't an approver's: refused, logged, the certificate unchanged.
+    let stranger = generate(KeyKind::Ed25519).unwrap();
+    let message = refused(
+        h.service.check_admin(
+            &change(&stranger, AdminTarget::Policy, previous.clone(), &two),
+            &facts(),
+        ),
+        RefusalCode::Signature,
+    );
+    assert!(message.contains("which is not in approvers"), "{message}");
+    assert_eq!(h.service.openpgp_certificate(&id).unwrap(), before);
+    assert_eq!(current(&h, AdminTarget::Policy), previous);
+
+    // Signed by the approver: the new user id certified at once, in the change's line.
+    let request = change(&h.approver, AdminTarget::Policy, previous, &two);
+    let checked = h.service.check_admin(&request, &facts()).unwrap();
+    let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&two).unwrap());
+    h.service
+        .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
+        .unwrap();
+    let after = h.service.openpgp_certificate(&id).unwrap();
+    assert_ne!(after, before);
+    let audit = std::fs::read_to_string(&h.audit_path).unwrap();
+    let line = audit
+        .lines()
+        .rev()
+        .find(|l| l.contains("\"event\":\"admin\"") && l.contains("\"result\":\"allowed\""))
+        .unwrap();
+    assert!(
+        line.contains("; certified OpenPGP key agent-ed25519-01 (")
+            && line.contains("): Agent <user+agent@example.org>, Fix <user+fix@example.org>"),
+        "{line}"
+    );
+    // The same user ids again: the same certificate, and nothing certified in the line.
+    let previous = current(&h, AdminTarget::Policy);
+    let same = format!("{two}\n# a comment\n");
+    let request = change(&h.approver, AdminTarget::Policy, previous, &same);
+    let checked = h.service.check_admin(&request, &facts()).unwrap();
+    let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&same).unwrap());
+    h.service
+        .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
+        .unwrap();
+    assert_eq!(h.service.openpgp_certificate(&id).unwrap(), after);
+    let audit = std::fs::read_to_string(&h.audit_path).unwrap();
+    let last = audit
+        .lines()
+        .rev()
+        .find(|l| l.contains("\"event\":\"admin\""))
+        .unwrap();
+    assert!(!last.contains("certified"), "{last}");
 }

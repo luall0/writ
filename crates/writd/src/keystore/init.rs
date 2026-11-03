@@ -210,6 +210,13 @@ pub fn make(
         .into_iter()
         .map(|(id, key)| {
             let made = super::sealed::make_signing_key(&layout, &recipient, id, key)?;
+            // An OpenPGP key's certificate, with the user ids the policy gives it.
+            if let Some(certificate) = crate::signing::certificate(&made, key, policy.uids(id))? {
+                write_public(
+                    &layout.signing_dir().join(format!("{id}.asc")),
+                    &certificate,
+                )?;
+            }
             Ok((made.id, made.key.public_key(), made.meta))
         })
         .collect::<anyhow::Result<_>>()?;
@@ -248,10 +255,14 @@ fn print(sealed: &SealedConfig, policy: &PolicyConfig, made: &Made) {
             crate::repos_using(policy, id).join(", ")
         );
     }
-    for (id, key, _) in &made.keys.signing {
+    for (id, key, meta) in &made.keys.signing {
+        let described = crate::signing::describe(id, key, meta).unwrap_or_default();
         println!(
-            "signing key {id}: {} (templates: {})",
-            openssh(key),
+            "signing key {}: {} (templates: {})",
+            id,
+            described
+                .strip_prefix(&format!("{id} "))
+                .unwrap_or(&described),
             crate::templates_using(policy, id).join(", ")
         );
     }

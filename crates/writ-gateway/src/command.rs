@@ -20,8 +20,13 @@ pub(crate) enum LeaseCommand {
     UploadPack { repo: RepoName },
     /// `git-receive-pack '<repo>.git'`: push.
     ReceivePack { repo: RepoName },
-    /// `writ-sign git <repo>`: sign the commit sent on stdin, for a repo of the lease.
-    Sign { repo: RepoName },
+    /// `writ-sign git <repo>` (an SSH signature, in git's namespace `git`) or `writ-sign
+    /// openpgp <repo>` (an OpenPGP one): sign the commit sent on stdin, for a repo of the
+    /// lease, in the format git asked for.
+    Sign {
+        repo: RepoName,
+        format: writ_crypto::algorithm::SignatureFormat,
+    },
 }
 
 impl LeaseCommand {
@@ -51,13 +56,17 @@ impl Command {
                 repo: repo_name(unquote(arg)?)?,
             },
             "writ-sign" => {
-                // The namespace git signs commits in, then a registry name (never a path).
-                let (namespace, repo) = arg.split_once(' ')?;
-                if namespace != "git" {
-                    return None;
-                }
+                // The format (`git`: SSH, git's SSHSIG namespace; or `openpgp`), then a
+                // registry name (never a path).
+                let (format, repo) = arg.split_once(' ')?;
+                let format = match format {
+                    "git" => writ_crypto::algorithm::SignatureFormat::Ssh,
+                    "openpgp" => writ_crypto::algorithm::SignatureFormat::Openpgp,
+                    _ => return None,
+                };
                 LeaseCommand::Sign {
                     repo: repo.parse().ok()?,
+                    format,
                 }
             }
             _ => return None,
@@ -107,6 +116,14 @@ mod tests {
             Command::parse(b"writ-sign git demo"),
             Some(Command::Lease(LeaseCommand::Sign {
                 repo: "demo".parse().unwrap(),
+                format: writ_crypto::algorithm::SignatureFormat::Ssh,
+            }))
+        );
+        assert_eq!(
+            Command::parse(b"writ-sign openpgp demo"),
+            Some(Command::Lease(LeaseCommand::Sign {
+                repo: "demo".parse().unwrap(),
+                format: writ_crypto::algorithm::SignatureFormat::Openpgp,
             }))
         );
         assert_eq!(
@@ -131,6 +148,9 @@ mod tests {
             b"git-upload-pack '.git'",
             b"git-upload-pack 'de mo.git'",
             b"writ-sign writ-approval demo",
+            b"writ-sign ssh demo",
+            b"writ-sign x509 demo",
+            b"writ-sign openpgp",
             b"writ-sign git",
             b"writ-sign git ../demo",
             b"writ-sign git demo extra",

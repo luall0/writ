@@ -148,6 +148,7 @@ async fn decide(
             lease,
             certificate,
             signing_key,
+            signing_certificate,
         } => {
             let terms = Ticket::from_canonical(lease.as_bytes())
                 .context("the daemon sent a lease that isn't canonical")?;
@@ -157,6 +158,7 @@ async fn decide(
             )?;
             write_file(&dir.join("lease.json"), &lease)?;
             write_signing_key(dir, signing_key.as_deref())?;
+            write_signing_certificate(dir, signing_certificate.as_deref())?;
             point_current(paths, id)?;
             println!(
                 "Lease {id} granted until {}: {} on {}, branches {}.",
@@ -169,11 +171,16 @@ async fn decide(
             println!("Session files: {}", dir.display());
             Ok(Exit::Ok)
         }
-        Decision::Applied { lease, signing_key } => {
+        Decision::Applied {
+            lease,
+            signing_key,
+            signing_certificate,
+        } => {
             let terms = Ticket::from_canonical(lease.as_bytes())
                 .context("the daemon sent a lease that isn't canonical")?;
             write_file(&dir.join("lease.json"), &lease)?;
             write_signing_key(dir, signing_key.as_deref())?;
+            write_signing_certificate(dir, signing_certificate.as_deref())?;
             println!(
                 "Amendment {id} signed: lease {} now runs under its terms (until {}).",
                 terms.lease_id(),
@@ -223,6 +230,29 @@ fn write_signing_key(dir: &Path, key: Option<&str>) -> anyhow::Result<()> {
     let key = writ_crypto::ssh_key::PublicKey::from_openssh(key)
         .context("the daemon sent a signing key that isn't an SSH public key")?;
     write_file(&dir.join("signing_key.pub"), key.to_openssh()? + "\n")
+}
+
+/// The largest OpenPGP certificate written to a session (a key and 16 user ids are a few
+/// KiB).
+const MAX_CERTIFICATE: usize = 64 * 1024;
+
+/// `signing_key.asc`: the armored OpenPGP certificate the daemon signs the lease's commits
+/// with, when its key signs in OpenPGP (git verifies with it; `writ init` names its
+/// fingerprint). Written only if it is one armored public key block of printable ASCII.
+fn write_signing_certificate(dir: &Path, certificate: Option<&str>) -> anyhow::Result<()> {
+    let Some(certificate) = certificate else {
+        return Ok(());
+    };
+    let armored = certificate.len() <= MAX_CERTIFICATE
+        && certificate.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----\n")
+        && certificate.ends_with("-----END PGP PUBLIC KEY BLOCK-----\n")
+        && certificate
+            .bytes()
+            .all(|b| b == b'\n' || b.is_ascii_graphic() || b == b' ');
+    if !armored {
+        anyhow::bail!("the daemon sent a signing certificate that isn't an armored OpenPGP key");
+    }
+    write_file(&dir.join("signing_key.asc"), certificate)
 }
 
 fn print_narrowing(submitted: Option<&Ticket>, terms: &Ticket) {

@@ -222,6 +222,7 @@ fn signing(cert: &CertIdentity, built: &Built, repo: &str) -> Signing {
         cert: cert.clone(),
         caller: CallerFacts::default(),
         repo: repo.parse().unwrap(),
+        format: writ_crypto::algorithm::SignatureFormat::Ssh,
         object: SignObject::Commit {
             commit: built.commit.clone(),
             touched_paths: touched(&built.commit, &evidence).ok(),
@@ -1165,4 +1166,115 @@ fn a_push_s_paths_are_walked_only_for_commits_this_lease_signed_here_with_their_
     // Nothing logged: a read.
     assert!(h.events("push", "allowed").is_empty());
     assert!(h.events("push", "denied").is_empty());
+}
+
+/// What the real `gpg` says about `signature` over `data`, the certificate `cert` imported
+/// into a throwaway `GNUPGHOME` (never the user's own). The test clock runs in 2027: gpg is
+/// told to ignore a key or signature from its future.
+fn gpg_verify(cert: &str, data: &[u8], signature: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("gnupg");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::set_permissions(&home, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(dir.path().join("cert.asc"), cert).unwrap();
+    std::fs::write(dir.path().join("data"), data).unwrap();
+    std::fs::write(dir.path().join("sig.asc"), signature).unwrap();
+    let gpg = |args: &[&str]| {
+        std::process::Command::new("gpg")
+            .args(["--batch", "--no-tty", "--ignore-time-conflict", "--homedir"])
+            .arg(&home)
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    let imported = gpg(&["--import", "cert.asc"]);
+    assert!(imported.status.success(), "{imported:?}");
+    let out = gpg(&["--status-fd", "1", "--verify", "sig.asc", "data"]);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn an_openpgp_lease_signs_in_openpgp_only_and_gpg_verifies_its_commits() {
+    use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat};
+    for (algorithm, hash) in [
+        (KeyAlgorithm::Ed25519, Hash::Sha512),
+        (KeyAlgorithm::P256, Hash::Sha256),
+        (KeyAlgorithm::Rsa3072, Hash::Sha384),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = format!(
+            "{POLICY}\nsigning_keys:\n  agent-ed25519-01:\n    uids: [\"Agent <{EMAIL}>\"]\n"
+        );
+        let test = TestServiceBuilder::new(&policy)
+            .clock(Arc::new(FakeClock::at_unix(START)))
+            .openpgp(algorithm, hash)
+            .build(dir.path());
+        let h = Harness {
+            _dir: dir,
+            test,
+            clock: Arc::new(FakeClock::at_unix(START)),
+            db: std::path::PathBuf::new(),
+        };
+        let key = generate(KeyKind::Ed25519).unwrap();
+        let (lease, cert) = h.lease_with(&key, FEATURE);
+        // The grant carries the certificate, with the policy's user id.
+        let decision = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(h.service.wait(&lease, key.public_key()))
+            .unwrap();
+        let Decision::Active {
+            signing_certificate: Some(certificate),
+            ..
+        } = decision
+        else {
+            panic!("{algorithm}: no certificate in {decision:?}");
+        };
+        assert!(certificate.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----\n"));
+
+        // git asked for an SSH signature: denied, logged, nothing signed and no slot used.
+        let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+        let ssh = h.service.sign(&signing(&cert, &commit, "omega-code"));
+        denied(
+            ssh,
+            DenyCode::SignatureFormat,
+            "signs in openpgp, and git asked for ssh",
+        );
+        let audit = std::fs::read_to_string(&h.audit_path).unwrap();
+        let line = audit
+            .lines()
+            .rev()
+            .find(|l| l.contains("\"event\":\"sign\""))
+            .unwrap();
+        assert!(line.contains("\"code\":\"signature_format\""), "{line}");
+
+        // In OpenPGP: signed, and the real gpg verifies it with the lease's certificate.
+        let mut openpgp = signing(&cert, &commit, "omega-code");
+        openpgp.format = SignatureFormat::Openpgp;
+        let signed = h.service.sign(&openpgp).unwrap();
+        assert!(
+            signed
+                .signature
+                .starts_with("-----BEGIN PGP SIGNATURE-----\n\n"),
+            "{}",
+            signed.signature
+        );
+        let status = gpg_verify(&certificate, commit.commit.bytes(), &signed.signature);
+        assert!(
+            status.contains("[GNUPG:] VALIDSIG "),
+            "{algorithm}: {status}"
+        );
+        assert!(
+            status.contains("[GNUPG:] GOODSIG ") && status.contains(EMAIL),
+            "{algorithm}: {status}"
+        );
+        // The ledger holds the commit git writes with this signature in it.
+        assert_eq!(
+            signed.commit,
+            writ_git::signed::signed_id(&commit.commit, &signed.signature)
+                .unwrap()
+                .to_commit_id()
+                .unwrap()
+        );
+    }
 }

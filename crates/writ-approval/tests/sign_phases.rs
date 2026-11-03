@@ -198,6 +198,7 @@ fn run(max_signatures: u32, rate: u32, fetch: bool, schedule: &[Step]) -> Outcom
                             cert: cert.clone(),
                             caller: CallerFacts::default(),
                             repo: "homelab-scripts".parse().unwrap(),
+                            format: writ_crypto::algorithm::SignatureFormat::Ssh,
                             object: SignObject::Commit {
                                 commit: commit(index),
                                 touched_paths: None,

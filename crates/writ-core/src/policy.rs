@@ -97,6 +97,10 @@ pub enum DenyCode {
     Invalid,
     /// The daemon is sealed: nothing is served until an approver unseals it (`sealed`).
     Sealed,
+    /// git asked for a signature in another format than the lease's key signs in
+    /// (`signature_format`). Not a violation: a client wired for the other format, never
+    /// anything the ticket allowed.
+    SignatureFormat,
 }
 
 impl DenyCode {
@@ -149,6 +153,7 @@ impl DenyCode {
             DenyCode::Rate => "rate",
             DenyCode::Invalid => "invalid",
             DenyCode::Sealed => "sealed",
+            DenyCode::SignatureFormat => "signature_format",
         }
     }
 }

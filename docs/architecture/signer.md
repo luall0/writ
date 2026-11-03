@@ -178,9 +178,35 @@ refused at start. No PEM key file exists. Its backend is a config choice like an
 (software by default, the Secure Enclave from M7.5); a new key means a new certificate, so
 approvers re-pin it once.
 
-Each key signs in SSH today with its declared algorithm and hash; OpenPGP signatures come
-next in [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms) (declaring
-`format: openpgp` is refused at start until then).
+### OpenPGP keys
+
+A key declared `format: openpgp` signs v4 OpenPGP signatures, written by `writ_crypto::openpgp`
+(never parsed from an agent: OpenPGP adds no untrusted input to the daemon). Its public key
+packet is made from its SSH public half and its **creation time**, kept in its key file since
+the fingerprint depends on it (EdDSA, algorithm 22, for Ed25519; ECDSA for P-256 and P-384;
+RSA). A signature is prepared there (`openpgp::detached`: the data, the hashed subpackets
+with the signature's time and the issuer's fingerprint, the trailer), signed through the
+`Signer` (Ed25519 signs the digest; ECDSA and RSA are asked for the preimage with the hash,
+which they hash to the same digest), and wrapped (`ToSign::packet`: the MPIs, the issuer's key
+id unhashed); `writ_signer::openpgp_signature` does the three. Armor with its CRC-24.
+
+**The certificate** (`writ_signer::openpgp_certificate`): the public key packet, then each
+user id the policy gives the key (`policy.yaml`'s `signing_keys.<id>.uids`, a signed admin
+change) with its positive self-certification: key flags certify and sign, SHA-512, SHA-384,
+SHA-256 preferred, made **at the key's creation time**. Ed25519, RSA PKCS#1 v1.5 and the
+software backend's ECDSA (RFC 6979) are deterministic, so the same key, time and user ids
+give the same certificate. The service makes the certificates at unseal and on every policy
+change (`service/openpgp.rs`; the change's `admin` line names each key whose user ids
+changed, `certified OpenPGP key <id> (<fingerprint>): <uids>`), hands a lease its key's
+certificate with the grant, and the daemon writes it beside the key
+(`signing/<id>.asc`) for `writd signing-keys` to print; `writd init` and `writd keys create`
+make it from the key itself.
+
+The sign request says the format git asked for (`writ-sign git <repo>` for SSH, `writ-sign
+openpgp <repo>`); one that isn't the lease's key's is denied with `signature_format`
+(logged, not a violation, no slot used): the daemon signs in the key's format only, so no
+signature of one format can be read as the other. Both formats go in the same `gpgsig`
+header, so the ledger is unchanged.
 
 v1 ships the software backend; the others are in the [backlog](../backlog/README.md) (and
 the Secure Enclave in local mode, `se-cryptokit`, in

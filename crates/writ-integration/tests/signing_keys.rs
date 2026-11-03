@@ -82,17 +82,26 @@ fn each_refused_signing_key_declaration_stops_the_start_with_its_reason() {
             && last(&error).contains("se-cryptokit"),
         "{error}"
     );
-    // OpenPGP: not signed by this build yet.
+    // OpenPGP P-256 takes SHA-256 only.
     let error = Daemon::refused(POLICY, |yaml| {
         yaml.replace(
             AGENT_01,
-            "agent-01: { format: openpgp, algorithm: ed25519 }",
+            "agent-01: { format: openpgp, algorithm: p256, hash: sha512 }",
         )
     });
     assert_eq!(
         last(&error),
-        "writd: signing_keys.agent-01: format openpgp is refused by this build until OpenPGP \
-         signatures land (M5.5)"
+        "writd: signing_keys.agent-01: openpgp signs p256 keys with sha256, not sha512"
+    );
+    // An OpenPGP key whose user ids don't cover a committer email of its templates.
+    let error = Daemon::refused(POLICY, |yaml| {
+        yaml.replace(AGENT_01, "agent-01: { format: openpgp, algorithm: ed25519 }")
+    });
+    assert_eq!(
+        last(&error),
+        "writd: policy: templates.feature.committer_emails: agent@writ has no user id in \
+         signing_keys.agent-01.uids (the OpenPGP key would sign commits a remote shows as \
+         unverified)"
     );
     // A template naming a key nobody declared.
     let error = Daemon::refused(POLICY, |yaml| yaml.replace(&format!("  {AGENT_01}\n"), ""));
@@ -199,4 +208,58 @@ fn every_algorithm_and_hash_signs_commits_git_verifies() {
         let sig = writ_crypto::ssh_key::SshSig::from_pem(&armored).unwrap();
         assert_eq!(sig.hash_alg().as_str(), hash.name(), "{algorithm}");
     }
+}
+
+/// A policy whose template signs with the harness's OpenPGP key, certified for its committer.
+const OPENPGP_POLICY: &str = r#"
+repos:
+  demo:
+    upstream: ssh://git@remote.invalid/demo.git
+    upstream_credential: upstream-01
+templates:
+  feature:
+    repos: [demo]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ"]
+    signing_key: agent-pgp
+    max_ttl: 2h
+    max_signatures: 5
+    max_pushes: 5
+    max_ops_per_minute: 60
+    max_push_size: 10MB
+signing_keys:
+  agent-pgp:
+    uids: ["Agent <agent@writ>"]
+"#;
+
+#[test]
+fn an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids() {
+    let daemon = Daemon::start(OPENPGP_POLICY, Approvals::Ssh);
+    let printed = daemon.print("signing-keys");
+    let (line, certificate) = printed.split_once('\n').unwrap();
+    // `agent-pgp openpgp <fingerprint> (ed25519) (templates: feature)`.
+    let fields: Vec<&str> = line.split(' ').collect();
+    assert_eq!(fields[..2], ["agent-pgp", "openpgp"], "{line}");
+    let fingerprint = fields[2];
+    assert_eq!(fingerprint.len(), 40, "{line}");
+    assert!(line.ends_with(" (ed25519) (templates: feature)"), "{line}");
+    assert!(certificate.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+    // Imported into a throwaway GNUPGHOME: the key, with its user id.
+    let home = daemon.root().join("gnupg");
+    fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    fs::write(daemon.root().join("cert.asc"), format!("{certificate}\n")).unwrap();
+    let gpg = |args: &[&str]| {
+        std::process::Command::new("gpg")
+            .args(["--batch", "--no-tty", "--homedir"])
+            .arg(&home)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let out = gpg(&["--import", daemon.root().join("cert.asc").to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let listed = stdout(&gpg(&["--with-colons", "--list-keys", fingerprint]));
+    assert!(listed.contains("Agent <agent@writ>"), "{listed}");
 }

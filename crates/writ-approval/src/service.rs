@@ -11,6 +11,7 @@ mod approver;
 mod coalesced;
 mod gateway;
 mod notes;
+mod openpgp;
 mod prove;
 mod push;
 mod sign;
@@ -131,6 +132,9 @@ pub struct Opened {
     pub signer: Arc<dyn Signer>,
     /// The authority MAC's key: checks the versions in force, signs each new head.
     pub authority: writ_crypto::authority::AuthorityKey,
+    /// The creation time of each OpenPGP key the signer holds (from the keystore): part of
+    /// its fingerprint, so of every signature and certificate.
+    pub openpgp: BTreeMap<writ_core::names::KeyId, u32>,
 }
 
 /// The approval service. Shared (`Arc`) by the gateway and the daemon's timers.
@@ -147,6 +151,9 @@ pub struct Service {
     in_force: RwLock<InForce>,
     /// Set once, at unseal; never taken back.
     opened: OnceLock<Opened>,
+    /// The OpenPGP keys' creation times and certificates: set at unseal, replaced by a policy
+    /// change.
+    openpgp: RwLock<openpgp::OpenpgpKeys>,
     /// What an unseal signature must name while sealed: this daemon, this boot.
     boot: SealedBoot,
     inner: Mutex<Inner>,
@@ -347,6 +354,7 @@ impl Service {
             approver_keys: RwLock::new(Arc::new(approver_keys)),
             in_force,
             opened: OnceLock::new(),
+            openpgp: RwLock::new(openpgp::OpenpgpKeys::default()),
             boot,
             inner: Mutex::new(Inner {
                 store,
@@ -610,6 +618,16 @@ impl Service {
         };
         let key = writ_signer::public_key(&*self.opened()?.signer, id).map_err(internal)?;
         key.to_openssh().map(Some).map_err(internal)
+    }
+
+    /// The armored OpenPGP certificate commits are signed with under `ticket`, if its key signs
+    /// in OpenPGP.
+    fn signing_certificate(&self, ticket: &Ticket) -> Option<String> {
+        ticket
+            .scope
+            .signing_key
+            .as_ref()
+            .and_then(|id| self.openpgp_certificate(id))
     }
 
     /// Queues a notification for the worker: the request never waits on the sink. Best

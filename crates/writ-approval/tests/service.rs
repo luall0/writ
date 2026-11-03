@@ -257,6 +257,7 @@ fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
         lease,
         certificate,
         signing_key,
+        signing_certificate,
     } = h.wait(&ticket.id, &key)
     else {
         panic!("expected an active lease");
@@ -265,6 +266,8 @@ fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
     // The public key commits are signed with, for the agent's git config.
     let expected = h.signing_key("agent-ed25519-01").to_openssh().unwrap();
     assert_eq!(signing_key.as_deref(), Some(expected.as_str()));
+    // An SSH key: no OpenPGP certificate.
+    assert_eq!(signing_certificate, None);
     let cert = Certificate::from_openssh(&certificate).unwrap();
     assert_eq!(cert.key_id(), ticket.id.as_str());
     assert_eq!(cert.public_key(), key.public_key().key_data());

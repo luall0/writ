@@ -185,6 +185,50 @@ pub fn public(
     }
 }
 
+/// Where the certificate of the OpenPGP key `id` is kept, beside its key: public, rewritten
+/// whenever the daemon certifies the key again (what `writd signing-keys` prints).
+pub fn certificate_path(config: &Config, id: &KeyId) -> PathBuf {
+    let dir = match &config.keystore {
+        KeystoreConfig::Dev(dir) => dir.join("signing"),
+        KeystoreConfig::Sealed(sealed) => sealed::Layout(sealed).signing_dir(),
+    };
+    dir.join(format!("{id}.asc"))
+}
+
+/// Writes the certificate of `id` (whole, then moved in place; readable by others).
+pub fn write_certificate(config: &Config, id: &KeyId, text: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let path = certificate_path(config, id);
+    let suffix = writ_crypto::keys::random_hex(8)?;
+    let temporary = path.with_extension(format!("asc.new-{suffix}"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&temporary)
+        .with_context(|| format!("cannot create {}", temporary.display()))?;
+    file.write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("cannot write {}", temporary.display()))?;
+    std::fs::rename(&temporary, &path).with_context(|| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("cannot move the certificate to {}", path.display())
+    })
+}
+
+/// The certificate of `id` the daemon last wrote, if any.
+pub fn read_certificate(config: &Config, id: &KeyId) -> anyhow::Result<Option<String>> {
+    let path = certificate_path(config, id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(writ_platform::fs::read_authority(
+        &path,
+        "the certificate",
+    )?))
+}
+
 /// Makes the declared signing key `id` in the keystore, which must not hold it yet: what
 /// `writd keys create` does. Needs no unseal (a sealed key is encrypted to the keystore's
 /// public recipient). Answers its public half and what it is.

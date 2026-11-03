@@ -22,6 +22,7 @@ use writ_core::names::{CommitId, KeyId, RepoName, TicketId};
 use writ_core::policy::{self, CertIdentity, Context, Denial, DenyCode, ObjectKind, SignRequest};
 use writ_core::ticket::{OnViolation, Operation};
 use writ_core::units::Timestamp;
+use writ_crypto::algorithm::SignatureFormat;
 use writ_git::Commit;
 use writ_signer::SignerError;
 use writ_store::{AuditEvent, Counter, EventKind, LedgerEntry, Outcome};
@@ -40,6 +41,8 @@ pub struct Signing {
     pub caller: CallerFacts,
     /// The repo the commit is for (`writ-sign git <repo>`).
     pub repo: RepoName,
+    /// The signature format git asked for (`gpg.format`): it must be the lease's key's.
+    pub format: SignatureFormat,
     pub object: SignObject,
 }
 
@@ -82,7 +85,8 @@ impl Signing {
     }
 }
 
-/// A signed commit: the armored SSHSIG for git, and what the ledger recorded.
+/// A signed commit: the armored signature for git (an SSHSIG, or an OpenPGP signature), and
+/// what the ledger recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedCommit {
     pub signature: String,
@@ -132,6 +136,8 @@ struct Reserved<'a> {
     key: KeyId,
     /// How the key signs, as declared.
     key_use: crate::KeyUse,
+    /// The time an OpenPGP signature says it was made (seconds since the epoch).
+    time: u32,
     commit: &'a Commit,
     warnings: Vec<String>,
     in_flight: InFlight<'a>,
@@ -238,13 +244,27 @@ impl Service {
     pub fn sign(&self, signing: &Signing) -> Result<SignedCommit, Denial> {
         let request = signing.request();
         let reserved = self.reserve(signing, &request)?;
-        let signed = writ_signer::sshsig(
-            &*self.opened().map_err(super::as_denial)?.signer,
-            &reserved.key,
-            GIT_NAMESPACE,
-            reserved.key_use.hash,
-            reserved.commit.bytes(),
-        );
+        let signer = &*self.opened().map_err(super::as_denial)?.signer;
+        let signed = match reserved.key_use.format {
+            SignatureFormat::Ssh => writ_signer::sshsig(
+                signer,
+                &reserved.key,
+                GIT_NAMESPACE,
+                reserved.key_use.hash,
+                reserved.commit.bytes(),
+            ),
+            SignatureFormat::Openpgp => match self.openpgp().created.get(&reserved.key) {
+                Some(&created) => writ_signer::openpgp_signature(
+                    signer,
+                    &reserved.key,
+                    created,
+                    reserved.key_use.hash,
+                    reserved.commit.bytes(),
+                    reserved.time,
+                ),
+                None => Err(SignerError::Failed(reserved.key.clone())),
+            },
+        };
         self.settle(signing, &request, reserved, signed)
     }
 
@@ -298,18 +318,26 @@ impl Service {
             let denial = Denial::internal();
             return Err(deny(&mut inner, &event, denial));
         };
-        // Declared, and in SSH: the daemon refuses to start otherwise (fail closed all the
-        // same, before a slot is taken).
-        let key_use = match self.config.signing_keys.get(key) {
-            Some(key_use) if key_use.format == writ_crypto::algorithm::SignatureFormat::Ssh => {
-                *key_use
-            }
-            _ => {
-                tracing::error!(%key, "a signing key without an SSH declaration");
-                let denial = Denial::internal();
-                return Err(deny(&mut inner, &event, denial));
-            }
+        // Declared: the daemon refuses to start otherwise (fail closed all the same, before a
+        // slot is taken).
+        let Some(key_use) = self.config.signing_keys.get(key).copied() else {
+            tracing::error!(%key, "a signing key without a declaration");
+            let denial = Denial::internal();
+            return Err(deny(&mut inner, &event, denial));
         };
+        // git asked for the format the lease's key signs in, or nothing is signed (and no
+        // slot taken: a wiring mistake, never anything the ticket allowed).
+        if signing.format != key_use.format {
+            let reason = format!(
+                "lease {}: its key {key} signs in {}, and git asked for {} (set gpg.format = {}, \
+                 as `writ init` does)",
+                lease.id, key_use.format, signing.format, key_use.format
+            );
+            let denial = Denial::new(DenyCode::SignatureFormat, reason);
+            return Err(deny(&mut inner, &event, denial));
+        }
+        // An OpenPGP signature's time: a 32-bit count of seconds.
+        let time = u32::try_from(now.unix()).unwrap_or(u32::MAX);
         let max = lease.ticket.limits.max_signatures;
         // Under the same lock as the decision: the counter can't have moved, but the store
         // refuses past the limit whatever happens.
@@ -336,6 +364,7 @@ impl Service {
         Ok(Reserved {
             key: key.clone(),
             key_use,
+            time,
             commit,
             warnings: allowed.warnings,
             in_flight: InFlight {

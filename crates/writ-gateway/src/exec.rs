@@ -70,12 +70,13 @@ pub(crate) async fn run(gateway: Gateway, request: LeaseRequest, channel: Channe
         LeaseCommand::UploadPack { repo } | LeaseCommand::ReceivePack { repo } => {
             run_git(&refusing, &command, repo, git_protocol, channel, connection).await;
         }
-        LeaseCommand::Sign { repo } => {
+        LeaseCommand::Sign { repo, format } => {
             let (mut rx, tx) = channel.split();
             let request = sign::SignCommand {
                 cert: &cert,
                 facts: &facts,
                 repo,
+                format: *format,
             };
             match sign::sign(&gateway, request, &mut rx).await {
                 Ok(signed) => {

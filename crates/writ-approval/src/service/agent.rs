@@ -287,6 +287,7 @@ impl Service {
                     lease: canonical_text(&lease.ticket)?,
                     certificate,
                     signing_key: self.signing_public_key(&lease.ticket)?,
+                    signing_certificate: self.signing_certificate(&lease.ticket),
                 }
             }
             State::Applied => {
@@ -294,6 +295,7 @@ impl Service {
                 Decision::Applied {
                     lease: canonical_text(&lease.ticket)?,
                     signing_key: self.signing_public_key(&lease.ticket)?,
+                    signing_certificate: self.signing_certificate(&lease.ticket),
                 }
             }
             State::Refused => Decision::Refused {

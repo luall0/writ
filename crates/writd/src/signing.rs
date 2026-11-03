@@ -40,12 +40,6 @@ fn pairs(backend: BackendConfig) -> Vec<(KeyAlgorithm, SignerHash)> {
 pub fn declarations(config: &Config) -> anyhow::Result<Declarations> {
     let mut declared = Declarations::new();
     for (id, key) in &config.signing_keys {
-        if key.format == SignatureFormat::Openpgp {
-            bail!(
-                "signing_keys.{id}: format openpgp is refused by this build until OpenPGP \
-                 signatures land (M5.5)"
-            );
-        }
         let hash = writ_crypto::algorithm::check(
             key.format,
             key.algorithm,
@@ -124,6 +118,50 @@ pub fn make(declared: &Declared) -> anyhow::Result<(KeyPair, KeyMeta)> {
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
     Ok((key, KeyMeta::new(declared.format, now)?))
+}
+
+/// The armored OpenPGP certificate of `key` with `uids`, each self-signature made with the
+/// key itself (on the host: `writd init`, `writd keys create`): the same certificate the
+/// running daemon makes through its signer. `None` for an SSH key, or a key without user ids
+/// yet (a certificate without one doesn't import).
+pub fn certificate(
+    key: &crate::keystore::SigningKey,
+    declared: &Declared,
+    uids: &[writ_core::names::Uid],
+) -> anyhow::Result<Option<String>> {
+    let Some(created) = key.meta.created else {
+        return Ok(None);
+    };
+    if declared.format != SignatureFormat::Openpgp || uids.is_empty() {
+        return Ok(None);
+    }
+    let openpgp = writ_crypto::openpgp::OpenpgpKey::new(&key.key.public_key(), created)?;
+    let mut certified = Vec::with_capacity(uids.len());
+    for uid in uids {
+        let prepared = writ_crypto::openpgp::certification(&openpgp, declared.hash, uid.as_str())?;
+        let (data, hash) = prepared.signer_input();
+        let signature = key.key.sign(data, hash)?;
+        certified.push((uid.as_str(), prepared.packet(&signature)?));
+    }
+    Ok(Some(writ_crypto::openpgp::certificate(
+        &openpgp, &certified,
+    )?))
+}
+
+/// What `writd signing-keys` prints for a key: its id and SSH public key for an SSH key; its
+/// id, `openpgp`, its fingerprint and algorithm for an OpenPGP one.
+pub fn describe(id: &KeyId, public: &PublicKey, meta: &KeyMeta) -> anyhow::Result<String> {
+    match meta.created {
+        Some(created) => {
+            let key = writ_crypto::openpgp::OpenpgpKey::new(public, created)?;
+            Ok(format!(
+                "{id} openpgp {} ({})",
+                key.fingerprint_hex(),
+                key.algorithm()
+            ))
+        }
+        None => Ok(format!("{id} {}", public.to_openssh()?)),
+    }
 }
 
 /// The declaration of `id`, or why there is none.

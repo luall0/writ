@@ -30,10 +30,12 @@ pub enum Approvals {
 }
 
 /// The signing keys the harness's `writd.yaml` declares: the ones its tests' policies name, in
-/// SSH with Ed25519 (`agent-02` unused until a test's policy change names it).
+/// SSH with Ed25519 (`agent-02` unused until a test's policy change names it), and an OpenPGP
+/// Ed25519 key (`agent-pgp`) for the tests whose policy uses one.
 pub const SIGNING_KEYS: &str = "signing_keys:\n  \
     agent-01: { format: ssh, algorithm: ed25519 }\n  \
-    agent-02: { format: ssh, algorithm: ed25519 }\n";
+    agent-02: { format: ssh, algorithm: ed25519 }\n  \
+    agent-pgp: { format: openpgp, algorithm: ed25519 }\n";
 
 /// The passphrase of the sealed keystore [`Daemon::start_sealed`] makes.
 pub const PASSPHRASE: &str = "an integration test passphrase";

@@ -310,3 +310,108 @@ fn every_algorithm_s_sshsig_verifies_with_ssh_keygen() {
         }
     }
 }
+
+/// What `gpg` prints on its status descriptor, run in a throwaway `GNUPGHOME` (never the
+/// user's own `~/.gnupg`, no agent of theirs: `--batch`, and the home made here).
+fn gpg(home: &std::path::Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new("gpg")
+        .args(["--batch", "--no-tty", "--homedir"])
+        .arg(home)
+        .args(args)
+        .env_remove("GPG_AGENT_INFO")
+        .output()
+        .unwrap()
+}
+
+/// Every algorithm's OpenPGP certificate imports into the real `gpg` with its user ids, and
+/// its detached signatures with each hash the format allows verify (`VALIDSIG` with its
+/// fingerprint), only over the bytes signed.
+#[test]
+fn every_algorithm_s_openpgp_signature_verifies_with_gpg() {
+    use writ_crypto::algorithm::SignatureFormat;
+    use writ_signer::{openpgp_certificate, openpgp_key, openpgp_signature};
+    let created = 1_762_128_000;
+    for algorithm in KeyAlgorithm::ALL {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("gnupg");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::set_permissions(&home, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        let signer =
+            SoftwareSigner::new([(id("k"), KeyPair::generate(algorithm).unwrap())]).unwrap();
+        let hashes = writ_crypto::algorithm::hashes(SignatureFormat::Openpgp, algorithm);
+        let strongest = *hashes.last().unwrap();
+        let uids = ["Agent <agent@writ.invalid>", "<bot@writ.invalid>"];
+        let cert = openpgp_certificate(&signer, &id("k"), created, strongest, &uids).unwrap();
+        // The same key, time and user ids: the same certificate.
+        assert_eq!(
+            openpgp_certificate(&signer, &id("k"), created, strongest, &uids).unwrap(),
+            cert,
+            "{algorithm}"
+        );
+        let fingerprint = openpgp_key(&signer, &id("k"), created)
+            .unwrap()
+            .fingerprint_hex();
+        std::fs::write(dir.path().join("cert.asc"), &cert).unwrap();
+        let out = gpg(
+            &home,
+            &["--import", dir.path().join("cert.asc").to_str().unwrap()],
+        );
+        assert!(
+            out.status.success(),
+            "{algorithm}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let listed = gpg(&home, &["--with-colons", "--list-keys", &fingerprint]);
+        let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+        for uid in uids {
+            assert!(listed.contains(uid), "{algorithm}: {uid} in {listed}");
+        }
+        // Valid user ids: their self-signatures checked (`u` or `-` validity, never `i`).
+        assert!(
+            !listed
+                .lines()
+                .any(|l| l.starts_with("uid:i:") || l.starts_with("uid:r:")),
+            "{algorithm}: {listed}"
+        );
+        for &hash in hashes {
+            let data =
+                format!("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n\n{algorithm} {hash}\n");
+            let armored = openpgp_signature(
+                &signer,
+                &id("k"),
+                created,
+                hash,
+                data.as_bytes(),
+                created + 60,
+            )
+            .unwrap();
+            assert!(armored.starts_with("-----BEGIN PGP SIGNATURE-----\n\n"));
+            std::fs::write(dir.path().join("sig.asc"), &armored).unwrap();
+            std::fs::write(dir.path().join("data"), &data).unwrap();
+            std::fs::write(dir.path().join("other"), "other bytes\n").unwrap();
+            for (file, valid) in [("data", true), ("other", false)] {
+                let out = gpg(
+                    &home,
+                    &[
+                        "--status-fd",
+                        "1",
+                        "--verify",
+                        dir.path().join("sig.asc").to_str().unwrap(),
+                        dir.path().join(file).to_str().unwrap(),
+                    ],
+                );
+                let status = String::from_utf8_lossy(&out.stdout).into_owned();
+                assert_eq!(
+                    status.contains(&format!("[GNUPG:] VALIDSIG {fingerprint} ")),
+                    valid,
+                    "{algorithm} {hash} over {file}: {status}{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                if !valid {
+                    assert!(status.contains("[GNUPG:] BADSIG "), "{status}");
+                }
+            }
+        }
+    }
+}

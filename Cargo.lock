@@ -3932,6 +3932,7 @@ dependencies = [
  "rustix",
  "rustls",
  "rustls-webpki",
+ "sha1-checked",
  "sha2 0.10.9",
  "signature",
  "ssh-key",

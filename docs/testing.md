@@ -203,7 +203,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: submissions.per_source` | `submission_rates_per_source_and_in_all_are_the_operator_s` |
 | `writd.yaml: submissions.in_all` | `submission_rates_per_source_and_in_all_are_the_operator_s` |
 | `writd.yaml: sign_requests.per_lease` | `sign_requests_per_lease_bounds_the_requests_held_at_once` |
-| `writd.yaml: signing_keys.<id>.format` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
+| `writd.yaml: signing_keys.<id>.format` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
 | `writd.yaml: signing_keys.<id>.algorithm` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one`, `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
 | `writd.yaml: signing_keys.<id>.hash` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
 | `writd.yaml: signing_keys.<id>.backend` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
@@ -253,7 +253,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: templates.<name>.max_push_size` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
 | `policy.yaml: templates.<name>.paths_check` | `paths_check_off_signs_any_path_without_a_warning`, `paths_outside_the_ticket_are_refused_with_paths_check_deny` |
 | `policy.yaml: templates.<name>.require_expected_paths` | `require_expected_paths_rejects_a_ticket_without_them` |
-| `policy.yaml: signing_keys.<id>.uids` | planned: M5.5 (OpenPGP keys, refused at start until then) |
+| `policy.yaml: signing_keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
 | `ticket: template` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
 | `ticket: origin_hint` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
 | `ticket: caller.descends_from.executable` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |

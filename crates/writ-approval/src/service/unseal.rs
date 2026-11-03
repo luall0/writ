@@ -110,6 +110,15 @@ impl Service {
         if let Err(e) = signing_keys_exist(&self.policy(), &*opened.signer) {
             return Err(refuse(e.to_string()));
         }
+        // The OpenPGP keys' certificates, with the user ids in force.
+        let certified = super::openpgp::certify(
+            &self.policy(),
+            &self.config.signing_keys,
+            &*opened.signer,
+            &opened.openpgp,
+        )
+        .map_err(|e| refuse(e.to_string()))?;
+        let created = opened.openpgp.clone();
         // The authority files the daemon started with are the keystore's: their head carries
         // its MAC, and the store still holds exactly them.
         let in_force = self.in_force();
@@ -157,6 +166,7 @@ impl Service {
                     "the daemon is not sealed",
                 ));
             }
+            self.set_openpgp(super::openpgp::OpenpgpKeys { created, certified });
         }
         self.changed.notify_waiters();
         if approver.is_some() {

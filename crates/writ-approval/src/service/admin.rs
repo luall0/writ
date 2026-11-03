@@ -167,6 +167,7 @@ impl Service {
         checked: &CheckedAdmin,
         parsed: AdminParsed,
         created: Vec<CreatedKey>,
+        openpgp_created: std::collections::BTreeMap<writ_core::names::KeyId, u32>,
         caller: &CallerFacts,
     ) -> Result<AdminApplied, ServiceError> {
         let target = checked.admin.target;
@@ -186,6 +187,36 @@ impl Service {
             );
             return Err(error);
         }
+        // A new policy's OpenPGP certificates, its user ids certified (refused if they can't
+        // be): the keys the signer held, and those this change added.
+        let openpgp = match &parsed {
+            AdminParsed::Policy(policy) => {
+                let mut created = self.openpgp().created.clone();
+                created.extend(openpgp_created);
+                match super::openpgp::certify(
+                    policy,
+                    &self.config.signing_keys,
+                    &*opened.signer,
+                    &created,
+                ) {
+                    Ok(certified) => Some(super::openpgp::OpenpgpKeys { created, certified }),
+                    Err(e) => {
+                        let error = refused(e.to_string());
+                        self.admin_failed(
+                            Some(&checked.approver),
+                            Some(target),
+                            &error.to_string(),
+                            caller,
+                        );
+                        return Err(error);
+                    }
+                }
+            }
+            _ => None,
+        };
+        let certified = openpgp.as_ref().map_or_else(String::new, |keys| {
+            super::openpgp::changes(&self.openpgp().certified, &keys.certified)
+        });
         let (now, mut inner) = self.begin()?;
         // Checked again under the lock: two changes of one file never both apply.
         let old = match self.current(target, &checked.admin.previous) {
@@ -216,7 +247,7 @@ impl Service {
             .caller(caller)
             .reason(format!(
                 "{target}: version {version} (sha256 {digest}) replaces version {old} (sha256 \
-                 {}){}",
+                 {}){}{certified}",
                 checked.admin.previous,
                 created
                     .iter()
@@ -266,6 +297,9 @@ impl Service {
                     .policy
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(policy);
+                if let Some(keys) = openpgp {
+                    self.set_openpgp(keys);
+                }
             }
             AdminParsed::Approvers(approvers) => {
                 *self
