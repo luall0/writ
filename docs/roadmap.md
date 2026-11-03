@@ -33,6 +33,7 @@ an unchanged core.
 | M4.7 | [Ticket link in git notes](history/m4.7-ticket-link-in-git-notes.md) ✅ | `ticket_link: notes`: each pushed commit's lease in a git note (`refs/notes/commits`, or `refs/notes/writ`), written and pushed by the daemon after the branch, merged with the remote's, the commit untouched |
 | M5 | [Sealed start and admin changes](history/m5-sealed-start-and-signed-admin-changes.md) ✅ | Encrypted keystore (one age file per secret, a boot tier for the transport keys), `writd init`, `writ unseal`, signed admin changes to approvers, readers, templates and registry applied live, keys made by a signed policy, `writ admin token`, process hardening, the end-to-end pipeline on the sealed keystore |
 | M5.5 | [Signature formats and key algorithms](history/m5.5-signature-formats-and-key-algorithms.md) ✅ | OpenPGP commit signatures beside SSH; each signing key declared with its format, algorithm (Ed25519, P-256, P-384, RSA 3072/4096) and hash, checked against its backend at start; `writd keys create` |
+| M5.6 | [Review after M5.5](#m56--review-after-m55) | The security and code quality review after M5 and M5.5 and its fixes: tree modes read as git reads them, upload-pack in protocol v0, admin changes bound to their version, a removed approver's leases revoked, the author checked like the committer, a bounded trusted display, notes appended, the three test layers hardened |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
@@ -150,6 +151,35 @@ ids in the policy, `writd keys create`, OpenPGP v4 signatures and certificates w
 daemon, `writ-sign` as `gpg.openpgp.program`, `writ prove-key` for an OpenPGP key, end-to-end
 scenario 18 on Forgejo. The integration and end-to-end runs are left for the user.
 
+## M5.6 — Review after M5.5
+
+A stop between M5.5 and M6, asked for by the user: a security and code quality review of the
+whole code after M5 and M5.5 (about 48,000 lines of sources, their tests, the tooling and the
+docs), a report discussed in the chat, then every finding fixed except those a later milestone
+takes (below), each with the test that would have caught it, and the rules of
+[security.md](security.md) and [conventions.md](conventions.md) sharpened so the next change
+doesn't bring them back. No new feature beyond what the fixes need.
+
+Decided with the user:
+
+- **Upload-pack speaks protocol v0 only** (S4): in v2, git ignores
+  `uploadpack.allow*SHA1InWant` and serves any object the mirror holds by its id. The agent's
+  `GIT_PROTOCOL` is not passed to `upload-pack`; `uploadpack.allowReachableSHA1InWant=true`
+  keeps `git fetch origin <sha>` of a reachable commit working, an unreachable one refused.
+- **Removing an approver revokes the leases it signed** (L5), in the same admin change: one
+  audit line each, their certificates barred at once, named in the change's reply; its pending
+  signed tickets too.
+- **The author is checked like the committer** (D2): its email must be in the lease's
+  `committer_emails`, denied with its own code.
+- **A note a commit already has keeps its form** (L11): the `Writ:` line is appended once, the
+  person's note left as written (no more `cat_sort_uniq`).
+- **A signed admin change names the version it replaces** (S3), not only its digest, so a
+  change can't be applied again after the text comes back to an earlier version.
+- **Left to later milestones**, each written into its section: SIGTERM handled as an orderly
+  stop (M7 for launchd, M8 for `docker stop`); `writd keys create` refused while the daemon
+  runs, like `writd recover` (M7); a whole-repo clone's signing settings following the lease
+  in force (M6).
+
 ## M6 — Agent skill, amendments and close
 
 The workflow the agent follows ([Clients](architecture/clients.md#client-list),
@@ -179,6 +209,15 @@ The workflow the agent follows ([Clients](architecture/clients.md#client-list),
   pinned elsewhere). `writ request` prints the `WRIT_SESSION` line for its lease and warns when
   it moves `current` while another lease in the same home is active. The skill sets
   `WRIT_SESSION` for every command after its grant.
+- **A whole-repo clone's signing settings follow its lease** (found by the
+  [M5.6 review](#m56--review-after-m55), L19): today `writ init --whole-repo` writes
+  `gpg.format`, `gpg.<format>.program`, `user.signingkey` and `user.email` once, from the lease
+  current at that time, so a later lease with another format (an OpenPGP key after an SSH one)
+  makes every commit fail. With the session chosen as above, these settings follow the chosen
+  lease (written again when it changes, or read by `writ-sign` from the session), and
+  `writ init` computes them once per run (its record for `--undo` and its summary from the
+  same values) and reads the previous values with `git config --get-all -z`, so a value over
+  several lines is kept whole.
 - **The host's other leases on the approver's screen.** The ticket records the source it was
   submitted from (an IPv4 address, an IPv6 /64, as `submissions.per_source` counts them; local
   mode is one source), and `writ sign` shows the other active leases from that source: id,
@@ -206,6 +245,9 @@ Acceptance:
       and push lands under its own lease in the ledger, whichever lease `current` points at.
       A `WRIT_SESSION` naming an unknown or ended lease is refused with its reason, and
       nothing goes out under `current`.
+- [ ] A whole-repo clone wired under an SSH lease, then used under an OpenPGP lease: commits
+      are signed in the new lease's format; `writ init --undo` restores every value it
+      changed, one spanning several lines included.
 - [ ] `writ init --lease`: a pinned repo uses its lease in both wirings; in a whole-repo clone
       pinned to one lease, `writ-sign` refuses a commit with `WRIT_SESSION` naming another,
       with its reason.
@@ -236,11 +278,17 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
   files don't. Created and removed by `make install` / `make uninstall`, like the spike's
   `plan-b/` scripts.
 - `writ try` with `--dry-run`, restoring everything on Ctrl-C.
-- **`writd recover` checks the daemon is stopped** (left open by M5): today it assumes it,
+- **`writd recover` and `writd keys create` check the daemon is stopped** (left open by M5;
+  `keys create` found by the [M5.6 review](#m56--review-after-m55), L17): today they assume it,
   and two writers would only refuse each other's versions. For example, `writd run` holds an
   advisory lock on a file in its state directory (released by the kernel when the process
   ends, so a crash leaves none stale) and `writd recover` refuses while it is held, naming it.
   Settled with the user before building.
+- **SIGTERM is an orderly stop** (found by the [M5.6 review](#m56--review-after-m55), L16):
+  `writd run` stops cleanly on Ctrl-C only (SIGINT); launchd stops a daemon with SIGTERM, which
+  kills it at once today (no `stopping` line, an upstream push cut mid-way). `writd run` waits
+  on both signals and stops the same way for each, through the platform's signal seam if the
+  wait differs by OS (hard rule 4).
 - **The recovery guide's macOS commands**: `docs/operators/recovery.md`'s placeholders (the
   LaunchDaemon's label, the daemon's directory and its `writd.yaml`) filled with what
   `make install` makes, and run for real as a manual check.
@@ -258,9 +306,11 @@ Acceptance:
 - [ ] `writ try` leaves the repo and the machine exactly as before after Ctrl-C.
 - [ ] My user (so any agent) can't read the daemon's keystore or attach to the daemon
       (`cat` and `lldb -p` refused), and the daemon starts again after a reboot.
-- [ ] `writd recover` refuses while the daemon runs, naming why, and works once it is
-      stopped (both sides tested, a crashed daemon's leftover not blocking it); the recovery
-      guide's macOS steps run as written.
+- [ ] `launchctl stop` (SIGTERM) stops the daemon as Ctrl-C does: the `stopping` line, the
+      listeners closed, an upstream operation in flight allowed its deadline.
+- [ ] `writd recover` and `writd keys create` refuse while the daemon runs, naming why,
+      and work once it is stopped (both sides tested, a crashed daemon's leftover not
+      blocking it); the recovery guide's macOS steps run as written.
 
 ## M7.5 — Secure Enclave signer on the Mac
 
@@ -376,6 +426,9 @@ LAN or VPN.
 - Notifications (the configured `Notifier`) for sealed restarts, denials and violations
   (waiting tickets already notify since M2).
 - Backup guidance for the ledger and the audit log.
+- **`docker stop` is an orderly stop** (found by the [M5.6 review](#m56--review-after-m55), L16):
+  the SIGTERM handling M7 adds, checked in the container (tini forwards it under
+  `init: true`), within compose's `stop_grace_period`.
 - **Q38 first** ([open questions](decisions.md#open-questions), left open by M5): the
   keystore's recipient is public, so whoever can write the keys directory, here a Docker
   volume, can plant a secret of their choosing. Settled with the user before building:
@@ -388,6 +441,8 @@ Acceptance:
 - [ ] `docker compose up` on the homelab → sealed → `writ unseal` from the Mac → agents on a
       VM and on the Mac both work under their own leases at the same time.
 - [ ] A container restart notifies me and fails closed until unsealed.
+- [ ] `docker stop` stops the daemon in order (the `stopping` line in its log), not killed
+      at the grace period's end.
 - [ ] Only port 2222 and the approval transports in use (2223 SSH, 8443 HTTPS) are exposed;
       the process runs as non-root.
 - [ ] Detached is only the detached [configuration preset](architecture/platform.md#configuration-presets)
