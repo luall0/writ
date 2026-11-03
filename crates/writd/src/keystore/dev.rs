@@ -116,6 +116,13 @@ fn dev_tokens(
 /// made on first start.
 pub fn authority_key(dir: &Path) -> anyhow::Result<writ_crypto::authority::AuthorityKey> {
     allowed()?;
+    dev_authority_key(dir)
+}
+
+/// [`authority_key`], once the build is known to take the development keystore.
+fn dev_authority_key(dir: &Path) -> anyhow::Result<writ_crypto::authority::AuthorityKey> {
+    // The first thing a fresh development keystore is asked for: its directory may not exist.
+    private_dir(dir)?;
     let path = dir.join("authority-key");
     if !path.exists() {
         let key = writ_crypto::authority::AuthorityKey::generate()?;
@@ -305,6 +312,22 @@ templates: {}
                  repo (a token): give each its own id"
             );
         }
+    }
+
+    #[test]
+    fn a_fresh_keystore_makes_its_authority_key_first_and_keeps_it() {
+        let root = tempfile::tempdir().unwrap();
+        // Nothing yet: `writd run`'s first start asks for the authority key before any other.
+        let dir = root.path().join("data/keys");
+        let first = dev_authority_key(&dir).unwrap();
+        assert_eq!(
+            dev_authority_key(&dir).unwrap().as_bytes(),
+            first.as_bytes(),
+            "kept"
+        );
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("authority-key")), 0o600);
     }
 
     #[test]
