@@ -113,8 +113,24 @@ async fn run_git(
     };
     match ready {
         Ok((lease, prepared)) => {
-            let max_push_size = lease.ticket.limits.max_push_size.bytes();
-            run_prepared(refusing, repo, max_push_size, prepared, channel).await;
+            // The smaller of the lease's and the template's in force, as the hook decides it;
+            // never 0, which git reads as no limit (refused at load and at submission).
+            let policy = refusing.gateway.service().policy();
+            let max_push_size = policy
+                .template(&lease.ticket.template)
+                .map(|template| writ_core::policy::max_push_size(&lease.ticket, template))
+                .filter(|max| *max > 0);
+            match max_push_size {
+                Some(max) => run_prepared(refusing, repo, max, prepared, channel).await,
+                None => {
+                    let reason = format!(
+                        "lease {}: its template {} is no longer configured",
+                        lease.id, lease.ticket.template
+                    );
+                    let reason = refusing.deny(reason, Some(repo)).await;
+                    refuse(channel, reason).await;
+                }
+            }
         }
         Err(refusal) => {
             let reason = match refusal {
@@ -200,9 +216,9 @@ async fn prepare<'a>(
     };
     let push = git::Push::register(gateway, context).map_err(Refusal::Unlogged)?;
     if !push.hook_in_place() {
-        tracing::error!("the pre-receive hook is missing: pushes are refused");
+        tracing::error!("the pre-receive hook is missing or not executable: pushes are refused");
         return Err(Refusal::Unlogged(
-            "internal error: the push hook is missing".to_owned(),
+            "internal error: the push hook is missing or can't be run".to_owned(),
         ));
     }
     Ok(Prepared {

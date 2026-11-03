@@ -209,6 +209,11 @@ fn check_limits(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>)
     if limits.max_ops_per_minute == 0 {
         reasons.push("limits.max_ops_per_minute must be at least 1".to_owned());
     }
+    // git reads a `receive.maxInputSize` of 0 as no limit (the review after M5.5, S7).
+    let pushes = ticket.scope.operations.contains(&Operation::Push);
+    if pushes && limits.max_push_size.bytes() == 0 {
+        reasons.push("limits.max_push_size must be at least 1 byte".to_owned());
+    }
 }
 
 fn check_text(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {

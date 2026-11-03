@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
+use zeroize::Zeroizing;
 
 /// Open connections per listener.
 pub(crate) const MAX_CONNECTIONS: usize = 256;
@@ -36,7 +37,7 @@ pub(crate) const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(600);
 /// The longest text chosen by an unauthenticated peer (a certificate's key id) that is logged.
 pub(crate) const MAX_LOGGED_TEXT: usize = 64;
 /// One audit line per source and kind of denial in this window; the rest are counted.
-const DENIAL_WINDOW: Duration = Duration::from_secs(60);
+pub(crate) const DENIAL_WINDOW: Duration = Duration::from_secs(60);
 /// Audit lines for denials before authentication, all sources together, per window: past it,
 /// denials are only counted (many sources at once can't fill the disk either).
 const MAX_DENIAL_LINES: u32 = 60;
@@ -119,13 +120,36 @@ pub(crate) async fn read_within(
     reader: impl AsyncRead + Unpin,
     max: usize,
     deadline: Duration,
-) -> Result<Vec<u8>, String> {
-    let mut body = Vec::new();
+) -> Result<Zeroizing<Vec<u8>>, String> {
     let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
-    match tokio::time::timeout(deadline, reader.take(limit).read_to_end(&mut body)).await {
+    match tokio::time::timeout(deadline, read_wiped(reader.take(limit))).await {
         Err(_) => Err("the request body took too long to arrive".to_owned()),
         Ok(Err(e)) => Err(format!("cannot read the request: {e}")),
-        Ok(Ok(_)) => Ok(body),
+        Ok(Ok(body)) => Ok(body),
+    }
+}
+
+/// Everything `reader` gives, in memory wiped on drop at every step: a body may hold the
+/// keystore's passphrase (`writ unseal`), and a `Vec` growing by itself frees each smaller
+/// buffer unwiped. Each one is wiped here before it goes (the review after M5.5).
+async fn read_wiped(mut reader: impl AsyncRead + Unpin) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    let mut body = Zeroizing::new(Vec::new());
+    let mut chunk = Zeroizing::new([0u8; 8192]);
+    loop {
+        let n = reader.read(&mut chunk[..]).await?;
+        if n == 0 {
+            return Ok(body);
+        }
+        let read = chunk.get(..n).unwrap_or_default();
+        let needed = body.len().saturating_add(n);
+        if needed > body.capacity() {
+            let mut bigger = Zeroizing::new(Vec::with_capacity(
+                needed.max(body.capacity().saturating_mul(2)),
+            ));
+            bigger.extend_from_slice(&body);
+            body = bigger;
+        }
+        body.extend_from_slice(read);
     }
 }
 
@@ -271,7 +295,17 @@ impl DenialThrottle {
         };
         let now = Instant::now();
         if windows.len() >= MAX_TRACKED_SOURCES && !windows.contains_key(&(source, kind)) {
-            windows.clear();
+            // The table is full: emptied, and every count it held carried to the next line
+            // logged, so no denial is lost (the review after M5.5).
+            let carried = windows
+                .drain()
+                .fold(0u64, |sum, (_, w)| sum.saturating_add(w.suppressed));
+            // poisoned: the counts are plain numbers; the last ones written stand.
+            let mut global = self
+                .global
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            global.suppressed = global.suppressed.saturating_add(carried);
         }
         match windows.get_mut(&(source, kind)) {
             Some(window) if now.duration_since(window.started) < DENIAL_WINDOW => {
@@ -297,6 +331,36 @@ impl DenialThrottle {
                 Some(0)
             }
         }
+    }
+}
+
+impl DenialThrottle {
+    /// The denials counted and never logged so far: those of windows that ended without a
+    /// later denial from their source to carry them, and those the global budget held back.
+    /// Called once a window by the gateway, which logs them as one line, so a source that goes
+    /// quiet still has its count written.
+    pub(crate) fn flush(&self) -> u64 {
+        let now = Instant::now();
+        let mut expired = 0u64;
+        // poisoned: the counts are plain numbers; the last ones written stand.
+        self.windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, w| {
+                let over = now.duration_since(w.started) >= DENIAL_WINDOW;
+                if over {
+                    expired = expired.saturating_add(w.suppressed);
+                }
+                !over
+            });
+        let held = std::mem::take(
+            &mut self
+                .global
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .suppressed,
+        );
+        expired.saturating_add(held)
     }
 }
 
@@ -420,8 +484,14 @@ mod tests {
         };
         let second = Duration::from_secs(1);
         // Up to the limit, and one byte more (the caller refuses it for its size).
-        assert_eq!(read(b"1234", second, b"5678").await.unwrap(), b"12345678");
-        assert_eq!(read(b"1234", second, b"56789").await.unwrap(), b"123456789");
+        assert_eq!(
+            read(b"1234", second, b"5678").await.unwrap().as_slice(),
+            b"12345678"
+        );
+        assert_eq!(
+            read(b"1234", second, b"56789").await.unwrap().as_slice(),
+            b"123456789"
+        );
         // Never more than one byte over, however much is sent.
         assert_eq!(
             read(b"1234", second, b"56789abcdef").await.unwrap().len(),
@@ -497,5 +567,32 @@ mod tests {
         assert_eq!(shown(&"k".repeat(64), 64), "k".repeat(64));
         assert_eq!(shown(&"k".repeat(65), 64), format!("{}…", "k".repeat(64)));
         assert_eq!(shown("ééé", 2), "éé…");
+    }
+
+    /// The review after M5.5: emptying the full table dropped every count it held. Every
+    /// denial is now a line, or counted in one, or handed out by `flush`: none is lost.
+    #[test]
+    fn no_denial_is_lost_when_the_table_is_full() {
+        let throttle = DenialThrottle::new();
+        let (mut denials, mut accounted) = (0u64, 0u64);
+        let mut deny = |source: Option<IpAddr>| {
+            denials += 1;
+            if let Some(more) = throttle.admit(source, "cap") {
+                accounted += 1 + more;
+            }
+        };
+        // Two denials from each of a table's worth of sources, then one from a new source,
+        // which empties the full table.
+        for i in 0..MAX_TRACKED_SOURCES {
+            let [.., hi, lo] = u32::try_from(i).unwrap().to_be_bytes();
+            let source = Some(IpAddr::from([10, 1, hi, lo]));
+            deny(source);
+            deny(source);
+        }
+        deny(ip("192.0.2.1"));
+        let flushed = throttle.flush();
+        assert!(flushed > 0, "the global budget held some back");
+        assert_eq!(accounted + flushed, denials, "every denial counted once");
+        assert_eq!(throttle.flush(), 0, "handed out once");
     }
 }

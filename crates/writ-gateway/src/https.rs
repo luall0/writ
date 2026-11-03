@@ -21,12 +21,14 @@ use writ_core::net::Sources;
 use writ_crypto::tls::TlsIdentity;
 use writ_platform::{CallerAttestor, Transport};
 use writ_proto::{ApiError, MAX_BODY};
+use zeroize::Zeroizing;
 
 use crate::api::{approval_has_body, approval_reply, encoded};
 use crate::{Gateway, Result, limits};
 
 /// How long a client has to finish the TLS handshake, and to send its request headers.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a request's headers may take to arrive, once the TLS handshake is done.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Gateway {
     /// Serves the approval API over HTTPS from a transport, until the transport fails.
@@ -49,8 +51,9 @@ impl Gateway {
             let (gateway, acceptor) = (self.clone(), acceptor.clone());
             tokio::spawn(async move {
                 let _slot = slot;
+                // The listener's one deadline to get in: the same as SSH's.
                 let tls = match tokio::time::timeout(
-                    HANDSHAKE_TIMEOUT,
+                    crate::limits::AUTH_DEADLINE,
                     acceptor.accept(connection.stream),
                 )
                 .await
@@ -96,12 +99,20 @@ impl Gateway {
                                 &reason,
                             ));
                         }
-                        Ok::<_, std::convert::Infallible>(handle(gateway, facts, request).await)
+                        // On a task of its own: hyper drops this future when the client
+                        // goes away (an unseal or an admin change cut off by Ctrl-C), and a
+                        // change half applied (the state changed, the gateway not told)
+                        // would stay so until a restart (the review after M5.5, S6). The
+                        // task runs to its end; only the reply is lost.
+                        let served = tokio::spawn(handle(gateway, facts, request)).await;
+                        Ok::<_, std::convert::Infallible>(served.unwrap_or_else(|_| {
+                            error(StatusCode::INTERNAL_SERVER_ERROR, "the request stopped")
+                        }))
                     }
                 });
                 let served = hyper::server::conn::http1::Builder::new()
                     .timer(TokioTimer::new())
-                    .header_read_timeout(HANDSHAKE_TIMEOUT)
+                    .header_read_timeout(HEADER_TIMEOUT)
                     .serve_connection(TokioIo::new(tls), service)
                     .await;
                 if let Err(e) = served {
@@ -152,7 +163,9 @@ async fn handle(
         )
         .await;
         match collected {
-            Ok(Ok(collected)) => collected.to_bytes().to_vec(),
+            // The buffer hyper assembled, taken over without a copy when no one else holds
+            // it, and wiped once read (the passphrase of an unseal).
+            Ok(Ok(collected)) => Zeroizing::new(Vec::<u8>::from(collected.to_bytes())),
             Ok(Err(_)) => {
                 return error(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -167,7 +180,7 @@ async fn handle(
             }
         }
     } else {
-        Vec::new()
+        Zeroizing::new(Vec::new())
     };
     let (reply, failure) = approval_reply(gateway, facts, command, body).await;
     let status = if failure.is_some() {

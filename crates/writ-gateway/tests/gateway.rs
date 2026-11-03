@@ -99,6 +99,27 @@ impl Daemon {
 
     /// With `agents` as the sources the agents listener accepts.
     async fn start_with(attestor: FakeAttestor, agents_sources: Sources) -> Self {
+        Self::start_full(attestor, agents_sources, None).await.0
+    }
+
+    /// Sealed, with `unsealer` to open it: the daemon and an unseal request signed by the
+    /// approver for this boot.
+    async fn start_sealed(
+        unsealer: Arc<dyn writ_gateway::Unsealer>,
+    ) -> (Self, Option<writ_proto::UnsealRequest>) {
+        Self::start_full(
+            FakeAttestor::fixed(CallerFacts::default()),
+            Sources::Any,
+            Some(unsealer),
+        )
+        .await
+    }
+
+    async fn start_full(
+        attestor: FakeAttestor,
+        agents_sources: Sources,
+        unsealer: Option<Arc<dyn writ_gateway::Unsealer>>,
+    ) -> (Self, Option<writ_proto::UnsealRequest>) {
         let dir = tempfile::tempdir().unwrap();
         let reader = generate(KeyKind::Ed25519).unwrap();
         let readers = writ_crypto::readers::parse(&format!(
@@ -108,16 +129,21 @@ impl Daemon {
         .unwrap();
         // The system clock: russh checks a certificate's validity window against it itself,
         // so the service must issue certificates valid now. Nothing here waits on time.
-        let test = TestServiceBuilder::new(POLICY)
-            .clock(Arc::new(SystemClock))
-            .build(dir.path());
+        let mut builder = TestServiceBuilder::new(POLICY).clock(Arc::new(SystemClock));
+        if unsealer.is_some() {
+            builder = builder.sealed();
+        }
+        let test = builder.build(dir.path());
+        let unseal = unsealer
+            .is_some()
+            .then(|| test.unseal_request(&test.approver, "the passphrase"));
         let approver = test.approver.clone();
         let service = test.service.clone();
         let gateway = Gateway::start(
             GatewayConfig {
                 host_key: generate(KeyKind::Ed25519).unwrap(),
                 mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
-                unsealer: None,
+                unsealer,
                 admin: None,
                 hook_program: PathBuf::from("/bin/false"),
                 state_dir: dir.path().join("run"),
@@ -148,7 +174,7 @@ impl Daemon {
             let (g, a) = (gateway.clone(), attestor.clone());
             tokio::spawn(async move { g.serve(Arc::new(transport), a, role, sources).await });
         }
-        Self {
+        let daemon = Self {
             dir,
             gateway,
             agents,
@@ -157,7 +183,8 @@ impl Daemon {
             pin,
             approver,
             reader,
-        }
+        };
+        (daemon, unseal)
     }
 
     /// The audit log's lines with this event and result.
@@ -1008,4 +1035,160 @@ async fn relative_paths_are_refused_at_start() {
         .await
         .is_ok()
     );
+}
+
+/// The review after M5.5 (S11): a `writ wait` ran until its ticket was decided or expired
+/// whatever became of its client, so connecting, asking four waits and hanging up, again and
+/// again, piled up tasks that every change of the service woke. A wait now ends with its
+/// channel, and with its connection; one whose client only sent EOF keeps waiting.
+#[tokio::test]
+async fn a_wait_ends_with_its_channel_and_its_connection() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let service = daemon.gateway.service().clone();
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let agent = Daemon::with_key(&daemon.agents, "writ", &key)
+        .await
+        .unwrap();
+    let submitted: Submitted = call(&agent, Command::Request, TICKET.as_bytes())
+        .await
+        .unwrap();
+    let wait = Command::Wait {
+        id: submitted.id.clone(),
+    }
+    .line();
+    async fn open(handle: &Handle<Accept>, line: &str) -> russh::Channel<client::Msg> {
+        let channel = handle.channel_open_session().await.unwrap();
+        channel.exec(true, line).await.unwrap();
+        // EOF: the client has nothing to send. Not an end.
+        channel.eof().await.unwrap();
+        channel
+    }
+    assert_eq!(service.waiting(), 0);
+    let first = open(&agent, &wait).await;
+    let second = open(&agent, &wait).await;
+    eventually_async("two waits", || service.waiting() == 2).await;
+
+    // One channel closed: its wait ends, the other one goes on.
+    first.close().await.unwrap();
+    eventually_async("the closed channel's wait to end", || {
+        service.waiting() == 1
+    })
+    .await;
+
+    // Another connection's waits end when it hangs up.
+    let other = Daemon::with_key(&daemon.agents, "writ", &key)
+        .await
+        .unwrap();
+    let _kept = [open(&other, &wait).await, open(&other, &wait).await];
+    eventually_async("three waits", || service.waiting() == 3).await;
+    other
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await
+        .unwrap();
+    eventually_async("the lost connection's waits to end", || {
+        service.waiting() == 1
+    })
+    .await;
+
+    // The one left still gets its answer.
+    let mut second = second;
+    let approver = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
+        .await
+        .unwrap();
+    let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+    let _: Ack = call(
+        &approver,
+        Command::Approve { id: submitted.id },
+        &writ_proto::encode_body(&sign_approval(&daemon.approver, &ticket)).unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut out = Vec::new();
+    while let Some(message) = second.wait().await {
+        match message {
+            ChannelMsg::Data { data } => out.extend_from_slice(&data),
+            ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    let decision: Decision = writ_proto::decode_reply(&out).unwrap();
+    assert!(matches!(decision, Decision::Active { .. }), "{decision:?}");
+    assert_eq!(service.waiting(), 0);
+}
+
+/// An unsealer held at a gate until the test lets it finish, saying when it entered and
+/// whether it ran to its end.
+#[derive(Default)]
+struct HeldUnsealer {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    finished: std::sync::atomic::AtomicBool,
+}
+
+struct Held(Arc<HeldUnsealer>);
+
+impl writ_gateway::Unsealer for Held {
+    fn unseal(
+        &self,
+        _passphrase: writ_proto::PassphraseText,
+        _approver: writ_core::names::KeyFingerprint,
+        _caller: CallerFacts,
+    ) -> writ_platform::BoxFuture<'static, Result<(), String>> {
+        let held = self.0.clone();
+        Box::pin(async move {
+            held.entered.notify_one();
+            held.release.notified().await;
+            held.finished
+                .store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        })
+    }
+}
+
+/// The review after M5.5 (S6): over HTTPS the unseal (and an admin change) ran inside the
+/// request's future, which hyper drops when the client goes away. Cut off midway, the state
+/// had changed and what follows (the mirrors, the readers, the open keystore) never ran: the
+/// daemon stayed half open until a restart. The request now runs on its own task, to its end.
+#[tokio::test]
+async fn an_unseal_cut_off_by_its_https_client_still_runs_to_its_end() {
+    use http_body_util::BodyExt as _;
+    let held = Arc::new(HeldUnsealer::default());
+    let (daemon, unseal) = Daemon::start_sealed(Arc::new(Held(held.clone()))).await;
+    let body = writ_proto::encode_body(&unseal.unwrap()).unwrap();
+    // The client the CLI uses, by hand, so the test can cut its connection.
+    let config = writ_crypto::tls::pinned_client_config(&daemon.pin, &daemon.reader).unwrap();
+    let stream = daemon.https.connect(peer()).await.unwrap();
+    let tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(
+            rustls::pki_types::ServerName::try_from("writd").unwrap(),
+            stream,
+        )
+        .await
+        .unwrap();
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tls))
+            .await
+            .unwrap();
+    let connection = tokio::spawn(connection);
+    let (method, path) = Command::Unseal.http_route().unwrap();
+    let request = hyper::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "writd")
+        .body(http_body_util::Full::new(hyper::body::Bytes::from(body)))
+        .unwrap();
+    let sent = tokio::spawn(async move {
+        let response = sender.send_request(request).await?;
+        response.into_body().collect().await.map(|_| ())
+    });
+    held.entered.notified().await;
+    // Ctrl-C on the approver's side: the connection is gone, its request too.
+    sent.abort();
+    connection.abort();
+    let _ = connection.await;
+    held.release.notify_one();
+    eventually_async("the unseal to run to its end", || {
+        held.finished.load(std::sync::atomic::Ordering::Acquire)
+    })
+    .await;
 }

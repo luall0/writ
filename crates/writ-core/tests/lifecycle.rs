@@ -88,6 +88,7 @@ fn tickets_outside_every_template_are_rejected_with_reasons() {
         (REQUEST.replace("max_signatures: 3", "max_signatures: 51"), "limits.max_signatures is 51, over the template's 50"),
         (REQUEST.replace("max_push_size: 1MB", "max_push_size: 51MB"), "limits.max_push_size is 51000000"),
         (REQUEST.replace("max_ops_per_minute: 5", "max_ops_per_minute: 0"), "max_ops_per_minute must be at least 1"),
+        (REQUEST.replace("max_push_size: 1MB", "max_push_size: 0"), "limits.max_push_size must be at least 1 byte"),
         (REQUEST.replace("  branches: [\"agent/oauth-*\"]\n", "  branches: [\"agent/oauth-*\"]\n  force_push: true\n"), "force_push is not allowed"),
         (REQUEST.replace("  branches: [\"agent/oauth-*\"]\n", "  branches: [\"agent/oauth-*\"]\n  committer_emails: [\"user@example.org\"]\n"), "committer email user@example.org is not allowed"),
         (REQUEST.replace("  branches: [\"agent/oauth-*\"]\n", ""), "commit_sign and push need at least one branch"),
@@ -937,4 +938,28 @@ fn a_template_the_request_cannot_be_built_against_does_not_hide_one_it_fits() {
         error.reasons
     );
     assert_eq!(error.reasons[0], "the ticket fits no template");
+}
+
+/// The review after M5.5 (S7): the gateway handed git the lease's `max_push_size`, though the
+/// policy decides on the smaller of the lease's and the template's (one a signed change may
+/// have lowered since); and 0, which git reads as no limit, was a valid limit.
+#[test]
+fn the_push_size_git_gets_is_the_smaller_of_the_lease_s_and_the_template_s() {
+    let ticket = submitted(REQUEST);
+    let config = config();
+    let template = config.template(&ticket.template).unwrap();
+    // The lease asks 1MB, the template allows 50MB: the lease's.
+    assert_eq!(
+        writ_core::policy::max_push_size(&ticket, template),
+        1_000_000
+    );
+    // The template lowered to 1 byte under it: the template's.
+    let lowered = POLICY.replacen("max_push_size: 50MB", "max_push_size: 1", 1);
+    let config = writ_core::config::PolicyConfig::from_yaml(&lowered).unwrap();
+    let template = config.template(&ticket.template).unwrap();
+    assert_eq!(writ_core::policy::max_push_size(&ticket, template), 1);
+    // A byte, the least a limit can be: taken (never 0).
+    let one = REQUEST.replace("max_push_size: 1MB", "max_push_size: 1");
+    let t = fit::submit(&self::config(), &request(&one), &submission(1)).unwrap();
+    assert_eq!(t.limits.max_push_size.bytes(), 1);
 }

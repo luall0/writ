@@ -28,34 +28,34 @@ pub(super) fn upload_pack(gateway: &Gateway, path: &Path) -> tokio::process::Com
     writ_mirror::git::upload_pack(&git_program(gateway), path)
 }
 
-/// A push in progress: its token is known to the hook server until this is dropped.
+/// A push in progress: its token is known to the hook server until this is dropped (or a
+/// revocation forgets it). The push keeps its own handles on what the hook sets, so a token
+/// forgotten meanwhile changes neither what was decided nor which mirror to release (the
+/// review after M5.5: a revocation mid-push wrote a spurious "ended before its checks").
 pub(super) struct Push<'a> {
     gateway: &'a Gateway,
     token: String,
+    decided: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    held: std::sync::Arc<std::sync::Mutex<Option<writ_mirror::MirrorGuard>>>,
 }
 
 impl<'a> Push<'a> {
     /// Whether the pre-receive hook took the push to a decision (logged by the service or as
     /// the hook's refusal).
     pub(super) fn decided(&self) -> bool {
-        self.gateway
-            .shared
-            .pushes
-            .lock()
-            .map(|pushes| {
-                pushes
-                    .get(&self.token)
-                    .is_some_and(|c| c.decided.load(std::sync::atomic::Ordering::Acquire))
-            })
-            // Poisoned: say decided, so nothing is logged twice; the hook logged its own.
-            .unwrap_or(true)
+        self.decided.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Whether the pre-receive hook the push runs with is in place (an absolute path to a
-    /// file: `Gateway::start` refuses a relative state directory).
+    /// Whether the pre-receive hook the push runs with is in place: an absolute path
+    /// (`Gateway::start` refuses a relative state directory) to a regular file its owner can
+    /// run. git skips a hook it can't execute without a word, and would take the push with no
+    /// decision (the review after M5.5, L10).
     pub(super) fn hook_in_place(&self) -> bool {
+        use std::os::unix::fs::PermissionsExt;
         let hook = self.gateway.shared.hooks_dir.join("pre-receive");
-        hook.is_absolute() && hook.is_file()
+        hook.is_absolute()
+            && std::fs::metadata(&hook)
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o100 != 0)
     }
 
     /// Registers the push under a new random token.
@@ -67,8 +67,13 @@ impl<'a> Push<'a> {
             .pushes
             .lock()
             .map_err(|_| "internal error: the push table is poisoned".to_owned())?
-            .insert(token.clone(), context);
-        Ok(Self { gateway, token })
+            .insert(token.clone(), context.clone());
+        Ok(Self {
+            gateway,
+            token,
+            decided: context.decided,
+            held: context.held,
+        })
     }
 
     /// `git receive-pack` on the repository at `path`, with the gateway's pre-receive hook,
@@ -95,44 +100,26 @@ impl Push<'_> {
     /// have moved (or never will). Released even from a poisoned lock: a held mirror stops
     /// every other push and sync of the repo.
     pub(super) fn release_mirror(&self) {
-        let context = self
-            .gateway
-            .shared
-            .pushes
+        self.held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&self.token)
-            .cloned();
-        if let Some(context) = context {
-            release(&context);
-        }
+            .take();
     }
-}
-
-/// Drops the mirror guard `context` holds, if any.
-fn release(context: &PushContext) {
-    context
-        .held
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
 }
 
 impl Drop for Push<'_> {
     fn drop(&mut self) {
         // Forgotten even from a poisoned table: a token must never outlive its push.
-        let context = self
-            .gateway
+        self.gateway
             .shared
             .pushes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.token);
         // Released at receive-pack's exit already ([`Push::release_mirror`]); again here in
-        // case the hook's decision put it back after that (receive-pack gone mid-decision).
-        if let Some(context) = context {
-            release(&context);
-        }
+        // case the hook's decision put it back after that (receive-pack gone mid-decision),
+        // through the push's own handle, the token forgotten or not.
+        self.release_mirror();
     }
 }
 

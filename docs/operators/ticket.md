@@ -42,7 +42,7 @@ it or refuse it. The full signed ticket and its lifecycle:
 | `limits.max_signatures` | Count | the template's | At most the template's |
 | `limits.max_pushes` | Count | the template's | At most the template's |
 | `limits.max_ops_per_minute` | Count | the template's | At most the template's |
-| `limits.max_push_size` | Size | the template's | At most the template's |
+| `limits.max_push_size` | Size | the template's | At most the template's, at least 1 byte with `push` |
 | `on_violation` | `deny_and_notify` or `revoke_lease` | `deny_and_notify` | What happens when the agent tries something out of scope, besides the denial. `revoke_lease`: the lease is revoked at the first violation. You may make it stricter when signing, never looser |
 | `caller.descends_from.executable` | Absolute path | — | The process every caller of the lease must descend from. [Caller](#caller-local-mode) |
 | `caller.descends_from.pid` | Number | — | That process's id |

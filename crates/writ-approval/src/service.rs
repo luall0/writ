@@ -167,6 +167,8 @@ pub struct Service {
     /// time in the order they were queued. Bounded: past [`MAX_QUEUED_NOTIFICATIONS`] they
     /// are counted in `dropped`, and the worker reports the count.
     notifications: Mutex<std::sync::mpsc::SyncSender<Notification>>,
+    /// `writ wait` calls in progress: each one ends with its answer, or with its client.
+    waiting: std::sync::atomic::AtomicUsize,
     dropped: Arc<AtomicU64>,
     watcher: Arc<dyn SessionWatcher>,
     clock: Arc<dyn Clock>,
@@ -377,6 +379,7 @@ impl Service {
             revocations,
             notifications: Mutex::new(outbox),
             dropped,
+            waiting: std::sync::atomic::AtomicUsize::new(0),
             watcher: platform.watcher,
             clock: platform.clock,
             me: me.clone(),
@@ -650,6 +653,11 @@ impl Service {
     /// one daemon names (`writ-unseal/1`, `writ-admin/2`, `writ-token/2`).
     pub fn daemon(&self) -> &KeyFingerprint {
         &self.boot.daemon
+    }
+
+    /// How many `writ wait` calls are in progress (a wait dropped, its client gone, ends).
+    pub fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::Acquire)
     }
 
     /// How this daemon takes decisions.

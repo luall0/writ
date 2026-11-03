@@ -161,6 +161,102 @@ limits:
   max_push_size: 2KB
 "#;
 
+/// The review after M5.5 (S7): git was handed the lease's `max_push_size`, not the smaller of
+/// the lease's and the template's in force, so after a signed change lowered the template git
+/// took in a pack the policy refuses; and a ticket asking 0, which git reads as no limit, was
+/// accepted.
+#[test]
+fn git_takes_in_no_more_than_the_template_in_force_allows() {
+    use writ_approval::AdminParsed;
+    use writ_core::authority::{AdminTarget, AdminText};
+    use writ_core::canonical::Canonical;
+    use writ_core::config::PolicyConfig;
+    use writ_core::signed::{Admin, Replaced};
+    let (gateway, work) = setup();
+    // 0, which git reads as no limit: rejected at submission.
+    let zero = SMALL_PUSHES.replace("max_push_size: 2KB", "max_push_size: 0");
+    let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+    let error = gateway
+        .service
+        .submit(
+            key.public_key(),
+            zero.as_bytes(),
+            &writ_core::caller::CallerFacts::default(),
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("limits.max_push_size must be at least 1 byte"),
+        "{error}"
+    );
+
+    // A lease of 1MB; then the template lowered to 2KB by a signed change.
+    let lease = gateway.session_with(
+        "wide",
+        &SMALL_PUSHES.replace("max_push_size: 2KB", "max_push_size: 1MB"),
+    );
+    let shown = gateway.service.admin_show(AdminTarget::Policy).unwrap();
+    let lowered = shown
+        .text
+        .replace("max_push_size: 50MB", "max_push_size: 2KB");
+    assert_ne!(lowered, shown.text, "the fixture changed");
+    let document = Admin::new(
+        shown.daemon.clone(),
+        AdminTarget::Policy,
+        Replaced {
+            version: shown.version,
+            digest: shown.digest.clone(),
+        },
+        AdminText::try_from(lowered.clone()).unwrap(),
+    )
+    .canonical_bytes()
+    .unwrap();
+    let request = writ_proto::AdminRequest {
+        signature: writ_crypto::sshsig::sign(
+            &gateway.approver,
+            writ_core::lease::APPROVAL_NAMESPACE,
+            &document,
+        )
+        .unwrap(),
+        document: String::from_utf8(document).unwrap(),
+    };
+    let facts = writ_core::caller::CallerFacts::default();
+    let checked = gateway.service.check_admin(&request, &facts).unwrap();
+    gateway
+        .service
+        .commit_admin(
+            &checked,
+            AdminParsed::Policy(PolicyConfig::from_yaml(&lowered).unwrap()),
+            vec![],
+            Default::default(),
+            &facts,
+        )
+        .unwrap();
+
+    // A pack of about 40KB: under the lease's 1MB, over the template's 2KB. git refuses it
+    // before the hook, from the template's bound.
+    let mut random = vec![0u8; 20_000];
+    std::io::Read::read_exact(&mut fs::File::open("/dev/urandom").unwrap(), &mut random).unwrap();
+    let content = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    gateway.commit_signed_as("wide", &lease, &work, "big", &content);
+    let out = gateway.git_as(
+        "wide",
+        &work,
+        &["push", "origin", "HEAD:refs/heads/agent/big"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("pack exceeds maximum allowed size"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/agent/big"), None);
+}
+
 #[test]
 fn a_pack_over_max_push_size_is_refused() {
     let (gateway, work) = setup();
@@ -178,7 +274,8 @@ fn a_pack_over_max_push_size_is_refused() {
         &["push", "origin", "HEAD:refs/heads/agent/big"],
     );
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    // git refuses it first (receive.maxInputSize is the lease's), before the hook.
+    // git refuses it first (receive.maxInputSize: the lease's, under the template's), before
+    // the hook.
     assert!(
         stderr(&out).contains("pack exceeds maximum allowed size"),
         "{}",
@@ -361,4 +458,47 @@ fn push_modes_without_gateway_refuse_a_gateway_push() {
     let id = gateway.commit_signed(&work, "f", "x\n");
     gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
     assert_eq!(gateway.upstream_ref("refs/heads/agent/x"), Some(id));
+}
+
+/// The review after M5.5 (L10): the gateway checked the hook was a file, not that git could run
+/// it; git skips a hook it can't execute without a word, and would take a push with no
+/// decision. One the daemon's user can't run refuses every push, logged.
+#[test]
+fn a_hook_git_cannot_run_refuses_every_push() {
+    use std::os::unix::fs::PermissionsExt;
+    let (gateway, work) = setup();
+    let lease = gateway.session("agent");
+    let hook = gateway.root().join("run/hooks/pre-receive");
+    let mode = fs::metadata(&hook).unwrap().permissions().mode();
+    assert_ne!(mode & 0o100, 0, "the hook the gateway wrote runs");
+    fs::set_permissions(&hook, fs::Permissions::from_mode(mode & !0o111)).unwrap();
+    gateway.commit_signed_as("agent", &lease, &work, "a", "a\n");
+    let out = gateway.git_as(
+        "agent",
+        &work,
+        &["push", "origin", "HEAD:refs/heads/agent/a"],
+    );
+    assert_ne!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("internal error: the push hook is missing or can't be run"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/agent/a"), None);
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    let denied = audit_events(&audit, "push", "denied");
+    assert!(
+        denied.iter().any(|e| e["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("the push hook is missing or can't be run"))),
+        "{denied:?}"
+    );
+    // Runnable again: the push goes through.
+    fs::set_permissions(&hook, fs::Permissions::from_mode(mode)).unwrap();
+    let out = gateway.git_as(
+        "agent",
+        &work,
+        &["push", "-q", "origin", "HEAD:refs/heads/agent/a"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 }

@@ -257,6 +257,12 @@ fn errors_name_the_field() {
             "templates.feature-branch.max_ops_per_minute: must be at least 1",
         ),
         (
+            // git reads a `receive.maxInputSize` of 0 as no limit.
+            "zero push size",
+            POLICY.replacen("max_push_size: 50MB", "max_push_size: 0", 1),
+            "templates.feature-branch.max_push_size: must be at least 1 byte",
+        ),
+        (
             "no operations",
             POLICY.replacen(
                 "operations: [fetch, commit_sign, push]",

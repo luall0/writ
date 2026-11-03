@@ -265,6 +265,27 @@ impl Gateway {
         };
         tokio::spawn(hook::serve(gateway.clone(), hook_listener));
         tokio::spawn(drop_revoked_sessions(gateway.clone(), revocations));
+        // Once a window: the denials before authentication counted and never logged (a
+        // source that went quiet), as one line.
+        let weak = Arc::downgrade(&gateway.shared);
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(limits::DENIAL_WINDOW);
+            every.tick().await;
+            loop {
+                every.tick().await;
+                let Some(shared) = weak.upgrade() else { return };
+                let gateway = Self { shared };
+                let unlogged = gateway.shared.throttle.flush();
+                if unlogged > 0 {
+                    let reason = format!(
+                        "{unlogged} denials before authentication counted and not logged in \
+                         the last minute"
+                    );
+                    let denial = GatewayDenial::new(EventKind::Connect, reason);
+                    gateway.log_denial(denial, CallerFacts::default()).await;
+                }
+            }
+        });
         Ok(gateway)
     }
 
@@ -415,28 +436,44 @@ impl Gateway {
                 .await?;
             let authenticated = Arc::new(AtomicBool::new(false));
             let handler =
-                handler::Connection::new(self.clone(), role, facts, authenticated.clone());
+                handler::Connection::new(self.clone(), role, facts.clone(), authenticated.clone());
             let ssh = self.shared.ssh.clone();
+            let gateway = self.clone();
             tokio::spawn(async move {
                 let _slot = slot;
-                let started = tokio::time::timeout(
-                    limits::AUTH_DEADLINE,
+                // One deadline from the accept, for the handshake and the authentication
+                // together (the review after M5.5: two in a row allowed 40 s).
+                let now = tokio::time::Instant::now();
+                let deadline_at = now.checked_add(limits::AUTH_DEADLINE).unwrap_or(now);
+                let started = tokio::time::timeout_at(
+                    deadline_at,
                     russh::server::run_stream(ssh, connection.stream, handler),
                 )
                 .await;
                 let session = match started {
-                    Err(_) => return,
+                    Err(_) => {
+                        let reason = format!(
+                            "no SSH handshake within {} s",
+                            limits::AUTH_DEADLINE.as_secs()
+                        );
+                        return gateway.turned_away(facts, "deadline", reason).await;
+                    }
                     Ok(Err(e)) if client_went_away(&e) => return,
                     // Any peer can cause these: diagnostics at debug level only, so a flood
                     // can't fill the daemon's log (the audit log holds the decisions).
                     Ok(Err(e)) => return tracing::debug!(error = %e, "connection failed"),
                     Ok(Ok(session)) => session,
                 };
-                // Not authenticated in time: disconnected.
+                // Not authenticated in time: disconnected, and logged (coalesced per source).
                 let handle = session.handle();
                 let deadline = tokio::spawn(async move {
-                    tokio::time::sleep(limits::AUTH_DEADLINE).await;
+                    tokio::time::sleep_until(deadline_at).await;
                     if !authenticated.load(Ordering::Acquire) {
+                        let reason = format!(
+                            "not authenticated within {} s",
+                            limits::AUTH_DEADLINE.as_secs()
+                        );
+                        gateway.turned_away(facts, "deadline", reason).await;
                         let _ = handle
                             .disconnect(
                                 Disconnect::ByApplication,

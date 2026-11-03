@@ -228,10 +228,16 @@ impl russh::server::Handler for Connection {
         if self.identity.is_none() {
             return Ok(());
         }
-        // Past the cap the open is refused (the reply is dropped unanswered: a failure).
+        // Past the cap the open is refused (the reply is dropped unanswered: a failure), and
+        // logged, coalesced per source.
         if let Ok(permit) = self.channel_slots.clone().try_acquire_owned() {
             self.channels.insert(channel.id(), (channel, permit));
             reply.accept().await;
+        } else {
+            let reason = format!("channel refused: at most {MAX_CHANNELS} per connection");
+            self.gateway
+                .turned_away(self.facts.clone(), "channels", reason)
+                .await;
         }
         Ok(())
     }
@@ -267,8 +273,14 @@ impl russh::server::Handler for Connection {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), GatewayError> {
+        // A channel runs one command: a second exec on it (or one on a channel never
+        // opened) is refused, and logged.
         let Some((channel, permit)) = self.channels.remove(&channel_id) else {
             session.channel_failure(channel_id)?;
+            let reason = "exec refused: a channel runs one command".to_owned();
+            self.gateway
+                .turned_away(self.facts.clone(), "exec", reason)
+                .await;
             return Ok(());
         };
         session.channel_success(channel_id)?;

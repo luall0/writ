@@ -250,7 +250,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: templates.<name>.max_signatures` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
 | `policy.yaml: templates.<name>.max_pushes` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
 | `policy.yaml: templates.<name>.max_ops_per_minute` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
-| `policy.yaml: templates.<name>.max_push_size` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `policy.yaml: templates.<name>.max_push_size` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `git_takes_in_no_more_than_the_template_in_force_allows` |
 | `policy.yaml: templates.<name>.paths_check` | `paths_check_off_signs_any_path_without_a_warning`, `paths_outside_the_ticket_are_refused_with_paths_check_deny` |
 | `policy.yaml: templates.<name>.require_expected_paths` | `require_expected_paths_rejects_a_ticket_without_them` |
 | `policy.yaml: signing_keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
@@ -276,7 +276,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `ticket: limits.max_signatures` | `signatures_stop_at_the_lease_s_count_and_rate`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
 | `ticket: limits.max_pushes` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
 | `ticket: limits.max_ops_per_minute` | `signatures_stop_at_the_lease_s_count_and_rate`, `a_fetch_goes_through_the_policy_and_counts_against_the_rate` |
-| `ticket: limits.max_push_size` | `a_pack_over_max_push_size_is_refused`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `ticket: limits.max_push_size` | `a_pack_over_max_push_size_is_refused`, `a_ticket_past_its_template_is_rejected_with_each_reason`, `git_takes_in_no_more_than_the_template_in_force_allows` |
 | `ticket: on_violation` | `a_violation_revokes_a_lease_that_asks_for_it`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
 | `env: WRIT_HOME` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
 | `env: WRIT_KNOWN_HOSTS` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |

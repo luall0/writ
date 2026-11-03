@@ -507,6 +507,13 @@ fn validate_template(
             "must be at least 1",
         ));
     }
+    // git reads a `receive.maxInputSize` of 0 as no limit: never one where pushes are allowed.
+    if template.operations.contains(&Operation::Push) && template.max_push_size.bytes() == 0 {
+        return Err(FieldError::at(
+            at("max_push_size"),
+            "must be at least 1 byte",
+        ));
+    }
     Ok(())
 }
 

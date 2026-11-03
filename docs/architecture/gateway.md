@@ -16,17 +16,19 @@ each listener has a role:
 | Listener (role) | SSH user and authentication | Commands |
 |---|---|---|
 | agents | `git` + an **SSH user certificate** issued by the daemon for an active lease ([Identity](identity.md#session-identity)) | **git** `upload-pack` (fetch) and `receive-pack` (push), so a plain `git fetch/push writ` works; **sign** for the `writ-sign` shim: `writ-sign git <repo>` or `writ-sign openpgp <repo>` (the commit and its evidence in, the armored SSHSIG or OpenPGP signature out; [signing](#signing)) |
-| agents | `writ` + a plain key: the session key of a ticket | **lease** commands: `writ request` (submit the ticket on stdin), `writ wait <id>` |
+| agents | `writ` + a plain key: the session key of a ticket | **lease** commands: `writ request` (submit the ticket on stdin), `writ wait <id>` (it ends with its answer, or when its channel or connection does) |
 | approvals (SSH) | any user, a key listed in the daemon's `readers` file (a certificate is refused) | the approval API: `writ info`, `ls`, `show`, `approve`, `refuse`, `revoke` ([Approvals](approvals.md#reaching-the-daemon)) |
 | approvals (HTTPS) | mutual TLS 1.3: the daemon's pinned self-signed certificate, and a client certificate for a key in `readers` | the same API as `GET`/`POST` routes (`crates/writ-gateway/src/https.rs`) |
 
 Each listener accepts connections only from its configured sources (`allow` in
 `writd.yaml`, required on the agents' TCP listeners), and bounds what any peer can make it
 hold (`crates/writ-gateway/src/limits.rs`): 256 open connections per listener and 16 per
-source address (an IPv6 host counts as its /64), 20 seconds to authenticate (or to finish the TLS handshake), 4 channels at
-once per SSH connection, 30 seconds to send a request body (60 seconds for a sign request's,
-up to 16 MiB), 16 sign requests held at once by the whole daemon and 4 by
-one lease (`sign_requests.per_lease` in `writd.yaml`, 1 to 16), 10 minutes without traffic. A
+source address (an IPv6 host counts as its /64), 20 seconds from the accept to be
+authenticated (the SSH handshake and the authentication together, or the TLS handshake; then
+10 seconds for each HTTPS request's headers), 4 channels at once per SSH connection and one
+command per channel (each of these refusals logged, coalesced per source), 30 seconds to
+send a request body (60 seconds for a sign request's, up to 16 MiB), 16 sign requests held at
+once by the whole daemon and 4 by one lease (`sign_requests.per_lease` in `writd.yaml`, 1 to 16), 10 minutes without traffic. A
 denial before authentication (a source not allowed, no free slot, a key not in `readers`,
 a refused certificate) writes one audit line per source and minute, at most 60 a minute in
 all, with the count of the others; text the peer chose (a certificate's key id) is cut to 64 characters.
@@ -171,7 +173,8 @@ anything git kept without a decision.
 git takes a push with no check at all when it finds no pre-receive hook, so the hook is never
 left to chance: the hooks directory is an absolute path (the gateway refuses to start on a
 relative one: git would look it up inside the repository), and `receive-pack` doesn't start
-for a push whose hook file isn't there.
+for a push whose hook isn't a regular file its owner can run (git skips a hook it can't
+execute, as silently as a missing one): the push is refused and logged.
 
 ## The daemon's git
 

@@ -434,6 +434,16 @@ fn admit<'a>(
     Ok((template, entry))
 }
 
+/// The largest push the lease may make under `template` (the one in force): the smaller of
+/// the two. What the gateway hands git (`receive.maxInputSize`) before the hook decides.
+pub fn max_push_size(ticket: &crate::ticket::Ticket, template: &Template) -> u64 {
+    ticket
+        .limits
+        .max_push_size
+        .bytes()
+        .min(template.max_push_size.bytes())
+}
+
 /// The rate check, last in every decision.
 fn check_rate(ctx: &Context<'_>) -> Result<(), Denial> {
     let max = ctx.lease.ticket.limits.max_ops_per_minute;
@@ -746,12 +756,7 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
             ));
         }
     }
-    let max_size = lease
-        .ticket
-        .limits
-        .max_push_size
-        .bytes()
-        .min(template.max_push_size.bytes());
+    let max_size = max_push_size(&lease.ticket, template);
     if request.pack_size > max_size {
         return Err(outside(
             id,

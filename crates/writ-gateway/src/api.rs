@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use russh::server::Msg;
-use russh::{Channel, ChannelReadHalf};
+use russh::{Channel, ChannelMsg, ChannelReadHalf};
 use serde::Serialize;
 use writ_approval::{Service, ServiceError};
 use writ_core::caller::CallerFacts;
@@ -38,7 +38,22 @@ pub(crate) async fn run_agent(
             Ok(body) => encoded(blocking(move || service.submit(&key, &body, &facts)).await),
             Err(e) => encoded::<()>(Err(e)),
         },
-        Command::Wait { id } => encoded(served(service.wait(&id, &key).await)),
+        // Raced against the channel: a client gone (its channel closed or the connection
+        // lost) ends the wait, so waits never outlive their connection and pile up (the
+        // review after M5.5, S11). The client's EOF (it has nothing to send) is not an end.
+        Command::Wait { id } => {
+            let waited = service.wait(&id, &key);
+            tokio::pin!(waited);
+            loop {
+                tokio::select! {
+                    result = &mut waited => break encoded(served(result)),
+                    message = rx.wait() => match message {
+                        None | Some(ChannelMsg::Close) => return,
+                        Some(_) => {}
+                    },
+                }
+            }
+        }
         // The handler routes only agent commands here.
         _ => encoded::<()>(Err(ApiError::new("command not allowed here"))),
     };
@@ -59,7 +74,7 @@ pub(crate) async fn run_approval(
             Err(e) => return reply(tx, encoded::<()>(Err(e))).await,
         }
     } else {
-        Vec::new()
+        Zeroizing::new(Vec::new())
     };
     let result = approval_reply(gateway, facts, command, body).await;
     reply(tx, result).await;
@@ -90,10 +105,9 @@ pub(crate) async fn approval_reply(
     gateway: Gateway,
     facts: CallerFacts,
     command: Command,
-    body: Vec<u8>,
+    // An unseal's body holds the passphrase: wiped once read, by every path that read it.
+    body: Zeroizing<Vec<u8>>,
 ) -> (Vec<u8>, Option<String>) {
-    // An unseal's body holds the passphrase: wiped once read.
-    let body = Zeroizing::new(body);
     let service: Arc<Service> = gateway.service().clone();
     if service.is_sealed() && !matches!(command, Command::Info | Command::Unseal) {
         gateway.refused_sealed(facts).await;
@@ -280,7 +294,7 @@ fn served<T>(result: Result<T, ServiceError>) -> Result<T, ApiError> {
 
 /// Reads the command's body (stdin, until EOF), at most [`MAX_BODY`] bytes, within
 /// [`limits::BODY_DEADLINE`].
-async fn read_body(rx: &mut ChannelReadHalf) -> Result<Vec<u8>, ApiError> {
+async fn read_body(rx: &mut ChannelReadHalf) -> Result<Zeroizing<Vec<u8>>, ApiError> {
     let body = limits::read_within(rx.make_reader(), MAX_BODY, limits::BODY_DEADLINE)
         .await
         .map_err(ApiError::new)?;

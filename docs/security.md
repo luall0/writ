@@ -71,7 +71,7 @@ reader with `decisions: open`). Each has a bound, a strict parser, and a hostile
 
 | Input | From | Bounds | Parsed by |
 |---|---|---|---|
-| TCP connection | anyone who reaches a listener | `allow` ranges (required on agents' TCP), 256 per listener, 16 per source (an IPv6 /64), 20 s to authenticate, 10 min idle; denials logged once per source and minute, 60 lines a minute in all | `writ_core::net`, `writ-gateway/src/limits.rs` |
+| TCP connection | anyone who reaches a listener | `allow` ranges (required on agents' TCP), 256 per listener, 16 per source (an IPv6 /64), 20 s from the accept to be authenticated (SSH handshake and authentication together, or the TLS handshake), 10 s for an HTTPS request's headers, 10 min idle, 4 channels per SSH connection and one command per channel (each refusal logged); denials logged once per source and minute, 60 lines a minute in all | `writ_core::net`, `writ-gateway/src/limits.rs` |
 | SSH handshake and auth | the same | listed algorithms only, publickey only, 6 attempts, certificate checks (CA, type, validity, principal, no critical option, deny list) | russh with `preferred_algorithms`, `writ_crypto::ca` |
 | SSH exec line and env | authenticated peers | exact command grammar, repo names validated, every `env` request refused and nothing of it kept (`GIT_PROTOCOL` included: `upload-pack` speaks protocol v0, where `uploadpack.allow*SHA1InWant` hold; test `a_fetch_by_id_gets_only_what_refs_reach_whatever_the_protocol_asked`), 4 channels per connection | `writ_proto::Command`, `writ-gateway/src/command.rs` |
 | Request bodies (SSH stdin, HTTPS) | agents, readers | 256 KiB (`MAX_BODY`), 30 s | `writ_proto` envelope, `deny_unknown_fields` |

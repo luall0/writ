@@ -231,6 +231,16 @@ impl Service {
             .me
             .upgrade()
             .ok_or_else(|| internal("the service is gone"))?;
+        // Counted while it runs, uncounted however it ends (answered, failed or dropped).
+        struct Waiting<'a>(&'a std::sync::atomic::AtomicUsize);
+        impl Drop for Waiting<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        self.waiting
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let _waiting = Waiting(&self.waiting);
         loop {
             let notified = self.changed.notified();
             tokio::pin!(notified);
