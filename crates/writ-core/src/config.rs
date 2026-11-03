@@ -209,13 +209,20 @@ pub struct PolicyConfig {
 }
 
 impl PolicyConfig {
-    /// Parses and checks a policy document (`repos:` and `templates:`).
+    /// Parses and checks a policy document (`repos:` and `templates:`), with the default
+    /// minimum TTL ([`DEFAULT_MIN_TTL`](crate::fit::DEFAULT_MIN_TTL)).
     pub fn from_yaml(text: &str) -> Result<Self, FieldError> {
-        Self::validate(parse_yaml::<RawPolicyConfig>(text)?)
+        Self::from_yaml_with_min_ttl(text, crate::fit::DEFAULT_MIN_TTL)
+    }
+
+    /// [`Self::from_yaml`] for a daemon whose `min_ttl` is `min_ttl`: every template's
+    /// `max_ttl` is at least it.
+    pub fn from_yaml_with_min_ttl(text: &str, min_ttl: Duration) -> Result<Self, FieldError> {
+        Self::validate(parse_yaml::<RawPolicyConfig>(text)?, min_ttl)
     }
 
     /// Cross-checks a parsed document.
-    fn validate(raw: RawPolicyConfig) -> Result<Self, FieldError> {
+    fn validate(raw: RawPolicyConfig, min_ttl: Duration) -> Result<Self, FieldError> {
         // A repo's mirror is `<name>.git`: on a case-insensitive file system (APFS, local
         // mode's mirrors) `Demo` and `demo` would be one directory under two entries, each
         // with its own protected refs and upstream. Names are unique ignoring ASCII case
@@ -234,7 +241,7 @@ impl PolicyConfig {
             validate_repo(name, repo)?;
         }
         for (name, template) in &raw.templates {
-            validate_template(name, template, &raw.repos)?;
+            validate_template(name, template, &raw.repos, min_ttl)?;
         }
         Ok(Self {
             repos: raw.repos,
@@ -340,6 +347,7 @@ fn validate_template(
     name: &TemplateName,
     template: &Template,
     repos: &BTreeMap<RepoName, RepoEntry>,
+    min_ttl: Duration,
 ) -> Result<(), FieldError> {
     let at = |field: &str| format!("templates.{name}.{field}");
     if template.repos.is_empty() {
@@ -383,10 +391,10 @@ fn validate_template(
             "required with commit_sign",
         ));
     }
-    if template.max_ttl < crate::fit::MIN_TTL {
+    if template.max_ttl < min_ttl {
         return Err(FieldError::at(
             at("max_ttl"),
-            format!("must be at least {}", crate::fit::MIN_TTL),
+            format!("must be at least {min_ttl} (the daemon's min_ttl)"),
         ));
     }
     if template.max_ops_per_minute == 0 {

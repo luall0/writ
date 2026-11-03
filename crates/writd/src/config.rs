@@ -8,6 +8,7 @@
 //! readers: readers                   # who may use the approval API (`writ reader`)
 //! decisions: signed                  # signed | open: refusals and revocations
 //! max_pending: 20                    # tickets waiting for the approver at once
+//! min_ttl: 5m                        # the shortest ticket ttl and template max_ttl (10s to 1d)
 //! submissions:                       # ticket submissions a minute (each 1 or more)
 //!   per_source: 10                   # per address (an IPv6 host by its /64; local: one)
 //!   in_all: 60                       # all sources together
@@ -57,6 +58,9 @@ pub struct Config {
     pub decisions: Decisions,
     #[serde(default = "default_max_pending")]
     pub max_pending: usize,
+    /// The shortest TTL a ticket may ask for, and the least a template's `max_ttl` may be.
+    #[serde(default = "default_min_ttl")]
+    pub min_ttl: Duration,
     /// The submission rates, per minute; the defaults suit one person's agents.
     #[serde(default)]
     pub submissions: SubmissionsConfig,
@@ -75,6 +79,10 @@ pub struct Config {
 
 fn default_max_pending() -> usize {
     writ_approval::DEFAULT_MAX_PENDING
+}
+
+fn default_min_ttl() -> Duration {
+    writ_core::fit::DEFAULT_MIN_TTL
 }
 
 /// `submissions`: how many tickets may be submitted a minute, per source and in all.
@@ -449,6 +457,16 @@ impl Config {
                     .to_owned(),
             ));
         }
+        let (floor, ceiling) = (
+            writ_core::fit::MIN_TTL_FLOOR,
+            writ_core::fit::MIN_TTL_CEILING,
+        );
+        if config.min_ttl < floor || config.min_ttl > ceiling {
+            return Err(fail(format!(
+                "min_ttl: {}, must be from {floor} to {ceiling}",
+                config.min_ttl
+            )));
+        }
         config.submissions.limits().check().map_err(fail)?;
         config.mirrors.check().map_err(fail)?;
         let per_lease = config.sign_requests.per_lease;
@@ -680,6 +698,21 @@ mod tests {
             error.contains("max_pending: 0, must be at least 1"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn min_ttl_defaults_to_five_minutes_and_is_bounded_on_both_sides() {
+        let with = |yaml: &str| load(&format!("{MINIMAL}{yaml}\n"));
+        assert_eq!(load(MINIMAL).unwrap().min_ttl.seconds(), 300);
+        assert_eq!(with("min_ttl: 10s").unwrap().min_ttl.seconds(), 10);
+        assert_eq!(with("min_ttl: 1d").unwrap().min_ttl.seconds(), 86_400);
+        for (yaml, said) in [
+            ("min_ttl: 9s", "min_ttl: 9s, must be from 10s to 1d"),
+            ("min_ttl: 86401s", "min_ttl: 86401s, must be from 10s to 1d"),
+        ] {
+            let error = format!("{:#}", with(yaml).unwrap_err());
+            assert!(error.contains(said), "{yaml}: {error}");
+        }
     }
 
     #[test]

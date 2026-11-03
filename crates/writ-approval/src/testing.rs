@@ -184,6 +184,7 @@ impl TestServiceBuilder {
                 }],
                 decisions: self.decisions,
                 max_pending: self.max_pending,
+                min_ttl: writ_core::fit::DEFAULT_MIN_TTL,
                 submissions: self.submissions,
                 ca_public: ca_key.public_key().clone(),
                 daemon: daemon.clone(),

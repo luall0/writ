@@ -17,6 +17,7 @@ keystore:                          # made once by `writd init writd.yaml`
 # Approvals and tickets
 # decisions: signed                # signed | open: refusals and revocations signed too
 # max_pending: 20                  # tickets waiting for the approver at once, 1 or more
+# min_ttl: 5m                      # the shortest ticket ttl and template max_ttl, 10s to 1d
 # submissions:
 #   per_source: 10                 # tickets one source submits a minute, 1 to 1000
 #   in_all: 60                     # all sources together, 1 to 10000

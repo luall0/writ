@@ -16,7 +16,7 @@ says which, and `make check` and `make test` fail when one is missing.
 ## Running it
 
 ```sh
-make e2e                        # every scenario (about 8 minutes once the images are cached)
+make e2e                        # every scenario (about 3.5 minutes once the images are cached)
 make e2e ARGS=wrapper_mode      # the scenarios whose name holds a filter (libtest's filter)
 WRIT_E2E_KEEP=1 make e2e        # keep the stack afterwards, to look at it (the command to remove it is printed)
 ```
@@ -33,8 +33,9 @@ its default `builder.gc.defaultKeepStorage` is the space it *keeps*, not a maxim
 `defaultMaxUsedSpace` in Settings → Docker Engine for a cap. CI runs it as a job of its own on every push (`.github/workflows/ci.yml`,
 job `e2e`); it is not part of `make ci`, and the pre-push hook doesn't wait for it.
 
-The longest scenario waits for an unsigned ticket to expire (a ticket asks for at least 5
-minutes): the others run beside it, so a run never takes less than about 5 minutes.
+The expiry scenario waits for an unsigned ticket to expire: the end-to-end daemon's `min_ttl`
+is `30s` (`e2e/config/writd.yaml`; `5m` by default), so it waits about 30 seconds, and a ticket
+under it is refused naming it. A run takes about as long as its longest other scenario.
 
 ## The stack
 
@@ -95,7 +96,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | # | Module | Repo | What it proves | Stack |
 |---|---|---|---|---|
 | 1 | `operator_setup` | `setup` | The setup from nothing, as the guide gives it: the approvers and readers, `writd init`, the print commands with no passphrase, `writ unseal`, the `https` token through `writ admin token`, the daemon on a relative path from its directory, every mirror's hook at an absolute path, a protected push refused and an allowed one landing | shared |
-| 2 | `ticket_lifecycle` | `lifecycle` | Rejected, requested and waited for, listed, signed over SSH and HTTPS, refused (flag and prompt) and revised, `n` and withdrawn, `--full`, an amendment with `--lease`, revoked; an unsigned ticket expiring; every client setting as a flag | shared |
+| 2 | `ticket_lifecycle` | `lifecycle` | Rejected, requested and waited for, listed, signed over SSH and HTTPS, refused (flag and prompt) and revised, `n` and withdrawn, `--full`, an amendment with `--lease`, revoked; a ticket under the daemon's `min_ttl` refused naming it, one at it left unsigned and expiring; every client setting as a flag | shared |
 | 2b | `narrowing` | `narrowing` | Every narrowing flag of `writ sign`, the agent told, the lease holding to each (a push past the count, a dropped operation revoking the lease) | shared |
 | 3 | `wrapper_mode` | `demo` | The GitHub manual check's steps 5-7 verbatim: `writ init`, fetch, signed commit, push, verification through `writ-sign`, `writ exec`, upstream moved (clean rebase), the refused pushes; the operator's plain git untouched | shared |
 | 4 | `whole_repo` | `whole` | `writ init --whole-repo --email --url`, plain git as the agent's, a second wiring refused, `--undo` exact | shared |

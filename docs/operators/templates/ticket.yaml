@@ -19,7 +19,7 @@ ticket:
 # template: null                   # null: the only template the ticket fits
 # origin_hint: null                # where the agent runs, shown to the approver
 # limits:                          # each omitted: the template's maximum
-#   ttl: 4h                        # at least 5m, counted from submission
+#   ttl: 4h                        # at least the daemon's min_ttl (5m by default), counted from submission
 #   max_signatures: 50
 #   max_pushes: 30
 #   max_ops_per_minute: 20

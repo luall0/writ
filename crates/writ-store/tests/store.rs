@@ -87,6 +87,7 @@ fn ticket(n: u64, yaml: &str, amends: Option<&Lease>) -> Ticket {
         session_key: fp('S'),
         amends,
         revises: None,
+        min_ttl: fit::DEFAULT_MIN_TTL,
     };
     fit::submit(
         &config(),

@@ -37,8 +37,14 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
         KeystoreConfig::Dev(dir) => crate::keystore::dev_authority_key(dir)?,
     };
     let store = Store::open(&db)?;
-    let (old, version, digest) =
-        crate::authority::recover(&store, &key, target, text.clone(), crate::now()?)?;
+    let (old, version, digest) = crate::authority::recover(
+        &store,
+        &key,
+        target,
+        text.clone(),
+        crate::now()?,
+        config.min_ttl,
+    )?;
     let mut audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
     audit
         .append(

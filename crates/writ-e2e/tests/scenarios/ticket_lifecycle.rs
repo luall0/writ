@@ -237,12 +237,21 @@ fn tickets_are_requested_signed_refused_revised_amended_and_revoked() {
 #[test]
 #[ignore = "end to end: make e2e"]
 fn a_ticket_left_unsigned_expires() {
-    // A ticket asks for at least 5 minutes: this scenario waits that long, beside the others.
+    // A ticket asks for at least the daemon's `min_ttl`, 30 seconds here
+    // (e2e/config/writd.yaml): one second under it is refused, naming it.
     let stack = Stack::shared();
     let agent = stack.agent("lifecycle-expiry");
-    let id = agent.submit("unsigned", &lifecycle("Never signed", TASK, "5m"));
+    let file = agent.ticket_file("too-short", &lifecycle("Too short", TASK, "29s"));
+    let out = agent.run(&format!("writ request {file}"));
+    let (_, err) = expect(&out, 3, "a ticket under the daemon's min_ttl");
+    assert!(
+        err.contains("limits.ttl is 29s, under the minimum of 30s"),
+        "{err}"
+    );
+    // Exactly the minimum is taken, and left unsigned, it expires.
+    let id = agent.submit("unsigned", &lifecycle("Never signed", TASK, "30s"));
     // `writ wait` returns when the daemon decides: here, its sweep expiring the ticket.
-    let out = agent.run_within(&format!("writ wait {id}"), b"", Duration::from_secs(450));
+    let out = agent.run_within(&format!("writ wait {id}"), b"", Duration::from_secs(90));
     let (out, _) = expect(&out, 5, "an unsigned ticket's wait");
     assert!(
         out.contains(&format!("Ticket {id} expired before it was signed.")),

@@ -35,7 +35,7 @@ encoding and its lifecycle: [lease model](../lease-model.md#the-ticket-the-agent
 | `ticket.expected_paths` | List of path globs (`[]`) | The files the work should touch (`src/auth/**`): `*` and `?` within one directory, `**` across. Compared with each commit's touched paths per the template's `paths_check`; required if the template sets `require_expected_paths` |
 | `ticket.amends` | Lease id, optional | An amendment: the active lease (of the same session) whose terms this ticket replaces once signed. It changes scope, not time |
 | `ticket.revises` | Ticket id, optional | A revision of a refused ticket, from the same session: the approver sees the earlier feedback beside it |
-| `limits.ttl` | Duration, at least `5m` (the template's `max_ttl`) | How long the lease lasts, counted from submission |
+| `limits.ttl` | Duration, at least the daemon's `min_ttl` (`5m` by default) and at most the template's `max_ttl` (its default) | How long the lease lasts, counted from submission |
 | `limits.max_signatures` | Count (the template's) | At most the template's |
 | `limits.max_pushes` | Count (the template's) | At most the template's |
 | `limits.max_ops_per_minute` | Count (the template's) | At most the template's |

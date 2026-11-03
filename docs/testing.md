@@ -199,6 +199,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: readers` | `every_client_setting_works_as_a_flag`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |
 | `writd.yaml: decisions` | `decisions_open_takes_unsigned_refusals_and_signed_does_not`, `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
 | `writd.yaml: max_pending` | `max_pending_caps_the_tickets_waiting_on_both_sides` |
+| `writd.yaml: min_ttl` | `a_ticket_left_unsigned_expires` |
 | `writd.yaml: submissions.per_source` | `submission_rates_per_source_and_in_all_are_the_operator_s` |
 | `writd.yaml: submissions.in_all` | `submission_rates_per_source_and_in_all_are_the_operator_s` |
 | `writd.yaml: sign_requests.per_lease` | `sign_requests_per_lease_bounds_the_requests_held_at_once` |

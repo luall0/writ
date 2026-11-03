@@ -22,7 +22,7 @@ templates:
     branches: ["agent/*"]          # required with commit_sign or push
     committer_emails: ["me+agent@example.org"]   # required with commit_sign
     signing_key: agent-ed25519-01  # required with commit_sign: `writd signing-keys` prints it
-    max_ttl: 4h                    # at least 5m
+    max_ttl: 4h                    # at least writd.yaml's min_ttl (5m by default)
     max_signatures: 50
     max_pushes: 30
     max_ops_per_minute: 20         # at least 1

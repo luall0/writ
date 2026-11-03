@@ -19,7 +19,7 @@ use writ_core::lease::{self, LifecycleError, State, TicketRecord, Usage};
 use writ_core::narrow;
 use writ_core::ticket::Operation;
 use writ_core::ticket::{OnViolation, Ticket};
-use writ_core::units::ByteSize;
+use writ_core::units::{ByteSize, Duration};
 
 fn rejection(yaml: &str) -> String {
     fit::submit(&config(), &request(yaml), &submission(1))
@@ -772,8 +772,60 @@ fn the_shortest_ticket_lasts_the_minimum_ttl() {
     .unwrap();
     assert_eq!(
         ticket.created_at.seconds_until(ticket.limits.expires_at),
-        i64::try_from(fit::MIN_TTL.seconds()).unwrap()
+        i64::try_from(fit::DEFAULT_MIN_TTL.seconds()).unwrap()
     );
+}
+
+#[test]
+fn the_minimum_ttl_is_the_daemon_s_on_both_sides() {
+    // `writd.yaml`'s `min_ttl` at 30 s: one second under refused, naming it; exactly it accepted.
+    let at = |ttl: &str| {
+        let mut submission = submission(1);
+        submission.min_ttl = Duration::from_seconds(30);
+        fit::submit(
+            &config(),
+            &request(&REQUEST.replace("ttl: 2h", &format!("ttl: {ttl}"))),
+            &submission,
+        )
+    };
+    let refused = at("29s").unwrap_err();
+    assert_eq!(
+        refused.reasons,
+        ["limits.ttl is 29s, under the minimum of 30s"],
+        "{refused}"
+    );
+    let ticket = at("30s").unwrap();
+    assert_eq!(
+        ticket.created_at.seconds_until(ticket.limits.expires_at),
+        30
+    );
+}
+
+#[test]
+fn a_template_s_max_ttl_is_at_least_the_daemon_s_minimum() {
+    // A template of 1 minute: under the default minimum (5 minutes), refused naming the
+    // field; accepted by a daemon whose minimum is 1 minute, refused by one at 61 seconds.
+    let policy = writ_core::config::PolicyConfig::from_yaml;
+    let text = common::POLICY.replace("max_ttl: 4h", "max_ttl: 1m");
+    assert_ne!(
+        text,
+        common::POLICY,
+        "the fixture's template has `max_ttl: 4h`"
+    );
+    let refused = policy(&text).unwrap_err().to_string();
+    assert!(
+        refused.contains("max_ttl") && refused.contains("must be at least 5m"),
+        "{refused}"
+    );
+    let with = |seconds| {
+        writ_core::config::PolicyConfig::from_yaml_with_min_ttl(
+            &text,
+            Duration::from_seconds(seconds),
+        )
+    };
+    assert!(with(60).is_ok());
+    let refused = with(61).unwrap_err().to_string();
+    assert!(refused.contains("must be at least 61s"), "{refused}");
 }
 
 #[test]

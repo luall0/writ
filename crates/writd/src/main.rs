@@ -219,12 +219,12 @@ fn load_ca_certs(config: &Config) -> anyhow::Result<Option<String>> {
 fn load_registry(config: &Config) -> anyhow::Result<PolicyConfig> {
     let db = config.state_dir.join("leases.db");
     if db.exists()
-        && let Some(loaded) = authority::load(&Store::open(&db)?)?
+        && let Some(loaded) = authority::load(&Store::open(&db)?, config.min_ttl)?
     {
         return Ok(loaded.policy);
     }
     let policy_text = writ_platform::fs::read_authority(&config.policy, "policy")?;
-    authority::parse_policy(&policy_text)
+    authority::parse_policy(&policy_text, config.min_ttl)
         .map_err(|e| anyhow::anyhow!("{}: {e}", config.policy.display()))
 }
 
@@ -338,7 +338,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let config = Arc::new(Config::load(path)?);
     keystore::private_dir(&config.state_dir)?;
     let store = Store::open(&config.state_dir.join("leases.db"))?;
-    let loaded = match (authority::load(&store)?, &config.keystore) {
+    let loaded = match (authority::load(&store, config.min_ttl)?, &config.keystore) {
         (Some(loaded), _) => loaded,
         // The development keystore's first start: the files as they are.
         (None, config::KeystoreConfig::Dev(dir)) => authority::seed(
@@ -346,6 +346,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
             &keystore::dev_authority_key(dir)?,
             authority::read_files(&config)?,
             now()?,
+            config.min_ttl,
         )?,
         (None, config::KeystoreConfig::Sealed(_)) => bail!(
             "{}: no authority files in force (policy, approvers, readers): `writd init` records \
@@ -457,6 +458,7 @@ fn start_service(
             approvers,
             decisions: config.decisions,
             max_pending: config.max_pending,
+            min_ttl: config.min_ttl,
             submissions: config.submissions.limits(),
             ca_public,
             daemon,

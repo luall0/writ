@@ -9,6 +9,9 @@ decisions: signed
 # Every scenario's agent submits from the agent container: one source address.
 max_pending: 50
 submissions: { per_source: 300, in_all: 600 }
+# The expiry scenario waits for an unsigned ticket to expire: 30 seconds, not the default 5
+# minutes (docs/end-to-end.md).
+min_ttl: 30s
 keystore: { sealed: { dir: data/keys, boot: data/boot } }   # made by `writd init`, opened by `writ unseal`
 mirrors:
   known_hosts: upstream_known_hosts

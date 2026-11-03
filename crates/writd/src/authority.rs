@@ -13,7 +13,7 @@ use writ_approval::InForce;
 use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::config::PolicyConfig;
 use writ_core::lease::APPROVAL_NAMESPACE;
-use writ_core::units::Timestamp;
+use writ_core::units::{Duration, Timestamp};
 use writ_crypto::allowed_signers::{self, AllowedSigner};
 use writ_crypto::authority::AuthorityKey;
 use writ_crypto::readers::{self, Reader};
@@ -39,9 +39,10 @@ pub fn path(config: &Config, target: AdminTarget) -> &Path {
     }
 }
 
-/// The policy's text, read as the daemon reads it.
-pub fn parse_policy(text: &str) -> anyhow::Result<PolicyConfig> {
-    PolicyConfig::from_yaml(text).map_err(|e| anyhow::anyhow!("{e}"))
+/// The policy's text, read as the daemon reads it: every template's `max_ttl` at least the
+/// daemon's `min_ttl`.
+pub fn parse_policy(text: &str, min_ttl: Duration) -> anyhow::Result<PolicyConfig> {
+    PolicyConfig::from_yaml_with_min_ttl(text, min_ttl).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// The approvers: none at all is refused (nothing could ever be signed).
@@ -85,9 +86,13 @@ pub fn one_key_one_purpose(approvers: &[AllowedSigner], readers: &[Reader]) -> a
 
 /// Checks the three texts together, as a start does: each parses, and no key is both an
 /// approver and a reader.
-fn parsed(texts: BTreeMap<AdminTarget, String>, in_force: InForce) -> anyhow::Result<Loaded> {
+fn parsed(
+    texts: BTreeMap<AdminTarget, String>,
+    in_force: InForce,
+    min_ttl: Duration,
+) -> anyhow::Result<Loaded> {
     let text = |target| texts.get(&target).map(String::as_str).unwrap_or_default();
-    let policy = parse_policy(text(AdminTarget::Policy)).context("the policy in force")?;
+    let policy = parse_policy(text(AdminTarget::Policy), min_ttl).context("the policy in force")?;
     let approvers =
         parse_approvers(text(AdminTarget::Approvers)).context("the approvers in force")?;
     let readers = parse_readers(text(AdminTarget::Readers)).context("the readers in force")?;
@@ -103,12 +108,12 @@ fn parsed(texts: BTreeMap<AdminTarget, String>, in_force: InForce) -> anyhow::Re
 
 /// Checks the three texts as a start would (each parses, no key both an approver and a
 /// reader), before anything is made from them.
-pub fn check(texts: &BTreeMap<AdminTarget, String>) -> anyhow::Result<()> {
+pub fn check(texts: &BTreeMap<AdminTarget, String>, min_ttl: Duration) -> anyhow::Result<()> {
     let unsigned = InForce {
         versions: BTreeMap::new(),
         mac: String::new(),
     };
-    parsed(texts.clone(), unsigned).map(|_| ())
+    parsed(texts.clone(), unsigned, min_ttl).map(|_| ())
 }
 
 /// The files `writd.yaml` names, read as authority files (owner, mode, no link).
@@ -123,8 +128,9 @@ pub fn read_files(config: &Config) -> anyhow::Result<BTreeMap<AdminTarget, Strin
         .collect()
 }
 
-/// The versions in force, from the store; `None` before any was recorded.
-pub fn load(store: &Store) -> anyhow::Result<Option<Loaded>> {
+/// The versions in force, from the store; `None` before any was recorded. The policy is
+/// checked against the daemon's `min_ttl`.
+pub fn load(store: &Store, min_ttl: Duration) -> anyhow::Result<Option<Loaded>> {
     let Some((head, files)) = store.authority_in_force()? else {
         return Ok(None);
     };
@@ -136,7 +142,7 @@ pub fn load(store: &Store) -> anyhow::Result<Option<Loaded>> {
         mac: head.mac,
     };
     let texts = files.into_iter().map(|(t, f)| (t, f.text)).collect();
-    parsed(texts, in_force).map(Some)
+    parsed(texts, in_force, min_ttl).map(Some)
 }
 
 /// Records the first version of each file, as `writd init` (or the development keystore's
@@ -146,6 +152,7 @@ pub fn seed(
     key: &AuthorityKey,
     texts: BTreeMap<AdminTarget, String>,
     now: Timestamp,
+    min_ttl: Duration,
 ) -> anyhow::Result<Loaded> {
     let versions: BTreeMap<AdminTarget, (u64, TextDigest)> = texts
         .iter()
@@ -159,7 +166,7 @@ pub fn seed(
         mac: key.sign_head(&unsigned.entries())?,
         ..unsigned
     };
-    let loaded = parsed(texts, in_force)?;
+    let loaded = parsed(texts, in_force, min_ttl)?;
     let rows: Vec<AuthorityVersion> = loaded
         .texts
         .iter()
@@ -201,8 +208,9 @@ pub fn recover(
     target: AdminTarget,
     text: String,
     now: Timestamp,
+    min_ttl: Duration,
 ) -> anyhow::Result<(u64, u64, TextDigest)> {
-    let Some(loaded) = load(store)? else {
+    let Some(loaded) = load(store, min_ttl)? else {
         bail!("no authority files in force: `writd init` records them");
     };
     if !key.verify_head(&loaded.in_force.entries(), &loaded.in_force.mac) {
@@ -225,7 +233,7 @@ pub fn recover(
     in_force.versions.insert(target, (version, digest.clone()));
     in_force.mac = key.sign_head(&in_force.entries())?;
     // The new set must pass a start's checks.
-    parsed(texts, in_force.clone())?;
+    parsed(texts, in_force.clone(), min_ttl)?;
     store.record_authority(
         &[AuthorityVersion {
             target,

@@ -52,7 +52,7 @@ every reason sent back to the agent.
 | `templates.<name>.force_push` | Boolean (`false`) | Whether a ticket may ask for force pushes (non-fast-forward updates and branch deletions) |
 | `templates.<name>.committer_emails` | List of emails (`[]`) | The committer emails a ticket may use: printable ASCII. Required with `commit_sign` |
 | `templates.<name>.signing_key` | Key id | The key in the daemon's signer that signs commits under this template (`writd signing-keys` prints it, to add on the account). Required with `commit_sign` |
-| `templates.<name>.max_ttl` | Duration, at least `5m`, **required** | The longest lease, counted from submission (time waiting for the approver counts) |
+| `templates.<name>.max_ttl` | Duration, at least `writd.yaml`'s `min_ttl` (`5m` by default), **required** | The longest lease, counted from submission (time waiting for the approver counts) |
 | `templates.<name>.max_signatures` | Count, **required** | The most commits one lease may have signed |
 | `templates.<name>.max_pushes` | Count, **required** | The most pushes one lease may make |
 | `templates.<name>.max_ops_per_minute` | Count, at least 1, **required** | The rate of a lease's signatures, pushes and fetches together |

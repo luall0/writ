@@ -85,6 +85,7 @@ pub fn submission(n: u64) -> Submission<'static> {
         session_key: fp('S'),
         amends: None,
         revises: None,
+        min_ttl: fit::DEFAULT_MIN_TTL,
     }
 }
 

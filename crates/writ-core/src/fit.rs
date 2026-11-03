@@ -26,11 +26,17 @@ pub const MAX_EXPECTED_PATHS: usize = 100;
 pub const MAX_ORIGIN_HINT_CHARS: usize = 100;
 /// What precedes feedback from a refusal nobody signed, in a revision's `previous_feedback`.
 pub const UNSIGNED_FEEDBACK: &str = "[not signed by an approver] ";
-/// The shortest lease a ticket may ask for. A pending ticket holds one of the approver's
-/// waiting slots until it expires: a 1-second ticket would free its slot every second, and
-/// let one submitter notify the approver without end. (The approver may still narrow a lease
+/// The shortest lease a ticket may ask for, by default (`writd.yaml`'s `min_ttl`). A pending
+/// ticket holds one of the approver's waiting slots until it expires: a 1-second ticket would
+/// free its slot every second, and let one submitter notify the approver without end. At 5
+/// minutes, `max_pending` caps those notifications. (The approver may still narrow a lease
 /// below it when signing.)
-pub const MIN_TTL: Duration = Duration::from_seconds(5 * 60);
+pub const DEFAULT_MIN_TTL: Duration = Duration::from_seconds(5 * 60);
+/// The least `min_ttl` may be: below it, only the submission rates bound the notifications
+/// (docs/threat-model.md).
+pub const MIN_TTL_FLOOR: Duration = Duration::from_seconds(10);
+/// The most `min_ttl` may be.
+pub const MIN_TTL_CEILING: Duration = Duration::from_seconds(86_400);
 
 /// A ticket the daemon won't put in front of the approver, with every reason.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -255,6 +261,8 @@ pub struct Submission<'a> {
     pub amends: Option<&'a Lease>,
     /// The ticket named by `ticket.revises`, as found in the store.
     pub revises: Option<&'a TicketRecord>,
+    /// The shortest TTL a ticket may ask for (`writd.yaml`'s `min_ttl`).
+    pub min_ttl: Duration,
 }
 
 /// Completes a request into a ticket that fits exactly one template (the named one, or the
@@ -397,9 +405,10 @@ fn build(
     };
     let limits = &request.limits;
     let ttl = limits.ttl.unwrap_or(template.max_ttl);
-    if ttl < MIN_TTL {
+    if ttl < submission.min_ttl {
         return Err(Rejection::one(format!(
-            "limits.ttl is {ttl}, under the minimum of {MIN_TTL}"
+            "limits.ttl is {ttl}, under the minimum of {}",
+            submission.min_ttl
         )));
     }
     let expires_at = submission

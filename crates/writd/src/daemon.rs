@@ -246,8 +246,8 @@ impl Opener {
         let mut created = Vec::new();
         let (parsed, ready) = match target {
             AdminTarget::Policy => {
-                let policy =
-                    crate::authority::parse_policy(&text).map_err(|e| refuse(format!("{e:#}")))?;
+                let policy = crate::authority::parse_policy(&text, inner.config.min_ttl)
+                    .map_err(|e| refuse(format!("{e:#}")))?;
                 let open = inner
                     .open
                     .get()

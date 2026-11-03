@@ -80,6 +80,8 @@ pub struct ServiceConfig {
     pub decisions: Decisions,
     /// How many tickets may wait at once.
     pub max_pending: usize,
+    /// The shortest TTL a ticket may ask for (`writd.yaml`'s `min_ttl`).
+    pub min_ttl: writ_core::units::Duration,
     /// The submission rates (per source, all sources together).
     pub submissions: SubmissionLimits,
     /// The CA's public key (its private key comes at unseal, and must be this one's).

@@ -40,9 +40,10 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
             .get(&writ_core::authority::AdminTarget::Policy)
             .map(String::as_str)
             .unwrap_or_default(),
+        config.min_ttl,
     )
     .with_context(|| config.policy.display().to_string())?;
-    crate::authority::check(&texts)?;
+    crate::authority::check(&texts, config.min_ttl)?;
     refuse_existing(sealed)?;
     let db = config.state_dir.join("leases.db");
     if db.exists()
@@ -67,7 +68,13 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
     crate::keystore::private_dir(&config.state_dir)?;
     let store = writ_store::Store::open(&db)?;
     let made = make(sealed, &policy, &passphrase, &crate::platform::enroll)?;
-    crate::authority::seed(&store, &made.authority, texts, crate::now()?)?;
+    crate::authority::seed(
+        &store,
+        &made.authority,
+        texts,
+        crate::now()?,
+        config.min_ttl,
+    )?;
     print(sealed, &policy, &made);
     Ok(())
 }

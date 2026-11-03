@@ -122,6 +122,7 @@ impl Service {
             session_key: session,
             amends: amends.as_ref(),
             revises: revises.as_ref(),
+            min_ttl: self.config.min_ttl,
         };
         let policy = self.policy();
         let ticket = match fit::submit(&policy, &request, &submission) {
