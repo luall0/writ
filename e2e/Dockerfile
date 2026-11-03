@@ -65,9 +65,10 @@ ENTRYPOINT ["/usr/local/bin/writd-start"]
 
 FROM runtime AS agent
 # GnuPG, for the agent's `git verify-commit` of OpenPGP commits (`writ-sign --verify` hands it
-# to gpg). The daemon's image has none: it never runs gpg.
+# to gpg), with its agent: gpg starts one even to import a public key, and exits 2 without it.
+# The daemon's image has none: it never runs gpg.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gpg \
+    && apt-get install -y --no-install-recommends gpg gpg-agent \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --shell /bin/sh agent \
     && useradd --create-home --shell /bin/sh approver

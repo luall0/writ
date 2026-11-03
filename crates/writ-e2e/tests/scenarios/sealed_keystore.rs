@@ -24,6 +24,22 @@ fn sealed_yaml() -> String {
     WRITD_YAML.replace(dev, "keystore: { sealed: { dir: keys, boot: boot } }")
 }
 
+/// `yaml` with one more signing key declared, `declaration` (`<id>: { … }`), right under its
+/// `signing_keys:` line (which may carry a comment). Refuses a `yaml` it doesn't change.
+fn declare(yaml: &str, declaration: &str) -> String {
+    let line = yaml
+        .lines()
+        .find(|l| l.starts_with("signing_keys:"))
+        .expect("the end-to-end config declares its signing keys");
+    let declared = yaml.replacen(
+        &format!("{line}\n"),
+        &format!("{line}\n  {declaration}\n"),
+        1,
+    );
+    assert_ne!(declared, yaml, "{declaration} not declared");
+    declared
+}
+
 /// The value after `label` on the line of `out` that starts with it.
 fn printed<'a>(out: &'a str, label: &str) -> &'a str {
     out.lines()
@@ -126,9 +142,9 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
 
     // A key declared after `writd init`, made by `writd keys create` with no passphrase:
     // sealed to the recipient, its public half printed, logged; made once.
-    let declared = sealed_yaml().replace(
-        "signing_keys:\n",
-        "signing_keys:\n  agent-e2e-rsa: { format: ssh, algorithm: rsa3072 }\n",
+    let declared = declare(
+        &sealed_yaml(),
+        "agent-e2e-rsa: { format: ssh, algorithm: rsa3072 }",
     );
     dir.ok("rm writd.yaml");
     dir.write("writd.yaml", &declared, "0644");
@@ -240,14 +256,13 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     home.ok("mkdir -p sealed-run && cp approvers readers upstream_known_hosts upstream_ca.pem sealed-run/");
     let dir = home.with(&format!("{}/sealed-run", home.dir), None);
     // Its own ports, beside the stack's daemon.
-    let yaml = sealed_yaml()
-        .replace(
-            "signing_keys:\n",
-            "signing_keys:\n  agent-sealed: { format: ssh, algorithm: ed25519 }\n",
-        )
-        .replace("0.0.0.0:2222", "0.0.0.0:3222")
-        .replace("0.0.0.0:2223", "0.0.0.0:3223")
-        .replace("0.0.0.0:8443", "0.0.0.0:9443");
+    let yaml = declare(
+        &sealed_yaml(),
+        "agent-sealed: { format: ssh, algorithm: ed25519 }",
+    )
+    .replace("0.0.0.0:2222", "0.0.0.0:3222")
+    .replace("0.0.0.0:2223", "0.0.0.0:3223")
+    .replace("0.0.0.0:8443", "0.0.0.0:9443");
     dir.write("writd.yaml", &yaml, "0644");
     dir.write("policy.yaml", SEALED_POLICY, "0644");
     let passphrase = "the sealed run's passphrase";
