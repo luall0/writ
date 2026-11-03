@@ -92,8 +92,9 @@ impl Service {
         signed: &[u8],
         signature: &str,
     ) -> Result<KeyFingerprint, String> {
-        let key = sshsig::verify(&self.approver_keys, APPROVAL_NAMESPACE, signed, signature)
-            .map_err(|e| match e {
+        let approvers = self.approver_keys();
+        let key = sshsig::verify(&approvers, APPROVAL_NAMESPACE, signed, signature).map_err(
+            |e| match e {
                 writ_crypto::CryptoError::Namespace { found, .. } => {
                     format!("the signature is in namespace {found:?}, not {APPROVAL_NAMESPACE:?}")
                 }
@@ -104,7 +105,8 @@ impl Service {
                     "the signature does not match the signed bytes".to_owned()
                 }
                 e => format!("unreadable signature: {e}"),
-            })?;
+            },
+        )?;
         fingerprint(key).map_err(|e| e.to_string())
     }
 
@@ -193,17 +195,11 @@ impl Service {
             );
         };
         let approver = approval.approver.clone();
-        let (updated, applied) = match lease::apply_amendment(
-            &self.config.policy,
-            &lease,
-            record,
-            signed,
-            approval,
-            now,
-        ) {
-            Ok(result) => result,
-            Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
-        };
+        let (updated, applied) =
+            match lease::apply_amendment(&self.policy(), &lease, record, signed, approval, now) {
+                Ok(result) => result,
+                Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
+            };
         let event = AuditEvent::new(now, EventKind::Amend, Outcome::Allowed)
             .lease(lease_id)
             .ticket(&record.ticket.id)
@@ -239,11 +235,10 @@ impl Service {
         };
         let approver = approval.approver.clone();
         let serial = keys::random_serial().map_err(internal)?;
-        let lease =
-            match lease::activate(&self.config.policy, record, signed, approval, serial, now) {
-                Ok(lease) => lease,
-                Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
-            };
+        let lease = match lease::activate(&self.policy(), record, signed, approval, serial, now) {
+            Ok(lease) => lease,
+            Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
+        };
         let watch = match self.watch_session(&lease) {
             Ok(watch) => watch,
             Err(reason) => return denied.deny(inner, RefusalCode::Session, reason),

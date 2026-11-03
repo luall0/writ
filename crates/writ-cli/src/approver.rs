@@ -5,10 +5,12 @@
 //! is ever used, and the private key never leaves the agent. Connections to the approval API
 //! authenticate with a throwaway key: the connection grants nothing, signatures do.
 
+mod admin;
 mod narrowing;
 mod prove;
 mod signer;
 
+pub use admin::{apply as admin_apply, show as admin_show, target as admin_target};
 pub use narrowing::Narrowing;
 pub use prove::{ProveKey, prove_key};
 pub use signer::{Signer, default_key};

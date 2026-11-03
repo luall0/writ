@@ -13,7 +13,9 @@ against the lease, and is the only thing that pushes upstream.
    [`policy.yaml`](templates/policy.yaml). Required keys are set; optional ones are commented
    out at their default.
 3. [Seal, unseal, recover](sealing.md): the keystore, `writ unseal` after each start, the
-   notification token's choice, getting access back, and (from M7.6) starting without a human.
+   notification token's choice, changing the policy, approvers and readers, and (from M7.6)
+   starting without a human. [Recovery](recovery.md): what to prepare, and how to get access
+   back on each platform when a key or a passphrase is lost.
 4. [Work beside an agent](good-practice.md): wrapper or whole repo, keeping your own keys
    yours, guardrails, checking what landed.
 

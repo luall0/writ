@@ -12,6 +12,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod allowed_signers;
+pub mod authority;
 pub mod ca;
 pub mod keys;
 pub mod passphrase;

@@ -1,5 +1,6 @@
 //! The lease model and the policy decisions, as pure functions (no I/O).
 //!
+//! - [`authority`]: the files that grant authority, as admin changes name them.
 //! - [`config`]: the repo registry and the templates (YAML, errors name the field).
 //! - [`canonical`]: the canonical bytes of every signed document.
 //! - [`ticket`]: what the agent asks for, the complete ticket.
@@ -8,7 +9,8 @@
 //! - [`lease`]: the lifecycle, approvals, amendments.
 //! - [`caller`]: caller facts and the lease's caller constraint.
 //! - [`policy`]: the decisions for signing, pushing and fetching.
-//! - [`signed`]: the refusal and revocation documents an approver may sign.
+//! - [`signed`]: the other documents an approver signs: refusal, revocation, proof, unseal,
+//!   admin change.
 //! - [`names`], [`pattern`], [`units`]: validated names, patterns and units.
 //! - [`text`]: agent-written text made safe to show.
 //! - [`yaml`]: YAML documents, with errors that name the field.
@@ -19,6 +21,7 @@
 // checked, saturating, or allowed with the reason it can't overflow.
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod authority;
 pub mod caller;
 pub mod canonical;
 pub mod config;

@@ -32,8 +32,30 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
             path.display()
         );
     };
-    let policy = crate::load_registry(&config)?;
+    // The three files, read and checked before anything is made: they become the versions
+    // in force.
+    let texts = crate::authority::read_files(&config)?;
+    let policy = crate::authority::parse_policy(
+        texts
+            .get(&writ_core::authority::AdminTarget::Policy)
+            .map(String::as_str)
+            .unwrap_or_default(),
+    )
+    .with_context(|| config.policy.display().to_string())?;
+    crate::authority::check(&texts)?;
     refuse_existing(sealed)?;
+    let db = config.state_dir.join("leases.db");
+    if db.exists()
+        && writ_store::Store::open(&db)?
+            .authority_in_force()?
+            .is_some()
+    {
+        bail!(
+            "{}: the state already holds authority files in force (another keystore's): a new \
+             keystore takes a new state_dir",
+            config.state_dir.display()
+        );
+    }
     let typed = writ_crypto::passphrase::read(
         "Keystore passphrase (it opens every secret: keep it in a password manager): ",
         Some("The same passphrase again: "),
@@ -41,13 +63,19 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
     )?;
     let passphrase = Passphrase::new(typed.as_str().to_owned());
     drop(typed);
+    // Nothing is written before here.
+    crate::keystore::private_dir(&config.state_dir)?;
+    let store = writ_store::Store::open(&db)?;
     let made = make(sealed, &policy, &passphrase, &crate::platform::enroll)?;
+    crate::authority::seed(&store, &made.authority, texts, crate::now()?)?;
     print(sealed, &policy, &made);
     Ok(())
 }
 
 /// What `writd init` made, to print.
 pub struct Made {
+    /// The authority MAC's key, to record the files' first versions with.
+    pub authority: writ_crypto::authority::AuthorityKey,
     pub recipient: String,
     pub keys: PublicKeys,
 }
@@ -145,6 +173,8 @@ pub fn make(
         Ok(key)
     };
     sealed_key(&layout.ca(), &layout.ca_public())?;
+    let authority = writ_crypto::authority::AuthorityKey::generate()?;
+    seal(&layout.authority(), authority.as_bytes(), &to)?;
     private_dir(&layout.signing_dir())?;
     private_dir(&layout.upstream_dir())?;
     let keys = |ids: std::collections::BTreeSet<&KeyId>,
@@ -166,6 +196,7 @@ pub fn make(
     })?;
     undo.done = true;
     Ok(Made {
+        authority,
         recipient: recipient_text,
         keys: PublicKeys {
             host: host.public_key().clone(),

@@ -2,6 +2,8 @@
 //!
 //! - `writd init <writd.yaml>`: makes the sealed keystore, once (asks for its passphrase).
 //! - `writd run <writd.yaml>`: the daemon (gateway, approval API, expiry timer).
+//! - `writd recover <writd.yaml> <policy|approvers|readers> <file>`: puts a file in force from
+//!   the host (the daemon stopped), with the keystore's passphrase.
 //! - `writd host-key <writd.yaml>`: prints the gateway's host key, to pin in clients'
 //!   `known_hosts`.
 //! - `writd tls-fingerprint <writd.yaml>`: prints the fingerprint of the HTTPS approval API's
@@ -19,10 +21,12 @@
 //! Only this binary wires the crates together and reads configuration
 //! (docs/architecture/overview.md).
 
+mod authority;
 mod config;
 mod daemon;
 mod keystore;
 mod platform;
+mod recover;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -32,14 +36,13 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use writ_approval::{Service, ServiceConfig, ServicePlatform};
 use writ_core::config::PolicyConfig;
-use writ_core::lease::APPROVAL_NAMESPACE;
 use writ_core::names::{KeyFingerprint, KeyId};
-use writ_crypto::allowed_signers::{self, AllowedSigner};
-use writ_crypto::readers::{self, Reader};
+use writ_crypto::allowed_signers::AllowedSigner;
+use writ_crypto::readers::Reader;
 use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_mirror::known_hosts::PinnedHosts;
-use writ_mirror::{MirrorConfig, Mirrors, SyncReport};
+use writ_mirror::{MirrorConfig, SyncReport};
 use writ_platform::clock::system::SystemClock;
 use writ_store::{AuditLog, Store};
 
@@ -54,6 +57,7 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 const COMMANDS: &[(&str, &str)] = &[
     ("init", "<writd.yaml>"),
     ("run", "<writd.yaml>"),
+    ("recover", "<writd.yaml> <policy|approvers|readers> <file>"),
     ("host-key", "<writd.yaml>"),
     ("tls-fingerprint", "<writd.yaml>"),
     ("upstream-keys", "<writd.yaml>"),
@@ -97,6 +101,9 @@ fn main() -> ExitCode {
         }
         ["init", config] => keystore::init(Path::new(config)),
         ["run", config] => run(Path::new(config)),
+        ["recover", config, target, file] => {
+            recover::recover(Path::new(config), target, Path::new(file))
+        }
         ["upstream-keys", config] => upstream_keys(Path::new(config)),
         ["host-key", config] => host_key(Path::new(config)),
         ["tls-fingerprint", config] => tls_fingerprint(Path::new(config)),
@@ -199,64 +206,20 @@ fn load_ca_certs(config: &Config) -> anyhow::Result<Option<String>> {
     Ok(Some(text))
 }
 
-/// The repo registry and templates alone: what the commands that print a key need (the
-/// keystore makes one key per template signing key and repo credential). An authority file,
-/// checked for owner, mode and links before it is believed.
+/// The repo registry and templates in force: what the commands that print a key need (the
+/// keystore holds one key per template signing key and repo credential). The store's version
+/// once `writd init` recorded one; before, the file (an authority file, checked for owner,
+/// mode and links before it is believed).
 fn load_registry(config: &Config) -> anyhow::Result<PolicyConfig> {
+    let db = config.state_dir.join("leases.db");
+    if db.exists()
+        && let Some(loaded) = authority::load(&Store::open(&db)?)?
+    {
+        return Ok(loaded.policy);
+    }
     let policy_text = writ_platform::fs::read_authority(&config.policy, "policy")?;
-    PolicyConfig::from_yaml(&policy_text)
+    authority::parse_policy(&policy_text)
         .map_err(|e| anyhow::anyhow!("{}: {e}", config.policy.display()))
-}
-
-/// The approval policy (repo registry and templates) and the approver keys, from the files
-/// the configuration names (authority files: [`writ_platform::fs::read_authority`]). No
-/// approver key at all is a startup error.
-fn load_policy(config: &Config) -> anyhow::Result<(PolicyConfig, Vec<AllowedSigner>)> {
-    let policy = load_registry(config)?;
-    let approvers_text = writ_platform::fs::read_authority(&config.approvers, "approvers file")?;
-    let approvers = allowed_signers::parse(&approvers_text, APPROVAL_NAMESPACE)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", config.approvers.display()))?;
-    if approvers.is_empty() {
-        bail!(
-            "{}: no approver key for {APPROVAL_NAMESPACE}: nothing could ever be signed",
-            config.approvers.display()
-        );
-    }
-    Ok((policy, approvers))
-}
-
-/// A key is an approver or a reader, never both: the reader key is a client key `writ` holds
-/// in a file, the approval key stays in its agent (hard rule 8), and one key for both roles
-/// would let whatever opens the API also sign approvals.
-fn one_key_one_purpose(approvers: &[AllowedSigner], readers: &[Reader]) -> anyhow::Result<()> {
-    for reader in readers {
-        if approvers
-            .iter()
-            .any(|a| a.key.key_data() == reader.key.key_data())
-        {
-            bail!(
-                "reader {} is also an approver key: a key has one purpose (make the reader key \
-                 with `writ reader`)",
-                reader.name
-            );
-        }
-    }
-    Ok(())
-}
-
-/// The keys that may use the approval API. None at all is a startup error: nobody could
-/// list, show or approve anything.
-fn load_readers(config: &Config) -> anyhow::Result<Vec<Reader>> {
-    let text = writ_platform::fs::read_authority(&config.readers, "readers file")?;
-    let readers =
-        readers::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", config.readers.display()))?;
-    if readers.is_empty() {
-        bail!(
-            "{}: no reader key: nobody could use the approval API (add the line `writ reader` prints)",
-            config.readers.display()
-        );
-    }
-    Ok(readers)
 }
 
 /// Starts every listener the platform built; returns them as a set to wait on.
@@ -312,12 +275,16 @@ fn spawn_sweeper(service: Arc<Service>) {
 /// stale: fetches and pushes then try again, and are refused if they fail too. After a mirror
 /// synced (or was fresh), its notes are brought up to date (`Gateway::reconcile_notes`): at
 /// start, and every `every`.
-pub(crate) fn spawn_mirror_sync(mirrors: Mirrors, gateway: Gateway, every: Duration) {
+pub(crate) fn spawn_mirror_sync(gateway: Gateway, every: Duration) {
     tokio::spawn(async move {
         let mut ticks = tokio::time::interval(every);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticks.tick().await;
+            // The mirrors in force at each round: a registry change replaces them.
+            let Ok(mirrors) = gateway.mirrors() else {
+                continue;
+            };
             let repos: Vec<_> = mirrors.repos().cloned().collect();
             for repo in repos {
                 match mirrors.sync_if_stale(&repo).await {
@@ -336,6 +303,16 @@ pub(crate) fn spawn_mirror_sync(mirrors: Mirrors, gateway: Gateway, every: Durat
     });
 }
 
+/// Now, by the system clock, to the second.
+pub(crate) fn now() -> anyhow::Result<writ_core::units::Timestamp> {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    Ok(writ_core::units::Timestamp::from_unix(i64::try_from(
+        seconds,
+    )?)?)
+}
+
 /// Logs go to stderr; `WRIT_LOG` filters them (`info` by default, e.g. `WRIT_LOG=debug`).
 /// They are diagnostics only: decisions are in the audit log, which never goes through them.
 fn init_logging() {
@@ -351,13 +328,26 @@ fn init_logging() {
 fn run(path: &Path) -> anyhow::Result<()> {
     init_logging();
     let config = Arc::new(Config::load(path)?);
-    let (policy, approvers) = load_policy(&config)?;
-    let readers = load_readers(&config)?;
-    one_key_one_purpose(&approvers, &readers)?;
+    keystore::private_dir(&config.state_dir)?;
+    let store = Store::open(&config.state_dir.join("leases.db"))?;
+    let loaded = match (authority::load(&store)?, &config.keystore) {
+        (Some(loaded), _) => loaded,
+        // The development keystore's first start: the files as they are.
+        (None, config::KeystoreConfig::Dev(dir)) => authority::seed(
+            &store,
+            &keystore::dev_authority_key(dir)?,
+            authority::read_files(&config)?,
+            now()?,
+        )?,
+        (None, config::KeystoreConfig::Sealed(_)) => bail!(
+            "{}: no authority files in force (policy, approvers, readers): `writd init` records \
+             them",
+            config.state_dir.display()
+        ),
+    };
     let pinned = load_pinned_hosts(&config)?;
     let ca_certs = load_ca_certs(&config)?;
-    let start = keystore::start(&config, &policy)?;
-    keystore::private_dir(&config.state_dir)?;
+    let start = keystore::start(&config, &loaded.policy)?;
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
         .with_context(|| format!("cannot create {}", repos.display()))?;
@@ -376,17 +366,22 @@ fn run(path: &Path) -> anyhow::Result<()> {
             .to_string()
             .parse()?;
         let tls = platform::tls_identity(boot.tls)?;
+        log_access(&loaded.approvers, &loaded.readers);
+        let readers = writ_crypto::readers::ReaderSet::new(loaded.readers);
         let service = start_service(
             &config,
-            policy.clone(),
-            &approvers,
+            store,
+            loaded.policy.clone(),
+            loaded.approvers,
+            loaded.in_force,
             boot.ca_public,
             daemon,
             &platform,
         )?;
         let opener = daemon::Opener::new(
             config.clone(),
-            policy,
+            loaded.policy,
+            loaded.texts,
             mirror_config,
             service.clone(),
             platform.notifier.clone(),
@@ -400,9 +395,10 @@ fn run(path: &Path) -> anyhow::Result<()> {
                 host_key: boot.host,
                 mirrors: None,
                 unsealer,
+                admin: Some(Arc::new(opener.clone())),
                 hook_program: std::env::current_exe()?,
                 state_dir: config.state_dir.join("run"),
-                readers: readers.clone(),
+                readers,
                 sign_requests_per_lease: config.sign_requests.per_lease,
             },
             service.clone(),
@@ -425,7 +421,6 @@ fn run(path: &Path) -> anyhow::Result<()> {
             sealed,
             "started"
         );
-        log_access(&approvers, &readers);
         tracing::info!(decisions = ?config.decisions, "decisions");
         let mut servers = spawn_listeners(&gateway, &platform, &tls);
         spawn_sweeper(service);
@@ -433,27 +428,31 @@ fn run(path: &Path) -> anyhow::Result<()> {
     })
 }
 
-/// The approval service, sealed, on the state directory's store and audit log, with a boot
-/// nonce drawn now.
+/// The approval service, sealed, on the state's store and audit log, with a boot nonce drawn
+/// now.
+// What the service starts with, each from its own source.
+#[allow(clippy::too_many_arguments)]
 fn start_service(
     config: &Config,
+    store: Store,
     policy: PolicyConfig,
-    approvers: &[AllowedSigner],
+    approvers: Vec<AllowedSigner>,
+    in_force: writ_approval::InForce,
     ca_public: writ_crypto::ssh_key::PublicKey,
     daemon: KeyFingerprint,
     platform: &platform::Platform,
 ) -> anyhow::Result<Arc<Service>> {
-    let store = Store::open(&config.state_dir.join("leases.db"))?;
     let audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
     Ok(Service::new(
         ServiceConfig {
             policy,
-            approvers: approvers.to_vec(),
+            approvers,
             decisions: config.decisions,
             max_pending: config.max_pending,
             submissions: config.submissions.limits(),
             ca_public,
             daemon,
+            in_force,
         },
         writ_crypto::keys::random_array()?,
         store,
@@ -561,25 +560,17 @@ mod tests {
     #[test]
     fn files_that_grant_authority_are_refused_if_others_can_write_them() {
         let (dir, config) = setup();
-        assert!(load_policy(&config).is_ok());
-        assert_eq!(load_readers(&config).unwrap().len(), 1);
-        type Load = fn(&Config) -> anyhow::Result<()>;
-        let policy: Load = |c| load_policy(c).map(|_| ());
-        let readers: Load = |c| load_readers(c).map(|_| ());
-        for (file, load) in [
-            ("approvers", policy),
-            ("policy.yaml", policy),
-            ("readers", readers),
-        ] {
+        assert_eq!(authority::read_files(&config).unwrap().len(), 3);
+        for file in ["approvers", "policy.yaml", "readers"] {
             let path = dir.path().join(file);
             chmod(&path, 0o666);
-            let error = load(&config).unwrap_err().to_string();
+            let error = authority::read_files(&config).unwrap_err().to_string();
             assert!(
                 error.contains("can be written by group or others"),
                 "{file}: {error}"
             );
             chmod(&path, 0o644);
-            assert!(load(&config).is_ok(), "{file} at 0644");
+            assert!(authority::read_files(&config).is_ok(), "{file} at 0644");
         }
         let yaml = dir.path().join("writd.yaml");
         chmod(&yaml, 0o664);
@@ -625,7 +616,7 @@ mod tests {
         let link = dir.path().join("approvers-link");
         std::os::unix::fs::symlink(dir.path().join("approvers"), &link).unwrap();
         config.approvers = link;
-        let error = load_policy(&config).unwrap_err().to_string();
+        let error = authority::read_files(&config).unwrap_err().to_string();
         assert!(
             error.starts_with("invalid configuration: cannot read approvers file"),
             "{error}"
@@ -663,7 +654,7 @@ mod tests {
         let (dir, config) = setup();
         std::fs::remove_file(dir.path().join("approvers")).unwrap();
         assert!(load_registry(&config).is_ok());
-        let error = load_policy(&config).unwrap_err().to_string();
+        let error = authority::read_files(&config).unwrap_err().to_string();
         assert!(error.contains("cannot read approvers file"), "{error}");
     }
 
@@ -671,10 +662,14 @@ mod tests {
     fn an_approver_key_is_never_a_reader() {
         // The fixture lists the same key as approver and reader.
         let (_dir, config) = setup();
-        let (_, approvers) = load_policy(&config).unwrap();
-        let readers = load_readers(&config).unwrap();
+        let texts = authority::read_files(&config).unwrap();
+        let approvers =
+            authority::parse_approvers(&texts[&writ_core::authority::AdminTarget::Approvers])
+                .unwrap();
+        let readers =
+            authority::parse_readers(&texts[&writ_core::authority::AdminTarget::Readers]).unwrap();
         assert_eq!(approvers[0].key.key_data(), readers[0].key.key_data());
-        let error = one_key_one_purpose(&approvers, &readers)
+        let error = authority::one_key_one_purpose(&approvers, &readers)
             .unwrap_err()
             .to_string();
         assert!(
@@ -683,16 +678,23 @@ mod tests {
         );
         // Different keys: fine.
         let other = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
-        let readers =
-            readers::parse(&format!("mac {}", other.public_key().to_openssh().unwrap())).unwrap();
-        assert!(one_key_one_purpose(&approvers, &readers).is_ok());
+        let readers = writ_crypto::readers::parse(&format!(
+            "mac {}",
+            other.public_key().to_openssh().unwrap()
+        ))
+        .unwrap();
+        assert!(authority::one_key_one_purpose(&approvers, &readers).is_ok());
     }
 
     #[test]
-    fn no_reader_at_all_is_a_startup_error() {
-        let (dir, config) = setup();
-        std::fs::write(dir.path().join("readers"), "# nobody\n").unwrap();
-        let error = load_readers(&config).unwrap_err().to_string();
+    fn no_reader_or_approver_at_all_is_a_startup_error() {
+        let error = authority::parse_readers("# nobody\n")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("no reader key"), "{error}");
+        let error = authority::parse_approvers("# nobody\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("nothing could ever be signed"), "{error}");
     }
 }

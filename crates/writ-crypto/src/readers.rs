@@ -41,6 +41,50 @@ impl Reader {
     }
 }
 
+/// The readers in force, shared by every listener: an admin change replaces them whole, and
+/// each listener reads them at every use (a connection, a command, a request), so a reader
+/// removed is turned away at once.
+#[derive(Debug, Clone, Default)]
+pub struct ReaderSet(std::sync::Arc<std::sync::RwLock<std::sync::Arc<Vec<Reader>>>>);
+
+impl ReaderSet {
+    pub fn new(readers: Vec<Reader>) -> Self {
+        Self(std::sync::Arc::new(std::sync::RwLock::new(
+            std::sync::Arc::new(readers),
+        )))
+    }
+
+    /// The readers now: a snapshot.
+    pub fn now(&self) -> std::sync::Arc<Vec<Reader>> {
+        // poisoned: the last set written stands (it was written whole).
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replaces them all.
+    pub fn replace(&self, readers: Vec<Reader>) {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = std::sync::Arc::new(readers);
+    }
+
+    /// The reader holding `key`, if any.
+    pub fn find(&self, key: &PublicKey) -> Option<Reader> {
+        find(&self.now(), key).cloned()
+    }
+
+    /// Whether a client certificate's SubjectPublicKeyInfo is a reader's.
+    pub fn has_spki(&self, spki: &[u8]) -> bool {
+        self.now()
+            .iter()
+            .filter_map(Reader::spki)
+            .any(|known| known.as_slice() == spki)
+    }
+}
+
 /// Parses a `readers` file. Blank lines and `#` comments are skipped; any other line must be
 /// a name and an Ed25519 key. Names and keys are unique.
 pub fn parse(text: &str) -> Result<Vec<Reader>> {

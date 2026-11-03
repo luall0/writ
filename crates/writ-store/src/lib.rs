@@ -15,7 +15,10 @@ pub use audit::{AuditBreaker, looks_secret};
 pub use audit::{AuditEvent, AuditLog, EventKind, MAX_FIELD_CHARS, Outcome};
 #[cfg(feature = "testing")]
 pub use store::StoreBreaker;
-pub use store::{Counter, LedgerEntry, OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, Store};
+pub use store::{
+    AuthorityHead, AuthorityHow, AuthorityVersion, Counter, LedgerEntry,
+    OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, Store,
+};
 
 use writ_core::lease::{LifecycleError, State};
 use writ_core::names::TicketId;

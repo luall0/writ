@@ -7,6 +7,7 @@
 //!   identity.age            the keystore's identity, wrapped with the passphrase (age scrypt)
 //!   recipient               its public recipient (age1…), for whoever encrypts a secret
 //!   ca.age      ca.pub      the SSH CA key (age file), its public half (in clear)
+//!   authority.age           the key of the MAC over the authority files in force
 //!   signing/<id>.age .pub   the agent signing keys
 //!   upstream/<id>.age .pub  the ssh:// upstreams' credentials
 //!   tokens/<id>.age         the https:// upstreams' tokens, and the notifiers' kept sealed
@@ -46,6 +47,9 @@ impl Layout<'_> {
     }
     pub fn ca(&self) -> PathBuf {
         self.0.dir.join("ca.age")
+    }
+    pub fn authority(&self) -> PathBuf {
+        self.0.dir.join("authority.age")
     }
     pub fn ca_public(&self) -> PathBuf {
         self.0.dir.join("ca.pub")
@@ -240,6 +244,15 @@ fn sealed_token(
         );
     }
     files.read(&path, what)
+}
+
+/// The authority MAC's key, opened by `files`.
+pub fn authority_key(
+    sealed: &SealedConfig,
+    files: &SecretFiles,
+) -> anyhow::Result<writ_crypto::authority::AuthorityKey> {
+    let bytes = files.read(&Layout(sealed).authority(), "the authority key")?;
+    Ok(writ_crypto::authority::AuthorityKey::from_bytes(&bytes)?)
 }
 
 /// The tokens of `https://` repos, opened by `files`.
@@ -448,6 +461,7 @@ mod tests {
         let expected: BTreeSet<String> = [
             "identity.age",
             "recipient",
+            "authority.age",
             "ca.age",
             "ca.pub",
             "signing/agent-01.age",

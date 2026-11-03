@@ -5,10 +5,11 @@
 //! upstream taking a push and recording its notes leaves.
 //!
 //! An agent pushes two commits to `backfill` while the repo doesn't ask for notes, and signs
-//! a third it never pushes. The operator switches the repo to `ticket_link: notes` in
-//! `policy.yaml` and restarts the daemon: the reconcile after the mirror's first sync writes
-//! both pushed commits' notes on Forgejo, and none for the commit upstream doesn't have. Then
-//! the policy is put back and the daemon restarted, as it was.
+//! a third it never pushes. The approver switches the repo to `ticket_link: notes` (a signed
+//! admin change: `writ admin apply policy`, the daemon's `policy.yaml` written back) and the
+//! operator restarts the daemon: the reconcile after the mirror's first sync writes both
+//! pushed commits' notes on Forgejo, and none for the commit upstream doesn't have. Then the
+//! policy is put back the same way and the daemon restarted, as it was.
 
 use std::time::Duration;
 
@@ -23,6 +24,20 @@ const REPO: &str = "backfill";
 /// The registry's line for the repo, as the operator setup wrote it, and with notes.
 const WITHOUT: &str = "upstream_credential: upstream-backfill, protected_refs";
 const WITH: &str = "upstream_credential: upstream-backfill, ticket_link: notes, protected_refs";
+
+/// The policy in force with `from` replaced by `to`, applied by the approver (a signed admin
+/// change, at once), then written back to the daemon's `policy.yaml`.
+fn change_policy(stack: &Stack, from: &str, to: &str) {
+    let approver = &stack.approver;
+    approver.ok("writ admin show policy > notes-policy.yaml");
+    approver.ok(&format!("sed -i 's/{from}/{to}/' notes-policy.yaml"));
+    expect(
+        &approver.run("writ admin apply policy notes-policy.yaml --yes"),
+        0,
+        "writ admin apply policy",
+    );
+    assert!(stack.operator.read("policy.yaml").contains(to));
+}
 
 /// Restarts the `writd` container (the `n`th start since the stack came up) and waits for it.
 fn restart(stack: &Stack) {
@@ -56,12 +71,10 @@ fn switching_a_repo_to_notes_and_restarting_notes_what_was_pushed_before() {
     assert_eq!(stack.forgejo.note(REPO, &second), None);
     assert!(stack.audited(&lease, "notes", "allowed").is_empty());
 
-    // The operator asks for notes, and restarts the daemon.
+    // The approver asks for notes, and the operator restarts the daemon.
     let policy = stack.operator.read("policy.yaml");
     assert!(policy.contains(WITHOUT), "{policy}");
-    stack
-        .operator
-        .ok(&format!("sed -i 's/{WITHOUT}/{WITH}/' policy.yaml"));
+    change_policy(&stack, WITHOUT, WITH);
     restart(&stack);
 
     // At start, after the mirror's first sync: the notes of what upstream has.
@@ -108,9 +121,7 @@ fn switching_a_repo_to_notes_and_restarting_notes_what_was_pushed_before() {
     assert!(stack.audited(&lease, "notes", "denied").is_empty());
 
     // As it was: the repo without notes, the daemon restarted.
-    stack
-        .operator
-        .ok(&format!("sed -i 's/{WITH}/{WITHOUT}/' policy.yaml"));
+    change_policy(&stack, WITH, WITHOUT);
     restart(&stack);
     assert!(stack.operator.read("policy.yaml").contains(WITHOUT));
 }

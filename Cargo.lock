@@ -3805,6 +3805,7 @@ name = "writ-approval"
 version = "0.0.0"
 dependencies = [
  "proptest",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -3852,6 +3853,7 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "serde_path_to_error",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
 ]
 
@@ -3860,6 +3862,7 @@ name = "writ-crypto"
 version = "0.0.0"
 dependencies = [
  "base64ct",
+ "hmac 0.12.1",
  "rcgen",
  "rustix",
  "rustls",

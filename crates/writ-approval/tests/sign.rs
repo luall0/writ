@@ -831,46 +831,17 @@ fn a_lease_s_connections_are_counted_past_sixty_lines_a_minute() {
 
 #[test]
 fn a_template_whose_key_the_signer_lacks_keeps_the_daemon_sealed() {
-    use writ_approval::{
-        Opened, RefusalCode, Service, ServiceConfig, ServiceError, ServicePlatform,
-    };
-    use writ_crypto::allowed_signers::AllowedSigner;
-    use writ_platform::testing::{FakeWatcher, RecordingNotifier};
+    use writ_approval::testing::TestServiceBuilder;
+    use writ_approval::{Opened, RefusalCode, ServiceError};
     let dir = tempfile::tempdir().unwrap();
-    let ca = generate(KeyKind::Ed25519).unwrap();
-    let approver = generate(KeyKind::Ed25519).unwrap();
-    let service = Service::new(
-        ServiceConfig {
-            policy: writ_core::config::PolicyConfig::from_yaml(POLICY).unwrap(),
-            approvers: vec![AllowedSigner {
-                principals: "me".into(),
-                key: approver.public_key().clone(),
-            }],
-            decisions: writ_proto::Decisions::Signed,
-            max_pending: 20,
-            submissions: writ_approval::SubmissionLimits::default(),
-            ca_public: ca.public_key().clone(),
-            daemon: "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
-                .parse()
-                .unwrap(),
-        },
-        [1; 16],
-        Store::open_in_memory().unwrap(),
-        writ_store::AuditLog::open(&dir.path().join("audit.jsonl")).unwrap(),
-        ServicePlatform {
-            notifier: Arc::new(RecordingNotifier::new()),
-            watcher: Arc::new(FakeWatcher::new()),
-            clock: Arc::new(FakeClock::at_unix(START)),
-        },
-    )
-    .unwrap();
+    let h = TestServiceBuilder::new(POLICY).sealed().build(dir.path());
     let opened = |signer: writ_signer::software::SoftwareSigner| Opened {
-        ca: writ_crypto::ca::CertificateAuthority::new(ca.clone()),
         signer: Arc::new(signer),
+        ..h.opened()
     };
     let caller = writ_core::caller::CallerFacts::default();
     let other = writ_signer::testing::software_signer(&["another-key"], KeyKind::Ed25519);
-    match service.unseal(opened(other), None, &caller) {
+    match h.service.unseal(opened(other), None, &caller) {
         Err(error @ ServiceError::Refused { .. }) => {
             assert_eq!(error.code(), Some(RefusalCode::Unseal));
             assert_eq!(
@@ -882,10 +853,10 @@ fn a_template_whose_key_the_signer_lacks_keeps_the_daemon_sealed() {
         Err(other) => panic!("expected a refused unseal, got {other}"),
         Ok(()) => panic!("unsealed without the template's signing key"),
     }
-    assert!(service.is_sealed());
+    assert!(h.service.is_sealed());
     let held = writ_signer::testing::software_signer(&["agent-ed25519-01"], KeyKind::P256);
-    service.unseal(opened(held), None, &caller).unwrap();
-    assert!(!service.is_sealed());
+    h.service.unseal(opened(held), None, &caller).unwrap();
+    assert!(!h.service.is_sealed());
 }
 
 #[test]

@@ -132,6 +132,8 @@ struct Shared {
 
 struct Repo {
     name: RepoName,
+    /// Its registry entry: a registry change reopens the repo only if it changed.
+    entry: writ_core::config::RepoEntry,
     path: PathBuf,
     reach: Reach,
     format: ObjectFormat,
@@ -142,6 +144,7 @@ struct Repo {
 /// empty directory as the CA path (`http.sslCAPath`). curl built with a default CA path (Debian's
 /// is) keeps trusting it when only the file is set: with the empty one, the operator's CAs are
 /// the only ones.
+#[derive(Clone)]
 struct CaCerts {
     file: PathBuf,
     empty_dir: PathBuf,

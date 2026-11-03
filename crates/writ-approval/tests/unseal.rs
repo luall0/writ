@@ -71,10 +71,7 @@ fn refused<T: std::fmt::Debug>(result: Result<T, ServiceError>, code: RefusalCod
 }
 
 fn opened(h: &TestService) -> Opened {
-    Opened {
-        ca: h.ca(),
-        signer: h.signer.clone(),
-    }
+    h.opened()
 }
 
 /// The `writ-unseal/1` document as canonical text, with what a test chooses.
@@ -309,7 +306,7 @@ fn an_unseal_opens_only_with_the_daemon_s_ca_and_is_logged_once() {
     // Another CA key (a keystore swapped under the daemon): refused, still sealed.
     let foreign = Opened {
         ca: writ_crypto::ca::CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap()),
-        signer: h.signer.clone(),
+        ..h.opened()
     };
     let message = refused(
         s.unseal(foreign, Some(&approver), &facts()),

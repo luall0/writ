@@ -167,6 +167,8 @@ pub struct Boot {
 /// of the notifiers that keep theirs sealed (by id).
 pub struct Opened {
     pub keys: Keys,
+    /// The key of the MAC over the authority files in force.
+    pub authority: writ_crypto::authority::AuthorityKey,
     pub tokens: BTreeMap<KeyId, Arc<UpstreamToken>>,
     pub bot_tokens: BTreeMap<KeyId, writ_platform::notify::telegram::BotToken>,
 }
@@ -185,6 +187,19 @@ pub fn sealed_bot_ids(config: &Config) -> BTreeSet<KeyId> {
         .collect()
 }
 
+/// The sealed keystore's authority key, opened with the identity a passphrase unwrapped.
+pub fn sealed_authority_key(
+    sealed: &crate::config::SealedConfig,
+    identity: age::x25519::Identity,
+) -> anyhow::Result<writ_crypto::authority::AuthorityKey> {
+    sealed::authority_key(sealed, &sealed::SecretFiles::new(vec![Box::new(identity)]))
+}
+
+/// The development keystore's authority key (made on its first start).
+pub fn dev_authority_key(dir: &Path) -> anyhow::Result<writ_crypto::authority::AuthorityKey> {
+    dev::authority_key(dir)
+}
+
 /// What the daemon starts with, from the configured keystore.
 pub fn start(config: &Config, policy: &PolicyConfig) -> anyhow::Result<Start> {
     match &config.keystore {
@@ -193,6 +208,7 @@ pub fn start(config: &Config, policy: &PolicyConfig) -> anyhow::Result<Start> {
             dev::boot(dir)?,
             Box::new(Opened {
                 keys: dev::keys(dir, policy)?,
+                authority: dev::authority_key(dir)?,
                 tokens: dev::tokens(dir, policy)?,
                 bot_tokens: dev::bot_tokens(dir, &sealed_bot_ids(config))?,
             }),
@@ -213,6 +229,7 @@ pub fn open(
     let files = sealed::SecretFiles::new(vec![Box::new(identity)]);
     Ok(Opened {
         keys: sealed::keys(sealed, policy, &files)?,
+        authority: sealed::authority_key(sealed, &files)?,
         tokens: sealed::tokens(sealed, policy, &files)?,
         bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &files)?,
     })

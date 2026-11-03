@@ -226,10 +226,40 @@ enum Commands {
         #[command(flatten)]
         signer: SignerArgs,
     },
+    /// The policy, approvers or readers in force, and signed changes of them.
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
     /// Unseal a daemon that started sealed: the keystore's passphrase (asked for, or one
     /// line of stdin), and one signature with your approval key over this start of this
     /// daemon.
     Unseal {
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminCommand {
+    /// Print the file in force (policy, approvers or readers) on stdout, to edit and apply.
+    Show {
+        /// policy, approvers or readers.
+        target: String,
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
+    /// Replace the file in force with FILE: shows what changes, then one signature with your
+    /// approval key. It applies at once.
+    Apply {
+        /// policy, approvers or readers.
+        target: String,
+        file: PathBuf,
+        /// Sign without asking (what changes is still shown first).
+        #[arg(long)]
+        yes: bool,
         #[command(flatten)]
         url: ApprovalUrl,
         #[command(flatten)]
@@ -351,6 +381,29 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             url,
             signer: args,
         } => approver::revoke(&paths, &url.url, &signer(&paths, args), id).await,
+        Commands::Admin {
+            command: AdminCommand::Show { target, url },
+        } => approver::admin_show(&paths, &url.url, approver::admin_target(target)?).await,
+        Commands::Admin {
+            command:
+                AdminCommand::Apply {
+                    target,
+                    file,
+                    yes,
+                    url,
+                    signer: args,
+                },
+        } => {
+            approver::admin_apply(
+                &paths,
+                &url.url,
+                &signer(&paths, args),
+                approver::admin_target(target)?,
+                file,
+                *yes,
+            )
+            .await
+        }
         Commands::Unseal { url, signer: args } => {
             approver::unseal(&paths, &url.url, &signer(&paths, args)).await
         }
@@ -440,12 +493,25 @@ mod tests {
         features.extend(flags(&cli).into_iter().map(|flag| format!("writ {flag}")));
         for sub in cli.get_subcommands() {
             let name = sub.get_name();
-            features.push(format!("writ {name}"));
-            features.extend(
-                flags(sub)
-                    .into_iter()
-                    .map(|flag| format!("writ {name} {flag}")),
-            );
+            // A group (`writ admin`) is its subcommands, each a command of its own.
+            let nested: Vec<_> = sub.get_subcommands().collect();
+            if nested.is_empty() {
+                features.push(format!("writ {name}"));
+                features.extend(
+                    flags(sub)
+                        .into_iter()
+                        .map(|flag| format!("writ {name} {flag}")),
+                );
+            }
+            for inner in nested {
+                let inner_name = format!("{name} {}", inner.get_name());
+                features.push(format!("writ {inner_name}"));
+                features.extend(
+                    flags(inner)
+                        .into_iter()
+                        .map(|flag| format!("writ {inner_name} {flag}")),
+                );
+            }
         }
         assert!(features.len() > 40, "{features:?}");
         let registry = registry("writ");

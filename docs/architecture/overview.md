@@ -111,7 +111,7 @@ crates/
   writ-gateway/         russh server: git upload/receive-pack, sign, lease commands, the
                         approval API over SSH and HTTPS
   writ-approval/        the approval service: tickets, approvals, refusals, revocations,
-                        the lease a certificate stands for (admin changes and unseal: M5)
+                        the lease a certificate stands for, admin changes and unseal
   writd/                the daemon binary: config, keystore, wiring of the crates above
   writ-cli/             the `writ` binary
   writ-sign/            the `writ-sign` shim

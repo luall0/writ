@@ -123,7 +123,8 @@ impl Service {
             amends: amends.as_ref(),
             revises: revises.as_ref(),
         };
-        let ticket = match fit::submit(&self.config.policy, &request, &submission) {
+        let policy = self.policy();
+        let ticket = match fit::submit(&policy, &request, &submission) {
             Ok(ticket) => ticket,
             Err(rejection) => {
                 return reject(

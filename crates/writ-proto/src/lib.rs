@@ -31,9 +31,9 @@ pub mod sign;
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
-    Ack, ApproveRequest, Decision, Decisions, Info, Listing, PassphraseText, Previous,
-    ProveRequest, Proved, RefuseRequest, Relation, RevokeRequest, SealedBoot, Shown, Submitted,
-    Summary, UnsealRequest, Unsealed,
+    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, Decision, Decisions, Info,
+    Listing, PassphraseText, Previous, ProveRequest, Proved, RefuseRequest, Relation,
+    RevokeRequest, SealedBoot, Shown, Submitted, Summary, UnsealRequest, Unsealed,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -68,6 +68,10 @@ mod tests {
             Command::Revoke { id },
             Command::Prove,
             Command::Unseal,
+            Command::AdminShow {
+                target: writ_core::authority::AdminTarget::Readers,
+            },
+            Command::AdminApply,
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -84,6 +88,11 @@ mod tests {
             "writ prove agent-01",
             "writ prove-key",
             "writ unseal now",
+            "writ admin",
+            "writ admin show",
+            "writ admin show templates",
+            "writ admin show policy extra",
+            "writ admin apply policy",
             "git-upload-pack 'x'",
         ] {
             assert_eq!(Command::parse(line), None, "{line:?}");
@@ -103,6 +112,10 @@ mod tests {
             Command::Revoke { id: id.clone() },
             Command::Prove,
             Command::Unseal,
+            Command::AdminShow {
+                target: writ_core::authority::AdminTarget::Policy,
+            },
+            Command::AdminApply,
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));
@@ -122,6 +135,10 @@ mod tests {
             ("POST", "/v1/proofs?key=agent-01"),
             ("GET", "/v1/unseal"),
             ("POST", "/v1/unseal/x"),
+            ("GET", "/v1/admin"),
+            ("GET", "/v1/admin/templates"),
+            ("POST", "/v1/admin/policy"),
+            ("GET", "/v1/admin/policy/x"),
             ("GET", "/v2/info"),
             ("GET", "/v1/info/"),
             ("GET", "v1/info"),

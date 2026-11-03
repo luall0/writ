@@ -38,7 +38,7 @@ impl Gateway {
         sources: Sources,
     ) -> Result<()> {
         let server_config = identity
-            .server_config(&self.shared.config.readers)
+            .server_config(self.shared.config.readers.clone())
             .map_err(|e| crate::GatewayError::Config(format!("TLS: {e}")))?;
         let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
         let slots = limits::Slots::new();
@@ -70,9 +70,32 @@ impl Gateway {
                         return gateway.turned_away(facts, "tls", reason).await;
                     }
                 };
+                // The reader key the client certificate stands for: checked again at each
+                // request (an admin change may remove it while the connection lives).
+                let reader = tls
+                    .get_ref()
+                    .1
+                    .peer_certificates()
+                    .and_then(|certs| certs.first())
+                    .and_then(|cert| writ_crypto::tls::certificate_spki(cert.as_ref()));
                 let service = hyper::service::service_fn(move |request| {
-                    let (gateway, facts) = (gateway.clone(), facts.clone());
+                    let (gateway, facts, reader) = (gateway.clone(), facts.clone(), reader.clone());
                     async move {
+                        let still = reader
+                            .as_deref()
+                            .is_some_and(|spki| gateway.readers().has_spki(spki));
+                        if !still {
+                            let reason = "key refused: no longer in readers".to_owned();
+                            let denial = writ_approval::GatewayDenial::new(
+                                writ_approval::EventKind::Command,
+                                reason.clone(),
+                            );
+                            gateway.log_denial(denial, facts).await;
+                            return Ok::<_, std::convert::Infallible>(error(
+                                StatusCode::FORBIDDEN,
+                                &reason,
+                            ));
+                        }
                         Ok::<_, std::convert::Infallible>(handle(gateway, facts, request).await)
                     }
                 });

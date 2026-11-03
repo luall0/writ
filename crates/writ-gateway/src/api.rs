@@ -10,7 +10,7 @@ use serde::Serialize;
 use writ_approval::{Service, ServiceError};
 use writ_core::caller::CallerFacts;
 use writ_crypto::ssh_key::PublicKey;
-use writ_proto::{ApiError, Command, MAX_BODY, UnsealRequest, Unsealed};
+use writ_proto::{AdminRequest, ApiError, Command, MAX_BODY, UnsealRequest, Unsealed};
 use zeroize::Zeroizing;
 
 use crate::channel::reply;
@@ -77,6 +77,7 @@ pub(crate) fn approval_has_body(command: &Command) -> bool {
             | Command::Revoke { .. }
             | Command::Prove
             | Command::Unseal
+            | Command::AdminApply
     )
 }
 
@@ -126,9 +127,41 @@ pub(crate) async fn approval_reply(
             Err(e) => encoded::<()>(Err(e)),
         },
         Command::Unseal => unseal(gateway, facts, &body).await,
+        Command::AdminShow { target } => {
+            encoded(blocking(move || service.admin_show(target)).await)
+        }
+        Command::AdminApply => admin_apply(gateway, facts, &body).await,
         Command::Request | Command::Wait { .. } => {
             encoded::<()>(Err(ApiError::new("command not allowed here")))
         }
+    }
+}
+
+/// `writ admin apply`: the service checks the document and the approver's signature against
+/// the version in force; then the daemon's [`crate::AdminApplier`] checks the new text, has it
+/// recorded and swaps it in. One change at a time; refusals are logged by the service or the
+/// applier, once.
+async fn admin_apply(
+    gateway: Gateway,
+    facts: CallerFacts,
+    body: &[u8],
+) -> (Vec<u8>, Option<String>) {
+    let request: AdminRequest = match writ_proto::decode_body(body) {
+        Ok(request) => request,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let Some(applier) = gateway.shared.config.admin.clone() else {
+        return encoded::<()>(Err(ApiError::new("this daemon takes no admin change")));
+    };
+    let _one = gateway.shared.administering.lock().await;
+    let (service, caller) = (gateway.service().clone(), facts.clone());
+    let checked = match blocking(move || service.check_admin(&request, &caller)).await {
+        Ok(checked) => checked,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    match applier.apply(checked, facts).await {
+        Ok(applied) => encoded(Ok(applied)),
+        Err(reason) => encoded::<()>(Err(ApiError::new(format!("not applied: {reason}")))),
     }
 }
 

@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::Disconnect;
@@ -64,7 +64,7 @@ use writ_core::lease::Lease;
 use writ_core::net::Sources;
 use writ_core::policy::{CertIdentity, Denial};
 use writ_core::ticket::Operation;
-use writ_crypto::readers::Reader;
+use writ_crypto::readers::ReaderSet;
 use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
 use writ_platform::{CallerAttestor, Connection, PeerInfo, Transport};
 
@@ -112,6 +112,19 @@ pub trait Unsealer: Send + Sync {
     ) -> writ_platform::BoxFuture<'static, std::result::Result<(), String>>;
 }
 
+/// Puts an approver's admin change in force, once the service checked its document and
+/// signature ([`Service::check_admin`]): parses and checks the new text against the rest of
+/// the daemon's configuration, has the service record it ([`Service::commit_admin`]), and
+/// swaps what the daemon runs with (the readers, the mirrors). Implemented by the daemon's
+/// wiring; the gateway calls it one change at a time.
+pub trait AdminApplier: Send + Sync {
+    fn apply(
+        &self,
+        checked: writ_approval::CheckedAdmin,
+        caller: CallerFacts,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::AdminApplied, String>>;
+}
+
 /// What the gateway needs to run.
 pub struct GatewayConfig {
     /// The gateway's SSH host key (clients pin it).
@@ -125,8 +138,11 @@ pub struct GatewayConfig {
     pub hook_program: PathBuf,
     /// Private directory for the gateway's own files (hooks, the hook socket).
     pub state_dir: PathBuf,
-    /// The keys that may use the approval API (`readers` file).
-    pub readers: Vec<Reader>,
+    /// The keys that may use the approval API (the `readers` in force; an admin change
+    /// replaces them, read at each connection, command and request).
+    pub readers: ReaderSet,
+    /// What puts a signed admin change in force; `None`: admin changes are refused.
+    pub admin: Option<Arc<dyn AdminApplier>>,
     /// Sign requests one lease may have held at once (1 to [`MAX_SIGN_REQUESTS`]).
     pub sign_requests_per_lease: usize,
 }
@@ -140,10 +156,12 @@ pub struct Gateway {
 struct Shared {
     config: GatewayConfig,
     service: Arc<Service>,
-    /// The mirrors: set at start, or at unseal.
-    mirrors: OnceLock<writ_mirror::Mirrors>,
+    /// The mirrors: set at start or at unseal, replaced whole by a registry change.
+    mirrors: std::sync::RwLock<Option<writ_mirror::Mirrors>>,
     /// One unseal at a time.
     unsealing: tokio::sync::Mutex<()>,
+    /// One admin change at a time.
+    administering: tokio::sync::Mutex<()>,
     authorities: Vec<Fingerprint>,
     ssh: Arc<russh::server::Config>,
     /// Pushes in progress, by the token handed to their pre-receive hook.
@@ -163,10 +181,7 @@ impl Gateway {
     /// Prepares the state directory, starts the hook server and the task that drops the
     /// sessions of leases that end.
     pub async fn start(mut config: GatewayConfig, service: Arc<Service>) -> Result<Self> {
-        let mirrors = OnceLock::new();
-        if let Some(given) = config.mirrors.take() {
-            let _ = mirrors.set(given);
-        }
+        let mirrors = std::sync::RwLock::new(config.mirrors.take());
         let sign_slots =
             limits::SignSlots::new(config.sign_requests_per_lease).map_err(GatewayError::Config)?;
         // git resolves a relative hooks path inside the repository it runs in, finds no hook
@@ -218,6 +233,7 @@ impl Gateway {
                 service,
                 mirrors,
                 unsealing: tokio::sync::Mutex::new(()),
+                administering: tokio::sync::Mutex::new(()),
                 authorities,
                 ssh,
                 pushes: Mutex::new(HashMap::new()),
@@ -239,20 +255,30 @@ impl Gateway {
         &self.shared.service
     }
 
-    /// Hands the gateway its mirrors, at unseal. Once only: mirrors already set are kept.
-    pub fn set_mirrors(&self, mirrors: writ_mirror::Mirrors) -> Result<()> {
-        self.shared
+    /// Hands the gateway its mirrors: at unseal, then whenever a registry change replaces
+    /// them (the repos kept keep their mirror and its lock: `Mirrors::with_registry`).
+    pub fn set_mirrors(&self, mirrors: writ_mirror::Mirrors) {
+        *self
+            .shared
             .mirrors
-            .set(mirrors)
-            .map_err(|_| GatewayError::Config("the mirrors are already set".to_owned()))
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mirrors);
     }
 
-    /// The mirrors, or "daemon sealed" before the unseal set them.
-    pub(crate) fn mirrors(&self) -> std::result::Result<&writ_mirror::Mirrors, String> {
+    /// The mirrors in force, or "daemon sealed" before the unseal set them.
+    pub fn mirrors(&self) -> std::result::Result<writ_mirror::Mirrors, String> {
+        // poisoned: the last set written stands (it was written whole).
         self.shared
             .mirrors
-            .get()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
             .ok_or_else(|| writ_core::policy::SEALED.to_owned())
+    }
+
+    /// The readers in force (an admin change replaces them).
+    pub fn readers(&self) -> &ReaderSet {
+        &self.shared.config.readers
     }
 
     /// A request refused because the daemon is sealed (event `command`, denied), coalesced
@@ -349,7 +375,7 @@ impl Gateway {
 
     /// Logs a request the gateway turned away on its own ([`Service::gateway_denied`]), off
     /// the async threads.
-    async fn log_denial(&self, denial: GatewayDenial, caller: CallerFacts) {
+    pub(crate) async fn log_denial(&self, denial: GatewayDenial, caller: CallerFacts) {
         let service = self.service().clone();
         let _ = tokio::task::spawn_blocking(move || service.gateway_denied(&denial, &caller)).await;
     }

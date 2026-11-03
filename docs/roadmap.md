@@ -206,7 +206,9 @@ Settled with the user before building (the [decision log](decisions.md) has the 
   registry change reopens only the mirrors whose entry changed.
 - **The daemon's state holds the versions in force**, each bound to the keystore by a MAC
   whose key is a sealed secret: at unseal every version is checked, and one altered, replaced
-  or rolled back by anyone without the passphrase stops the unseal, naming the file.
+  or swapped for another version by anyone without the passphrase stops the unseal. The whole
+  state put back from an older copy carries a valid MAC: that is a restored backup, which
+  only a hardware counter could tell apart.
 - **The files stay in sync:** after each applied change the daemon writes the text in force
   back to the file `writd.yaml` names, so the host shows what is in force. A hand edit is
   never applied: at start, a file that differs is moved aside to `<file>.unapplied-<time>`

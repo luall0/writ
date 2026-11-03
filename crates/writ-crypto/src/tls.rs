@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use ssh_key::PrivateKey;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::readers::Reader;
+use crate::readers::ReaderSet;
 use crate::{CryptoError, Result};
 
 /// The only application protocol spoken over the approval API's TLS.
@@ -69,6 +69,14 @@ pub fn fingerprint(cert_der: &[u8]) -> String {
         "SHA256:{}",
         Base64Unpadded::encode_string(&Sha256::digest(cert_der))
     )
+}
+
+/// The SubjectPublicKeyInfo of a certificate (DER), as a reader's client certificate carries
+/// its key; `None` for bytes that aren't a certificate.
+pub fn certificate_spki(der: &[u8]) -> Option<Vec<u8>> {
+    let der = CertificateDer::from(der);
+    let cert = webpki::EndEntityCert::try_from(&der).ok()?;
+    Some(cert.subject_public_key_info().as_ref().to_vec())
 }
 
 /// The pin of a PEM certificate ([`fingerprint`]).
@@ -164,10 +172,10 @@ impl TlsIdentity {
 
     /// The server configuration, for a TLS acceptor: a client must present a certificate
     /// for one of the `readers` keys (and prove it holds it). No reader: nobody gets in.
-    pub fn server_config(&self, readers: &[Reader]) -> Result<Arc<rustls::ServerConfig>> {
+    pub fn server_config(&self, readers: ReaderSet) -> Result<Arc<rustls::ServerConfig>> {
         let provider = provider();
         let verifier = Arc::new(ReaderVerifier {
-            spkis: readers.iter().filter_map(Reader::spki).collect(),
+            readers,
             provider: provider.clone(),
         });
         let mut config = rustls::ServerConfig::builder_with_provider(provider)
@@ -194,8 +202,8 @@ impl ResolvesServerCert for Single {
 /// checked: like the daemon's own, it is self-signed and stands only for its key.
 #[derive(Debug)]
 struct ReaderVerifier {
-    /// Each reader key as a SubjectPublicKeyInfo.
-    spkis: Vec<Vec<u8>>,
+    /// The readers in force, read at each handshake.
+    readers: ReaderSet,
     provider: Arc<CryptoProvider>,
 }
 
@@ -223,11 +231,7 @@ impl ClientCertVerifier for ReaderVerifier {
         let cert = webpki::EndEntityCert::try_from(end_entity)
             .map_err(|_| rustls::Error::General("unreadable client certificate".to_owned()))?;
         let spki = cert.subject_public_key_info();
-        if self
-            .spkis
-            .iter()
-            .any(|known| known.as_slice() == spki.as_ref())
-        {
+        if self.readers.has_spki(spki.as_ref()) {
             Ok(ClientCertVerified::assertion())
         } else {
             Err(rustls::Error::General(
@@ -445,7 +449,10 @@ mod tests {
         let der = CertificateDer::from_pem_slice(generated.cert_pem.as_bytes()).unwrap();
         assert_eq!(identity.fingerprint(), fingerprint(&der));
         assert_eq!(
-            identity.server_config(&[]).unwrap().alpn_protocols,
+            identity
+                .server_config(ReaderSet::default())
+                .unwrap()
+                .alpn_protocols,
             vec![ALPN.to_vec()]
         );
         assert!(!format!("{identity:?}").contains("PRIVATE"));
@@ -520,7 +527,9 @@ mod tests {
             reader.public_key().to_openssh().unwrap()
         ))
         .unwrap();
-        let server = identity.server_config(&readers).unwrap();
+        let server = identity
+            .server_config(ReaderSet::new(readers.clone()))
+            .unwrap();
         let client = |key: &PrivateKey| pinned_client_config(identity.fingerprint(), key).unwrap();
 
         assert_eq!(handshake(server.clone(), client(&reader)), Ok(()));
@@ -531,9 +540,31 @@ mod tests {
                 "the client certificate is not for a reader key".to_owned()
             ))
         );
+        // Readers replaced (an admin change): the same server takes the new set at the next
+        // handshake, the old reader refused at once.
+        let set = ReaderSet::new(readers.clone());
+        let live = identity.server_config(set.clone()).unwrap();
+        assert_eq!(handshake(live.clone(), client(&reader)), Ok(()));
+        set.replace(
+            crate::readers::parse(&format!(
+                "other {}",
+                stranger.public_key().to_openssh().unwrap()
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            handshake(live.clone(), client(&reader)),
+            Err(rustls::Error::General(
+                "the client certificate is not for a reader key".to_owned()
+            ))
+        );
+        assert_eq!(handshake(live, client(&stranger)), Ok(()));
         // No reader at all: nobody gets in.
         assert_eq!(
-            handshake(identity.server_config(&[]).unwrap(), client(&reader)),
+            handshake(
+                identity.server_config(ReaderSet::default()).unwrap(),
+                client(&reader)
+            ),
             Err(rustls::Error::General(
                 "the client certificate is not for a reader key".to_owned()
             ))

@@ -24,6 +24,7 @@ serde_json = { workspace = true, optional = true }
 tracing.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 # The tests use the test support: always build it with `testing`.
 writ-approval = { workspace = true, features = ["testing"] }
 writ-platform = { workspace = true, features = ["testing"] }

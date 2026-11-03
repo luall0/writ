@@ -275,9 +275,8 @@ async fn hold_mirror(
         .held
         .lock()
         .map_err(|_| Denied::new("internal error"))? = Some(guard);
-    let entry = gateway
-        .service()
-        .policy()
+    let policy = gateway.service().policy();
+    let entry = policy
         .repo(&context.repo)
         .ok_or_else(|| Denied::new(format!("repo {} is not in the registry", context.repo)))?;
     Quarantine::open(
@@ -522,9 +521,10 @@ ticket:
                     host_key: generate(KeyKind::Ed25519).unwrap(),
                     mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
                     unsealer: None,
+                    admin: None,
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
-                    readers: Vec::new(),
+                    readers: writ_crypto::readers::ReaderSet::default(),
                     sign_requests_per_lease: crate::DEFAULT_SIGN_REQUESTS_PER_LEASE,
                 },
                 test.service.clone(),
@@ -613,9 +613,10 @@ ticket:
                     host_key: generate(KeyKind::Ed25519).unwrap(),
                     mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
                     unsealer: None,
+                    admin: None,
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
-                    readers: Vec::new(),
+                    readers: writ_crypto::readers::ReaderSet::default(),
                     sign_requests_per_lease: crate::DEFAULT_SIGN_REQUESTS_PER_LEASE,
                 },
                 test.service.clone(),
@@ -715,9 +716,10 @@ templates:
                     host_key: generate(KeyKind::Ed25519).unwrap(),
                     mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
                     unsealer: None,
+                    admin: None,
                     hook_program: PathBuf::from("/bin/false"),
                     state_dir: dir.path().join("run"),
-                    readers: Vec::new(),
+                    readers: writ_crypto::readers::ReaderSet::default(),
                     sign_requests_per_lease: crate::DEFAULT_SIGN_REQUESTS_PER_LEASE,
                 },
                 test.service.clone(),

@@ -1,6 +1,7 @@
 //! The commands: an SSH exec line (`writ approve <id>`) or, for the approval API, an HTTPS
 //! route (`POST /v1/tickets/<id>/approve`).
 
+use writ_core::authority::AdminTarget;
 use writ_core::names::TicketId;
 
 /// A command run over the daemon's SSH protocol (the exec line).
@@ -32,6 +33,12 @@ pub enum Command {
     /// `writ-unseal/1` document ([`UnsealRequest`] on stdin). Reply: [`Unsealed`]. The only
     /// command, with `info`, a sealed daemon answers.
     Unseal,
+    /// `writ admin show <target>`: the version in force of the policy, `approvers` or
+    /// `readers`. Reply: [`AdminShown`].
+    AdminShow { target: AdminTarget },
+    /// `writ admin apply`: an approver's signed `writ-admin/1` change ([`AdminRequest`] on
+    /// stdin). Reply: [`AdminApplied`].
+    AdminApply,
 }
 
 impl Command {
@@ -42,6 +49,20 @@ impl Command {
             return None;
         }
         let verb = words.next()?;
+        if verb == "admin" {
+            let what = words.next()?;
+            let arg = words.next();
+            if words.next().is_some() {
+                return None;
+            }
+            return match (what, arg) {
+                ("show", Some(target)) => Some(Self::AdminShow {
+                    target: target.parse().ok()?,
+                }),
+                ("apply", None) => Some(Self::AdminApply),
+                _ => None,
+            };
+        }
         let arg = words.next();
         if words.next().is_some() {
             return None;
@@ -77,6 +98,8 @@ impl Command {
             Self::Revoke { id } => format!("writ revoke {id}"),
             Self::Prove => "writ prove".to_owned(),
             Self::Unseal => "writ unseal".to_owned(),
+            Self::AdminShow { target } => format!("writ admin show {target}"),
+            Self::AdminApply => "writ admin apply".to_owned(),
         }
     }
 
@@ -96,6 +119,7 @@ impl Command {
     /// | approve, refuse, revoke | `POST /v1/tickets/<id>/approve` (`refuse`, `revoke`) |
     /// | prove | `POST /v1/proofs` |
     /// | unseal | `POST /v1/unseal` |
+    /// | admin show, admin apply | `GET /v1/admin/<target>`, `POST /v1/admin` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request | Self::Wait { .. } => None,
@@ -108,6 +132,8 @@ impl Command {
             Self::Revoke { id } => Some(("POST", format!("/v1/tickets/{id}/revoke"))),
             Self::Prove => Some(("POST", "/v1/proofs".to_owned())),
             Self::Unseal => Some(("POST", "/v1/unseal".to_owned())),
+            Self::AdminShow { target } => Some(("GET", format!("/v1/admin/{target}"))),
+            Self::AdminApply => Some(("POST", "/v1/admin".to_owned())),
         }
     }
 
@@ -130,6 +156,10 @@ impl Command {
             ("POST", ["tickets", t, "revoke"], None) => Self::Revoke { id: id(t)? },
             ("POST", ["proofs"], None) => Self::Prove,
             ("POST", ["unseal"], None) => Self::Unseal,
+            ("GET", ["admin", target], None) => Self::AdminShow {
+                target: target.parse().ok()?,
+            },
+            ("POST", ["admin"], None) => Self::AdminApply,
             _ => return None,
         };
         Some(command)

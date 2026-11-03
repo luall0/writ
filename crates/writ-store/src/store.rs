@@ -9,10 +9,12 @@
 //! [`schema`] creates and migrates the tables, [`rows`] decodes rows strictly (fail closed:
 //! a row that doesn't decode is an error), [`ledger`] holds the signed commits.
 
+mod authority;
 mod ledger;
 mod rows;
 mod schema;
 
+pub use authority::{AuthorityHead, AuthorityHow, AuthorityVersion};
 pub use ledger::{LedgerEntry, PendingNote};
 
 use std::os::unix::fs::OpenOptionsExt;

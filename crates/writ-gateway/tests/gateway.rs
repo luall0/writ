@@ -118,9 +118,10 @@ impl Daemon {
                 host_key: generate(KeyKind::Ed25519).unwrap(),
                 mirrors: Some(writ_mirror::testing::no_repos(dir.path()).await.unwrap()),
                 unsealer: None,
+                admin: None,
                 hook_program: PathBuf::from("/bin/false"),
                 state_dir: dir.path().join("run"),
-                readers,
+                readers: writ_crypto::readers::ReaderSet::new(readers),
                 sign_requests_per_lease: writ_gateway::DEFAULT_SIGN_REQUESTS_PER_LEASE,
             },
             service,
@@ -967,9 +968,10 @@ async fn relative_paths_are_refused_at_start() {
         host_key: generate(KeyKind::Ed25519).unwrap(),
         mirrors: Some(mirrors.clone()),
         unsealer: None,
+        admin: None,
         hook_program,
         state_dir,
-        readers: Vec::new(),
+        readers: writ_crypto::readers::ReaderSet::default(),
         sign_requests_per_lease: writ_gateway::DEFAULT_SIGN_REQUESTS_PER_LEASE,
     };
     for (state, hook, what) in [

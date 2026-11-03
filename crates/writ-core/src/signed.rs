@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::authority::{AdminTarget, AdminText, TextDigest};
 use crate::canonical::Canonical;
 use crate::names::{KeyFingerprint, KeyId, ProofNamespace, TicketId};
 
@@ -183,6 +184,41 @@ impl Unseal {
     }
 }
 
+/// Only `"writ-admin/1"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AdminKind {
+    #[default]
+    #[serde(rename = "writ-admin/1")]
+    V1,
+}
+
+/// The approver replaces the authority file `target`: the version whose text has digest
+/// `previous` (the one in force when this was signed) by `text`. Replayed, or signed against
+/// a version no longer in force, it changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Admin {
+    pub kind: AdminKind,
+    pub target: AdminTarget,
+    pub previous: TextDigest,
+    pub text: AdminText,
+}
+
+impl Canonical for Admin {
+    const KIND: &'static str = "writ-admin/1";
+}
+
+impl Admin {
+    pub fn new(target: AdminTarget, previous: TextDigest, text: AdminText) -> Self {
+        Self {
+            kind: AdminKind::V1,
+            target,
+            previous,
+            text,
+        }
+    }
+}
+
 /// The approver refuses a pending ticket, with feedback for the agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -340,6 +376,43 @@ mod tests {
             BootNonce::try_from("0".repeat(32)).unwrap().as_str(),
             "0".repeat(32)
         );
+    }
+
+    #[test]
+    fn an_admin_change_is_pinned_strict_and_bounded() {
+        let previous = TextDigest::of("me ssh-ed25519 AAAA\n");
+        let change = Admin::new(
+            AdminTarget::Approvers,
+            previous.clone(),
+            AdminText::try_from("me ssh-ed25519 BBBB\n".to_owned()).unwrap(),
+        );
+        let bytes = change.canonical_bytes().unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            format!(
+                r#"{{"kind":"writ-admin/1","target":"approvers","previous":"{previous}","text":"me ssh-ed25519 BBBB\n"}}"#
+            )
+        );
+        assert_eq!(Admin::from_canonical(&bytes).unwrap(), change);
+        // Never another document.
+        assert!(matches!(
+            Revocation::from_canonical(&bytes),
+            Err(CanonicalError::Decode { .. })
+        ));
+        let text = String::from_utf8(bytes).unwrap();
+        for (bad, why) in [
+            (
+                text.replace("\"approvers\"", "\"templates\""),
+                "unknown variant",
+            ),
+            (text.replace(previous.as_str(), "abc"), "64 lowercase hex"),
+            (text.replace("BBBB\\n", "BBBB\\u001b"), "control character"),
+        ] {
+            let error = Admin::from_canonical(bad.as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(why), "{bad}: {error}");
+        }
     }
 
     #[test]

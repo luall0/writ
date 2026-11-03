@@ -5,10 +5,14 @@ hard per-repo limits no lease can exceed) and the **templates** (`templates`, th
 ticket each accepts; every ticket must fit one). The [lease model](../lease-model.md) explains
 how they combine with tickets; this page lists what can be written.
 
-- Read at start; an authority file (0644 or stricter, owned by the daemon's user). Changing
-  it will be an admin change with a signed approval ([M5](../roadmap.md#m5--sealed-start-and-signed-admin-changes));
-  today, edit it and restart. A lease is used only while it still fits its template under the
-  current file: tighten a template and its leases are denied (`config`) until amended.
+- Read once by `writd init` (an authority file: 0644 or stricter, owned by the daemon's user)
+  as the first version in force. After that it changes only by a signed admin change, applied
+  at once: `writ admin show policy > policy.yaml`, edit, `writ admin apply policy policy.yaml`
+  (or [`writd recover`](recovery.md) on the host). The daemon writes the text in force back
+  to this file; a hand edit is set aside at the next start, never applied. A lease is used only
+  while it still fits its template under the policy in force: tighten a template and its
+  leases are denied (`config`) at once, until amended. A repo whose entry changes gets its
+  mirror reopened; the others keep theirs.
 - **Unknown keys are refused**; every error names its key
   (`templates.quick-fix.max_ttl: invalid duration "1 hour"`).
 - Repo and template names: the map keys (`repos.<name>`, `templates.<name>`). Repo names are

@@ -105,6 +105,19 @@ fn dev_tokens(
         .collect()
 }
 
+/// The development keystore's authority MAC key, `<dir>/authority-key` (32 bytes, 0600),
+/// made on first start.
+pub fn authority_key(dir: &Path) -> anyhow::Result<writ_crypto::authority::AuthorityKey> {
+    allowed()?;
+    let path = dir.join("authority-key");
+    if !path.exists() {
+        let key = writ_crypto::authority::AuthorityKey::generate()?;
+        write_private(&path, key.as_bytes())?;
+    }
+    let bytes = writ_platform::fs::read_secret(&path, "the authority key", 64)?;
+    Ok(writ_crypto::authority::AuthorityKey::from_bytes(&bytes)?)
+}
+
 /// The tokens of the notifiers that keep theirs sealed, from `<dir>/tokens/<id>` (the token
 /// alone, mode 0600). A missing or malformed one stops the daemon, never naming the token.
 pub fn bot_tokens(

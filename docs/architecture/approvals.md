@@ -27,8 +27,8 @@ file (same format as git's `allowed_signers`) ([Q20](../decisions.md)).
   approval, but a separate key keeps things clean.
 - Notifications (a `Notifier`: Telegram in v1) only tell me something is waiting. A
   notification click is never an approval ([Q7/Q13](../decisions.md)).
-- Admin changes (approvers, templates, repo registry) and unsealing also require a signed
-  approval.
+- Admin changes (approvers, readers, templates, repo registry) and unsealing also require a
+  signed approval ([admin changes](#admin-changes), [`writ unseal`](#writ-unseal)).
 
 ## `writ sign`: the trusted display
 
@@ -52,6 +52,33 @@ triggering the signature; it is the trusted display
   ticket happens to be the only one waiting.
 - It signs exactly the canonical bytes it displayed (fetched from the daemon, then decoded and
   re-encoded locally to check they match).
+
+## Admin changes
+
+After `writd init`, the policy (repo registry and templates), `approvers` and `readers` are
+versions in force in the daemon's state (`writ-store`'s `authority` tables), bound to the
+keystore by a MAC over their head (`writ_crypto::authority`, keyed by a sealed secret, checked
+at unseal). They change only by:
+
+- **`writ admin apply <target> <file>`**: `writ` fetches the version in force (`writ admin
+  show`), shows what changes line by line (every line cleaned of what a terminal would act
+  on), and signs a `writ-admin/1` document (`{target, previous, text}`: the digest of the
+  version it replaces, the new text, at most 100 KiB without control characters but newlines
+  and tabs). The service checks the document and the approver's signature, and that
+  `previous` is still in force (a replay, or a change made meanwhile, is refused); the daemon
+  checks the new text as a start would (it parses; an approver and a reader remain; no key is
+  both; a template's signing key is held; a changed repo's mirror opens); then the `admin`
+  line is written, the version and its head recorded under the MAC, and the change swapped in
+  at once: the service's policy and approver keys, the gateway's readers (checked again at
+  each SSH command and HTTPS request, so a removed reader is turned away on a live
+  connection), the mirrors (`Mirrors::with_registry`: unchanged repos keep their mirror and
+  its lock). The file `writd.yaml` names is written back. One change at a time.
+- **`writd recover`** on the host, with the passphrase ([recovery](../operators/recovery.md)).
+
+A file edited on the host is never applied: at the next start it is set aside
+(`<file>.unapplied-<time>`, an `admin` line, done) and the text in force written back. A
+version altered in the state without the keystore's key keeps the daemon sealed. The whole
+state put back from an older copy is a restored backup: it carries a valid MAC.
 
 ## `writ unseal`
 

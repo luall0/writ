@@ -99,8 +99,8 @@ unless it is a regular file (no link followed, never a FIFO) owned by the daemon
 not writable by group or others; secrets (a bot token, a wrapped key) must also be readable
 by nobody else. From M5, `approvers`, `readers` and the policy change only through signed
 admin changes: the daemon's state holds the versions in force, each bound to the keystore by
-a MAC keyed by a sealed secret (a version altered, replaced or rolled back without the
-passphrase stops the unseal), and writes them back to the files, where a hand edit is never
+a MAC keyed by a sealed secret (a version altered, replaced or swapped for another one without
+the passphrase stops the unseal), and writes them back to the files, where a hand edit is never
 applied ([M5](roadmap.md#m5--sealed-start-and-signed-admin-changes)). `writd.yaml` stays a
 host file: it can't make anyone an approver.
 
@@ -160,7 +160,7 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | ✅ The approver sees what gets signed, whatever the agent wrote | `a_hostile_ticket_shows_nothing_a_terminal_would_act_on`, `agent_text_cannot_push_the_enforced_terms_off_the_screen` |
 | ✅ The keys directory alone reveals no key: every secret but the boot tier's is its own age file, unwrapped only after an unseal | `the_keys_directory_alone_reveals_no_key`, `a_replaced_or_foreign_file_is_refused_by_name` |
 | ✅ While sealed, nothing is served: every request but `info` and `unseal` fails closed with "daemon sealed", and is logged | `while_sealed_every_request_fails_closed_with_daemon_sealed`, `while_sealed_every_request_fails_closed_with_daemon_sealed_and_is_logged`, `a_restart_keeps_active_leases_working_after_unseal` |
-| ✅ Unsealing and admin changes need an approver signature (and, to unseal, the passphrase); a hand edit or a version altered at rest is never in force | planned: M5 |
+| ✅ Unsealing and admin changes need an approver signature (and, to unseal, the passphrase); a hand edit or a version altered at rest is never in force | `an_unseal_needs_an_approver_signature_over_this_daemon_and_this_boot`, `unsealing_needs_both_the_passphrase_and_an_approver_signature`, `an_unsigned_wrongly_signed_or_stale_change_is_refused_and_logged`, `a_signed_change_applies_at_once_and_is_written_back_to_its_file`, `a_hand_edited_file_is_set_aside_at_the_next_start_and_never_applied`, `versions_whose_mac_is_not_the_keystore_s_keep_the_daemon_sealed`, `a_version_altered_at_rest_keeps_the_daemon_sealed_and_writd_recover_needs_the_passphrase` |
 | ✅ Hardware backends: keys non-exportable | planned: M7.5 |
 
 ## What Writ does NOT guarantee
@@ -198,6 +198,7 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | Process hardening is best effort (M5): where a platform or the host's limits don't allow one step (memory locking without an unlimited lock limit or `CAP_IPC_LOCK`; macOS has no call to lock everything), the daemon starts anyway with a warning | Each failure says how to fix it, and the operator guide shows how to check each step; macOS encrypts swap | Set the host up as the operator guide says (M8's compose file does) |
 | The keystore's passphrase passes, in `writ unseal`'s request, through buffers Writ doesn't wipe: the SSH library's channel buffers, or hyper's and rustls's on HTTPS, on both sides | Writ wipes its own copies (the request body, the decoded passphrase, the typed one); the request goes only over the pinned, authenticated channel, to a reader key; reading another process's freed memory takes its user's account | Hardware recipients (M7.6): no passphrase to send |
 | With `unseal: auto` (M7.6, opt-in): anyone who can restart the daemon, or who takes the whole machine with its hardware, gets a running daemon without the approver | Only with every key and secret in hardware (the notification token and transport keys aside), so no copy of the disk opens anything; leases still need the approver's signature and fit their templates; the start is logged and notified; `writd recover` needs the offline recovery identity | Keep the sealed start (the default) |
+| The authority files' state put back whole from an older copy (the policy, approvers and readers of that time) is accepted: every version in it carries a valid MAC | It is what restoring a backup is; anyone able to put the state back can also stop the daemon; the audit log keeps every change, and the files are written back with what is in force, so the change is visible | A hardware monotonic counter (a TPM's) in the head's MAC, with M7.6's hardware |
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | [Hardware-wrapped secrets](roadmap.md#m76--hardware-wrapped-secrets) (M7.6) |
 | `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |

@@ -5,6 +5,7 @@
 //! write, under `ticket_link: notes`) and [`sweep`] (time: expiry, exhaustion,
 //! ended sessions).
 
+mod admin;
 mod agent;
 mod approver;
 mod coalesced;
@@ -17,6 +18,7 @@ mod submissions;
 mod sweep;
 mod unseal;
 
+pub use admin::{AdminParsed, CheckedAdmin, InForce};
 pub use gateway::GatewayDenial;
 pub use push::Pushing;
 pub use sign::{SignObject, SignedCommit, Signing};
@@ -82,6 +84,9 @@ pub struct ServiceConfig {
     pub ca_public: PublicKey,
     /// The fingerprint of the daemon's SSH host key: what an unseal signature names.
     pub daemon: KeyFingerprint,
+    /// The version of each authority file the daemon started with, and their MAC (checked at
+    /// unseal).
+    pub in_force: InForce,
 }
 
 /// The platform implementations the service uses.
@@ -97,6 +102,8 @@ pub struct Opened {
     pub ca: CertificateAuthority,
     /// Holds the keys commits are signed with (each template's `signing_key`).
     pub signer: Arc<dyn Signer>,
+    /// The authority MAC's key: checks the versions in force, signs each new head.
+    pub authority: writ_crypto::authority::AuthorityKey,
 }
 
 /// The approval service. Shared (`Arc`) by the gateway and the daemon's timers.
@@ -105,7 +112,12 @@ pub struct Opened {
 /// until [`Service::unseal`] hands it the CA and the signer ([`unseal`]).
 pub struct Service {
     config: ServiceConfig,
-    approver_keys: Vec<PublicKey>,
+    /// The policy in force: replaced whole by an admin change, read as a snapshot.
+    policy: RwLock<Arc<PolicyConfig>>,
+    /// The approver keys in force: replaced whole by an admin change.
+    approver_keys: RwLock<Arc<Vec<PublicKey>>>,
+    /// The version of each authority file in force, and the head's MAC.
+    in_force: RwLock<InForce>,
     /// Set once, at unseal; never taken back.
     opened: OnceLock<Opened>,
     /// What an unseal signature must name while sealed: this daemon, this boot.
@@ -293,7 +305,10 @@ impl Service {
         let dropped = Arc::new(AtomicU64::new(0));
         let outbox = notification_worker(platform.notifier, dropped.clone()).map_err(internal)?;
         let submissions = submissions::Submissions::new(config.submissions);
-        let approver_keys = config.approvers.iter().map(|a| a.key.clone()).collect();
+        let approver_keys: Vec<PublicKey> =
+            config.approvers.iter().map(|a| a.key.clone()).collect();
+        let policy = RwLock::new(Arc::new(config.policy.clone()));
+        let in_force = RwLock::new(config.in_force.clone());
         let (revocations, _) = broadcast::channel(256);
         let boot = SealedBoot {
             daemon: config.daemon.clone(),
@@ -301,7 +316,9 @@ impl Service {
         };
         let service = Arc::new_cyclic(|me| Self {
             config,
-            approver_keys,
+            policy,
+            approver_keys: RwLock::new(Arc::new(approver_keys)),
+            in_force,
             opened: OnceLock::new(),
             boot,
             inner: Mutex::new(Inner {
@@ -346,9 +363,23 @@ impl Service {
         self.opened.get().is_none()
     }
 
-    /// The repo registry and the templates.
-    pub fn policy(&self) -> &PolicyConfig {
-        &self.config.policy
+    /// The repo registry and the templates in force: a snapshot (an admin change replaces it
+    /// whole, never in part).
+    pub fn policy(&self) -> Arc<PolicyConfig> {
+        // poisoned: the last policy written stands (it was written whole).
+        self.policy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The approver keys in force: a snapshot.
+    pub(crate) fn approver_keys(&self) -> Arc<Vec<PublicKey>> {
+        // poisoned: the last set written stands (it was written whole).
+        self.approver_keys
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Now, by the service's clock.

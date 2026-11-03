@@ -4,7 +4,7 @@ use rusqlite::Connection;
 
 use crate::{Result, StoreError};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// How long a write waits for another connection's transaction before failing.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -44,7 +44,7 @@ CREATE INDEX ledger_lease ON ledger(lease_id);
 ";
 
 /// Migrations, in order: `MIGRATIONS[n]` takes version `n + 1` to `n + 2`.
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 5] = [
     // 2: the session public key of each ticket, the certificate of each lease.
     "ALTER TABLE tickets ADD COLUMN session_pubkey TEXT;
      ALTER TABLE tickets ADD COLUMN certificate TEXT;",
@@ -57,6 +57,27 @@ const MIGRATIONS: [&str; 4] = [
     "ALTER TABLE ledger ADD COLUMN note TEXT CHECK (note IN ('pending', 'written'));
      ALTER TABLE ledger ADD COLUMN note_credential TEXT;
      CREATE INDEX ledger_notes_pending ON ledger(repo) WHERE note = 'pending';",
+    // 6: the authority files in force and every earlier version (M5's admin changes), and
+    // the head: which version of each is in force, under the keystore's MAC.
+    "CREATE TABLE authority (
+         target     TEXT NOT NULL CHECK (target IN ('policy', 'approvers', 'readers')),
+         version    INTEGER NOT NULL CHECK (version >= 1),
+         text       TEXT NOT NULL,
+         digest     TEXT NOT NULL,
+         how        TEXT NOT NULL CHECK (how IN ('init', 'admin', 'recover')),
+         document   TEXT,
+         signature  TEXT,
+         approver   TEXT,
+         applied_at INTEGER NOT NULL,
+         PRIMARY KEY (target, version)
+     ) STRICT;
+     CREATE TABLE authority_head (
+         id        INTEGER PRIMARY KEY CHECK (id = 1),
+         policy    INTEGER NOT NULL,
+         approvers INTEGER NOT NULL,
+         readers   INTEGER NOT NULL,
+         mac       TEXT NOT NULL
+     ) STRICT;",
 ];
 
 /// Sets the connection up (busy timeout, foreign keys, full sync, WAL) and brings the schema

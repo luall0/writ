@@ -148,6 +148,31 @@ impl Daemon {
         self.run(&["unseal"], &format!("{PASSPHRASE}\n"))
     }
 
+    /// Stops the daemon (it is started again by [`Daemon::restart`]).
+    pub fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    /// `writd <args…>` (the configuration as given in `args`), with `stdin`.
+    pub fn writd_with(&self, args: &[&str], stdin: &str) -> Output {
+        let mut child = Command::new(bin("writd"))
+            .args(args)
+            .current_dir(self.root())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        crate::process::finish(child)
+    }
+
     /// Stops the daemon and starts it again on the same directory (new ports, pinned again):
     /// a restart. Waits until it announced its listeners.
     pub fn restart(&mut self) {

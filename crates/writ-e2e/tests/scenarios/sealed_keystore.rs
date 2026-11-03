@@ -35,7 +35,11 @@ fn printed<'a>(out: &'a str, label: &str) -> &'a str {
 fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
     let stack = Stack::shared();
     let home = &stack.operator;
-    home.ok("mkdir -p sealed-init sealed-short");
+    // The approvers and readers first: `writd init` records the three files in force.
+    home.ok(
+        "mkdir -p sealed-init sealed-short && cp approvers readers sealed-init/ && \
+             cp approvers readers sealed-short/",
+    );
     let dir = home.with(&format!("{}/sealed-init", home.dir), None);
     dir.write("writd.yaml", &sealed_yaml(), "0644");
     dir.write("policy.yaml", POLICY_YAML, "0644");
@@ -139,7 +143,10 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
         why.trim_end(),
         "writd: the passphrase is 9 characters: at least 12 are needed"
     );
-    assert_eq!(short.ok("ls"), "policy.yaml\nwritd.yaml\n");
+    assert_eq!(
+        short.ok("ls"),
+        "approvers\npolicy.yaml\nreaders\nwritd.yaml\n"
+    );
 }
 
 /// The second daemon's policy: one repo, one template (no `https://` repo, whose token only an
@@ -250,5 +257,73 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     assert_eq!(count("unseal", "allowed"), 1, "{audit}");
     assert!(count("command", "denied") >= 1, "{audit}");
     assert!(!audit.contains(passphrase));
+
+    // Admin changes: the approvers in force shown, a second approval key added (every flag
+    // of `writ admin show` and `apply`), written back to the daemon's file at once.
+    let out = approver.run(&format!(
+        "{writ} admin show approvers --approval-url {https}"
+    ));
+    let (in_force, header) = expect(&out, 0, "writ admin show");
+    assert!(
+        header.starts_with("approvers: version 1 (sha256 "),
+        "{header}"
+    );
+    assert_eq!(dir.read("approvers"), in_force);
+    approver.ok("rm -f .writ-sealed/second* && \
+         ssh-keygen -q -t ed25519 -N '' -C second -f .writ-sealed/second && \
+         SSH_AUTH_SOCK=$HOME/agent.sock ssh-add -q .writ-sealed/second && rm .writ-sealed/second");
+    let second = approver.read(".writ-sealed/second.pub");
+    let both = format!("{in_force}second {}\n", second.trim());
+    approver.write(".writ-sealed/approvers", &both, "0644");
+    let out = approver.run(&format!(
+        "{writ} admin apply approvers .writ-sealed/approvers --yes --approval-url {ssh} {signer}"
+    ));
+    let (said, _) = expect(&out, 0, "writ admin apply");
+    assert!(said.contains("+ second ssh-ed25519 "), "{said}");
+    assert!(
+        said.contains("Applied: approvers is version 2 (sha256 "),
+        "{said}"
+    );
+    assert_eq!(dir.read("approvers"), both);
+
+    // `writd recover`, the daemon stopped: the first approvers put back with the passphrase.
+    dir.ok(
+        "kill $(cat writd.pid) && while kill -0 $(cat writd.pid) 2>/dev/null; do sleep 0.1; done",
+    );
+    dir.write("recovered-approvers", &in_force, "0644");
+    let out = dir.run_with(
+        "writd recover writd.yaml approvers recovered-approvers",
+        b"not the passphrase\n",
+    );
+    let (_, why) = expect(&out, 1, "recover with a wrong passphrase");
+    assert!(why.contains("wrong passphrase"), "{why}");
+    assert_eq!(dir.read("approvers"), both, "nothing changed");
+    let out = dir.run_with(
+        "writd recover writd.yaml approvers recovered-approvers",
+        format!("{passphrase}\n").as_bytes(),
+    );
+    let (said, _) = expect(&out, 0, "writd recover");
+    assert!(
+        said.contains("approvers: version 3 in force (recovered on the host)"),
+        "{said}"
+    );
+    assert_eq!(dir.read("approvers"), in_force);
+    let audit = dir.read("data/audit.jsonl");
+    assert!(audit.contains("recovered on the host"), "{audit}");
+    dir.ok("nohup writd run writd.yaml > writd.log 2>&1 & echo $! > writd.pid");
+    eventually(
+        "the sealed daemon started again",
+        Duration::from_secs(30),
+        || {
+            dir.run("test $(grep -c 'sealed=true' writd.log) -ge 1")
+                .status
+                .success()
+        },
+    );
+    let out = approver.run_with(
+        &format!("{writ} unseal --approval-url {ssh} {signer}"),
+        format!("{passphrase}\n").as_bytes(),
+    );
+    expect(&out, 0, "unseal after recovery");
     dir.ok("kill $(cat writd.pid)");
 }

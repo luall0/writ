@@ -25,7 +25,8 @@ impl Service {
         repo: &RepoName,
         commits: &[CommitId],
     ) -> Result<bool, ServiceError> {
-        let Some(entry) = self.config.policy.repo(repo) else {
+        let policy = self.policy();
+        let Some(entry) = policy.repo(repo) else {
             return Ok(false);
         };
         if entry.ticket_link != TicketLink::Notes {
@@ -47,7 +48,8 @@ impl Service {
         repo: &RepoName,
         limit: usize,
     ) -> Result<Option<Vec<(CommitId, TicketId)>>, ServiceError> {
-        match self.config.policy.repo(repo) {
+        let policy = self.policy();
+        match policy.repo(repo) {
             Some(entry) if entry.ticket_link == TicketLink::Notes => {}
             _ => return Ok(None),
         }

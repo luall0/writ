@@ -706,11 +706,11 @@ fn a_newer_schema_is_refused() {
     drop(Store::open(&path).unwrap());
     rusqlite::Connection::open(&path)
         .unwrap()
-        .pragma_update(None, "user_version", 6)
+        .pragma_update(None, "user_version", 7)
         .unwrap();
     assert!(matches!(
         Store::open(&path),
-        Err(StoreError::SchemaTooNew(6))
+        Err(StoreError::SchemaTooNew(7))
     ));
 }
 
@@ -786,7 +786,9 @@ fn a_version_1_database_is_migrated() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
+    // The authority tables exist, empty: nothing in force until `writd init`.
+    assert_eq!(store.authority_in_force().unwrap(), None);
     // The ledger gained its paths digest column: an entry keeps one, or none.
     let lease = active_lease(&store, 2);
     for n in [1, 2] {

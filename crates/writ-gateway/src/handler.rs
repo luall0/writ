@@ -25,8 +25,9 @@ pub(crate) enum Identity {
     Lease(CertIdentity),
     /// A client submitting or waiting on a ticket: the key is its session key.
     SessionKey(PublicKey),
-    /// A client of the approval API: a key in the `readers` file.
-    Approver,
+    /// A client of the approval API: a key in the `readers` in force (checked again at each
+    /// command: an admin change may have removed it).
+    Reader(PublicKey),
 }
 
 pub(crate) struct Connection {
@@ -142,9 +143,15 @@ impl russh::server::Handler for Connection {
         self.identity = match (self.role, user) {
             (Role::Agents, CLIENT_USER) => Some(Identity::SessionKey(key.public_key.clone())),
             (Role::Approvals, _) => {
-                let readers = &self.gateway.shared.config.readers;
-                if writ_crypto::readers::find(readers, key.public_key).is_some() {
-                    Some(Identity::Approver)
+                if self
+                    .gateway
+                    .shared
+                    .config
+                    .readers
+                    .find(key.public_key)
+                    .is_some()
+                {
+                    Some(Identity::Reader(key.public_key.clone()))
                 } else {
                     let reason = "key refused: not in readers".to_owned();
                     self.refused("reader", reason, None).await;
@@ -295,6 +302,20 @@ impl russh::server::Handler for Connection {
                 });
             }
             Ok(Route::Approval(command)) => {
+                let removed = match &identity_reader(&self.identity) {
+                    Some(key) => gateway.shared.config.readers.find(key).is_none(),
+                    None => true,
+                };
+                if removed {
+                    let reason = "key refused: no longer in readers".to_owned();
+                    let denial = GatewayDenial::new(EventKind::Command, reason.clone());
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        gateway.log_denial(denial, facts).await;
+                        refuse(channel, reason).await;
+                    });
+                    return Ok(());
+                }
                 tokio::spawn(async move {
                     let _permit = permit;
                     api::run_approval(gateway, facts, command, channel).await;
@@ -318,6 +339,14 @@ impl russh::server::Handler for Connection {
             }
         }
         Ok(())
+    }
+}
+
+/// The reader key an approval-API connection authenticated with.
+fn identity_reader(identity: &Option<Identity>) -> Option<PublicKey> {
+    match identity {
+        Some(Identity::Reader(key)) => Some(key.clone()),
+        _ => None,
     }
 }
 
@@ -346,7 +375,7 @@ fn route(
         (Some(Identity::SessionKey(key)), Some(Command::Writ(writ))) if !writ.is_approval() => {
             Ok(Route::Agent(key, writ))
         }
-        (Some(Identity::Approver), Some(Command::Writ(writ))) if writ.is_approval() => {
+        (Some(Identity::Reader(_)), Some(Command::Writ(writ))) if writ.is_approval() => {
             Ok(Route::Approval(writ))
         }
         (Some(Identity::Lease(cert)), _) => Err(Some(cert)),
@@ -394,7 +423,7 @@ mod tests {
         ];
         let lease = Some(Identity::Lease(cert.clone()));
         let session = Some(Identity::SessionKey(key.clone()));
-        let approver = Some(Identity::Approver);
+        let approver = Some(Identity::Reader(key.clone()));
 
         for line in lease_lines {
             assert!(

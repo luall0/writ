@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
 use writ_core::lease::APPROVAL_NAMESPACE;
@@ -35,7 +36,9 @@ use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, GatedSigner, software_signer};
 use writ_store::{AuditBreaker, AuditLog, Store, StoreBreaker};
 
-use crate::{Opened, Service, ServiceConfig, ServicePlatform, SubmissionLimits};
+use writ_store::{AuthorityHead, AuthorityHow, AuthorityVersion};
+
+use crate::{InForce, Opened, Service, ServiceConfig, ServicePlatform, SubmissionLimits};
 
 /// The boot nonce of every [`TestService`].
 pub const NONCE: [u8; 16] = [7; 16];
@@ -49,6 +52,7 @@ pub const START: u64 = 1_800_000_000;
 /// to fail).
 pub struct TestServiceBuilder {
     policy: PolicyConfig,
+    policy_text: String,
     signer_kind: KeyKind,
     decisions: Decisions,
     max_pending: usize,
@@ -63,6 +67,7 @@ impl TestServiceBuilder {
     pub fn new(policy_yaml: &str) -> Self {
         Self {
             policy: PolicyConfig::from_yaml(policy_yaml).expect("the test policy parses"),
+            policy_text: policy_yaml.to_owned(),
             signer_kind: KeyKind::Ed25519,
             decisions: Decisions::Signed,
             max_pending: 20,
@@ -138,6 +143,27 @@ impl TestServiceBuilder {
         let audit_path = dir.join("audit.jsonl");
         let (audit, audit_breaker) = AuditLog::open_breakable(&audit_path).unwrap();
         let (store, store_breaker) = Store::open_breakable(&dir.join("leases.db")).unwrap();
+        // The three files' first versions, under the MAC of a key the kit hands at open; on
+        // a second build in the same directory (a restart), the ones already there.
+        let key_path = dir.join("authority.key");
+        let authority = match std::fs::read(&key_path) {
+            Ok(bytes) => writ_crypto::authority::AuthorityKey::from_bytes(&bytes).unwrap(),
+            Err(_) => {
+                let key = writ_crypto::authority::AuthorityKey::generate().unwrap();
+                std::fs::write(&key_path, key.as_bytes()).unwrap();
+                key
+            }
+        };
+        let in_force = match store.authority_in_force().unwrap() {
+            Some((head, files)) => InForce {
+                versions: files
+                    .iter()
+                    .map(|(target, file)| (*target, (file.version, file.digest.clone())))
+                    .collect(),
+                mac: head.mac,
+            },
+            None => record_first(&store, &authority, &self.policy_text, &approver),
+        };
         let ids: std::collections::BTreeSet<String> = self
             .policy
             .templates()
@@ -161,6 +187,7 @@ impl TestServiceBuilder {
                 submissions: self.submissions,
                 ca_public: ca_key.public_key().clone(),
                 daemon: daemon.clone(),
+                in_force,
             },
             NONCE,
             store,
@@ -181,12 +208,64 @@ impl TestServiceBuilder {
             audit_path,
             signer,
             daemon,
+            authority: *authority.as_bytes(),
         };
         if !self.sealed {
             test.open()?;
         }
         Ok(test)
     }
+}
+
+/// Records the three files' first versions (the policy, the kit's approver, no reader) under
+/// `authority`'s MAC.
+fn record_first(
+    store: &Store,
+    authority: &writ_crypto::authority::AuthorityKey,
+    policy_text: &str,
+    approver: &PrivateKey,
+) -> InForce {
+    let approvers_text = format!("me {}\n", approver.public_key().to_openssh().unwrap());
+    let texts = [
+        (AdminTarget::Policy, policy_text.to_owned()),
+        (AdminTarget::Approvers, approvers_text),
+        (AdminTarget::Readers, String::new()),
+    ];
+    let unsigned = InForce {
+        versions: texts
+            .iter()
+            .map(|(target, text)| (*target, (1, TextDigest::of(text))))
+            .collect(),
+        mac: String::new(),
+    };
+    let in_force = InForce {
+        mac: authority.sign_head(&unsigned.entries()).unwrap(),
+        ..unsigned
+    };
+    let rows: Vec<AuthorityVersion> = texts
+        .iter()
+        .map(|(target, text)| AuthorityVersion {
+            target: *target,
+            version: 1,
+            text: text.clone(),
+            digest: TextDigest::of(text),
+            how: AuthorityHow::Init,
+            document: None,
+            signature: None,
+            approver: None,
+            applied_at: writ_core::units::Timestamp::from_unix(1_800_000_000).unwrap(),
+        })
+        .collect();
+    let head = AuthorityHead {
+        versions: in_force
+            .versions
+            .iter()
+            .map(|(t, (v, _))| (*t, *v))
+            .collect(),
+        mac: in_force.mac.clone(),
+    };
+    store.record_authority(&rows, &head).unwrap();
+    in_force
 }
 
 /// A running service and what tests need around it.
@@ -208,6 +287,8 @@ pub struct TestService {
     pub signer: Arc<GatedSigner<FailingSigner<SoftwareSigner>>>,
     /// What an unseal names: the daemon's host key fingerprint.
     pub daemon: writ_core::names::KeyFingerprint,
+    /// The authority MAC's key the kit hands at open.
+    pub authority: [u8; 32],
 }
 
 impl TestService {
@@ -215,13 +296,19 @@ impl TestService {
     /// (no approver).
     pub fn open(&self) -> Result<(), crate::ServiceError> {
         self.service.unseal(
-            Opened {
-                ca: self.ca(),
-                signer: self.signer.clone(),
-            },
+            self.opened(),
             None,
             &writ_core::caller::CallerFacts::default(),
         )
+    }
+
+    /// What an unseal brings: the kit's CA, signer and authority key.
+    pub fn opened(&self) -> Opened {
+        Opened {
+            ca: self.ca(),
+            signer: self.signer.clone(),
+            authority: writ_crypto::authority::AuthorityKey::from_bytes(&self.authority).unwrap(),
+        }
     }
 
     /// An unseal request for this boot, signed by `signer` (the approver, or another key).

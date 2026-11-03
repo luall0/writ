@@ -38,6 +38,9 @@ pub enum RefusalCode {
     /// An unseal that can't be accepted: not this boot's or this daemon's document, a
     /// signature not an approver's, a wrong passphrase, or a keystore that doesn't open.
     Unseal,
+    /// An admin change that can't be accepted: not a `writ-admin/1` document, against a
+    /// version no longer in force, or a file that doesn't pass the startup checks.
+    Admin,
 }
 
 /// Why a request to the service failed. What a client may see is its `Display`; an internal

@@ -271,8 +271,9 @@ impl Service {
                 ));
             }
         };
+        let policy = self.policy();
         let ctx = Context {
-            config: &self.config.policy,
+            config: &policy,
             lease: &lease,
             usage: &usage,
             caller: &signing.caller,

@@ -52,6 +52,50 @@ impl Mirrors {
     }
 }
 
+impl Mirrors {
+    /// The mirrors of `repos`, a registry replacing this one's (an admin change): a repo whose
+    /// entry didn't change keeps its mirror and its lock (an operation in flight on it goes
+    /// on), a new or changed one is opened and checked as at start, a removed one is no longer
+    /// served. `signer` and `tokens` are the upstream credentials in force.
+    pub async fn with_registry(
+        &self,
+        repos: &BTreeMap<RepoName, RepoEntry>,
+        signer: Arc<dyn Signer>,
+        tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+    ) -> Result<Self> {
+        let shared = &self.shared;
+        check_config(&shared.config, repos).await?;
+        let keys_dir = shared.config.run_dir.join("keys");
+        let mut opened = BTreeMap::new();
+        for (name, entry) in repos {
+            let kept = shared
+                .repos
+                .get(name)
+                .filter(|repo| repo.entry == *entry)
+                .cloned();
+            let repo = match kept {
+                Some(repo) => repo,
+                None => Arc::new(
+                    open_repo(&shared.config, &keys_dir, &*signer, tokens, name, entry).await?,
+                ),
+            };
+            opened.insert(name.clone(), repo);
+        }
+        Ok(Self {
+            shared: Arc::new(Shared {
+                config: shared.config.clone(),
+                signer,
+                repos: opened,
+                socket_dir: shared.socket_dir.clone(),
+                known_hosts: shared.known_hosts.clone(),
+                ca_certs: shared.ca_certs.clone(),
+                home: shared.home.clone(),
+                syncs: Semaphore::new(MAX_SYNCS),
+            }),
+        })
+    }
+}
+
 /// What `config` names, checked before anything is written: git an executable file recent
 /// enough for these repos, ssh and the relay executable files, all by absolute path, and the
 /// directories absolute (git and ssh resolve a relative path from wherever they run).
@@ -203,6 +247,7 @@ async fn open_repo(
     }
     Ok(Repo {
         name: name.clone(),
+        entry: entry.clone(),
         path,
         reach,
         format: entry.object_format,

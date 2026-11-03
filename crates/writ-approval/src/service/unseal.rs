@@ -107,8 +107,39 @@ impl Service {
                 "the keystore's CA key is not the one the daemon started with".to_owned(),
             ));
         }
-        if let Err(e) = signing_keys_exist(&self.config.policy, &*opened.signer) {
+        if let Err(e) = signing_keys_exist(&self.policy(), &*opened.signer) {
             return Err(refuse(e.to_string()));
+        }
+        // The authority files the daemon started with are the keystore's: their head carries
+        // its MAC, and the store still holds exactly them.
+        let in_force = self.in_force();
+        if !opened
+            .authority
+            .verify_head(&in_force.entries(), &in_force.mac)
+        {
+            return Err(refuse(
+                "the policy, approvers and readers in force were altered at rest: their MAC is \
+                 not this keystore's (put them back with writd recover)"
+                    .to_owned(),
+            ));
+        }
+        let held = self.lock()?.store.authority_in_force().map_err(|e| {
+            refuse(format!(
+                "the authority files in the store can't be read: {e}"
+            ))
+        })?;
+        let same = held.is_some_and(|(head, files)| {
+            head.mac == in_force.mac
+                && in_force.versions.iter().all(|(target, (version, digest))| {
+                    head.versions.get(target) == Some(version)
+                        && files.get(target).is_some_and(|f| &f.digest == digest)
+                })
+        });
+        if !same {
+            return Err(refuse(
+                "the authority files in the store changed since the daemon started: restart it"
+                    .to_owned(),
+            ));
         }
         let now = self.now()?;
         {

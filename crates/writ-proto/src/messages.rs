@@ -1,6 +1,7 @@
 //! The replies and request bodies of each [`Command`](crate::Command).
 
 use serde::{Deserialize, Serialize};
+use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::lease::State;
 use writ_core::names::{KeyFingerprint, RepoName, TemplateName, TicketId};
 use writ_core::signed::BootNonce;
@@ -111,6 +112,38 @@ pub struct UnsealRequest {
     pub unseal: String,
     /// The approver's armored SSHSIG over them, namespace `writ-approval`.
     pub signature: String,
+}
+
+/// Reply to [`Command::AdminShow`](crate::Command::AdminShow): a file as it is in force.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminShown {
+    pub target: AdminTarget,
+    pub version: u64,
+    /// The digest of its text: what a `writ-admin/1` change names as `previous`.
+    pub digest: TextDigest,
+    pub text: String,
+}
+
+/// Body of [`Command::AdminApply`](crate::Command::AdminApply).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminRequest {
+    /// The canonical bytes of the `writ-admin/1` document: the file, the version it replaces,
+    /// the new text.
+    pub document: String,
+    /// The approver's armored SSHSIG over them, namespace `writ-approval`.
+    pub signature: String,
+}
+
+/// Reply to [`Command::AdminApply`](crate::Command::AdminApply): the new version is in force.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminApplied {
+    pub target: AdminTarget,
+    pub version: u64,
+    pub digest: TextDigest,
+    pub signed_by: KeyFingerprint,
 }
 
 /// Reply to [`Command::Unseal`](crate::Command::Unseal): the daemon is open.

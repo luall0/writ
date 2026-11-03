@@ -54,19 +54,33 @@ key for one signature (Touch ID with Secretive). Both are needed: the signature 
 first, then the passphrase. A signature is good for that start of that daemon only. Active
 leases are served again as soon as it is open; their certificates still expire when they did.
 
-## Getting access back
+## Changing the policy, the approvers or the readers
 
 After `writd init`, `policy.yaml`, `approvers` and `readers` change only through signed admin
-changes (M5). To keep from locking yourself out:
+changes, applied at once:
+
+```sh
+writ admin show approvers > approvers     # the version in force
+$EDITOR approvers
+writ admin apply approvers approvers      # shows what changes, then one signature
+```
+
+The daemon writes the text in force back to its files on the host; editing them there changes
+nothing (a hand edit is set aside at the next start, never applied).
+
+## Getting access back
+
+The whole guide is [recovery](recovery.md). In short, to keep from locking yourself out:
 
 - enroll a **second approver key** from the start (a YubiKey, `sk-ssh-ed25519`), and a second
   reader key on another machine;
 - if every approver or reader key is lost anyway: `writd recover <writd.yaml>
   <policy|approvers|readers> <file>` on the daemon host, as its user, with the daemon stopped.
   It asks for the keystore's passphrase, checks the file like an admin change, puts it in force
-  and logs it (M5). It is also the way to apply a file you edited on the host. It needs both
-  the host and the passphrase, which together open every secret already, so it gives nobody
-  anything new.
+  and logs it. It is also the way to apply a file you edited on the host. It needs both the
+  host and the passphrase, which together open every secret already, so it gives nobody
+  anything new. On macOS's local mode it runs as `_writd`, in Docker in a one-off container:
+  [the platforms](recovery.md#the-daemons-user-on-each-platform).
 - if the passphrase is lost too, the keystore can't be opened: a new `writd init`, new keys to
   register on the remotes, the leases gone. M7.6's recovery identity (below) is the safeguard.
 
