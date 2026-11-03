@@ -74,6 +74,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
+| [Pending hand edits](#pending-hand-edits) | Administration | improvement | M | idea |
 
 ## Signers
 
@@ -174,6 +175,44 @@ repo registry is no longer the only per-repo boundary
 
 Request the lease automatically when an agent tab opens, bind it to that tab's session (process
 chain in local mode), and wire the repo's git config ([Q10](../decisions.md)).
+
+## Administration
+
+### Pending hand edits
+
+Editing the policy, `approvers` or `readers` on the daemon host, then applying it with one
+signature, instead of copying it to the Mac for `writ admin apply` ([sealing](../operators/sealing.md#changing-the-policy-the-approvers-or-the-readers)).
+Today a hand edit is set aside at the next unseal (`<file>.unapplied-<time>`) and never
+applied.
+
+- **Flow:** edit the file on the host; nothing happens. From the Mac, `writ admin apply
+  <target> --host` (name to settle): a new approval-API command has the daemon read its own
+  file now (`read_authority`: regular file, owned by its user, no link, bounded, UTF-8
+  without control characters) and return it; `writ` shows the diff against the version in
+  force, saying it comes from the host file; one signature, an ordinary `writ-admin/1` over
+  exactly that text naming the version in force, applied through the existing path.
+- **The signature covers what was shown, not the file:** an edit made between the diff and
+  the signature is not applied (set aside when the text in force is written back).
+- **At unseal:** a file that differs is left in place as pending (a log line, an audit line,
+  a notification; `writ info` says the host file differs) instead of being set aside. A
+  change applied meanwhile by `writ admin apply` sets it aside as today, since it was made
+  against an older version.
+- **No file watcher:** the operator knows they edited it; watching would need a new platform
+  seam for little gain.
+- **Guarantee unchanged:** nothing is in force without an approver's signature over its whole
+  text (the threat model's wording becomes "a hand edit is never in force unsigned"). New: the
+  host file read on request is an untrusted input (an inventory row in
+  [security](../security.md), its bounds, a hostile-input test). Whoever can write it can
+  prepare a change and hope it is signed unread; the operator starts the apply and sees the
+  whole diff. [`writd recover`](../operators/recovery.md) stays the locked-out path.
+- **Open question:** at unseal, leave the hand edit in place (found where it was made) or
+  move it to `<file>.pending` and write the version in force back (the host file always shows
+  what is in force).
+- **Rejected alternative:** an "unsecure" mode reading these files unsigned. Whoever can write
+  them becomes an approver, or points an upstream at their server and receives its token;
+  before M7 that is any agent running as the operator's user, and host access without the
+  passphrase would win everything at the next unseal. It breaks the hard rules on failing
+  closed and on signed admin changes.
 
 ## Parked
 
