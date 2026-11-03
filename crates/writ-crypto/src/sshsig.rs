@@ -97,9 +97,19 @@ pub fn verify<'a>(
                     .to_string(),
             )
         })?;
-    signer
-        .verify(namespace, msg, &sig)
-        .map_err(|_| CryptoError::BadSignature)?;
+    match crate::algorithm::KeyAlgorithm::of_public(signer.key_data()) {
+        // `ssh-key` verifies RSA only through the banned `rsa` crate: the raw signature goes
+        // to `aws-lc-rs` instead, over the same signed data.
+        Some(algorithm) if algorithm.is_rsa() => {
+            let data = SshSig::signed_data(namespace, sig.hash_alg(), msg)?;
+            let raw = crate::keypair::RawSignature::from_ssh(algorithm, sig.signature())
+                .map_err(|_| CryptoError::BadSignature)?;
+            crate::keypair::verify(signer, &data, &raw)?;
+        }
+        _ => signer
+            .verify(namespace, msg, &sig)
+            .map_err(|_| CryptoError::BadSignature)?,
+    }
     require_user_presence(sig.signature())?;
     Ok(signer)
 }

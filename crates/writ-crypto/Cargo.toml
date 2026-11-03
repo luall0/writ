@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 # Sealing a token to the daemon keystore's recipient (`writ admin token`).
 age.workspace = true
+aws-lc-rs.workspace = true
 base64ct.workspace = true
 hmac.workspace = true
 rcgen.workspace = true

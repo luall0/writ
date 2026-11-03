@@ -142,7 +142,7 @@ Gitea also ask for a proof, signed through [`writ prove-key`](approvals.md#provi
 
 | Backend | Algorithms | Key exportable? | Notes |
 |---|---|---|---|
-| **Software** (v1) | ed25519, P-256, P-384 (RSA 3072/4096 next in M5.5) | While unsealed, by root on the host | Encrypted keystore at rest, sealed start |
+| **Software** (v1) | ed25519, P-256, P-384, RSA 3072/4096 (each with its hashes) | While unsealed, by root on the host | Encrypted keystore at rest, sealed start |
 | **YubiKey PIV** | P-256, P-384, ed25519 (recent firmware) | No | Touch policy must be `never` for unattended agent keys; USB passthrough to the container |
 | **Secure Enclave** | P-256 | No | Local mode on a Mac only. v1: a CryptoKit key under the dedicated `_writd` user (`se-cryptokit`, M7.5); a keychain access group (`se-keychain`) is [parked](../backlog/parked/keychain-secure-enclave-signer.md). See [macOS Secure Enclave](macos-secure-enclave.md) |
 | **TPM 2.0** | P-256 | No | Possible future backend on the server |

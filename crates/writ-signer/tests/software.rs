@@ -255,3 +255,58 @@ fn a_backend_that_panics_signs_nothing_more_and_says_so_once() {
     );
     assert!(lines[0].contains("key=agent-01"), "{}", lines[0]);
 }
+
+/// Every SSHSIG the software backend makes, for each algorithm and message hash SSH takes,
+/// verifies with the real `ssh-keygen -Y verify` (OpenSSH's own reading of the format: an RSA
+/// key signs as `rsa-sha2-256` or `rsa-sha2-512`), and fails it for other bytes. A throwaway
+/// directory only: never the user's `~/.ssh`.
+#[test]
+fn every_algorithm_s_sshsig_verifies_with_ssh_keygen() {
+    use writ_crypto::algorithm::SignatureFormat;
+    let dir = tempfile::tempdir().unwrap();
+    for algorithm in KeyAlgorithm::ALL {
+        let signer =
+            SoftwareSigner::new([(id("k"), KeyPair::generate(algorithm).unwrap())]).unwrap();
+        let public = writ_signer::public_key(&signer, &id("k")).unwrap();
+        let allowed = dir.path().join("allowed_signers");
+        std::fs::write(
+            &allowed,
+            format!("agent@writ.invalid {}\n", public.to_openssh().unwrap()),
+        )
+        .unwrap();
+        for &hash in writ_crypto::algorithm::hashes(SignatureFormat::Ssh, algorithm) {
+            let msg = format!("signed with {algorithm} and {hash}\n");
+            let armored = sshsig(&signer, &id("k"), "git", hash, msg.as_bytes()).unwrap();
+            let sig = dir.path().join("sig");
+            std::fs::write(&sig, &armored).unwrap();
+            for (bytes, valid) in [(msg.as_str(), true), ("other bytes\n", false)] {
+                let mut child = std::process::Command::new("ssh-keygen")
+                    .args([
+                        "-Y",
+                        "verify",
+                        "-n",
+                        "git",
+                        "-I",
+                        "agent@writ.invalid",
+                        "-f",
+                    ])
+                    .arg(&allowed)
+                    .arg("-s")
+                    .arg(&sig)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                std::io::Write::write_all(child.stdin.as_mut().unwrap(), bytes.as_bytes()).unwrap();
+                let out = child.wait_with_output().unwrap();
+                assert_eq!(
+                    out.status.success(),
+                    valid,
+                    "{algorithm} {hash} over {bytes:?}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+    }
+}

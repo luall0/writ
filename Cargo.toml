@@ -46,6 +46,9 @@ writ-signer = { path = "crates/writ-signer" }
 writ-mirror = { path = "crates/writ-mirror" }
 
 age = { version = "0.11.2", default-features = false }
+# RSA keys of the software signer (generated, PKCS#8, signed in constant time): the `rsa` crate
+# is banned (deny.toml). `ring-io` reads a public key's modulus and exponent.
+aws-lc-rs = { version = "1.19.0", default-features = false, features = ["aws-lc-sys", "alloc", "ring-io"] }
 # The fake recipient of the keystore's tests (one more recipient, no change to the keystore):
 # age's own stanza and file key types, already in the tree.
 age-core = { version = "0.11.0", default-features = false }

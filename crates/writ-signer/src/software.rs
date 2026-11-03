@@ -1,6 +1,6 @@
 //! The software backend: keys held in memory as [`KeyPair`]s (wiped on drop), handed over by
 //! whoever loaded them (the daemon's keystore). It supports every pair Writ signs with
-//! ([`writ_crypto::algorithm::every_pair`] less what this build can't make). Nothing here
+//! ([`writ_crypto::algorithm::every_pair`]): RSA through `aws-lc-rs`, in constant time. Nothing here
 //! reads a file or prints a key.
 
 use std::collections::BTreeMap;
@@ -29,17 +29,10 @@ impl fmt::Debug for SoftwareSigner {
     }
 }
 
-/// The pairs the software backend signs with: every one [`KeyPair`] signs.
+/// The pairs the software backend signs with: every one a [`KeyPair`] signs (Ed25519,
+/// ECDSA with its curve's hash, RSA with each SHA-2).
 pub fn pairs() -> Vec<(KeyAlgorithm, SignerHash)> {
     writ_crypto::algorithm::every_pair()
-        .into_iter()
-        .filter(|(algorithm, _)| supported(*algorithm))
-        .collect()
-}
-
-/// Whether this build's software backend holds keys of `algorithm`.
-fn supported(algorithm: KeyAlgorithm) -> bool {
-    !algorithm.is_rsa()
 }
 
 impl SoftwareSigner {
@@ -83,12 +76,6 @@ fn insert(
     id: KeyId,
     key: KeyPair,
 ) -> Result<KeyInfo, SignerError> {
-    if !supported(key.algorithm()) {
-        return Err(SignerError::Unsupported {
-            what: key.algorithm().to_string(),
-            id,
-        });
-    }
     if held.contains_key(&id) {
         return Err(SignerError::DuplicateKey(id));
     }
