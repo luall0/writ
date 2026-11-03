@@ -76,11 +76,14 @@ fn the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says() {
         assert_eq!(stack.forgejo.deploy_keys(repo).len(), 1, "{repo}");
     }
     // One signing key per template key id, with the templates that name it.
-    assert_eq!(report.signing_keys.len(), 2, "{:?}", report.signing_keys);
+    assert_eq!(report.signing_keys.len(), 3, "{:?}", report.signing_keys);
     assert!(report.signing_keys[0].starts_with("agent-e2e ssh-ed25519 "));
     assert!(report.signing_keys[0].ends_with(" (templates: feature)"));
-    assert!(report.signing_keys[1].starts_with("agent-e2e-verify ssh-ed25519 "));
-    assert!(report.signing_keys[1].ends_with(" (templates: verified)"));
+    // The OpenPGP key: its fingerprint and algorithm (its certificate on the lines after).
+    assert!(report.signing_keys[1].starts_with("agent-e2e-pgp openpgp "));
+    assert!(report.signing_keys[1].ends_with(" (ed25519) (templates: openpgp)"));
+    assert!(report.signing_keys[2].starts_with("agent-e2e-verify ssh-ed25519 "));
+    assert!(report.signing_keys[2].ends_with(" (templates: verified)"));
     assert!(
         report.host_key.starts_with("ssh-ed25519 "),
         "{}",

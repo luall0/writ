@@ -95,7 +95,10 @@ fn each_refused_signing_key_declaration_stops_the_start_with_its_reason() {
     );
     // An OpenPGP key whose user ids don't cover a committer email of its templates.
     let error = Daemon::refused(POLICY, |yaml| {
-        yaml.replace(AGENT_01, "agent-01: { format: openpgp, algorithm: ed25519 }")
+        yaml.replace(
+            AGENT_01,
+            "agent-01: { format: openpgp, algorithm: ed25519 }",
+        )
     });
     assert_eq!(
         last(&error),

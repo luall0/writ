@@ -113,6 +113,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 15 | `notes_reconcile` | `backfill` | The notes reconcile at start: a repo with pushed commits switched to `ticket_link: notes` (a signed admin change, `writ admin apply policy`) and the daemon restarted; both pushed commits' notes on Forgejo (API and page) from the ledger, none for a commit signed and never pushed (until its push), the policy put back | alone |
 | 16 | `sealed_keystore` | — | `writd init` as the operator runs it: the keys directory at rest reveals no key (one age file per secret to the recipient, the identity to the passphrase, only public halves in clear), the boot tier holds the host and TLS keys alone, the commands that print a key read the public halves with no passphrase; a key declared afterwards made by `writd keys create` (RSA 3072, sealed, logged, refused a second time); a second `writd init` and a short passphrase refused, nothing left behind; a second daemon started sealed and hardened (`writd init` too: no warning with the compose file's unlimited `memlock`; the daemon's `/proc` entries owned by root while it runs as `writ`, its memory unreadable, its core limit 0, its memory locked, each step in its log): every request refused until `writ unseal` (a wrong passphrase over HTTPS refused, then over SSH unsealed), each logged; unsealed without its `https://` repo's token (said in the log), the token then added with `writ admin token` (sealed on the daemon's host, never there in clear, an unused id refused); `writ admin show` and `apply` (a second approval key, written back to the daemon's file), `writd recover` with the daemon stopped (a wrong passphrase refused, the right one putting the first approvers back), unsealed again | shared |
 | 17 | `hardening_limits` | — | `writd init`, which hardens itself as `writd run` does, under the two conditions the compose file doesn't give the daemon: as `writ` under a 64 KiB lock limit (many hosts' default), the memory lock not applied and said once on stderr with its fix (`ulimit -l unlimited`), the other steps applied, the keystore made all the same (a warning, never a refusal); as root, every step applied. With scenario 16 (unlimited, as `writ`), the three conditions M5 checked by hand in a Linux container | shared |
+| 18 | `openpgp_commits` | `openpgp` | A template signing with an OpenPGP key (`format: openpgp`, its user id in the policy): the lease's certificate is the one `writd signing-keys` prints; `writ init` wires git for gpg (`writ-sign` as `gpg.openpgp.program`, the fingerprint as `user.signingkey`); commits sign with a hostile GnuPG home and agent in the environment (never used); the agent verifies them through `writ-sign --verify` (the real gpg, `WRIT_GPG`); unverified on Forgejo until the key is added with Forgejo's GPG challenge signed through `writ prove-key` (OpenPGP), then verified; an SSH signature under the lease denied (`signature_format`) | shared |
 
 Every scenario checks, where it applies: **what the agent reads** (the exit code and the
 words, never just "it failed"), **the audit line** (event, result, code), **Forgejo's state**
@@ -196,7 +197,7 @@ the scenarios (`tool/check-e2e.py`).
 | `writ admin token --key` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ admin token --agent` | `a_sealed_daemon_serves_nothing_until_writ_unseal` |
 | `writ prove-key` (the prompt, on a terminal: `y`, `n`) | `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
-| `writ prove-key --namespace` | `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
+| `writ prove-key --namespace` | `commits_are_verified_once_the_signing_key_is_registered_and_proven`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
 | `writ prove-key --yes` | `commits_are_verified_once_the_signing_key_is_registered_and_proven`, `every_client_setting_works_as_a_flag` |
 | `writ prove-key --approval-url` | `every_client_setting_works_as_a_flag` |
 | `writ prove-key --key` | `every_client_setting_works_as_a_flag` |
@@ -214,6 +215,8 @@ the scenarios (`tool/check-e2e.py`).
 | `writd upstream-credential` (every sync and upstream push of an `https://` upstream) | `a_repo_behind_https_is_fetched_and_pushed_with_a_token_nobody_else_sees` |
 | `writ-sign -Y sign` (every commit under the wiring) | `an_agent_works_through_writ_git_beside_the_operator_s_own_git`, `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
 | `writ-sign -Y verify` (handed to `ssh-keygen`) | `an_agent_works_through_writ_git_beside_the_operator_s_own_git` |
+| `writ-sign --status-fd=2 -bsau` (every commit under an OpenPGP lease) | `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
+| `writ-sign --verify` (handed to `gpg`) | `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
 
 ## Commands the docs show
 

@@ -20,6 +20,7 @@ lists them.
 | `--key` | `WRIT_APPROVAL_KEY` | `<home>/approver.pub` | Your approval key's **public** half (a private key file is refused) |
 | `--agent` | `WRIT_APPROVAL_AGENT` | `$SSH_AUTH_SOCK` | The ssh-agent holding your approval key: Secretive's socket |
 | none | `WRIT_SSH_KEYGEN` | `/usr/bin/ssh-keygen` | The `ssh-keygen` that signs your approvals: an absolute path, OpenSSH 8.9 or newer. Never looked up in `PATH`, where anything could sit first and change what gets signed |
+| none | `WRIT_GPG` | `/usr/bin/gpg` | `writ-sign`: the `gpg` it hands git's OpenPGP `--verify` calls to, an absolute path. It never runs gpg to sign: the key is the daemon's |
 
 Every command and its arguments: [clients](../architecture/clients.md). `writ sign`'s
 narrowing flags: [approvals](../architecture/approvals.md).
@@ -32,7 +33,7 @@ narrowing flags: [approvals](../architecture/approvals.md).
 | `<home>/tls_pins` | Your machine | The daemon's TLS certificate: `[<daemon>]:8443 SHA256:…` |
 | `<home>/approver.pub` | Your machine | Your approval key's public half |
 | `<home>/reader` | Your machine | Your reader key, mode 0600 |
-| `<home>/sessions/<lease>/` | Agent host | One per ticket: its session key, its certificate once signed, the lease's terms, and the agent signing key's public half (`signing_key.pub`, for `git verify-commit`) |
+| `<home>/sessions/<lease>/` | Agent host | One per ticket: its session key, its certificate once signed, the lease's terms, and the agent signing key's public half (`signing_key.pub`, for `git verify-commit`), and for an OpenPGP key its certificate (`signing_key.asc`: import it into a GnuPG home to verify) |
 | `<home>/sessions/current` | Agent host | A link to the session wired repos use |
 
 ## `writ init` and `writ-sign`

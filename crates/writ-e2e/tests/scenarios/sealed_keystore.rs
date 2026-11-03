@@ -104,7 +104,8 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
         printed(&made, "TLS fingerprint: ")
     );
     let signing = dir.ok("writd signing-keys writd.yaml");
-    for line in signing.lines() {
+    // An OpenPGP key's certificate follows its line.
+    for line in signing.lines().filter(|l| l.contains(" (templates: ")) {
         let (id, rest) = line.split_once(' ').unwrap();
         assert_eq!(
             printed(&made, &format!("signing key {id}: ")),

@@ -113,14 +113,27 @@ pub fn settings(
         ("writ.url", base_url.to_owned()),
         ("writ.repo", repo.to_string()),
         ("writ.gitdir", path(common_dir.to_path_buf())),
-        ("gpg.format", "ssh".to_owned()),
-        ("gpg.ssh.program", writ_sign.to_owned()),
-        ("user.signingkey", path(session.join("signing_key.pub"))),
+    ];
+    // The lease's key signs in OpenPGP when its session holds the key's certificate: git
+    // then calls `writ-sign` as `gpg`, and names the key by its fingerprint.
+    match openpgp_fingerprint(&session) {
+        Some(fingerprint) => settings.extend([
+            ("gpg.format", "openpgp".to_owned()),
+            ("gpg.openpgp.program", writ_sign.to_owned()),
+            ("user.signingkey", fingerprint),
+        ]),
+        None => settings.extend([
+            ("gpg.format", "ssh".to_owned()),
+            ("gpg.ssh.program", writ_sign.to_owned()),
+            ("user.signingkey", path(session.join("signing_key.pub"))),
+        ]),
+    }
+    settings.extend([
         ("commit.gpgSign", "true".to_owned()),
         // Tags are never signed by the daemon (releases stay a human act).
         ("tag.gpgSign", "false".to_owned()),
         ("core.sshCommand", ssh_command(home, known_hosts)),
-    ];
+    ]);
     if let Some(email) = email {
         settings.push(("user.email", email.to_owned()));
     }
@@ -133,6 +146,13 @@ pub fn settings(
         settings.push((format!("url.{daemon}.insteadOf"), origin.to_owned()));
     }
     settings
+}
+
+/// The fingerprint of the OpenPGP certificate in `session` (`signing_key.asc`, written with
+/// the grant when the lease's key signs in OpenPGP), if there is one that reads.
+fn openpgp_fingerprint(session: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(session.join("signing_key.asc")).ok()?;
+    writ_crypto::openpgp::certificate_fingerprint(&text).ok()
 }
 
 /// The SSH command to reach the daemon with the current session: nothing from the user's own
@@ -310,6 +330,63 @@ pub fn config_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_openpgp_lease_is_wired_for_gpg_by_its_fingerprint() {
+        use writ_crypto::algorithm::{Hash, KeyAlgorithm};
+        use writ_crypto::keypair::KeyPair;
+        use writ_crypto::openpgp::{OpenpgpKey, certificate, certification};
+        let home = tempfile::tempdir().unwrap();
+        let session = home.path().join("sessions/current");
+        std::fs::create_dir_all(&session).unwrap();
+        let key = KeyPair::generate(KeyAlgorithm::Ed25519).unwrap();
+        let pgp = OpenpgpKey::new(&key.public_key(), 1_762_128_000).unwrap();
+        let prepared = certification(&pgp, Hash::Sha512, "<a@b>").unwrap();
+        let (data, hash) = prepared.signer_input();
+        let packet = prepared.packet(&key.sign(data, hash).unwrap()).unwrap();
+        std::fs::write(
+            session.join("signing_key.asc"),
+            certificate(&pgp, &[("<a@b>", packet)]).unwrap(),
+        )
+        .unwrap();
+        let wired = settings(
+            &Target {
+                base_url: "ssh://git@writ.home:2222",
+                repo: &"omega-code".parse().unwrap(),
+                common_dir: Path::new("/opt/agent/omega/.git"),
+                origin: None,
+            },
+            home.path(),
+            Path::new("/opt/agent/.writ/known_hosts"),
+            "/usr/local/bin/writ-sign",
+            None,
+        );
+        let get = |key: &str| {
+            wired
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("gpg.format"), Some("openpgp"));
+        assert_eq!(get("gpg.openpgp.program"), Some("/usr/local/bin/writ-sign"));
+        assert_eq!(get("user.signingkey"), Some(pgp.fingerprint_hex().as_str()));
+        assert_eq!(get("gpg.ssh.program"), None);
+        // A certificate that doesn't read: wired for SSH, as without one.
+        std::fs::write(session.join("signing_key.asc"), "not a certificate").unwrap();
+        let wired = settings(
+            &Target {
+                base_url: "ssh://git@writ.home:2222",
+                repo: &"omega-code".parse().unwrap(),
+                common_dir: Path::new("/opt/agent/omega/.git"),
+                origin: None,
+            },
+            home.path(),
+            Path::new("/opt/agent/.writ/known_hosts"),
+            "/usr/local/bin/writ-sign",
+            None,
+        );
+        assert!(wired.iter().any(|(k, v)| k == "gpg.format" && v == "ssh"));
+    }
 
     #[test]
     fn writes_exactly_the_documented_config() {

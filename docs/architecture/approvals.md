@@ -221,6 +221,14 @@ echo -n '<token>' | writ prove-key <key id> --namespace gitea    # in place of s
    checks against the key's public half and prints alone on stdout, to paste in the remote's
    form.
 
+**An OpenPGP key** (`format: openpgp`) proves itself the way Forgejo's and Gitea's GPG key
+check asks: the account's challenge (`/user/gpg_key_token`) signed as an OpenPGP detached
+signature, the key's certificate (`writd signing-keys`) added with it. The proof goes
+through the same approval; the namespace is still named and checked, but an OpenPGP
+signature carries none, so a message that starts like a git commit or tag (`tree `,
+`object `) is refused: it could pass as a commit signature. `writ prove-key` prints the
+armored OpenPGP signature as is (it doesn't verify OpenPGP itself: the remote does).
+
 A replayed proof only repeats itself: the same key signs the same message in the same
 namespace. Nothing on the daemon host is needed, and it works the same with the sealed
 keystore (M5).

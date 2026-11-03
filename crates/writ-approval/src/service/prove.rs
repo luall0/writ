@@ -48,15 +48,39 @@ impl Service {
         } = checked;
         let message = proof.message.as_str().as_bytes();
         let signer = &*self.opened()?.signer;
-        // The key's declared SSHSIG hash (a template's key is always declared).
-        let hash = self
+        let key_use = self
             .config
             .signing_keys
             .get(&proof.key)
-            .map_or(writ_crypto::sshsig::DEFAULT_HASH, |key| key.hash);
+            .copied()
+            .unwrap_or(crate::KeyUse::SSH);
         let signed = writ_signer::public_key(signer, &proof.key).and_then(|public| {
-            writ_signer::sshsig(signer, &proof.key, proof.namespace.as_str(), hash, message)
-                .map(|signature| (public, signature))
+            let signature = match key_use.format {
+                writ_crypto::algorithm::SignatureFormat::Ssh => writ_signer::sshsig(
+                    signer,
+                    &proof.key,
+                    proof.namespace.as_str(),
+                    key_use.hash,
+                    message,
+                ),
+                // An OpenPGP signature has no namespace: the remote's token is signed as a
+                // document (Forgejo's and Gitea's GPG key check), never one that could pass as
+                // a commit or a tag (checked first).
+                writ_crypto::algorithm::SignatureFormat::Openpgp => {
+                    match self.openpgp().created.get(&proof.key) {
+                        Some(&created) => writ_signer::openpgp_signature(
+                            signer,
+                            &proof.key,
+                            created,
+                            key_use.hash,
+                            message,
+                            u32::try_from(self.now().map_or(0, |t| t.unix())).unwrap_or(u32::MAX),
+                        ),
+                        None => Err(SignerError::Failed(proof.key.clone())),
+                    }
+                }
+            };
+            signature.map(|signature| (public, signature))
         });
         let (now, mut inner) = self.begin()?;
         let (public, signature) = match signed {
@@ -112,6 +136,22 @@ impl Service {
             Err(reason) => return denied.deny(&mut inner, RefusalCode::Signature, reason),
         };
         let denied = denied.approver(&approver);
+        // In OpenPGP nothing tells a proof from a commit signature: a message shaped like a git
+        // commit or tag is never signed as one.
+        let openpgp = self
+            .config
+            .signing_keys
+            .get(&proof.key)
+            .is_some_and(|k| k.format == writ_crypto::algorithm::SignatureFormat::Openpgp);
+        let text = proof.message.as_str();
+        if openpgp && (text.starts_with("tree ") || text.starts_with("object ")) {
+            let reason = format!(
+                "{} signs in OpenPGP, where a proof can't be told from a commit or tag \
+                 signature: a message that starts like a git commit or tag is never signed",
+                proof.key
+            );
+            return denied.deny(&mut inner, RefusalCode::Proof, reason);
+        }
         let signs_commits = self
             .config
             .policy

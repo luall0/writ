@@ -13,6 +13,8 @@ repos:
   moved:      { upstream: "ssh://git@forgejo/writ/moved.git",      upstream_credential: upstream-moved,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
   protection: { upstream: "ssh://git@forgejo/writ/protection.git", upstream_credential: upstream-protection, protected_refs: ["refs/heads/main", "refs/tags/*"] }
   verified:   { upstream: "ssh://git@forgejo/writ/verified.git",   upstream_credential: upstream-verified,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  # Signed in OpenPGP, the key proven on the account through Forgejo's GPG check (scenario 18).
+  openpgp:    { upstream: "ssh://git@forgejo/writ/openpgp.git",    upstream_credential: upstream-openpgp,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
   inflight:   { upstream: "ssh://git@forgejo/writ/inflight.git",   upstream_credential: upstream-inflight,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
   restart:    { upstream: "ssh://git@forgejo/writ/restart.git",    upstream_credential: upstream-restart,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
   hostile:    { upstream: "ssh://git@forgejo/writ/hostile.git",    upstream_credential: upstream-hostile,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
@@ -52,3 +54,18 @@ templates:
     max_pushes: 50
     max_ops_per_minute: 200
     max_push_size: 50MB
+  # An OpenPGP key (writd.yaml declares it), certified for the account's email below.
+  openpgp:
+    repos: [openpgp]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ.invalid"]
+    signing_key: agent-e2e-pgp
+    max_ttl: 4h
+    max_signatures: 100
+    max_pushes: 50
+    max_ops_per_minute: 200
+    max_push_size: 50MB
+signing_keys:
+  agent-e2e-pgp:
+    uids: ["Writ agent <agent@writ.invalid>"]

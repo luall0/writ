@@ -1,9 +1,15 @@
-//! `writ-sign`: git's `gpg.ssh.program` on agent hosts.
+//! `writ-sign`: git's `gpg.ssh.program` and `gpg.openpgp.program` on agent hosts.
 //!
 //! `-Y sign` sends the object to the daemon (`writ-sign git <repo>` over the gateway), with
 //! the objects it needs to see which paths the commit touches ([`evidence`]), and writes the
-//! signature where git expects it. Everything else (`-Y verify`, `-Y find-principals`, …) is
-//! the real `ssh-keygen`'s job.
+//! signature where git expects it. Everything else `ssh-keygen` does (`-Y verify`,
+//! `-Y find-principals`, …) is the real `ssh-keygen`'s job.
+//!
+//! `--status-fd=2 -bsau <key>` (git's OpenPGP signing call) sends the object on stdin the
+//! same way (`writ-sign openpgp <repo>`), writes the armored signature on stdout and
+//! `[GNUPG:] SIG_CREATED` on stderr, as git expects of `gpg`. A call with `--verify` goes to
+//! the real `gpg` (`WRIT_GPG`, an absolute path, `/usr/bin/gpg` by default); anything else
+//! is refused. No GnuPG home, keyring or agent is used to sign: the key is the daemon's.
 //!
 //! The daemon is found from git's configuration: `writ.url` (`ssh://git@host:port`), the repo
 //! the commit is for (`writ.repo`, a registry name), and the SSH command git itself uses
@@ -31,15 +37,46 @@ use writ_proto::sign::SignInput;
 /// ssh's exit status when it fails itself (connection, authentication).
 const SSH_FAILED: i32 = 255;
 
+/// The `gpg` git's OpenPGP verify calls are handed to, when `WRIT_GPG` doesn't name one.
+const DEFAULT_GPG: &str = "/usr/bin/gpg";
+
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let rest = match args.as_slice() {
         [y, sign, rest @ ..] if y == "-Y" && sign == "sign" => rest,
-        _ => {
+        [y, ..] if y == "-Y" => {
             // PATH: verify calls go to the agent host's own ssh-keygen, as git would call it;
             // the agent host is not a boundary (nothing here grants anything).
             let error = Command::new("ssh-keygen").args(&args).exec();
             eprintln!("writ-sign: cannot run ssh-keygen: {error}");
+            return ExitCode::FAILURE;
+        }
+        _ if is_gpg_sign(&args) => {
+            return match sign_openpgp() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("writ-sign: {e:#}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        _ if args.iter().any(|a| a == "--verify") => {
+            let gpg = match gpg_program(std::env::var_os("WRIT_GPG")) {
+                Ok(gpg) => gpg,
+                Err(e) => {
+                    eprintln!("writ-sign: {e:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let error = Command::new(&gpg).args(&args).exec();
+            eprintln!("writ-sign: cannot run {}: {error}", gpg.display());
+            return ExitCode::FAILURE;
+        }
+        _ => {
+            eprintln!(
+                "writ-sign: unsupported call: it signs (-Y sign, or -bsau as gpg), and hands \
+                 verification to ssh-keygen (-Y …) or gpg (--verify)"
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -124,10 +161,75 @@ fn parse_url(url: &str) -> anyhow::Result<(String, Option<String>)> {
     Ok((destination, port))
 }
 
+/// Whether git called this as `gpg` to sign: `--status-fd=2 -bsau <key>`, exactly (git's
+/// `sign_buffer_gpg`). The key is the daemon's to choose: whatever git names is not used.
+fn is_gpg_sign(args: &[OsString]) -> bool {
+    matches!(args, [fd, flags, _key] if fd == "--status-fd=2" && flags == "-bsau")
+}
+
+/// The `gpg` that verifies: `WRIT_GPG`, an absolute path, or `/usr/bin/gpg`. Never looked up
+/// in `PATH`.
+fn gpg_program(from_env: Option<OsString>) -> anyhow::Result<PathBuf> {
+    let path = from_env
+        .filter(|p| !p.is_empty())
+        .map_or_else(|| PathBuf::from(DEFAULT_GPG), PathBuf::from);
+    if !path.is_absolute() {
+        bail!(
+            "WRIT_GPG must be an absolute path, got {}",
+            clean(&path.display().to_string())
+        );
+    }
+    Ok(path)
+}
+
+/// git's `gpg -bsau`: the object on stdin, sent to the daemon in OpenPGP; the armored
+/// signature on stdout, `[GNUPG:] SIG_CREATED` on the status descriptor (stderr).
+fn sign_openpgp() -> anyhow::Result<()> {
+    use std::io::Read as _;
+    let mut object = Vec::new();
+    std::io::stdin()
+        .take(u64::try_from(writ_proto::sign::MAX_SIGN_INPUT)?.saturating_add(1))
+        .read_to_end(&mut object)
+        .context("cannot read the object on stdin")?;
+    if object.len() > writ_proto::sign::MAX_SIGN_INPUT {
+        bail!("the object on stdin is too large");
+    }
+    let signature = ask_daemon("openpgp", object)?;
+    check_openpgp_signature(&signature)?;
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(&signature)
+        .and_then(|()| stdout.flush())
+        .context("cannot write the signature")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // git reads only that the line is there; the algorithm fields are not known here.
+    eprintln!("[GNUPG:] SIG_CREATED D 0 0 00 {now} -");
+    Ok(())
+}
+
 fn sign(args: &[OsString]) -> anyhow::Result<()> {
     let request = parse(args)?;
     let object = std::fs::read(&request.file)
         .with_context(|| format!("cannot read {}", request.file.display()))?;
+    let signature = ask_daemon(&request.namespace, object)?;
+    check_signature(&signature)?;
+    let mut sig_path = request.file.into_os_string();
+    sig_path.push(".sig");
+    std::fs::write(&sig_path, &signature).with_context(|| {
+        format!(
+            "cannot write the signature to {}",
+            std::path::Path::new(&sig_path).display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Sends `object` (with its evidence) to the daemon to be signed in `format` (`git`: SSH, in
+/// git's namespace; `openpgp`), for the repo `writ.repo` names: the daemon's answer, or why
+/// it refused (its words on stderr, escaped).
+fn ask_daemon(format: &str, object: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     let url = git_config("writ.url")
         .context("git config writ.url is not set: the repo is not set up for Writ (writ init)")?;
     let (destination, port) = parse_url(&url)?;
@@ -153,7 +255,7 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
         cmd.arg("-p").arg(port);
     }
     cmd.arg(destination)
-        .arg(format!("writ-sign {} {repo}", request.namespace))
+        .arg(format!("writ-sign {format} {repo}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -181,16 +283,7 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
         }
         _ => bail!("the daemon refused to sign (see above)"),
     }
-    check_signature(&out.stdout)?;
-    let mut sig_path = request.file.into_os_string();
-    sig_path.push(".sig");
-    std::fs::write(&sig_path, &out.stdout).with_context(|| {
-        format!(
-            "cannot write the signature to {}",
-            std::path::Path::new(&sig_path).display()
-        )
-    })?;
-    Ok(())
+    Ok(out.stdout)
 }
 
 /// The commit is made in the repository the settings were made for (`writ.gitdir`, written by
@@ -255,6 +348,24 @@ fn ssh_command(from_env: Option<String>, from_config: Option<String>) -> anyhow:
             "no SSH command for the daemon: set core.sshCommand to the session's key and \
              certificate (see docs/architecture/clients.md, repo setup)",
         )
+}
+
+/// What the daemon sent is one armored OpenPGP signature, nothing else.
+fn check_openpgp_signature(out: &[u8]) -> anyhow::Result<()> {
+    let text = std::str::from_utf8(out).ok();
+    match text {
+        Some(text)
+            if text.starts_with("-----BEGIN PGP SIGNATURE-----\n")
+                && text.ends_with("\n-----END PGP SIGNATURE-----\n")
+                && text.matches("-----BEGIN").count() == 1
+                && text
+                    .bytes()
+                    .all(|b| b == b'\n' || b == b' ' || b.is_ascii_graphic()) =>
+        {
+            Ok(())
+        }
+        _ => bail!("the daemon sent something that is not an OpenPGP signature"),
+    }
 }
 
 /// What the daemon sent is one armored SSH signature, nothing else.
@@ -369,6 +480,49 @@ mod tests {
             "writ: files outside expected_paths: a\\u{1b}[2Jb, c\\\\d"
         );
         assert_eq!(clean("plain"), "plain");
+    }
+
+    #[test]
+    fn git_s_gpg_calls_are_told_apart_and_the_gpg_is_an_absolute_path() {
+        assert!(is_gpg_sign(&os(&["--status-fd=2", "-bsau", "ABCDEF"])));
+        for other in [
+            &["--status-fd=1", "-bsau", "ABCDEF"][..],
+            &["-bsau", "ABCDEF"],
+            &["--status-fd=2", "-bsau"],
+            &["--status-fd=2", "-bsau", "A", "extra"],
+            &["--status-fd=2", "--verify", "x", "-"],
+        ] {
+            assert!(!is_gpg_sign(&os(other)), "{other:?}");
+        }
+        assert_eq!(gpg_program(None).unwrap(), PathBuf::from("/usr/bin/gpg"));
+        assert_eq!(
+            gpg_program(Some("/opt/gnupg/bin/gpg".into())).unwrap(),
+            PathBuf::from("/opt/gnupg/bin/gpg")
+        );
+        assert_eq!(
+            error_of(gpg_program(Some("gpg".into()))),
+            "WRIT_GPG must be an absolute path, got gpg"
+        );
+    }
+
+    #[test]
+    fn only_an_armored_openpgp_signature_is_written() {
+        let good =
+            "-----BEGIN PGP SIGNATURE-----\n\nwnUEABYKAB0=\n=AbCd\n-----END PGP SIGNATURE-----\n";
+        assert!(check_openpgp_signature(good.as_bytes()).is_ok());
+        for bad in [
+            "",
+            "-----BEGIN SSH SIGNATURE-----\nx\n-----END SSH SIGNATURE-----\n",
+            &good.replace("wnUE", "\u{1b}[2J"),
+            &format!("{good}{good}"),
+            good.trim_end(),
+        ] {
+            assert_eq!(
+                error_of(check_openpgp_signature(bad.as_bytes())),
+                "the daemon sent something that is not an OpenPGP signature",
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

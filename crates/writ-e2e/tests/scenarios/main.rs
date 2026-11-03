@@ -22,6 +22,7 @@ mod https_upstream;
 mod narrowing;
 mod notes;
 mod notes_reconcile;
+mod openpgp_commits;
 mod operator_setup;
 mod push_denials;
 mod remote_protection;

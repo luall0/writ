@@ -115,23 +115,44 @@ pub async fn prove_key(
                 .await??)
         })
         .await?;
-    // A convenience: what came back is the key's signature over this message, in this
-    // namespace (the remote checks it again).
     let public = PublicKey::from_openssh(proved.public_key.trim())
         .context("the daemon sent an unreadable public key")?;
-    writ_crypto::sshsig::verify(
-        std::slice::from_ref(&public),
-        proof.namespace.as_str(),
-        proof.message.as_str().as_bytes(),
-        &proved.signature,
-    )
-    .context("the daemon's signature doesn't verify over the message")?;
-    eprintln!(
-        "Signed by {} ({}) in namespace {}:",
-        proof.key,
-        public.fingerprint(HashAlg::Sha256),
-        proof.namespace.as_str()
-    );
+    if proved
+        .signature
+        .starts_with("-----BEGIN PGP SIGNATURE-----\n")
+    {
+        // An OpenPGP key (Forgejo's and Gitea's GPG key check): no namespace; the remote
+        // checks the signature against the key's certificate.
+        let armored = proved.signature.ends_with("-----END PGP SIGNATURE-----\n")
+            && proved
+                .signature
+                .bytes()
+                .all(|b| b == b'\n' || b == b' ' || b.is_ascii_graphic());
+        if !armored {
+            bail!("the daemon sent something that is not an OpenPGP signature");
+        }
+        eprintln!(
+            "Signed by {} ({}) in OpenPGP:",
+            proof.key,
+            public.fingerprint(HashAlg::Sha256)
+        );
+    } else {
+        // A convenience: what came back is the key's signature over this message, in this
+        // namespace (the remote checks it again).
+        writ_crypto::sshsig::verify(
+            std::slice::from_ref(&public),
+            proof.namespace.as_str(),
+            proof.message.as_str().as_bytes(),
+            &proved.signature,
+        )
+        .context("the daemon's signature doesn't verify over the message")?;
+        eprintln!(
+            "Signed by {} ({}) in namespace {}:",
+            proof.key,
+            public.fingerprint(HashAlg::Sha256),
+            proof.namespace.as_str()
+        );
+    }
     print!("{}", proved.signature);
     if !proved.signature.ends_with('\n') {
         println!();

@@ -430,6 +430,59 @@ pub fn armor(kind: Armor, packets: &[u8]) -> String {
     text
 }
 
+/// The largest armored certificate read back ([`certificate_fingerprint`]).
+const MAX_ARMORED: usize = 64 * 1024;
+
+/// The fingerprint of the key in an armored certificate (what [`certificate`] writes): its
+/// first packet must be a v4 public key packet. Reads only that much, strictly: the
+/// armor's lines, its checksum, the first packet's header; anything else is refused. For a
+/// client wiring git (`user.signingkey`), from the certificate its pinned daemon sent.
+pub fn certificate_fingerprint(armored: &str) -> Result<String> {
+    use base64ct::Encoding as _;
+    let refused = || CryptoError::Unsupported("an armored OpenPGP certificate".to_owned());
+    if armored.len() > MAX_ARMORED {
+        return Err(refused());
+    }
+    let label = Armor::PublicKey.label();
+    let body = armored
+        .strip_prefix(&format!("-----BEGIN {label}-----\n\n"))
+        .and_then(|rest| rest.strip_suffix(&format!("-----END {label}-----\n")))
+        .ok_or_else(refused)?;
+    let mut lines: Vec<&str> = body.lines().collect();
+    let checksum = lines
+        .pop()
+        .and_then(|l| l.strip_prefix('='))
+        .ok_or_else(refused)?;
+    let packets = base64ct::Base64::decode_vec(&lines.concat()).map_err(|_| refused())?;
+    let crc = base64ct::Base64::decode_vec(checksum).map_err(|_| refused())?;
+    if crc.as_slice() != crc24(&packets).to_be_bytes().get(1..).unwrap_or_default() {
+        return Err(refused());
+    }
+    let (&tag, rest) = packets.split_first().ok_or_else(refused)?;
+    if tag != 0xC0 | TAG_PUBLIC_KEY {
+        return Err(refused());
+    }
+    let (len, rest) = match rest.split_first() {
+        Some((&first, rest)) if first < 192 => (usize::from(first), rest),
+        Some((&first, rest)) if first < 224 => {
+            let (&second, rest) = rest.split_first().ok_or_else(refused)?;
+            let len = usize::from(first)
+                .checked_sub(192)
+                .and_then(|h| h.checked_mul(256))
+                .and_then(|h| h.checked_add(usize::from(second)))
+                .and_then(|h| h.checked_add(192))
+                .ok_or_else(refused)?;
+            (len, rest)
+        }
+        _ => return Err(refused()),
+    };
+    let body = rest.get(..len).ok_or_else(refused)?;
+    if body.first() != Some(&4) {
+        return Err(refused());
+    }
+    Ok(hex(&fingerprint(body)?))
+}
+
 /// OpenPGP's CRC-24 (RFC 4880 § 6.1).
 fn crc24(data: &[u8]) -> u32 {
     let mut crc: u32 = 0x00B7_04CE;
@@ -494,6 +547,43 @@ mod tests {
             a,
             OpenpgpKey::new(&key.public_key(), 1_700_000_000).unwrap()
         );
+    }
+
+    #[test]
+    fn a_certificate_s_fingerprint_reads_back_and_anything_else_is_refused() {
+        for algorithm in [KeyAlgorithm::Ed25519, KeyAlgorithm::Rsa4096] {
+            let key = KeyPair::generate(algorithm).unwrap();
+            let pgp = OpenpgpKey::new(&key.public_key(), 7).unwrap();
+            let prepared = certification(&pgp, Hash::Sha256, "<a@b>").unwrap();
+            let (data, hash) = prepared.signer_input();
+            let packet = prepared.packet(&key.sign(data, hash).unwrap()).unwrap();
+            let armored = certificate(&pgp, &[("<a@b>", packet)]).unwrap();
+            assert_eq!(
+                certificate_fingerprint(&armored).unwrap(),
+                pgp.fingerprint_hex()
+            );
+            // A byte changed: the checksum fails.
+            let tampered = armored.replacen("\n\nx", "\n\ny", 1);
+            let tampered = if tampered == armored {
+                armored.replacen("\n\n", "\n\nA", 1)
+            } else {
+                tampered
+            };
+            assert!(matches!(
+                certificate_fingerprint(&tampered),
+                Err(CryptoError::Unsupported(_))
+            ));
+            // A signature block, not a certificate.
+            let signature = armored.replace("PUBLIC KEY BLOCK", "SIGNATURE");
+            assert!(matches!(
+                certificate_fingerprint(&signature),
+                Err(CryptoError::Unsupported(_))
+            ));
+        }
+        assert!(matches!(
+            certificate_fingerprint(&"A".repeat(MAX_ARMORED + 1)),
+            Err(CryptoError::Unsupported(_))
+        ));
     }
 
     #[test]

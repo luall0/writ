@@ -371,3 +371,71 @@ fn a_proof_the_signer_or_the_audit_log_fails_is_never_handed_out() {
     assert!(h.service.prove(&request, &facts()).is_ok());
     assert_eq!(h.events("prove", "allowed").len(), 1);
 }
+
+#[test]
+fn an_openpgp_key_proves_itself_in_openpgp_never_over_a_commit_shaped_message() {
+    use writ_crypto::algorithm::{Hash, KeyAlgorithm};
+    let dir = tempfile::tempdir().unwrap();
+    let policy = format!(
+        "{POLICY}\nsigning_keys:\n  {KEY}:\n    uids: [\"Agent <user+agent@example.org>\"]\n"
+    );
+    let h = TestServiceBuilder::new(&policy)
+        .clock(Arc::new(FakeClock::at_unix(START)))
+        .openpgp(KeyAlgorithm::Ed25519, Hash::Sha512)
+        .build(dir.path());
+    // Forgejo's token: signed as a document, verified by gpg with the key's certificate.
+    let token = "0123456789abcdef0123456789abcdef01234567";
+    let doc = document(KEY, "gitea", token);
+    let proved = h
+        .service
+        .prove(&signed_by(&h.approver, APPROVAL_NAMESPACE, &doc), &facts())
+        .unwrap();
+    assert!(
+        proved
+            .signature
+            .starts_with("-----BEGIN PGP SIGNATURE-----\n"),
+        "{}",
+        proved.signature
+    );
+    let gpg_dir = tempfile::tempdir().unwrap();
+    let home = gpg_dir.path().join("gnupg");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::set_permissions(&home, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let certificate = h
+        .service
+        .openpgp_certificate(&KEY.parse().unwrap())
+        .unwrap();
+    std::fs::write(gpg_dir.path().join("cert.asc"), certificate).unwrap();
+    std::fs::write(gpg_dir.path().join("token"), token).unwrap();
+    std::fs::write(gpg_dir.path().join("token.asc"), &proved.signature).unwrap();
+    let gpg = |args: &[&str]| {
+        std::process::Command::new("gpg")
+            .args(["--batch", "--no-tty", "--ignore-time-conflict", "--homedir"])
+            .arg(&home)
+            .args(args)
+            .current_dir(gpg_dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(gpg(&["--import", "cert.asc"]).status.success());
+    let status = gpg(&["--status-fd", "1", "--verify", "token.asc", "token"]);
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(status.contains("[GNUPG:] VALIDSIG "), "{status}");
+
+    // A message shaped like a commit or a tag: refused, logged.
+    for message in [
+        "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n",
+        "object 0\ntype commit\n",
+    ] {
+        let doc = document(KEY, "gitea", message);
+        let (code, reason) = code(
+            h.service
+                .prove(&signed_by(&h.approver, APPROVAL_NAMESPACE, &doc), &facts()),
+        );
+        assert_eq!(code, RefusalCode::Proof, "{reason}");
+        assert!(
+            reason.contains("a message that starts like a git commit or tag is never signed"),
+            "{reason}"
+        );
+    }
+}

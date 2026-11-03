@@ -273,7 +273,13 @@ pub fn run() -> Stack {
     // 6. The agent signing keys (to register on an account, for verified commits).
     let signing = doc_step(&operator, "writd signing-keys writd.yaml", &[]);
     printed.push(("writd signing-keys writd.yaml".to_owned(), signing.clone()));
-    let signing_keys: Vec<String> = signing.lines().map(str::to_owned).collect();
+    // One line per key (`<id> <key> (templates: …)`); an OpenPGP key's certificate follows
+    // its line, kept apart.
+    let signing_keys: Vec<String> = signing
+        .lines()
+        .filter(|l| l.contains(" (templates: "))
+        .map(str::to_owned)
+        .collect();
 
     // 7. The daemon's identity, pinned on the clients.
     let host_key = doc_step(&operator, "writd host-key writd.yaml", &[])

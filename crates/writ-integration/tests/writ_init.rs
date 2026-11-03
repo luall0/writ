@@ -525,3 +525,168 @@ fn whole_repo_mode_wires_a_dedicated_clone_and_undo_restores_it() {
     assert_eq!(local_config(&daemon, &repo), before);
     assert!(!repo.join(".git/writ").exists());
 }
+
+/// The absolute path of the host's `gpg` (the tests need GnuPG 2.2 or newer).
+fn gpg_path() -> String {
+    let out = Command::new("sh")
+        .args(["-c", "command -v gpg"])
+        .output()
+        .unwrap();
+    let path = stdout(&out).trim().to_owned();
+    assert!(path.starts_with('/'), "gpg is not installed: {path:?}");
+    path
+}
+
+/// An empty GnuPG home, private, in `dir`.
+fn gnupg_home(dir: &Path) -> std::path::PathBuf {
+    fs::create_dir_all(dir).unwrap();
+    fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    dir.to_owned()
+}
+
+#[test]
+fn an_openpgp_lease_signs_through_writ_sign_as_gpg_with_no_gnupg_home_of_its_own() {
+    let policy = format!(
+        "{}signing_keys:\n  agent-pgp:\n    uids: [\"Agent <agent@writ>\"]\n",
+        POLICY.replace("signing_key: agent-01", "signing_key: agent-pgp")
+    );
+    let daemon = Daemon::start(&policy, Approvals::Ssh);
+    let request = daemon.request("oauth", OAUTH);
+    let id = request.id.clone();
+    let out = daemon.run(&["sign", &id, "--yes"], "");
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let (status, out, err) = request.finish();
+    assert_eq!(status.code(), Some(0), "{out}{err}");
+    let certificate = fs::read_to_string(daemon.session(&id).join("signing_key.asc")).unwrap();
+    assert!(certificate.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----\n"));
+    // The operator's printed certificate is the lease's.
+    let printed = daemon.print("signing-keys");
+    assert!(printed.contains(certificate.trim()), "{printed}");
+    let fingerprint = printed.split(' ').nth(2).unwrap().to_owned();
+
+    let root = daemon.root().to_owned();
+    fs::write(
+        root.join("home/.gitconfig"),
+        "[user]\n\tname = Agent\n\temail = me@operator.example\n[init]\n\tdefaultBranch = main\n",
+    )
+    .unwrap();
+    let repo = root.join("pgp-repo");
+    fs::create_dir_all(&repo).unwrap();
+    git_ok(&daemon, &repo, &["init", "-q"]);
+    fs::write(repo.join("README"), "demo\n").unwrap();
+    git_ok(&daemon, &repo, &["add", "-A"]);
+    git_ok(&daemon, &repo, &["commit", "-q", "-m", "seed"]);
+    writ_ok(&daemon, &repo, &["init", "demo"]);
+    // Wired for gpg: writ-sign as the program, the key by its fingerprint.
+    assert_eq!(
+        writ_ok(&daemon, &repo, &["git", "config", "gpg.format"]).trim(),
+        "openpgp"
+    );
+    assert_eq!(
+        writ_ok(&daemon, &repo, &["git", "config", "user.signingkey"]).trim(),
+        fingerprint
+    );
+
+    // A hostile GnuPG home and agent in the environment: never used to sign (a home nobody
+    // may read, an agent socket that is a plain file).
+    let hostile = gnupg_home(&root.join("hostile-gnupg"));
+    fs::write(hostile.join("S.gpg-agent"), "not a socket\n").unwrap();
+    fs::set_permissions(
+        &hostile,
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
+    )
+    .unwrap();
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(repo.join("src/oauth.rs"), "pub fn login() {}\n").unwrap();
+    writ_ok(&daemon, &repo, &["git", "add", "-A"]);
+    let out = daemon
+        .writ(&[
+            "git",
+            "commit",
+            "-q",
+            "-m",
+            "Add OAuth",
+            "--trailer",
+            &format!("Writ: {id}"),
+        ])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GNUPGHOME", &hostile)
+        .env("GPG_AGENT_INFO", hostile.join("S.gpg-agent"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    fs::set_permissions(
+        &hostile,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        fs::read_dir(&hostile).unwrap().count(),
+        1,
+        "nothing written in the hostile home"
+    );
+    let commit = git_ok(&daemon, &repo, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    assert_eq!(ledger(&daemon, &id), std::slice::from_ref(&commit));
+
+    // Verified through writ-sign, handed to the real gpg (WRIT_GPG) with the certificate
+    // imported in a home of the agent's choosing.
+    let verify_home = gnupg_home(&root.join("verify-gnupg"));
+    fs::write(root.join("cert.asc"), &certificate).unwrap();
+    let imported = Command::new(gpg_path())
+        .args(["--batch", "--no-tty", "--homedir"])
+        .arg(&verify_home)
+        .arg("--import")
+        .arg(root.join("cert.asc"))
+        .output()
+        .unwrap();
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    let out = daemon
+        .writ(&["git", "verify-commit", "HEAD"])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GNUPGHOME", &verify_home)
+        .env("WRIT_GPG", gpg_path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("Good signature from \"Agent <agent@writ>\""),
+        "{}",
+        stderr(&out)
+    );
+
+    // git asked for an SSH signature under this lease: denied by the daemon, logged.
+    let out = writ(
+        &daemon,
+        &repo,
+        &[
+            "git",
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            &format!(
+                "gpg.ssh.program={}",
+                writ_integration::binaries::bin("writ-sign").display()
+            ),
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("ssh\n\nWrit: {id}"),
+        ],
+    );
+    assert_ne!(out.status.code(), Some(0), "{}", stderr(&out));
+    let denied = audit_events(&daemon.audit(), "sign", "denied");
+    assert_eq!(
+        denied.last().unwrap()["code"],
+        "signature_format",
+        "{}",
+        daemon.audit()
+    );
+    assert_eq!(ledger(&daemon, &id), [commit]);
+}

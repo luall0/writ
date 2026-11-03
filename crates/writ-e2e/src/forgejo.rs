@@ -1,6 +1,7 @@
 //! Forgejo, the remote of every scenario: its API (repositories, deploy keys, branch
 //! protection, commits and their verification) with the admin user's token, and the web forms
-//! it has no API for (proving an SSH signing key: a challenge signed in namespace `gitea`).
+//! it has no API for (proving an SSH signing key: a challenge signed in namespace `gitea`), and
+//! GPG keys (the account's challenge signed in OpenPGP, then the key added with it).
 //! Changes made on the remote by someone else than the agents are a second account's, the
 //! [`CONTRIBUTOR`], a collaborator with write access on every repository: through the API
 //! ([`Forgejo::commit_file`]) and with plain git over HTTP ([`Forgejo::contributor_url`]).
@@ -396,6 +397,40 @@ impl Forgejo {
             201,
         );
         json["fingerprint"].as_str().unwrap().to_owned()
+    }
+
+    /// The challenge Forgejo asks a GPG key to sign before it trusts it for the account
+    /// (`GET /user/gpg_key_token`: plain text, not JSON).
+    pub fn gpg_key_token(&self) -> String {
+        let url = format!("{BASE}/api/v1/user/gpg_key_token");
+        let mut response = agent(true)
+            .get(&url)
+            .header("Authorization", &format!("token {}", self.token))
+            .call()
+            .unwrap_or_else(|e| panic!("GET /user/gpg_key_token: {e}"));
+        assert_eq!(response.status().as_u16(), 200, "GET /user/gpg_key_token");
+        let token = response.body_mut().read_to_string().unwrap_or_default();
+        assert!(!token.trim().is_empty(), "an empty GPG key token");
+        token.trim().to_owned()
+    }
+
+    /// Adds the armored OpenPGP certificate to the account with `signature`, the key's
+    /// detached signature over [`Forgejo::gpg_key_token`] (`POST /user/gpg_keys`): the status
+    /// and Forgejo's record of the key (`key_id`, `verified`, `emails`).
+    pub fn add_gpg_key(&self, certificate: &str, signature: &str) -> (u16, Value) {
+        self.api(
+            "POST",
+            "/user/gpg_keys",
+            Some(json!({
+                "armored_public_key": certificate,
+                "armored_signature": signature,
+            })),
+        )
+    }
+
+    /// The account's GPG keys, as Forgejo lists them.
+    pub fn gpg_keys(&self) -> Value {
+        self.api_ok("GET", "/user/gpg_keys", None, 200)
     }
 
     /// Logs in through the web form: the session's cookies.

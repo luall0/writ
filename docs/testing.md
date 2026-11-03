@@ -253,7 +253,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: templates.<name>.max_push_size` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
 | `policy.yaml: templates.<name>.paths_check` | `paths_check_off_signs_any_path_without_a_warning`, `paths_outside_the_ticket_are_refused_with_paths_check_deny` |
 | `policy.yaml: templates.<name>.require_expected_paths` | `require_expected_paths_rejects_a_ticket_without_them` |
-| `policy.yaml: signing_keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
+| `policy.yaml: signing_keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
 | `ticket: template` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
 | `ticket: origin_hint` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
 | `ticket: caller.descends_from.executable` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
@@ -287,6 +287,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `env: WRIT_APPROVAL_KEY` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
 | `env: WRIT_APPROVAL_AGENT` | `decisions_open_takes_unsigned_refusals_and_signed_does_not`, `every_client_setting_works_as_a_flag` |
 | `env: WRIT_SSH_KEYGEN` | `writ_ssh_keygen_names_the_program_the_approver_signs_with` |
+| `env: WRIT_GPG` | `an_openpgp_lease_signs_through_writ_sign_as_gpg_with_no_gnupg_home_of_its_own`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
 | `env: WRIT_LOG` | `mirrors_sync_every_syncs_without_any_client` |
 
 ## Guarantee tests
