@@ -46,7 +46,7 @@ impl Service {
     ) -> Result<bool, ServiceError> {
         Self::log_counted_denials(inner, now);
         Self::log_counted_submissions(inner, now);
-        let mut changed = false;
+        let mut changed = self.record_unrecorded(inner, now)?;
         for record in inner.store.tickets(State::Pending).map_err(internal)? {
             if let Some(next) = lease::pending_due(&record, now) {
                 let id = &record.ticket.id;
@@ -126,30 +126,82 @@ impl Service {
     ) -> Result<(), ServiceError> {
         let now = self.now()?;
         let mut inner = self.lock()?;
-        let Some(lease) = inner.store.lease(lease_id).map_err(internal)? else {
-            return Ok(());
+        let lease = match inner.store.lease(lease_id).map_err(internal) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => return Ok(()),
+            Err(e) => {
+                // Recorded by a later sweep; the caller barred the certificate already.
+                inner.unrecorded.insert(lease_id.clone(), reason.to_owned());
+                return Err(e);
+            }
         };
         if lease.state != State::Active {
             return Ok(());
         }
         self.bar_serial(lease.cert_serial);
         inner.watches.remove(lease_id);
-        let event = AuditEvent::new(now, EventKind::Revoke, Outcome::Done)
-            .lease(lease_id)
-            .cert(lease.cert_serial)
-            .reason(reason);
-        let done = Self::reduced(&mut inner, event, |inner| {
-            inner
-                .store
-                .transition(lease_id, State::Active, State::Revoked, now)
-                .map_err(internal)
-        });
+        let done = self.record_revocation(&mut inner, &lease, reason, now);
         drop(inner);
         match announce {
             Announce::Now => self.deny_serial(lease.cert_serial),
             Announce::Later => self.bar_serial(lease.cert_serial),
         }
         done
+    }
+
+    /// Records the daemon's revocation of the active `lease` (its certificate barred by the
+    /// caller): the `revoke` line, then the store. One the store can't take is kept, and
+    /// recorded again by the next sweeps.
+    fn record_revocation(
+        &self,
+        inner: &mut Inner,
+        lease: &lease::Lease,
+        reason: &str,
+        now: Timestamp,
+    ) -> Result<(), ServiceError> {
+        let event = AuditEvent::new(now, EventKind::Revoke, Outcome::Done)
+            .lease(&lease.id)
+            .cert(lease.cert_serial)
+            .reason(reason);
+        let done = Self::reduced(inner, event, |inner| {
+            inner
+                .store
+                .transition(&lease.id, State::Active, State::Revoked, now)
+                .map_err(internal)
+        });
+        match &done {
+            Ok(()) => {
+                inner.unrecorded.remove(&lease.id);
+            }
+            Err(_) => {
+                inner.unrecorded.insert(lease.id.clone(), reason.to_owned());
+            }
+        }
+        done
+    }
+
+    /// Records again the revocations the store couldn't take ([`Inner::unrecorded`]); their
+    /// certificates stay refused meanwhile. Whether any was recorded.
+    fn record_unrecorded(&self, inner: &mut Inner, now: Timestamp) -> Result<bool, ServiceError> {
+        let mut changed = false;
+        for (id, reason) in std::mem::take(&mut inner.unrecorded) {
+            let lease = match inner.store.lease(&id) {
+                Ok(Some(lease)) => lease,
+                Ok(None) => continue,
+                Err(e) => {
+                    inner.unrecorded.insert(id, reason);
+                    return Err(internal(e));
+                }
+            };
+            if lease.state != State::Active {
+                continue;
+            }
+            self.bar_serial(lease.cert_serial);
+            if self.record_revocation(inner, &lease, &reason, now).is_ok() {
+                changed = true;
+            }
+        }
+        Ok(changed)
     }
 
     /// At startup: watches again the session of every active lease bound to one (watches

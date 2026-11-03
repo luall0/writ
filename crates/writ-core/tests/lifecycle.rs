@@ -116,6 +116,69 @@ fn tickets_outside_every_template_are_rejected_with_reasons() {
     }
 }
 
+/// The bounds the review after M5.5 added (S8, L20), each on both sides: the bytes of every
+/// `expected_paths` pattern together (what each commit's paths are matched against), and the
+/// number of branches (what the approver reads).
+#[test]
+fn expected_paths_and_branches_are_bounded_on_both_sides() {
+    use writ_core::fit::{MAX_BRANCHES, MAX_EXPECTED_PATHS_BYTES};
+    // 16 patterns of 1,024 bytes: exactly the bound; then a 17th of one byte.
+    let paths = |extra: bool| {
+        let mut all: Vec<String> = (0..16)
+            .map(|i| format!("d{i:02}/{}", "x".repeat(1020)))
+            .collect();
+        if extra {
+            all.push("z".to_owned());
+        }
+        let total: usize = all.iter().map(String::len).sum();
+        let list = all
+            .iter()
+            .map(|p| format!("\"{p}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        (
+            total,
+            REQUEST.replace(
+                r#"expected_paths: ["src/auth/**", "tests/auth/**"]"#,
+                &format!("expected_paths: [{list}]"),
+            ),
+        )
+    };
+    let (total, at) = paths(false);
+    assert_eq!(total, MAX_EXPECTED_PATHS_BYTES);
+    assert!(fit::submit(&config(), &request(&at), &submission(1)).is_ok());
+    let (total, over) = paths(true);
+    assert_eq!(total, MAX_EXPECTED_PATHS_BYTES + 1);
+    let error = rejection(&over);
+    assert!(
+        error.contains(&format!(
+            "ticket.expected_paths (bytes in all) is too long ({}, at most {MAX_EXPECTED_PATHS_BYTES})",
+            MAX_EXPECTED_PATHS_BYTES + 1
+        )),
+        "{error}"
+    );
+    // Branches: 50 within the template's `agent/*`, then 51.
+    let branches = |n: usize| {
+        let list = (0..n)
+            .map(|i| format!("\"agent/oauth-{i}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        REQUEST.replace(
+            r#"branches: ["agent/oauth-*"]"#,
+            &format!("branches: [{list}]"),
+        )
+    };
+    assert!(fit::submit(&config(), &request(&branches(MAX_BRANCHES)), &submission(1)).is_ok());
+    let error = rejection(&branches(MAX_BRANCHES + 1));
+    assert!(
+        error.contains(&format!(
+            "scope.branches is too long ({}, at most {MAX_BRANCHES})",
+            MAX_BRANCHES + 1
+        )),
+        "{error}"
+    );
+}
+
 #[test]
 fn push_needs_a_push_mode_allowed_by_both() {
     // dotfiles only allows direct_ssh; quick-fix only gateway.

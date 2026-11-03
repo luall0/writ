@@ -247,26 +247,14 @@ impl Service {
         let request = signing.request();
         let reserved = self.reserve(signing, &request)?;
         let signer = &*self.opened().map_err(super::as_denial)?.signer;
-        let signed = match reserved.key_use.format {
-            SignatureFormat::Ssh => writ_signer::sshsig(
-                signer,
-                &reserved.key,
-                GIT_NAMESPACE,
-                reserved.key_use.hash,
-                reserved.commit.bytes(),
-            ),
-            SignatureFormat::Openpgp => match self.openpgp().created.get(&reserved.key) {
-                Some(&created) => writ_signer::openpgp_signature(
-                    signer,
-                    &reserved.key,
-                    created,
-                    reserved.key_use.hash,
-                    reserved.commit.bytes(),
-                    reserved.time,
-                ),
-                None => Err(SignerError::Failed(reserved.key.clone())),
-            },
-        };
+        let signed = self.signature(
+            signer,
+            &reserved.key,
+            reserved.key_use,
+            GIT_NAMESPACE,
+            reserved.commit.bytes(),
+            reserved.time,
+        );
         self.settle(signing, &request, reserved, signed)
     }
 
@@ -392,8 +380,12 @@ impl Service {
     ) -> Result<SignedCommit, Denial> {
         let (now, mut inner) = match self.now().and_then(|now| Ok((now, self.lock()?))) {
             Ok(locked) => locked,
-            // The slot stays used; the lease is released by `InFlight`'s drop.
-            Err(e) => return Err(Denial::new(DenyCode::Invalid, e.to_string())),
+            // The slot stays used; the lease is released by `InFlight`'s drop. No line can
+            // be written without the lock: the daemon's log says why.
+            Err(e) => {
+                tracing::error!(error = %e.detail(), "cannot settle a signature: it is discarded");
+                return Err(Denial::new(DenyCode::Invalid, e.to_string()));
+            }
         };
         reserved.in_flight.settle(&mut inner);
         let outcome = self.record(&mut inner, signing, request, &reserved, signed, now);
@@ -446,6 +438,16 @@ impl Service {
                 return Err(deny(inner, event, Denial { reason, ..denial }));
             }
         };
+        // The policy may have changed too (a signed change applies at once): the lease must
+        // still fit the template in force, as the first phase checked.
+        if let Err(why) = writ_core::fit::fits(&self.policy(), &current.ticket) {
+            let reason = format!(
+                "lease {} no longer fits template {}: {why} (changed while the commit was being \
+                 signed); the signature was discarded",
+                current.id, current.ticket.template
+            );
+            return Err(deny(inner, event, Denial::new(DenyCode::Config, reason)));
+        }
         let commit_id = match writ_git::signed::signed_id(reserved.commit, &signature)
             .and_then(|id| Ok(id.to_commit_id()?))
         {

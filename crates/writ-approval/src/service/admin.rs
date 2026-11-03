@@ -184,7 +184,14 @@ impl Service {
     ) -> Result<AdminApplied, ServiceError> {
         let target = checked.admin.target;
         if parsed.target() != target {
-            return Err(internal("an admin change parsed as another file"));
+            let error = internal("an admin change parsed as another file");
+            self.admin_failed(
+                Some(&checked.approver),
+                Some(target),
+                "internal error (see the daemon's log)",
+                caller,
+            );
+            return Err(error);
         }
         let opened = self.opened()?;
         // The approvers the change keeps, if it changes them: a lease another key signed is
@@ -255,16 +262,32 @@ impl Service {
                 return Err(e);
             }
         };
-        let version = old
-            .checked_add(1)
-            .ok_or_else(|| internal("version overflow"))?;
         let digest = checked.admin.text.digest();
         let mut in_force = self.in_force();
-        in_force.versions.insert(target, (version, digest.clone()));
-        in_force.mac = opened
-            .authority
-            .sign_head(&in_force.entries())
-            .map_err(internal)?;
+        let sealed = old
+            .checked_add(1)
+            .ok_or_else(|| internal("version overflow"))
+            .and_then(|version| {
+                in_force.versions.insert(target, (version, digest.clone()));
+                let mac = opened
+                    .authority
+                    .sign_head(&in_force.entries())
+                    .map_err(internal)?;
+                Ok((version, mac))
+            });
+        let (version, mac) = match sealed {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                tracing::error!(error = %e.detail(), %target, "cannot seal the new version");
+                let denial = AuditEvent::new(now, EventKind::Admin, Outcome::Denied)
+                    .approver(&checked.approver)
+                    .caller(caller)
+                    .reason(format!("{target}: internal error (see the daemon's log)"));
+                Self::write_best_effort(&mut inner, &denial);
+                return Err(e);
+            }
+        };
+        in_force.mac = mac;
         let event = AuditEvent::new(now, EventKind::Admin, Outcome::Allowed)
             .approver(&checked.approver)
             .caller(caller)
@@ -380,6 +403,8 @@ impl Service {
                 "its approver {} was removed from approvers (version {version})",
                 lease.approval.approver
             );
+            // Refused first, whatever the store does.
+            self.bar_serial(lease.cert_serial);
             match self.revoke_by_daemon(&lease.id, &reason, super::sweep::Announce::Now) {
                 Ok(()) => revoked.push(lease.id),
                 Err(e) => tracing::error!(

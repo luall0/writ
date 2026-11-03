@@ -112,6 +112,37 @@ impl Service {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = keys;
     }
 
+    /// The creation time of the OpenPGP key `id` (what its fingerprint is computed over), if
+    /// the daemon holds one. Copied out: the lock is released before anything signs, so a
+    /// slow signer never holds up an admin change that replaces these keys.
+    pub(crate) fn openpgp_created(&self, id: &KeyId) -> Option<u32> {
+        self.openpgp().created.get(id).copied()
+    }
+
+    /// Signs `data` with the key `id` in the format `key_use` declares: an SSHSIG in
+    /// `namespace`, or an OpenPGP signature made at `time` (an OpenPGP signature has no
+    /// namespace). The only path from the service to the signer for a commit or a proof. No
+    /// lock is held while the signer runs.
+    pub(crate) fn signature(
+        &self,
+        signer: &dyn Signer,
+        id: &KeyId,
+        key_use: KeyUse,
+        namespace: &str,
+        data: &[u8],
+        time: u32,
+    ) -> Result<String, writ_signer::SignerError> {
+        match key_use.format {
+            SignatureFormat::Ssh => writ_signer::sshsig(signer, id, namespace, key_use.hash, data),
+            SignatureFormat::Openpgp => {
+                let created = self
+                    .openpgp_created(id)
+                    .ok_or_else(|| writ_signer::SignerError::Failed(id.clone()))?;
+                writ_signer::openpgp_signature(signer, id, created, key_use.hash, data, time)
+            }
+        }
+    }
+
     /// The armored certificate of the OpenPGP key `id`, if a template uses it.
     pub fn openpgp_certificate(&self, id: &KeyId) -> Option<String> {
         self.openpgp()

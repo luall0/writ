@@ -29,13 +29,13 @@ it or refuse it. The full signed ticket and its lifecycle:
 | `origin_hint` | Text | — | Where the agent runs (`macbook-user`). Shown to you, never checked |
 | `scope.repos` | Repo names | **required** | The repos the lease may use, within the template's |
 | `scope.operations` | `fetch`, `commit_sign`, `push` | **required** | The operations, within the template's |
-| `scope.branches` | Branch patterns | `[]` | Each within one of the template's patterns. Needed for `commit_sign` and `push` |
+| `scope.branches` | Branch patterns | `[]` | Each within one of the template's patterns, at most 50. Needed for `commit_sign` and `push` |
 | `scope.force_push` | Boolean | `false` | Force pushes and branch deletions, if the template allows them |
 | `scope.committer_emails` | Emails | the template's | The emails commits may carry as committer and as author, within the template's |
 | `ticket.title` | Text | **required** | One line. Shown first, to you and in notifications |
 | `ticket.task` | Text | **required** | What the agent was asked to do |
 | `ticket.plan` | List of steps | `[]` | The agent's steps, in order |
-| `ticket.expected_paths` | Path globs | `[]` | The files the work should touch (`src/auth/**`): `*` and `?` within a directory, `**` across. Compared with each commit per the template's `paths_check`. Required if the template sets `require_expected_paths` |
+| `ticket.expected_paths` | Path globs | `[]` | The files the work should touch (`src/auth/**`): `*` and `?` within a directory, `**` across. At most 100 patterns, 16 KiB in all, each at most 1,024 bytes with 16 of `*`, `?`, `[`, `{`. Compared with each commit per the template's `paths_check`. Required if the template sets `require_expected_paths` |
 | `ticket.amends` | Lease id | — | Replaces the terms of an active lease of the same session, once signed. Changes the scope, not the time |
 | `ticket.revises` | Ticket id | — | A new version of a refused ticket of the same session. You see the earlier feedback beside it |
 | `limits.ttl` | Duration | the template's `max_ttl` | How long the lease lasts, counted from submission. At least the daemon's `min_ttl` (`5m` by default), at most the template's `max_ttl` |

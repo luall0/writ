@@ -234,7 +234,7 @@ impl Service {
             Err(reason) => return denied.deny(inner, RefusalCode::Session, reason),
         };
         let approver = approval.approver.clone();
-        let serial = keys::random_serial().map_err(internal)?;
+        let serial = denied.or_failed(inner, keys::random_serial().map_err(internal))?;
         let lease = match lease::activate(&self.policy(), record, signed, approval, serial, now) {
             Ok(lease) => lease,
             Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
@@ -245,23 +245,29 @@ impl Service {
         };
         // A time that doesn't fit fails the grant: no fallback (a 0 would mean "valid since
         // 1970").
-        let valid_after = u64::try_from(now.saturating_sub_seconds(CLOCK_SKEW_SECONDS).unix())
-            .map_err(internal)?;
-        let valid_before =
-            u64::try_from(lease.ticket.limits.expires_at.unix()).map_err(internal)?;
-        let certificate = self
-            .opened()?
-            .ca
-            .issue(&CertificateRequest {
-                subject: &session_key,
-                serial,
-                key_id: lease.id.as_str(),
-                principals: &[PRINCIPAL],
-                valid_after,
-                valid_before,
-            })
-            .and_then(|cert| Ok(cert.to_openssh()?))
-            .map_err(internal)?;
+        let valid_after = denied.or_failed(
+            inner,
+            u64::try_from(now.saturating_sub_seconds(CLOCK_SKEW_SECONDS).unix()).map_err(internal),
+        )?;
+        let valid_before = denied.or_failed(
+            inner,
+            u64::try_from(lease.ticket.limits.expires_at.unix()).map_err(internal),
+        )?;
+        let issued = self.opened().and_then(|opened| {
+            opened
+                .ca
+                .issue(&CertificateRequest {
+                    subject: &session_key,
+                    serial,
+                    key_id: lease.id.as_str(),
+                    principals: &[PRINCIPAL],
+                    valid_after,
+                    valid_before,
+                })
+                .and_then(|cert| Ok(cert.to_openssh()?))
+                .map_err(internal)
+        });
+        let certificate = denied.or_failed(inner, issued)?;
         let event = AuditEvent::new(now, EventKind::Grant, Outcome::Allowed)
             .lease(&lease.id)
             .cert(serial)
@@ -362,9 +368,12 @@ impl Service {
         if let Err(e) = lease::check_feedback(&request.feedback) {
             return denied.deny(&mut inner, RefusalCode::Feedback, e.to_string());
         }
-        let document = Refusal::new(id.clone(), request.feedback.clone())
-            .canonical_bytes()
-            .map_err(internal)?;
+        let document = denied.or_failed(
+            &mut inner,
+            Refusal::new(id.clone(), request.feedback.clone())
+                .canonical_bytes()
+                .map_err(internal),
+        )?;
         let approver = match self.decision_signer(&document, request.signature.as_deref()) {
             Ok(approver) => approver,
             Err(reason) => return denied.deny(&mut inner, RefusalCode::Signature, reason),
@@ -415,9 +424,12 @@ impl Service {
                 .caller(caller),
             "revocation not accepted",
         );
-        let document = Revocation::new(id.clone())
-            .canonical_bytes()
-            .map_err(internal)?;
+        let document = denied.or_failed(
+            &mut inner,
+            Revocation::new(id.clone())
+                .canonical_bytes()
+                .map_err(internal),
+        )?;
         let approver = match self.decision_signer(&document, request.signature.as_deref()) {
             Ok(approver) => approver,
             Err(reason) => return denied.deny(&mut inner, RefusalCode::Signature, reason),
@@ -506,6 +518,34 @@ impl Denied {
             event: self.event.clone().approver(approver),
             prefix: self.prefix,
         }
+    }
+
+    /// Logs the denial of a request the daemon couldn't complete (its cause goes to the
+    /// daemon's log, never to the line or the caller) and returns the internal error: every
+    /// turned-down request writes its line (hard rule 9), an internal fault too.
+    pub(super) fn failed<T>(
+        &self,
+        inner: &mut Inner,
+        error: ServiceError,
+    ) -> Result<T, ServiceError> {
+        tracing::error!(error = %error.detail(), "{}", self.prefix);
+        Service::log_best_effort(
+            inner,
+            &self
+                .event
+                .clone()
+                .reason("internal error (see the daemon's log)"),
+        );
+        Err(error)
+    }
+
+    /// `result`, or its error logged as [`Denied::failed`].
+    pub(super) fn or_failed<T>(
+        &self,
+        inner: &mut Inner,
+        result: Result<T, ServiceError>,
+    ) -> Result<T, ServiceError> {
+        result.or_else(|error| self.failed(inner, error))
     }
 
     /// Logs the denial with its reason and returns the error, with its code.

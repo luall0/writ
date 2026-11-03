@@ -108,10 +108,9 @@ impl Service {
 }
 
 impl Service {
-    /// The ref `repo`'s notes go under (the policy's `notes_ref`).
+    /// The ref `repo`'s notes go under (the `notes_ref` of the policy in force).
     pub fn notes_ref(&self, repo: &RepoName) -> NotesRef {
-        self.config
-            .policy
+        self.policy()
             .repo(repo)
             .map(RepoEntry::notes_ref)
             .unwrap_or_default()

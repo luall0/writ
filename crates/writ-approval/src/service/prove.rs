@@ -48,39 +48,30 @@ impl Service {
         } = checked;
         let message = proof.message.as_str().as_bytes();
         let signer = &*self.opened()?.signer;
+        // Declared: check_proof refused a key no template signs with, and every such key is
+        // declared (checked at start and at each policy change). Fail closed all the same.
         let key_use = self
             .config
             .signing_keys
             .get(&proof.key)
             .copied()
-            .unwrap_or(crate::KeyUse::SSH);
+            .ok_or_else(|| super::internal(format!("{} is not declared", proof.key)))?;
+        // An OpenPGP signature carries its time: a 32-bit count of seconds, never a guess.
+        let time = u32::try_from(self.now()?.unix())
+            .map_err(|_| super::internal("the clock is past 2106"))?;
+        // An OpenPGP signature has no namespace: the remote's token is signed as a document
+        // (Forgejo's and Gitea's GPG key check), never one that could pass as a commit or a
+        // tag (checked first).
         let signed = writ_signer::public_key(signer, &proof.key).and_then(|public| {
-            let signature = match key_use.format {
-                writ_crypto::algorithm::SignatureFormat::Ssh => writ_signer::sshsig(
-                    signer,
-                    &proof.key,
-                    proof.namespace.as_str(),
-                    key_use.hash,
-                    message,
-                ),
-                // An OpenPGP signature has no namespace: the remote's token is signed as a
-                // document (Forgejo's and Gitea's GPG key check), never one that could pass as
-                // a commit or a tag (checked first).
-                writ_crypto::algorithm::SignatureFormat::Openpgp => {
-                    match self.openpgp().created.get(&proof.key) {
-                        Some(&created) => writ_signer::openpgp_signature(
-                            signer,
-                            &proof.key,
-                            created,
-                            key_use.hash,
-                            message,
-                            u32::try_from(self.now().map_or(0, |t| t.unix())).unwrap_or(u32::MAX),
-                        ),
-                        None => Err(SignerError::Failed(proof.key.clone())),
-                    }
-                }
-            };
-            signature.map(|signature| (public, signature))
+            self.signature(
+                signer,
+                &proof.key,
+                key_use,
+                proof.namespace.as_str(),
+                message,
+                time,
+            )
+            .map(|signature| (public, signature))
         });
         let (now, mut inner) = self.begin()?;
         let (public, signature) = match signed {
@@ -152,9 +143,9 @@ impl Service {
             );
             return denied.deny(&mut inner, RefusalCode::Proof, reason);
         }
+        // The policy in force (a signed change replaces it live), not the one at start.
         let signs_commits = self
-            .config
-            .policy
+            .policy()
             .templates()
             .values()
             .any(|template| template.signing_key.as_ref() == Some(&proof.key));

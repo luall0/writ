@@ -75,7 +75,7 @@ reader with `decisions: open`). Each has a bound, a strict parser, and a hostile
 | SSH handshake and auth | the same | listed algorithms only, publickey only, 6 attempts, certificate checks (CA, type, validity, principal, no critical option, deny list) | russh with `preferred_algorithms`, `writ_crypto::ca` |
 | SSH exec line and env | authenticated peers | exact command grammar, repo names validated, every `env` request refused and nothing of it kept (`GIT_PROTOCOL` included: `upload-pack` speaks protocol v0, where `uploadpack.allow*SHA1InWant` hold; test `a_fetch_by_id_gets_only_what_refs_reach_whatever_the_protocol_asked`), 4 channels per connection | `writ_proto::Command`, `writ-gateway/src/command.rs` |
 | Request bodies (SSH stdin, HTTPS) | agents, readers | 256 KiB (`MAX_BODY`), 30 s | `writ_proto` envelope, `deny_unknown_fields` |
-| Ticket YAML | agents | the body bound, one document, no anchors/aliases/merge keys, depth 32, 50,000 nodes, strict booleans; text bounds (title 200 one line, task 4,000 / 100 lines, plan 50 × 500 one line, 100 paths, caller fields); `ttl` ≥ `min_ttl` (5 min by default, 10 s at the lowest); 2 pending per session key, 10 submissions/min per address and 60/min from all sources (defaults; the operator sets both, 1-1,000 and 1-10,000: `submissions`), `max_pending` in all | `writ_core::yaml`, `fit` |
+| Ticket YAML | agents | the body bound, one document, no anchors/aliases/merge keys, depth 32, 50,000 nodes, strict booleans; text bounds (title 200 one line, task 4,000 / 100 lines, plan 50 × 500 one line, 100 paths of 1,024 bytes, 16 KiB in all, 16 wildcards each, 50 branches, caller fields); `ttl` ≥ `min_ttl` (5 min by default, 10 s at the lowest); 2 pending per session key, 10 submissions/min per address and 60/min from all sources (defaults; the operator sets both, 1-1,000 and 1-10,000: `submissions`), `max_pending` in all | `writ_core::yaml`, `fit` |
 | Canonical tickets and decisions | approver clients | decode then re-encode to the same bytes | `writ_core::canonical` |
 | SSHSIGs | approver clients | namespace, keys compared whole, accepted key types, `sk-` user presence | `writ_crypto::sshsig`, `allowed_signers` |
 | Proofs (`writ prove`) | readers, with an approver's signature | the body bound; the `writ-proof/1` document decoded strictly (canonical bytes); the namespace 1-64 of `[A-Za-z0-9._@-]`, never `git` nor `writ…` in any case; the message 1 to 4,096 bytes of UTF-8; the key one a template signs commits with; for an OpenPGP key, never a message that starts like a git commit or tag (`tree `, `object `); the approver's SSHSIG over exactly those bytes, required whatever `decisions` says; through the signer's queue (`Busy`, `Timeout`) | `writ_core::signed::Proof`, `writ_core::names::ProofNamespace`, `Service::prove` |
@@ -172,10 +172,14 @@ A new input is added here in the same change.
   its lease).
 - **A decision made earlier is checked again when it takes effect**: the pre-receive hook
   re-authorizes the lease; a revoked lease's pushes in progress are forgotten; a signature
-  made outside the state lock leaves only if its lease is still the same, active, unexpired
-  and its certificate not on the deny list (`Service::sign`'s last phase).
-- **Nothing slow runs under the state lock** (a device, the network, a subprocess), so a
-  revocation never waits behind one; what the first phase reserved is never given back.
+  made outside the state lock leaves only if its lease is still the same, active, unexpired,
+  its certificate not on the deny list, and it still fits the template in force
+  (`Service::sign`'s last phase).
+- **Nothing slow runs under the state lock, nor under any lock an admin change takes** (a
+  device, the network, a subprocess), so a revocation never waits behind one; a value read
+  under a lock for a slow call is copied out first (`match lock().get(..)` holds the guard
+  for the whole arm); what the first phase reserved is never given back. Work under the
+  lock is bounded by the input (the path match by the ticket's bounds).
 - **A lock that serializes leases is held by the work, never by a peer, and waited on with a
   deadline**: a push's mirror is released when `receive-pack` exits, not when the client has
   read its output, at once when the push is refused, and 10 s after the hook's yes at the

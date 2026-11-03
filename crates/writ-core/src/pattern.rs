@@ -238,6 +238,9 @@ impl RefPattern {
     }
 }
 
+/// The `*`, `?`, `[` and `{` a path pattern may hold (`**` counts two).
+pub const MAX_PATH_WILDCARDS: usize = 16;
+
 /// A glob over repository paths (`src/auth/**`, `src/routes/oauth*`). `*` and `?` stay
 /// inside one component, `**` crosses components. Holds the validated text; [`PathSet`]
 /// compiles several for matching.
@@ -275,6 +278,17 @@ impl FromStr for PathPattern {
         }
         if value.split('/').any(|c| c == ".." || c == ".") {
             return Err(invalid("must not contain '.' or '..' components"));
+        }
+        // What makes a set of globs costly to match (the review after M5.5, S8): wildcards,
+        // classes and alternatives. A literal is free.
+        let wildcards = value
+            .chars()
+            .filter(|c| matches!(c, '*' | '?' | '[' | '{'))
+            .count();
+        if wildcards > MAX_PATH_WILDCARDS {
+            return Err(invalid(&format!(
+                "has {wildcards} of `*`, `?`, `[` and `{{`, at most {MAX_PATH_WILDCARDS}"
+            )));
         }
         build_glob(value)
             .map_err(|e| pattern_error("path pattern", value, e.kind().to_string()))?;
@@ -432,6 +446,26 @@ mod tests {
         let set = PathSet::new([&p, &q]).unwrap();
         assert!(set.matches("src/auth/a.rs") && set.matches("src/routes/oauth.rs"));
         assert!(!set.matches("README.md"));
+        // At most 16 of `*`, `?`, `[` and `{` (`**` counts two): what makes matching cost.
+        let at = format!("src/{}", "*?".repeat(8));
+        assert!(at.parse::<PathPattern>().is_ok(), "{at}");
+        let over = format!("{at}*");
+        let error = over.parse::<PathPattern>().unwrap_err();
+        assert_eq!(error.kind, "path pattern");
+        assert!(
+            error
+                .to_string()
+                .contains("has 17 of `*`, `?`, `[` and `{`, at most 16"),
+            "{error}"
+        );
+        let braces = format!("src/{}", "{a,b}".repeat(17));
+        assert!(
+            braces
+                .parse::<PathPattern>()
+                .unwrap_err()
+                .to_string()
+                .contains("has 17 of")
+        );
         for bad in ["", "/abs", "../x", "a/./b", "src/[", "a\nb"] {
             assert_eq!(
                 bad.parse::<PathPattern>().unwrap_err().kind,

@@ -439,3 +439,70 @@ fn an_openpgp_key_proves_itself_in_openpgp_never_over_a_commit_shaped_message() 
         );
     }
 }
+
+#[test]
+fn a_proof_follows_the_policy_in_force_not_the_one_at_start() {
+    // The review after M5.5 (L1): proofs read the policy the daemon started with, so a key
+    // taken out of every template by a signed change still proved itself until a restart.
+    use writ_approval::AdminParsed;
+    use writ_core::authority::{AdminTarget, AdminText};
+    use writ_core::canonical::Canonical;
+    use writ_core::config::PolicyConfig;
+    use writ_core::signed::{Admin, Replaced};
+    let dir = tempfile::tempdir().unwrap();
+    let h = service(dir.path(), Decisions::Signed);
+    let proof = signed_by(
+        &h.approver,
+        APPROVAL_NAMESPACE,
+        &document(KEY, "gitea", "challenge"),
+    );
+    assert!(
+        h.service.prove(&proof, &facts()).is_ok(),
+        "before the change"
+    );
+
+    // A signed change: no template signs commits any more, so no template names the key.
+    let shown = h.service.admin_show(AdminTarget::Policy).unwrap();
+    let text = shown
+        .text
+        .replace(
+            "operations: [fetch, commit_sign, push]",
+            "operations: [fetch, push]",
+        )
+        .replace("    signing_key: agent-ed25519-01\n", "");
+    assert!(!text.contains("signing_key: agent-ed25519-01"), "{text}");
+    let document = Admin::new(
+        shown.daemon.clone(),
+        AdminTarget::Policy,
+        Replaced {
+            version: shown.version,
+            digest: shown.digest.clone(),
+        },
+        AdminText::try_from(text.clone()).unwrap(),
+    )
+    .canonical_bytes()
+    .unwrap();
+    let request = writ_proto::AdminRequest {
+        signature: sshsig::sign(&h.approver, APPROVAL_NAMESPACE, &document).unwrap(),
+        document: String::from_utf8(document).unwrap(),
+    };
+    let checked = h.service.check_admin(&request, &facts()).unwrap();
+    h.service
+        .commit_admin(
+            &checked,
+            AdminParsed::Policy(PolicyConfig::from_yaml(&text).unwrap()),
+            vec![],
+            Default::default(),
+            &facts(),
+        )
+        .unwrap();
+
+    let (code, message) = code(h.service.prove(&proof, &facts()));
+    assert_eq!(code, RefusalCode::Proof, "{message}");
+    assert!(
+        message.contains("agent-ed25519-01 is not a key a template signs commits with"),
+        "{message}"
+    );
+    assert_eq!(h.events("prove", "allowed").len(), 1);
+    assert_eq!(h.events("prove", "denied").len(), 1);
+}

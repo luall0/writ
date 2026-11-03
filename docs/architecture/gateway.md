@@ -97,7 +97,7 @@ objects) and decoded strictly at the edge (`exec/sign.rs`), then, off the async 
    under the service's lock, the single active lease, the policy's `decide_sign` and the
    signature counted; outside it, the signature through the `Signer` (its queue and
    deadline) with the template's `signing_key`; under the lock again, the lease checked once
-   more, then the audit line and the commit recorded in the ledger. The ledger holds the id
+   more (and its fit with the template in force), then the audit line and the commit recorded in the ledger. The ledger holds the id
    of the commit git writes with the signature in it (`writ_git::signed`).
 4. The armored SSHSIG on stdout, or `writ: <reason>` on stderr; `writ-sign` shows it to the
    agent, escaped. A violation under `on_violation: revoke_lease` revokes the lease; its other

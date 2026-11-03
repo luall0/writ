@@ -545,7 +545,8 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
             }
         }
     }
-    check_paths(ctx, template, request, &mut allowed)?;
+    // The count and the rate first: they are cheap, and a request refused by them never
+    // pays for the path match (the review after M5.5, S8).
     if ctx.usage.signatures >= lease.ticket.limits.max_signatures {
         return Err(deny(
             DenyCode::Limit,
@@ -556,6 +557,7 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
         ));
     }
     check_rate(ctx)?;
+    check_paths(ctx, template, request, &mut allowed)?;
     Ok(allowed)
 }
 

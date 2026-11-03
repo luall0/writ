@@ -226,6 +226,10 @@ struct Inner {
     connections: coalesced::Coalesced,
     /// Signatures between their first and last phase ([`sign`]).
     signing: sign::InFlightSignatures,
+    /// Revocations the daemon decided (a violation, an ended session, a removed approver)
+    /// that the store couldn't record, with their reason: their certificates are refused in
+    /// memory meanwhile, and each sweep records them again until the store takes them.
+    unrecorded: std::collections::BTreeMap<TicketId, String>,
 }
 
 impl Inner {
@@ -366,6 +370,7 @@ impl Service {
                 denials: coalesced::Coalesced::denials(),
                 connections: coalesced::Coalesced::connections(),
                 signing: sign::InFlightSignatures::default(),
+                unrecorded: std::collections::BTreeMap::new(),
             }),
             revoked: RwLock::new(revoked),
             changed: Notify::new(),

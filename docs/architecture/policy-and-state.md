@@ -55,10 +55,13 @@ would hold up every approval, wait, refusal and revocation):
    the rate slot taken). A denial is logged there, and a violation's certificate goes on the
    deny list before the lock is released.
 2. **Without the lock**: the signature, through the signer's queue and its deadline
-   ([the queue](signer.md#the-queue-in-front-of-a-backend)).
+   ([the queue](signer.md#the-queue-in-front-of-a-backend)). No other lock is held either:
+   an OpenPGP key's creation time is copied out first, so an admin change that replaces the
+   OpenPGP keys never waits for a signature.
 3. **Under the lock again**: the lease still the one the decision was made on (same terms:
    an amendment approved meanwhile discards the signature), active, not past `expires_at`,
-   its certificate not on the deny list; then the signed commit's id, the `sign` audit line
+   its certificate not on the deny list, and still fitting the template in force (a policy
+   tightened meanwhile by a signed change discards it, code `config`); then the signed commit's id, the `sign` audit line
    (lease, certificate, repo, commit, committer, warnings) and the ledger entry. Only then
    does the signature leave the daemon; otherwise it is discarded and the denial logged
    ("… (while the commit was being signed); the signature was discarded").
@@ -69,7 +72,14 @@ so a failure can't be retried past the limits, and a crash between phases uses a
 grants nothing. While a signature is in flight its lease is not marked exhausted by the
 sweep (its own slot would make its last check refuse it): the last phase marks it once the
 signature is settled. A violation under `on_violation: revoke_lease` revokes the lease (a
-`revoke` line with the violation as its reason).
+`revoke` line with the violation as its reason). A revocation the daemon decides (a
+violation, an ended session, a removed approver) that the store can't record keeps its
+certificate on the deny list, and each sweep (every request runs one first) records it again
+until the store takes it.
+
+`decide_sign` checks the count and the rate before the commit's paths: a request refused for
+them never pays for the path match. That match is bounded by the ticket: at most 100
+`expected_paths` patterns, 16 KiB of them in all, 16 wildcards (`*`, `?`, `[`, `{`) each.
 
 ## Lease store + ledger (SQLite)
 

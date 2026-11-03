@@ -23,6 +23,12 @@ pub const MAX_TASK_LINES: usize = 100;
 pub const MAX_PLAN_STEPS: usize = 50;
 pub const MAX_PLAN_STEP_CHARS: usize = 500;
 pub const MAX_EXPECTED_PATHS: usize = 100;
+/// The bytes of every `expected_paths` pattern together: the set is matched against each
+/// commit's paths, so its size bounds that work (the review after M5.5, S8).
+pub const MAX_EXPECTED_PATHS_BYTES: usize = 16 * 1024;
+/// The branches a ticket may list (each within the template's): what the approver reads,
+/// and what each push is compared with.
+pub const MAX_BRANCHES: usize = 50;
 pub const MAX_ORIGIN_HINT_CHARS: usize = 100;
 /// What precedes feedback from a refusal nobody signed, in a revision's `previous_feedback`.
 pub const UNSIGNED_FEEDBACK: &str = "[not signed by an approver] ";
@@ -223,6 +229,16 @@ fn check_text(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {
         text.expected_paths.len(),
         MAX_EXPECTED_PATHS,
     );
+    let path_bytes = text
+        .expected_paths
+        .iter()
+        .fold(0usize, |sum, p| sum.saturating_add(p.as_str().len()));
+    bound(
+        "ticket.expected_paths (bytes in all)",
+        path_bytes,
+        MAX_EXPECTED_PATHS_BYTES,
+    );
+    bound("scope.branches", ticket.scope.branches.len(), MAX_BRANCHES);
     if let Some(hint) = &ticket.subject.origin_hint {
         bound("origin_hint", hint.chars().count(), MAX_ORIGIN_HINT_CHARS);
     }

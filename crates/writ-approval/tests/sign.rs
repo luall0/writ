@@ -684,7 +684,8 @@ fn a_lease_that_cannot_sign_is_refused_before_its_request_is_read() {
 fn a_violation_bars_the_certificate_even_when_its_revocation_fails() {
     // The M3 review's F4: the deny list comes before the lock is released and before the
     // revocation is recorded. Here recording it fails (its lease lookup): the certificate is
-    // refused all the same, and the next request of the lease with it.
+    // refused all the same, and the next request of the lease with it; the revocation is
+    // recorded by the next sweep.
     let h = Harness::new();
     let (lease, cert) = h.lease(&(FEATURE.to_owned() + "on_violation: revoke_lease\n"));
     // Service::sign looks the lease up once; the revocation's lookup fails.
@@ -699,10 +700,11 @@ fn a_violation_bars_the_certificate_even_when_its_revocation_fails() {
         "not allowed",
     );
     assert!(h.service.is_revoked(cert.serial), "on the deny list");
+    // Not lost: the next request's sweep records it (the review after M5.5, L2).
     assert_eq!(
         h.service.show(&lease).unwrap().state,
-        State::Active,
-        "the revocation wasn't recorded"
+        State::Revoked,
+        "the revocation is recorded at the next request"
     );
     denied(
         h.sign(
@@ -910,6 +912,50 @@ fn answers<T: Send>(what: &str, f: impl FnOnce() -> T + Send) -> T {
     })
 }
 
+/// A signed admin change replacing `target` (as in force now) by `text`, put in force.
+fn apply_admin(h: &Harness, target: writ_core::authority::AdminTarget, text: &str) -> u64 {
+    use writ_approval::AdminParsed;
+    use writ_core::authority::{AdminTarget, AdminText};
+    use writ_core::config::PolicyConfig;
+    use writ_core::signed::{Admin, Replaced};
+    let shown = h.service.admin_show(target).unwrap();
+    let document = Admin::new(
+        shown.daemon.clone(),
+        target,
+        Replaced {
+            version: shown.version,
+            digest: shown.digest.clone(),
+        },
+        AdminText::try_from(text.to_owned()).unwrap(),
+    )
+    .canonical_bytes()
+    .unwrap();
+    let request = writ_proto::AdminRequest {
+        signature: writ_crypto::sshsig::sign(
+            &h.approver,
+            writ_core::lease::APPROVAL_NAMESPACE,
+            &document,
+        )
+        .unwrap(),
+        document: String::from_utf8(document).unwrap(),
+    };
+    let checked = h
+        .service
+        .check_admin(&request, &CallerFacts::default())
+        .unwrap();
+    assert_eq!(target, AdminTarget::Policy, "a policy change only, here");
+    h.service
+        .commit_admin(
+            &checked,
+            AdminParsed::Policy(PolicyConfig::from_yaml(text).unwrap()),
+            vec![],
+            Default::default(),
+            &CallerFacts::default(),
+        )
+        .unwrap()
+        .version
+}
+
 #[test]
 fn a_revocation_completes_while_a_signature_is_in_flight() {
     // M3.5: the signer runs outside the state lock. While it is stuck, the service answers;
@@ -980,8 +1026,8 @@ fn a_lease_that_expires_while_signing_discards_the_signature() {
 fn a_violation_while_a_signature_is_in_flight_discards_it() {
     // The M3 review's F4 with M3.5's phases: a violation bars the certificate before the
     // lock is released, and the last phase checks the deny list, not only the store. Here
-    // recording the revocation fails: the store still says active, the signature in flight
-    // is refused all the same.
+    // recording the revocation fails: the store still says active when the signature in
+    // flight settles (the last phase doesn't sweep), and it is refused all the same.
     let h = Harness::new();
     let (lease, cert) = h.lease(&(FEATURE.to_owned() + "on_violation: revoke_lease\n"));
     let good = build("src/a.rs", EMAIL, &trailer(&lease));
@@ -998,7 +1044,6 @@ fn a_violation_while_a_signature_is_in_flight_discards_it() {
             "not allowed",
         );
         assert!(h.service.is_revoked(cert.serial), "on the deny list");
-        assert_eq!(h.service.show(&lease).unwrap().state, State::Active);
         closed.open();
         denied(
             in_flight.join().unwrap(),
@@ -1007,6 +1052,21 @@ fn a_violation_while_a_signature_is_in_flight_discards_it() {
         );
     });
     assert!(h.ledger(&lease).is_empty());
+    // The revocation the store couldn't record is recorded by the next sweep, which every
+    // request runs first (the review after M5.5, L2): kept only in memory, a restart would
+    // have brought the lease back.
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Revoked);
+    let revoked = h.events("revoke", "done");
+    assert!(
+        revoked
+            .iter()
+            .any(|e| e["lease"] == lease.as_str() && e["reason"].as_str().is_some()),
+        "{revoked:?}"
+    );
+    // Recorded once: a later sweep has nothing left to do.
+    let lines = h.events("revoke", "done").len();
+    h.service.sweep();
+    assert_eq!(h.events("revoke", "done").len(), lines);
 }
 
 #[test]
@@ -1277,4 +1337,111 @@ fn an_openpgp_lease_signs_in_openpgp_only_and_gpg_verifies_its_commits() {
                 .unwrap()
         );
     }
+}
+
+#[test]
+fn a_policy_change_and_a_revocation_complete_while_an_openpgp_signature_is_in_flight() {
+    // The review after M5.5 (S5): an OpenPGP signature held the lock on the OpenPGP keys
+    // while the signer ran, and an admin change of the policy, which replaces those keys
+    // under the state lock, waited for it, holding every revocation and approval behind it.
+    use writ_core::authority::AdminTarget;
+    use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat};
+    let dir = tempfile::tempdir().unwrap();
+    let policy =
+        format!("{POLICY}\nsigning_keys:\n  agent-ed25519-01:\n    uids: [\"Agent <{EMAIL}>\"]\n");
+    let test = TestServiceBuilder::new(&policy)
+        .clock(Arc::new(FakeClock::at_unix(START)))
+        .openpgp(KeyAlgorithm::Ed25519, Hash::Sha512)
+        .build(dir.path());
+    let h = Harness {
+        _dir: dir,
+        test,
+        clock: Arc::new(FakeClock::at_unix(START)),
+        db: std::path::PathBuf::new(),
+    };
+    let (lease, cert) = h.lease(FEATURE);
+    let (other, _) = h.lease(FEATURE);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    let mut openpgp = signing(&cert, &commit, "omega-code");
+    openpgp.format = SignatureFormat::Openpgp;
+
+    let shown = h.service.admin_show(AdminTarget::Policy).unwrap();
+    let text = format!("{}# changed while a signature was in flight\n", shown.text);
+    let closed = h.signer.close();
+    std::thread::scope(|scope| {
+        let in_flight = scope.spawn(|| h.service.sign(&openpgp));
+        let held = h.signer.wait_entered();
+        // Only the commit's signature is held: the policy change certifies the OpenPGP
+        // user ids with the signer too, and those go through.
+        let signer = Arc::downgrade(&h.signer);
+        h.signer.on_enter(Box::new(move |call| {
+            if call != held
+                && let Some(signer) = signer.upgrade()
+            {
+                signer.release(call);
+            }
+        }));
+        let applied = answers("a policy change", || {
+            apply_admin(&h, AdminTarget::Policy, &text)
+        });
+        assert_eq!(applied, shown.version + 1);
+        answers("a revocation", || {
+            h.service
+                .revoke(&other, &h.revocation(&other), &CallerFacts::default())
+                .unwrap()
+        });
+        closed.open();
+        // The signature in flight still completes: the key it signs with didn't change.
+        let signed = in_flight.join().unwrap().unwrap();
+        assert!(
+            signed
+                .signature
+                .starts_with("-----BEGIN PGP SIGNATURE-----\n\n"),
+            "{}",
+            signed.signature
+        );
+    });
+    assert_eq!(h.service.show(&other).unwrap().state, State::Revoked);
+}
+
+#[test]
+fn a_template_tightened_while_signing_discards_the_signature() {
+    // The review after M5.5 (L3): the last phase checked the lease's state, not the policy;
+    // a template tightened below the lease by a signed change while the backend signed still
+    // handed the signature out.
+    use writ_core::authority::AdminTarget;
+    let h = Harness::new();
+    let (lease, cert) = h.lease(FEATURE);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    let shown = h.service.admin_show(AdminTarget::Policy).unwrap();
+    let tight = shown
+        .text
+        .replacen("max_signatures: 50", "max_signatures: 1", 1);
+    assert_ne!(tight, shown.text, "the fixture changed");
+    let closed = h.signer.close();
+    std::thread::scope(|scope| {
+        let in_flight = scope.spawn(|| h.sign(&cert, &commit, "omega-code"));
+        h.signer.wait_entered();
+        answers("a policy change", || {
+            apply_admin(&h, AdminTarget::Policy, &tight)
+        });
+        closed.open();
+        denied(
+            in_flight.join().unwrap(),
+            DenyCode::Config,
+            &format!("lease {lease} no longer fits template feature-branch: "),
+        );
+    });
+    assert!(h.ledger(&lease).is_empty(), "nothing recorded");
+    let lines = h.events("sign", "denied");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["code"], "config");
+    assert!(
+        lines[0]["reason"]
+            .as_str()
+            .unwrap()
+            .ends_with("(changed while the commit was being signed); the signature was discarded"),
+        "{}",
+        lines[0]
+    );
 }

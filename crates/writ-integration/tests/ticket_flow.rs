@@ -613,8 +613,55 @@ fn a_ticket_past_its_template_is_rejected_with_each_reason() {
             &["the ticket fits no template", &format!("feature: {reason}")],
         );
     }
-    assert_eq!(daemon.audited("submit", "allowed"), 2, "{}", daemon.audit());
-    assert_eq!(daemon.audited("submit", "denied"), 10, "{}", daemon.audit());
+    // The review after M5.5's bounds (S8, L20): 50 branches and 16 KiB of expected_paths
+    // taken, one more of either rejected with its reason.
+    let task = "  task: Ask for as much as the template allows\n";
+    let branches = |n: usize| {
+        let list: Vec<String> = (0..n).map(|i| format!("\"agent/x{i}\"")).collect();
+        capped("", at).replace(
+            "branches: [\"agent/x\"]",
+            &format!("branches: [{}]", list.join(", ")),
+        )
+    };
+    let paths = |extra: bool| {
+        let mut list: Vec<String> = (0..16)
+            .map(|i| format!("\"d{i:02}/{}\"", "x".repeat(1020)))
+            .collect();
+        if extra {
+            list.push("\"z\"".to_owned());
+        }
+        capped("", at).replace(
+            task,
+            &format!("{task}  expected_paths: [{}]\n", list.join(", ")),
+        )
+    };
+    for (name, text) in [
+        ("50 branches", branches(50)),
+        ("16 KiB of paths", paths(false)),
+    ] {
+        let out = submit(&daemon, name, &text);
+        assert_eq!(out.status.code(), Some(0), "{name}: {}", stderr(&out));
+    }
+    for (name, text, reason) in [
+        (
+            "51 branches",
+            branches(51),
+            "scope.branches is too long (51, at most 50)",
+        ),
+        (
+            "16 KiB and a byte of paths",
+            paths(true),
+            "ticket.expected_paths (bytes in all) is too long (16385, at most 16384)",
+        ),
+    ] {
+        let out = submit(&daemon, name, &text);
+        assert_rejected(
+            &out,
+            &["the ticket fits no template", &format!("feature: {reason}")],
+        );
+    }
+    assert_eq!(daemon.audited("submit", "allowed"), 4, "{}", daemon.audit());
+    assert_eq!(daemon.audited("submit", "denied"), 12, "{}", daemon.audit());
 }
 
 /// Two templates a plain ticket fits, one of them for any branch.
