@@ -2,7 +2,7 @@
 //! route (`POST /v1/tickets/<id>/approve`).
 
 use writ_core::authority::AdminTarget;
-use writ_core::names::TicketId;
+use writ_core::names::{KeyId, TicketId};
 
 /// A command run over the daemon's SSH protocol (the exec line).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +39,12 @@ pub enum Command {
     /// `writ admin apply`: an approver's signed `writ-admin/1` change ([`AdminRequest`] on
     /// stdin). Reply: [`AdminApplied`].
     AdminApply,
+    /// `writ admin token <id>`, first step: the token file in force for the credential `id`
+    /// (its digest, never the token). Reply: [`TokenShown`].
+    TokenShow { id: KeyId },
+    /// `writ admin token <id>`: an approver's signed `writ-token/1` ([`TokenRequest`] on
+    /// stdin). Reply: [`TokenApplied`].
+    TokenApply,
 }
 
 impl Command {
@@ -52,6 +58,19 @@ impl Command {
         if verb == "admin" {
             let what = words.next()?;
             let arg = words.next();
+            if what == "token" {
+                let third = words.next();
+                if words.next().is_some() {
+                    return None;
+                }
+                return match (arg?, third) {
+                    ("show", Some(id)) => Some(Self::TokenShow {
+                        id: id.parse().ok()?,
+                    }),
+                    ("apply", None) => Some(Self::TokenApply),
+                    _ => None,
+                };
+            }
             if words.next().is_some() {
                 return None;
             }
@@ -100,6 +119,8 @@ impl Command {
             Self::Unseal => "writ unseal".to_owned(),
             Self::AdminShow { target } => format!("writ admin show {target}"),
             Self::AdminApply => "writ admin apply".to_owned(),
+            Self::TokenShow { id } => format!("writ admin token show {id}"),
+            Self::TokenApply => "writ admin token apply".to_owned(),
         }
     }
 
@@ -120,6 +141,7 @@ impl Command {
     /// | prove | `POST /v1/proofs` |
     /// | unseal | `POST /v1/unseal` |
     /// | admin show, admin apply | `GET /v1/admin/<target>`, `POST /v1/admin` |
+    /// | admin token (show, apply) | `GET /v1/tokens/<id>`, `POST /v1/tokens` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request | Self::Wait { .. } => None,
@@ -134,6 +156,8 @@ impl Command {
             Self::Unseal => Some(("POST", "/v1/unseal".to_owned())),
             Self::AdminShow { target } => Some(("GET", format!("/v1/admin/{target}"))),
             Self::AdminApply => Some(("POST", "/v1/admin".to_owned())),
+            Self::TokenShow { id } => Some(("GET", format!("/v1/tokens/{id}"))),
+            Self::TokenApply => Some(("POST", "/v1/tokens".to_owned())),
         }
     }
 
@@ -160,6 +184,10 @@ impl Command {
                 target: target.parse().ok()?,
             },
             ("POST", ["admin"], None) => Self::AdminApply,
+            ("GET", ["tokens", id], None) => Self::TokenShow {
+                id: id.parse().ok()?,
+            },
+            ("POST", ["tokens"], None) => Self::TokenApply,
             _ => return None,
         };
         Some(command)

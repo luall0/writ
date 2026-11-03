@@ -13,7 +13,7 @@
 use writ_core::names::KeyId;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::LineEnding;
-use writ_signer::contract::{queued_signer_contract, signer_contract};
+use writ_signer::contract::{add_key_contract, queued_signer_contract, signer_contract};
 use writ_signer::queue::{QueueConfig, QueuedSigner};
 use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, software_signer};
@@ -36,6 +36,12 @@ fn the_software_backend_passes_the_contract() {
     assert_eq!(mixed.capabilities().algorithms.len(), 2);
     assert!(mixed.capabilities().exportable);
     assert!(!mixed.capabilities().needs_touch);
+    assert!(mixed.capabilities().takes_keys);
+    add_key_contract(&mixed);
+    // A backend that holds no key yet takes one too.
+    let empty = SoftwareSigner::new([]).unwrap();
+    add_key_contract(&empty);
+    assert_eq!(empty.list_keys().unwrap().len(), 1);
 }
 
 #[test]
@@ -70,10 +76,59 @@ fn keys_it_refuses() {
     let sk =
         writ_crypto::ssh_key::PrivateKey::new(private::KeypairData::SkEd25519(sk), "").unwrap();
     assert!(matches!(
-        SoftwareSigner::new([(id("sk"), sk)]),
+        SoftwareSigner::new([(id("sk"), sk.clone())]),
         Err(SignerError::Unsupported { id: k, algorithm }) if k == id("sk")
             && algorithm == "sk-ssh-ed25519@openssh.com"
     ));
+    // Added while it runs: the same refusals, and nothing new listed.
+    let signer = SoftwareSigner::new([(id("a"), key.clone())]).unwrap();
+    assert!(matches!(
+        signer.add_key(id("sk"), sk),
+        Err(SignerError::Unsupported { id: k, .. }) if k == id("sk")
+    ));
+    assert!(matches!(
+        signer.add_key(id("a"), generate(KeyKind::P256).unwrap()),
+        Err(SignerError::DuplicateKey(k)) if k == id("a")
+    ));
+    assert_eq!(signer.list_keys().unwrap().len(), 1);
+    assert_eq!(
+        writ_signer::public_key(&signer, &id("a")).unwrap(),
+        *key.public_key(),
+        "the key held is kept"
+    );
+}
+
+/// A backend that makes its own keys (a stand-in for a device): it takes none from outside.
+struct MakesItsOwn(SoftwareSigner);
+
+impl Signer for MakesItsOwn {
+    fn list_keys(&self) -> Result<Vec<writ_signer::KeyInfo>, SignerError> {
+        self.0.list_keys()
+    }
+
+    fn sign(
+        &self,
+        id: &KeyId,
+        data: &[u8],
+    ) -> Result<writ_crypto::ssh_key::Signature, SignerError> {
+        self.0.sign(id, data)
+    }
+
+    fn capabilities(&self) -> writ_signer::Capabilities {
+        writ_signer::Capabilities {
+            takes_keys: false,
+            exportable: false,
+            ..self.0.capabilities()
+        }
+    }
+}
+
+#[test]
+fn a_backend_that_takes_no_key_says_so_alone_and_behind_a_queue() {
+    let own = || MakesItsOwn(software_signer(&["agent-01"], KeyKind::P256));
+    signer_contract(&own());
+    add_key_contract(&own());
+    queued_signer_contract(own());
 }
 
 #[test]

@@ -149,10 +149,11 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
     );
 }
 
-/// The second daemon's policy: one repo, one template (no `https://` repo, whose token only an
-/// approver adds).
+/// The second daemon's policy: an `ssh://` repo, and an `https://` one whose token only an
+/// approver adds (`writ admin token`); one template.
 const SEALED_POLICY: &str = r#"repos:
   setup: { upstream: "ssh://git@forgejo/writ/setup.git", upstream_credential: upstream-sealed }
+  https: { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-sealed }
 templates:
   feature:
     repos: [setup]
@@ -239,6 +240,50 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     assert!(said.contains("Unsealed (signed by SHA256:"), "{said}");
     let out = approver.run(&format!("{writ} ls --approval-url {https}"));
     expect(&out, 0, "ls once unsealed");
+    // Unsealed without the `https` repo's token: said in the log, the command to run named.
+    assert!(
+        dir.read("writd.log").contains("no token yet"),
+        "{}",
+        dir.read("writd.log")
+    );
+
+    // The token, added from the approver's machine (every flag of `writ admin token`): read
+    // on stdin, encrypted there, sealed on the daemon's host, never in clear there.
+    let token = home.read(&format!(
+        "data/keys/tokens/{}",
+        writ_e2e::setup::HTTPS_CREDENTIAL
+    ));
+    let token = token.trim();
+    let out = approver.run_with(
+        &format!("{writ} admin token token-sealed --yes --approval-url {https} {signer}"),
+        format!("{token}\n").as_bytes(),
+    );
+    let (said, _) = expect(&out, 0, "writ admin token");
+    assert!(said.contains("it replaces no token."), "{said}");
+    assert!(
+        said.contains("Token token-sealed in force (file sha256 "),
+        "{said}"
+    );
+    assert_eq!(
+        dir.ok("grep -c '^-> X25519 ' keys/tokens/token-sealed.age"),
+        "1\n"
+    );
+    assert_eq!(dir.ok("stat -c %a keys/tokens/token-sealed.age"), "600\n");
+    assert_eq!(
+        dir.ok(&format!("grep -rlF -e '{token}' . || true")),
+        "",
+        "the token in clear on the daemon's host"
+    );
+    // An id the policy doesn't use: refused.
+    let out = approver.run_with(
+        &format!("{writ} admin token token-other --yes --approval-url {ssh} {signer}"),
+        format!("{token}\n").as_bytes(),
+    );
+    let (_, why) = expect(&out, 1, "writ admin token for an unused id");
+    assert!(
+        why.contains("no https:// repo of the policy in force names it"),
+        "{why}"
+    );
 
     // In its audit log: the sealed start, the refusals, the unseal.
     let audit = dir.read("data/audit.jsonl");
@@ -257,6 +302,10 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     assert_eq!(count("unseal", "allowed"), 1, "{audit}");
     assert!(count("command", "denied") >= 1, "{audit}");
     assert!(!audit.contains(passphrase));
+    assert!(
+        audit.contains("token token-sealed: sha256 ") && !audit.contains(token),
+        "{audit}"
+    );
 
     // Admin changes: the approvers in force shown, a second approval key added (every flag
     // of `writ admin show` and `apply`), written back to the daemon's file at once.

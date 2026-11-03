@@ -151,7 +151,7 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
     let checked: CheckedAdmin = h.service.check_admin(&request, &facts()).unwrap();
     let applied = h
         .service
-        .commit_admin(&checked, parsed_approvers(&text), &facts())
+        .commit_admin(&checked, parsed_approvers(&text), vec![], &facts())
         .unwrap();
     assert_eq!(
         (applied.target, applied.version),
@@ -207,14 +207,35 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
         message.contains("is version 2, not the one this change replaces"),
         "{message}"
     );
-    // Against the version in force: fine (the same text again, version 3).
+    // Against the version in force: fine (the same text again, version 3). The keys the
+    // daemon made for a change are in the reply and the line.
     let checked = h.service.check_admin(&again, &facts()).unwrap();
-    assert_eq!(
-        h.service
-            .commit_admin(&checked, parsed_approvers(&text), &facts())
+    let made = writ_proto::CreatedKey {
+        id: "agent-02".parse().unwrap(),
+        role: writ_proto::KeyRole::Signing,
+        public_key: next.public_key().to_openssh().unwrap(),
+    };
+    let applied = h
+        .service
+        .commit_admin(
+            &checked,
+            parsed_approvers(&text),
+            vec![made.clone()],
+            &facts(),
+        )
+        .unwrap();
+    assert_eq!((applied.version, applied.created), (3, vec![made.clone()]));
+    let lines = h.events("admin", "allowed");
+    assert!(
+        lines.last().unwrap()["reason"]
+            .as_str()
             .unwrap()
-            .version,
-        3
+            .ends_with(&format!(
+                "; created signing key agent-02: {}",
+                made.public_key
+            )),
+        "{}",
+        lines.last().unwrap()
     );
 }
 
@@ -313,7 +334,7 @@ fn a_tightened_template_denies_its_leases_and_a_key_the_signer_lacks_is_refused(
     let checked = h.service.check_admin(&request, &facts()).unwrap();
     let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&unknown).unwrap());
     let message = refused(
-        h.service.commit_admin(&checked, parsed, &facts()),
+        h.service.commit_admin(&checked, parsed, vec![], &facts()),
         RefusalCode::Admin,
     );
     assert!(
@@ -328,7 +349,9 @@ fn a_tightened_template_denies_its_leases_and_a_key_the_signer_lacks_is_refused(
     let request = change(&h.approver, AdminTarget::Policy, previous, &tight);
     let checked = h.service.check_admin(&request, &facts()).unwrap();
     let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&tight).unwrap());
-    h.service.commit_admin(&checked, parsed, &facts()).unwrap();
+    h.service
+        .commit_admin(&checked, parsed, vec![], &facts())
+        .unwrap();
     let denial = h.service.fetch(&cert, &facts(), &repo).unwrap_err();
     assert_eq!(denial.code, DenyCode::Config, "{denial:?}");
 }
@@ -348,7 +371,7 @@ fn a_change_the_audit_log_cannot_take_changes_nothing() {
     h.audit_breaker.set_broken(true);
     let error = h
         .service
-        .commit_admin(&checked, AdminParsed::Readers, &facts())
+        .commit_admin(&checked, AdminParsed::Readers, vec![], &facts())
         .unwrap_err();
     assert!(matches!(error, ServiceError::AuditLog(_)), "{error}");
     h.audit_breaker.set_broken(false);

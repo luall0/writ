@@ -54,7 +54,8 @@ impl MirrorGuard {
     /// What one operation reaches upstream with. `ssh://`: an agent socket serving the repo's
     /// key, and the ssh command that uses it through the relay. `https://`: the byte-capping
     /// proxy, the credential socket serving the token to the daemon's helper, and git's HTTPS
-    /// settings. Each socket goes when the operation ends.
+    /// settings. Each socket goes when the operation ends. An `https://` repo whose token
+    /// isn't in the keystore yet reaches nothing: refused with the command that adds it.
     pub(super) fn reach_upstream(&self) -> Result<Access> {
         match &self.repo.reach {
             Reach::Ssh {
@@ -63,7 +64,19 @@ impl MirrorGuard {
                 identity,
                 ..
             } => ssh_access(&self.shared, credential, public, identity),
-            Reach::Https { url, token, .. } => https_access(&self.shared, url, token),
+            Reach::Https {
+                url,
+                token: Some(token),
+                ..
+            } => https_access(&self.shared, url, token),
+            Reach::Https {
+                credential,
+                token: None,
+                ..
+            } => Err(MirrorError::NoToken {
+                repo: self.repo.name.clone(),
+                key: credential.clone(),
+            }),
         }
     }
 

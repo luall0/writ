@@ -2,7 +2,9 @@
 //! is held to what the software one is: its signatures verify as SSHSIGs with the public key
 //! it lists, only for the bytes signed, and an unknown key is refused by name. And the
 //! decorator section: behind a [`QueuedSigner`], the backend passes the same contract, a full
-//! queue refuses at once, a stuck backend times out, and its keys are still listed.
+//! queue refuses at once, a stuck backend times out, and its keys are still listed. And
+//! [`add_key_contract`]: a backend that takes keys made outside it lists and signs with one at
+//! once and refuses its id twice; one that doesn't says so, and holds nothing new.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,6 +19,7 @@ use std::time::Duration;
 
 use writ_core::names::KeyId;
 use writ_crypto::CryptoError;
+use writ_crypto::keys::{KeyKind, generate, random_hex};
 
 use crate::queue::{QueueConfig, QueuedSigner};
 use crate::testing::GatedSigner;
@@ -83,6 +86,50 @@ pub fn signer_contract(signer: &dyn Signer) {
     ));
 }
 
+/// Runs the key-adding contract on a backend (it adds a key with a fresh id):
+/// - one that says it takes keys ([`crate::Capabilities::takes_keys`]) answers the key's
+///   [`crate::KeyInfo`], lists it at once, signs with it (verified as an SSHSIG), has its
+///   algorithm in its capabilities, and refuses the same id again by name;
+/// - one that doesn't answers [`SignerError::CannotTakeKeys`] with the id, and lists nothing
+///   new.
+pub fn add_key_contract(signer: &dyn Signer) {
+    let before = signer.list_keys().unwrap();
+    let id: KeyId = format!("contract-added-{}", random_hex(4).unwrap())
+        .parse()
+        .unwrap();
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let public = key.public_key().clone();
+    if !signer.capabilities().takes_keys {
+        assert!(matches!(
+            signer.add_key(id.clone(), key),
+            Err(SignerError::CannotTakeKeys(refused)) if refused == id
+        ));
+        assert_eq!(signer.list_keys().unwrap(), before, "nothing new is listed");
+        return;
+    }
+    let info = signer.add_key(id.clone(), key).unwrap();
+    assert_eq!((&info.id, &info.public_key), (&id, &public));
+    let listed = signer.list_keys().unwrap();
+    assert_eq!(listed.len(), before.len() + 1);
+    assert!(listed.contains(&info), "listed at once");
+    assert!(
+        signer
+            .capabilities()
+            .algorithms
+            .contains(&public.algorithm())
+    );
+    let msg = b"signed with a key added while it runs";
+    let armored = sshsig(signer, &id, "git", msg).unwrap();
+    writ_crypto::sshsig::verify(std::slice::from_ref(&public), "git", msg, &armored).unwrap();
+    // The same id again: refused by name, the first key kept.
+    let again = generate(KeyKind::Ed25519).unwrap();
+    assert!(matches!(
+        signer.add_key(id.clone(), again),
+        Err(SignerError::DuplicateKey(refused)) if refused == id
+    ));
+    assert_eq!(public_key(signer, &id).unwrap(), public);
+}
+
 /// The decorator section: `backend` behind a [`QueuedSigner`] (with a [`GatedSigner`] between
 /// them, to hold the backend stuck on a signal):
 /// - the whole [`signer_contract`] passes through the queue;
@@ -90,7 +137,10 @@ pub fn signer_contract(signer: &dyn Signer) {
 /// - a full queue refuses at once with [`SignerError::Busy`];
 /// - a job the stuck backend doesn't answer returns [`SignerError::Timeout`] with its key;
 /// - once the backend answers again, a job whose caller gave up is skipped (never signed for
-///   nobody), the late result is thrown away, and the next job signs.
+///   nobody), the late result is thrown away, and the next job signs;
+/// - a key added while the backend is stuck waits its turn behind the job before it (not
+///   listed until the backend took it), then lands; and the whole [`add_key_contract`]
+///   passes through the queue.
 pub fn queued_signer_contract<S: Signer + 'static>(backend: S) {
     let keys = backend.list_keys().unwrap();
     let capabilities = backend.capabilities();
@@ -151,4 +201,28 @@ pub fn queued_signer_contract<S: Signer + 'static>(backend: S) {
         3,
         "the abandoned job was never signed"
     );
+
+    if capabilities.takes_keys {
+        // A key added while the backend is stuck: it waits behind the stuck job.
+        let closed = gated.close();
+        let stuck = queued.submit(&key, b"held", GENEROUS).unwrap();
+        gated.wait_entered();
+        let id: KeyId = "contract-added-behind".parse().unwrap();
+        let added = generate(KeyKind::Ed25519).unwrap();
+        let public = added.public_key().clone();
+        std::thread::scope(|scope| {
+            let adding = scope.spawn(|| queued.add_key(id.clone(), added));
+            // Whether or not the add is queued yet, the backend can't have taken it.
+            assert!(
+                queued.list_keys().unwrap().iter().all(|k| k.id != id),
+                "listed before the backend took it"
+            );
+            closed.open();
+            stuck.wait().unwrap();
+            let info = adding.join().unwrap().unwrap();
+            assert_eq!(info.public_key, public);
+        });
+        assert_eq!(public_key(&queued, &id).unwrap(), public);
+    }
+    add_key_contract(&queued);
 }

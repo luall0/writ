@@ -25,7 +25,7 @@ pub mod contract;
 pub mod testing;
 
 use writ_core::names::KeyId;
-use writ_crypto::ssh_key::{Algorithm, PublicKey, Signature};
+use writ_crypto::ssh_key::{Algorithm, PrivateKey, PublicKey, Signature};
 
 /// Why a signer didn't sign. Never holds key material.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +49,10 @@ pub enum SignerError {
     /// The signer can't take a job: its worker couldn't start, or stopped.
     #[error("the signer is unavailable")]
     Unavailable,
+    /// The backend takes no key made outside it ([`Signer::add_key`]): a device that makes
+    /// its own keys.
+    #[error("key {0}: this signer backend takes no key made outside it")]
+    CannotTakeKeys(KeyId),
 }
 
 /// A key a backend exposes: its id (what templates name in `signing_key`) and its public
@@ -70,6 +74,9 @@ pub struct Capabilities {
     /// Whether signing needs someone to touch the device (never for an agent key: signing
     /// happens unattended).
     pub needs_touch: bool,
+    /// Whether [`Signer::add_key`] takes a key made outside the backend (a software backend
+    /// does; a device that makes its own keys doesn't).
+    pub takes_keys: bool,
 }
 
 /// Where keys live and how they sign. Used as a trait object (`Arc<dyn Signer>`).
@@ -81,6 +88,15 @@ pub trait Signer: Send + Sync {
     fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError>;
     /// What this backend can do.
     fn capabilities(&self) -> Capabilities;
+    /// Takes `key`, made outside the backend, under `id` (moved in, never copied), usable at
+    /// once; answers its [`KeyInfo`]. An id it holds already is [`SignerError::DuplicateKey`],
+    /// an algorithm it doesn't hold [`SignerError::Unsupported`]. A backend that takes no key
+    /// from outside (a device makes its own: M7.5 brings that verb) keeps this default,
+    /// [`SignerError::CannotTakeKeys`], and says so in [`Capabilities::takes_keys`].
+    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+        drop(key);
+        Err(SignerError::CannotTakeKeys(id))
+    }
 }
 
 /// A shared signer is a signer (a decorator can hold one the daemon or a test holds too).
@@ -95,6 +111,10 @@ impl<S: Signer + ?Sized> Signer for std::sync::Arc<S> {
 
     fn capabilities(&self) -> Capabilities {
         (**self).capabilities()
+    }
+
+    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+        (**self).add_key(id, key)
     }
 }
 

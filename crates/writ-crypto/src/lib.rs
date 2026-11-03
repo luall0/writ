@@ -1,7 +1,8 @@
 //! Cryptography for Writ: SSHSIG signatures (commit signing, approvals), the SSH certificate
 //! authority that turns an approved lease into a session certificate, the approvers file,
 //! the readers file (who may use the approval API), keys and randomness, the approval API's
-//! pinned TLS, and reading a passphrase a person types.
+//! pinned TLS, reading a passphrase a person types, and sealing a secret to the daemon's
+//! keystore.
 //!
 //! Signing is split the way the `Signer` interface needs it: [`sshsig::signed_data`] builds
 //! the exact bytes to sign, a key signs them, and [`sshsig::assemble`] wraps the raw
@@ -17,6 +18,7 @@ pub mod ca;
 pub mod keys;
 pub mod passphrase;
 pub mod readers;
+pub mod sealed;
 pub mod sshsig;
 pub mod tls;
 

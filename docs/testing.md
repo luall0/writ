@@ -178,7 +178,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: attestor` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; the value macos_process_chain planned: M7 |
 | `writd.yaml: session_watcher` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; the value macos planned: M7 |
 | `writd.yaml: notifiers[].telegram.token.boot` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `while_sealed_every_request_fails_closed_with_daemon_sealed_and_is_logged` |
-| `writd.yaml: notifiers[].telegram.token.sealed` | planned: M5 |
+| `writd.yaml: notifiers[].telegram.token.sealed` | `a_sealed_notifier_token_starts_its_notifier_when_added` |
 | `writd.yaml: notifiers[].telegram.chat_id` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
 | `writd.yaml: notifiers[].telegram.api_base` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
 | `policy.yaml: repos.<name>.upstream` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees` |

@@ -10,7 +10,9 @@ use serde::Serialize;
 use writ_approval::{Service, ServiceError};
 use writ_core::caller::CallerFacts;
 use writ_crypto::ssh_key::PublicKey;
-use writ_proto::{AdminRequest, ApiError, Command, MAX_BODY, UnsealRequest, Unsealed};
+use writ_proto::{
+    AdminRequest, ApiError, Command, MAX_BODY, TokenRequest, UnsealRequest, Unsealed,
+};
 use zeroize::Zeroizing;
 
 use crate::channel::reply;
@@ -78,6 +80,7 @@ pub(crate) fn approval_has_body(command: &Command) -> bool {
             | Command::Prove
             | Command::Unseal
             | Command::AdminApply
+            | Command::TokenApply
     )
 }
 
@@ -131,6 +134,14 @@ pub(crate) async fn approval_reply(
             encoded(blocking(move || service.admin_show(target)).await)
         }
         Command::AdminApply => admin_apply(gateway, facts, &body).await,
+        Command::TokenShow { id } => match gateway.shared.config.admin.clone() {
+            Some(applier) => match applier.token_show(id).await {
+                Ok(shown) => encoded(Ok(shown)),
+                Err(reason) => encoded::<()>(Err(ApiError::new(reason))),
+            },
+            None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
+        },
+        Command::TokenApply => token_apply(gateway, facts, &body).await,
         Command::Request | Command::Wait { .. } => {
             encoded::<()>(Err(ApiError::new("command not allowed here")))
         }
@@ -160,6 +171,34 @@ async fn admin_apply(
         Err(e) => return encoded::<()>(Err(e)),
     };
     match applier.apply(checked, facts).await {
+        Ok(applied) => encoded(Ok(applied)),
+        Err(reason) => encoded::<()>(Err(ApiError::new(format!("not applied: {reason}")))),
+    }
+}
+
+/// `writ admin token`: the service checks the document and the approver's signature; then the
+/// daemon's [`crate::AdminApplier`] opens the token, has the change logged against the file in
+/// force, writes it and uses it. One change at a time (admin changes included); refusals are
+/// logged by the service or the applier, once.
+async fn token_apply(
+    gateway: Gateway,
+    facts: CallerFacts,
+    body: &[u8],
+) -> (Vec<u8>, Option<String>) {
+    let request: TokenRequest = match writ_proto::decode_body(body) {
+        Ok(request) => request,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let Some(applier) = gateway.shared.config.admin.clone() else {
+        return encoded::<()>(Err(ApiError::new("this daemon takes no admin change")));
+    };
+    let _one = gateway.shared.administering.lock().await;
+    let (service, caller) = (gateway.service().clone(), facts.clone());
+    let checked = match blocking(move || service.check_token(&request, &caller)).await {
+        Ok(checked) => checked,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    match applier.apply_token(checked, facts).await {
         Ok(applied) => encoded(Ok(applied)),
         Err(reason) => encoded::<()>(Err(ApiError::new(format!("not applied: {reason}")))),
     }

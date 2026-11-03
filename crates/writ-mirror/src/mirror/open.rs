@@ -21,9 +21,11 @@ use crate::{MIN_GIT, MIN_GIT_HTTPS, MirrorError, Result, shown};
 impl Mirrors {
     /// Opens the mirror of every repo in `repos`, creating the ones that don't exist yet.
     /// Refuses (fail closed) an upstream it can't reach as configured: neither `ssh://` nor
-    /// `https://`, an ssh host without a pinned key, a credential the signer (ssh) or `tokens`
-    /// (HTTPS) don't hold, a git too old for it; and a directory in the mirror's place that
-    /// isn't one the daemon made (another object or ref format, not bare, a link).
+    /// `https://`, an ssh host without a pinned key, a credential the signer doesn't hold
+    /// (ssh), a git too old for it; and a directory in the mirror's place that isn't one the
+    /// daemon made (another object or ref format, not bare, a link). An `https://` repo whose
+    /// token `tokens` lacks is opened, and reaches nothing upstream until it is added
+    /// ([`MirrorError::NoToken`]).
     pub async fn open(
         config: MirrorConfig,
         repos: &BTreeMap<RepoName, RepoEntry>,
@@ -56,7 +58,8 @@ impl Mirrors {
     /// The mirrors of `repos`, a registry replacing this one's (an admin change): a repo whose
     /// entry didn't change keeps its mirror and its lock (an operation in flight on it goes
     /// on), a new or changed one is opened and checked as at start, a removed one is no longer
-    /// served. `signer` and `tokens` are the upstream credentials in force.
+    /// served. `signer` and `tokens` are the upstream credentials in force: an `https://` repo
+    /// whose token changed (added or replaced: `writ admin token`) is opened again with it.
     pub async fn with_registry(
         &self,
         repos: &BTreeMap<RepoName, RepoEntry>,
@@ -71,7 +74,7 @@ impl Mirrors {
             let kept = shared
                 .repos
                 .get(name)
-                .filter(|repo| repo.entry == *entry)
+                .filter(|repo| repo.entry == *entry && same_token(&repo.reach, tokens))
                 .cloned();
             let repo = match kept {
                 Some(repo) => repo,
@@ -93,6 +96,20 @@ impl Mirrors {
                 syncs: Semaphore::new(MAX_SYNCS),
             }),
         })
+    }
+}
+
+/// Whether `reach` holds the token `tokens` has for its credential (an `ssh://` one: always).
+fn same_token(reach: &Reach, tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>) -> bool {
+    match reach {
+        Reach::Ssh { .. } => true,
+        Reach::Https {
+            credential, token, ..
+        } => match (token, tokens.get(credential)) {
+            (None, None) => true,
+            (Some(held), Some(given)) => Arc::ptr_eq(held, given),
+            _ => false,
+        },
     }
 }
 
@@ -256,7 +273,7 @@ async fn open_repo(
 }
 
 /// How `name`'s upstream is reached: neither `ssh://` nor `https://` is refused, and so is a
-/// credential the signer (ssh) or `tokens` (HTTPS) don't hold.
+/// credential the signer doesn't hold (ssh); a token `tokens` lacks (HTTPS) is none yet.
 fn reach(
     config: &MirrorConfig,
     keys_dir: &Path,
@@ -274,13 +291,14 @@ fn reach(
     match upstream {
         Upstream::Ssh(url) => ssh_reach(config, keys_dir, signer, name, url, credential),
         Upstream::Https(url) => {
-            let token = tokens
-                .get(&credential)
-                .ok_or_else(|| MirrorError::UnknownToken {
-                    repo: name.clone(),
-                    key: credential.clone(),
-                })?
-                .clone();
+            let token = tokens.get(&credential).cloned();
+            if token.is_none() {
+                tracing::warn!(
+                    repo = %name,
+                    credential = %credential,
+                    "no token yet: syncs and pushes are refused until `writ admin token` adds it"
+                );
+            }
             Ok(Reach::Https {
                 url,
                 credential,

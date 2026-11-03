@@ -16,6 +16,7 @@ mod push;
 mod sign;
 mod submissions;
 mod sweep;
+mod token;
 mod unseal;
 
 pub use admin::{AdminParsed, CheckedAdmin, InForce};
@@ -26,6 +27,7 @@ pub use submissions::{
     DEFAULT_SUBMISSIONS_IN_ALL, DEFAULT_SUBMISSIONS_PER_SOURCE, MAX_SUBMISSIONS_IN_ALL,
     MAX_SUBMISSIONS_PER_SOURCE, SubmissionLimits,
 };
+pub use token::CheckedToken;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,6 +89,9 @@ pub struct ServiceConfig {
     /// The version of each authority file the daemon started with, and their MAC (checked at
     /// unseal).
     pub in_force: InForce,
+    /// The sealed keystore's public recipient, served by `writ info` (what `writ admin
+    /// token` encrypts to); `None` with the development keystore.
+    pub recipient: Option<String>,
 }
 
 /// The platform implementations the service uses.
@@ -601,6 +606,7 @@ impl Service {
         Info {
             decisions: self.config.decisions,
             sealed: self.is_sealed().then(|| self.boot.clone()),
+            recipient: self.config.recipient.clone(),
         }
     }
 }

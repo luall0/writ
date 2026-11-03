@@ -49,11 +49,13 @@ impl MirrorGuard {
     /// and an agent's terminal.
     pub(super) fn clean(&self, text: &[u8]) -> String {
         match &self.repo.reach {
-            Reach::Https { token, .. } => {
+            Reach::Https {
+                token: Some(token), ..
+            } => {
                 let text = String::from_utf8_lossy(text).replace(token.expose(), "<redacted>");
                 shown(text.as_bytes())
             }
-            Reach::Ssh { .. } => shown(text),
+            Reach::Https { token: None, .. } | Reach::Ssh { .. } => shown(text),
         }
     }
 }

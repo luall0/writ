@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{PoisonError, RwLock};
 
 use signature::Signer as _;
 use writ_core::names::KeyId;
@@ -11,18 +12,30 @@ use writ_crypto::ssh_key::{Algorithm, EcdsaCurve, PrivateKey, Signature};
 
 use crate::{Capabilities, KeyInfo, Signer, SignerError};
 
-/// Keys in memory, by id.
+/// Keys in memory, by id. Keys may be added while it runs ([`Signer::add_key`]).
 pub struct SoftwareSigner {
-    keys: BTreeMap<KeyId, PrivateKey>,
+    keys: RwLock<BTreeMap<KeyId, PrivateKey>>,
 }
 
 impl fmt::Debug for SoftwareSigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The ids only: never a key.
+        let keys = self.read();
         f.debug_struct("SoftwareSigner")
-            .field("keys", &self.keys.keys().collect::<Vec<_>>())
+            .field("keys", &keys.keys().collect::<Vec<_>>())
             .finish()
     }
+}
+
+/// Whether the software backend holds keys of `key`'s kind: Ed25519 and P-256, unencrypted.
+fn supported(key: &PrivateKey) -> bool {
+    matches!(
+        key.algorithm(),
+        Algorithm::Ed25519
+            | Algorithm::Ecdsa {
+                curve: EcdsaCurve::NistP256
+            }
+    ) && !key.is_encrypted()
 }
 
 impl SoftwareSigner {
@@ -31,32 +44,46 @@ impl SoftwareSigner {
     pub fn new(keys: impl IntoIterator<Item = (KeyId, PrivateKey)>) -> Result<Self, SignerError> {
         let mut held = BTreeMap::new();
         for (id, key) in keys {
-            let supported = matches!(
-                key.algorithm(),
-                Algorithm::Ed25519
-                    | Algorithm::Ecdsa {
-                        curve: EcdsaCurve::NistP256
-                    }
-            );
-            if !supported || key.is_encrypted() {
-                return Err(SignerError::Unsupported {
-                    algorithm: key.algorithm().to_string(),
-                    id,
-                });
-            }
-            if held.contains_key(&id) {
-                return Err(SignerError::DuplicateKey(id));
-            }
-            held.insert(id, key);
+            insert(&mut held, id, key)?;
         }
-        Ok(Self { keys: held })
+        Ok(Self {
+            keys: RwLock::new(held),
+        })
     }
+
+    // poisoned: a key map is changed by one insert, whole or not at all; the map stands.
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, BTreeMap<KeyId, PrivateKey>> {
+        self.keys.read().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Puts `key` in `held` under `id`, if the backend takes its kind and the id is free.
+fn insert(
+    held: &mut BTreeMap<KeyId, PrivateKey>,
+    id: KeyId,
+    key: PrivateKey,
+) -> Result<KeyInfo, SignerError> {
+    if !supported(&key) {
+        return Err(SignerError::Unsupported {
+            algorithm: key.algorithm().to_string(),
+            id,
+        });
+    }
+    if held.contains_key(&id) {
+        return Err(SignerError::DuplicateKey(id));
+    }
+    let info = KeyInfo {
+        id: id.clone(),
+        public_key: key.public_key().clone(),
+    };
+    held.insert(id, key);
+    Ok(info)
 }
 
 impl Signer for SoftwareSigner {
     fn list_keys(&self) -> Result<Vec<KeyInfo>, SignerError> {
         Ok(self
-            .keys
+            .read()
             .iter()
             .map(|(id, key)| KeyInfo {
                 id: id.clone(),
@@ -66,8 +93,8 @@ impl Signer for SoftwareSigner {
     }
 
     fn sign(&self, id: &KeyId, data: &[u8]) -> Result<Signature, SignerError> {
-        let key = self
-            .keys
+        let keys = self.read();
+        let key = keys
             .get(id)
             .ok_or_else(|| SignerError::UnknownKey(id.clone()))?;
         key.try_sign(data)
@@ -76,7 +103,7 @@ impl Signer for SoftwareSigner {
 
     fn capabilities(&self) -> Capabilities {
         let mut algorithms: Vec<Algorithm> = Vec::new();
-        for key in self.keys.values() {
+        for key in self.read().values() {
             if !algorithms.contains(&key.algorithm()) {
                 algorithms.push(key.algorithm());
             }
@@ -85,6 +112,12 @@ impl Signer for SoftwareSigner {
             algorithms,
             exportable: true,
             needs_touch: false,
+            takes_keys: true,
         }
+    }
+
+    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+        let mut held = self.keys.write().unwrap_or_else(PoisonError::into_inner);
+        insert(&mut held, id, key)
     }
 }

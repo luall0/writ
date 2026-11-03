@@ -117,12 +117,30 @@ pub trait Unsealer: Send + Sync {
 /// the daemon's configuration, has the service record it ([`Service::commit_admin`]), and
 /// swaps what the daemon runs with (the readers, the mirrors). Implemented by the daemon's
 /// wiring; the gateway calls it one change at a time.
+///
+/// It holds the sealed tokens too: which file is in force for a credential
+/// ([`AdminApplier::token_show`]), and a checked `writ-token/1` put in force
+/// ([`AdminApplier::apply_token`]: opened and checked to be a token, logged by the service
+/// against the file in force ([`Service::commit_token`]), written, used at once).
 pub trait AdminApplier: Send + Sync {
     fn apply(
         &self,
         checked: writ_approval::CheckedAdmin,
         caller: CallerFacts,
     ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::AdminApplied, String>>;
+
+    /// The token file in force for the credential `id` (its digest, or none), if `id` is one
+    /// a token is taken for.
+    fn token_show(
+        &self,
+        id: writ_core::names::KeyId,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::TokenShown, String>>;
+
+    fn apply_token(
+        &self,
+        checked: writ_approval::CheckedToken,
+        caller: CallerFacts,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::TokenApplied, String>>;
 }
 
 /// What the gateway needs to run.

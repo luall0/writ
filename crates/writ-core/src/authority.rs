@@ -3,6 +3,11 @@
 //! an approver's signed admin change (`writ-admin/1`, [`crate::signed::Admin`]) or
 //! `writd recover` on the host; the daemon keeps every version, and names each by the SHA-256
 //! of its text ([`TextDigest`]).
+//!
+//! And the sealed tokens (an `https://` upstream's, a notifier's kept sealed): added from the
+//! approver's machine, encrypted there to the keystore's recipient, by a signed `writ-token/1`
+//! ([`crate::signed::Token`]) naming the token file it replaces ([`PreviousToken`]) and
+//! carrying the ciphertext ([`SealedToken`]).
 
 use std::fmt;
 use std::str::FromStr;
@@ -74,8 +79,13 @@ pub struct TextDigestError;
 impl TextDigest {
     /// The digest of `text`.
     pub fn of(text: &str) -> Self {
+        Self::of_bytes(text.as_bytes())
+    }
+
+    /// The digest of `bytes` (a sealed token's file).
+    pub fn of_bytes(bytes: &[u8]) -> Self {
         Self(
-            Sha256::digest(text.as_bytes())
+            Sha256::digest(bytes)
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect(),
@@ -160,6 +170,100 @@ impl From<AdminText> for String {
     }
 }
 
+/// The longest sealed token a `writ-token/1` may carry, in characters of base64: an age file
+/// holding a token of at most 1 KiB, to one recipient, is a few hundred bytes.
+pub const MAX_SEALED_TOKEN: usize = 8 * 1024;
+
+/// A token encrypted to the keystore's recipient: the age file, in standard base64 (with its
+/// padding), at most [`MAX_SEALED_TOKEN`] characters. Only the keystore's identity reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SealedToken(String);
+
+/// A sealed token that can't be taken.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SealedTokenError {
+    #[error("the sealed token is {0} characters: at most {MAX_SEALED_TOKEN} are taken")]
+    TooLong(usize),
+    #[error("the sealed token is not standard base64")]
+    NotBase64,
+}
+
+impl SealedToken {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SealedToken {
+    type Error = SealedTokenError;
+
+    fn try_from(value: String) -> Result<Self, SealedTokenError> {
+        if value.len() > MAX_SEALED_TOKEN {
+            return Err(SealedTokenError::TooLong(value.len()));
+        }
+        let body = value.trim_end_matches('=');
+        let padding = value.len().saturating_sub(body.len());
+        let alphabet = |c: char| c.is_ascii_alphanumeric() || c == '+' || c == '/';
+        if value.is_empty()
+            || !value.len().is_multiple_of(4)
+            || padding > 2
+            || !body.chars().all(alphabet)
+        {
+            return Err(SealedTokenError::NotBase64);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<SealedToken> for String {
+    fn from(value: SealedToken) -> String {
+        value.0
+    }
+}
+
+/// The token file a `writ-token/1` replaces: none yet (`none`), or the one whose bytes have
+/// this digest. Replayed, or signed against a file no longer there, a change does nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum PreviousToken {
+    None,
+    File(TextDigest),
+}
+
+impl fmt::Display for PreviousToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::File(digest) => digest.fmt(f),
+        }
+    }
+}
+
+/// A previous token that is neither `none` nor a digest.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the token replaced is `none` or a digest of 64 lowercase hex characters (SHA-256)")]
+pub struct PreviousTokenError;
+
+impl TryFrom<String> for PreviousToken {
+    type Error = PreviousTokenError;
+
+    fn try_from(value: String) -> Result<Self, PreviousTokenError> {
+        if value == "none" {
+            return Ok(Self::None);
+        }
+        TextDigest::try_from(value)
+            .map(Self::File)
+            .map_err(|_| PreviousTokenError)
+    }
+}
+
+impl From<PreviousToken> for String {
+    fn from(value: PreviousToken) -> String {
+        value.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +305,62 @@ mod tests {
                 AdminText::try_from(bad.to_owned()),
                 Err(AdminTextError::Control),
                 "{bad:?}"
+            );
+        }
+    }
+    #[test]
+    fn sealed_tokens_and_the_file_they_replace_are_read_strictly() {
+        // The bound, on both sides.
+        assert!(SealedToken::try_from("A".repeat(MAX_SEALED_TOKEN)).is_ok());
+        assert_eq!(
+            SealedToken::try_from("A".repeat(MAX_SEALED_TOKEN + 4)),
+            Err(SealedTokenError::TooLong(MAX_SEALED_TOKEN + 4))
+        );
+        for good in ["YWdl", "YWc=", "YQ==", "a+b/"] {
+            assert_eq!(
+                SealedToken::try_from(good.to_owned()).unwrap().as_str(),
+                good
+            );
+        }
+        // Hostile or malformed: never taken.
+        for bad in [
+            "",
+            "YWd",
+            "YQ===",
+            "Y===",
+            "YW-l",
+            "YW_l",
+            "YW l",
+            "YWdl\n",
+            "=YWd",
+            "YQ=a",
+            "\u{1b}[2J",
+            "YWÿl",
+        ] {
+            assert_eq!(
+                SealedToken::try_from(bad.to_owned()),
+                Err(SealedTokenError::NotBase64),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            PreviousToken::try_from("none".to_owned()),
+            Ok(PreviousToken::None)
+        );
+        let digest = TextDigest::of_bytes(b"age file");
+        assert_eq!(
+            PreviousToken::try_from(digest.to_string()),
+            Ok(PreviousToken::File(digest.clone()))
+        );
+        assert_eq!(
+            PreviousToken::File(digest.clone()).to_string(),
+            digest.to_string()
+        );
+        for bad in ["None", "", "null", "E3B0", &"a".repeat(63)] {
+            assert_eq!(
+                PreviousToken::try_from(bad.to_owned()),
+                Err(PreviousTokenError),
+                "{bad}"
             );
         }
     }

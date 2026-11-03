@@ -1,9 +1,9 @@
 //! The replies and request bodies of each [`Command`](crate::Command).
 
 use serde::{Deserialize, Serialize};
-use writ_core::authority::{AdminTarget, TextDigest};
+use writ_core::authority::{AdminTarget, PreviousToken, TextDigest};
 use writ_core::lease::State;
-use writ_core::names::{KeyFingerprint, RepoName, TemplateName, TicketId};
+use writ_core::names::{KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
 use writ_core::signed::BootNonce;
 use writ_core::units::Timestamp;
 use zeroize::Zeroizing;
@@ -57,6 +57,10 @@ pub struct Info {
     /// While the daemon is sealed: what an unseal signature names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealed: Option<SealedBoot>,
+    /// The sealed keystore's public recipient (`age1…`): what `writ admin token` encrypts a
+    /// token to. None with the development keystore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
 }
 
 /// A sealed daemon's boot, as a `writ-unseal/1` document names it.
@@ -143,6 +147,72 @@ pub struct AdminApplied {
     pub target: AdminTarget,
     pub version: u64,
     pub digest: TextDigest,
+    pub signed_by: KeyFingerprint,
+    /// The keys the new policy named that the keystore lacked: made by this change, to
+    /// register on the remotes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created: Vec<CreatedKey>,
+}
+
+/// A key a signed policy change made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatedKey {
+    pub id: KeyId,
+    pub role: KeyRole,
+    /// Its public key (OpenSSH text).
+    pub public_key: String,
+}
+
+/// What a daemon key is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyRole {
+    /// Signs agents' commits (a template's `signing_key`): register it on the account the
+    /// commits are shown under.
+    Signing,
+    /// Reaches an `ssh://` upstream (a repo's `upstream_credential`): add it on the remote.
+    Upstream,
+}
+
+impl KeyRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Signing => "signing key",
+            Self::Upstream => "upstream credential",
+        }
+    }
+}
+
+/// Reply to [`Command::TokenShow`](crate::Command::TokenShow): the token file in force for a
+/// credential, by its digest (never the token).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenShown {
+    pub id: KeyId,
+    /// What a `writ-token/1` replacing it names as `previous`.
+    pub previous: PreviousToken,
+}
+
+/// Body of [`Command::TokenApply`](crate::Command::TokenApply).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenRequest {
+    /// The canonical bytes of the `writ-token/1` document: the credential, the file it
+    /// replaces, the token sealed to the keystore's recipient.
+    pub document: String,
+    /// The approver's armored SSHSIG over them, namespace `writ-approval`.
+    pub signature: String,
+}
+
+/// Reply to [`Command::TokenApply`](crate::Command::TokenApply): the token is in force.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenApplied {
+    pub id: KeyId,
+    /// The digest of the new token file.
+    pub digest: TextDigest,
+    pub replaced: PreviousToken,
     pub signed_by: KeyFingerprint,
 }
 

@@ -188,6 +188,7 @@ impl TestServiceBuilder {
                 ca_public: ca_key.public_key().clone(),
                 daemon: daemon.clone(),
                 in_force,
+                recipient: None,
             },
             NONCE,
             store,

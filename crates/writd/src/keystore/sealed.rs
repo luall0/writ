@@ -109,8 +109,17 @@ impl SecretFiles {
     /// encrypted to a recipient, never to a passphrase.
     pub fn read(&self, path: &Path, what: &str) -> anyhow::Result<Zeroizing<Vec<u8>>> {
         let sealed = writ_platform::fs::read_secret(path, what, MAX_SECRET_FILE)?;
-        let not_one = || format!("{} is not a sealed secret", path.display());
-        let decryptor = age::Decryptor::new_buffered(&sealed[..])
+        self.open(&sealed, &path.display().to_string())
+    }
+
+    /// The plaintext of the age file `sealed` (a secret not written yet: a token an approver
+    /// sent; `name` names it in errors), as [`SecretFiles::read`] opens a file.
+    pub fn open(&self, sealed: &[u8], name: &str) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+        if u64::try_from(sealed.len()).unwrap_or(u64::MAX) > MAX_SECRET_FILE {
+            bail!("{name} is larger than a sealed secret ({MAX_SECRET_FILE} bytes)");
+        }
+        let not_one = || format!("{name} is not a sealed secret");
+        let decryptor = age::Decryptor::new_buffered(sealed)
             .map_err(|_| anyhow::anyhow!("{}: not an age file", not_one()))?;
         if decryptor.is_scrypt() {
             bail!("{}: it is encrypted to a passphrase", not_one());
@@ -123,9 +132,9 @@ impl SecretFiles {
             )
             .map_err(|e| match e {
                 age::DecryptError::NoMatchingKeys => {
-                    anyhow::anyhow!("{}: no identity of this keystore opens it", path.display())
+                    anyhow::anyhow!("{name}: no identity of this keystore opens it")
                 }
-                _ => anyhow::anyhow!("{}: cannot decrypt it", path.display()),
+                _ => anyhow::anyhow!("{name}: cannot decrypt it"),
             })?;
         // Room for the largest secret up front: reading never moves the plaintext to a
         // larger buffer, which would leave an unwiped copy behind.
@@ -134,7 +143,7 @@ impl SecretFiles {
         (&mut reader)
             .take(MAX_SECRET_FILE)
             .read_to_end(&mut plaintext)
-            .map_err(|_| anyhow::anyhow!("{}: cannot decrypt it", path.display()))?;
+            .map_err(|_| anyhow::anyhow!("{name}: cannot decrypt it"))?;
         Ok(plaintext)
     }
 }
@@ -230,20 +239,21 @@ pub fn boot(sealed: &SealedConfig) -> anyhow::Result<Boot> {
 }
 
 /// The sealed secret `tokens/<id>.age`, opened by `files`; `what` names it. A missing one is
-/// a token nobody added yet.
+/// a token nobody added yet: `None`, said in the log.
 fn sealed_token(
     files: &SecretFiles,
     sealed: &SealedConfig,
     id: &KeyId,
     what: &str,
-) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+) -> anyhow::Result<Option<Zeroizing<Vec<u8>>>> {
     let path = Layout(sealed).token(id);
     if !path.exists() {
-        bail!(
+        tracing::warn!(
             "{what} {id} is not in the keystore: an approver adds it with `writ admin token {id}`"
         );
+        return Ok(None);
     }
-    files.read(&path, what)
+    files.read(&path, what).map(Some)
 }
 
 /// The authority MAC's key, opened by `files`.
@@ -255,37 +265,115 @@ pub fn authority_key(
     Ok(writ_crypto::authority::AuthorityKey::from_bytes(&bytes)?)
 }
 
-/// The tokens of `https://` repos, opened by `files`.
+/// The tokens of `https://` repos, opened by `files`; one not added yet is left out (its
+/// repos reach nothing upstream until it is).
 pub fn tokens(
     sealed: &SealedConfig,
     policy: &PolicyConfig,
     files: &SecretFiles,
 ) -> anyhow::Result<std::collections::BTreeMap<KeyId, std::sync::Arc<UpstreamToken>>> {
     let (_, ids) = upstream_credentials(policy)?;
-    ids.into_iter()
-        .map(|id| {
-            let bytes = sealed_token(files, sealed, id, "upstream token")?;
+    let mut tokens = std::collections::BTreeMap::new();
+    for id in ids {
+        if let Some(bytes) = sealed_token(files, sealed, id, "upstream token")? {
             let token = UpstreamToken::from_bytes(&bytes)
                 .map_err(|why| anyhow::anyhow!("upstream token {id}: not a token: {why}"))?;
-            Ok((id.clone(), std::sync::Arc::new(token)))
-        })
-        .collect()
+            tokens.insert(id.clone(), std::sync::Arc::new(token));
+        }
+    }
+    Ok(tokens)
 }
 
-/// The tokens of the notifiers that keep theirs sealed, opened by `files`.
+/// A notifier's token, from the plaintext of its sealed file.
+pub fn bot_token(id: &KeyId, bytes: &[u8]) -> anyhow::Result<BotToken> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| anyhow::anyhow!("notifier token {id}: not text"))?;
+    Ok(BotToken::new(text.trim().to_owned())?)
+}
+
+/// The tokens of the notifiers that keep theirs sealed, opened by `files`; one not added yet
+/// is left out (its notifier stays off until it is).
 pub fn bot_tokens(
     sealed: &SealedConfig,
     ids: &std::collections::BTreeSet<KeyId>,
     files: &SecretFiles,
 ) -> anyhow::Result<std::collections::BTreeMap<KeyId, BotToken>> {
-    ids.iter()
-        .map(|id| {
-            let bytes = sealed_token(files, sealed, id, "notifier token")?;
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|_| anyhow::anyhow!("notifier token {id}: not text"))?;
-            Ok((id.clone(), BotToken::new(text.trim().to_owned())?))
-        })
-        .collect()
+    let mut tokens = std::collections::BTreeMap::new();
+    for id in ids {
+        if let Some(bytes) = sealed_token(files, sealed, id, "notifier token")? {
+            tokens.insert(id.clone(), bot_token(id, &bytes)?);
+        }
+    }
+    Ok(tokens)
+}
+
+/// The sealed key at `secret` (its public half at `public`), opened by `files`, or, when the
+/// keystore lacks it, a new one (Ed25519) sealed to `recipient`: its public half written
+/// first, so a make cut short leaves at most a public half, which the next one replaces.
+/// Whether it was made is the second value.
+pub fn key_or_make(
+    files: &SecretFiles,
+    recipient: &dyn age::Recipient,
+    secret: &Path,
+    public: &Path,
+    what: &str,
+) -> anyhow::Result<(PrivateKey, bool)> {
+    if secret.exists() {
+        return Ok((sealed_key(files, secret, public, what)?, false));
+    }
+    if let Some(dir) = secret.parent() {
+        super::private_dir(dir)?;
+    }
+    match std::fs::remove_file(public) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("cannot replace {}", public.display()));
+        }
+        _ => {}
+    }
+    let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519)?;
+    write_public(public, &format!("{}\n", key.public_key().to_openssh()?))?;
+    let pem = key.to_openssh(writ_crypto::ssh_key::LineEnding::LF)?;
+    seal(secret, pem.as_bytes(), &[recipient])?;
+    Ok((key, true))
+}
+
+/// The keystore's recipient, from its file: public (`writ info` serves it), an authority file
+/// all the same (whoever replaced it would receive the tokens added next).
+pub fn recipient(sealed: &SealedConfig) -> anyhow::Result<age::x25519::Recipient> {
+    let path = Layout(sealed).recipient();
+    let text = writ_platform::fs::read_authority(&path, "the keystore's recipient")?;
+    text.trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{}: not an age X25519 recipient", path.display()))
+}
+
+/// The digest of the token file in force for `id`, or none.
+pub fn token_in_force(
+    sealed: &SealedConfig,
+    id: &KeyId,
+) -> anyhow::Result<writ_core::authority::PreviousToken> {
+    use writ_core::authority::{PreviousToken, TextDigest};
+    let path = Layout(sealed).token(id);
+    if !path.exists() {
+        return Ok(PreviousToken::None);
+    }
+    let bytes = writ_platform::fs::read_secret(&path, "the token file", MAX_SECRET_FILE)?;
+    Ok(PreviousToken::File(TextDigest::of_bytes(&bytes)))
+}
+
+/// Puts `bytes` (an age file) in force as `tokens/<id>.age`, replacing the one there: written
+/// whole beside it (0600), then moved in place.
+pub fn write_token(sealed: &SealedConfig, id: &KeyId, bytes: &[u8]) -> anyhow::Result<()> {
+    let layout = Layout(sealed);
+    super::private_dir(&layout.tokens_dir())?;
+    let suffix = writ_crypto::keys::random_hex(8)?;
+    let temporary = layout.tokens_dir().join(format!(".{id}.age.new-{suffix}"));
+    write_private(&temporary, bytes)?;
+    let path = layout.token(id);
+    std::fs::rename(&temporary, &path).with_context(|| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("cannot move the new token to {}", path.display())
+    })
 }
 
 /// The public halves: the boot tier's keys, and the `.pub` files beside each sealed key, for
@@ -738,6 +826,137 @@ templates:
     max_push_size: 1MB
 "#
         .to_owned()
+    }
+
+    fn recipient_of(sealed: &SealedConfig) -> age::x25519::Recipient {
+        recipient(sealed).unwrap()
+    }
+
+    #[test]
+    fn a_key_named_later_is_made_once_sealed_and_a_leftover_half_replaced() {
+        let (_root, sealed, _made) = setup();
+        let layout = Layout(&sealed);
+        let files = opened(&sealed, PASSPHRASE).unwrap();
+        let id: KeyId = "agent-02".parse().unwrap();
+        let (secret, public) = (layout.signing(&id), layout.signing_public(&id));
+        let make = || {
+            key_or_make(
+                &files,
+                &recipient_of(&sealed),
+                &secret,
+                &public,
+                "signing key agent-02",
+            )
+            .unwrap()
+        };
+        let (key, made) = make();
+        assert!(made);
+        // Sealed to the recipient, its half beside it, both as `writd init` writes them.
+        let text = String::from_utf8(std::fs::read(&secret).unwrap()).unwrap_or_default();
+        assert!(!text.contains("PRIVATE KEY"));
+        assert_eq!((mode(&secret), mode(&public)), (0o600, 0o644));
+        assert_eq!(
+            std::fs::read_to_string(&public).unwrap().trim(),
+            key.public_key().to_openssh().unwrap()
+        );
+        // Named again: opened, never made twice.
+        let (again, made) = make();
+        assert!(!made);
+        assert_eq!(again.public_key(), key.public_key());
+        // A make cut short after the half: the half is replaced by the new key's.
+        std::fs::remove_file(&secret).unwrap();
+        let (fresh, made) = make();
+        assert!(made);
+        assert_ne!(fresh.public_key(), key.public_key());
+        assert_eq!(
+            std::fs::read_to_string(&public).unwrap().trim(),
+            fresh.public_key().to_openssh().unwrap()
+        );
+        // And it opens as `writd init`'s keys do, from a policy that names it.
+        let named = PolicyConfig::from_yaml(&policy_text().replacen(
+            "signing_key: agent-01",
+            "signing_key: agent-02",
+            1,
+        ))
+        .unwrap();
+        let keys = keys(&sealed, &named, &files).unwrap();
+        assert!(
+            keys.signing
+                .iter()
+                .any(|(k, key)| *k == id && key.public_key() == fresh.public_key())
+        );
+    }
+
+    #[test]
+    fn a_token_is_put_in_force_whole_named_by_its_digest_and_a_missing_one_left_out() {
+        use writ_core::authority::{PreviousToken, TextDigest};
+        let (_root, sealed, _made) = setup();
+        let files = opened(&sealed, PASSPHRASE).unwrap();
+        let id: KeyId = "token-01".parse().unwrap();
+        // Not added yet: no file in force, and the open leaves it out (the unseal goes on).
+        assert_eq!(token_in_force(&sealed, &id).unwrap(), PreviousToken::None);
+        assert!(tokens(&sealed, &policy(), &files).unwrap().is_empty());
+        // As `writ admin token` seals it, on the approver's machine.
+        let token = "writ-test-token-0123456789abcdefghij";
+        let text = writ_crypto::sealed::seal(&recipient_of(&sealed).to_string(), token.as_bytes())
+            .unwrap();
+        let file = writ_crypto::sealed::decode(&text).unwrap();
+        assert_eq!(
+            *files.open(&file, "the token sent").unwrap(),
+            token.as_bytes()
+        );
+        write_token(&sealed, &id, &file).unwrap();
+        let path = Layout(&sealed).token(&id);
+        assert_eq!(std::fs::read(&path).unwrap(), file);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(
+            token_in_force(&sealed, &id).unwrap(),
+            PreviousToken::File(TextDigest::of_bytes(&file))
+        );
+        let opened = tokens(&sealed, &policy(), &files).unwrap();
+        assert_eq!(
+            opened.get(&id).map(|t| format!("{t:?}")).as_deref(),
+            Some("UpstreamToken(<redacted>)"),
+            "opened: the token itself goes only to git (its file was read back above)"
+        );
+        // Replaced whole, nothing left beside it.
+        write_token(&sealed, &id, &file).unwrap();
+        let left: Vec<String> = std::fs::read_dir(Layout(&sealed).tokens_dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["token-01.age"]);
+        // A ciphertext for another keystore, or none at all: refused by name.
+        let other = writ_crypto::sealed::seal(
+            &DataKey::from_bytes([3; 32])
+                .identity()
+                .unwrap()
+                .to_public()
+                .to_string(),
+            token.as_bytes(),
+        )
+        .unwrap();
+        let error = format!(
+            "{:#}",
+            files
+                .open(
+                    &writ_crypto::sealed::decode(&other).unwrap(),
+                    "the token sent"
+                )
+                .unwrap_err()
+        );
+        assert_eq!(
+            error,
+            "the token sent: no identity of this keystore opens it"
+        );
+        let error = format!(
+            "{:#}",
+            files.open(b"in clear", "the token sent").unwrap_err()
+        );
+        assert_eq!(
+            error,
+            "the token sent is not a sealed secret: not an age file"
+        );
     }
 
     #[test]

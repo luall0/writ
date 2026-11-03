@@ -229,10 +229,14 @@ pub fn telegram_notifier(
 }
 
 /// The notifiers the service tells: those whose token is in the boot tier from the start,
-/// those whose token is sealed added at unseal. A notification goes to the ones there when it
-/// is sent.
+/// those whose token is sealed added at unseal (or when `writ admin token` adds it: a new
+/// token replaces the notifier it starts). A notification goes to the ones there when it is
+/// sent.
 #[derive(Default)]
-pub struct LateNotifiers(std::sync::RwLock<Vec<Arc<dyn Notifier>>>);
+pub struct LateNotifiers(std::sync::RwLock<Vec<Late>>);
+
+/// A notifier, and the id of its sealed token (`None`: its token is in the boot tier).
+type Late = (Option<KeyId>, Arc<dyn Notifier>);
 
 impl std::fmt::Debug for LateNotifiers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -241,11 +245,22 @@ impl std::fmt::Debug for LateNotifiers {
 }
 
 impl LateNotifiers {
+    /// A notifier whose token is in the boot tier.
     pub fn add(&self, notifier: Arc<dyn Notifier>) {
         self.0
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(notifier);
+            .push((None, notifier));
+    }
+
+    /// The notifier whose sealed token is `id`, in place of the one it had.
+    pub fn set(&self, id: &KeyId, notifier: Arc<dyn Notifier>) {
+        let mut all = self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        all.retain(|(held, _)| held.as_ref() != Some(id));
+        all.push((Some(id.clone()), notifier));
     }
 }
 
@@ -255,7 +270,9 @@ impl Notifier for LateNotifiers {
             .0
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+            .iter()
+            .map(|(_, notifier)| notifier.clone())
+            .collect();
         Notifiers(now).notify(notification)
     }
 }

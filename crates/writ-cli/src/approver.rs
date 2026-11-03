@@ -10,7 +10,9 @@ mod narrowing;
 mod prove;
 mod signer;
 
-pub use admin::{apply as admin_apply, show as admin_show, target as admin_target};
+pub use admin::{
+    apply as admin_apply, show as admin_show, target as admin_target, token as admin_token,
+};
 pub use narrowing::Narrowing;
 pub use prove::{ProveKey, prove_key};
 pub use signer::{Signer, default_key};

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use writ_core::names::KeyId;
 use writ_crypto::keys::{KeyKind, generate};
-use writ_crypto::ssh_key::Signature;
+use writ_crypto::ssh_key::{PrivateKey, Signature};
 
 use crate::software::SoftwareSigner;
 use crate::{Capabilities, KeyInfo, Signer, SignerError};
@@ -76,6 +76,10 @@ impl<S: Signer> Signer for FailingSigner<S> {
 
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
+    }
+
+    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+        self.inner.add_key(id, key)
     }
 }
 
@@ -215,5 +219,9 @@ impl<S: Signer> Signer for GatedSigner<S> {
 
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
+    }
+
+    fn add_key(&self, id: KeyId, key: PrivateKey) -> Result<KeyInfo, SignerError> {
+        self.inner.add_key(id, key)
     }
 }

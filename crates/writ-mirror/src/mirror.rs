@@ -160,11 +160,12 @@ enum Reach {
         /// The credential's public key file, which picks it in the agent.
         identity: PathBuf,
     },
-    /// `https://`, with a token from the keystore.
+    /// `https://`, with a token from the keystore: none until an approver adds it
+    /// (`writ admin token`), and until then nothing reaches upstream.
     Https {
         url: HttpsUrl,
         credential: KeyId,
-        token: Arc<UpstreamToken>,
+        token: Option<Arc<UpstreamToken>>,
     },
 }
 

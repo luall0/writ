@@ -16,7 +16,7 @@ use writ_core::names::KeyFingerprint;
 use writ_core::signed::Admin;
 use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::authority::HeadEntry;
-use writ_proto::{AdminApplied, AdminRequest, AdminShown};
+use writ_proto::{AdminApplied, AdminRequest, AdminShown, CreatedKey};
 use writ_store::{AuditEvent, AuthorityHead, AuthorityHow, AuthorityVersion, EventKind, Outcome};
 
 use super::{Service, internal, signing_keys_exist};
@@ -160,11 +160,13 @@ impl Service {
     /// Puts a checked change in force: the version it replaces is still the one in force, a
     /// new policy's signing keys are held by the signer; then the `admin` line (if the log
     /// can't take it, nothing changes), the new version and head under the keystore's MAC,
-    /// and the swap. `parsed` is the daemon's reading of the new text.
+    /// and the swap. `parsed` is the daemon's reading of the new text; `created`, the keys it
+    /// made for a new policy (named in the `admin` line and the reply).
     pub fn commit_admin(
         &self,
         checked: &CheckedAdmin,
         parsed: AdminParsed,
+        created: Vec<CreatedKey>,
         caller: &CallerFacts,
     ) -> Result<AdminApplied, ServiceError> {
         let target = checked.admin.target;
@@ -213,8 +215,18 @@ impl Service {
             .approver(&checked.approver)
             .caller(caller)
             .reason(format!(
-                "{target}: version {version} (sha256 {digest}) replaces version {old} (sha256 {})",
-                checked.admin.previous
+                "{target}: version {version} (sha256 {digest}) replaces version {old} (sha256 \
+                 {}){}",
+                checked.admin.previous,
+                created
+                    .iter()
+                    .map(|key| format!(
+                        "; created {} {}: {}",
+                        key.role.as_str(),
+                        key.id,
+                        key.public_key
+                    ))
+                    .collect::<String>()
             ));
         Self::log(&mut inner, &event)?;
         let row = AuthorityVersion {
@@ -271,6 +283,7 @@ impl Service {
             version,
             digest,
             signed_by: checked.approver.clone(),
+            created,
         })
     }
 

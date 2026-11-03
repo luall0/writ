@@ -1,8 +1,9 @@
 //! The other documents an approver may sign, besides tickets: a refusal and a revocation,
 //! required when the daemon's `decisions` setting is `signed`; a proof, always required:
 //! the approver lets an agent signing key sign one message for a remote that asks for it
-//! before it shows commits as verified (Forgejo, Gitea); and an unseal, which with the
-//! keystore's passphrase opens a sealed daemon.
+//! before it shows commits as verified (Forgejo, Gitea); an unseal, which with the
+//! keystore's passphrase opens a sealed daemon; an admin change of an authority file; and a
+//! sealed token.
 //!
 //! Like a ticket, each is a [`Canonical`] document: canonical bytes, `kind` first, decoded only
 //! from exactly those bytes. The `kind` keeps one signed document from
@@ -13,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::authority::{AdminTarget, AdminText, TextDigest};
+use crate::authority::{AdminTarget, AdminText, PreviousToken, SealedToken, TextDigest};
 use crate::canonical::Canonical;
 use crate::names::{KeyFingerprint, KeyId, ProofNamespace, TicketId};
 
@@ -219,6 +220,42 @@ impl Admin {
     }
 }
 
+/// Only `"writ-token/1"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TokenKind {
+    #[default]
+    #[serde(rename = "writ-token/1")]
+    V1,
+}
+
+/// The approver puts the token `sealed` (encrypted to the keystore's recipient on their
+/// machine) in place of the token file `previous` for the credential `id`: an `https://`
+/// upstream's, or a notifier's kept sealed. Replayed, or signed against a file no longer
+/// there, it changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub id: KeyId,
+    pub previous: PreviousToken,
+    pub sealed: SealedToken,
+}
+
+impl Canonical for Token {
+    const KIND: &'static str = "writ-token/1";
+}
+
+impl Token {
+    pub fn new(id: KeyId, previous: PreviousToken, sealed: SealedToken) -> Self {
+        Self {
+            kind: TokenKind::V1,
+            id,
+            previous,
+            sealed,
+        }
+    }
+}
+
 /// The approver refuses a pending ticket, with feedback for the agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -409,6 +446,57 @@ mod tests {
             (text.replace("BBBB\\n", "BBBB\\u001b"), "control character"),
         ] {
             let error = Admin::from_canonical(bad.as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(why), "{bad}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_token_change_is_pinned_strict_and_bounded() {
+        let previous = PreviousToken::File(TextDigest::of_bytes(b"the old age file"));
+        let change = Token::new(
+            "token-01".parse().unwrap(),
+            previous.clone(),
+            SealedToken::try_from("YWdlLWVuY3J5cHRpb24=".to_owned()).unwrap(),
+        );
+        let bytes = change.canonical_bytes().unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            format!(
+                r#"{{"kind":"writ-token/1","id":"token-01","previous":"{previous}","sealed":"YWdlLWVuY3J5cHRpb24="}}"#
+            )
+        );
+        assert_eq!(Token::from_canonical(&bytes).unwrap(), change);
+        let first = Token::new(
+            "token-01".parse().unwrap(),
+            PreviousToken::None,
+            SealedToken::try_from("YWdl".to_owned()).unwrap(),
+        );
+        let first_bytes = String::from_utf8(first.canonical_bytes().unwrap()).unwrap();
+        assert!(
+            first_bytes.contains(r#""previous":"none""#),
+            "{first_bytes}"
+        );
+        // Never another document, nor an admin change.
+        assert!(matches!(
+            Admin::from_canonical(&bytes),
+            Err(CanonicalError::Decode { .. })
+        ));
+        let text = String::from_utf8(bytes).unwrap();
+        for (bad, why) in [
+            (text.replace("\"token-01\"", "\"../x\""), "key id"),
+            (
+                text.replace(previous.to_string().as_str(), "abc"),
+                "`none` or a digest",
+            ),
+            (text.replace("pb24=\"", "pb24=\\n\""), "not standard base64"),
+            (
+                text.replace("}", r#","token":"in clear"}"#),
+                "unknown field",
+            ),
+        ] {
+            let error = Token::from_canonical(bad.as_bytes())
                 .unwrap_err()
                 .to_string();
             assert!(error.contains(why), "{bad}: {error}");

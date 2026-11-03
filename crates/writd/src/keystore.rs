@@ -9,17 +9,20 @@ mod sealed;
 pub use init::init;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
+use writ_core::authority::PreviousToken;
 use writ_core::config::PolicyConfig;
 use writ_core::names::KeyId;
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
 use writ_mirror::credential::UpstreamToken;
 use writ_mirror::upstream::Upstream;
+use writ_proto::KeyRole;
+use zeroize::Zeroizing;
 
-use crate::config::{Config, KeystoreConfig};
+use crate::config::{Config, KeystoreConfig, SealedConfig};
 
 /// Creates a directory (and its parents) only the daemon can enter (0700).
 pub fn private_dir(path: &Path) -> anyhow::Result<()> {
@@ -108,7 +111,7 @@ impl PublicKeys {
 }
 
 /// The signing keys every template names, each once.
-fn signing_ids(policy: &PolicyConfig) -> BTreeSet<&KeyId> {
+pub fn signing_ids(policy: &PolicyConfig) -> BTreeSet<&KeyId> {
     policy
         .templates()
         .values()
@@ -120,7 +123,7 @@ fn signing_ids(policy: &PolicyConfig) -> BTreeSet<&KeyId> {
 /// `ssh://` repos (keys) and of `https://` repos (tokens). One id for both is refused: a
 /// credential is a key or a token. A URL that doesn't parse is left out (the mirrors refuse it
 /// at startup, with the reason).
-fn upstream_credentials(
+pub fn upstream_credentials(
     policy: &PolicyConfig,
 ) -> anyhow::Result<(BTreeSet<&KeyId>, BTreeSet<&KeyId>)> {
     let (mut keys, mut tokens) = (BTreeSet::new(), BTreeSet::new());
@@ -164,13 +167,107 @@ pub struct Boot {
 }
 
 /// What an open keystore gives: every key, the `https://` upstreams' tokens, and the tokens
-/// of the notifiers that keep theirs sealed (by id).
+/// of the notifiers that keep theirs sealed (by id); and what stays open for the keys and
+/// tokens added later ([`Live`]).
 pub struct Opened {
     pub keys: Keys,
+    pub live: Live,
     /// The key of the MAC over the authority files in force.
     pub authority: writ_crypto::authority::AuthorityKey,
     pub tokens: BTreeMap<KeyId, Arc<UpstreamToken>>,
     pub bot_tokens: BTreeMap<KeyId, writ_platform::notify::telegram::BotToken>,
+}
+
+/// The keystore as the running daemon keeps it once open: where the keys a signed policy
+/// change names are made, and how a token an approver sends is opened and put in force. The
+/// sealed keystore's identity stays here, wiped on drop (`SecretFiles`), so a secret added
+/// later is opened through the same seam as at start.
+pub enum Live {
+    Dev(PathBuf),
+    Sealed {
+        sealed: SealedConfig,
+        files: sealed::SecretFiles,
+        recipient: age::x25519::Recipient,
+    },
+}
+
+impl Live {
+    /// The key `id` for `role`, from the keystore, or made there now if it lacks it (Ed25519);
+    /// whether it was made is the second value.
+    pub fn key_or_make(&self, role: KeyRole, id: &KeyId) -> anyhow::Result<(PrivateKey, bool)> {
+        match self {
+            Self::Dev(dir) => {
+                let dir = dir.join(match role {
+                    KeyRole::Signing => "signing",
+                    KeyRole::Upstream => "upstream",
+                });
+                private_dir(&dir)?;
+                let made = !dir.join(id.as_str()).exists();
+                Ok((dev::key(&dir, id.as_str())?, made))
+            }
+            Self::Sealed {
+                sealed,
+                files,
+                recipient,
+            } => {
+                let layout = sealed::Layout(sealed);
+                let (secret, public) = match role {
+                    KeyRole::Signing => (layout.signing(id), layout.signing_public(id)),
+                    KeyRole::Upstream => (layout.upstream(id), layout.upstream_public(id)),
+                };
+                let what = format!("{} {id}", role.as_str());
+                sealed::key_or_make(files, recipient, &secret, &public, &what)
+            }
+        }
+    }
+
+    /// The sealed keystore's parts, or why the development keystore takes no token this way.
+    fn sealed(&self) -> anyhow::Result<(&SealedConfig, &sealed::SecretFiles)> {
+        match self {
+            Self::Sealed { sealed, files, .. } => Ok((sealed, files)),
+            Self::Dev(dir) => bail!(
+                "the development keystore takes no token from writ admin token: write it alone \
+                 to {} (mode 0600) and restart the daemon",
+                dir.join("tokens").join("<id>").display()
+            ),
+        }
+    }
+
+    /// The token file in force for `id`.
+    pub fn token_in_force(&self, id: &KeyId) -> anyhow::Result<PreviousToken> {
+        let (sealed, _) = self.sealed()?;
+        sealed::token_in_force(sealed, id)
+    }
+
+    /// The plaintext of a token an approver sealed to the keystore's recipient (`file`, an age
+    /// file), wiped on drop.
+    pub fn open_token(&self, id: &KeyId, file: &[u8]) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+        let (_, files) = self.sealed()?;
+        files.open(file, &format!("the token sent for {id}"))
+    }
+
+    /// Puts the age file `file` in force as the token of `id`.
+    pub fn write_token(&self, id: &KeyId, file: &[u8]) -> anyhow::Result<()> {
+        let (sealed, _) = self.sealed()?;
+        sealed::write_token(sealed, id, file)
+    }
+}
+
+/// The sealed keystore's public recipient, as `writ info` serves it; none with the development
+/// keystore.
+pub fn recipient(config: &Config) -> anyhow::Result<Option<String>> {
+    match &config.keystore {
+        KeystoreConfig::Sealed(sealed) => Ok(Some(sealed::recipient(sealed)?.to_string())),
+        KeystoreConfig::Dev(_) => Ok(None),
+    }
+}
+
+/// A notifier's token, from the plaintext of its sealed file.
+pub fn bot_token(
+    id: &KeyId,
+    bytes: &[u8],
+) -> anyhow::Result<writ_platform::notify::telegram::BotToken> {
+    sealed::bot_token(id, bytes)
 }
 
 /// The ids of the notifier tokens kept sealed (`notifiers[].telegram.token.sealed`).
@@ -208,6 +305,7 @@ pub fn start(config: &Config, policy: &PolicyConfig) -> anyhow::Result<Start> {
             dev::boot(dir)?,
             Box::new(Opened {
                 keys: dev::keys(dir, policy)?,
+                live: Live::Dev(dir.clone()),
                 authority: dev::authority_key(dir)?,
                 tokens: dev::tokens(dir, policy)?,
                 bot_tokens: dev::bot_tokens(dir, &sealed_bot_ids(config))?,
@@ -232,5 +330,10 @@ pub fn open(
         authority: sealed::authority_key(sealed, &files)?,
         tokens: sealed::tokens(sealed, policy, &files)?,
         bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &files)?,
+        live: Live::Sealed {
+            sealed: sealed.clone(),
+            recipient: sealed::recipient(sealed)?,
+            files,
+        },
     })
 }

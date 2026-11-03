@@ -3861,6 +3861,7 @@ dependencies = [
 name = "writ-crypto"
 version = "0.0.0"
 dependencies = [
+ "age",
  "base64ct",
  "hmac 0.12.1",
  "rcgen",

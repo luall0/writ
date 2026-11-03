@@ -2,16 +2,22 @@
 //! or `readers` in force, and a signed change of one. `apply` fetches the version in force,
 //! shows what changes line by line (every line cleaned of what a terminal would act on), and
 //! signs a `writ-admin/1` document naming that version: a change made meanwhile is refused by
-//! the daemon, never overwritten.
+//! the daemon, never overwritten. And `writ admin token <id>`: a token read here, encrypted
+//! here to the daemon keystore's recipient, and signed as a `writ-token/1` naming the token
+//! file it replaces: the daemon host never sees it in clear on its disk.
 
 use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use writ_core::authority::{AdminTarget, AdminText};
+use writ_core::authority::{AdminTarget, AdminText, SealedToken};
 use writ_core::canonical::Canonical;
-use writ_core::signed::Admin;
-use writ_proto::{AdminApplied, AdminRequest, AdminShown, Command};
+use writ_core::names::KeyId;
+use writ_core::signed::{Admin, Token};
+use writ_crypto::passphrase::PassphraseError;
+use writ_proto::{
+    AdminApplied, AdminRequest, AdminShown, Command, Info, TokenApplied, TokenRequest, TokenShown,
+};
 
 use super::{Signer, connect, read_line};
 use crate::display::clean;
@@ -93,9 +99,92 @@ pub async fn apply(
                 "Applied: {} is version {} (sha256 {}), signed by {}.",
                 applied.target, applied.version, applied.digest, applied.signed_by
             );
+            for key in &applied.created {
+                println!(
+                    "New {} {} (register it on the remote): {}",
+                    key.role.as_str(),
+                    key.id,
+                    clean(&key.public_key)
+                );
+            }
             Ok(Exit::Ok)
         })
         .await
+}
+
+/// `writ admin token <id>`: the keystore's recipient from `writ info`, the token file in force
+/// for `id`, the token (asked for with no echo, or one line of stdin), encrypted here, then one
+/// signature over the `writ-token/1` document.
+pub async fn token(
+    paths: &Paths,
+    url: &str,
+    signer: &Signer,
+    id: &KeyId,
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let info: Info = session.call(&Command::Info, b"").await??;
+            let Some(recipient) = info.recipient else {
+                bail!(
+                    "the daemon serves no keystore recipient: its development keystore takes \
+                     tokens as files"
+                );
+            };
+            let shown: TokenShown = session
+                .call(&Command::TokenShow { id: id.clone() }, b"")
+                .await??;
+            let sealed = {
+                let typed = writ_crypto::passphrase::read(&format!("Token {id}: "), None, false)
+                    .map_err(token_error)?;
+                if typed.trim().is_empty() {
+                    bail!("no token: the line was empty");
+                }
+                writ_crypto::sealed::seal(&recipient, typed.trim().as_bytes())?
+            };
+            let sealed = SealedToken::try_from(sealed)?;
+            println!(
+                "Token {id}: encrypted to the daemon's recipient {}; it replaces {}.",
+                clean(recipient.trim()),
+                match &shown.previous {
+                    writ_core::authority::PreviousToken::None => "no token".to_owned(),
+                    other => format!("the token file sha256 {other}"),
+                }
+            );
+            if !yes {
+                print!("Sign this token change? [y/N] ");
+                std::io::stdout().flush()?;
+                if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
+                    println!("Not signed.");
+                    return Ok(Exit::Ok);
+                }
+            }
+            let document = Token::new(id.clone(), shown.previous, sealed).canonical_bytes()?;
+            let request = TokenRequest {
+                signature: signer.sign(&document)?,
+                document: String::from_utf8(document)?,
+            };
+            let applied: TokenApplied = session
+                .call(&Command::TokenApply, &writ_proto::encode_body(&request)?)
+                .await??;
+            println!(
+                "Token {} in force (file sha256 {}), signed by {}.",
+                applied.id, applied.digest, applied.signed_by
+            );
+            Ok(Exit::Ok)
+        })
+        .await
+}
+
+/// A token that couldn't be read, said as a token (the reader is the passphrase's).
+fn token_error(error: PassphraseError) -> anyhow::Error {
+    match error {
+        PassphraseError::TooLong => anyhow::anyhow!("the token is longer than 1024 bytes"),
+        PassphraseError::NoInput => anyhow::anyhow!("no token: the input ended first"),
+        PassphraseError::NotUtf8 => anyhow::anyhow!("the token is not UTF-8"),
+        other => anyhow::anyhow!("cannot read the token: {other}"),
+    }
 }
 
 /// The lines that change from `before` to `after`: `-` removed, `+` added, two lines of

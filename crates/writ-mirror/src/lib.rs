@@ -79,8 +79,12 @@ pub enum MirrorError {
     },
     #[error("repo {repo}: upstream credential {key} is not in the upstream signer")]
     UnknownCredential { repo: RepoName, key: KeyId },
-    #[error("repo {repo}: upstream credential {key} is not a token the keystore holds")]
-    UnknownToken { repo: RepoName, key: KeyId },
+    /// An `https://` repo whose token isn't in the keystore yet: nothing reaches upstream.
+    #[error(
+        "repo {repo}: upstream credential {key} has no token yet: an approver adds it with \
+         `writ admin token {key}`"
+    )]
+    NoToken { repo: RepoName, key: KeyId },
     #[error("repo {repo}: no pinned host key for {host} in the upstream known_hosts")]
     HostNotPinned { repo: RepoName, host: String },
     #[error("repo {repo}: {path} is not a mirror made by writd: {why}")]

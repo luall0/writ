@@ -557,7 +557,8 @@ fn a_directory_that_is_not_a_daemon_mirror_is_refused() {
 }
 
 #[test]
-fn an_upstream_the_daemon_cannot_reach_as_configured_is_refused_at_start() {
+fn an_upstream_the_daemon_cannot_reach_as_configured_is_refused_at_start_and_one_without_its_token_reaches_nothing()
+ {
     let f = Fixture::new();
     let open = |upstream: &str, credential: &str| {
         let policy = PolicyConfig::from_yaml(&policy_yaml(upstream, credential, "sha1")).unwrap();
@@ -573,10 +574,17 @@ fn an_upstream_the_daemon_cannot_reach_as_configured_is_refused_at_start() {
         Err(MirrorError::UnknownCredential { key, .. }) => assert_eq!(key.as_str(), "upstream-02"),
         other => panic!("expected UnknownCredential, got {:?}", other.err()),
     }
-    // An HTTPS upstream whose credential is no token the keystore holds (here: an ssh key).
-    match open("https://example.org/demo.git", "upstream-01") {
-        Err(MirrorError::UnknownToken { key, .. }) => assert_eq!(key.as_str(), "upstream-01"),
-        other => panic!("expected UnknownToken, got {:?}", other.err()),
+    // An HTTPS upstream whose token the keystore doesn't hold yet (here: its id is an ssh
+    // key's): served, but nothing reaches upstream, with the command that adds the token.
+    let mirrors = open("https://example.org/demo.git", "upstream-01").unwrap();
+    let demo: writ_core::names::RepoName = "demo".parse().unwrap();
+    match f.runtime.block_on(mirrors.sync_if_stale(&demo)) {
+        Err(error @ MirrorError::NoToken { .. }) => assert_eq!(
+            error.to_string(),
+            "repo demo: upstream credential upstream-01 has no token yet: an approver adds it \
+             with `writ admin token upstream-01`"
+        ),
+        other => panic!("expected NoToken, got {other:?}"),
     }
     // Plain HTTP: never (the token would travel in clear); the registry refuses it already.
     let http = PolicyConfig::from_yaml(&policy_yaml("http://example.org/demo.git", "u-1", "sha1"));

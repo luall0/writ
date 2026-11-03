@@ -41,6 +41,13 @@ fn dev_tls(dir: &Path) -> anyhow::Result<TlsKeyPair> {
     })
 }
 
+/// The dev keystore's key `name` in `dir`, generated if it lacks it (on first start, or for a
+/// signed policy change).
+pub fn key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
+    allowed()?;
+    dev_key(dir, name)
+}
+
 /// The dev keystore's key `name`, generated on first start.
 fn dev_key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
     let path = dir.join(name);

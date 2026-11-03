@@ -31,9 +31,10 @@ pub mod sign;
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
-    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, Decision, Decisions, Info,
-    Listing, PassphraseText, Previous, ProveRequest, Proved, RefuseRequest, Relation,
-    RevokeRequest, SealedBoot, Shown, Submitted, Summary, UnsealRequest, Unsealed,
+    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, CreatedKey, Decision, Decisions,
+    Info, KeyRole, Listing, PassphraseText, Previous, ProveRequest, Proved, RefuseRequest,
+    Relation, RevokeRequest, SealedBoot, Shown, Submitted, Summary, TokenApplied, TokenRequest,
+    TokenShown, UnsealRequest, Unsealed,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -72,6 +73,10 @@ mod tests {
                 target: writ_core::authority::AdminTarget::Readers,
             },
             Command::AdminApply,
+            Command::TokenShow {
+                id: "token-01".parse().unwrap(),
+            },
+            Command::TokenApply,
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -93,6 +98,14 @@ mod tests {
             "writ admin show templates",
             "writ admin show policy extra",
             "writ admin apply policy",
+            "writ admin token",
+            "writ admin token token-01",
+            "writ admin token show",
+            "writ admin token show ../x",
+            "writ admin token show token-01 extra",
+            "writ admin token apply token-01",
+            "writ admin token apply extra more",
+            "writ admin token remove token-01",
             "git-upload-pack 'x'",
         ] {
             assert_eq!(Command::parse(line), None, "{line:?}");
@@ -116,6 +129,10 @@ mod tests {
                 target: writ_core::authority::AdminTarget::Policy,
             },
             Command::AdminApply,
+            Command::TokenShow {
+                id: "token-01".parse().unwrap(),
+            },
+            Command::TokenApply,
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));
@@ -139,6 +156,11 @@ mod tests {
             ("GET", "/v1/admin/templates"),
             ("POST", "/v1/admin/policy"),
             ("GET", "/v1/admin/policy/x"),
+            ("GET", "/v1/tokens"),
+            ("GET", "/v1/tokens/..%2Fx"),
+            ("GET", "/v1/tokens/token-01/x"),
+            ("POST", "/v1/tokens/token-01"),
+            ("GET", "/v1/tokens/token-01?show=1"),
             ("GET", "/v2/info"),
             ("GET", "/v1/info/"),
             ("GET", "v1/info"),
@@ -152,6 +174,7 @@ mod tests {
         let ok: Result<Info, ApiError> = Ok(Info {
             decisions: Decisions::Open,
             sealed: None,
+            recipient: None,
         });
         let bytes = encode_reply(&ok);
         assert_eq!(bytes, b"{\"ok\":{\"decisions\":\"open\"}}\n");
@@ -197,12 +220,16 @@ mod tests {
                     .unwrap(),
                 nonce: writ_core::signed::BootNonce::from_bytes([1; 16]),
             }),
+            recipient: Some(
+                "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p".to_owned(),
+            ),
         };
         let bytes = encode_reply(&Ok::<_, ApiError>(info.clone()));
         assert_eq!(decode_reply::<Info>(&bytes), Ok(info));
         let open = encode_reply(&Ok::<_, ApiError>(Info {
             decisions: Decisions::Signed,
             sealed: None,
+            recipient: None,
         }));
         assert_eq!(open, b"{\"ok\":{\"decisions\":\"signed\"}}\n");
     }

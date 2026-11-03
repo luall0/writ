@@ -453,6 +453,7 @@ fn start_service(
             ca_public,
             daemon,
             in_force,
+            recipient: keystore::recipient(config)?,
         },
         writ_crypto::keys::random_array()?,
         store,

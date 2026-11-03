@@ -265,6 +265,20 @@ enum AdminCommand {
         #[command(flatten)]
         signer: SignerArgs,
     },
+    /// Add or replace the token ID (an https:// repo's upstream_credential, or a notifier's
+    /// sealed token): asked for with no echo (or one line of stdin), encrypted here to the
+    /// daemon's keystore, then one signature with your approval key. It is used at once.
+    Token {
+        /// The credential id.
+        id: String,
+        /// Sign without asking (what is replaced is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
 }
 
 fn paths(cli: &Cli) -> anyhow::Result<Paths> {
@@ -403,6 +417,20 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 *yes,
             )
             .await
+        }
+        Commands::Admin {
+            command:
+                AdminCommand::Token {
+                    id,
+                    yes,
+                    url,
+                    signer: args,
+                },
+        } => {
+            let id: writ_core::names::KeyId = id
+                .parse()
+                .map_err(|e| anyhow::anyhow!("token id {id:?}: {e}"))?;
+            approver::admin_token(&paths, &url.url, &signer(&paths, args), &id, *yes).await
         }
         Commands::Unseal { url, signer: args } => {
             approver::unseal(&paths, &url.url, &signer(&paths, args)).await

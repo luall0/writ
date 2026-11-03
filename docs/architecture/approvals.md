@@ -77,9 +77,10 @@ at unseal). They change only by:
   lacks makes the daemon create it before the checks (Ed25519, sealed to the keystore's
   recipient with its `.pub`, handed to the running signer through
   [`Signer::add_key`](signer.md#signer-interface)); the reply (`AdminApplied.created`) and
-  the `admin` line give each one's id and public key, and `writ admin apply` prints them to
-  register on the remotes. A key made for a change that then fails stays in the keystore and
-  is loaded, not made again, by the next change that names it.
+  the `admin` line give the id and public key of each key new to the signers, and `writ admin
+  apply` prints them to register on the remotes. A key made for a change that then fails
+  stays in the keystore and is loaded, not made again, by the next change that names it
+  (and printed then).
 - **`writd recover`** on the host, with the passphrase ([recovery](../operators/recovery.md)).
 
 A file edited on the host is never applied: at the next start it is set aside
@@ -116,6 +117,10 @@ operator writes, `<keys>/tokens/<id>`).
 An `https://` repo whose token isn't in the keystore yet doesn't stop the unseal: its mirror
 is served, and its syncs and pushes are refused with "add it with `writ admin token <id>`".
 A sealed notifier without its token stays off, with a warning at unseal.
+
+Routes: `GET /v1/admin/<target>`, `POST /v1/admin` (SSH: `writ admin show <target>`,
+`writ admin apply`); `GET /v1/tokens/<id>`, `POST /v1/tokens` (SSH: `writ admin token show
+<id>`, `writ admin token apply`).
 
 ## `writ unseal`
 
