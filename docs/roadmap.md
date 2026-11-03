@@ -32,7 +32,7 @@ an unchanged core.
 | M4.6 | [Review after M4.5](history/m4.6-review-after-m4.5.md) ✅ | The security and code quality review after M4.5 and its fixes: a push's mirror never held by a client, the mirror lock with a deadline, `mirrors.ca_certs` the only trust, GnuTLS's certificate refusal read, the ledger before a push's walk, `mirrors.git`, `writ-mirror` split by concern |
 | M4.7 | [Ticket link in git notes](history/m4.7-ticket-link-in-git-notes.md) ✅ | `ticket_link: notes`: each pushed commit's lease in a git note (`refs/notes/commits`, or `refs/notes/writ`), written and pushed by the daemon after the branch, merged with the remote's, the commit untouched |
 | M5 | [Sealed start and admin changes](history/m5-sealed-start-and-signed-admin-changes.md) ✅ | Encrypted keystore (one age file per secret, a boot tier for the transport keys), `writd init`, `writ unseal`, signed admin changes to approvers, readers, templates and registry applied live, keys made by a signed policy, `writ admin token`, process hardening, the end-to-end pipeline on the sealed keystore |
-| M5.5 | [Signature formats and key algorithms](#m55--signature-formats-and-key-algorithms) | OpenPGP commit signatures beside SSH; each signing key declared with its format, algorithm (Ed25519, P-256, P-384, RSA 3072/4096) and hash, checked against its backend at start; `writd keys create` |
+| M5.5 | [Signature formats and key algorithms](history/m5.5-signature-formats-and-key-algorithms.md) ✅ | OpenPGP commit signatures beside SSH; each signing key declared with its format, algorithm (Ed25519, P-256, P-384, RSA 3072/4096) and hash, checked against its backend at start; `writd keys create` |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
@@ -143,71 +143,12 @@ notes commits; the commits untouched.
 
 ## M5.5 — Signature formats and key algorithms
 
-[The backlog page](backlog/signature-formats-and-key-algorithms.md) holds the design. Writ
-signs in SSH only, with the Ed25519 keys the development keystore generates; many people keep
-an OpenPGP key for commits, separate from their SSH keys, and the goal is as many of git's
-formats as possible. After M5, because a key's UIDs are bound by a signed admin change and its
-certificate lives in M5's keystore.
-
-- **The `Signer` seam first** (hard rule 4): `sign` takes the hash to use (a message, or a
-  digest already computed), `Capabilities` lists the (algorithm, hash) pairs a backend
-  supports; the contract suite and the [signer page](architecture/signer.md) before any
-  backend changes.
-- **Keys declared:** `signing_keys.<id>` in `writd.yaml` (`format: ssh | openpgp`,
-  `algorithm: ed25519 | p256 | p384 | rsa3072 | rsa4096`, `hash` optional, `backend`), the
-  OpenPGP UIDs in `policy.yaml` (a signed admin change). One format per key.
-- **Refused, never adjusted:** the daemon refuses to start, naming the key and the reason, on
-  a format, algorithm, hash or backend that don't go together, a declared key missing from the
-  keystore or held with another algorithm or format, an OpenPGP key without a UID for an email
-  its templates allow, a template naming an undeclared key. `hash` left out: the strongest
-  the format, algorithm and backend allow.
-- **`writd keys create <writd.yaml> <id>`:** makes the declared key, writes it to the
-  keystore, logs it, prints the SSH public key or the armored OpenPGP certificate to register.
-  The development keystore follows the declarations.
-- **The key-creation verbs may change shape here.** M5 gives the `Signer` one verb for a key
-  made outside the backend, `add_key(id, PrivateKey)`, used by a signed policy change that
-  names a new key (Ed25519). Declared algorithms and formats may reshape it (an OpenPGP key
-  carries its creation time and UIDs; the declaration says what to make): change the
-  interface, its contract tests and the [signer page](architecture/signer.md) first, as for
-  `sign`'s hash. Settled in M5 ([decision log](decisions.md)), so M5.5 doesn't have to keep
-  `add_key` as it is.
-- **OpenPGP signatures** (v4, built in `writ-crypto`, never parsed from an agent): the
-  certificate with its stored creation time and UID self-signatures; the sign command carries
-  the format git asked for, a mismatch with the lease's key denied
-  (`DenyCode::SignatureFormat`); the ledger unchanged.
-- **RSA through `aws-lc-rs`** (constant time); the `rsa` crate stays banned. P-384 through
-  `p384`.
-- **Clients:** `writ-sign` as `gpg.program` (`-bsau`, `[GNUPG:] SIG_CREATED`; `--verify` to
-  the real `gpg`, its path a client setting); `writ init` writes the OpenPGP settings when the
-  lease's key is OpenPGP; `writ prove-key` for an OpenPGP key (Forgejo's
-  `/user/gpg_key_verify` challenge).
-- Docs: the [product](product.md) scope and non-goals, AGENTS.md's rule 13, the
-  [signer](architecture/signer.md), [clients](architecture/clients.md),
-  [gateway](architecture/gateway.md) and [flows](flows.md) pages, the operators' references,
-  the [stack](stack.md), the [threat model](threat-model.md); the `x509` format stays a
-  [backlog idea](backlog/README.md#x509-commit-signatures).
-
-Acceptance:
-- [ ] Every backend passes the `Signer` contract with the hash (the software backend for
-      every algorithm and hash it declares); an undeclared pair is refused by name.
-- [ ] Each refused configuration (format × algorithm, algorithm × hash, backend × algorithm,
-      backend × hash, key missing, key held with another algorithm, email without a UID,
-      undeclared key, RSA 2048) stops the start with its exact reason; each allowed one starts.
-- [ ] `hash` left out picks the strongest the combination allows (tested per combination).
-- [ ] A commit signed in OpenPGP with each algorithm verifies with the real `gpg`
-      (throwaway `GNUPGHOME`) and is accepted at push through the ledger, as SSH ones.
-- [ ] A sign request in the other format than the lease's key is denied with
-      `SignatureFormat` and logged; the commit gets no signature.
-- [ ] RSA signs in the software backend with no `rsa` crate in the graph (`cargo deny`).
-- [ ] `writd keys create` makes, stores and logs a key, and refuses one already there; the
-      certificate it prints imports into `gpg` with its UIDs.
-- [ ] A UID added without an approver's signature is refused; with one, the new
-      self-signature is made and logged.
-- [ ] End to end (rule 18, 19): an OpenPGP key proved on Forgejo through `writ prove-key`,
-      an agent's commit shown verified there; every new command, flag and key in its
-      registry.
-- [ ] Writ never reads `~/.gnupg` or uses a GnuPG agent (a test with a hostile `GNUPGHOME`
-      and agent socket in the environment).
+**Done.** Moved to [history/m5.5-signature-formats-and-key-algorithms.md](history/m5.5-signature-formats-and-key-algorithms.md):
+the `Signer` with the hash and a `RawSignature`, RSA through `aws-lc-rs`, P-384, signing keys
+declared in `writd.yaml` (format, algorithm, hash, backend) and checked at start, OpenPGP user
+ids in the policy, `writd keys create`, OpenPGP v4 signatures and certificates written by the
+daemon, `writ-sign` as `gpg.openpgp.program`, `writ prove-key` for an OpenPGP key, end-to-end
+scenario 18 on Forgejo. The integration and end-to-end runs are left for the user.
 
 ## M6 — Agent skill, amendments and close
 

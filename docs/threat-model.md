@@ -21,7 +21,8 @@ guarantee below must be covered by at least one test that tries to break it
 | Asset | Where | Notes |
 |---|---|---|
 | My personal keys | Secretive (Secure Enclave) | **Never touched by Writ** |
-| Agent signing keys | Signer backend | Software (v1), YubiKey / SE / TPM later |
+| Agent signing keys | Signer backend | Software (v1), YubiKey / SE / TPM later. Each declared in `writd.yaml` with its format (SSH or OpenPGP), algorithm and hash, checked against its backend at start ([M5.5](history/m5.5-signature-formats-and-key-algorithms.md)) |
+| OpenPGP certificates | Daemon: made from the key, its creation time and the policy's user ids; beside the key (`signing/<id>.asc`), with each grant | Bind an email to an agent key, which remotes then trust as the account's. A user id only through a signed policy change; the certificate is public |
 | Upstream remote credentials | Daemon: SSH keys behind the signer interface; HTTPS tokens sealed in the keystore (`tokens/<id>.age`), added from the approver's machine (`writ admin token`) | SSH keys on my remote accounts: **account-wide access**, not per repo; tokens as narrow as the remote allows (GitHub: one repository). Agents never see them; a token reaches only the daemon's own git, for one operation |
 | Repo mirrors | Daemon host | Personal projects only for now |
 | Session keys + certificates | Agent hosts | Short-lived, one per lease |
@@ -163,6 +164,9 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | ✅ Unsealing and admin changes need an approver signature (and, to unseal, the passphrase); a hand edit or a version altered at rest is never in force | `an_unseal_needs_an_approver_signature_over_this_daemon_and_this_boot`, `unsealing_needs_both_the_passphrase_and_an_approver_signature`, `an_unsigned_wrongly_signed_or_stale_change_is_refused_and_logged`, `a_signed_change_applies_at_once_and_is_written_back_to_its_file`, `a_hand_edited_file_is_set_aside_at_the_next_start_and_never_applied`, `versions_whose_mac_is_not_the_keystore_s_keep_the_daemon_sealed`, `a_version_altered_at_rest_keeps_the_daemon_sealed_and_writd_recover_needs_the_passphrase` |
 | ✅ A token reaches the daemon only from an approver, encrypted to the keystore (never in clear on its disk), and never replayed; a key a signed policy change names is created in the keystore and used at once | `a_signed_token_against_the_file_in_force_is_logged_and_a_replay_is_stale`, `an_unsigned_wrongly_signed_or_malformed_token_is_refused_and_logged`, `a_sealed_service_takes_no_token`, `a_token_added_from_the_mac_is_used_at_once_and_never_in_clear_on_disk`, `a_policy_naming_new_keys_creates_them_and_uses_them_at_once`, `the_software_backend_passes_the_contract_behind_a_queue` |
 | ✅ A `writd` process that holds a secret leaves no core dump and takes no debugger, or doesn't run (a debug build traced on macOS aside); never through a setting of the whole system | `the_linux_hardening_passes_the_contract_and_does_what_it_says`, `the_macos_hardening_passes_the_contract_and_does_what_it_says`, `a_traced_process_is_refused_in_release_and_skipped_in_debug_never_killed`, `a_refused_step_stops_the_process_and_a_warning_does_not`, `no_hardening_refuses_every_step` |
+| ✅ A key signs in the format it is declared with, and only with a combination its backend can do: a request in the other format is denied, a declaration the backend, the format or the hash refuses stops the start, never adjusted | `an_openpgp_lease_signs_in_openpgp_only_and_gpg_verifies_its_commits`, `a_hash_set_is_checked_never_adjusted`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one`, `a_pair_a_key_does_not_sign_with_is_refused_by_name` |
+| ✅ An OpenPGP key certifies an email only through a signed policy change; an OpenPGP proof never signs a commit- or tag-shaped message | `a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_logged`, `an_openpgp_key_proves_itself_in_openpgp_never_over_a_commit_shaped_message`, `the_policy_is_checked_against_the_declared_signing_keys` |
+| ✅ RSA signs in constant time (AWS-LC), never through the `rsa` crate; nothing under RSA 3072, no SHA-1, no `ssh-rsa` | `rsa_signs_with_each_sha2_in_constant_time_code_and_is_stored_as_pkcs8`, `rsa_under_3072_bits_is_refused`, `a_signature_of_the_wrong_size_or_pair_is_refused` |
 | ✅ Hardware backends: keys non-exportable | planned: M7.5 |
 
 ## What Writ does NOT guarantee
@@ -174,6 +178,11 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
   readable copy of the link; the daemon's ledger is the reference
   ([notes](architecture/gateway.md#notes))
 - ❌ Protection of software keys against a compromised daemon host (v1)
+- ❌ That an OpenPGP signature's time is true: it is the daemon's clock, shown by remotes,
+  never checked by Writ
+- ❌ That a user id removed from the policy stops being trusted: remotes keep the
+  certificate they imported; remove the key there too (OpenPGP revocation certificates are
+  not made in v1)
 - ❌ Protection against an attacker who controls an agent host during a lease, beyond the
   scope of the leases active on that host
 - ❌ Protection of the operator's own credentials from an agent running as the operator:
@@ -202,6 +211,7 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | The keystore's passphrase passes, in `writ unseal`'s request, through buffers Writ doesn't wipe: the SSH library's channel buffers, or hyper's and rustls's on HTTPS, on both sides | Writ wipes its own copies (the request body, the decoded passphrase, the typed one); the request goes only over the pinned, authenticated channel, to a reader key; reading another process's freed memory takes its user's account | Hardware recipients (M7.6): no passphrase to send |
 | With `unseal: auto` (M7.6, opt-in): anyone who can restart the daemon, or who takes the whole machine with its hardware, gets a running daemon without the approver | Only with every key and secret in hardware (the notification token and transport keys aside), so no copy of the disk opens anything; leases still need the approver's signature and fit their templates; the start is logged and notified; `writd recover` needs the offline recovery identity | Keep the sealed start (the default) |
 | The authority files' state put back whole from an older copy (the policy, approvers and readers of that time) is accepted: every version in it carries a valid MAC | It is what restoring a backup is; anyone able to put the state back can also stop the daemon; the audit log keeps every change, and the files are written back with what is in force, so the change is visible | A hardware monotonic counter (a TPM's) in the head's MAC, with M7.6's hardware |
+| RSA keys sign through AWS-LC (C and assembly, `aws-lc-rs`): a flaw there is in the signing path of an RSA key ([M5.5](history/m5.5-signature-formats-and-key-algorithms.md)) | Only RSA keys use it, and only an operator who declares one; it signs in constant time, which the pure-Rust `rsa` crate (banned: Marvin) doesn't, and agents can ask for signatures and time them | Ed25519 or ECDSA keys (pure Rust); hardware backends |
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | [Hardware-wrapped secrets](roadmap.md#m76--hardware-wrapped-secrets) (M7.6) |
 | `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |

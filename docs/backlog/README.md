@@ -63,7 +63,6 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
 | [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |
-| [Signature formats and key algorithms](signature-formats-and-key-algorithms.md) | Signers, Clients | feature | L | in progress as [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms) |
 | [x509 commit signatures](#x509-commit-signatures) | Signers | feature | M | idea |
 | [Developer ID signed binaries](#developer-id-signed-binaries) | Packaging | improvement | S | idea |
 | [Hardware-wrapped secrets](hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | specified; picked as [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) |

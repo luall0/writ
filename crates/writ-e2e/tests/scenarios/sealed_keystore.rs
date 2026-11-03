@@ -157,6 +157,35 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
     let (_, why) = expect(&again, 1, "a key made twice");
     assert!(why.contains("is in the keystore already"), "{why}");
 
+    // A declaration its backend can't sign with, or one the format doesn't take: the
+    // commands refuse it with the reason, never adjusting it.
+    for (declaration, reason) in [
+        (
+            "agent-e2e-pgp: { format: openpgp, algorithm: p256, hash: sha512 }",
+            "signing_keys.agent-e2e-pgp: openpgp signs p256 keys with sha256, not sha512",
+        ),
+        (
+            "agent-e2e-pgp: { format: openpgp, algorithm: rsa2048 }",
+            "RSA keys are 3072 or 4096 bits",
+        ),
+    ] {
+        let refused = declared.replace(
+            "agent-e2e-pgp: { format: openpgp, algorithm: ed25519 }",
+            declaration,
+        );
+        assert_ne!(refused, declared);
+        dir.ok("rm writd.yaml");
+        dir.write("writd.yaml", &refused, "0644");
+        let (_, why) = expect(
+            &dir.run("writd signing-keys writd.yaml"),
+            1,
+            "a declaration refused",
+        );
+        assert!(why.contains(reason), "{why}");
+    }
+    dir.ok("rm writd.yaml");
+    dir.write("writd.yaml", &declared, "0644");
+
     // Made once: a second `writd init` is refused, the keystore untouched.
     let before = dir.ok("sha256sum keys/identity.age boot/host");
     let again = dir.run_with("writd init writd.yaml", b"another end-to-end passphrase\n");
