@@ -1,6 +1,6 @@
 # Signature formats and key algorithms
 
-**Status:** specified; picked as [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms).
+**Status:** in progress as [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms).
 **Area:** Signers, Clients. **Kind:** feature. **Size:** L.
 
 ## Problem
@@ -149,20 +149,40 @@ signing_keys:
 
 ## Open questions
 
-- The exact signature of the new `Signer::sign` (an enum of message or digest, or two
-  methods), settled with the contract tests before any backend changes.
-- Whether the upstream credentials (`ssh://` repos) get the same declaration (algorithm,
-  backend), or stay as M4 makes them.
-- How a key created through the running daemon follows its declaration. Since M5 a signed
-  policy change naming a key the keystore lacks makes it (Ed25519) and hands it to the
-  signer through `Signer::add_key(id, PrivateKey)`, the verb for a key made outside the
-  backend. M5.5 is free to reshape that verb (the declaration says the algorithm and format;
-  an OpenPGP key carries its creation time and UIDs): the interface, its contract tests and
-  the signer page change first ([decision log](../decisions.md), 2026-11-03).
-- Certificate expiry (an OpenPGP key expiration subpacket), renewed by a signed admin change:
-  wanted, or left out?
-- P-256 with SHA-384 or SHA-512 in OpenPGP: GnuPG accepts it; to be checked on GitHub and
-  Forgejo before it is a default (otherwise the default for P-256 is SHA-256).
+Settled when M5.5 started ([decision log](../decisions.md), 2026-11-03):
+
+- **`Signer::sign` takes the bytes and the hash, one method:** `sign(id, data, hash)`, where
+  `hash` is `None` for an algorithm that signs the bytes themselves (Ed25519, pure EdDSA) and
+  `Some(sha256 | sha384 | sha512)` for one that signs a digest (ECDSA, the digest truncated to
+  the curve; RSA, PKCS#1 v1.5 with the hash's `DigestInfo`): the backend hashes. A backend
+  that signs only digests hashes itself; one that signs only messages with a fixed hash (an
+  ssh-agent's P-256) declares only that pair. It answers a `RawSignature` (the algorithm,
+  the hash and the signature in one fixed encoding: Ed25519's 64 bytes, ECDSA's `r ‖ s`, RSA's
+  `s`), which small adapters turn into SSH, DER (TLS) or OpenPGP MPIs: an SSH `Signature`
+  can't say "RSA with SHA-384".
+- **The upstream credentials stay as M4 makes them** (Ed25519, SSH, software), not declared.
+- **A key a signed policy change names** is made from its declaration (format, algorithm,
+  creation time) and handed over through `Signer::add_key(id, KeyPair)`: `KeyPair` is
+  `writ-crypto`'s own private key type (Ed25519, P-256, P-384 through `ssh-key`, RSA through
+  `aws-lc-rs`), since `ssh-key`'s `PrivateKey` signs RSA only with the banned `rsa` crate. A
+  key the configuration doesn't declare is refused before anything is made.
+- **No certificate expiry** in M5.5: a key is retired by taking it out of the configuration;
+  an expiration renewed by admin changes stays a later idea.
+- **OpenPGP ECDSA signs with its curve's hash only** (P-256 with SHA-256, P-384 with
+  SHA-384: RFC 6637's pairing, which every implementation verifies); nothing larger is
+  offered until a remote is checked to verify it.
+- **Q28:** not `pgp` (rPGP depends on the banned `rsa` crate): a minimal v4 writer in
+  `writ-crypto`; `aws-lc-rs` confirmed for RSA.
+- **Certificates are deterministic:** every self-signature carries the key's creation time,
+  and Ed25519, RSA PKCS#1 v1.5 and the software backend's ECDSA (RFC 6979) are deterministic,
+  so the certificate is a function of the key, its creation time and its UIDs: the daemon
+  makes it again at unseal and on each policy change, and no certificate is state to keep
+  in step.
+- **The key file:** an agent signing key's sealed plaintext stays an OpenSSH private key for
+  an SSH key made before M5.5 (read as `format: ssh`); a key made from a declaration is a
+  `writ-key/1` text (format, algorithm, creation time for OpenPGP, then the private key: an
+  OpenSSH key, or PKCS#8 for RSA). Its public half beside it says the same, in clear, so
+  the print commands need no unseal; the two are checked against each other at open.
 
 ## Acceptance
 
@@ -170,4 +190,34 @@ signing_keys:
 
 ## Plan
 
-Written when M5.5 starts.
+One commit per step, each with `make ci` (and `make e2e` when a binary changed):
+
+1. **This plan** (docs).
+2. **The `Signer` seam:** `writ_crypto::algorithm` (`KeyAlgorithm`, `Hash`, `SignatureFormat`,
+   the table of what each format takes and its default hash), `KeyPair`, `RawSignature` and
+   its SSH and DER adapters, `writ_crypto::verify` (a raw signature checked in Rust, for the
+   contract); `Signer::sign(id, data, hash)`, `Capabilities::pairs`, `SignerError::Unsupported`
+   naming the pair, `add_key(id, KeyPair)`; the contract suite signs and verifies every pair
+   the backend declares for each key it holds and refuses an undeclared one by name; the
+   software backend adds P-384; the SSHSIG hash a parameter. The signer page first.
+3. **RSA through `aws-lc-rs`:** RSA 3072 and 4096 in `KeyPair` (generated, PKCS#8, signed in
+   constant time), the software backend's RSA pairs, SSH's `rsa-sha2-256` and `rsa-sha2-512`;
+   `deny.toml` still bans `rsa`; the stack page.
+4. **Keys declared:** `signing_keys` in `writd.yaml`, `signing_keys.<id>.uids` in
+   `policy.yaml`; every refusal at start (and on a policy change: a template naming an
+   undeclared key, an email without a UID), each with its exact reason; `writ-key/1`; the
+   development keystore, `writd init` and signed policy changes making keys from their
+   declaration; `writd keys create`; the operator references, the configuration registry.
+5. **OpenPGP signatures:** `writ_crypto::openpgp` (v4 public key, UID and certificate,
+   detached binary signatures, armor); the service signs in the key's format; `writ-sign
+   openpgp <repo>` beside `writ-sign git <repo>`, a mismatch denied with
+   `DenyCode::SignatureFormat`; certificates made at unseal and on a policy change, the
+   UIDs certified in the change's audit line; the grant carries the format and the
+   certificate; `writd signing-keys` prints it; the real `gpg` verifies each algorithm.
+6. **Clients:** `writ-sign` as `gpg.program` (`--status-fd=2 -bsau`, `SIG_CREATED`;
+   `--verify` to the real `gpg`, `WRIT_GPG`), `signing_key.asc`, `writ init`'s OpenPGP
+   settings, `writ prove-key` for an OpenPGP key; a hostile `GNUPGHOME` and agent socket
+   never used.
+7. **End to end:** an OpenPGP key proved on Forgejo, an agent's commit verified there; every
+   new command, flag and key in its registry.
+8. **Docs and history:** threat model, product, the history page.
