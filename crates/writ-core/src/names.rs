@@ -85,6 +85,11 @@ string_newtype!(
     Email, "email", validate_email
 );
 string_newtype!(
+    /// An OpenPGP user id a key is certified with: `Name <local@domain>` (or `<local@domain>`
+    /// alone), printable ASCII, the address an [`Email`].
+    Uid, "OpenPGP user id", validate_uid
+);
+string_newtype!(
     /// A ticket id, which is also the id of the lease it becomes: `wrt_` + a ULID.
     TicketId, "ticket id", validate_ticket_id
 );
@@ -143,6 +148,49 @@ fn validate_email(value: &str) -> Result<(), &'static str> {
             Ok(())
         }
         _ => Err("must be local@domain"),
+    }
+}
+
+/// `Name <email>`: printable ASCII and spaces, at most 256 characters, the name without
+/// `<`, `>` or leading and trailing spaces, then one space (when there is a name), then the
+/// address in angle brackets, which must be an [`Email`]. What a remote compares to the
+/// committer, so read as strictly as one.
+fn validate_uid(value: &str) -> Result<(), &'static str> {
+    if value.is_empty() || value.len() > 256 {
+        return Err("must be 1 to 256 characters");
+    }
+    if !value.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+        return Err("printable ASCII and spaces only");
+    }
+    let inner = value
+        .strip_suffix('>')
+        .and_then(|rest| rest.rsplit_once('<'))
+        .ok_or("must end with <local@domain>")?;
+    let (name, email) = inner;
+    if !name.is_empty() {
+        let name = name
+            .strip_suffix(' ')
+            .ok_or("a space between the name and <local@domain>")?;
+        if name.is_empty() || name.starts_with(' ') || name.ends_with(' ') {
+            return Err("the name must not be empty or start or end with a space");
+        }
+        if name.contains(['<', '>']) {
+            return Err("no '<' or '>' in the name");
+        }
+    }
+    validate_email(email).map_err(|_| "the address in <> must be a valid email")
+}
+
+impl Uid {
+    /// The address in its angle brackets.
+    pub fn email(&self) -> Email {
+        let address = self
+            .0
+            .strip_suffix('>')
+            .and_then(|rest| rest.rsplit_once('<'))
+            .map_or("", |(_, email)| email);
+        // Checked when the user id was made.
+        Email(address.to_owned())
     }
 }
 
@@ -286,6 +334,43 @@ mod tests {
     #[test]
     fn emails() {
         assert!("user+agent@example.org".parse::<Email>().is_ok());
+        for uid in [
+            "Agent <agent@writ.invalid>",
+            "<agent@writ.invalid>",
+            "A B (bot) <a@b>",
+        ] {
+            let parsed = uid.parse::<Uid>().unwrap();
+            assert!(uid.ends_with(&format!("<{}>", parsed.email())), "{uid}");
+        }
+        for (bad, why) in [
+            ("Agent agent@writ.invalid", "must end with <local@domain>"),
+            (
+                "Agent<agent@writ.invalid>",
+                "a space between the name and <local@domain>",
+            ),
+            (
+                "Agent  <agent@writ.invalid>",
+                "the name must not be empty or start or end with a space",
+            ),
+            (
+                " <agent@writ.invalid>",
+                "the name must not be empty or start or end with a space",
+            ),
+            ("A <b> <agent@writ.invalid>", "no '<' or '>' in the name"),
+            (
+                "Agent <not-an-email>",
+                "the address in <> must be a valid email",
+            ),
+            ("Agent <a@b>\n", "printable ASCII and spaces only"),
+            ("Agént <a@b>", "printable ASCII and spaces only"),
+        ] {
+            assert_eq!(bad.parse::<Uid>().unwrap_err().why, why, "{bad:?}");
+        }
+        let long = format!("{} <a@b>", "n".repeat(251));
+        assert_eq!(
+            long.parse::<Uid>().unwrap_err().why,
+            "must be 1 to 256 characters"
+        );
         let ascii = "printable ASCII only";
         for (bad, why) in [
             ("", "1 to 254 characters"),

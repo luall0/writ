@@ -2,8 +2,9 @@
 //! daemon's user; asks for the passphrase twice (one line of stdin when it isn't a terminal).
 //!
 //! It makes the keystore's identity (wrapped with the passphrase), the boot tier (the host
-//! key, the TLS key and its certificate), the CA key, and every agent signing key and `ssh://`
-//! upstream credential the policy names, each its own age file to the identity's recipient;
+//! key, the TLS key and its certificate), the CA key, every agent signing key `writd.yaml`
+//! declares (as declared) and every `ssh://` upstream credential the policy names, each its
+//! own age file to the identity's recipient;
 //! then prints what the operator pins and registers. It refuses a keystore already there, and
 //! leaves nothing behind when it fails.
 
@@ -17,8 +18,9 @@ use writ_crypto::ssh_key::{LineEnding, PrivateKey};
 use writ_platform::{DataKey, Passphrase};
 
 use super::sealed::{Layout, seal, write_public};
-use super::{PublicKeys, make_tls, private_dir, signing_ids, upstream_credentials, write_private};
+use super::{PublicKeys, make_tls, private_dir, upstream_credentials, write_private};
 use crate::config::{Config, KeystoreConfig, SealedConfig};
+use crate::signing::Declarations;
 
 /// Wraps the identity with the passphrase: the platform's choice (`platform::enroll`), or a
 /// cheap work factor in tests.
@@ -43,6 +45,8 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
         config.min_ttl,
     )
     .with_context(|| config.policy.display().to_string())?;
+    let declared = crate::signing::declarations(&config)?;
+    crate::signing::check_policy(&policy, &declared)?;
     crate::authority::check(&texts, config.min_ttl)?;
     refuse_existing(sealed)?;
     let db = config.state_dir.join("leases.db");
@@ -67,7 +71,13 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
     // Nothing is written before here.
     crate::keystore::private_dir(&config.state_dir)?;
     let store = writ_store::Store::open(&db)?;
-    let made = make(sealed, &policy, &passphrase, &crate::platform::enroll)?;
+    let made = make(
+        sealed,
+        &declared,
+        &policy,
+        &passphrase,
+        &crate::platform::enroll,
+    )?;
     crate::authority::seed(
         &store,
         &made.authority,
@@ -141,6 +151,7 @@ impl Drop for Undo<'_> {
 /// Makes the keystore in `sealed`'s directories, which must be missing or empty.
 pub fn make(
     sealed: &SealedConfig,
+    declared: &Declarations,
     policy: &PolicyConfig,
     passphrase: &Passphrase,
     enroll: Enroll<'_>,
@@ -195,9 +206,13 @@ pub fn make(
             })
             .collect()
     };
-    let signing = keys(signing_ids(policy), &|id| layout.signing(id), &|id| {
-        layout.signing_public(id)
-    })?;
+    let signing = super::used(declared, policy)?
+        .into_iter()
+        .map(|(id, key)| {
+            let made = super::sealed::make_signing_key(&layout, &recipient, id, key)?;
+            Ok((made.id, made.key.public_key(), made.meta))
+        })
+        .collect::<anyhow::Result<_>>()?;
     let upstream = keys(upstream_ids, &|id| layout.upstream(id), &|id| {
         layout.upstream_public(id)
     })?;
@@ -233,7 +248,7 @@ fn print(sealed: &SealedConfig, policy: &PolicyConfig, made: &Made) {
             crate::repos_using(policy, id).join(", ")
         );
     }
-    for (id, key) in &made.keys.signing {
+    for (id, key, _) in &made.keys.signing {
         println!(
             "signing key {id}: {} (templates: {})",
             openssh(key),

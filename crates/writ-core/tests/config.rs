@@ -384,3 +384,114 @@ fn ticket_request_errors_name_the_field() {
         );
     }
 }
+
+/// A policy with one template signing with `agent-01` for two emails, and `signing_keys`.
+fn signing_policy(signing_keys: &str) -> PolicyConfig {
+    PolicyConfig::from_yaml(&format!(
+        r#"
+repos:
+  demo:
+    upstream: ssh://git@example.org/demo.git
+    upstream_credential: upstream-01
+templates:
+  feature:
+    repos: [demo]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ.invalid", "bot@writ.invalid"]
+    signing_key: agent-01
+    max_ttl: 1h
+    max_signatures: 5
+    max_pushes: 5
+    max_ops_per_minute: 5
+    max_push_size: 1MB
+{signing_keys}"#
+    ))
+    .unwrap()
+}
+
+#[test]
+fn the_policy_is_checked_against_the_declared_signing_keys() {
+    use std::collections::BTreeMap;
+    use writ_core::config::DeclaredFormat;
+    let declared = |format| BTreeMap::from([("agent-01".parse().unwrap(), format)]);
+    let plain = signing_policy("");
+    plain
+        .check_signing_keys(&declared(DeclaredFormat::Ssh))
+        .unwrap();
+    // A template's key nobody declared.
+    assert_eq!(
+        plain
+            .check_signing_keys(&BTreeMap::new())
+            .unwrap_err()
+            .to_string(),
+        "templates.feature.signing_key: agent-01 is not declared in writd.yaml's signing_keys"
+    );
+    // An OpenPGP key: a user id for every committer email.
+    assert_eq!(
+        plain
+            .check_signing_keys(&declared(DeclaredFormat::Openpgp))
+            .unwrap_err()
+            .to_string(),
+        "templates.feature.committer_emails: agent@writ.invalid has no user id in \
+         signing_keys.agent-01.uids (the OpenPGP key would sign commits a remote shows as \
+         unverified)"
+    );
+    let one =
+        signing_policy("signing_keys:\n  agent-01:\n    uids: [\"Agent <agent@writ.invalid>\"]\n");
+    assert_eq!(
+        one.check_signing_keys(&declared(DeclaredFormat::Openpgp))
+            .unwrap_err()
+            .to_string(),
+        "templates.feature.committer_emails: bot@writ.invalid has no user id in \
+         signing_keys.agent-01.uids (the OpenPGP key would sign commits a remote shows as \
+         unverified)"
+    );
+    let both = signing_policy(
+        "signing_keys:\n  agent-01:\n    uids: [\"Agent <agent@writ.invalid>\", \"<bot@writ.invalid>\"]\n",
+    );
+    both.check_signing_keys(&declared(DeclaredFormat::Openpgp))
+        .unwrap();
+    assert_eq!(both.uids(&"agent-01".parse().unwrap()).len(), 2);
+    // User ids on an SSH key, or on a key nobody declared.
+    assert_eq!(
+        both.check_signing_keys(&declared(DeclaredFormat::Ssh))
+            .unwrap_err()
+            .to_string(),
+        "signing_keys.agent-01: user ids are for OpenPGP keys; writd.yaml declares this one ssh"
+    );
+    let stray =
+        signing_policy("signing_keys:\n  agent-09:\n    uids: [\"<agent@writ.invalid>\"]\n");
+    assert_eq!(
+        stray
+            .check_signing_keys(&declared(DeclaredFormat::Ssh))
+            .unwrap_err()
+            .to_string(),
+        "signing_keys.agent-09: not declared in writd.yaml's signing_keys"
+    );
+}
+
+#[test]
+fn a_key_s_user_ids_are_one_to_sixteen_and_distinct() {
+    let error = |uids: &str| {
+        PolicyConfig::from_yaml(&format!(
+            "repos: {{}}\ntemplates: {{}}\nsigning_keys:\n  k:\n    uids: {uids}\n"
+        ))
+        .unwrap_err()
+        .to_string()
+    };
+    assert_eq!(
+        error("[]"),
+        "signing_keys.k.uids: must list 1 to 16 user ids"
+    );
+    let seventeen: Vec<String> = (0..17).map(|i| format!("\"<a{i}@b>\"")).collect();
+    assert_eq!(
+        error(&format!("[{}]", seventeen.join(", "))),
+        "signing_keys.k.uids: must list 1 to 16 user ids"
+    );
+    assert_eq!(
+        error("[\"<a@b>\", \"<a@b>\"]"),
+        "signing_keys.k.uids: a user id is listed twice"
+    );
+    assert!(error("[\"no address\"]").contains("must end with <local@domain>"));
+}

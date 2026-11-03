@@ -13,7 +13,10 @@ use writ_crypto::ssh_key::{LineEnding, PrivateKey};
 use writ_mirror::credential::{MAX_TOKEN_FILE, UpstreamToken};
 use writ_platform::notify::telegram::BotToken;
 
-use super::{Boot, Keys, TlsKeyPair, make_tls, private_dir, upstream_credentials, write_private};
+use super::{
+    Boot, Keys, SigningKey, TlsKeyPair, make_tls, private_dir, upstream_credentials, write_private,
+};
+use crate::signing::{Declarations, Declared};
 
 /// The TLS key and certificate of the dev keystore, made on first start.
 fn dev_tls(dir: &Path) -> anyhow::Result<TlsKeyPair> {
@@ -61,14 +64,87 @@ fn dev_key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
     Ok(key)
 }
 
-/// The signing keys every template names, from `<dir>/signing/<id>`, each generated on first
-/// start (a key id is a plain name, never a path).
-fn dev_signing_keys(dir: &Path, policy: &PolicyConfig) -> anyhow::Result<Vec<(KeyId, PrivateKey)>> {
-    let ids = policy
-        .templates()
-        .values()
-        .filter_map(|t| t.signing_key.as_ref());
-    dev_keys(&dir.join("signing"), ids)
+/// The declared signing key `id`, from `<dir>/signing/<id>` (a `writ-key/1` file, or an
+/// OpenSSH key made before M5.5), checked against its declaration; made there now, as
+/// declared, when it is missing. Whether it was made is the second value.
+pub fn signing_key(
+    dir: &Path,
+    id: &KeyId,
+    declared: &Declared,
+) -> anyhow::Result<(SigningKey, bool)> {
+    allowed()?;
+    dev_signing_key(dir, id, declared)
+}
+
+/// [`signing_key`], once the build is known to take the development keystore.
+fn dev_signing_key(
+    dir: &Path,
+    id: &KeyId,
+    declared: &Declared,
+) -> anyhow::Result<(SigningKey, bool)> {
+    let dir = dir.join("signing");
+    private_dir(&dir)?;
+    let path = dir.join(id.as_str());
+    if !path.exists() {
+        return Ok((make_signing_key(&path, id, declared)?, true));
+    }
+    let text = writ_platform::fs::read_secret(&path, "the signing key", 1 << 16)?;
+    let (key, meta) = writ_crypto::keyfile::decode_secret(&text)
+        .with_context(|| format!("{}: not a signing key", path.display()))?;
+    crate::signing::check_key(id, declared, &key.public_key(), &meta)?;
+    Ok((
+        SigningKey {
+            id: id.clone(),
+            key,
+            meta,
+        },
+        false,
+    ))
+}
+
+/// Makes the signing key `id` at `path` as `declared` describes it.
+fn make_signing_key(path: &Path, id: &KeyId, declared: &Declared) -> anyhow::Result<SigningKey> {
+    let (key, meta) = crate::signing::make(declared)?;
+    write_private(
+        path,
+        writ_crypto::keyfile::encode_secret(&key, meta)?.as_bytes(),
+    )?;
+    Ok(SigningKey {
+        id: id.clone(),
+        key,
+        meta,
+    })
+}
+
+/// `writd keys create` on the development keystore: refuses a key already there.
+pub fn create_signing_key(
+    dir: &Path,
+    id: &KeyId,
+    declared: &Declared,
+) -> anyhow::Result<SigningKey> {
+    allowed()?;
+    let dir = dir.join("signing");
+    private_dir(&dir)?;
+    let path = dir.join(id.as_str());
+    if path.exists() {
+        anyhow::bail!(
+            "signing key {id} is in the keystore already ({}): a key is made once",
+            path.display()
+        );
+    }
+    make_signing_key(&path, id, declared)
+}
+
+/// Every signing key the templates use, each made on first start as declared.
+fn dev_signing_keys(
+    dir: &Path,
+    declared: &Declarations,
+    policy: &PolicyConfig,
+) -> anyhow::Result<Vec<SigningKey>> {
+    super::used(declared, policy)?
+        .into_iter()
+        .map(|(id, key)| Ok(dev_signing_key(dir, id, key)?.0))
+        .collect()
 }
 
 /// The credentials of `ssh://` repos, from `<dir>/upstream/<id>`, each generated on first
@@ -179,12 +255,12 @@ fn allowed() -> anyhow::Result<()> {
 }
 
 /// The daemon's keys, from the development keystore in `dir`.
-pub fn keys(dir: &Path, policy: &PolicyConfig) -> anyhow::Result<Keys> {
+pub fn keys(dir: &Path, declared: &Declarations, policy: &PolicyConfig) -> anyhow::Result<Keys> {
     allowed()?;
     private_dir(dir)?;
     Ok(Keys {
         ca: dev_key(dir, "ca")?,
-        signing: dev_signing_keys(dir, policy)?,
+        signing: dev_signing_keys(dir, declared, policy)?,
         upstream: dev_upstream_keys(dir, policy)?,
     })
 }
@@ -217,18 +293,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_signing_key_per_template_key_id_kept_across_starts() {
+    fn one_signing_key_per_used_key_kept_across_starts() {
         let dir = tempfile::tempdir().unwrap();
         let policy = PolicyConfig::from_yaml(include_str!(
             "../../../writ-core/tests/fixtures/policy.yaml"
         ))
         .unwrap();
-        // Two templates name agent-ed25519-01, one names none: one key.
-        let first = dev_signing_keys(dir.path(), &policy).unwrap();
+        // Two templates name agent-ed25519-01, one names none; one more key is declared but
+        // unused: one key made.
+        let declared = crate::signing::ssh_ed25519(&["agent-ed25519-01", "agent-unused"]);
+        let first = dev_signing_keys(dir.path(), &declared, &policy).unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].0.as_str(), "agent-ed25519-01");
-        let again = dev_signing_keys(dir.path(), &policy).unwrap();
-        assert_eq!(again[0].1.public_key(), first[0].1.public_key(), "kept");
+        assert_eq!(first[0].id.as_str(), "agent-ed25519-01");
+        let again = dev_signing_keys(dir.path(), &declared, &policy).unwrap();
+        assert_eq!(again[0].key.public_key(), first[0].key.public_key(), "kept");
         let path = dir.path().join("signing/agent-ed25519-01");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);

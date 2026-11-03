@@ -31,8 +31,10 @@ use writ_mirror::credential::UpstreamToken;
 use writ_platform::notify::telegram::BotToken;
 use zeroize::Zeroizing;
 
-use super::{Boot, Keys, PublicKeys, TlsKeyPair, signing_ids, upstream_credentials, write_private};
+use super::{Boot, Keys, PublicKeys, SigningKey, TlsKeyPair, upstream_credentials, write_private};
 use crate::config::SealedConfig;
+use crate::signing::{Declarations, Declared};
+use writ_crypto::keyfile::{self, KeyMeta};
 
 /// The largest secret file read: a key or a token in an age file is a few hundred bytes.
 const MAX_SECRET_FILE: u64 = 64 * 1024;
@@ -376,16 +378,38 @@ pub fn write_token(sealed: &SealedConfig, id: &KeyId, bytes: &[u8]) -> anyhow::R
     })
 }
 
+/// The public half of the signing key `id` and what its file says it is. A missing one is a
+/// declared key the keystore doesn't hold.
+fn signing_public(layout: &Layout<'_>, id: &KeyId) -> anyhow::Result<(PublicKey, KeyMeta)> {
+    let path = layout.signing_public(id);
+    if !path.exists() {
+        bail!(
+            "signing key {id} is declared but not in the keystore ({} is missing): make it \
+             with `writd keys create <writd.yaml> {id}`",
+            path.display()
+        );
+    }
+    let text = writ_platform::fs::read_authority(&path, &format!("signing key {id}"))?;
+    keyfile::decode_public(text.as_bytes())
+        .with_context(|| format!("{}: not a signing key's public half", path.display()))
+}
+
 /// The public halves: the boot tier's keys, and the `.pub` files beside each sealed key, for
-/// every key the policy names. Nothing sealed is opened.
-pub fn public(sealed: &SealedConfig, policy: &PolicyConfig) -> anyhow::Result<PublicKeys> {
+/// every signing key the templates use (each checked against its declaration) and every
+/// upstream credential the policy names. Nothing sealed is opened.
+pub fn public(
+    sealed: &SealedConfig,
+    declared: &Declarations,
+    policy: &PolicyConfig,
+) -> anyhow::Result<PublicKeys> {
     let layout = Layout(sealed);
     let (upstream_ids, _) = upstream_credentials(policy)?;
-    let signing = signing_ids(policy)
+    let signing = super::used(declared, policy)?
         .into_iter()
-        .map(|id| {
-            let what = format!("signing key {id}");
-            Ok((id.clone(), read_public(&layout.signing_public(id), &what)?))
+        .map(|(id, key)| {
+            let (public, meta) = signing_public(&layout, id)?;
+            crate::signing::check_key(id, key, &public, &meta)?;
+            Ok((id.clone(), public, meta))
         })
         .collect::<anyhow::Result<_>>()?;
     let upstream = upstream_ids
@@ -424,27 +448,84 @@ fn sealed_key(
     Ok(key)
 }
 
-/// The daemon's keys, from the sealed keystore opened by `files`: the boot tier's, and every
-/// sealed key the policy names.
+/// The signing key `id`, opened by `files`, checked against its public half (the one printed
+/// and registered, and what its file says it is) and against its declaration.
+pub fn signing_key(
+    files: &SecretFiles,
+    layout: &Layout<'_>,
+    id: &KeyId,
+    declared: &Declared,
+) -> anyhow::Result<SigningKey> {
+    let path = layout.signing(id);
+    let text = files.read(&path, &format!("signing key {id}"))?;
+    let (key, meta) = keyfile::decode_secret(&text)
+        .with_context(|| format!("{}: not a signing key", path.display()))?;
+    let (public, public_meta) = signing_public(layout, id)?;
+    if public != key.public_key() || public_meta != meta {
+        bail!(
+            "{} does not match {}: one of them was replaced",
+            layout.signing_public(id).display(),
+            path.display()
+        );
+    }
+    crate::signing::check_key(id, declared, &public, &meta)?;
+    Ok(SigningKey {
+        id: id.clone(),
+        key,
+        meta,
+    })
+}
+
+/// Makes the signing key `id` as `declared` describes it, sealed to `recipient`: its public
+/// half written first (a make cut short leaves at most a public half, which the next one
+/// replaces). Refuses a key the keystore holds already.
+pub fn make_signing_key(
+    layout: &Layout<'_>,
+    recipient: &dyn age::Recipient,
+    id: &KeyId,
+    declared: &Declared,
+) -> anyhow::Result<SigningKey> {
+    let (secret, public) = (layout.signing(id), layout.signing_public(id));
+    if secret.exists() {
+        bail!(
+            "signing key {id} is in the keystore already ({}): a key is made once",
+            secret.display()
+        );
+    }
+    super::private_dir(&layout.signing_dir())?;
+    match std::fs::remove_file(&public) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("cannot replace {}", public.display()));
+        }
+        _ => {}
+    }
+    let (key, meta) = crate::signing::make(declared)?;
+    write_public(&public, &keyfile::encode_public(&key.public_key(), meta)?)?;
+    seal(
+        &secret,
+        keyfile::encode_secret(&key, meta)?.as_bytes(),
+        &[recipient],
+    )?;
+    Ok(SigningKey {
+        id: id.clone(),
+        key,
+        meta,
+    })
+}
+
+/// The daemon's keys, from the sealed keystore opened by `files`: the CA key, every signing
+/// key the templates use, and every upstream credential the policy names.
 pub fn keys(
     sealed: &SealedConfig,
+    declared: &Declarations,
     policy: &PolicyConfig,
     files: &SecretFiles,
 ) -> anyhow::Result<Keys> {
     let layout = Layout(sealed);
     let (upstream_ids, _) = upstream_credentials(policy)?;
-    let signing = signing_ids(policy)
+    let signing = super::used(declared, policy)?
         .into_iter()
-        .map(|id| {
-            let what = format!("signing key {id}");
-            let key = sealed_key(
-                files,
-                &layout.signing(id),
-                &layout.signing_public(id),
-                &what,
-            )?;
-            Ok((id.clone(), key))
-        })
+        .map(|(id, key)| signing_key(files, &layout, id, key))
         .collect::<anyhow::Result<_>>()?;
     let upstream = upstream_ids
         .into_iter()
@@ -481,6 +562,11 @@ mod tests {
 
     const PASSPHRASE: &str = "correct horse battery staple";
 
+    /// The one key the policy's templates sign with, declared SSH Ed25519.
+    fn declared() -> Declarations {
+        crate::signing::ssh_ed25519(&["agent-01"])
+    }
+
     /// The development policy: two templates sign with one key, an ssh:// and an https:// repo.
     fn policy() -> PolicyConfig {
         PolicyConfig::from_yaml(&policy_text()).unwrap()
@@ -505,6 +591,7 @@ mod tests {
         };
         let made = make(
             &sealed,
+            &declared(),
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &cheap,
@@ -610,13 +697,19 @@ mod tests {
     fn the_passphrase_opens_every_key_the_policy_names_and_nothing_else_does() {
         let (_root, sealed, made) = setup();
         // The public halves need no passphrase, and are the keys made.
-        let public = public(&sealed, &policy()).unwrap();
+        let public = public(&sealed, &declared(), &policy()).unwrap();
         assert_eq!(public.host, made.keys.host);
         assert_eq!(public.tls_fingerprint, made.keys.tls_fingerprint);
         assert_eq!(public.signing, made.keys.signing);
         assert_eq!(public.upstream, made.keys.upstream);
 
-        let keys = keys(&sealed, &policy(), &opened(&sealed, PASSPHRASE).unwrap()).unwrap();
+        let keys = keys(
+            &sealed,
+            &declared(),
+            &policy(),
+            &opened(&sealed, PASSPHRASE).unwrap(),
+        )
+        .unwrap();
         let boot = boot(&sealed).unwrap();
         assert_eq!(*boot.host.public_key(), made.keys.host);
         assert_eq!(boot.ca_public, *keys.ca.public_key());
@@ -624,12 +717,12 @@ mod tests {
             writ_crypto::tls::fingerprint_pem(&boot.tls.cert_pem).unwrap(),
             made.keys.tls_fingerprint
         );
-        let ids = |keys: &[(KeyId, PrivateKey)]| -> Vec<String> {
-            keys.iter().map(|(id, _)| id.to_string()).collect()
-        };
-        assert_eq!(ids(&keys.signing), ["agent-01"]);
-        assert_eq!(ids(&keys.upstream), ["key-01"]);
-        assert_eq!(*keys.signing[0].1.public_key(), made.keys.signing[0].1);
+        let signing: Vec<String> = keys.signing.iter().map(|k| k.id.to_string()).collect();
+        assert_eq!(signing, ["agent-01"]);
+        let upstream: Vec<String> = keys.upstream.iter().map(|(id, _)| id.to_string()).collect();
+        assert_eq!(upstream, ["key-01"]);
+        assert_eq!(keys.signing[0].key.public_key(), made.keys.signing[0].1);
+        assert_eq!(keys.signing[0].meta, KeyMeta::SSH);
 
         let wrong = opened(&sealed, "correct horse battery stapler")
             .err()
@@ -650,7 +743,7 @@ mod tests {
     }
 
     fn keys_error(sealed: &SealedConfig, files: &SecretFiles) -> String {
-        match keys(sealed, &policy(), files) {
+        match keys(sealed, &declared(), &policy(), files) {
             Ok(_) => panic!("must not open"),
             Err(e) => format!("{e:#}"),
         }
@@ -718,7 +811,7 @@ mod tests {
             *plaintext
         );
         // So does the keystore's identity, and the keys still load and match their halves.
-        assert!(keys(&sealed, &policy(), &files).is_ok());
+        assert!(keys(&sealed, &declared(), &policy(), &files).is_ok());
         // The fake opens nothing else.
         let error = format!("{:#}", fake.read(&layout.ca(), "the CA key").unwrap_err());
         assert!(
@@ -775,22 +868,50 @@ mod tests {
     }
 
     #[test]
-    fn a_key_the_policy_names_but_the_keystore_lacks_is_said() {
+    fn a_declared_key_the_keystore_lacks_or_holds_otherwise_is_said() {
         let (_root, sealed, _made) = setup();
-        let more = PolicyConfig::from_yaml(&policy_text().replacen(
-            "signing_key: agent-01",
-            "signing_key: agent-02",
-            1,
-        ))
-        .unwrap();
-        let error = match public(&sealed, &more) {
+        let more = crate::signing::ssh_ed25519(&["agent-01", "agent-02"]);
+        // Declared and unused: nothing to hold yet.
+        assert!(public(&sealed, &more, &policy()).is_ok());
+        // Used by a template: it must be there.
+        let error = match public(&sealed, &more, &naming_agent_02()) {
             Ok(_) => panic!("agent-02 was never made"),
             Err(e) => e.to_string(),
         };
         assert!(
-            error.starts_with("signing key agent-02 is not in the keystore"),
+            error.starts_with("signing key agent-02 is declared but not in the keystore"),
             "{error}"
         );
+        assert!(
+            error.ends_with("make it with `writd keys create <writd.yaml> agent-02`"),
+            "{error}"
+        );
+        // agent-01 declared P-256: the keystore holds an Ed25519 key.
+        let mut other = declared();
+        if let Some(key) = other.values_mut().next() {
+            key.algorithm = writ_crypto::algorithm::KeyAlgorithm::P256;
+        }
+        let error = match public(&sealed, &other, &policy()) {
+            Ok(_) => panic!("held as Ed25519"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            error.starts_with(
+                "signing key agent-01: declared p256 but the keystore holds a \
+                               ed25519 key"
+            ),
+            "{error}"
+        );
+    }
+
+    /// The policy with template `a` signing with agent-02.
+    fn naming_agent_02() -> PolicyConfig {
+        PolicyConfig::from_yaml(&policy_text().replacen(
+            "signing_key: agent-01",
+            "signing_key: agent-02",
+            1,
+        ))
+        .unwrap()
     }
 
     fn policy_text() -> String {
@@ -838,53 +959,70 @@ templates:
         let layout = Layout(&sealed);
         let files = opened(&sealed, PASSPHRASE).unwrap();
         let id: KeyId = "agent-02".parse().unwrap();
+        let both = crate::signing::ssh_ed25519(&["agent-01", "agent-02"]);
+        let decl = both.get(&id).unwrap();
         let (secret, public) = (layout.signing(&id), layout.signing_public(&id));
-        let make = || {
-            key_or_make(
-                &files,
-                &recipient_of(&sealed),
-                &secret,
-                &public,
-                "signing key agent-02",
-            )
-            .unwrap()
-        };
-        let (key, made) = make();
-        assert!(made);
+        let make = || make_signing_key(&layout, &recipient_of(&sealed), &id, decl);
+        let key = make().unwrap();
         // Sealed to the recipient, its half beside it, both as `writd init` writes them.
         let text = String::from_utf8(std::fs::read(&secret).unwrap()).unwrap_or_default();
         assert!(!text.contains("PRIVATE KEY"));
         assert_eq!((mode(&secret), mode(&public)), (0o600, 0o644));
         assert_eq!(
             std::fs::read_to_string(&public).unwrap().trim(),
-            key.public_key().to_openssh().unwrap()
+            key.key.public_key().to_openssh().unwrap()
         );
-        // Named again: opened, never made twice.
-        let (again, made) = make();
-        assert!(!made);
-        assert_eq!(again.public_key(), key.public_key());
+        // Made again: refused, the key kept.
+        let error = make().err().unwrap().to_string();
+        assert!(
+            error.starts_with("signing key agent-02 is in the keystore already"),
+            "{error}"
+        );
+        let again = signing_key(&files, &layout, &id, decl).unwrap();
+        assert_eq!(again.key.public_key(), key.key.public_key());
         // A make cut short after the half: the half is replaced by the new key's.
         std::fs::remove_file(&secret).unwrap();
-        let (fresh, made) = make();
-        assert!(made);
-        assert_ne!(fresh.public_key(), key.public_key());
+        let fresh = make().unwrap();
+        assert_ne!(fresh.key.public_key(), key.key.public_key());
         assert_eq!(
             std::fs::read_to_string(&public).unwrap().trim(),
-            fresh.public_key().to_openssh().unwrap()
+            fresh.key.public_key().to_openssh().unwrap()
         );
-        // And it opens as `writd init`'s keys do, from a policy that names it.
-        let named = PolicyConfig::from_yaml(&policy_text().replacen(
-            "signing_key: agent-01",
-            "signing_key: agent-02",
-            1,
-        ))
-        .unwrap();
-        let keys = keys(&sealed, &named, &files).unwrap();
+        // And it opens as `writd init`'s keys do, once a template uses it.
+        let keys = keys(&sealed, &both, &naming_agent_02(), &files).unwrap();
         assert!(
             keys.signing
                 .iter()
-                .any(|(k, key)| *k == id && key.public_key() == fresh.public_key())
+                .any(|k| k.id == id && k.key.public_key() == fresh.key.public_key())
         );
+    }
+
+    #[test]
+    fn every_algorithm_and_an_openpgp_key_round_trip_through_the_keystore() {
+        use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat};
+        let (_root, sealed, _made) = setup();
+        let layout = Layout(&sealed);
+        let files = opened(&sealed, PASSPHRASE).unwrap();
+        for (i, algorithm) in KeyAlgorithm::ALL.into_iter().enumerate() {
+            for format in SignatureFormat::ALL {
+                let id: KeyId = format!("k-{i}-{format}").parse().unwrap();
+                let decl = crate::signing::Declared {
+                    format,
+                    algorithm,
+                    hash: Hash::Sha256,
+                    backend: crate::config::BackendConfig::Software,
+                };
+                let made = make_signing_key(&layout, &recipient_of(&sealed), &id, &decl).unwrap();
+                assert_eq!(made.meta.format, format);
+                assert_eq!(
+                    made.meta.created.is_some(),
+                    format == SignatureFormat::Openpgp
+                );
+                let read = signing_key(&files, &layout, &id, &decl).unwrap();
+                assert_eq!(read.key.public_key(), made.key.public_key());
+                assert_eq!(read.meta, made.meta);
+            }
+        }
     }
 
     #[test]
@@ -964,6 +1102,7 @@ templates:
         let (_root, sealed, _made) = setup();
         let again = make(
             &sealed,
+            &declared(),
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &cheap,
@@ -987,6 +1126,7 @@ templates:
         };
         let error = make(
             &fresh,
+            &declared(),
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &failing,
@@ -996,6 +1136,7 @@ templates:
         assert!(
             make(
                 &fresh,
+                &declared(),
                 &policy(),
                 &Passphrase::new(PASSPHRASE.to_owned()),
                 &cheap

@@ -130,6 +130,8 @@ fn signer_reason(e: &SignerError) -> String {
 struct Reserved<'a> {
     lease: Lease,
     key: KeyId,
+    /// How the key signs, as declared.
+    key_use: crate::KeyUse,
     commit: &'a Commit,
     warnings: Vec<String>,
     in_flight: InFlight<'a>,
@@ -240,7 +242,7 @@ impl Service {
             &*self.opened().map_err(super::as_denial)?.signer,
             &reserved.key,
             GIT_NAMESPACE,
-            writ_crypto::sshsig::DEFAULT_HASH,
+            reserved.key_use.hash,
             reserved.commit.bytes(),
         );
         self.settle(signing, &request, reserved, signed)
@@ -296,6 +298,18 @@ impl Service {
             let denial = Denial::internal();
             return Err(deny(&mut inner, &event, denial));
         };
+        // Declared, and in SSH: the daemon refuses to start otherwise (fail closed all the
+        // same, before a slot is taken).
+        let key_use = match self.config.signing_keys.get(key) {
+            Some(key_use) if key_use.format == writ_crypto::algorithm::SignatureFormat::Ssh => {
+                *key_use
+            }
+            _ => {
+                tracing::error!(%key, "a signing key without an SSH declaration");
+                let denial = Denial::internal();
+                return Err(deny(&mut inner, &event, denial));
+            }
+        };
         let max = lease.ticket.limits.max_signatures;
         // Under the same lock as the decision: the counter can't have moved, but the store
         // refuses past the limit whatever happens.
@@ -321,6 +335,7 @@ impl Service {
         inner.signing.start(&lease.id);
         Ok(Reserved {
             key: key.clone(),
+            key_use,
             commit,
             warnings: allowed.warnings,
             in_flight: InFlight {

@@ -54,8 +54,8 @@ const AGENT_KEYS_DEADLINE: Duration = Duration::from_secs(10);
 /// the TLS key and the upstream credential get theirs). This build has the software
 /// backend only, so the configuration doesn't name one yet: the `signer:` key comes with the
 /// sealed keystore (M5), and hardware backends with their milestones (M7.5).
-pub fn signer(keys: Vec<(KeyId, PrivateKey)>) -> anyhow::Result<Arc<dyn Signer>> {
-    let backend = SoftwareSigner::new(keys)?;
+pub fn signer(keys: Vec<crate::keystore::SigningKey>) -> anyhow::Result<Arc<dyn Signer>> {
+    let backend = SoftwareSigner::new(keys.into_iter().map(|k| (k.id, k.key)))?;
     let queued = QueuedSigner::new(
         backend,
         QueueConfig {

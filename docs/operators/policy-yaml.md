@@ -1,10 +1,11 @@
 # `policy.yaml`
 
-Two sections:
+Three sections:
 
 - **`repos`**, the repo registry: each repo agents may use, and hard limits no lease can go
   past.
 - **`templates`**: the largest ticket each one accepts. Every ticket must fit a template.
+- **`signing_keys`**: the user ids of each OpenPGP signing key. Optional.
 
 How they combine with tickets: [lease model](../lease-model.md). Start from the
 [template](templates/policy.yaml). Examples: the [development policy](../../dev/policy.yaml)
@@ -18,8 +19,8 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
   entry changes gets its mirror reopened.
 - **Unknown keys are refused**, and every error names its key:
   `templates.quick-fix.max_ttl: invalid duration "1 hour"`.
-- **Names** are the map keys (`repos.<name>`, `templates.<name>`). Repo names must be unique
-  ignoring case.
+- **Names** are the map keys (`repos.<name>`, `templates.<name>`, `signing_keys.<id>`). Repo
+  names must be unique ignoring case.
 - **Patterns, durations, sizes:** [patterns and units](../lease-model.md#patterns-and-units).
 
 ## The repo registry: `repos.<name>`
@@ -92,3 +93,20 @@ Only for tickets that list `expected_paths`; others are never compared.
 - **off**: no comparison.
 - **warn** (default): the commit is signed, and the `sign` audit line records a warning.
 - **deny**: the commit isn't signed (`paths`). Also when the touched paths can't be computed.
+
+## OpenPGP user ids: `signing_keys.<id>`
+
+A key's format, algorithm and backend are declared in
+[`writd.yaml`'s `signing_keys`](writd-yaml.md#signing-keys-signing_keysid). The identities
+an OpenPGP key carries are here, because binding an email to a key is an admin change.
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `signing_keys.<id>.uids` | 1 to 16 user ids, `Name <local@domain>` or `<local@domain>`, printable ASCII | **required** | The user ids the key's certificate carries. Each must be unique |
+
+The daemon refuses the policy, naming the field, when:
+
+- a template's `signing_key` isn't declared in `writd.yaml`;
+- a template allows a committer email that no user id of its OpenPGP key carries (remotes would
+  show those commits as unverified);
+- `<id>` isn't declared in `writd.yaml`, or is declared `format: ssh`.

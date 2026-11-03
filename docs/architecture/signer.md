@@ -60,9 +60,9 @@ ECDSA's `r ‖ s`, RSA's `s`), which adapters turn into an SSH signature (`to_ss
 DER, or OpenPGP's MPIs; `writ_crypto::keypair::verify` checks one against a public key.
 
 **Adding a key live** (M5): a signed policy change that names an agent signing key or an
-`ssh://` upstream credential the keystore lacks makes the daemon create it (Ed25519), seal
-it to the keystore's recipient with its public half, and hand it to the running signer
-through `add_key`. The software backend holds its keys behind a lock and takes the key by
+`ssh://` upstream credential the keystore lacks makes the daemon create it (a signing key as
+`writd.yaml` declares it, an upstream credential Ed25519), seal it to the keystore's
+recipient with its public half, and hand it to the running signer through `add_key`. The software backend holds its keys behind a lock and takes the key by
 move. `QueuedSigner` sends it through its worker, so it lands in order with the signatures
 queued before it, then refreshes the key list it answers `list_keys` from. The contract
 suite checks a key added is listed and signs, an id held already is refused by name, and a
@@ -126,12 +126,27 @@ backend held stuck (by `testing::GatedSigner`, released on a signal) answers `Ti
 are still listed, and an abandoned job is never signed. Every backend runs it.
 
 The daemon signs commits with `sshsig`, in git's namespace `git`, with the key the lease's
-template names (`signing_key`): templates' key ids are the signer's, and the daemon refuses to
-start when a template names a key its signer doesn't hold. Until the sealed keystore (M5),
-the development keystore (`keystore: { dev: … }`, refused by release builds) generates one
-Ed25519 key per template `signing_key` on first start, in `<keys>/signing/<id>` (0600), and
-hands them to the software backend (likewise one key per `upstream_credential` of an `ssh://`
-repo, in `<keys>/upstream/<id>`; an `https://` repo's credential is a token the operator writes
+template names (`signing_key`) and the hash its declaration gives. Each agent signing key is
+**declared** in `writd.yaml`'s `signing_keys` (format, algorithm, optional hash, backend;
+[operator reference](../operators/writd-yaml.md#signing-keys-signing_keysid)), and the
+daemon refuses to start, naming the key and the reason, on a combination its backend can't
+sign (`writ_crypto::algorithm::check` against the backend's `pairs`), a template naming an
+undeclared key, a key a template uses that the keystore lacks, or one it holds with another
+algorithm or format (`writd`'s `signing` module). A declared key nobody uses yet may be
+missing: `writd keys create <writd.yaml> <id>` makes it (sealed to the keystore's recipient,
+so with no unseal; logged as a `key` line; refused when the keystore holds it already), or
+the signed policy change that first names it does.
+
+**The key file** (`writ_crypto::keyfile`): an SSH key's sealed plaintext is an OpenSSH
+private key (PKCS#8 for RSA), its public half an OpenSSH line, as before M5.5; a key made for
+another format starts with a `writ-key/1` header (its format, and for OpenPGP its creation
+time, part of its fingerprint), on both halves, checked against each other when opened. A
+file without the header is an SSH key, so every key made before M5.5 reads as one.
+
+The development keystore (`keystore: { dev: … }`, refused by release builds) makes each key a
+template uses on first start, as declared, in `<keys>/signing/<id>` (0600), and hands them to
+the software backend (likewise one Ed25519 key per `upstream_credential` of an `ssh://` repo,
+in `<keys>/upstream/<id>`; an `https://` repo's credential is a token the operator writes
 in `<keys>/tokens/<id>`, never generated, held outside the `Signer` since it doesn't sign:
 [gateway](gateway.md#https-with-a-token)). The lease's public key reaches the agent with the grant
 (`signing_key.pub` in its session), for git's `user.signingkey` and for `allowed_signers`
@@ -163,10 +178,9 @@ refused at start. No PEM key file exists. Its backend is a config choice like an
 (software by default, the Secure Enclave from M7.5); a new key means a new certificate, so
 approvers re-pin it once.
 
-Each key signs in SSH today, with the algorithm the development keystore gives it (Ed25519).
-From [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms), each signing key is
-declared with its format (SSH or OpenPGP), algorithm (Ed25519, P-256, P-384, RSA 3072/4096)
-and hash, checked against its backend at start, and `sign` takes the hash to use.
+Each key signs in SSH today with its declared algorithm and hash; OpenPGP signatures come
+next in [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms) (declaring
+`format: openpgp` is refused at start until then).
 
 v1 ships the software backend; the others are in the [backlog](../backlog/README.md) (and
 the Secure Enclave in local mode, `se-cryptokit`, in

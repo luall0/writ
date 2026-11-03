@@ -57,6 +57,8 @@ pub enum EventKind {
     Admin,
     Seal,
     Unseal,
+    /// An agent signing key made on the host (`writd keys create`), with what it is.
+    Key,
 }
 
 /// How it ended.

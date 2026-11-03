@@ -123,6 +123,39 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
         );
     }
 
+    // A key declared after `writd init`, made by `writd keys create` with no passphrase:
+    // sealed to the recipient, its public half printed, logged; made once.
+    let declared = sealed_yaml().replace(
+        "signing_keys:\n",
+        "signing_keys:\n  agent-e2e-rsa: { format: ssh, algorithm: rsa3072 }\n",
+    );
+    dir.ok("rm writd.yaml");
+    dir.write("writd.yaml", &declared, "0644");
+    let created = dir.ok("writd keys create writd.yaml agent-e2e-rsa");
+    assert!(
+        created.starts_with("agent-e2e-rsa ssh-rsa AAAA")
+            && created.trim_end().ends_with("(templates: )"),
+        "{created}"
+    );
+    assert_eq!(
+        dir.ok("head -c 22 keys/signing/agent-e2e-rsa.age"),
+        "age-encryption.org/v1\n"
+    );
+    assert_eq!(dir.ok("grep -rl 'PRIVATE KEY' keys || true"), "");
+    assert_eq!(
+        dir.ok("ssh-keygen -l -f keys/signing/agent-e2e-rsa.pub")
+            .split(' ')
+            .next(),
+        Some("3072")
+    );
+    assert_eq!(
+        dir.ok("grep -c '\"event\":\"key\"' data/audit.jsonl"),
+        "1\n"
+    );
+    let again = dir.run_with("writd keys create writd.yaml agent-e2e-rsa", b"");
+    let (_, why) = expect(&again, 1, "a key made twice");
+    assert!(why.contains("is in the keystore already"), "{why}");
+
     // Made once: a second `writd init` is refused, the keystore untouched.
     let before = dir.ok("sha256sum keys/identity.age boot/host");
     let again = dir.run_with("writd init writd.yaml", b"another end-to-end passphrase\n");
@@ -178,6 +211,10 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     let dir = home.with(&format!("{}/sealed-run", home.dir), None);
     // Its own ports, beside the stack's daemon.
     let yaml = sealed_yaml()
+        .replace(
+            "signing_keys:\n",
+            "signing_keys:\n  agent-sealed: { format: ssh, algorithm: ed25519 }\n",
+        )
         .replace("0.0.0.0:2222", "0.0.0.0:3222")
         .replace("0.0.0.0:2223", "0.0.0.0:3223")
         .replace("0.0.0.0:8443", "0.0.0.0:9443");

@@ -8,7 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::names::{Email, KeyId, RepoName, TemplateName};
+use crate::names::{Email, KeyId, RepoName, TemplateName, Uid};
 use crate::pattern::{BranchPattern, RefPattern};
 use crate::ticket::Operation;
 use crate::units::{ByteSize, Duration};
@@ -192,12 +192,26 @@ fn default_paths_check() -> PathsCheck {
     PathsCheck::Warn
 }
 
+/// What the policy says about an agent signing key: the OpenPGP user ids it is certified
+/// with. Binding an identity to a key is an admin change, so it lives here, never in
+/// `writd.yaml` (which declares the key's format, algorithm and backend).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningKeyPolicy {
+    pub uids: Vec<Uid>,
+}
+
+/// The most user ids one key carries.
+pub const MAX_UIDS: usize = 16;
+
 /// The registry and the templates, as written by the admin, before cross-checks.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPolicyConfig {
     pub repos: BTreeMap<RepoName, RepoEntry>,
     pub templates: BTreeMap<TemplateName, Template>,
+    #[serde(default)]
+    pub signing_keys: BTreeMap<KeyId, SigningKeyPolicy>,
 }
 
 /// The registry and the templates, cross-checked: every template only names registered
@@ -206,6 +220,15 @@ struct RawPolicyConfig {
 pub struct PolicyConfig {
     repos: BTreeMap<RepoName, RepoEntry>,
     templates: BTreeMap<TemplateName, Template>,
+    signing_keys: BTreeMap<KeyId, SigningKeyPolicy>,
+}
+
+/// The format a key is declared with in `writd.yaml`, as far as the policy cares: an
+/// OpenPGP key needs a user id for each committer email its templates allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclaredFormat {
+    Ssh,
+    Openpgp,
 }
 
 impl PolicyConfig {
@@ -243,10 +266,91 @@ impl PolicyConfig {
         for (name, template) in &raw.templates {
             validate_template(name, template, &raw.repos, min_ttl)?;
         }
+        for (id, key) in &raw.signing_keys {
+            let at = format!("signing_keys.{id}.uids");
+            if key.uids.is_empty() || key.uids.len() > MAX_UIDS {
+                return Err(FieldError::at(
+                    at,
+                    format!("must list 1 to {MAX_UIDS} user ids"),
+                ));
+            }
+            let distinct: BTreeSet<&Uid> = key.uids.iter().collect();
+            if distinct.len() != key.uids.len() {
+                return Err(FieldError::at(at, "a user id is listed twice"));
+            }
+        }
         Ok(Self {
             repos: raw.repos,
             templates: raw.templates,
+            signing_keys: raw.signing_keys,
         })
+    }
+
+    /// The OpenPGP user ids of the key `id`, none when the policy names none.
+    pub fn uids(&self, id: &KeyId) -> &[Uid] {
+        self.signing_keys
+            .get(id)
+            .map_or(&[], |key| key.uids.as_slice())
+    }
+
+    /// The keys the policy gives user ids to.
+    pub fn signing_keys(&self) -> &BTreeMap<KeyId, SigningKeyPolicy> {
+        &self.signing_keys
+    }
+
+    /// Checks the policy against the keys `writd.yaml` declares (by id, with their format):
+    /// every template's `signing_key` is declared; user ids are given only to declared
+    /// OpenPGP keys; and every committer email a template allows has a user id on the
+    /// OpenPGP key it signs with (a remote shows a commit whose committer the key doesn't
+    /// carry as unverified). The first problem is the error, naming its field.
+    pub fn check_signing_keys(
+        &self,
+        declared: &BTreeMap<KeyId, DeclaredFormat>,
+    ) -> Result<(), FieldError> {
+        for (name, template) in &self.templates {
+            let Some(id) = &template.signing_key else {
+                continue;
+            };
+            let Some(format) = declared.get(id) else {
+                return Err(FieldError::at(
+                    format!("templates.{name}.signing_key"),
+                    format!("{id} is not declared in writd.yaml's signing_keys"),
+                ));
+            };
+            if *format != DeclaredFormat::Openpgp {
+                continue;
+            }
+            let uids = self.uids(id);
+            for email in &template.committer_emails {
+                if !uids.iter().any(|uid| &uid.email() == email) {
+                    return Err(FieldError::at(
+                        format!("templates.{name}.committer_emails"),
+                        format!(
+                            "{email} has no user id in signing_keys.{id}.uids (the OpenPGP key \
+                             would sign commits a remote shows as unverified)"
+                        ),
+                    ));
+                }
+            }
+        }
+        for id in self.signing_keys.keys() {
+            match declared.get(id) {
+                Some(DeclaredFormat::Openpgp) => {}
+                Some(DeclaredFormat::Ssh) => {
+                    return Err(FieldError::at(
+                        format!("signing_keys.{id}"),
+                        "user ids are for OpenPGP keys; writd.yaml declares this one ssh",
+                    ));
+                }
+                None => {
+                    return Err(FieldError::at(
+                        format!("signing_keys.{id}"),
+                        "not declared in writd.yaml's signing_keys",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn repo(&self, name: &RepoName) -> Option<&RepoEntry> {

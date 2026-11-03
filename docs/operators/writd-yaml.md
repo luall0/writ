@@ -5,7 +5,7 @@ The daemon's configuration. Start from the [template](templates/writd.yaml). Exa
 [end-to-end one](../../e2e/config/writd.yaml), shaped like a real deployment.
 
 - **Read at start.** A change takes effect at the next start. The `writd host-key`,
-  `tls-fingerprint`, `upstream-keys` and `signing-keys` commands read it too.
+  `tls-fingerprint`, `upstream-keys`, `signing-keys` and `keys create` commands read it too.
 - **An authority file:** owned by the daemon's user, mode 0644 or stricter.
 - **Unknown keys are refused**, and every error names its key:
   `mirrors.timeout: 61m, must be from 10s to 1h`.
@@ -32,6 +32,35 @@ After that the daemon keeps its own copy and writes it back to these paths. A ha
 moved aside at the next start, never applied. To change them:
 [`writ admin apply`](sealing.md#changing-the-policy-the-approvers-or-the-readers), or
 [`writd recover`](recovery.md) on the host.
+
+## Signing keys: `signing_keys.<id>`
+
+Each key agents' commits are signed with, declared once. `<id>` is the name a template's
+`signing_key` uses.
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `signing_keys.<id>.format` | `ssh` or `openpgp` | **required** | The signature git writes: `gpg.format`. A key signs in one format only. `openpgp`: **refused by this build** ([M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms)) |
+| `signing_keys.<id>.algorithm` | `ed25519`, `p256`, `p384`, `rsa3072` or `rsa4096` | **required** | The key's algorithm. RSA under 3072 bits is refused |
+| `signing_keys.<id>.hash` | `sha256`, `sha384` or `sha512` | the strongest allowed | The hash the signature uses. [What each format allows](#hashes) |
+| `signing_keys.<id>.backend` | `software` | `software` | Where the key lives. `software`: in the daemon's memory, from the keystore |
+
+The daemon refuses to start, naming the key and the reason, when:
+
+- the format, algorithm, hash and backend don't go together;
+- a template uses a key that isn't declared here;
+- a key a template uses isn't in the keystore, or the keystore holds it with another
+  algorithm or format.
+
+A declared key nobody uses yet may be missing. Make it with `writd keys create`
+([setup](setup.md)), or let the signed policy change that first uses it make it.
+
+### Hashes
+
+- **`ssh`:** `sha256` or `sha512` for every algorithm (the SSHSIG's hash). An RSA key signs
+  as `rsa-sha2-256` or `rsa-sha2-512` to match.
+- **`openpgp`:** `sha256`, `sha384` or `sha512` for `ed25519` and RSA. `p256` signs with
+  `sha256` only, `p384` with `sha384` only.
 
 ## Approvals and tickets
 

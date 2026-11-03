@@ -29,6 +29,12 @@ pub enum Approvals {
     Https,
 }
 
+/// The signing keys the harness's `writd.yaml` declares: the ones its tests' policies name, in
+/// SSH with Ed25519 (`agent-02` unused until a test's policy change names it).
+pub const SIGNING_KEYS: &str = "signing_keys:\n  \
+    agent-01: { format: ssh, algorithm: ed25519 }\n  \
+    agent-02: { format: ssh, algorithm: ed25519 }\n";
+
 /// The passphrase of the sealed keystore [`Daemon::start_sealed`] makes.
 pub const PASSPHRASE: &str = "an integration test passphrase";
 
@@ -555,6 +561,7 @@ fn setup(policy: &str, edit: Option<Edit<'_>>, sealed: bool) -> Setup {
     let yaml = format!(
         "state_dir: s\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
          decisions: signed\nkeystore: {{ dev: s/keys }}\n\
+         {SIGNING_KEYS}\
          mirrors: {{ known_hosts: upstream_known_hosts, fresh_for: 0s }}\n\
          transports:\n  agents: [{{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }}]\n  \
          approvals:\n    ssh: [{{ tcp: \"127.0.0.1:0\" }}]\n    \

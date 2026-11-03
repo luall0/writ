@@ -16,6 +16,7 @@ pub mod algorithm;
 pub mod allowed_signers;
 pub mod authority;
 pub mod ca;
+pub mod keyfile;
 pub mod keypair;
 pub mod keys;
 pub mod passphrase;

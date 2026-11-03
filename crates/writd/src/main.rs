@@ -28,6 +28,7 @@ mod hardening;
 mod keystore;
 mod platform;
 mod recover;
+mod signing;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -63,6 +64,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("tls-fingerprint", "<writd.yaml>"),
     ("upstream-keys", "<writd.yaml>"),
     ("signing-keys", "<writd.yaml>"),
+    ("keys create", "<writd.yaml> <id>"),
     ("hook", "pre-receive"),
     ("upstream-ssh", "<max bytes> <ssh> <args…>"),
     ("upstream-credential", "<socket> <get|store|erase>"),
@@ -114,6 +116,8 @@ fn main() -> ExitCode {
         ["host-key", config] => host_key(Path::new(config)),
         ["tls-fingerprint", config] => tls_fingerprint(Path::new(config)),
         ["signing-keys", config] => signing_keys(Path::new(config)),
+        ["keys", "create", config, id] => hardening::harden(hardening::Say::Stderr)
+            .and_then(|()| keys_create(Path::new(config), id)),
         _ => {
             eprintln!("{}", usage());
             return ExitCode::from(2);
@@ -129,16 +133,22 @@ fn main() -> ExitCode {
 }
 
 fn host_key(path: &Path) -> anyhow::Result<()> {
-    let config = Config::load(path)?;
-    let policy = load_registry(&config)?;
-    println!("{}", keystore::public(&config, &policy)?.host.to_openssh()?);
+    let (config, declared, policy) = load_checked(path)?;
+    println!(
+        "{}",
+        keystore::public(&config, &declared, &policy)?
+            .host
+            .to_openssh()?
+    );
     Ok(())
 }
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
-    let config = Config::load(path)?;
-    let policy = load_registry(&config)?;
-    println!("{}", keystore::public(&config, &policy)?.tls_fingerprint);
+    let (config, declared, policy) = load_checked(path)?;
+    println!(
+        "{}",
+        keystore::public(&config, &declared, &policy)?.tls_fingerprint
+    );
     Ok(())
 }
 
@@ -165,9 +175,8 @@ fn templates_using<'a>(policy: &'a PolicyConfig, id: &KeyId) -> Vec<&'a str> {
 /// Prints each upstream credential's public key and the repos that use it: the key to add on
 /// each remote (as a deploy key, or on the account).
 fn upstream_keys(path: &Path) -> anyhow::Result<()> {
-    let config = Config::load(path)?;
-    let policy = load_registry(&config)?;
-    for (id, key) in keystore::public(&config, &policy)?.upstream {
+    let (config, declared, policy) = load_checked(path)?;
+    for (id, key) in keystore::public(&config, &declared, &policy)?.upstream {
         println!(
             "{id} {} (repos: {})",
             key.to_openssh()?,
@@ -180,9 +189,8 @@ fn upstream_keys(path: &Path) -> anyhow::Result<()> {
 /// Prints each agent signing key's public key and the templates that name it: the key to
 /// register on an account (as a signing key) so the remote shows its commits as verified.
 fn signing_keys(path: &Path) -> anyhow::Result<()> {
-    let config = Config::load(path)?;
-    let policy = load_registry(&config)?;
-    for (id, key) in keystore::public(&config, &policy)?.signing {
+    let (config, declared, policy) = load_checked(path)?;
+    for (id, key, _) in keystore::public(&config, &declared, &policy)?.signing {
         println!(
             "{id} {} (templates: {})",
             key.to_openssh()?,
@@ -190,6 +198,45 @@ fn signing_keys(path: &Path) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// `writd keys create <writd.yaml> <id>`: makes the declared signing key `id` in the keystore
+/// (refused when it holds it already), logs it, and prints what to register on a remote.
+fn keys_create(path: &Path, id: &str) -> anyhow::Result<()> {
+    let (config, declared, policy) = load_checked(path)?;
+    let id: KeyId = id.parse()?;
+    let made = keystore::create(&config, &declared, &id)?;
+    let declaration = signing::declared(&declared, &id)?;
+    let line = writ_store::AuditEvent::new(
+        now()?,
+        writ_store::EventKind::Key,
+        writ_store::Outcome::Allowed,
+    )
+    .key(&id)
+    .reason(format!(
+        "{} {} key made by writd keys create",
+        declaration.format, declaration.algorithm
+    ));
+    keystore::private_dir(&config.state_dir)?;
+    writ_store::AuditLog::open(&config.state_dir.join("audit.jsonl"))?
+        .append(&line)
+        .context("the audit log can't be written: the key is made all the same")?;
+    println!(
+        "{id} {} (templates: {})",
+        made.key.public_key().to_openssh()?,
+        templates_using(&policy, &id).join(", ")
+    );
+    Ok(())
+}
+
+/// The configuration, its signing key declarations (each checked against its backend), and
+/// the policy in force (checked against them).
+fn load_checked(path: &Path) -> anyhow::Result<(Config, signing::Declarations, PolicyConfig)> {
+    let config = Config::load(path)?;
+    let declared = signing::declarations(&config)?;
+    let policy = load_registry(&config)?;
+    signing::check_policy(&policy, &declared)?;
+    Ok((config, declared, policy))
 }
 
 /// The upstream host keys the operator pinned (an authority file: whoever writes it decides
@@ -356,7 +403,9 @@ fn run(path: &Path) -> anyhow::Result<()> {
     };
     let pinned = load_pinned_hosts(&config)?;
     let ca_certs = load_ca_certs(&config)?;
-    let start = keystore::start(&config, &loaded.policy)?;
+    let declared = signing::declarations(&config)?;
+    signing::check_policy(&loaded.policy, &declared)?;
+    let start = keystore::start(&config, &declared, &loaded.policy)?;
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
         .with_context(|| format!("cannot create {}", repos.display()))?;
@@ -464,6 +513,16 @@ fn start_service(
             daemon,
             in_force,
             recipient: keystore::recipient(config)?,
+            signing_keys: signing::declarations(config)?
+                .into_iter()
+                .map(|(id, key)| {
+                    let key_use = writ_approval::KeyUse {
+                        format: key.format,
+                        hash: key.hash,
+                    };
+                    (id, key_use)
+                })
+                .collect(),
         },
         writ_crypto::keys::random_array()?,
         store,

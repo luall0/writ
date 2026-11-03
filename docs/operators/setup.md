@@ -36,8 +36,13 @@ One directory on the daemon host, owned by the daemon's user:
    approvers: approvers
    readers: readers
    keystore: { sealed: { dir: data/keys, boot: data/boot } }
+   signing_keys:
+     agent-ed25519-01: { format: ssh, algorithm: ed25519 }
    mirrors: { known_hosts: upstream_known_hosts }
    ```
+
+   Declare each key a template's `signing_key` names under `signing_keys`: its format, its
+   algorithm, and optionally its hash ([choices](writd-yaml.md#signing-keys-signing_keysid)).
 
    Both files mode 0644 or stricter. Every key: [`writd.yaml`](writd-yaml.md),
    [`policy.yaml`](policy-yaml.md). A commented example: the
@@ -63,7 +68,9 @@ One directory on the daemon host, owned by the daemon's user:
 
    It asks for a passphrase twice (12 characters or more; one line of stdin when it isn't a
    terminal). Keep it in a password manager: you type it at every unseal, and nothing
-   recovers a lost one. It creates the keys the policy names and prints what to register.
+   recovers a lost one. It creates the keys the policy names, as `writd.yaml` declares them,
+   and prints what to register. A key you declare later: `writd keys create writd.yaml <id>`
+   makes it, with no passphrase.
    From now on, `policy.yaml`, `approvers` and `readers` change only with
    [`writ admin apply`](sealing.md#changing-the-policy-the-approvers-or-the-readers).
 

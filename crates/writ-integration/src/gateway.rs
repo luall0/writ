@@ -18,6 +18,7 @@ use writ_core::canonical::Canonical;
 use writ_core::names::TicketId;
 use writ_core::net::Sources;
 use writ_core::ticket::Ticket;
+use writ_crypto::algorithm::{Hash, KeyAlgorithm};
 use writ_crypto::ca::{CertificateAuthority, CertificateRequest};
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey, PublicKey};
@@ -131,7 +132,19 @@ impl GitGateway {
     /// With another policy (its templates' `signing_key`s are the signer's keys); the first
     /// session (`keys/session`) is a lease for [`TICKET`], which must fit it.
     pub fn start_with(agent_kind: KeyKind, listen: Listen, policy: &str) -> Self {
-        Self::start_full(agent_kind, listen, policy, false)
+        Self::start_full(agent_kind, listen, policy, false, None)
+    }
+
+    /// [`GitGateway::start`] with the signing keys of `algorithm`, signing SSHSIGs with
+    /// `hash`, as `writd.yaml` would declare them.
+    pub fn start_signing(algorithm: KeyAlgorithm, hash: Hash) -> Self {
+        Self::start_full(
+            KeyKind::Ed25519,
+            Listen::Tcp,
+            POLICY,
+            false,
+            Some((algorithm, hash)),
+        )
     }
 
     /// With the repo's upstream over HTTPS: the test remote's repositories served by an
@@ -143,10 +156,16 @@ impl GitGateway {
 
     /// [`GitGateway::start_https`], with another policy.
     pub fn start_https_with(policy: &str) -> Self {
-        Self::start_full(KeyKind::Ed25519, Listen::Tcp, policy, true)
+        Self::start_full(KeyKind::Ed25519, Listen::Tcp, policy, true, None)
     }
 
-    fn start_full(agent_kind: KeyKind, listen: Listen, policy: &str, https: bool) -> Self {
+    fn start_full(
+        agent_kind: KeyKind,
+        listen: Listen,
+        policy: &str,
+        https: bool,
+        signing: Option<(KeyAlgorithm, Hash)>,
+    ) -> Self {
         crate::tools::require();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -225,8 +244,11 @@ impl GitGateway {
             ))
             .unwrap();
         // The system clock: russh checks certificate validity against it itself.
-        let test = TestServiceBuilder::new(policy)
-            .signer_kind(agent_kind)
+        let mut builder = TestServiceBuilder::new(policy).signer_kind(agent_kind);
+        if let Some((algorithm, hash)) = signing {
+            builder = builder.signing(algorithm, hash);
+        }
+        let test = builder
             .clock(Arc::new(SystemClock))
             .watcher(Arc::new(NoSessionWatcher::new()))
             .build(root);

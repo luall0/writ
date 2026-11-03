@@ -39,11 +39,14 @@
 //!   - telegram: { token: { boot: data/boot/telegram }, chat_id: "123456789" }
 //! ```
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use writ_core::names::KeyId;
 use writ_core::net::{IpRange, Sources};
 use writ_core::units::{ByteSize, Duration};
+use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat};
 use writ_proto::Decisions;
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +71,10 @@ pub struct Config {
     #[serde(default)]
     pub sign_requests: SignRequestsConfig,
     pub keystore: KeystoreConfig,
+    /// The agent signing keys, each declared with its format, algorithm, hash and backend:
+    /// checked against the backend and the keystore at start.
+    #[serde(default)]
+    pub signing_keys: BTreeMap<KeyId, SigningKeyConfig>,
     /// The mirrors and how they reach upstream.
     pub mirrors: MirrorsConfig,
     pub transports: Transports,
@@ -83,6 +90,61 @@ fn default_max_pending() -> usize {
 
 fn default_min_ttl() -> Duration {
     writ_core::fit::DEFAULT_MIN_TTL
+}
+
+/// `signing_keys.<id>`: an agent signing key, declared. Refused at start, never adjusted, on a
+/// combination the backend can't sign (`writ_crypto::algorithm::check`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningKeyConfig {
+    #[serde(deserialize_with = "parsed")]
+    pub format: SignatureFormat,
+    #[serde(deserialize_with = "parsed")]
+    pub algorithm: KeyAlgorithm,
+    /// Left out: the strongest the format, algorithm and backend allow.
+    #[serde(default, deserialize_with = "parsed_some")]
+    pub hash: Option<Hash>,
+    #[serde(default)]
+    pub backend: BackendConfig,
+}
+
+/// Where a signing key lives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendConfig {
+    /// In the daemon's memory, from its keystore.
+    #[default]
+    Software,
+}
+
+impl BackendConfig {
+    pub fn name(self) -> &'static str {
+        match self {
+            BackendConfig::Software => "software",
+        }
+    }
+}
+
+/// A value read by its own parser, whose error says what it accepts (and why `rsa2048`
+/// isn't one).
+fn parsed<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let text = String::deserialize(deserializer)?;
+    text.parse().map_err(serde::de::Error::custom)
+}
+
+/// [`parsed`], for an optional key.
+fn parsed_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    parsed(deserializer).map(Some)
 }
 
 /// `submissions`: how many tickets may be submitted a minute, per source and in all.
@@ -898,10 +960,16 @@ mod tests {
                 "submissions",
                 "sign_requests",
                 "keystore",
+                "signing_keys",
                 "mirrors",
                 "transports",
                 "notifiers",
             ],
+        );
+        section(
+            "signing_keys: { k: { __probe__: 0 } }",
+            "signing_keys.<id>.",
+            &[],
         );
         section("submissions: { __probe__: 0 }", "submissions.", &[]);
         section("sign_requests: { __probe__: 0 }", "sign_requests.", &[]);
@@ -994,11 +1062,26 @@ mod tests {
             ("decisions", "decisions: __probe__"),
             ("attestor", "attestor: __probe__"),
             ("session_watcher", "session_watcher: __probe__"),
+            (
+                "signing_keys.<id>.backend",
+                "signing_keys: { k: { format: ssh, algorithm: ed25519, backend: __probe__ } }",
+            ),
         ] {
             let (_, row) = rows.iter().find(|(k, _)| *k == key).expect("its row");
             for value in expected(doc) {
                 assert!(row.contains(&format!("`{value}`")), "{key}: `{value}`");
             }
+        }
+        // The values read by their own parsers (format, algorithm, hash).
+        let row = |key: &str| rows.iter().find(|(k, _)| *k == key).expect("its row").1;
+        for format in writ_crypto::algorithm::SignatureFormat::ALL {
+            assert!(row("signing_keys.<id>.format").contains(&format!("`{format}`")));
+        }
+        for algorithm in writ_crypto::algorithm::KeyAlgorithm::ALL {
+            assert!(row("signing_keys.<id>.algorithm").contains(&format!("`{algorithm}`")));
+        }
+        for hash in ["sha256", "sha384", "sha512"] {
+            assert!(row("signing_keys.<id>.hash").contains(&format!("`{hash}`")));
         }
     }
 

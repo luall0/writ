@@ -14,6 +14,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use writ_crypto::algorithm::{Hash, KeyAlgorithm};
+use writ_crypto::keypair::KeyPair;
 
 use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::canonical::Canonical;
@@ -54,6 +56,8 @@ pub struct TestServiceBuilder {
     policy: PolicyConfig,
     policy_text: String,
     signer_kind: KeyKind,
+    /// Another algorithm and SSHSIG hash for the signing keys than `signer_kind`'s.
+    signing: Option<(KeyAlgorithm, Hash)>,
     decisions: Decisions,
     max_pending: usize,
     submissions: SubmissionLimits,
@@ -69,6 +73,7 @@ impl TestServiceBuilder {
             policy: PolicyConfig::from_yaml(policy_yaml).expect("the test policy parses"),
             policy_text: policy_yaml.to_owned(),
             signer_kind: KeyKind::Ed25519,
+            signing: None,
             decisions: Decisions::Signed,
             max_pending: 20,
             submissions: SubmissionLimits::default(),
@@ -123,6 +128,13 @@ impl TestServiceBuilder {
         self
     }
 
+    /// The signing keys' algorithm and SSHSIG hash, as `writd.yaml` would declare them (any
+    /// algorithm Writ signs with, RSA included).
+    pub fn signing(mut self, algorithm: KeyAlgorithm, hash: Hash) -> Self {
+        self.signing = Some((algorithm, hash));
+        self
+    }
+
     /// Starts the service with its store and audit log in `dir`, and one approver key.
     pub fn build(self, dir: &Path) -> TestService {
         self.try_build(dir).unwrap()
@@ -171,10 +183,22 @@ impl TestServiceBuilder {
             .filter_map(|t| t.signing_key.as_ref().map(|k| k.as_str().to_owned()))
             .collect();
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let signer = Arc::new(GatedSigner::new(FailingSigner::new(software_signer(
-            &ids,
-            self.signer_kind,
-        ))));
+        let backend = match self.signing {
+            None => software_signer(&ids, self.signer_kind),
+            Some((algorithm, _)) => SoftwareSigner::new(
+                ids.iter()
+                    .map(|id| (id.parse().unwrap(), KeyPair::generate(algorithm).unwrap())),
+            )
+            .unwrap(),
+        };
+        let key_use = match self.signing {
+            None => crate::KeyUse::SSH,
+            Some((_, hash)) => crate::KeyUse {
+                format: writ_crypto::algorithm::SignatureFormat::Ssh,
+                hash,
+            },
+        };
+        let signer = Arc::new(GatedSigner::new(FailingSigner::new(backend)));
         let service = Service::new(
             ServiceConfig {
                 policy: self.policy,
@@ -190,6 +214,10 @@ impl TestServiceBuilder {
                 daemon: daemon.clone(),
                 in_force,
                 recipient: None,
+                signing_keys: ids
+                    .iter()
+                    .map(|id| (id.parse().unwrap(), key_use))
+                    .collect(),
             },
             NONCE,
             store,

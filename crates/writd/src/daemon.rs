@@ -247,6 +247,11 @@ impl Opener {
         let (parsed, ready) = match target {
             AdminTarget::Policy => {
                 let policy = crate::authority::parse_policy(&text, inner.config.min_ttl)
+                    .and_then(|policy| {
+                        let declared = crate::signing::declarations(&inner.config)?;
+                        crate::signing::check_policy(&policy, &declared)?;
+                        Ok(policy)
+                    })
                     .map_err(|e| refuse(format!("{e:#}")))?;
                 let open = inner
                     .open
@@ -310,13 +315,22 @@ impl Opener {
     }
 
     /// Hands the signers every key `policy` names that they don't hold yet: from the
-    /// keystore, or made there now (Ed25519). The keys new to the signers, to register.
+    /// keystore, or made there now (a signing key as `writd.yaml` declares it, an upstream
+    /// credential Ed25519). The keys new to the signers, to register.
     async fn keys_for(&self, policy: &PolicyConfig) -> anyhow::Result<Vec<CreatedKey>> {
         let open = self.0.open.get().context("the daemon is not open")?;
+        let declared = crate::signing::declarations(&self.0.config)?;
         let (upstream_ids, _) = keystore::upstream_credentials(policy)?;
-        let wanted: Vec<(KeyRole, KeyId)> = keystore::signing_ids(policy)
+        let mut signing_ids: Vec<KeyId> = policy
+            .templates()
+            .values()
+            .filter_map(|t| t.signing_key.clone())
+            .collect();
+        signing_ids.sort();
+        signing_ids.dedup();
+        let wanted: Vec<(KeyRole, KeyId)> = signing_ids
             .into_iter()
-            .map(|id| (KeyRole::Signing, id.clone()))
+            .map(|id| (KeyRole::Signing, id))
             .chain(
                 upstream_ids
                     .into_iter()
@@ -339,8 +353,17 @@ impl Opener {
                 if writ_signer::public_key(&**signer, &id).is_ok() {
                     continue;
                 }
-                let (key, made) = live.key_or_make(role, &id)?;
-                let key = writ_crypto::keypair::KeyPair::from_ssh(key)?;
+                let (key, made) = match role {
+                    KeyRole::Signing => {
+                        let declared = crate::signing::declared(&declared, &id)?;
+                        let (key, made) = live.signing_key_or_make(&id, declared)?;
+                        (key.key, made)
+                    }
+                    KeyRole::Upstream => {
+                        let (key, made) = live.upstream_key_or_make(&id)?;
+                        (writ_crypto::keypair::KeyPair::from_ssh(key)?, made)
+                    }
+                };
                 let info = signer
                     .add_key(id.clone(), key)
                     .with_context(|| format!("{} {id}", role.as_str()))?;
@@ -498,7 +521,8 @@ impl Opener {
             drop(passphrase);
             let key = unlock.unlock(&request)?;
             drop(request);
-            keystore::open(&inner.config, &inner.policy, key.identity()?)
+            let declared = crate::signing::declarations(&inner.config)?;
+            keystore::open(&inner.config, &declared, &inner.policy, key.identity()?)
         })
         .await
         .context("the unseal stopped")?

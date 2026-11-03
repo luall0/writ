@@ -29,7 +29,7 @@ pub use submissions::{
 };
 pub use token::CheckedToken;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, Weak};
 use std::time::Duration;
@@ -94,6 +94,26 @@ pub struct ServiceConfig {
     /// The sealed keystore's public recipient, served by `writ info` (what `writ admin
     /// token` encrypts to); `None` with the development keystore.
     pub recipient: Option<String>,
+    /// How each agent signing key signs, as `writd.yaml` declares it. A key without its
+    /// entry signs nothing.
+    pub signing_keys: BTreeMap<writ_core::names::KeyId, KeyUse>,
+}
+
+/// How an agent signing key signs: the format it is declared with, and the format's hash
+/// (checked against its backend at start).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyUse {
+    pub format: writ_crypto::algorithm::SignatureFormat,
+    pub hash: writ_crypto::algorithm::Hash,
+}
+
+impl KeyUse {
+    /// An SSH key with the SSHSIG hash `ssh-keygen` uses: the default of an SSH declaration
+    /// that leaves `hash` out.
+    pub const SSH: KeyUse = KeyUse {
+        format: writ_crypto::algorithm::SignatureFormat::Ssh,
+        hash: writ_crypto::sshsig::DEFAULT_HASH,
+    };
 }
 
 /// The platform implementations the service uses.

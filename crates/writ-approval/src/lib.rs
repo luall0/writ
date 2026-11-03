@@ -27,7 +27,7 @@ pub mod testing;
 pub use error::{RefusalCode, ServiceError};
 pub use service::{
     AdminParsed, CheckedAdmin, CheckedToken, DEFAULT_SUBMISSIONS_IN_ALL,
-    DEFAULT_SUBMISSIONS_PER_SOURCE, GatewayDenial, InForce, MAX_SUBMISSIONS_IN_ALL,
+    DEFAULT_SUBMISSIONS_PER_SOURCE, GatewayDenial, InForce, KeyUse, MAX_SUBMISSIONS_IN_ALL,
     MAX_SUBMISSIONS_PER_SOURCE, Opened, Pushing, Service, ServiceConfig, ServicePlatform,
     SignObject, SignedCommit, Signing, SubmissionLimits,
 };

@@ -52,7 +52,7 @@ fn policy_keys() -> BTreeSet<String> {
     let top = expected(&policy_error("__probe__: 0"));
     assert_eq!(
         top,
-        ["repos", "templates"],
+        ["repos", "templates", "signing_keys"],
         "a new top-level section: probe it"
     );
     keys.extend(keys_of(
@@ -68,6 +68,11 @@ fn policy_keys() -> BTreeSet<String> {
     keys.extend(keys_of(
         &policy_error("repos: {}\ntemplates:\n  t:\n    __probe__: 0"),
         "templates.<name>.",
+        &[],
+    ));
+    keys.extend(keys_of(
+        &policy_error("repos: {}\ntemplates: {}\nsigning_keys:\n  k:\n    __probe__: 0"),
+        "signing_keys.<id>.",
         &[],
     ));
     keys
@@ -239,7 +244,7 @@ fn the_probe_reads_every_list_the_parser_writes() {
     );
     assert_eq!(
         expected(&policy_error("__probe__: 0")),
-        ["repos", "templates"]
+        ["repos", "templates", "signing_keys"]
     );
 }
 
@@ -294,6 +299,10 @@ fn the_policy_template_parses_as_is_and_with_every_default_taken_in() {
             || line.contains("allow_account_wide:")
             // Only with `ticket_link: notes`, not the default.
             || line.contains("notes_ref:")
+            // An example for an OpenPGP key, not a default.
+            || line.contains("signing_keys:")
+            || line.contains("openpgp_agent:")
+            || line.contains("uids:")
     });
     assert_ne!(taken, POLICY_TEMPLATE);
     let config = PolicyConfig::from_yaml(&taken).unwrap();

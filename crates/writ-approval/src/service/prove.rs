@@ -48,15 +48,15 @@ impl Service {
         } = checked;
         let message = proof.message.as_str().as_bytes();
         let signer = &*self.opened()?.signer;
+        // The key's declared SSHSIG hash (a template's key is always declared).
+        let hash = self
+            .config
+            .signing_keys
+            .get(&proof.key)
+            .map_or(writ_crypto::sshsig::DEFAULT_HASH, |key| key.hash);
         let signed = writ_signer::public_key(signer, &proof.key).and_then(|public| {
-            writ_signer::sshsig(
-                signer,
-                &proof.key,
-                proof.namespace.as_str(),
-                writ_crypto::sshsig::DEFAULT_HASH,
-                message,
-            )
-            .map(|signature| (public, signature))
+            writ_signer::sshsig(signer, &proof.key, proof.namespace.as_str(), hash, message)
+                .map(|signature| (public, signature))
         });
         let (now, mut inner) = self.begin()?;
         let (public, signature) = match signed {

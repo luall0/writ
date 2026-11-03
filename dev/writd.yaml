@@ -7,6 +7,8 @@ approvers: approvers
 readers: readers                 # dev/readers, gitignored: written by `make dev-client`
 decisions: signed                # signed | open (refusals and revocations)
 keystore: { dev: data/keys }     # unencrypted, refused by release builds (sealed keystore: M5)
+signing_keys:                    # every key a template's signing_key names
+  agent-dev-01: { format: ssh, algorithm: ed25519 }
 mirrors:
   known_hosts: upstream_known_hosts   # the remotes' host keys, pinned by hand
   # ca_certs: upstream_ca.pem     # https:// upstreams: the CAs trusted (default: the system's);

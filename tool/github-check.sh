@@ -191,6 +191,8 @@ approvers: approvers
 readers: readers
 decisions: signed
 keystore: { dev: data/keys }
+signing_keys:
+  agent-github-check: { format: ssh, algorithm: ed25519 }
 mirrors:
   known_hosts: upstream_known_hosts
 transports:
