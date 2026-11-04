@@ -533,12 +533,17 @@ fn check_batch(notes: &[Note]) -> Result<()> {
     Ok(())
 }
 
-/// `note` with only the lines `held` lacks (in its order), or `None` when it lacks none.
+/// `note` with only the lines `held` lacks (in its order, each as written, its line ending
+/// too: never longer than the note), or `None` when it lacks none.
 fn unwritten(note: &Note, held: &BTreeSet<String>) -> Option<Note> {
-    let mut text = String::new();
-    for line in note.text.lines().filter(|line| !held.contains(*line)) {
-        let _ = writeln!(text, "{line}");
-    }
+    let text: String = note
+        .text
+        .split_inclusive('\n')
+        .filter(|line| {
+            let bare = line.strip_suffix('\n').unwrap_or(line);
+            !held.contains(bare.strip_suffix('\r').unwrap_or(bare))
+        })
+        .collect();
     (!text.is_empty()).then(|| Note {
         commit: note.commit.clone(),
         text,
@@ -644,6 +649,20 @@ mod tests {
         assert_eq!(
             unwritten(&note, &held(&["Writ: wrt_B", "Writ: wrt_A"])),
             None
+        );
+        // Kept as written: no newline added (a note of the largest size stays within it).
+        let bare = Note {
+            commit: note.commit.clone(),
+            text: "x".repeat(MAX_NOTE_TEXT),
+        };
+        assert_eq!(unwritten(&bare, &held(&[])), Some(bare.clone()));
+        let last = Note {
+            commit: note.commit.clone(),
+            text: "Writ: wrt_A\nWrit: wrt_B".to_owned(),
+        };
+        assert_eq!(
+            unwritten(&last, &held(&["Writ: wrt_A"])).map(|n| n.text),
+            Some("Writ: wrt_B".to_owned())
         );
     }
 
