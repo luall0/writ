@@ -15,7 +15,8 @@ use serde::de::DeserializeOwned;
 use writ_proto::{ApiError, Command};
 
 /// The largest reply read from the daemon.
-const MAX_REPLY: usize = 8 * 1024 * 1024;
+/// The most of a reply read, over HTTPS and SSH alike.
+pub const MAX_REPLY: usize = 8 * 1024 * 1024;
 
 /// Finds the pinned fingerprint for `name` in the pins file. None pinned: an error saying how
 /// to pin it.

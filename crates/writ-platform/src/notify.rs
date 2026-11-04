@@ -1,7 +1,8 @@
 //! Tells me something happened, never an approval channel: the [`Notifier`] interface, the
 //! [`Notification`] it delivers, and [`Notifiers`], a list of notifiers.
 //!
-//! Titles and messages may carry agent-written text: implementations send them neutralized
+//! The service sends no agent-written text (a ticket's id, template and revision, never its
+//! title). A notifier treats what it gets as untrusted all the same: sent neutralized
 //! ([`Notification::neutralized`]), and only ever in a body, never in headers or URLs.
 //!
 //! Portable implementation: [`telegram::TelegramNotifier`], plain-text messages from a
@@ -31,8 +32,8 @@ pub enum Priority {
     High,
 }
 
-/// One notification. `title` and `message` may contain agent-written text (a ticket title):
-/// implementations neutralize control characters before sending.
+/// One notification. The service writes none of the agent's text in it; implementations
+/// neutralize control characters before sending all the same.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Notification {
     pub title: String,

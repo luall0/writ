@@ -31,7 +31,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context, bail};
-use writ_core::text::is_hidden_char;
 use writ_proto::sign::SignInput;
 
 /// ssh's exit status when it fails itself (connection, authentication).
@@ -136,9 +135,13 @@ fn parse_url(url: &str) -> anyhow::Result<(String, Option<String>)> {
     let rest = rest.trim_end_matches('/');
     let (destination, port) = match rest.rsplit_once(':') {
         Some((destination, port))
-            if !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit()) =>
+            if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) =>
         {
-            (destination, Some(port.to_owned()))
+            // A TCP port: 1 to 65535, as `writ`'s own parser reads it.
+            match port.parse::<u16>() {
+                Ok(n) if n > 0 => (destination, Some(port.to_owned())),
+                _ => bail!("invalid writ.url {url}: the port must be 1 to 65535"),
+            }
         }
         _ => (rest, None),
     };
@@ -211,6 +214,14 @@ fn sign_openpgp() -> anyhow::Result<()> {
 
 fn sign(args: &[OsString]) -> anyhow::Result<()> {
     let request = parse(args)?;
+    // git signs commits in namespace `git`; anything else is no commit of a lease (the
+    // daemon refuses it too, this says why first).
+    if request.namespace != "git" {
+        bail!(
+            "writ-sign signs commits only, in namespace git, not {}",
+            clean(&request.namespace)
+        );
+    }
     let object = std::fs::read(&request.file)
         .with_context(|| format!("cannot read {}", request.file.display()))?;
     let signature = ask_daemon(&request.namespace, object)?;
@@ -325,17 +336,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// Text from elsewhere (the daemon, ssh) for the terminal: every hidden character as
 /// `\u{…}`, and `\` as `\\`.
 fn clean(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if is_hidden_char(c) {
-            out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
-        } else if c == '\\' {
-            out.push_str("\\\\");
-        } else {
-            out.push(c);
-        }
-    }
-    out
+    writ_core::text::escaped(text)
 }
 
 /// The SSH command to reach the daemon: `GIT_SSH_COMMAND`, then `core.sshCommand`. Never a
@@ -416,6 +417,22 @@ mod tests {
             error_of(parse(&os(&["-f", "/tmp/k", "/tmp/buf"]))),
             "missing -n <namespace>"
         );
+        // Another namespace than git's: refused before anything is read or asked (the review
+        // after M5.5: the namespace went to the daemon as its command's word).
+        for namespace in ["file", "writ-approval", "git\u{1b}"] {
+            let error = error_of(sign(&os(&[
+                "-n",
+                namespace,
+                "-f",
+                "/tmp/k",
+                "/nonexistent",
+            ])));
+            assert!(
+                error.starts_with("writ-sign signs commits only, in namespace git, not "),
+                "{namespace:?}: {error}"
+            );
+            assert!(!error.contains('\u{1b}'), "{error:?}");
+        }
     }
 
     #[test]
@@ -442,6 +459,24 @@ mod tests {
         refused("ssh://git@host:");
         refused("ssh://git@host:123456");
         refused("ssh://git@");
+        // A port is 1 to 65535, as `writ` reads it (the review after M5.5: 99999 was taken).
+        for bad in [
+            "ssh://git@host:0",
+            "ssh://git@host:65536",
+            "ssh://git@host:99999",
+        ] {
+            let error = error_of(parse_url(bad));
+            assert!(
+                error.contains("the port must be 1 to 65535"),
+                "{bad}: {error}"
+            );
+        }
+        for (url, port) in [("ssh://git@host:1", "1"), ("ssh://git@host:65535", "65535")] {
+            assert_eq!(
+                parse_url(url).unwrap(),
+                ("git@host".into(), Some(port.into()))
+            );
+        }
         assert_eq!(
             parse_url("ssh://git@[::1]:2222").unwrap(),
             ("git@::1".into(), Some("2222".into()))

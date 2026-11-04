@@ -19,7 +19,6 @@
 use std::fmt::Write as _;
 
 use writ_core::lease::State;
-use writ_core::text::is_hidden_char;
 use writ_core::ticket::{OnViolation, Ticket};
 use writ_core::units::Timestamp;
 
@@ -91,17 +90,7 @@ fn labelled(out: &mut String, label: &str, value: &str) {
 /// Agent text made safe for one line of the terminal: every hidden character as `\u{…}`
 /// (newlines included), and `\` as `\\`, so a typed `\u{1b}` can't pass for an escaped one.
 pub fn clean(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if is_hidden_char(c) {
-            let _ = write!(out, "\\u{{{:x}}}", u32::from(c));
-        } else if c == '\\' {
-            out.push_str("\\\\");
-        } else {
-            out.push(c);
-        }
-    }
-    out
+    writ_core::text::escaped(text)
 }
 
 /// Text from outside the program (a daemon's error, a tool's stderr) for the terminal: each
@@ -554,6 +543,7 @@ pub fn changes(title: &str, changes: &[(&'static str, String, String)]) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use writ_core::text::is_hidden_char;
 
     #[test]
     fn hidden_characters_are_shown_escaped() {

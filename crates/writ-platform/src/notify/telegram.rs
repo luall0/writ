@@ -223,6 +223,17 @@ fn telegram_text(notification: &Notification) -> String {
     text
 }
 
+/// Checks a notifier's settings as the notifier will read them (the chat id, the Bot API
+/// base URL), so a mistake stops the configuration's load rather than leave the daemon
+/// silently without its notifications at unseal (the review after M5.5).
+pub fn check_settings(chat_id: &str, api_base: Option<&str>) -> Result<()> {
+    ChatId::parse(chat_id)?;
+    if let Some(api_base) = api_base {
+        parse_api_base(api_base)?;
+    }
+    Ok(())
+}
+
 fn parse_api_base(api_base: &str) -> Result<String> {
     let invalid =
         |why: &str| PlatformError::Config(format!("invalid Telegram Bot API base URL: {why}"));

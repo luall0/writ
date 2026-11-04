@@ -19,6 +19,7 @@ never asks you to.
 | `writd run` | Every secret, once unsealed | In its log, at start |
 | `writd init` | The passphrase, every key it makes | On stderr |
 | `writd recover` | The passphrase, the key protecting the authority files | On stderr |
+| `writd keys create` | The passphrase, the key it makes | On stderr |
 | `writd upstream-credential` (git's credential helper, one per HTTPS operation) | One token, for one operation | Only when it refuses (git's operation then fails), so the warning doesn't repeat at every operation |
 
 ## How, on each OS
@@ -26,7 +27,7 @@ never asks you to.
 | Protection | Linux | macOS |
 |---|---|---|
 | No core dump | `RLIMIT_CORE` 0, and the process marked not dumpable (`PR_SET_DUMPABLE` 0) | `RLIMIT_CORE` 0 |
-| No debugger | Not dumpable: another process of the same user can't attach (`ptrace`) or read `/proc/<pid>/mem`. Root still can | `PT_DENY_ATTACH`: every attach is refused, root's too. A release build refuses to start under a debugger; a debug build skips this step, with a warning |
+| No debugger | Not dumpable: another process of the same user can't attach (`ptrace`) or read `/proc/<pid>/mem`. Root still can. Started under a tracer already (`strace`, `gdb`), the daemon refuses to run | `PT_DENY_ATTACH`: every attach is refused, root's too. A release build refuses to start under a debugger; a debug build skips this step, with a warning |
 | Out of swap | `mlockall`, only when the lock limit is unlimited or the process has `CAP_IPC_LOCK`. Under a smaller limit, the daemon would crash once it reached it | Not possible for a whole process (an info line). macOS encrypts swap |
 
 ## The swap warning on Linux

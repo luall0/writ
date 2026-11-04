@@ -128,12 +128,14 @@ allow: [...] }`.
 ## Notifications
 
 `notifiers` is a list, empty by default. Each entry is one Telegram bot. A notification says a
-ticket is waiting (its title and id). It is never a way to approve: only `writ sign` is.
+ticket is waiting (its id and template, never the agent's words). It is never a way to
+approve: only `writ sign` is. Each entry is checked when the daemon reads `writd.yaml`: a
+mistake stops the start, rather than leave you without notifications.
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
 | `notifiers[].telegram.token.boot` | Path | one of `boot` or `sealed` **required** | The bot token in its own file (mode 0600), in the boot directory, read at start. [Boot or sealed?](sealing.md#the-notification-token-boot-or-sealed) |
-| `notifiers[].telegram.token.sealed` | Key id | one of `boot` or `sealed` **required** | The bot token stored with the other secrets, added with `writ admin token <id>` and read at unseal. If it's missing at unseal, the notifier stays off (a warning) until you add it |
+| `notifiers[].telegram.token.sealed` | Key id | one of `boot` or `sealed` **required** | The bot token stored with the other secrets, added with `writ admin token <id>` and read at unseal. If it's missing at unseal, the notifier stays off (a warning) until you add it. One id per notifier: two notifiers can't share one |
 | `notifiers[].telegram.chat_id` | Text | **required** | The chat: a numeric id, quoted (`"-100123"`), or `@channelname` |
 | `notifiers[].telegram.api_base` | URL | `https://api.telegram.org` | Another Bot API server: `https://`, or `http://` to this machine only (the token travels in the URL). No credentials, path, query or fragment |
 

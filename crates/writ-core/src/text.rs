@@ -42,6 +42,24 @@ pub fn strip(text: &str, newlines: Newlines, max_chars: usize) -> String {
         .collect()
 }
 
+/// Text from elsewhere (an agent, a daemon, a tool) made safe for one line of a terminal:
+/// every hidden character as a visible `\u{…}` escape (newlines included), and `\` as `\\`,
+/// so a typed `\u{1b}` can't pass for an escaped one. The one escaping every client uses.
+pub fn escaped(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_hidden_char(c) {
+            let _ = write!(out, "\\u{{{:x}}}", u32::from(c));
+        } else if c == '\\' {
+            out.push_str("\\\\");
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// `text` cut to `max_chars` characters, with `…` when something was cut: for text from
 /// elsewhere (an agent, a peer) that goes in a message or a log line.
 pub fn shown(text: &str, max_chars: usize) -> String {

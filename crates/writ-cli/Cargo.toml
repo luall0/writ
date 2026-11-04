@@ -19,6 +19,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 russh.workspace = true
+rustix.workspace = true
 rustls.workspace = true
 serde.workspace = true
 tokio.workspace = true

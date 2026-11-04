@@ -486,6 +486,25 @@ impl Config {
             }
         }
         let fail = |why: String| anyhow::anyhow!("{}: {why}", path.display());
+        // Each notifier's settings checked now, as the notifier will read them; a sealed token
+        // belongs to one notifier (two sharing one: the second would never get it).
+        let mut sealed_tokens = std::collections::BTreeSet::new();
+        for (i, notifier) in config.notifiers.iter().enumerate() {
+            let NotifierConfig::Telegram(telegram) = notifier;
+            writ_platform::notify::telegram::check_settings(
+                &telegram.chat_id,
+                telegram.api_base.as_deref(),
+            )
+            .map_err(|e| fail(format!("notifiers[{i}].telegram: {e}")))?;
+            if let TokenConfig::Sealed(id) = &telegram.token
+                && !sealed_tokens.insert(id.clone())
+            {
+                return Err(fail(format!(
+                    "notifiers[{i}].telegram.token: sealed token {id} is another notifier's \
+                     already: give each its own"
+                )));
+            }
+        }
         let listeners = [
             ("transports.agents", &config.transports.agents),
             ("transports.approvals.ssh", &config.transports.approvals.ssh),
@@ -925,6 +944,35 @@ mod tests {
             ))
             .is_err()
         );
+        // Checked at load as the notifier reads them, not found missing at unseal (the review
+        // after M5.5): the chat id, the Bot API URL, one notifier per sealed token.
+        for (notifiers, why) in [
+            (
+                "[{ telegram: { token: { sealed: t-01 }, chat_id: \"seven\" } }]",
+                "notifiers[0].telegram: invalid configuration: invalid Telegram chat id",
+            ),
+            (
+                "[{ telegram: { token: { sealed: t-01 }, chat_id: \"7\", api_base: \"http://bots.example.org\" } }]",
+                "notifiers[0].telegram: invalid configuration: invalid Telegram Bot API base URL",
+            ),
+            (
+                "[{ telegram: { token: { sealed: t-01 }, chat_id: \"7\" } }, \
+                  { telegram: { token: { sealed: t-01 }, chat_id: \"8\" } }]",
+                "notifiers[1].telegram.token: sealed token t-01 is another notifier's already",
+            ),
+        ] {
+            let error = format!(
+                "{:#}",
+                load(&format!("{MINIMAL}notifiers: {notifiers}\n")).unwrap_err()
+            );
+            assert!(error.contains(why), "{notifiers}: {error}");
+        }
+        // Two notifiers, two tokens: fine.
+        load(&format!(
+            "{MINIMAL}notifiers: [{{ telegram: {{ token: {{ sealed: t-01 }}, chat_id: \"7\" }} }}, \
+             {{ telegram: {{ token: {{ sealed: t-02 }}, chat_id: \"8\" }} }}]\n"
+        ))
+        .unwrap();
     }
 
     /// What the parser says it expects instead of a probe key or value: the fields of a map,

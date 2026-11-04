@@ -134,13 +134,40 @@ pub fn pinned_host_key(known_hosts: &Path, name: &str) -> anyhow::Result<PublicK
     )
 }
 
-/// A pins file's text; a missing file pins nothing, any other read error is reported.
+/// A pins file's text; a missing file pins nothing, any other read error is reported. The
+/// file must be yours (or root's) and writable by nobody else, checked on the file opened:
+/// whoever could rewrite a pin could sit between `writ` and the daemon, and receive the
+/// keystore's passphrase from `writ unseal` (the review after M5.5, L18; ssh's `StrictModes`).
 pub fn read_pins(path: &Path) -> anyhow::Result<String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+    use std::io::Read as _;
+    use std::os::unix::fs::MetadataExt as _;
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let meta = file
+        .metadata()
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let me = rustix::process::geteuid().as_raw();
+    if meta.uid() != me && meta.uid() != 0 {
+        bail!(
+            "{}: owned by another user (uid {}): a pin anyone else can change pins nothing",
+            path.display(),
+            meta.uid()
+        );
     }
+    if meta.mode() & 0o022 != 0 {
+        bail!(
+            "{}: writable by group or others (mode {:o}): `chmod go-w` it",
+            path.display(),
+            meta.mode() & 0o777
+        );
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    Ok(text)
 }
 
 struct Pinned {
@@ -256,8 +283,18 @@ impl Session {
         }
         channel.eof().await?;
         let mut output = Output::default();
+        // Bounded like an HTTPS reply (the review after M5.5): a daemon, or whatever sits in
+        // its place, can't make `writ` hold more.
+        let max = crate::https::MAX_REPLY;
+        let over = |held: usize, more: usize| held.saturating_add(more) > max;
         while let Some(message) = channel.wait().await {
             match message {
+                ChannelMsg::Data { data } if over(output.stdout.len(), data.len()) => {
+                    bail!("the daemon's reply is larger than {max} bytes")
+                }
+                ChannelMsg::ExtendedData { data, .. } if over(output.stderr.len(), data.len()) => {
+                    bail!("the daemon's error is larger than {max} bytes")
+                }
                 ChannelMsg::Data { data } => output.stdout.extend_from_slice(&data),
                 ChannelMsg::ExtendedData { data, ext: 1 } => output.stderr.extend_from_slice(&data),
                 ChannelMsg::ExitStatus { exit_status } => output.status = Some(exit_status),
@@ -371,6 +408,28 @@ mod tests {
         assert!(!error.contains("not pinned"), "{error}");
         // A directory can't be read as a file either.
         assert!(crate::error_of(read_pins(dir.path())).starts_with("cannot read"));
+    }
+
+    /// The review after M5.5 (L18): a pins file anyone else could rewrite was taken as is.
+    #[test]
+    fn a_pins_file_others_can_write_pins_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let pins = dir.path().join("known_hosts");
+        std::fs::write(&pins, "host ssh-ed25519 AAAA\n").unwrap();
+        for (mode, refused) in [(0o644, false), (0o600, false), (0o664, true), (0o646, true)] {
+            std::fs::set_permissions(&pins, std::fs::Permissions::from_mode(mode)).unwrap();
+            let read = read_pins(&pins);
+            if refused {
+                let error = crate::error_of(read);
+                assert!(
+                    error.contains("writable by group or others") && error.contains("chmod go-w"),
+                    "{mode:o}: {error}"
+                );
+            } else {
+                assert_eq!(read.unwrap(), "host ssh-ed25519 AAAA\n", "{mode:o}");
+            }
+        }
     }
 
     #[test]
