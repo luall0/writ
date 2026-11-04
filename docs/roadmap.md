@@ -38,6 +38,7 @@ picked.
 | M5.7 | [Memory wiped on free](history/m5.7-memory-wiped-on-free.md) ✅ | Writ's own zero-on-free allocator in `writd`, `writ` and `writ-sign`, on in every build: no library's freed copy of a secret stays in memory, at no measurable cost under heavy load |
 | M6 | [Agent skill, amendments, renewals, close](history/m6-agent-skill-amendments-renewals-and-close.md) ✅ | The Writ skill installed by `writ init` for each agent, adaptive timings, amendments, renewals, the estimate, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M6.1 | [Multi-repo workspaces](#m61--multi-repo-workspaces) | One agent at the root of a folder of repositories: `writ init` at the root, the `writ-workspace` skill, `writ git` reading git's global options, `writ exec -C` |
+| M6.1.5 | [Per-repository tickets](#m615--per-repository-tickets) | A ticket whose scope is given repository by repository (template, operations, branches, emails, expected paths, counts), each part checked against its own template; one lease, one approval |
 | M6.2 | [Managing the daemon from the CLI](#m62--managing-the-daemon-from-the-cli) | Every key declared in the signed policy, upstream host keys pinned by signed changes, repos naming their templates; `writ admin repo\|template\|key\|host` to read, add step by step and edit one field at a time, with no host access |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
 | M7.1 | [Local mode on Linux](#m71--local-mode-on-linux) | Linux implementations plugged in the same way: `SO_PEERCRED` and `/proc` process chain, pidfd watcher, a systemd service under its own user, the installer's Linux local setup, local mode in `make e2e` |
@@ -230,6 +231,64 @@ Acceptance:
 - [ ] `writ init --undo` at the root restores every repository and the root exactly.
 - [ ] The new flags (`--repo`, `writ exec -C`) are used for real by end-to-end scenarios,
       with their rows in the registry.
+
+## M6.1.5 — Per-repository tickets
+
+A workspace task (M6.1) touches several repositories, and they rarely share one policy: the
+API's template allows `push` on `agent/*` with a trailer, the web app's a review branch only,
+the docs repository `commit_sign` alone. Today a ticket has one scope for all its repos and
+must fit one template that allows every one of them, so a multi-repo ticket asks for the
+union and is rejected, or for the intersection and is too narrow. After M6.1.5 a ticket gives
+its scope repository by repository, each part fitting a template that allows that repository,
+and stays one ticket: one approval, one lease, one session, one TTL.
+
+- **The layout**: `scope.repos` becomes a map, each repository with its own `template`
+  (optional when one fits), `operations`, `branches`, `force_push`, `committer_emails`,
+  `expected_paths` and counts (`max_signatures`, `max_pushes`, `max_push_size`); `ticket`
+  (title, task, plan, estimate) and `limits.ttl` stay lease-wide, with an optional lease-wide
+  cap on the counts. The one-scope layout is still read, as the same scope for each repo
+  named, so tickets written before keep working and a single-repo ticket is written as
+  today. Settled with the user before building: the exact keys, whether `max_ops_per_minute`
+  is per repository or per lease, and how the lease's TTL relates to each template's
+  `max_ttl` (the smallest, presumably).
+- **The lease model** (`writ-core`): the scope per repository, the fit, narrowing and the
+  renewal and amendment checks run per repository against that repository's template, and a
+  ticket fits only when every part does; `writ-ticket/3` canonical bytes (the old kind still
+  read for leases already granted). Every sign and push request is checked against its
+  repository's part only; the counts are kept per repository (and against the lease-wide cap).
+- **Signing keys**: each template names its signing key, so two parts may name two keys, or
+  two formats. Either the lease holds one key per repository (the session's
+  `signing_key.pub`/`.asc` per repo, the wiring pointing at its repository's), or the parts
+  of one ticket must share a key: to settle with the user before building.
+- **What the approver sees**: `writ sign`'s trusted display one block per repository (its
+  template, operations, branches, emails, paths, counts), still within 78 columns; narrowing
+  per repository (`--branch api:agent/x`, `--drop-op web:push`, `--max-pushes api:2`…), the
+  existing flags without a repository applying to every part; the agent told what changed,
+  per repository.
+- **The clients**: `writ policy` for several repos at once (`writ policy api web`, the
+  templates of each, and which template a part would fit), `writ check` and `writ request
+  --dry-run` naming the repository of each problem, the activity report and the timings per
+  repository, the `writ-workspace` skill (and the `writ` skill's single-repo example) written
+  for the new layout.
+- **Docs and registries**: the ticket file's keys in the [operator reference](operators/ticket.md)
+  and its template, each key set by a test (rule 19), the security inventory's ticket row
+  (its bounds: repositories per ticket, bytes in all), the threat model if a guarantee moves.
+
+Acceptance:
+- [ ] One ticket for two repositories under two templates (different operations, branches,
+      emails and paths) is granted with one signature, and each repository's requests are
+      held to its own part: an operation, a branch or a path allowed in one and not in the
+      other is denied there, with its code, and allowed in the first.
+- [ ] A part that fits no template allowing its repository rejects the whole ticket, naming
+      the repository and why; a ticket under the old layout fits and is enforced as before.
+- [ ] Counts per repository and the lease-wide cap both hold, each tested on both sides.
+- [ ] Narrowing per repository is a strict subset of what was submitted (a widening refused),
+      shown to the approver and the agent per repository; amendments and renewals checked
+      per repository.
+- [ ] Canonical bytes round-trip for the new layout (property tests), and a lease granted
+      before reads unchanged.
+- [ ] The new keys and flags used for real by end-to-end scenarios, with their rows in the
+      registries (rules 18 and 19).
 
 ## M6.2 — Managing the daemon from the CLI
 
