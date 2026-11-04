@@ -659,8 +659,8 @@ fn a_mirror_held_past_its_deadline_is_busy_never_waited_on_forever() {
     let deadline = mirrors.lock_deadline();
     assert_eq!(
         deadline,
-        Duration::from_secs(60) + writ_mirror::LOCAL_WORK_DEADLINE,
-        "one upstream operation and the local work around it"
+        Duration::from_secs(120) + writ_mirror::LOCAL_WORK_DEADLINE,
+        "a wait for a sync slot, one upstream operation and the local work around it"
     );
     // The clock is a fake from here: the mirror is open, nothing below starts a process.
     let paused = tokio::runtime::Builder::new_current_thread()
@@ -1116,4 +1116,36 @@ fn the_mirror_says_which_commits_it_holds() {
         other => panic!("expected the bound, got {other:?}"),
     }
     assert!(held(&refs[..MAX_LOOKUPS]).unwrap().is_empty());
+}
+
+/// The review after M5.5 (S10): a registry change (here a repo's protected refs) opened the
+/// changed repo again with a lock of its own, and made new sync slots: an operation holding
+/// the old lock and one taking the new ran on the same mirror at once. The mirror keeps its
+/// one lock across a change, and the daemon its sync slots.
+#[test]
+fn a_registry_change_keeps_one_lock_per_mirror() {
+    let f = Fixture::new();
+    let mirrors = f.open();
+    let changed = PolicyConfig::from_yaml(
+        &policy_yaml(&f.remote.url("demo"), "upstream-01", "sha1").replacen(
+            "    object_format: sha1\n",
+            "    object_format: sha1\n    protected_refs: [\"refs/heads/release\"]\n",
+            1,
+        ),
+    )
+    .unwrap();
+    assert_ne!(
+        changed.repos().get(&demo()),
+        f.policy("sha1").repos().get(&demo()),
+        "the entry changed, so the repo is opened again"
+    );
+    let held = f.runtime.block_on(mirrors.lock(&demo())).unwrap();
+    let after = f
+        .runtime
+        .block_on(mirrors.with_registry(changed.repos(), f.signer(), &BTreeMap::new()))
+        .unwrap();
+    assert!(mirrors.shares_lock_with(&after, &demo()));
+    drop(held);
+    // Taken through the new `Mirrors` once the old guard is gone, as through the old.
+    drop(f.runtime.block_on(after.lock(&demo())).unwrap());
 }

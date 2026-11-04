@@ -112,11 +112,16 @@ struct Served {
     signatures: Arc<AtomicUsize>,
 }
 
+/// The serving task owns its connections (a `JoinSet`): aborting it, when the socket is
+/// dropped, ends them all, so nothing answers once the operation is over (the review after
+/// M5.5: spawned tasks outlived it, able to ask for signatures left in its budget).
 async fn serve(listener: UnixListener, served: Arc<Served>) {
-    let mut connections = Vec::new();
+    let mut connections = tokio::task::JoinSet::new();
     for _ in 0..MAX_CONNECTIONS {
         match listener.accept().await {
-            Ok((stream, _)) => connections.push(tokio::spawn(answer(stream, served.clone()))),
+            Ok((stream, _)) => {
+                connections.spawn(answer(stream, served.clone()));
+            }
             // The socket is private and short-lived: a failure ends it, and ssh then fails.
             Err(e) => {
                 tracing::debug!(error = %e, "agent socket accept failed");
@@ -126,9 +131,7 @@ async fn serve(listener: UnixListener, served: Arc<Served>) {
     }
     // Past the cap, nobody else is accepted; the running connections finish.
     drop(listener);
-    for connection in connections {
-        let _ = connection.await;
-    }
+    while connections.join_next().await.is_some() {}
 }
 
 async fn answer(mut stream: impl AsyncRead + AsyncWrite + Unpin, served: Arc<Served>) {
@@ -394,5 +397,15 @@ mod tests {
         }
         drop(socket);
         assert!(!path.exists(), "the socket file is removed");
+        // A connection opened before the drop gets no answer after it: the socket's task
+        // owned it, and ended it (the review after M5.5, L13).
+        let mut kept = open.pop().unwrap();
+        let _ = write_message(&mut kept, &[REQUEST_IDENTITIES]).await;
+        let mut byte = [0u8; 1];
+        let read = kept.read(&mut byte).await;
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "answered after the drop: {read:?}"
+        );
     }
 }

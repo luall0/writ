@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::access::Access;
-use super::open::{local, remove_leftovers};
+use super::open::remove_leftovers;
 use super::{LOCAL_WORK_DEADLINE, MAX_FETCH_OUTPUT, MAX_HEAD_OUTPUT, MAX_MOVES_KEPT, MAX_PACKS};
 use super::{MirrorGuard, RefMove, SyncReport};
 use crate::git::{self, Hooks};
@@ -90,22 +90,26 @@ impl MirrorGuard {
             return;
         };
         let path = &self.repo.path;
-        let git_in = |args: &[&str]| {
+        // Under the mirror lock: each git bounded in time and output like the rest of the
+        // local work (the review after M5.5: a hung one would have held the lock for good).
+        let run = |args: &[&str]| {
             let mut cmd = git::command(&self.shared.config.git, Hooks::None);
             cmd.arg("--git-dir").arg(path).args(args);
-            cmd
+            process::run(cmd, None, LOCAL_WORK_DEADLINE, MAX_HEAD_OUTPUT)
         };
-        let current = local(git_in(&["symbolic-ref", "-q", "HEAD"])).await;
+        let current = run(&["symbolic-ref", "-q", "HEAD"]).await;
         if matches!(&current, Ok(out) if out.stdout.trim_ascii() == target.as_bytes()) {
             return;
         }
-        let exists = local(git_in(&["show-ref", "--verify", "--quiet", "--", target])).await;
+        let exists = run(&["show-ref", "--verify", "--quiet", "--", target]).await;
         if !matches!(&exists, Ok(out) if out.status.success()) {
             return;
         }
-        match local(git_in(&["symbolic-ref", "HEAD", target])).await {
+        match run(&["symbolic-ref", "HEAD", target]).await {
             Ok(out) if out.status.success() => {
-                tracing::info!(repo = %self.repo.name, head = target, "mirror HEAD follows upstream");
+                // Upstream's name: shown cleaned, never raw.
+                let head = shown(target.as_bytes());
+                tracing::info!(repo = %self.repo.name, %head, "mirror HEAD follows upstream");
             }
             _ => {
                 tracing::warn!(repo = %self.repo.name, "cannot point the mirror's HEAD at upstream's")

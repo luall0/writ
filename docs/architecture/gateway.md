@@ -217,11 +217,12 @@ deleted goes). It runs on a fetch and on a push when the mirror is older than `f
 (10 s), and in the background every `sync_every` (5 min) (no webhooks,
 [Q19](../decisions.md)). One lock per mirror serializes syncs and pushes; concurrent callers
 wait for one sync and find the mirror fresh; at most 4 syncs run at once, daemon-wide. A caller
-waits for the lock at most `mirrors.timeout` plus 10 minutes (what a holder doing its job takes:
-one upstream operation, and a repack or the reading of a push); past it the fetch or push is
-refused, `the mirror is busy`, never left waiting. A sync
-that fails leaves the mirror's refs as they were, removes its partial pack, and marks the
-mirror stale; the fetch or push that asked for it is refused with the reason (fail closed).
+waits for the lock at most twice `mirrors.timeout` plus 10 minutes (what a holder doing its
+job takes: a wait for a sync slot, itself at most `mirrors.timeout`, one upstream operation,
+and a repack or the reading of a push); past it the fetch or push is refused, `the mirror is
+busy`, never left waiting. A sync that fails, or is dropped, leaves the mirror's refs as they
+were, removes its partial pack, and marks the mirror stale; a mirror a start cut short while
+creating it (`.<name>.git.new-…`) is removed at the next start; the fetch or push that asked for it is refused with the reason (fail closed).
 Past 50 packs, a sync repacks the mirror.
 
 Upstream is semi-trusted (the operator's remote, but one that can be compromised, behind a
@@ -343,8 +344,13 @@ separate ref, which names the commits it annotates by their ids and never contai
    credential: one note per commit, a `Writ:` line per lease it waits under.
 3. **Writing** (`writ_mirror` `mirror/notes.rs`): the batch becomes a commit of its own (a
    tree naming each annotated commit's id, each note at most 64 KiB, no parent), merged into
-   the mirror's notes ref with `git notes merge -s cat_sort_uniq` (a note a commit already
-   has keeps its lines, a person's under `refs/notes/commits` too, each line once). Notes commits are **unsigned**, by
+   the mirror's notes ref with `git notes merge -s union`: a note a commit already has (a
+   person's under `refs/notes/commits` too) is kept exactly as written, paragraphs and blank
+   lines included, the daemon's line after it. A note whose lines the ref already holds (a
+   retry, or upstream's ref fetched) is left out of the batch first, read in one
+   `cat-file --batch`, so no line is written twice. A notes ref upstream doesn't have
+   (`ls-remote`: deleted there, or the repo now points at another remote) is started afresh
+   from the batch, never put back from the mirror's copy. Notes commits are **unsigned**, by
    `writd <writd@writ.invalid>`: no remote verifies or shows a notes commit's signature, and
    the ledger, not the note, is the reference.
 4. **Pushing**: the notes ref upstream, without force, with the batch's credential

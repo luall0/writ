@@ -548,6 +548,33 @@ impl GitGateway {
             .unwrap()
     }
 
+    /// git with `stdin` on its standard input (plumbing: `hash-object --stdin`, `mktree`),
+    /// its output; fails the test if git does.
+    pub fn git_stdin(&self, cwd: &Path, args: &[&str], stdin: &str) -> String {
+        use std::io::Write as _;
+        let key = self.root().join("keys").join("session");
+        let mut child = self
+            .git_command(&self.ssh_command(&key, true), cwd, args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
     pub fn git_ok(&self, cwd: &Path, args: &[&str]) -> String {
         let out = self.git(cwd, args);
         assert!(

@@ -44,17 +44,22 @@ impl MirrorGuard {
         }
     }
 
-    /// A text from git or upstream made safe for an error ([`shown`]), the token taken out
-    /// first: upstream receives it, and a hostile one could print it back, to the audit log
-    /// and an agent's terminal.
+    /// A text from git or upstream made safe for an error ([`shown`]), the token taken out:
+    /// upstream receives it, and a hostile one could print it back, to the audit log and an
+    /// agent's terminal. Taken out before and after the hidden characters go, so one hidden
+    /// inside the token (`ghp_ab\u{200B}cd…`) can't rebuild it once stripped (the review
+    /// after M5.5, S9); its Basic-auth form (`base64(user:token)`) too.
     pub(super) fn clean(&self, text: &[u8]) -> String {
         match &self.repo.reach {
             Reach::Https {
-                token: Some(token), ..
-            } => {
-                let text = String::from_utf8_lossy(text).replace(token.expose(), "<redacted>");
-                shown(text.as_bytes())
-            }
+                token: Some(token),
+                url,
+                ..
+            } => redacted(
+                text,
+                token.expose(),
+                url.user().unwrap_or(crate::credential::DEFAULT_USER),
+            ),
             Reach::Https { token: None, .. } | Reach::Ssh { .. } => shown(text),
         }
     }
@@ -80,9 +85,61 @@ fn is_certificate_failure(stderr: &str) -> bool {
     CERTIFICATE_FAILURES.iter().any(|m| stderr.contains(m))
 }
 
+/// `text` [`shown`], with every form of `token` (sent as `user`) taken out, before and after
+/// its hidden characters go.
+fn redacted(text: &[u8], token: &str, user: &str) -> String {
+    let forms = token_forms(token, user);
+    let redact = |text: &str| {
+        forms
+            .iter()
+            .fold(text.to_owned(), |t, f| t.replace(f.as_str(), "<redacted>"))
+    };
+    let once = redact(&String::from_utf8_lossy(text));
+    redact(&shown(once.as_bytes()))
+}
+
+/// The forms a token can come back in: as it is, and as git's Basic authorization sends it
+/// (`base64(user:token)`). Wiped when dropped: each is the secret.
+fn token_forms(token: &str, user: &str) -> [zeroize::Zeroizing<String>; 2] {
+    use base64ct::Encoding as _;
+    let pair = zeroize::Zeroizing::new(format!("{user}:{token}"));
+    [
+        zeroize::Zeroizing::new(token.to_owned()),
+        zeroize::Zeroizing::new(base64ct::Base64::encode_string(pair.as_bytes())),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The review after M5.5 (S9): the token was taken out before the hidden characters went,
+    /// so one hidden inside it came back whole once stripped; its Basic-auth form wasn't.
+    #[test]
+    fn a_hostile_upstream_can_t_print_the_token_back_in_any_form() {
+        use base64ct::Encoding as _;
+        let token = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+        let basic = base64ct::Base64::encode_string(format!("writ:{token}").as_bytes());
+        for echo in [
+            format!("remote: {token}"),
+            "remote: ghp_0123\u{200b}456789abcdefghijklmnopqrstuvwxyz".to_owned(),
+            "remote: ghp_01\x1b23456789abcdefghijklmnopqrstuvwxyz".to_owned(),
+            "remote: ghp_0123456789\rabcdefghijklmnopqrstuvwxyz".to_owned(),
+            format!("remote: \u{202e}{token}"),
+            format!("remote: Authorization: Basic {basic}"),
+        ] {
+            let shown = redacted(echo.as_bytes(), token, "writ");
+            assert!(!shown.contains(token), "{echo:?} -> {shown:?}");
+            assert!(!shown.contains(&basic), "{echo:?} -> {shown:?}");
+            assert!(shown.contains("<redacted>"), "{echo:?} -> {shown:?}");
+        }
+        // Another user's Basic form is another string: the one sent is the one taken out.
+        let theirs = base64ct::Base64::encode_string(format!("x-token-auth:{token}").as_bytes());
+        assert!(
+            !redacted(format!("Basic {theirs}").as_bytes(), token, "x-token-auth")
+                .contains(&theirs)
+        );
+    }
 
     #[test]
     fn every_tls_backend_s_certificate_failure_is_recognized() {

@@ -394,10 +394,15 @@ fn a_hostile_upstream_printing_the_token_back_has_it_taken_out() {
     match f.sync(&mirrors) {
         Err(MirrorError::Git { stderr, .. }) => {
             assert!(
-                stderr.contains("the password you sent is <redacted>"),
+                stderr.contains(
+                    "the password you sent is <redacted>, split <redacted>, as Basic <redacted>"
+                ),
                 "{stderr}"
             );
             assert!(!stderr.contains(TOKEN), "{stderr}");
+            use base64ct::Encoding as _;
+            let basic = base64ct::Base64::encode_string(format!("writ:{TOKEN}").as_bytes());
+            assert!(!stderr.contains(&basic), "{stderr}");
         }
         other => panic!("expected Git, got {other:?}"),
     }

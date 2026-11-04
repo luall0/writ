@@ -275,6 +275,61 @@ fn a_notes_ref_upstream_moved_meanwhile_is_merged_and_pushed_again() {
     assert_eq!(gateway.remote.receive_packs(), 3);
 }
 
+/// The review after M5.5 (L11): with `cat_sort_uniq`, a note a person already had on the
+/// commit came back sorted, its blank lines gone and the `Writ:` line mixed in. It is kept as
+/// written now, the daemon's line after it.
+#[test]
+fn a_person_s_note_on_the_commit_is_kept_as_written() {
+    let (gateway, work) = setup();
+    let upstream = gateway.remote.repo("demo");
+    let head = gateway.commit_signed_plain("session", &work, "f", "1\n");
+    // A person's note on that very commit, upstream, just before the daemon's push.
+    let theirs = "Zeta: reviewed by a person\n\nalpha: details on a second paragraph\n";
+    let blob = gateway.git_stdin(&upstream, &["hash-object", "-w", "--stdin"], theirs);
+    let tree = gateway.git_stdin(
+        &upstream,
+        &["mktree", "--missing"],
+        &format!("100644 blob {}\t{head}\n", blob.trim()),
+    );
+    let commit = gateway.git_ok(&upstream, &["commit-tree", tree.trim(), "-m", "a review"]);
+    gateway
+        .remote
+        .before_next_push(&["update-ref", "refs/notes/commits", commit.trim()]);
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    wait_for_notes(&gateway, 1);
+    assert_eq!(
+        gateway.upstream_note(&head),
+        Some(format!("{theirs}\n{}", note_for(&gateway.lease))),
+        "the person's note as written, then the daemon's line"
+    );
+}
+
+/// The review after M5.5 (L11): a notes ref deleted upstream came back whole at the next notes
+/// push, from the mirror's copy: every note it ever held, a person's deleted ones too. It is
+/// started afresh from the batch.
+#[test]
+fn a_notes_ref_deleted_upstream_is_started_afresh() {
+    let (gateway, work) = setup();
+    let upstream = gateway.remote.repo("demo");
+    let first = gateway.commit_signed_plain("session", &work, "f", "1\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    wait_for_notes(&gateway, 1);
+    assert_eq!(
+        gateway.upstream_note(&first),
+        Some(note_for(&gateway.lease))
+    );
+    // Deleted upstream (by a person, or the repo moved): the next notes start a new ref.
+    gateway.git_ok(&upstream, &["update-ref", "-d", "refs/notes/commits"]);
+    let second = gateway.commit_signed_plain("session", &work, "g", "2\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    wait_for_notes(&gateway, 2);
+    assert_eq!(
+        gateway.upstream_note(&second),
+        Some(note_for(&gateway.lease))
+    );
+    assert_eq!(gateway.upstream_note(&first), None, "not put back");
+}
+
 #[test]
 fn a_remote_refusing_the_notes_leaves_the_branch_pushed_a_line_and_the_notes_for_next_time() {
     let (gateway, work) = setup();

@@ -45,6 +45,9 @@ pub const HARDENING: &[&str] = &[
     // file system monitor.
     "fetch.recurseSubmodules=false",
     "submodule.recurse=false",
+    // No bundle a remote names (git's default today, set here: a default is never the
+    // decision): it would have git download from other URLs than the upstream's.
+    "transfer.bundleURI=false",
     "gc.auto=0",
     "maintenance.auto=false",
     "receive.autogc=false",

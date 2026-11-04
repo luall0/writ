@@ -34,6 +34,7 @@ impl Mirrors {
     ) -> Result<Self> {
         check_config(&config, repos).await?;
         let files = RunFiles::write(&config)?;
+        remove_unfinished_mirrors(&config.root)?;
         let mut opened = BTreeMap::new();
         for (name, entry) in repos {
             let repo = open_repo(&config, &files.keys_dir, &*signer, tokens, name, entry).await?;
@@ -48,7 +49,7 @@ impl Mirrors {
                 known_hosts: files.known_hosts,
                 ca_certs: files.ca_certs,
                 home: files.home,
-                syncs: Semaphore::new(MAX_SYNCS),
+                syncs: Arc::new(Semaphore::new(MAX_SYNCS)),
             }),
         })
     }
@@ -78,9 +79,17 @@ impl Mirrors {
                 .cloned();
             let repo = match kept {
                 Some(repo) => repo,
-                None => Arc::new(
-                    open_repo(&shared.config, &keys_dir, &*signer, tokens, name, entry).await?,
-                ),
+                None => {
+                    let mut repo =
+                        open_repo(&shared.config, &keys_dir, &*signer, tokens, name, entry).await?;
+                    // The same mirror on disk keeps its one lock: an operation holding it
+                    // from before the change still excludes every one after (the review
+                    // after M5.5, S10).
+                    if let Some(old) = shared.repos.get(name).filter(|old| old.path == repo.path) {
+                        repo.state = old.state.clone();
+                    }
+                    Arc::new(repo)
+                }
             };
             opened.insert(name.clone(), repo);
         }
@@ -93,7 +102,7 @@ impl Mirrors {
                 known_hosts: shared.known_hosts.clone(),
                 ca_certs: shared.ca_certs.clone(),
                 home: shared.home.clone(),
-                syncs: Semaphore::new(MAX_SYNCS),
+                syncs: shared.syncs.clone(),
             }),
         })
     }
@@ -425,6 +434,34 @@ async fn verify_mirror(
 
 /// Removes the files of `dir` whose name `matches` (never following a link: only the entry
 /// itself goes).
+/// Removes the mirrors a start cut short left (`.<name>.git.new-<hex>`, made then renamed
+/// into place by [`create_mirror`]): nothing else ever uses them (the review after M5.5).
+fn remove_unfinished_mirrors(root: &Path) -> Result<()> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(MirrorError::Io {
+                what: "cannot read",
+                path: root.to_owned(),
+                source,
+            });
+        }
+    };
+    for entry in entries.filter_map(std::result::Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') && name.contains(".git.new-") {
+            let path = entry.path();
+            std::fs::remove_dir_all(&path).map_err(|source| MirrorError::Io {
+                what: "cannot remove",
+                path,
+                source,
+            })?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn remove_leftovers(dir: &Path, matches: impl Fn(&str) -> bool) -> Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -466,4 +503,31 @@ fn replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let mut file = writ_platform::fs::create_new_private_file(path).map_err(io("cannot create"))?;
     std::io::Write::write_all(&mut file, bytes).map_err(io("cannot write"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mirror_a_start_cut_short_is_removed_and_nothing_else() {
+        let root = tempfile::tempdir().unwrap();
+        for dir in [
+            ".demo.git.new-0123abcd/objects",
+            "demo.git/objects",
+            ".hidden",
+        ] {
+            std::fs::create_dir_all(root.path().join(dir)).unwrap();
+        }
+        std::fs::write(root.path().join("demo.git.new-not-hidden"), "x").unwrap();
+        remove_unfinished_mirrors(root.path()).unwrap();
+        let mut left: Vec<String> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [".hidden", "demo.git", "demo.git.new-not-hidden"]);
+        // No root yet: nothing to do.
+        remove_unfinished_mirrors(&root.path().join("absent")).unwrap();
+    }
 }

@@ -127,7 +127,9 @@ struct Shared {
     ca_certs: Option<CaCerts>,
     /// An empty private directory: the `HOME` of an HTTPS operation's git (no `.netrc`).
     home: PathBuf,
-    syncs: Semaphore,
+    /// The daemon's sync slots: shared by every `Mirrors` a registry change makes, so a
+    /// change never adds slots while syncs run.
+    syncs: Arc<Semaphore>,
 }
 
 struct Repo {
@@ -214,6 +216,19 @@ impl Mirrors {
         self.shared.repos.keys()
     }
 
+    /// Whether `other` (a registry change's `Mirrors`) holds `repo` under the same lock as
+    /// this one, and shares its sync slots (tests only).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn shares_lock_with(&self, other: &Mirrors, repo: &RepoName) -> bool {
+        let (Some(mine), Some(theirs)) =
+            (self.shared.repos.get(repo), other.shared.repos.get(repo))
+        else {
+            return false;
+        };
+        Arc::ptr_eq(&mine.state, &theirs.state)
+            && Arc::ptr_eq(&self.shared.syncs, &other.shared.syncs)
+    }
+
     /// Holds the mirror of `repo`, waiting for a sync or a push in progress, at most
     /// [`Mirrors::lock_deadline`]: past it the mirror is busy ([`MirrorError::Busy`]), refused
     /// with the reason rather than waited on forever.
@@ -242,9 +257,11 @@ impl Mirrors {
     /// operation (`timeout`) and the local work around it ([`LOCAL_WORK_DEADLINE`]), a sync's
     /// repack or the reading of a push.
     pub fn lock_deadline(&self) -> Duration {
+        // The holder's wait for a sync slot, its upstream operation, its local work.
         self.shared
             .config
             .timeout
+            .saturating_mul(2)
             .saturating_add(LOCAL_WORK_DEADLINE)
     }
 
@@ -280,16 +297,25 @@ impl MirrorGuard {
     /// and marks it stale.
     pub async fn sync(&mut self) -> Result<SyncReport> {
         self.state.synced_at = None;
-        let _slot = self
-            .shared
-            .syncs
-            .acquire()
+        // A slot waited for at most one upstream operation (the others' fetches end by then),
+        // counted in what the mirror lock's waiters allow ([`Mirrors::lock_deadline`]).
+        let wait = self.shared.config.timeout;
+        let _slot = tokio::time::timeout(wait, self.shared.syncs.acquire())
             .await
+            .map_err(|_| MirrorError::Busy {
+                repo: self.repo.name.clone(),
+                seconds: wait.as_secs(),
+            })?
             .map_err(|_| MirrorError::SyncSlotsClosed)?;
-        let fetched = self.fetch().await;
-        if fetched.is_err() {
-            self.remove_partial_packs();
-        }
+        // A fetch that fails, or whose sync is dropped (its caller gone), leaves no partial
+        // pack (`tmp_*`): removed on the way out, unless the fetch succeeded.
+        let mut partial = PartialPacks {
+            guard: self,
+            done: false,
+        };
+        let fetched = partial.guard.fetch().await;
+        partial.done = fetched.is_ok();
+        drop(partial);
         let report = fetched?;
         self.state.synced_at = Some(Instant::now());
         self.repack_if_needed().await;
@@ -299,5 +325,19 @@ impl MirrorGuard {
     /// Marks the mirror stale: the next fetch or push syncs it first.
     pub fn mark_stale(&mut self) {
         self.state.synced_at = None;
+    }
+}
+
+/// Removes a sync's partial packs when dropped, unless its fetch succeeded.
+struct PartialPacks<'a> {
+    guard: &'a MirrorGuard,
+    done: bool,
+}
+
+impl Drop for PartialPacks<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.guard.remove_partial_packs();
+        }
     }
 }

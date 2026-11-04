@@ -213,7 +213,18 @@ async fn answer(state: &State, request: Request<Incoming>) -> Response<Body> {
     if mode == HttpsMode::Echo {
         let mut body = pkt("# service=git-upload-pack\n");
         body.push_str("0000");
-        body.push_str(&pkt(&format!("ERR the password you sent is {token}\n")));
+        // Verbatim, split by a character the error's cleaning drops, and in the Basic form
+        // the remote received: each must be taken out (the review after M5.5, S9).
+        let header = request
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let (head, tail) = token.split_at(token.len() / 2);
+        body.push_str(&pkt(&format!(
+            "ERR the password you sent is {token}, split {head}\u{200b}{tail}, as {header}\n"
+        )));
         let mut response = status(StatusCode::OK, &body);
         response.headers_mut().insert(
             "content-type",

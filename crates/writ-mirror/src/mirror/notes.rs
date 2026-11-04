@@ -4,8 +4,8 @@
 //!
 //! A batch of notes becomes one commit of its own (a tree mapping each annotated commit's id
 //! to its note, no parent), merged into the mirror's notes ref with `git notes merge -s
-//! cat_sort_uniq`: a note a commit already has keeps its lines, the batch's are added, no line
-//! twice. The ref is pushed without force, so a remote that moved it meanwhile refuses
+//! union`: a note a commit already has is kept as it is written, the batch's text after it; a
+//! note whose lines the ref holds already is left out of the batch, so none is written twice. The ref is pushed without force, so a remote that moved it meanwhile refuses
 //! (`fetch first`, `non-fast-forward`): then that one ref is fetched from upstream, the batch
 //! merged into it again, and the push tried once more. A notes commit never contains the
 //! commits it annotates (a note names them by id), so none of this needs them.
@@ -38,6 +38,9 @@ pub const MAX_NOTE_TEXT: usize = 64 * 1024;
 pub const MAX_LOOKUPS: usize = 100_000;
 /// The most of a local git's output read (an object id, a merge's words).
 const MAX_LOCAL_OUTPUT: usize = 64 * 1024;
+/// The most read of the notes a batch's commits have already (more: merged again, a line
+/// twice at worst).
+const MAX_NOTES_READ: usize = 16 * 1024 * 1024;
 
 /// One note to write: the commit it annotates, and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,10 +91,19 @@ impl MirrorGuard {
             )));
         }
         let local_until = from_now(LOCAL_WORK_DEADLINE);
-        let batch = self.notes_commit(notes, local_until).await?;
-        self.merge_notes(notes_ref, &batch, local_until).await?;
         let upstream_until = from_now(self.shared.config.timeout);
         let access = self.reach_upstream()?;
+        // A notes ref upstream doesn't have (deleted there, or another remote since a
+        // registry change) is started afresh, from the batch alone: the mirror's own would
+        // put back every note it ever held, a person's deleted ones too (the review after
+        // M5.5, L11).
+        if !self
+            .upstream_has(notes_ref, &access, upstream_until)
+            .await?
+        {
+            self.forget_local_ref(notes_ref, local_until).await?;
+        }
+        self.merge_missing(notes_ref, notes, local_until).await?;
         if self
             .push_notes_ref(notes_ref, &access, upstream_until)
             .await?
@@ -101,7 +113,7 @@ impl MirrorGuard {
         }
         self.fetch_notes_ref(notes_ref, &access, upstream_until)
             .await?;
-        self.merge_notes(notes_ref, &batch, local_until).await?;
+        self.merge_missing(notes_ref, notes, local_until).await?;
         match self
             .push_notes_ref(notes_ref, &access, upstream_until)
             .await?
@@ -204,15 +216,83 @@ impl MirrorGuard {
         .await
     }
 
-    /// Merges the batch into the mirror's notes ref (made the batch if there is none): the
-    /// lines of a note both have, sorted, each once.
+    /// Merges into the mirror's notes ref the notes of `notes` it doesn't hold yet (a retry
+    /// after a push whose answer was lost, or a ref fetched from upstream, may hold some):
+    /// nothing is written twice.
+    async fn merge_missing(&self, notes_ref: &str, notes: &[Note], until: Instant) -> Result<()> {
+        let held = self.notes_held(notes_ref, notes, until).await;
+        let missing: Vec<Note> = notes
+            .iter()
+            .filter(|note| !held.contains(&note.commit))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let batch = self.notes_commit(&missing, until).await?;
+        self.merge_notes(notes_ref, &batch, until).await
+    }
+
+    /// The commits of `notes` whose note in `notes_ref` already holds every line of the new
+    /// one. Read in one `cat-file --batch`, each note under every fan-out git writes (`ab…`,
+    /// `ab/cd…`, `ab/cd/ef…`). Best effort: a read that fails holds nothing, and the note is
+    /// merged again (a line twice at worst, never one lost).
+    async fn notes_held(
+        &self,
+        notes_ref: &str,
+        notes: &[Note],
+        until: Instant,
+    ) -> BTreeSet<CommitId> {
+        let mut input = String::new();
+        let mut asked: Vec<&Note> = Vec::new();
+        for note in notes {
+            let id = note.commit.as_str();
+            for path in fanouts(id) {
+                let _ = writeln!(input, "{notes_ref}:{path}");
+                asked.push(note);
+            }
+        }
+        let mut cmd = git::command(&self.shared.config.git, Hooks::None);
+        cmd.arg("--git-dir")
+            .arg(&self.repo.path)
+            .args(["cat-file", "--batch"]);
+        let left = until.saturating_duration_since(Instant::now());
+        let Ok(done) = process::run(cmd, Some(input.into_bytes()), left, MAX_NOTES_READ).await
+        else {
+            return BTreeSet::new();
+        };
+        if !done.status.success() {
+            return BTreeSet::new();
+        }
+        let texts = batch_texts(&done.stdout);
+        if texts.len() != asked.len() {
+            return BTreeSet::new();
+        }
+        asked
+            .into_iter()
+            .zip(texts)
+            .filter_map(|(note, text)| {
+                let text = String::from_utf8_lossy(text?);
+                let lines: BTreeSet<&str> = text.lines().collect();
+                note.text
+                    .lines()
+                    .all(|line| lines.contains(line))
+                    .then(|| note.commit.clone())
+            })
+            .collect()
+    }
+
+    /// Merges the batch into the mirror's notes ref (made the batch if there is none): a note
+    /// a commit already has is kept as it is written (a person's paragraphs and blank lines
+    /// too), the batch's text after it (`union`; the review after M5.5, L11: `cat_sort_uniq`
+    /// sorted a person's lines and dropped their blank lines).
     async fn merge_notes(&self, notes_ref: &str, batch: &str, until: Instant) -> Result<()> {
         let args = [
             "notes",
             "--ref",
             notes_ref,
             "merge",
-            "--strategy=cat_sort_uniq",
+            "--strategy=union",
             "--quiet",
             batch,
         ];
@@ -223,6 +303,53 @@ impl MirrorGuard {
         Err(MirrorError::Git {
             repo: self.repo.name.clone(),
             what: "notes merge",
+            stderr: crate::shown(&done.stderr),
+        })
+    }
+
+    /// Whether upstream has `notes_ref` (`ls-remote`, the same access as the push).
+    async fn upstream_has(&self, notes_ref: &str, access: &Access, until: Instant) -> Result<bool> {
+        let args = [
+            "ls-remote",
+            "--refs",
+            "--",
+            self.repo.reach.url(),
+            notes_ref,
+        ];
+        let left = until.saturating_duration_since(Instant::now());
+        let finished = self
+            .run_upstream(access, &args, None, left, MAX_LOCAL_OUTPUT)
+            .await?;
+        if !finished.status.success() {
+            return Err(self.classify(access, &finished.stderr, "notes ref lookup"));
+        }
+        // `<id>\t<ref>` per line: upstream's name is compared whole.
+        Ok(String::from_utf8_lossy(&finished.stdout)
+            .lines()
+            .any(|line| line.split('\t').nth(1) == Some(notes_ref)))
+    }
+
+    /// Deletes the mirror's `notes_ref` (none is fine).
+    async fn forget_local_ref(&self, notes_ref: &str, until: Instant) -> Result<()> {
+        let exists = self
+            .local(
+                &["rev-parse", "--verify", "--quiet", notes_ref],
+                Vec::new(),
+                until,
+            )
+            .await?;
+        if !exists.status.success() {
+            return Ok(());
+        }
+        let done = self
+            .local(&["update-ref", "-d", notes_ref], Vec::new(), until)
+            .await?;
+        if done.status.success() {
+            return Ok(());
+        }
+        Err(MirrorError::Git {
+            repo: self.repo.name.clone(),
+            what: "notes ref reset",
             stderr: crate::shown(&done.stderr),
         })
     }
@@ -394,9 +521,95 @@ fn from_now(deadline: Duration) -> Instant {
     now.checked_add(deadline).unwrap_or(now)
 }
 
+/// The paths a commit's note may be under in a notes tree: none, one and two levels of
+/// fan-out (`ab/cd…`), as git writes them for a growing number of notes.
+fn fanouts(id: &str) -> Vec<String> {
+    let mut paths = vec![id.to_owned()];
+    if let (Some(a), Some(b), Some(rest)) = (id.get(..2), id.get(2..4), id.get(4..)) {
+        paths.push(format!("{a}/{b}{rest}"));
+        paths.push(format!("{a}/{b}/{rest}"));
+    }
+    paths
+}
+
+/// The contents `cat-file --batch` printed, one per input line: `None` for one it found
+/// missing (or that isn't a blob). Malformed output gives fewer: the caller then trusts none.
+fn batch_texts(out: &[u8]) -> Vec<Option<&[u8]>> {
+    let mut texts = Vec::new();
+    let mut rest = out;
+    while !rest.is_empty() {
+        let Some(end) = rest.iter().position(|&b| b == b'\n') else {
+            break;
+        };
+        let (header, after) = rest.split_at(end);
+        let after = after.get(1..).unwrap_or_default();
+        let header = String::from_utf8_lossy(header);
+        let fields: Vec<&str> = header.split(' ').collect();
+        match fields.as_slice() {
+            [_, "blob", size] => {
+                let Ok(size) = size.parse::<usize>() else {
+                    break;
+                };
+                let Some(content) = after.get(..size) else {
+                    break;
+                };
+                texts.push(Some(content));
+                // The content, then its newline.
+                rest = after.get(size.saturating_add(1)..).unwrap_or_default();
+            }
+            [_, _, size] => {
+                let Ok(size) = size.parse::<usize>() else {
+                    break;
+                };
+                texts.push(None);
+                rest = after.get(size.saturating_add(1)..).unwrap_or_default();
+            }
+            _ => {
+                // `<name> missing` (or ambiguous): no content follows.
+                texts.push(None);
+                rest = after;
+            }
+        }
+    }
+    texts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_batch_s_output_is_read_one_input_at_a_time() {
+        // As git 2.43 prints it: a blob, a path not there, a commit (not a note), a blob.
+        let note = "Zeta: person line\n\nalpha detail\n\nWrit: wrt_1\n";
+        let out = format!(
+            "6b917266 blob {}\n{note}\nrefs/notes/commits:ab/cd missing\n62a08054 commit 5\nabcde\n\
+             1111 blob 3\nxyz\n",
+            note.len()
+        );
+        let texts = batch_texts(out.as_bytes());
+        assert_eq!(
+            texts,
+            [Some(note.as_bytes()), None, None, Some(&b"xyz"[..])]
+        );
+        // Cut short or malformed: fewer texts than inputs, which the caller trusts none of.
+        assert_eq!(batch_texts(b"6b91 blob 99\nshort\n").len(), 0);
+        assert_eq!(batch_texts(b"6b91 blob x\n").len(), 0);
+        assert!(batch_texts(b"").is_empty());
+    }
+
+    #[test]
+    fn a_note_is_looked_for_under_every_fan_out() {
+        let id = "8b137891791fe96927ad78e64b0aad7bded08bdc";
+        assert_eq!(
+            fanouts(id),
+            [
+                id.to_owned(),
+                "8b/137891791fe96927ad78e64b0aad7bded08bdc".to_owned(),
+                "8b/13/7891791fe96927ad78e64b0aad7bded08bdc".to_owned()
+            ]
+        );
+    }
 
     #[test]
     fn only_a_notes_ref_upstream_moved_is_behind() {

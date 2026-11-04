@@ -4023,6 +4023,7 @@ dependencies = [
 name = "writ-mirror"
 version = "0.0.0"
 dependencies = [
+ "base64ct",
  "rustix",
  "signature",
  "ssh-key",

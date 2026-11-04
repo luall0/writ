@@ -15,6 +15,7 @@ writ-crypto.workspace = true
 writ-git.workspace = true
 writ-platform.workspace = true
 writ-signer.workspace = true
+base64ct.workspace = true
 rustix.workspace = true
 ssh-key.workspace = true
 thiserror.workspace = true

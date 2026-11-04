@@ -25,7 +25,12 @@ fn helper(args: &[&str]) -> std::result::Result<(), String> {
     let [socket, operation] = args else {
         return Err("usage: writd upstream-credential <socket> <get|store|erase>".to_owned());
     };
-    let mut request = Vec::new();
+    // git sends the token itself with `store` and `erase`: read into memory that is wiped,
+    // sized up front so it never grows (and frees an unwiped copy). Read whole, so git's write
+    // never meets a closed pipe.
+    let mut request = Zeroizing::new(Vec::with_capacity(
+        usize::try_from(READ_LIMIT).unwrap_or(usize::MAX),
+    ));
     std::io::stdin()
         .lock()
         .take(READ_LIMIT)

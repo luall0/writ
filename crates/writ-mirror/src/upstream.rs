@@ -252,6 +252,17 @@ impl SshCommand<'_> {
             self.agent,
             self.identity,
         ];
+        // ssh splits an option's value at whitespace (`UserKnownHostsFile=/a b` names two
+        // files): the paths given in `-o` options hold none (the review after M5.5).
+        for path in [self.known_hosts, self.agent, self.identity] {
+            if path.to_string_lossy().chars().any(char::is_whitespace) {
+                return Err(MirrorError::Config(format!(
+                    "path {} has a space, which ssh would read as two paths: choose a state \
+                     directory without one",
+                    path.display()
+                )));
+            }
+        }
         let mut quoted = Vec::new();
         for path in paths {
             quoted.push(quote(path)?);
@@ -504,7 +515,7 @@ mod tests {
         let (relay, ssh, kh, agent, id) = (
             PathBuf::from("/opt/writ/writd"),
             PathBuf::from("/usr/bin/ssh"),
-            PathBuf::from("/var/lib/writ/mirror/known hosts"),
+            PathBuf::from("/var/lib/writ/mirror/known_hosts"),
             PathBuf::from("/var/lib/writ/mirror/sockets/a.sock"),
             PathBuf::from("/var/lib/writ/mirror/upstream-01.pub"),
         );
@@ -523,7 +534,7 @@ mod tests {
             "{command}"
         );
         for option in [
-            "-o UserKnownHostsFile='/var/lib/writ/mirror/known hosts'",
+            "-o UserKnownHostsFile='/var/lib/writ/mirror/known_hosts'",
             "-o StrictHostKeyChecking=yes",
             "-o IdentityAgent='/var/lib/writ/mirror/sockets/a.sock'",
             "-o IdentitiesOnly=yes",
@@ -544,5 +555,37 @@ mod tests {
         }
         .to_git_ssh_command();
         assert!(matches!(result, Err(MirrorError::Config(_))), "{result:?}");
+        // A space in a path an `-o` option names: refused, not split by ssh into two. A
+        // program's path (run by `sh`, quoted) may hold one.
+        let spaced = PathBuf::from("/var/lib/writ/mirror/known hosts");
+        let result = SshCommand {
+            relay: &relay,
+            ssh: &ssh,
+            known_hosts: &spaced,
+            agent: &agent,
+            identity: &id,
+            max_bytes: 1000,
+        }
+        .to_git_ssh_command();
+        match result {
+            Err(MirrorError::Config(reason)) => {
+                assert!(reason.contains("has a space"), "{reason}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        let spaced_relay = PathBuf::from("/opt/my writ/writd");
+        assert!(
+            SshCommand {
+                relay: &spaced_relay,
+                ssh: &ssh,
+                known_hosts: &kh,
+                agent: &agent,
+                identity: &id,
+                max_bytes: 1000,
+            }
+            .to_git_ssh_command()
+            .unwrap()
+            .starts_with("'/opt/my writ/writd' ")
+        );
     }
 }
