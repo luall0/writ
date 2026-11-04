@@ -22,8 +22,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use writ_core::lease::{self, Lease, State, TicketRecord, Usage};
-use writ_core::names::{KeyFingerprint, TicketId};
+use writ_core::lease::{self, Lease, RepoUsage, State, TicketRecord, Usage};
+use writ_core::names::{KeyFingerprint, RepoName, TicketId};
 use writ_core::net::Source;
 use writ_core::policy::RATE_WINDOW_SECONDS;
 use writ_core::ticket::Ticket;
@@ -554,39 +554,63 @@ impl Store {
             .collect()
     }
 
-    /// What a lease has used: its counters and its operations in the rate window ending now.
+    /// What a lease has used: each repository's counters and its operations in the rate
+    /// window ending now.
     pub fn usage(&self, id: &TicketId, now: Timestamp) -> Result<Usage> {
-        let (signatures, pushes): (i64, i64) = self
-            .conn
+        self.conn
             .query_row(
-                "SELECT signatures, pushes FROM tickets WHERE id = ?1 AND cert_serial IS NOT NULL",
+                "SELECT 1 FROM tickets WHERE id = ?1 AND cert_serial IS NOT NULL",
                 [id.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |_| Ok(()),
             )
             .optional()?
             .ok_or_else(|| StoreError::NotFound(id.clone()))?;
+        let count =
+            |v: i64| u32::try_from(v).map_err(|_| corrupt(id.as_str(), "counter out of range"));
+        let mut repos = std::collections::BTreeMap::new();
+        let mut statement = self
+            .conn
+            .prepare("SELECT repo, signatures, pushes FROM usage WHERE lease_id = ?1")?;
+        let rows = statement.query_map([id.as_str()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (repo, signatures, pushes) = row?;
+            let repo: RepoName = repo
+                .parse()
+                .map_err(|_| corrupt(id.as_str(), "a usage row's repo is not a repo name"))?;
+            repos.insert(
+                repo,
+                RepoUsage {
+                    signatures: count(signatures)?,
+                    pushes: count(pushes)?,
+                },
+            );
+        }
         let window_start = now.unix() - RATE_WINDOW_SECONDS;
         let ops: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM ops WHERE lease_id = ?1 AND at > ?2 AND at <= ?3",
             params![id.as_str(), window_start, now.unix()],
             |r| r.get(0),
         )?;
-        let count =
-            |v: i64| u32::try_from(v).map_err(|_| corrupt(id.as_str(), "counter out of range"));
         Ok(Usage {
-            signatures: count(signatures)?,
-            pushes: count(pushes)?,
+            repos,
             ops_last_minute: count(ops)?,
         })
     }
 
-    /// Takes one operation from an active lease, atomically: the counter goes up only while
-    /// it is under `max` (concurrent requests can't overshoot), and the operation is recorded
-    /// for the rate. Returns `false` (and records nothing) when the limit is reached or the
-    /// lease is not active.
+    /// Takes one operation in `repo` from an active lease, atomically: the repository's
+    /// counter goes up only while it is under `max` (concurrent requests can't overshoot),
+    /// and the operation is recorded for the lease's rate. Returns `false` (and records
+    /// nothing) when the limit is reached or the lease is not active.
     pub fn consume(
         &self,
         id: &TicketId,
+        repo: &RepoName,
         counter: Counter,
         max: u32,
         now: Timestamp,
@@ -594,28 +618,38 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         let active = State::Active.as_str();
         let max = i64::from(max);
-        let taken = match counter {
-            Counter::Signature => tx.execute(
-                "UPDATE tickets SET signatures = signatures + 1
-                 WHERE id = ?1 AND state = ?2 AND cert_serial IS NOT NULL AND signatures < ?3",
-                params![id.as_str(), active, max],
-            )? == 1,
-            Counter::Push => tx.execute(
-                "UPDATE tickets SET pushes = pushes + 1
-                 WHERE id = ?1 AND state = ?2 AND cert_serial IS NOT NULL AND pushes < ?3",
-                params![id.as_str(), active, max],
-            )? == 1,
-            Counter::Fetch => tx
-                .query_row(
-                    "SELECT 1 FROM tickets WHERE id = ?1 AND state = ?2 AND cert_serial IS NOT NULL",
-                    params![id.as_str(), active],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some(),
-        };
-        if !taken {
+        let in_force = tx
+            .query_row(
+                "SELECT 1 FROM tickets WHERE id = ?1 AND state = ?2 AND cert_serial IS NOT NULL",
+                params![id.as_str(), active],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !in_force {
             return Ok(false);
+        }
+        let column = match counter {
+            Counter::Signature => Some("signatures"),
+            Counter::Push => Some("pushes"),
+            Counter::Fetch => None,
+        };
+        if let Some(column) = column {
+            tx.execute(
+                "INSERT INTO usage (lease_id, repo) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                params![id.as_str(), repo.as_str()],
+            )?;
+            // The column is one of two fixed names, never input.
+            let taken = tx.execute(
+                &format!(
+                    "UPDATE usage SET {column} = {column} + 1
+                     WHERE lease_id = ?1 AND repo = ?2 AND {column} < ?3"
+                ),
+                params![id.as_str(), repo.as_str(), max],
+            )? == 1;
+            if !taken {
+                return Ok(false);
+            }
         }
         tx.execute(
             "INSERT INTO ops (lease_id, at) VALUES (?1, ?2)",

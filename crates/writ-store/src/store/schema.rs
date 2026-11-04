@@ -10,7 +10,7 @@ use crate::{Result, StoreError};
 
 /// The version of the state's format: the schema below and the ticket format it stores
 /// ([`Ticket::KIND`]). Kept in `PRAGMA user_version`, and the ticket format in `formats`.
-pub const STATE_VERSION: i64 = 8;
+pub const STATE_VERSION: i64 = 9;
 
 /// How long a write waits for another connection's transaction before failing.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -32,8 +32,6 @@ CREATE TABLE tickets (
     sshsig         TEXT,
     cert_serial    INTEGER UNIQUE,
     current_ticket TEXT REFERENCES tickets(id),
-    signatures     INTEGER NOT NULL DEFAULT 0 CHECK (signatures >= 0),
-    pushes         INTEGER NOT NULL DEFAULT 0 CHECK (pushes >= 0),
     session_pubkey TEXT,
     certificate    TEXT,
     source         TEXT,
@@ -44,6 +42,13 @@ CREATE TABLE tickets (
 ) STRICT;
 CREATE INDEX tickets_state ON tickets(state);
 CREATE INDEX tickets_source ON tickets(source, state);
+CREATE TABLE usage (
+    lease_id   TEXT NOT NULL REFERENCES tickets(id),
+    repo       TEXT NOT NULL,
+    signatures INTEGER NOT NULL DEFAULT 0 CHECK (signatures >= 0),
+    pushes     INTEGER NOT NULL DEFAULT 0 CHECK (pushes >= 0),
+    PRIMARY KEY (lease_id, repo)
+) STRICT;
 CREATE TABLE ops (
     lease_id TEXT NOT NULL REFERENCES tickets(id),
     at       INTEGER NOT NULL
