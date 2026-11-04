@@ -14,6 +14,9 @@ crates together and runs them.
   (one age file per secret, opened through one seam, and the boot tier) or the development
   keystore (refused by release builds).
 - Logs: `tracing` to stderr, filtered by `WRIT_LOG`. The audit log is separate.
+- Its global allocator is `writ_alloc::Wiping`: every block zeroed when it is freed. The
+  `system-allocator` feature (the plain system allocator) is the benchmark's baseline only,
+  never in a shipped build.
 
 ## Scope
 

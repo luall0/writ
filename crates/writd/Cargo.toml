@@ -9,8 +9,12 @@ publish.workspace = true
 # The unencrypted dev keystore (tests and development only). Even with it, a release build
 # refuses it; without it, any build does. Never enabled in a shipped build.
 dev-keystore = []
+# The system allocator, without wiping: the baseline of M5.7's benchmark only
+# (docs/history/m5.7-memory-wiped-on-free.md). Never enabled in a shipped build.
+system-allocator = []
 
 [dependencies]
+writ-alloc.workspace = true
 writ-approval.workspace = true
 writ-core.workspace = true
 writ-crypto.workspace = true
@@ -37,6 +41,8 @@ writ-platform-linux.workspace = true
 writ-platform-macos.workspace = true
 
 [dev-dependencies]
+# The count of blocks wiped: the test that proves the global allocator is the wiping one.
+writ-alloc = { workspace = true, features = ["testing"] }
 age-core.workspace = true
 tempfile.workspace = true
 # A cheap scrypt work factor for the keystore's tests (`enroll_with_work_factor`).

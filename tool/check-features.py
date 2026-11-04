@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Checks that no shipped binary is built with a test-only feature: the `testing` features
-(fakes, contract suites, a breakable audit log, cheap key derivation) and writd's
-`dev-keystore` must never be in the dependency graph of writd, writ or writ-sign as they ship.
+(fakes, contract suites, a breakable audit log, cheap key derivation, the count of blocks
+wiped), writd's `dev-keystore` and `system-allocator` (the benchmark's baseline, without
+wiping) must never be in the dependency graph of writd, writ or writ-sign as they ship.
 """
 
 import subprocess
 import sys
 
 BINARIES = ["writd", "writ-cli", "writ-sign"]
-FORBIDDEN = {"testing", "dev-keystore"}
+FORBIDDEN = {"testing", "dev-keystore", "system-allocator"}
 
 
 def forbidden_in(package: str) -> list[str]:

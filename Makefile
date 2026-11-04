@@ -1,10 +1,10 @@
-.PHONY: ci push check test test-props test-agent e2e github-check fmt run dev-client hooks
+.PHONY: ci push check test test-props test-agent e2e bench-alloc github-check fmt run dev-client hooks
 
 # Lint, format check, dependency directions, source rules, doc links, the guarantee,
 # end-to-end and configuration registries.
 # Each library is also linted alone: the workspace build turns on the `testing` features the
 # tests ask for, which could hide code that only compiles with them.
-LIBRARIES := writ-core writ-proto writ-crypto writ-git writ-mirror writ-signer writ-platform writ-store writ-approval writ-gateway
+LIBRARIES := writ-alloc writ-core writ-proto writ-crypto writ-git writ-mirror writ-signer writ-platform writ-store writ-approval writ-gateway
 
 # The shipped binaries, built on their own: a workspace build would turn on the `testing`
 # features the integration crate asks for.
@@ -82,6 +82,13 @@ test-agent:
 # A filter for the scenarios: make e2e ARGS=wrapper_mode.
 e2e:
 	sh tool/e2e.sh $(ARGS)
+
+# M5.7's benchmark (docs/history/m5.7-memory-wiped-on-free.md): writd with and without the
+# wiping allocator under heavy load, alternated, and the allocation-heavy paths both ways, in
+# release builds (tool/bench-alloc.py). Not part of `make ci`. RUNS per build (5 by default);
+# LINUX=1 runs it in a Linux container (glibc's allocator, as in detached mode; Docker).
+bench-alloc:
+	python3 -I tool/bench-alloc.py --runs $(or $(RUNS),5) $(if $(LINUX),--linux)
 
 # The GitHub manual check as one command (by hand: your approval key signs, Touch ID), against a
 # THROWAWAY repository with a main: make github-check REPO=<owner>/<repo> [EMAIL=<a verified

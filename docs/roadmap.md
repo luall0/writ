@@ -34,7 +34,7 @@ an unchanged core.
 | M5 | [Sealed start and admin changes](history/m5-sealed-start-and-signed-admin-changes.md) ✅ | Encrypted keystore (one age file per secret, a boot tier for the transport keys), `writd init`, `writ unseal`, signed admin changes to approvers, readers, templates and registry applied live, keys made by a signed policy, `writ admin token`, process hardening, the end-to-end pipeline on the sealed keystore |
 | M5.5 | [Signature formats and key algorithms](history/m5.5-signature-formats-and-key-algorithms.md) ✅ | OpenPGP commit signatures beside SSH; each signing key declared with its format, algorithm (Ed25519, P-256, P-384, RSA 3072/4096) and hash, checked against its backend at start; `writd keys create` |
 | M5.6 | [Review after M5.5](history/m5.6-review-after-m5.5.md) ✅ | The security and code quality review after M5 and M5.5 and its fixes: tree modes read as git reads them, upload-pack in protocol v0, admin changes bound to their version, a removed approver's leases revoked, the author checked like the committer, a bounded trusted display, notes appended, the three test layers hardened |
-| M5.7 | [Memory wiped on free](#m57--memory-wiped-on-free) | A zero-on-free allocator in `writd`, `writ` and `writ-sign`, so no library's freed copy of a secret stays in memory; measured under heavy load, then on by default or a build of its own |
+| M5.7 | [Memory wiped on free](history/m5.7-memory-wiped-on-free.md) ✅ | Writ's own zero-on-free allocator in `writd`, `writ` and `writ-sign`, on in every build: no library's freed copy of a secret stays in memory, at no measurable cost under heavy load |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
@@ -177,56 +177,11 @@ clone following its lease (M6) left in their sections. `make ci` and `make e2e` 
 
 ## M5.7 — Memory wiped on free
 
-Asked for by the user after M5.6's review. Writ wipes every copy of a secret it owns
-(`Zeroizing`, buffers sized up front), but libraries keep their own and free them unwiped:
-age's encryption buffer holds the plaintext of a key sealed at runtime, bech32's and age's
-parse hold the keystore identity's encoding at unseal
-([residual risks](threat-model.md#residual-risks-v1)). A global allocator that zeroes every
-block before handing it back to the system closes that for every library at once, in each
-binary that handles a secret: `writd`, `writ` (the approver's `writ admin token`, `writ
-unseal`) and `writ-sign`.
-
-The same idea runs elsewhere: GrapheneOS's `hardened_malloc` (zero on free by default),
-OpenBSD's malloc (junk on free), the Linux kernel's `init_on_free=1`. In Rust,
-[`zeroizing-alloc`](https://github.com/1Password/zeroizing-alloc) (1Password, MIT or
-Apache-2.0, no dependencies) wraps the system allocator: each block zeroed in `dealloc`
-through a call the compiler can't remove, `realloc` left to the default (a new block, the old
-one freed, so wiped).
-
-What it does not cover, and stays in the threat model: a library's live copy while its call
-runs, the stack and registers, git's own processes (the HTTPS token), the kernel's socket
-buffers. `Zeroizing` stays where it is: it ends a secret's life when its owner is done, not
-when its memory happens to be freed.
-
-1. **The allocator**: `zeroizing-alloc` (read whole, pinned, its row in
-   [stack.md](stack.md)) or a module of Writ's own (rule 11's dedicated `unsafe` module with
-   its `SAFETY` comment); picked at the start of the milestone, with the user. Set as the
-   `#[global_allocator]` of the three binaries.
-2. **Its test**: the wiping allocator over a test allocator that checks every block it is
-   handed back holds only zeros (never reading freed memory, which is undefined behavior);
-   blocks of every size class, a `Vec` grown many times, a large block the system maps on its
-   own. A test in each binary proves its allocator is the wiping one.
-3. **The benchmark, under heavy load**: the same workload against two builds of `writd`, with
-   and without the wiping allocator, on the same machine, several runs each, medians and p99
-   reported. The workload: M4.1's heavy concurrency (many agents signing commits and pushing at
-   once), large pushes and fetches through the gateway, mirror syncs, ticket submissions and
-   approvals in bursts, an admin change under load; measured: throughput, latency (p50, p99),
-   CPU time, peak memory. Plus a microbenchmark of the allocation-heavy paths (the pack walk,
-   the ticket parse, the audit line). The numbers and how to rerun them go on the history page.
-4. **The decision, from the numbers, with the user**:
-   - **on by default** in every build, if the cost is small under heavy load; or
-   - **two builds**: a cargo feature selecting the allocator, two binaries (and two Docker
-     images from M8), the operator choosing; then both builds run the end-to-end pipeline
-     (rule 18), `tool/check-features.py` knows the feature is not test-only, and the operator
-     reference says which build fits whom.
-5. **Docs**: the threat model's row narrowed to what stays (a live copy, the stack, other
-   processes), [security.md](security.md)'s secrets section and
-   [conventions.md](conventions.md) (the allocator is part of every binary that handles a
-   secret), the decision in the [decision log](decisions.md) (open question Q39 closed).
-
-**Acceptance:** the allocator test passes in each binary; the benchmark ran under heavy load
-and its numbers are on the history page; the default-or-two-builds decision is recorded with
-the user's go-ahead; `make ci` and `make e2e` pass (both builds, if two).
+**Done.** Moved to [history/m5.7-memory-wiped-on-free.md](history/m5.7-memory-wiped-on-free.md):
+`writ-alloc`, Writ's own wiping allocator (each block zeroed on free behind a compiler
+barrier, checked on the optimized code; `realloc` as a new block and a wiped free), the global
+allocator of `writd`, `writ` and `writ-sign`, on in every build: under heavy load it cost
+nothing measurable on macOS or Linux (`make bench-alloc`).
 
 ## M6 — Agent skill, amendments and close
 

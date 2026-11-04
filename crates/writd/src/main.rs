@@ -51,6 +51,12 @@ use writ_store::{AuditLog, Store};
 use crate::config::Config;
 use crate::keystore::Start;
 
+/// Every block is zeroed when it is freed, whatever code freed it: a library's copy of a
+/// secret too (docs/security.md#secrets). `system-allocator` is the benchmark's baseline only.
+#[cfg(not(feature = "system-allocator"))]
+#[global_allocator]
+static ALLOCATOR: writ_alloc::Wiping = writ_alloc::Wiping::system();
+
 /// How often pending tickets and leases are checked for expiry.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -620,6 +626,15 @@ mod tests {
 
     /// The development policy: a valid one, kept in the repo.
     const POLICY: &str = include_str!("../../../dev/policy.yaml");
+
+    #[test]
+    #[cfg(not(feature = "system-allocator"))]
+    fn the_global_allocator_wipes_every_block_freed() {
+        // Only a wiping allocator counts: with any other, the count never moves.
+        let before = writ_alloc::testing::wiped_blocks();
+        drop(std::hint::black_box(vec![0x5au8; 4096]));
+        assert!(writ_alloc::testing::wiped_blocks() > before);
+    }
 
     /// A configuration whose files are all in a temporary directory.
     fn setup() -> (tempfile::TempDir, Config) {

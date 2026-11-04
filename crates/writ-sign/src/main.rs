@@ -33,6 +33,10 @@ use std::process::{Command, ExitCode, Stdio};
 use anyhow::{Context, bail};
 use writ_proto::sign::SignInput;
 
+/// Every block is zeroed when it is freed, whatever code freed it (docs/security.md#secrets).
+#[global_allocator]
+static ALLOCATOR: writ_alloc::Wiping = writ_alloc::Wiping::system();
+
 /// ssh's exit status when it fails itself (connection, authentication).
 const SSH_FAILED: i32 = 255;
 
@@ -393,6 +397,14 @@ fn check_signature(out: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_global_allocator_wipes_every_block_freed() {
+        // Only a wiping allocator counts: with any other, the count never moves.
+        let before = writ_alloc::testing::wiped_blocks();
+        drop(std::hint::black_box(vec![0x5au8; 4096]));
+        assert!(writ_alloc::testing::wiped_blocks() > before);
+    }
 
     /// Every call is in the end-to-end coverage registry (the review after M5.5: `writ-sign`
     /// had no such test, though rule 18 says `make test` fails on a flag without its row).

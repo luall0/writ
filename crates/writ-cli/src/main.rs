@@ -30,6 +30,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use writ_core::names::{Email, KeyId, ProofNamespace, RepoName, TicketId};
 
+/// Every block is zeroed when it is freed, whatever code freed it: a library's copy of a
+/// secret too (age's, sealing a token; docs/security.md#secrets).
+#[global_allocator]
+static ALLOCATOR: writ_alloc::Wiping = writ_alloc::Wiping::system();
+
 /// How a command ended, as the exit status (stable: the agent skill and harnesses read it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exit {
@@ -483,6 +488,14 @@ pub(crate) fn error_of<T>(result: anyhow::Result<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_global_allocator_wipes_every_block_freed() {
+        // Only a wiping allocator counts: with any other, the count never moves.
+        let before = writ_alloc::testing::wiped_blocks();
+        drop(std::hint::black_box(vec![0x5au8; 4096]));
+        assert!(writ_alloc::testing::wiped_blocks() > before);
+    }
 
     /// The features `docs/end-to-end.md`'s coverage registry lists (first cell of each row,
     /// up to its first parenthesis), for one binary.

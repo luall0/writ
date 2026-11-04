@@ -90,6 +90,7 @@ Cargo.toml              workspace root (members, shared lints, shared dependency
 rust-toolchain.toml
 Makefile
 crates/
+  writ-alloc/           the binaries' global allocator: every block zeroed when it is freed
   writ-core/            lease model: registry, templates, tickets, canonical encoding,
                         template fit, narrowing, lifecycle, caller facts, policy decisions,
                         text neutralization. Pure: no I/O.
@@ -141,6 +142,7 @@ spikes/                 throwaway spike code, outside the workspace, removed onc
 
 - `writ-core` depends on nothing internal. It holds every decision that can be made without
   I/O, so the policy is testable as plain functions.
+- `writ-alloc` depends on nothing at all: the three binaries set it as their global allocator.
 - **Clients never contain policy.** `writ-cli` and `writ-sign` may depend on `writ-core`
   (types, display, canonical encoding for signing), `writ-proto` and `writ-crypto` (keys,
   approval signatures, the pinned TLS), but never on `writ-store`, `writ-signer`,

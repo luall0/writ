@@ -8,6 +8,7 @@ import sys
 # Crates that must never depend on these internal crates.
 FORBIDDEN = {
     "writ-core": "*",  # no internal dependency at all
+    "writ-alloc": "*",  # the binaries' allocator: no dependency at all
     "writ-cli": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",
                  "writ-platform", "writ-platform-macos", "writ-platform-linux", "writ-git", "writ-mirror"},
     "writ-sign": {"writ-store", "writ-signer", "writ-gateway", "writ-approval", "writd",

@@ -1,0 +1,22 @@
+[package]
+name = "writ-alloc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The wiping global allocator of the binaries that handle a secret. No dependency.
+
+[features]
+# Test support (an allocator that checks every block it gets back, the count of blocks wiped,
+# the benchmark's switchable allocator), for the tests of this crate and of the binaries.
+testing = []
+
+[dev-dependencies]
+# The tests use the test support: always build it with `testing`.
+writ-alloc = { workspace = true, features = ["testing"] }
+# Where the barrier test compiles its programs.
+tempfile.workspace = true
+
+[lints]
+workspace = true

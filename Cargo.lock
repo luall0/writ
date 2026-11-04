@@ -3864,6 +3864,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-alloc"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "writ-alloc",
+]
+
+[[package]]
 name = "writ-approval"
 version = "0.0.0"
 dependencies = [
@@ -3900,6 +3908,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "writ-alloc",
  "writ-core",
  "writ-crypto",
  "writ-proto",
@@ -4008,6 +4017,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "ureq",
+ "writ-alloc",
  "writ-approval",
  "writ-core",
  "writ-crypto",
@@ -4090,6 +4100,7 @@ name = "writ-sign"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "writ-alloc",
  "writ-core",
  "writ-crypto",
  "writ-proto",
@@ -4137,6 +4148,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "writ-alloc",
  "writ-approval",
  "writ-core",
  "writ-crypto",

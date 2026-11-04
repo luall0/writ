@@ -169,6 +169,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Install the git hooks (`pre-push` allows only a tree `make ci` passed on) | `make hooks` |
 | Run the development daemon on `dev/writd.yaml` (test keys in `dev/data`, your approval public key in `dev/approvers`; `writd host-key dev/writd.yaml` / `writd tls-fingerprint dev/writd.yaml` print what to pin) | `make run` |
 | End-to-end scenarios: the binaries in containers against Forgejo, every command and flag (Docker; `ARGS=<filter>`, `WRIT_E2E_KEEP=1` keeps the stack) | `make e2e [ARGS=<scenario>]` |
+| The wiping allocator's benchmark: `writd` with and without it under heavy load, in release (by hand; `LINUX=1` in a Linux container) | `make bench-alloc [RUNS=<n>] [LINUX=1]` |
 | Build the Docker image (from M8) | `make docker` |
 | Add a dependency | add its version to `[workspace.dependencies]` in the root `Cargo.toml`, then `dep.workspace = true` in the crate |
 

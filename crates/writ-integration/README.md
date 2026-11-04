@@ -15,6 +15,8 @@ external service. Nothing depends on this crate (checked).
   binaries: `ticket_flow` (M2), `gateway_git` (the gateway with real git and ssh), `interop`
   (`writ-crypto` against `ssh-keygen` and `ssh-agent`), `mirror_sync` and `https_upstream`
   (syncs from an `ssh://` and an `https://` upstream, hostile ones included), `upstream_push`.
+- **The wiping allocator's benchmark** (`tests/alloc_bench.rs`, M5.7): ignored by `make
+  test`, run by `make bench-alloc`, which builds `writd` with and without the wiping allocator.
 
 ## Scope
 

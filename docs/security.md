@@ -15,10 +15,10 @@ user's go-ahead (hard rule 12).
 | Check | What it enforces | Where |
 |---|---|---|
 | `make ci` | Everything below, as one target: GitHub Actions runs it on Linux for every push and pull request; on the Mac, the `pre-push` hook (`make hooks`) allows only a tree it passed on (`make push`) | `Makefile`, `.github/workflows/ci.yml`, `tool/git-hooks/pre-push`, `tool/ci-stamp.sh`, `tool/install-hooks.sh` |
-| clippy (`-D warnings`) | No `unwrap`/`expect`/`panic!`, unchecked indexing, slicing or truncating casts outside tests; no unchecked arithmetic in `writ-core`, `writ-crypto`, `writ-proto`, `writ-git`, `writ-mirror`, `writ-gateway`; no `unsafe` | `Cargo.toml` `[workspace.lints]`, each crate's `lib.rs` |
-| `tool/check-rules.py` | A file's test module ends it (so nothing escapes the rules below; a `#[cfg(test)]` helper is test code to its end only); no bare `is_err()`/`!success()` in tests (an assert read whole), no unmarked sleep in tests, no test `git` reading the user's config, no `if let Ok(… .lock())` that skips work, no relative program path in production code, no unexplained `#[allow]` of a denied lint, no `cfg(target_os)` outside the platform code, no prints in libraries | `make check` |
+| clippy (`-D warnings`) | No `unwrap`/`expect`/`panic!`, unchecked indexing, slicing or truncating casts outside tests; no unchecked arithmetic in `writ-core`, `writ-crypto`, `writ-proto`, `writ-git`, `writ-mirror`, `writ-gateway`; no `unsafe` outside its dedicated modules | `Cargo.toml` `[workspace.lints]`, each crate's `lib.rs` |
+| `tool/check-rules.py` | A file's test module ends it (so nothing escapes the rules below; a `#[cfg(test)]` helper is test code to its end only); no bare `is_err()`/`!success()` in tests (an assert read whole), no unmarked sleep in tests, no test `git` reading the user's config, no `if let Ok(… .lock())` that skips work, no relative program path in production code, no unexplained `#[allow]` of a denied lint, no `cfg(target_os)` outside the platform code, no prints in libraries; each binary's global allocator the wiping one | `make check` |
 | `tool/check-deps.py` | Clients never depend on daemon crates (hard rule 1) | `make check` |
-| `tool/check-features.py` | No `testing` or `dev-keystore` feature in a shipped binary's graph (checks itself on the test crate) | `make check` |
+| `tool/check-features.py` | No `testing`, `dev-keystore` or `system-allocator` feature in a shipped binary's graph (checks itself on the test crate) | `make check` |
 | `tool/check-guarantees.py` | Every guarantee names tests that exist and aren't ignored | `make check` |
 | `cargo deny` | Advisories, yanked crates, sources, banned crates, licenses | `deny.toml`, `make check` |
 | Review | Everything a script can't see: the checklist below | every change |
@@ -50,7 +50,8 @@ one of them answers it in its commit message. "Not touched" is a valid answer; s
    while handling a request bars the certificate before the lock is released.
 6. **Secrets.** No key, token or passphrase in an error, a log, a reply, `Debug`, or a file
    others can read; zeroized, in buffers sized up front (a `Vec` or `String` growing by
-   itself frees an unwiped copy each time); moved, never copied; written whole (a temporary
+   itself leaves a copy each time: the wiping allocator zeroes it when freed, but Writ's own
+   secrets don't rely on it); moved, never copied; written whole (a temporary
    file, synced, linked or renamed into place); redacted in every form it can come back in,
    after the text is cleaned ([details](#secrets)).
 7. **Display.** Does agent or daemon text reach a terminal or a notification? It is escaped,
@@ -226,7 +227,10 @@ A new input is added here in the same change.
   (`looks_secret`, `errors_and_debug_never_contain_the_token`).
 - Key material moves into the library that needs it; no other copy is kept, and the copies
   made on the way (a PKCS#8 encoding, rcgen's key pair) are wiped on every path. What a
-  library keeps unwiped (rustls, ring) is a residual risk in the threat model.
+  library frees is zeroed by the wiping allocator, `writ_alloc::Wiping`, the global allocator
+  of `writd`, `writ` and `writ-sign` (on in every build, [M5.7](history/m5.7-memory-wiped-on-free.md));
+  what a library keeps alive (ring's key, a copy while its call runs) is a residual risk in
+  the threat model.
 - A token travels in clear only to this machine (Telegram's `http` base: loopback only), and
   never through a proxy named in the environment (`proxy(None)`, tested in a child process
   with every proxy variable set). An upstream token goes only over TLS the daemon's git
@@ -338,7 +342,10 @@ with a test:
 - **No unchecked arithmetic** in the crates that parse untrusted bytes and compute limits
   (`writ-core`, `writ-crypto`, `writ-proto`, `writ-git`, `writ-mirror`, `writ-gateway`):
   `checked_*` or `saturating_*`. Release builds keep overflow checks.
-- **No `unsafe`** (`unsafe_code = "deny"`); safe wrappers (`rustix`) for system calls.
+- **No `unsafe`** (`unsafe_code = "deny"`); safe wrappers (`rustix`) for system calls. The
+  exceptions are dedicated modules, each `unsafe` block with its `SAFETY` comment:
+  `writ-platform-macos`'s `sys` (two system calls `rustix` doesn't wrap), and `writ-alloc`'s
+  `wipe` (the wiping allocator) and, in tests only, `testing`.
 - **Parse, don't validate**: untrusted strings become validated newtypes at the edge.
 - **Compare security values exactly**: never `Path ==` (it normalizes), never a fingerprint
   where the whole key is at hand, case-insensitively where a file system folds case (refs;

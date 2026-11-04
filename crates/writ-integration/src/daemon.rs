@@ -289,6 +289,11 @@ impl Daemon {
         self.dir.path()
     }
 
+    /// The `writd run` process's id (the benchmark reads its CPU time and memory).
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// The daemon's log so far.
     pub fn log(&self) -> String {
         fs::read_to_string(self.root().join("writd.err")).unwrap_or_default()

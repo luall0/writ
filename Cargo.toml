@@ -32,6 +32,7 @@ debug = "line-tables-only"
 overflow-checks = true
 
 [workspace.dependencies]
+writ-alloc = { path = "crates/writ-alloc" }
 writ-core = { path = "crates/writ-core" }
 writ-crypto = { path = "crates/writ-crypto" }
 writ-gateway = { path = "crates/writ-gateway" }

@@ -14,7 +14,8 @@ and the security rules of docs/security.md:
 - no sleep in test code, unless a `// poll: <why>` comment says what it waits for;
 - production code runs external programs by absolute path, or says why `PATH` is trusted in
   a `// PATH: <why>` comment;
-- an `#[allow]` of a lint the workspace denies, in production code, has a comment above it.
+- an `#[allow]` of a lint the workspace denies, in production code, has a comment above it;
+- every binary's global allocator is the wiping one (`writ_alloc::Wiping`).
 """
 
 import pathlib
@@ -167,6 +168,19 @@ for crate in sorted(p for p in CRATES.iterdir() if p.is_dir()):
             above = lines[number - 2].strip() if number >= 2 else ""
             if not testing and DENIED_ALLOW.search(code) and not above.startswith("//"):
                 errors.append(f"{rel}:{number}: an #[allow] of a denied lint says why, above it")
+
+# Every binary frees through the wiping allocator, so no library's freed copy of a secret stays
+# in memory (docs/security.md#secrets); its test proves it at run time, this that it is set.
+GLOBAL_ALLOCATOR = re.compile(
+    r"^#\[global_allocator\]\nstatic ALLOCATOR: writ_alloc::Wiping = writ_alloc::Wiping::system\(\);$",
+    re.M,
+)
+for binary in sorted(BINARIES):
+    main = CRATES / binary / "src" / "main.rs"
+    if not GLOBAL_ALLOCATOR.search(main.read_text()):
+        errors.append(
+            f"{main.relative_to(ROOT)}: the global allocator must be writ_alloc::Wiping::system()"
+        )
 
 # The rules above treat everything after `#[cfg(test)]` as test code, so a test module must
 # end its file: production code after it would escape them.

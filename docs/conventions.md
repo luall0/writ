@@ -22,7 +22,7 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
 - **`writ-core` is pure**: no I/O, no clock, no randomness. Time comes in as `now: Timestamp`,
   randomness as bytes (`TicketId::from_parts`).
 - **Test support lives behind a `testing` feature** (`writ-platform`, `writ-store`,
-  `writ-signer`, `writ-approval`): fakes, contract suites, builders, test-only constructors
+  `writ-signer`, `writ-approval`, `writ-alloc`): fakes, contract suites, builders, test-only constructors
   (`Store::open_in_memory`). A crate's own tests turn it on through a dev-dependency on itself.
   Production code never enables it. `make check` also lints each library alone, so code that
   only compiles with the feature can't hide.
@@ -138,8 +138,14 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   Client side: `writ-cli`'s `session` (`create_private_dir`, `write_private`, `load_key`).
 - **Key material moves, it isn't copied**: when a library takes ownership (rustls), no other
   copy is kept.
+- **Every binary frees through the wiping allocator**: `writ_alloc::Wiping` is the
+  `#[global_allocator]` of `writd`, `writ` and `writ-sign` (checked by `tool/check-rules.py`,
+  and by a test in each binary), so a library's freed copy of a secret is zeroed too. A new
+  binary that handles a secret sets it the same way. It doesn't replace the rules below: they
+  end a secret's life when its owner is done, not when its memory happens to be freed.
 - **A buffer that will hold a secret never grows by itself**: a `Vec` or `String` that grows
-  frees its smaller buffer unwiped, a copy of the secret in each. Size it up front
+  frees its smaller buffer, a copy of the secret in each (the wiping allocator zeroes it, but
+  Writ's own secrets don't rely on it). Size it up front
   (`String::with_capacity`), or grow it into a new `Zeroizing` buffer by hand
   (`limits::read_within`).
 - **A secret's file is written whole**: to a private temporary file beside it, synced, then
