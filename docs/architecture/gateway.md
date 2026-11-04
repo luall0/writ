@@ -346,7 +346,8 @@ separate ref, which names the commits it annotates by their ids and never contai
    tree naming each annotated commit's id, each note at most 64 KiB, no parent), merged into
    the mirror's notes ref with `git notes merge -s union`: a note a commit already has (a
    person's under `refs/notes/commits` too) is kept exactly as written, paragraphs and blank
-   lines included, the daemon's line after it. A note whose lines the ref already holds (a
+   lines included, the daemon's line after it as a paragraph of its own (a blank line
+   between, as `git notes append` writes it). A note whose lines the ref already holds (a
    retry, or upstream's ref fetched) is left out of the batch first, read in one
    `cat-file --batch`, so no line is written twice. A notes ref upstream doesn't have
    (`ls-remote`: deleted there, or the repo now points at another remote) is started afresh

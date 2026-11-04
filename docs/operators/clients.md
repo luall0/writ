@@ -33,8 +33,8 @@ wrapped row loses the `│` mark that shows text the agent wrote.
 
 | Path | Where | What it is |
 |---|---|---|
-| `<home>/known_hosts` | Both | The daemon's host key: `[<daemon>]:2222 <key>` on agent hosts, `[<daemon>]:2223 <key>` on your machine. Yours (or root's) and writable by nobody else, or `writ` refuses it |
-| `<home>/tls_pins` | Your machine | The daemon's TLS certificate: `[<daemon>]:8443 SHA256:…`. Yours (or root's) and writable by nobody else, or `writ` refuses it |
+| `<home>/known_hosts` | Both | The daemon's host key: `[<daemon>]:2222 <key>` on agent hosts, `[<daemon>]:2223 <key>` on your machine. A plain file, yours (or root's) and writable by nobody else, or `writ` refuses it |
+| `<home>/tls_pins` | Your machine | The daemon's TLS certificate: `[<daemon>]:8443 SHA256:…`. A plain file, yours (or root's) and writable by nobody else, or `writ` refuses it |
 | `<home>/approver.pub` | Your machine | Your approval key's public half |
 | `<home>/reader` | Your machine | Your reader key, mode 0600 |
 | `<home>/sessions/<lease>/` | Agent host | One per ticket: its session key, its certificate once signed, the lease's terms, and the agent signing key's public half (`signing_key.pub`, for `git verify-commit`), and for an OpenPGP key its certificate (`signing_key.asc`: import it into a GnuPG home to verify) |

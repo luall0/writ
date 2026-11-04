@@ -149,6 +149,10 @@ pub fn read_pins(path: &Path) -> anyhow::Result<String> {
     let meta = file
         .metadata()
         .with_context(|| format!("cannot read {}", path.display()))?;
+    // A device or a FIFO is no pins file: whoever feeds it chooses what is pinned.
+    if !meta.is_file() {
+        bail!("{}: not a regular file", path.display());
+    }
     let me = rustix::process::geteuid().as_raw();
     if meta.uid() != me && meta.uid() != 0 {
         bail!(
@@ -406,8 +410,9 @@ mod tests {
         let error = format!("{:#}", pinned_host_key(&locked, "host").unwrap_err());
         assert!(error.starts_with("cannot read"), "{error}");
         assert!(!error.contains("not pinned"), "{error}");
-        // A directory can't be read as a file either.
-        assert!(crate::error_of(read_pins(dir.path())).starts_with("cannot read"));
+        // A directory can't be read as a pins file either.
+        let error = crate::error_of(read_pins(dir.path()));
+        assert!(error.ends_with("not a regular file"), "{error}");
     }
 
     /// The review after M5.5 (L18): a pins file anyone else could rewrite was taken as is.
@@ -430,6 +435,9 @@ mod tests {
                 assert_eq!(read.unwrap(), "host ssh-ed25519 AAAA\n", "{mode:o}");
             }
         }
+        // A device (anyone can write `/dev/null`): never read as pins.
+        let error = crate::error_of(read_pins(std::path::Path::new("/dev/null")));
+        assert_eq!(error, "/dev/null: not a regular file");
     }
 
     #[test]

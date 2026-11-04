@@ -48,14 +48,12 @@ fn tickets_are_requested_signed_refused_revised_amended_and_revoked() {
     // Requested and waited for; the approver lists it and signs it over SSH.
     let (first, running) = agent.request("first", &lifecycle("First", TASK, "1h"));
     let listing = stack.approver.ok("writ ls");
-    let line = listing
-        .lines()
-        .find(|l| l.starts_with(&first))
-        .unwrap_or_else(|| panic!("{listing}"));
-    assert!(
-        line.contains("pending") && line.contains("r1") && line.contains("lifecycle"),
-        "{line}"
-    );
+    // The ticket's row, then its repos' row.
+    let mut rows = listing.lines().skip_while(|l| !l.starts_with(&first));
+    let line = rows.next().unwrap_or_else(|| panic!("{listing}"));
+    assert!(line.contains("pending") && line.contains("r1"), "{line}");
+    let repos = rows.next().unwrap_or_default();
+    assert_eq!(repos, "    repos lifecycle", "{listing}");
     assert!(listing.contains("│ First"), "{listing}");
     let out = stack.approver.run(&format!(
         "WRIT_APPROVAL_URL={APPROVALS_SSH} writ sign {first} --yes"

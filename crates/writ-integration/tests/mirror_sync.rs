@@ -808,12 +808,13 @@ fn notes_reach_upstream_as_a_fast_forward_the_commits_untouched() {
     );
     assert_eq!(f.agent_sockets(), 0);
 
-    // The next batch builds on it: one more fast-forward, a commit's note gains a line.
+    // The next batch builds on it: one more fast-forward, a commit's note gains a line, after
+    // a blank one (`union`, as `git notes append` writes it).
     let pushed = f.push_notes(&mirrors, "upstream-01", &[note(&second, "Writ: wrt_B\n")]);
     assert_eq!(pushed.unwrap(), NotesPushed::FastForward);
     assert_eq!(
         f.note_of(&upstream, &second).as_deref(),
-        Some("Writ: wrt_A\nWrit: wrt_B\n")
+        Some("Writ: wrt_A\n\nWrit: wrt_B\n")
     );
     assert_eq!(
         f.note_of(&upstream, &first).as_deref(),
@@ -852,14 +853,14 @@ fn a_notes_ref_upstream_moved_is_fetched_merged_and_pushed_once_more() {
         ],
     );
     assert_eq!(pushed.unwrap(), NotesPushed::Merged);
-    // Theirs kept, ours added: the lines of both, sorted, each once.
+    // Theirs kept as written, ours after a blank line; a line both hold, once.
     assert_eq!(
         f.note_of(&upstream, &first).as_deref(),
         Some("Writ: wrt_A\n")
     );
     assert_eq!(
         f.note_of(&upstream, &second).as_deref(),
-        Some("Theirs\nWrit: wrt_A\n")
+        Some("Theirs\n\nWrit: wrt_A\n")
     );
     let notes = f.notes_ref(&upstream).unwrap();
     assert_eq!(f.notes_ref(&f.mirror()).as_deref(), Some(notes.as_str()));
@@ -1064,7 +1065,7 @@ fn notes_under_git_s_own_ref_keep_a_person_s_notes_there() {
     // The mirror had no notes ref: upstream's is fetched, merged, pushed once more.
     assert_eq!(pushed.unwrap(), NotesPushed::Merged);
     let shown = f.git_ok(&upstream, &["notes", "show", &first]);
-    assert_eq!(shown, "Reviewed by Sam\nWrit: wrt_A");
+    assert_eq!(shown, "Reviewed by Sam\n\nWrit: wrt_A");
     let ancestor = f.git(
         &upstream,
         &["merge-base", "--is-ancestor", &theirs, "refs/notes/commits"],

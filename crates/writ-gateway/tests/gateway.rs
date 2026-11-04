@@ -1263,21 +1263,35 @@ async fn env_requests_are_refused_and_authentication_stops_after_six_attempts() 
             .authenticate_publickey("writ", PrivateKeyWithHashAlg::new(Arc::new(stranger), None))
             .await
             .unwrap_or_else(|e| panic!("attempt {attempt}: {e}"));
+        // Refused, publickey still offered: the server answered.
         assert!(
             matches!(
-                auth,
+                &auth,
                 russh::client::AuthResult::Failure {
+                    remaining_methods,
                     partial_success: false,
-                    ..
-                }
+                } if remaining_methods.contains(&russh::MethodKind::PublicKey)
             ),
             "attempt {attempt}: {auth:?}"
         );
+        assert!(!handle.is_closed(), "attempt {attempt}");
     }
     let stranger = generate(KeyKind::Ed25519).unwrap();
     let seventh = handle
         .authenticate_publickey("writ", PrivateKeyWithHashAlg::new(Arc::new(stranger), None))
         .await;
-    // any error: the server disconnected ("Too many authentication attempts").
-    assert!(seventh.is_err(), "{seventh:?}");
+    // The server disconnected ("Too many authentication attempts"): russh's client reports
+    // the session ending as a failure with no method left (never an answer the server sent,
+    // which always offers publickey), and the connection is closed.
+    assert!(
+        matches!(
+            &seventh,
+            Ok(russh::client::AuthResult::Failure {
+                remaining_methods,
+                partial_success: false,
+            }) if remaining_methods.is_empty()
+        ),
+        "{seventh:?}"
+    );
+    assert!(handle.is_closed());
 }

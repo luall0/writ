@@ -43,16 +43,35 @@ pub fn width(text: &str) -> usize {
 }
 
 /// One line of text (already [`clean`]ed) cut into rows of at most `width` columns (at least
-/// one row, possibly empty).
+/// one row, possibly empty), between words: a row ends at its last space (the space itself
+/// not shown), and only a word longer than a row is cut inside, so a name or an id is never
+/// shown as two (`ABCDE123` then `45`).
 fn cut(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows = vec![String::new()];
     let mut used = 0;
     for c in text.chars() {
         let w = columns(c);
-        if used + w > width {
-            rows.push(String::new());
-            used = 0;
+        if used > 0 && used + w > width {
+            let carried = match rows.last_mut() {
+                // The break falls on a space: it ends the row.
+                _ if c == ' ' => String::new(),
+                // The word being written moves down whole, after the row's last space.
+                Some(row) => match row.rfind(' ') {
+                    Some(at) if at > 0 => {
+                        let word = row.split_off(at + 1);
+                        row.pop();
+                        word
+                    }
+                    _ => String::new(),
+                },
+                None => String::new(),
+            };
+            used = self::width(&carried);
+            rows.push(carried);
+            if c == ' ' {
+                continue;
+            }
         }
         if let Some(row) = rows.last_mut() {
             row.push(c);
@@ -78,8 +97,13 @@ fn one_row(text: &str, width: usize, more: &str) -> String {
 /// A labelled row (`  label              value`), the value cut into rows that fit [`WIDTH`]:
 /// each continuation indented under the value, behind the gutter.
 fn labelled(out: &mut String, label: &str, value: &str) {
-    let head = format!("  {label:<18} ");
-    let rest = format!("{}{GUTTER}", " ".repeat(head.len()));
+    rows_after(out, &format!("  {label:<18} "), value);
+}
+
+/// `value` after `head`, cut into rows that fit [`WIDTH`]: each continuation indented under
+/// the value, behind the gutter.
+fn rows_after(out: &mut String, head: &str, value: &str) {
+    let rest = format!("{}{GUTTER}", " ".repeat(width(head)));
     let mut rows = cut(value, WIDTH.saturating_sub(width(&rest))).into_iter();
     let _ = writeln!(out, "{head}{}", rows.next().unwrap_or_default());
     for row in rows {
@@ -166,8 +190,9 @@ pub fn list(items: impl IntoIterator<Item = impl ToString>) -> String {
     }
 }
 
-/// `writ ls`: one line per ticket (id, state, revision, template, time left, repos), then its
-/// title behind the gutter.
+/// `writ ls`: per ticket, a row with its id, state, revision, template and time left; a row
+/// with its repos (and the lease it amends); then its title behind the gutter. Every row fits
+/// [`WIDTH`].
 pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
     let mut out = String::new();
     for t in &listing.tickets {
@@ -183,21 +208,21 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
             String::new()
         };
         let line = format!(
-            "{}  {:<9} r{}  {:<14} {:<10} {}{lease}",
+            "{}  {:<9} r{}  {:<14} {left}",
             t.id,
-            t.state,
+            // `as_str`: `State`'s `Display` doesn't pad.
+            t.state.as_str(),
             t.revision,
             clean(t.template.as_str()),
-            left,
-            clean(
-                &t.repos
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
         );
-        let _ = writeln!(out, "{}", one_row(&line, WIDTH, "(writ show)"));
+        let _ = writeln!(out, "{}", one_row(line.trim_end(), WIDTH, "(writ show)"));
+        let repos = t
+            .repos
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        rows_after(&mut out, "    repos ", &clean(&format!("{repos}{lease}")));
         out.push_str(&block(&t.title, "    ", true));
     }
     out
@@ -616,6 +641,98 @@ mod tests {
     /// path pushed the real terms hundreds of rows up. Every row now fits an 80-column
     /// terminal, agent text is behind the gutter on each of them, and the summary is a few
     /// rows of one line each.
+    #[test]
+    fn a_row_breaks_between_words_and_cuts_only_a_word_longer_than_a_row() {
+        // Between words: the space at the break is not shown, no word is split.
+        assert_eq!(
+            cut("signed com.example team ABCDE12345)", 28),
+            ["signed com.example team", "ABCDE12345)"]
+        );
+        assert_eq!(cut("aaaa bbbb", 4), ["aaaa", "bbbb"]);
+        assert_eq!(cut("aaa bbbb", 4), ["aaa", "bbbb"]);
+        // A word longer than a row: cut inside, where it must be.
+        assert_eq!(cut("abcdefghij", 4), ["abcd", "efgh", "ij"]);
+        assert_eq!(cut("x abcdefghij", 4), ["x", "abcd", "efgh", "ij"]);
+        // A leading space is no break; wide characters count 2.
+        assert_eq!(cut(" abcde", 4), [" abc", "de"]);
+        assert_eq!(cut("日本 日本", 4), ["日本", "日本"]);
+        assert_eq!(cut("", 4), [""]);
+        // Whatever the text and the width, no row is wider, and nothing but the spaces at the
+        // breaks is lost.
+        let text = "a bb ccc dddd eeeee 日本語 ffffffffffff  g   h";
+        // (A row holds at least one character: 2 columns for a wide one.)
+        for room in 2..=20 {
+            let rows = cut(text, room);
+            assert!(rows.iter().all(|r| width(r) <= room), "{room}: {rows:?}");
+            let kept: String = rows.concat().chars().filter(|c| *c != ' ').collect();
+            let all: String = text.chars().filter(|c| *c != ' ').collect();
+            assert_eq!(kept, all, "{room}: {rows:?}");
+        }
+    }
+
+    #[test]
+    fn a_listing_row_never_hides_the_repos_or_the_lease_amended() {
+        use writ_core::names::{RepoName, TicketId};
+        let id: TicketId = "wrt_01M6J0KMVRMFR7DNP0ZXD6DYPP".parse().unwrap();
+        let lease: TicketId = "wrt_01M6J0KMVRMFR7DNP0ZXD6DYPQ".parse().unwrap();
+        let now = Timestamp::from_unix(1_000_000).unwrap();
+        let summary = |repos: Vec<RepoName>, lease: TicketId| writ_proto::Summary {
+            id: id.clone(),
+            lease,
+            state: State::Pending,
+            template: "feature".parse().unwrap(),
+            revision: 2,
+            repos,
+            created_at: now,
+            expires_at: Timestamp::from_unix(1_003_599).unwrap(),
+            title: "First".into(),
+        };
+        let one = writ_proto::Listing {
+            tickets: vec![summary(vec!["lifecycle".parse().unwrap()], lease.clone())],
+        };
+        assert_eq!(
+            listing(&one, now),
+            format!(
+                "{id}  pending   r2  feature        59m59s left\n    \
+                 repos lifecycle (amends {lease})\n    │ First\n"
+            )
+        );
+        // Many long repos: every row fits, continuations behind the gutter, none lost.
+        let many: Vec<RepoName> = (0..12)
+            .map(|i| {
+                format!("repository-{i:02}-{}", "x".repeat(20))
+                    .parse()
+                    .unwrap()
+            })
+            .collect();
+        let shown = listing(
+            &writ_proto::Listing {
+                tickets: vec![summary(many.clone(), id.clone())],
+            },
+            now,
+        );
+        for line in shown.lines() {
+            assert!(width(line) <= WIDTH, "{} columns: {line:?}", width(line));
+        }
+        for repo in &many {
+            assert!(shown.contains(repo.as_str()), "{repo}: {shown}");
+        }
+        assert!(
+            shown
+                .lines()
+                .nth(1)
+                .unwrap()
+                .starts_with("    repos repository-00-")
+        );
+        assert!(
+            shown
+                .lines()
+                .nth(2)
+                .unwrap()
+                .starts_with("          │ repository-")
+        );
+    }
+
     #[test]
     fn no_row_is_wider_than_the_terminal_and_long_agent_text_cannot_forge_a_row() {
         let mut t = full_ticket();

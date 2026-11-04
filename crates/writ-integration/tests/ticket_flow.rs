@@ -286,6 +286,7 @@ fn https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled()
         ),
     )
     .unwrap();
+    writ_integration::daemon::private(&other);
     let out = daemon.run(&["--tls-pins", other.to_str().unwrap(), "ls"], "");
     assert_eq!(out.status.code(), Some(1));
     assert!(
@@ -293,8 +294,11 @@ fn https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled()
         "{}",
         stderr(&out)
     );
-    // No pin at all: refused, saying how to pin.
-    let out = daemon.run(&["--tls-pins", "/dev/null", "ls"], "");
+    // No pin at all (an empty pins file): refused, saying how to pin.
+    let empty = daemon.root().join("empty_pins");
+    fs::write(&empty, "").unwrap();
+    writ_integration::daemon::private(&empty);
+    let out = daemon.run(&["--tls-pins", empty.to_str().unwrap(), "ls"], "");
     assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("writd tls-fingerprint"),
@@ -763,10 +767,12 @@ fn the_origin_hint_is_shown_and_a_caller_constraint_is_checked() {
         ),
         "{shown}"
     );
+    // Cut between words to fit the terminal, never inside the team id.
     assert!(
         shown.contains(
-            "descends from /usr/local/bin/agent-harness (pid 4242, generation 7, signed \
-             com.example.harness team ABCDE12345)"
+            "  caller             descends from /usr/local/bin/agent-harness (pid 4242,\n\
+             \x20                    │ generation 7, signed com.example.harness team\n\
+             \x20                    │ ABCDE12345)\n"
         ),
         "{shown}"
     );

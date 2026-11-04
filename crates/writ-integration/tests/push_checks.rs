@@ -185,10 +185,17 @@ fn git_takes_in_no_more_than_the_template_in_force_allows() {
         )
         .unwrap_err();
     assert!(
-        error
-            .to_string()
-            .contains("limits.max_push_size must be at least 1 byte"),
-        "{error}"
+        matches!(
+            &error,
+            writ_approval::ServiceError::Refused {
+                code: writ_approval::RefusalCode::Rejected,
+                reasons,
+                ..
+            } if reasons
+                .iter()
+                .any(|r| r.contains("limits.max_push_size must be at least 1 byte"))
+        ),
+        "{error:?}"
     );
 
     // A lease of 1MB; then the template lowered to 2KB by a signed change.

@@ -4,9 +4,11 @@
 //!
 //! A batch of notes becomes one commit of its own (a tree mapping each annotated commit's id
 //! to its note, no parent), merged into the mirror's notes ref with `git notes merge -s
-//! union`: a note a commit already has is kept as it is written, the batch's text after it; a
-//! note whose lines the ref holds already is left out of the batch, so none is written twice. The ref is pushed without force, so a remote that moved it meanwhile refuses
-//! (`fetch first`, `non-fast-forward`): then that one ref is fetched from upstream, the batch
+//! union`: a note a commit already has is kept as it is written, the batch's text after it (a
+//! blank line between, as `git notes append` writes it); a note whose lines the ref holds
+//! already is left out of the batch, so none is written twice. The ref is pushed without
+//! force, so a remote that moved it meanwhile refuses (`fetch first`, `non-fast-forward`):
+//! then that one ref is fetched from upstream, the batch
 //! merged into it again, and the push tried once more. A notes commit never contains the
 //! commits it annotates (a note names them by id), so none of this needs them.
 //!
@@ -284,7 +286,8 @@ impl MirrorGuard {
 
     /// Merges the batch into the mirror's notes ref (made the batch if there is none): a note
     /// a commit already has is kept as it is written (a person's paragraphs and blank lines
-    /// too), the batch's text after it (`union`; the review after M5.5, L11: `cat_sort_uniq`
+    /// too), the batch's text after it, a blank line between (`union`, as `git notes append`
+    /// writes it; the review after M5.5, L11: `cat_sort_uniq`
     /// sorted a person's lines and dropped their blank lines).
     async fn merge_notes(&self, notes_ref: &str, batch: &str, until: Instant) -> Result<()> {
         let args = [

@@ -43,11 +43,13 @@ triggering the signature; it is the trusted display
   account-wide key) are printed by `writ sign` itself, never taken from the ticket.
 - The display is bounded in both directions. Every row fits 78 columns (a non-ASCII
   character counted as two), so an 80-column terminal never wraps one: a longer line is cut
-  into rows by `writ sign`, each continuation behind the gutter, so a row the terminal made
-  can't start with agent text that reads like one of `writ sign`'s (`  repos  …`). Each agent
-  field shows at most 40 rows (runs of blank lines collapsed), then how many more there are
-  (`writ sign --full` shows everything); the expected paths too, under the enforced scope,
-  one quoted item per line. Lists are quoted so two different lists never read the same.
+  into rows by `writ sign`, between words (only a word longer than a row is cut inside, so
+  an id or a name never reads as two), each continuation behind the gutter, so a row the
+  terminal made can't start with agent text that reads like one of `writ sign`'s
+  (`  repos  …`). Each agent field shows at most 40 rows (runs of blank lines collapsed),
+  then how many more there are (`writ sign --full` shows everything); the expected paths
+  too, under the enforced scope, one quoted item per line. Lists are quoted so two
+  different lists never read the same.
   The enforced terms (id, template, expiry, repos, operations, branches, force push,
   emails, expected paths with their count, limits, on violation) are repeated in a summary
   of one row each right before the prompt (a list too long for its row is cut, `… (see

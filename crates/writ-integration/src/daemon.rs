@@ -493,6 +493,16 @@ fn pin(root: &Path, agents: u16, approvals: u16, https: u16) {
         format!("[127.0.0.1]:{https} {fingerprint}\n"),
     )
     .unwrap();
+    // `writ` refuses a pins file group or others can write: never left to the umask.
+    for file in ["known_hosts", "tls_pins"] {
+        private(&root.join(file));
+    }
+}
+
+/// Makes `path` readable and writable by its owner only (`0600`), whatever the umask.
+pub fn private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 fn approval_url(approvals: Approvals, ssh: u16, https: u16) -> String {
