@@ -87,11 +87,10 @@ impl MirrorGuard {
                 key: credential.clone(),
             });
         }
-        if notes.is_empty() || notes.len() > MAX_NOTES {
-            return Err(MirrorError::Notes(format!(
-                "a batch holds from 1 to {MAX_NOTES} notes"
-            )));
-        }
+        // The whole batch checked before any git runs, here or upstream (the second review
+        // after M5.5: a note's own bounds were checked only once the batch was built, after
+        // upstream was asked, and a note left out as written already never was).
+        check_batch(notes)?;
         let local_until = from_now(LOCAL_WORK_DEADLINE);
         let upstream_until = from_now(self.shared.config.timeout);
         let access = self.reach_upstream()?;
@@ -178,21 +177,11 @@ impl MirrorGuard {
     /// The batch as a commit of its own: each note's text a blob (one per distinct text), a
     /// tree naming each by the commit it annotates, a commit of that tree with no parent.
     async fn notes_commit(&self, notes: &[Note], until: Instant) -> Result<String> {
+        // Checked whole by `push_notes`; again here, for what was left of it.
+        check_batch(notes)?;
         let mut blobs: BTreeMap<&str, String> = BTreeMap::new();
         let mut tree = String::new();
-        let mut seen = BTreeSet::new();
         for note in notes {
-            if note.text.is_empty() || note.text.len() > MAX_NOTE_TEXT {
-                return Err(MirrorError::Notes(format!(
-                    "a note holds from 1 to {MAX_NOTE_TEXT} bytes"
-                )));
-            }
-            if !seen.insert(&note.commit) {
-                return Err(MirrorError::Notes(format!(
-                    "two notes for commit {}",
-                    note.commit
-                )));
-            }
             let blob = match blobs.get(note.text.as_str()) {
                 Some(blob) => blob.clone(),
                 None => {
@@ -519,6 +508,31 @@ fn from_now(deadline: Duration) -> Instant {
     now.checked_add(deadline).unwrap_or(now)
 }
 
+/// A batch's bounds: 1 to [`MAX_NOTES`] notes, each of 1 to [`MAX_NOTE_TEXT`] bytes, one per
+/// commit.
+fn check_batch(notes: &[Note]) -> Result<()> {
+    if notes.is_empty() || notes.len() > MAX_NOTES {
+        return Err(MirrorError::Notes(format!(
+            "a batch holds from 1 to {MAX_NOTES} notes"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for note in notes {
+        if note.text.is_empty() || note.text.len() > MAX_NOTE_TEXT {
+            return Err(MirrorError::Notes(format!(
+                "a note holds from 1 to {MAX_NOTE_TEXT} bytes"
+            )));
+        }
+        if !seen.insert(&note.commit) {
+            return Err(MirrorError::Notes(format!(
+                "two notes for commit {}",
+                note.commit
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// `note` with only the lines `held` lacks (in its order), or `None` when it lacks none.
 fn unwritten(note: &Note, held: &BTreeSet<String>) -> Option<Note> {
     let mut text = String::new();
@@ -631,6 +645,37 @@ mod tests {
             unwritten(&note, &held(&["Writ: wrt_B", "Writ: wrt_A"])),
             None
         );
+    }
+
+    /// The second review after M5.5: a note's bounds were checked once the batch was built,
+    /// after upstream was asked, and an empty note, left out as holding no new line, never.
+    #[test]
+    fn a_batch_is_checked_whole_before_anything_runs() {
+        let commit: CommitId = "8b137891791fe96927ad78e64b0aad7bded08bdc".parse().unwrap();
+        let other: CommitId = "8b137891791fe96927ad78e64b0aad7bded08bdd".parse().unwrap();
+        let note = |commit: &CommitId, text: &str| Note {
+            commit: commit.clone(),
+            text: text.to_owned(),
+        };
+        let reason = |notes: &[Note]| match check_batch(notes) {
+            Err(MirrorError::Notes(reason)) => reason,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert_eq!(
+            reason(&[]),
+            format!("a batch holds from 1 to {MAX_NOTES} notes")
+        );
+        for text in [String::new(), "x".repeat(MAX_NOTE_TEXT + 1)] {
+            assert_eq!(
+                reason(&[note(&commit, &text)]),
+                format!("a note holds from 1 to {MAX_NOTE_TEXT} bytes")
+            );
+        }
+        assert_eq!(
+            reason(&[note(&commit, "a\n"), note(&commit, "b\n")]),
+            format!("two notes for commit {commit}")
+        );
+        check_batch(&[note(&commit, "x"), note(&other, &"x".repeat(MAX_NOTE_TEXT))]).unwrap();
     }
 
     #[test]

@@ -529,13 +529,16 @@ async fn a_connection_that_never_authenticates_is_closed() {
         (Duration::from_secs(20)..Duration::from_secs(21)).contains(&open_for),
         "closed after {open_for:?}"
     );
-    let lines = daemon.audit("connect", "denied");
-    assert!(
-        lines.iter().any(|l| l["reason"]
-            .as_str()
-            .is_some_and(|r| r.starts_with("no SSH handshake within 20 s"))),
-        "{lines:?}"
-    );
+    // The line is written as the connection is dropped, which the client sees first: it
+    // comes just after the close (the second review after M5.5: read at once, it raced).
+    eventually_async("the refusal's line", || {
+        daemon.audit("connect", "denied").iter().any(|l| {
+            l["reason"]
+                .as_str()
+                .is_some_and(|r| r.starts_with("no SSH handshake within 20 s"))
+        })
+    })
+    .await;
 }
 
 #[tokio::test]
