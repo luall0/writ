@@ -75,6 +75,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
 | [One program, several repositories](#one-program-several-repositories) | Clients | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
 | [Submodules](#submodules) | Clients, Gateway | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
+| [A signing key per repository in one lease](#a-signing-key-per-repository-in-one-lease) | Signers, Clients | feature | M | idea (left out of [M6.1.5](../roadmap.md#m615--per-repository-tickets)) |
 | [Managing the daemon from the CLI](daemon-management-from-the-cli.md) | Administration, Signers, Upstream, Clients | improvement | L | specified; picked as [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) |
 | [Pending hand edits](#pending-hand-edits) | Administration | improvement | M | idea |
 | [Old upstream histories](#old-upstream-histories) | Upstream | improvement | M | idea; lowest priority, waits for a real repository that needs it |
@@ -218,6 +219,16 @@ A submodule is a repository inside another, and a commit in the parent records w
 of the child it points to. Supporting them means wiring the child as its own repository (its
 registry name), signing the parent's commits that move a pointer like any other, and fetching
 the child through the daemon too (`git submodule update` reaches the child's own remote).
+
+### A signing key per repository in one lease
+
+Since M6.1.5 a ticket's parts may fit different templates, but they must name the same
+signing key: the session holds one (`signing_key.pub` or `.asc`), and `writ-sign` and the
+wiring use it for every repository. When the templates name different keys (or formats), the
+agent asks one lease per repository instead. Letting one lease hold one key per repository
+means the grant writing a key per repository in the session, the wiring pointing each
+repository at its own, `writ-sign` asking the format per repository, and the approver seeing
+each key.
 
 ## Administration
 
