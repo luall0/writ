@@ -132,8 +132,11 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, mode: Mode) -> anyho
                 write_file(&dir.join("ticket.json"), &submitted.canonical)?;
             }
             println!(
-                "Ticket {} submitted (template {}, revision {}, expires {}).",
-                submitted.id, ticket.template, ticket.text.revision, ticket.limits.expires_at
+                "Ticket {} submitted ({}, revision {}, expires {}).",
+                submitted.id,
+                display::templates(&ticket),
+                ticket.text.revision,
+                ticket.limits.expires_at
             );
             println!(
                 "Waiting for the approver: `writ sign {}` on the approver's machine.",
@@ -162,13 +165,9 @@ async fn dry_run(session: &Session, text: &str) -> anyhow::Result<Exit> {
     let ticket = Ticket::from_canonical(checked.canonical.as_bytes())
         .context("the daemon sent a ticket that isn't canonical")?;
     println!(
-        "The daemon would accept this ticket (template {}): {} on {}, branches {}, until {} if \
-         submitted now.",
-        ticket.template,
-        display::list(&ticket.scope.operations),
-        display::list(&ticket.scope.repos),
-        display::list(&ticket.scope.branches),
+        "The daemon would accept this ticket, until {} if submitted now: {}.",
         ticket.limits.expires_at,
+        display::repo_terms(&ticket),
     );
     println!("Nothing was submitted: `writ request` without --dry-run sends it.");
     Ok(Exit::Ok)
@@ -231,13 +230,11 @@ async fn decide(
             let others = other_active(paths, id);
             point_current(paths, id)?;
             println!(
-                "Lease {id} granted until {}: {} on {}, branches {}.",
+                "Lease {id} granted until {}: {}.",
                 terms.limits.expires_at,
-                display::list(&terms.scope.operations),
-                display::list(&terms.scope.repos),
-                display::list(&terms.scope.branches),
+                display::repo_terms(&terms),
             );
-            if let Some(name) = &terms.scope.committer_name {
+            if let Some(name) = &terms.common.committer_name {
                 println!(
                     "Commits must carry the name {} as author and committer (`writ git` sets it).",
                     display::clean(name.as_str())

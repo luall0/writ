@@ -2,6 +2,8 @@
 //! in force), so the agent writes a ticket that fits before it sends one. The repo is the one
 //! named, or the wired repository's. A read: the daemon checks every ticket again.
 
+use std::fmt::Write as _;
+
 use writ_core::config::{PathsCheck, TicketLink};
 use writ_core::names::RepoName;
 use writ_crypto::keys::{KeyKind, generate};
@@ -10,49 +12,128 @@ use writ_proto::{CLIENT_USER, Command, RepoPolicy, TemplateView};
 use crate::client::{Endpoint, Session};
 use crate::{Exit, Paths, display, wiring, workspace};
 
-/// Prints the policy for `repo`, or for the wired repository here.
-pub async fn policy(paths: &Paths, url: &str, repo: Option<&RepoName>) -> anyhow::Result<Exit> {
-    let repo = match repo {
-        Some(repo) => repo.clone(),
-        None => {
-            let dir = std::env::current_dir()?;
-            if let Some(wired) = wiring::load(&dir).ok().flatten() {
-                wired.repo
-            } else if let Ok(Some(found)) = workspace::load(&dir) {
-                anyhow::bail!(
-                    "this folder is a Writ workspace: name the repo (`writ policy <repo>`), one \
-                     of:\n{}",
-                    found.listing()
-                );
-            } else {
-                anyhow::bail!(
-                    "this directory isn't a repository wired for Writ: name the repo \
-                     (`writ policy <repo>`)"
-                );
+/// Prints the policy for each of `repos`, or for the wired repository here; for several,
+/// whether one ticket can cover them ([`together`]).
+pub async fn policy(paths: &Paths, url: &str, repos: &[RepoName]) -> anyhow::Result<Exit> {
+    let repos: Vec<RepoName> = if repos.is_empty() {
+        let dir = std::env::current_dir()?;
+        if let Some(wired) = wiring::load(&dir).ok().flatten() {
+            vec![wired.repo]
+        } else if let Ok(Some(found)) = workspace::load(&dir) {
+            anyhow::bail!(
+                "this folder is a Writ workspace: name the repos (`writ policy <repo>…`), of:\n{}",
+                found.listing()
+            );
+        } else {
+            anyhow::bail!(
+                "this directory isn't a repository wired for Writ: name the repo \
+                 (`writ policy <repo>`)"
+            );
+        }
+    } else {
+        repos.to_vec()
+    };
+    let endpoint = Endpoint::parse(url)?;
+    let mut read = Vec::new();
+    for (i, repo) in repos.iter().enumerate() {
+        // Any key reaches the agents' listener for a read; this one is never kept.
+        let key = generate(KeyKind::Ed25519)?;
+        let reply = Session::connect(&endpoint, &paths.known_hosts, CLIENT_USER, key)
+            .await?
+            .run(async |session| {
+                session
+                    .call::<RepoPolicy>(&Command::Policy { repo: repo.clone() }, b"")
+                    .await
+            })
+            .await?;
+        match reply {
+            Ok(policy) => {
+                if i > 0 {
+                    println!();
+                }
+                print!("{}", render(&policy));
+                read.push(policy);
+            }
+            Err(error) => {
+                eprintln!("writ: {}", display::clean(&error.message));
+                return Ok(Exit::Rejected);
             }
         }
+    }
+    if read.len() > 1 {
+        print!("\n{}", together(&read));
+    }
+    Ok(Exit::Ok)
+}
+
+/// Whether one ticket can cover every repository of `policies`: some template of each
+/// repository, all naming one signing key (or none, for repositories that don't sign), and
+/// the lease's terms the strictest of them. Otherwise, one lease per repository.
+pub fn together(policies: &[RepoPolicy]) -> String {
+    let mut out = String::from("Together:\n");
+    let keys: Vec<std::collections::BTreeSet<Option<&writ_core::names::KeyId>>> = policies
+        .iter()
+        .map(|p| p.templates.iter().map(|t| t.signing_key.as_ref()).collect())
+        .collect();
+    let shared: Vec<Option<&writ_core::names::KeyId>> = match keys.split_first() {
+        Some((first, rest)) => first
+            .iter()
+            .filter(|k| rest.iter().all(|set| set.contains(*k)))
+            .copied()
+            .collect(),
+        None => Vec::new(),
     };
-    // Any key reaches the agents' listener for a read; this one is never kept.
-    let key = generate(KeyKind::Ed25519)?;
-    let endpoint = Endpoint::parse(url)?;
-    Session::connect(&endpoint, &paths.known_hosts, CLIENT_USER, key)
-        .await?
-        .run(async |session| {
-            let reply = session
-                .call::<RepoPolicy>(&Command::Policy { repo: repo.clone() }, b"")
-                .await?;
-            match reply {
-                Ok(policy) => {
-                    print!("{}", render(&policy));
-                    Ok(Exit::Ok)
-                }
-                Err(error) => {
-                    eprintln!("writ: {}", display::clean(&error.message));
-                    Ok(Exit::Rejected)
-                }
-            }
-        })
-        .await
+    if shared.is_empty() {
+        out.push_str(
+            "  No signing key is shared by a template of every repository: one ticket can't \
+             cover them. Ask one lease per repository (each with its own WRIT_SESSION).\n",
+        );
+        return out;
+    }
+    for key in shared {
+        let shown = key.map_or("no signing key".to_owned(), |k| {
+            format!("signing key {}", display::clean(k.as_str()))
+        });
+        let picks: Vec<String> = policies
+            .iter()
+            .map(|p| {
+                let names: Vec<String> = p
+                    .templates
+                    .iter()
+                    .filter(|t| t.signing_key.as_ref() == key)
+                    .map(|t| display::clean(t.name.as_str()))
+                    .collect();
+                format!(
+                    "{}: {}",
+                    display::clean(p.repo.as_str()),
+                    names.join(" or ")
+                )
+            })
+            .collect();
+        let chosen: Vec<&TemplateView> = policies
+            .iter()
+            .flat_map(|p| p.templates.iter().filter(|t| t.signing_key.as_ref() == key))
+            .collect();
+        let ttl = chosen.iter().map(|t| t.max_ttl).min();
+        let rate = chosen.iter().map(|t| t.max_ops_per_minute).min();
+        let _ = writeln!(
+            out,
+            "  One ticket can cover them with {shown}: {}.",
+            picks.join("; ")
+        );
+        if let (Some(ttl), Some(rate)) = (ttl, rate) {
+            let _ = writeln!(
+                out,
+                "  Its ttl at most {ttl} and its rate at most {rate}/min (the strictest of \
+                 these templates; the one each repository fits decides)."
+            );
+        }
+    }
+    out.push_str(
+        "  Name each repository's template in its block (`repos.<repo>.template`) when several \
+         could; if these terms are too tight for the task, ask one lease per repository.\n",
+    );
+    out
 }
 
 /// The policy as the agent reads it. Everything from the daemon is escaped.
@@ -105,11 +186,12 @@ pub fn render(policy: &RepoPolicy) -> String {
     }
     if policy.templates.len() > 1 {
         out.push_str(
-            "\nA ticket must fit one template: name it (`template: <name>`) when several could.\n",
+            "\nThe repo's block must fit one template: name it (`repos.<repo>.template: <name>`) \
+             when several could.\n",
         );
     } else {
         out.push_str(
-            "\nA ticket must fit this template: ask for what the task needs, within it.\n",
+            "\nThe repo's block must fit this template: ask for what the task needs, within it.\n",
         );
     }
     out

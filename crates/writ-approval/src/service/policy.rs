@@ -66,8 +66,8 @@ impl Service {
     }
 }
 
-/// A template, without the repos it names (only the one asked about is shown) or its signing
-/// key.
+/// A template, without the repos it names (only the one asked about is shown); its signing
+/// key by id only (one ticket's repositories must share one).
 fn template_view(name: &TemplateName, template: &Template) -> TemplateView {
     TemplateView {
         name: name.clone(),
@@ -84,5 +84,6 @@ fn template_view(name: &TemplateName, template: &Template) -> TemplateView {
         paths_check: template.paths_check,
         require_expected_paths: template.require_expected_paths,
         max_renewals: template.max_renewals,
+        signing_key: template.signing_key.clone(),
     }
 }

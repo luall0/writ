@@ -73,6 +73,9 @@ pub struct TemplateView {
     pub require_expected_paths: bool,
     /// How many renewals one lease's chain may have (none: no limit).
     pub max_renewals: Option<u32>,
+    /// The id of the key its commits are signed with (none without `commit_sign`): a name,
+    /// never the key. One ticket's repositories must share it (M6.1.5).
+    pub signing_key: Option<KeyId>,
 }
 
 /// Reply to [`Command::Wait`]: how the ticket was decided.

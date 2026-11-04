@@ -138,8 +138,9 @@ enum Commands {
     /// What a ticket for a repo may ask (templates, branches, committer emails, limits,
     /// protected refs), from the daemon's policy: the repo named, or this wired repository's.
     Policy {
-        /// The repo's name in the daemon's registry (default: the wired repository's).
-        repo: Option<RepoName>,
+        /// The repos' names in the daemon's registry (default: the wired repository's); for
+        /// several, whether one ticket can cover them.
+        repos: Vec<RepoName>,
         #[command(flatten)]
         url: AgentUrl,
     },
@@ -450,7 +451,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             };
             agent::request(&paths, &url.url, file, mode).await
         }
-        Commands::Policy { repo, url } => policy::policy(&paths, &url.url, repo.as_ref()).await,
+        Commands::Policy { repos, url } => policy::policy(&paths, &url.url, repos).await,
         Commands::Wait { id, lease, url } => {
             agent::wait(&paths, &url.url, id, lease.as_ref()).await
         }

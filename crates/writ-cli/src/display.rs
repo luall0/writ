@@ -19,7 +19,7 @@
 use std::fmt::Write as _;
 
 use writ_core::lease::State;
-use writ_core::ticket::{OnViolation, Ticket};
+use writ_core::ticket::{OnViolation, RepoTerms, Ticket};
 use writ_core::units::Timestamp;
 
 /// The gutter in front of every line of agent-written text.
@@ -218,7 +218,13 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
             // `as_str`: `State`'s `Display` doesn't pad.
             t.state.as_str(),
             t.revision,
-            clean(t.template.as_str()),
+            clean(
+                &t.templates
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         );
         let _ = writeln!(out, "{}", one_row(line.trim_end(), WIDTH, "(writ show)"));
         let repos = t
@@ -302,13 +308,96 @@ impl Field {
     }
 }
 
+impl Field {
+    /// Whether the field is one repository's (`repos.<repo>.…`), not the lease's.
+    pub fn per_repo(self) -> bool {
+        matches!(
+            self,
+            Self::Template
+                | Self::Operations
+                | Self::Branches
+                | Self::ForcePush
+                | Self::ExpectedPaths
+                | Self::MaxSignatures
+                | Self::MaxPushes
+                | Self::MaxPushSize
+        )
+    }
+}
+
+/// One repository's value of a per-repository field, already [`clean`]ed (one line).
+pub fn repo_field(terms: &RepoTerms, field: Field) -> String {
+    match field {
+        Field::Template => clean(terms.template.as_str()),
+        Field::Operations => list(&terms.operations),
+        Field::Branches => list(&terms.branches),
+        Field::ForcePush => if terms.force_push { "yes" } else { "no" }.to_owned(),
+        Field::ExpectedPaths => quoted(terms.expected_paths.iter().map(|p| p.as_str())),
+        Field::MaxSignatures => terms.limits.max_signatures.to_string(),
+        Field::MaxPushes => terms.limits.max_pushes.to_string(),
+        Field::MaxPushSize => terms.limits.max_push_size.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// A per-repository field over the whole ticket, in one line: the value alone for one
+/// repository, `api: …; web: …` for several.
+fn every_repo(ticket: &Ticket, field: Field) -> String {
+    if ticket.repos.len() == 1 {
+        return ticket
+            .repos
+            .values()
+            .map(|terms| repo_field(terms, field))
+            .collect();
+    }
+    ticket
+        .repos
+        .iter()
+        .map(|(repo, terms)| format!("{repo}: {}", repo_field(terms, field)))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The templates a ticket fits, in a sentence: `template t`, or `templates a, b`.
+pub fn templates(ticket: &Ticket) -> String {
+    let names: Vec<String> = ticket
+        .templates()
+        .iter()
+        .map(|t| clean(t.as_str()))
+        .collect();
+    match names.as_slice() {
+        [one] => format!("template {one}"),
+        _ => format!("templates {}", names.join(", ")),
+    }
+}
+
+/// Each repository's operations and branches in one line, for the agent:
+/// `api: fetch, push on agent/x; web: fetch`.
+pub fn repo_terms(ticket: &Ticket) -> String {
+    ticket
+        .repos
+        .iter()
+        .map(|(repo, terms)| {
+            let branches = if terms.branches.is_empty() {
+                String::new()
+            } else {
+                format!(" on {}", list(&terms.branches))
+            };
+            format!("{repo}: {}{branches}", list(&terms.operations))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// One field's value, already [`clean`]ed (one line).
 pub fn field(ticket: &Ticket, field: Field) -> String {
-    let scope = &ticket.scope;
+    let common = &ticket.common;
     let limits = &ticket.limits;
     let text = &ticket.text;
+    if field.per_repo() {
+        return every_repo(ticket, field);
+    }
     match field {
-        Field::Template => clean(ticket.template.as_str()),
         Field::ExpiresAt => limits.expires_at.to_string(),
         Field::SessionKey => clean(ticket.subject.session_key.as_str()),
         Field::OriginHint => clean(ticket.subject.origin_hint.as_deref().unwrap_or("(none)")),
@@ -331,23 +420,17 @@ pub fn field(ticket: &Ticket, field: Field) -> String {
                 )
             }
         },
-        Field::Repos => list(&scope.repos),
-        Field::Operations => list(&scope.operations),
-        Field::Branches => list(&scope.branches),
-        Field::ForcePush => if scope.force_push { "yes" } else { "no" }.to_owned(),
-        Field::CommitterEmails => list(&scope.committer_emails),
-        Field::CommitterName => scope
+        Field::Repos => list(ticket.repos.keys()),
+        Field::CommitterEmails => list(&common.committer_emails),
+        Field::CommitterName => common
             .committer_name
             .as_ref()
             .map_or("(none: not checked)".to_owned(), |n| clean(n.as_str())),
-        Field::SigningKey => scope
+        Field::SigningKey => common
             .signing_key
             .as_ref()
             .map_or("(none)".to_owned(), |k| clean(k.as_str())),
-        Field::MaxSignatures => limits.max_signatures.to_string(),
-        Field::MaxPushes => limits.max_pushes.to_string(),
         Field::MaxOpsPerMinute => limits.max_ops_per_minute.to_string(),
-        Field::MaxPushSize => limits.max_push_size.to_string(),
         Field::OnViolation => match ticket.on_violation {
             OnViolation::DenyAndNotify => "deny and notify",
             OnViolation::RevokeLease => "revoke the lease",
@@ -357,7 +440,8 @@ pub fn field(ticket: &Ticket, field: Field) -> String {
         Field::Task => clean(&text.task),
         Field::Plan => quoted(&text.plan),
         Field::Estimate => estimate(text.estimate.as_ref()),
-        Field::ExpectedPaths => quoted(text.expected_paths.iter().map(|p| p.as_str())),
+        // Per repository: answered above.
+        _ => every_repo(ticket, field),
     }
 }
 
@@ -430,12 +514,6 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     };
     let _ = writeln!(out, "{kind} {}", ticket.id);
     let _ = writeln!(out, "  revision {} · {state}", t.revision);
-    // A name of up to 64 characters: a row of its own, cut like any value.
-    labelled(
-        &mut out,
-        Field::Template.label(),
-        &field(ticket, Field::Template),
-    );
     let _ = writeln!(
         out,
         "  created {}, expires {} (in {})",
@@ -463,39 +541,44 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
         "    ",
         full,
     ));
-    out.push_str("\nScope (enforced)\n");
+    out.push_str("\nThe lease (enforced, for every repository)\n");
     for f in [
         Field::Repos,
-        Field::Operations,
-        Field::Branches,
-        Field::ForcePush,
         Field::CommitterEmails,
         Field::CommitterName,
         Field::SigningKey,
-    ] {
-        row(&mut out, f);
-    }
-    // Chosen by the agent but enforced by the path check: one quoted item per line.
-    let _ = writeln!(out, "  {}", Field::ExpectedPaths.label());
-    if t.expected_paths.is_empty() {
-        let _ = writeln!(out, "    (none: not checked)");
-    }
-    let room = WIDTH.saturating_sub(4 + width(GUTTER));
-    let rows: Vec<String> = t
-        .expected_paths
-        .iter()
-        .flat_map(|path| cut(&quoted([path.as_str()]), room))
-        .collect();
-    out.push_str(&gutter_rows(&rows, "    ", full));
-    out.push_str("\nLimits (enforced)\n");
-    for f in [
-        Field::MaxSignatures,
-        Field::MaxPushes,
         Field::MaxOpsPerMinute,
-        Field::MaxPushSize,
         Field::OnViolation,
     ] {
         row(&mut out, f);
+    }
+    for (repo, terms) in &ticket.repos {
+        // A registry name: up to 100 characters, cut like any value.
+        let title = format!("Repository {repo} (enforced)");
+        let _ = writeln!(out, "\n{}", one_row(&clean(&title), WIDTH, "…"));
+        for f in [
+            Field::Template,
+            Field::Operations,
+            Field::Branches,
+            Field::ForcePush,
+            Field::MaxSignatures,
+            Field::MaxPushes,
+            Field::MaxPushSize,
+        ] {
+            labelled(&mut out, f.label(), &repo_field(terms, f));
+        }
+        // Chosen by the agent but enforced by the path check: one quoted item per line.
+        let _ = writeln!(out, "  {}", Field::ExpectedPaths.label());
+        if terms.expected_paths.is_empty() {
+            let _ = writeln!(out, "    (none: not checked)");
+        }
+        let room = WIDTH.saturating_sub(4 + width(GUTTER));
+        let rows: Vec<String> = terms
+            .expected_paths
+            .iter()
+            .flat_map(|path| cut(&quoted([path.as_str()]), room))
+            .collect();
+        out.push_str(&gutter_rows(&rows, "    ", full));
     }
     out.push_str("\nWritten by the agent (untrusted, shown as written)\n");
     out.push_str("  title\n");
@@ -547,7 +630,7 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
     let _ = writeln!(
         out,
         "  {:<18} {}",
-        Field::Template.label(),
+        "templates",
         one_row(&field(ticket, Field::Template), room, "(see above)")
     );
     let _ = writeln!(
@@ -571,30 +654,32 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
             one_row(&field(ticket, f), room, "(see above)")
         );
     }
-    let paths = &ticket.text.expected_paths;
-    let shown = if paths.is_empty() {
+    let paths: usize = ticket.repos.values().map(|t| t.expected_paths.len()).sum();
+    let shown = if paths == 0 {
         "(none: not checked)".to_owned()
     } else {
         one_row(
-            &format!("{}: {}", paths.len(), field(ticket, Field::ExpectedPaths)),
+            &format!("{paths}: {}", field(ticket, Field::ExpectedPaths)),
             room,
             "(see above)",
         )
     };
     let _ = writeln!(out, "  {:<18} {shown}", Field::ExpectedPaths.label());
-    // Two rows, each within [`WIDTH`] whatever the numbers (the counts are `u32`: 77 columns
-    // at their largest).
-    let limits = &ticket.limits;
+    // Rows within [`WIDTH`] whatever the numbers: the totals over every repository (`u32`
+    // sums, saturating), each repository's counts above.
     let _ = writeln!(
         out,
         "  {:<18} {} signatures, {} pushes, {}/min",
-        "limits", limits.max_signatures, limits.max_pushes, limits.max_ops_per_minute,
+        "limits",
+        ticket.max_signatures(),
+        ticket.max_pushes(),
+        ticket.limits.max_ops_per_minute,
     );
     let _ = writeln!(
         out,
         "  {:<18} {}",
         Field::MaxPushSize.label(),
-        limits.max_push_size
+        one_row(&field(ticket, Field::MaxPushSize), room, "(see above)")
     );
     let _ = writeln!(
         out,
@@ -718,7 +803,18 @@ pub fn report(
     );
     out.push_str("  title\n");
     out.push_str(&block(&report.title, "    ", full));
-    labelled(&mut out, "template", &clean(report.template.as_str()));
+    labelled(
+        &mut out,
+        "templates",
+        &clean(
+            &report
+                .templates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    );
     labelled(&mut out, "repos", &list(&report.repos));
     if report.chain.len() > 1 {
         let ids: Vec<String> = report.chain.iter().map(|l| l.id.to_string()).collect();

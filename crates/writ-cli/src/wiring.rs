@@ -272,7 +272,7 @@ pub fn writ_sign_program() -> String {
 pub fn lease_email(session: &Path) -> Option<String> {
     let bytes = std::fs::read(session.join("lease.json")).ok()?;
     let lease = Ticket::from_canonical(&bytes).ok()?;
-    match lease.scope.committer_emails.iter().collect::<Vec<_>>()[..] {
+    match lease.common.committer_emails.iter().collect::<Vec<_>>()[..] {
         [only] => Some(only.as_str().to_owned()),
         _ => None,
     }
@@ -283,7 +283,7 @@ pub fn lease_email(session: &Path) -> Option<String> {
 pub fn lease_name(session: &Path) -> Option<String> {
     let bytes = std::fs::read(session.join("lease.json")).ok()?;
     let lease = Ticket::from_canonical(&bytes).ok()?;
-    lease.scope.committer_name.map(String::from)
+    lease.common.committer_name.map(String::from)
 }
 
 /// The id of the lease in `session`, if there is one on this host.

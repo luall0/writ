@@ -1,5 +1,9 @@
 //! What `writ sign` may narrow before signing: each flag only narrows, and anything that
 //! would widen the ticket is refused here (a convenience; the daemon checks again).
+//!
+//! A ticket's terms are the lease's, then each repository's (M6.1.5). The flags on a
+//! repository's terms take `<repo>:<value>` for that repository (`--branch api:agent/x`,
+//! `--drop-op web:push`, `--max-pushes api:2`), or the value alone for every repository.
 
 use std::collections::BTreeSet;
 
@@ -8,8 +12,37 @@ use writ_core::names::{Email, RepoName};
 use writ_core::narrow;
 use writ_core::pattern::BranchPattern;
 use writ_core::ticket::Operation;
-use writ_core::ticket::{OnViolation, Ticket};
+use writ_core::ticket::{OnViolation, RepoTerms, Ticket};
 use writ_core::units::{ByteSize, Duration};
+
+/// A flag's value for one repository (`<repo>:<value>`), or for every repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scoped<T> {
+    pub repo: Option<RepoName>,
+    pub value: T,
+}
+
+impl<T: std::str::FromStr> std::str::FromStr for Scoped<T>
+where
+    T::Err: std::fmt::Display,
+{
+    type Err = String;
+
+    /// `<repo>:<value>` or `<value>`: neither a registry name nor a branch pattern, an
+    /// operation or a size holds a `:`.
+    fn from_str(text: &str) -> Result<Self, String> {
+        match text.split_once(':') {
+            Some((repo, value)) => Ok(Self {
+                repo: Some(repo.parse().map_err(|e| format!("{e}"))?),
+                value: value.parse().map_err(|e: T::Err| e.to_string())?,
+            }),
+            None => Ok(Self {
+                repo: None,
+                value: text.parse().map_err(|e: T::Err| e.to_string())?,
+            }),
+        }
+    }
+}
 
 /// What `writ sign` may narrow before signing. Each flag only narrows.
 #[derive(Debug, Default, Clone, clap::Args)]
@@ -20,29 +53,80 @@ pub struct Narrowing {
     /// Drop a repo (repeatable).
     #[arg(long = "drop-repo", value_name = "REPO")]
     pub drop_repos: Vec<RepoName>,
-    /// Drop an operation: fetch, commit_sign or push (repeatable).
-    #[arg(long = "drop-op", value_name = "OP")]
-    pub drop_ops: Vec<Operation>,
-    /// Replace the branches; each must be within a submitted one (repeatable).
-    #[arg(long = "branch", value_name = "PATTERN")]
-    pub branches: Vec<BranchPattern>,
+    /// Drop an operation: fetch, commit_sign or push, in one repo (`web:push`) or every one
+    /// (repeatable).
+    #[arg(long = "drop-op", value_name = "[REPO:]OP")]
+    pub drop_ops: Vec<Scoped<Operation>>,
+    /// Replace a repo's branches (`api:agent/x`; alone, every repo's not named); each must be
+    /// within a submitted one (repeatable).
+    #[arg(long = "branch", value_name = "[REPO:]PATTERN")]
+    pub branches: Vec<Scoped<BranchPattern>>,
     /// Drop a committer email (repeatable).
     #[arg(long = "drop-email", value_name = "EMAIL")]
     pub drop_emails: Vec<Email>,
-    #[arg(long)]
-    pub max_signatures: Option<u32>,
-    #[arg(long)]
-    pub max_pushes: Option<u32>,
+    /// Lower a repo's signatures (`api:5`), or cap every repo's (repeatable).
+    #[arg(long, value_name = "[REPO:]N")]
+    pub max_signatures: Vec<Scoped<u32>>,
+    /// Lower a repo's pushes (`api:2`), or cap every repo's (repeatable).
+    #[arg(long, value_name = "[REPO:]N")]
+    pub max_pushes: Vec<Scoped<u32>>,
+    /// The lease's rate.
     #[arg(long)]
     pub max_ops_per_minute: Option<u32>,
-    #[arg(long)]
-    pub max_push_size: Option<ByteSize>,
-    /// Turn force push off.
+    /// Lower a repo's push size (`api:10MB`), or cap every repo's (repeatable).
+    #[arg(long, value_name = "[REPO:]SIZE")]
+    pub max_push_size: Vec<Scoped<ByteSize>>,
+    /// Turn force push off, in every repo.
     #[arg(long)]
     pub no_force_push: bool,
     /// Revoke the lease on the first out-of-scope request.
     #[arg(long)]
     pub revoke_on_violation: bool,
+}
+
+/// The repositories a scoped flag reaches: the one named (it must be in the ticket), or every
+/// one.
+fn reached<'t, T>(
+    t: &'t mut Ticket,
+    flag: &str,
+    scoped: &Scoped<T>,
+) -> anyhow::Result<Vec<(&'t RepoName, &'t mut RepoTerms)>> {
+    match &scoped.repo {
+        Some(repo) => {
+            let Some((name, terms)) = t.repos.iter_mut().find(|(name, _)| *name == repo) else {
+                bail!("--{flag} {repo}:…: the ticket doesn't name repo {repo}");
+            };
+            Ok(vec![(name, terms)])
+        }
+        None => Ok(t.repos.iter_mut().collect()),
+    }
+}
+
+/// Lowers a count: to `value` in the repository named (refused above its current one), or
+/// capped at `value` in every repository.
+fn lower<T: Copy + PartialOrd + std::fmt::Display>(
+    t: &mut Ticket,
+    flag: &str,
+    values: &[Scoped<T>],
+    field: impl Fn(&mut RepoTerms) -> &mut T,
+) -> anyhow::Result<()> {
+    for scoped in values {
+        let named = scoped.repo.is_some();
+        for (repo, terms) in reached(t, flag, scoped)? {
+            let current = field(terms);
+            if scoped.value > *current {
+                if named {
+                    bail!(
+                        "--{flag} {repo}:{} is above the ticket's {current}; it can only lower it",
+                        scoped.value
+                    );
+                }
+                continue;
+            }
+            *current = scoped.value;
+        }
+    }
+    Ok(())
 }
 
 impl Narrowing {
@@ -57,51 +141,79 @@ impl Narrowing {
             t.limits.expires_at = end;
         }
         for repo in &self.drop_repos {
-            if !t.scope.repos.remove(repo) {
+            if t.repos.remove(repo).is_none() {
                 bail!("--drop-repo {repo}: the ticket doesn't ask for it");
             }
         }
-        for op in &self.drop_ops {
-            if !t.scope.operations.remove(op) {
-                bail!("--drop-op {op}: the ticket doesn't ask for it");
+        if t.repos.is_empty() {
+            bail!("--drop-repo leaves no repository: refuse the ticket instead");
+        }
+        for scoped in &self.drop_ops {
+            let mut dropped = false;
+            for (_, terms) in reached(&mut t, "drop-op", scoped)? {
+                dropped |= terms.operations.remove(&scoped.value);
+            }
+            if !dropped {
+                bail!("--drop-op {}: the ticket doesn't ask for it", scoped.value);
             }
         }
-        if !self.branches.is_empty() {
-            t.scope.branches = self.branches.iter().cloned().collect::<BTreeSet<_>>();
+        // Branches named for a repository replace its own; the others replace the branches of
+        // every repository no flag names.
+        let named: BTreeSet<&RepoName> = self
+            .branches
+            .iter()
+            .filter_map(|b| b.repo.as_ref())
+            .collect();
+        let every: BTreeSet<BranchPattern> = self
+            .branches
+            .iter()
+            .filter(|b| b.repo.is_none())
+            .map(|b| b.value.clone())
+            .collect();
+        for repo in &named {
+            if !t.repos.contains_key(*repo) {
+                bail!("--branch {repo}:…: the ticket doesn't name repo {repo}");
+            }
+        }
+        for (repo, terms) in &mut t.repos {
+            if named.contains(repo) {
+                terms.branches = self
+                    .branches
+                    .iter()
+                    .filter(|b| b.repo.as_ref() == Some(repo))
+                    .map(|b| b.value.clone())
+                    .collect();
+            } else if !every.is_empty() {
+                terms.branches = every.clone();
+            }
         }
         for email in &self.drop_emails {
-            if !t.scope.committer_emails.remove(email) {
+            if !t.common.committer_emails.remove(email) {
                 bail!("--drop-email {email}: the ticket doesn't ask for it");
             }
         }
-        let lower = |name: &str, value: Option<u32>, current: &mut u32| -> anyhow::Result<()> {
-            if let Some(value) = value {
-                if value > *current {
-                    bail!("--{name} {value} is above the ticket's {current}; it can only lower it");
-                }
-                *current = value;
+        lower(&mut t, "max-signatures", &self.max_signatures, |terms| {
+            &mut terms.limits.max_signatures
+        })?;
+        lower(&mut t, "max-pushes", &self.max_pushes, |terms| {
+            &mut terms.limits.max_pushes
+        })?;
+        lower(&mut t, "max-push-size", &self.max_push_size, |terms| {
+            &mut terms.limits.max_push_size
+        })?;
+        if let Some(value) = self.max_ops_per_minute {
+            if value > t.limits.max_ops_per_minute {
+                bail!(
+                    "--max-ops-per-minute {value} is above the ticket's {}; it can only lower it",
+                    t.limits.max_ops_per_minute
+                );
             }
-            Ok(())
-        };
-        lower(
-            "max-signatures",
-            self.max_signatures,
-            &mut t.limits.max_signatures,
-        )?;
-        lower("max-pushes", self.max_pushes, &mut t.limits.max_pushes)?;
-        lower(
-            "max-ops-per-minute",
-            self.max_ops_per_minute,
-            &mut t.limits.max_ops_per_minute,
-        )?;
-        if let Some(size) = self.max_push_size {
-            if size > t.limits.max_push_size {
-                bail!("--max-push-size {size} is above the ticket's; it can only lower it");
-            }
-            t.limits.max_push_size = size;
+            t.limits.max_ops_per_minute = value;
         }
         if self.no_force_push {
-            t.scope.force_push = false;
+            for terms in t.repos.values_mut() {
+                terms.force_push = false;
+            }
         }
         if self.revoke_on_violation {
             t.on_violation = OnViolation::RevokeLease;
