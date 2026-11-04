@@ -75,6 +75,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
 | [One program, several repositories](#one-program-several-repositories) | Clients | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
 | [Submodules](#submodules) | Clients, Gateway | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
+| [Per-repository tickets](per-repository-tickets.md) | Lease model, Approvals, Clients | feature | L | specified up to its open questions; picked as [M6.1.5](../roadmap.md#m615--per-repository-tickets) |
 | [A signing key per repository in one lease](#a-signing-key-per-repository-in-one-lease) | Signers, Clients | feature | M | idea (left out of [M6.1.5](../roadmap.md#m615--per-repository-tickets)) |
 | [Managing the daemon from the CLI](daemon-management-from-the-cli.md) | Administration, Signers, Upstream, Clients | improvement | L | specified; picked as [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) |
 | [Pending hand edits](#pending-hand-edits) | Administration | improvement | M | idea |

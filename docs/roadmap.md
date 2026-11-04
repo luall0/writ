@@ -38,7 +38,7 @@ picked.
 | M5.7 | [Memory wiped on free](history/m5.7-memory-wiped-on-free.md) ✅ | Writ's own zero-on-free allocator in `writd`, `writ` and `writ-sign`, on in every build: no library's freed copy of a secret stays in memory, at no measurable cost under heavy load |
 | M6 | [Agent skill, amendments, renewals, close](history/m6-agent-skill-amendments-renewals-and-close.md) ✅ | The Writ skill installed by `writ init` for each agent, adaptive timings, amendments, renewals, the estimate, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M6.1 | [Multi-repo workspaces](history/m6.1-multi-repo-workspaces.md) ✅ | One agent at the root of a folder of repositories: `writ init` at the root, the `writ-workspace` skill, `writ git` reading git's global options, `writ exec -C` |
-| M6.1.5 | [Per-repository tickets](#m615--per-repository-tickets) | A ticket whose scope is given repository by repository (shared defaults, per-repo overrides: template, operations, branches, emails, expected paths, counts), each part checked against its own template; one lease, one approval, one signing key, the strictest template's lease-wide terms; otherwise one lease per repository |
+| M6.1.5 | [Per-repository tickets](#m615--per-repository-tickets) | A ticket whose scope is given repository by repository (the lease's terms, then each repository's: template, operations, branches, expected paths, counts; no override), each part checked against its own template; one lease, one approval, one signing key, the strictest template's lease-wide terms; otherwise one lease per repository |
 | M6.2 | [Managing the daemon from the CLI](#m62--managing-the-daemon-from-the-cli) | Every key declared in the signed policy, upstream host keys pinned by signed changes, repos naming their templates; `writ admin repo\|template\|key\|host` to read, add step by step and edit one field at a time, with no host access |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
 | M7.1 | [Local mode on Linux](#m71--local-mode-on-linux) | Linux implementations plugged in the same way: `SO_PEERCRED` and `/proc` process chain, pidfd watcher, a systemd service under its own user, the installer's Linux local setup, local mode in `make e2e` |
@@ -219,38 +219,18 @@ the docs repository `commit_sign` alone. Today a ticket has one scope for all it
 must fit one template that allows every one of them, so a multi-repo ticket asks for the
 union and is rejected, or for the intersection and is too narrow. After M6.1.5 a ticket gives
 its scope repository by repository, each part fitting a template that allows that repository,
-and stays one ticket: one approval, one lease, one session, one TTL. The design below was
-settled with the user (the decision log's M6.1.5 rows).
+and stays one ticket: one approval, one lease, one session, one TTL. Most of the design below was
+settled with the user (the decision log's M6.1.5 rows); the layout is still to decide.
 
-- **The layout: shared defaults, per-repository overrides.** `scope` keeps today's keys
-  (`operations`, `branches`, `force_push`, `committer_emails`, `expected_paths`, and the
-  counts `max_signatures`, `max_pushes`, `max_push_size`) as defaults; `scope.repos` may be a
-  map, each repository overriding any of them and naming its `template` (optional when one
-  fits). Today's form (`scope.repos` a list) is the same thing with no overrides, so tickets
-  written before read unchanged. The daemon expands every part to its full scope: the
-  canonical bytes (`writ-ticket/3`; the old kind still read for leases already granted), the
-  approver's screen and the policy only ever see full parts, so nothing is inherited at
-  enforcement time.
+[The design page](backlog/per-repository-tickets.md) holds the layout's propositions and
+the questions left.
 
-  ```yaml
-  scope:
-    operations: [fetch, commit_sign, push]
-    branches: ["agent/login"]
-    committer_emails: ["agent@example.org"]
-    repos:
-      api:
-        template: backend
-        expected_paths: ["src/auth/**"]
-        max_pushes: 4
-      web:
-        template: frontend
-        operations: [fetch, commit_sign]
-        branches: ["review/login"]
-        expected_paths: ["app/login/**"]
-  limits:
-    ttl: 3h
-  ```
-
+- **The layout: the lease's terms, then each repository's, no override.** Each term is read
+  in one place: the approver never merges two. Which keys are the lease's and which each
+  repository's, and how today's layout is read, are to decide with the user from the
+  [four propositions](backlog/per-repository-tickets.md#the-layout-four-propositions)
+  (recommended: A, fixed places). Whatever the choice, `writ-ticket/3` canonical bytes hold
+  every repository's full terms (the old kind still read for leases already granted).
 - **Counts per repository only.** Each part's `max_signatures`, `max_pushes` and
   `max_push_size` within its own template's; the daemon counts signatures and pushes per
   repository. No lease-wide cap; the approver sees each part's counts and their sum.
@@ -281,12 +261,11 @@ settled with the user (the decision log's M6.1.5 rows).
 - **The clients**: `writ policy` for several repos at once (`writ policy api web`: each
   template with its signing key and lease-wide terms, and whether one ticket can cover them),
   `writ check` and `writ request --dry-run` naming the repository of each problem (`writ
-  check` expanding defaults and overrides as the daemon will), the activity report per
+  check` naming the place a misplaced key goes), the activity report per
   repository.
 - **Both skills follow the new layout.** The `writ` skill (one repository) and the
-  `writ-workspace` skill teach the ticket as it now reads: the shared keys under `scope`,
-  `scope.repos` (a list, or a map naming a repository's `template` and its overrides), the
-  counts per repository, the lease-wide `limits` (time and rate) held to the strictest
+  `writ-workspace` skill teach the ticket as it now reads: the lease's terms, each
+  repository's block (its template, operations, branches, files, counts), the lease-wide `limits` (time and rate) held to the strictest
   template, how to read `writ policy` for it (a template's signing key and lease-wide terms),
   and the per-repository denials and narrowing the agent may be told about. The workspace
   skill also gives the one-lease-per-repository rule and how to work with several sessions
@@ -309,9 +288,9 @@ Acceptance:
 - [ ] Each part's counts hold, each tested on both sides; the lease's TTL, rate, renewals
       and `on_violation` are the strictest of its templates', each tested on both sides
       (a ticket asking more than the strictest rejected, naming the template).
-- [ ] Defaults and overrides expand to the same full parts whichever way a ticket writes
-      them, and the canonical bytes round-trip (property tests); a lease granted before
-      reads unchanged.
+- [ ] Every key is read in its one place (a key elsewhere refused, naming where it goes),
+      the canonical bytes round-trip (property tests), and a lease granted before reads
+      unchanged.
 - [ ] Narrowing per repository is a strict subset of what was submitted (a widening refused),
       shown to the approver and the agent per repository; amendments and renewals checked
       per repository.
