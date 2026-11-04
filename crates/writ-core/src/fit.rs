@@ -1,17 +1,21 @@
 //! Template fit and ticket submission.
 //!
-//! Every ticket must fit a template (Q14 in `docs/decisions.md`): [`fits`] says whether a
-//! complete ticket stays within its template and the registry, with every reason when it
-//! doesn't. [`submit`] completes an agent's [`TicketRequest`] into a [`Ticket`], picking the
-//! template, or rejects it before it reaches the approver.
+//! Every ticket must fit its templates (Q14 in `docs/decisions.md`; per repository since
+//! M6.1.5): [`fits`] says whether a complete ticket stays within them and the registry, with
+//! every reason when it doesn't. [`submit`] completes an agent's [`TicketRequest`] into a
+//! [`Ticket`], picking each repository's template, or rejects it before it reaches the
+//! approver.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::{PolicyConfig, PushMode, Template};
 use crate::lease::{Lease, Renewed, State, TicketRecord};
-use crate::names::{KeyFingerprint, TemplateName, TicketId};
+use crate::names::{CommitterName, Email, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
 use crate::ticket::Operation;
-use crate::ticket::{Limits, Scope, Subject, Ticket, TicketKind, TicketRequest, TicketText};
+use crate::ticket::{
+    Common, Limits, RepoLimits, RepoTerms, RequestRepo, Subject, Ticket, TicketKind,
+    TicketRequest, TicketText,
+};
 use crate::units::{Duration, Timestamp};
 
 /// Bounds on the agent-written text, so a ticket stays reviewable.
@@ -26,8 +30,8 @@ pub const MAX_EXPECTED_PATHS: usize = 100;
 /// The bytes of every `expected_paths` pattern together: the set is matched against each
 /// commit's paths, so its size bounds that work (the review after M5.5, S8).
 pub const MAX_EXPECTED_PATHS_BYTES: usize = 16 * 1024;
-/// The branches a ticket may list (each within the template's): what the approver reads,
-/// and what each push is compared with.
+/// The branches a ticket may list for one repository (each within the template's): what the
+/// approver reads, and what each push is compared with.
 pub const MAX_BRANCHES: usize = 50;
 pub const MAX_ORIGIN_HINT_CHARS: usize = 100;
 /// What precedes feedback from a refusal nobody signed, in a revision's `previous_feedback`.
@@ -73,102 +77,56 @@ pub struct FitError {
     pub reasons: Vec<String>,
 }
 
-/// Checks that a complete ticket fits its template and the registry. Used at submission, at
-/// approval (on the signed ticket) and on every request (against the current config).
-pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
-    let Some(template) = config.template(&ticket.template) else {
-        return Err(FitError {
-            reasons: vec![format!("template {} does not exist", ticket.template)],
-        });
-    };
-    let mut reasons = Vec::new();
-    let scope = &ticket.scope;
+/// The most repositories one ticket may name: each is a block the approver reads.
+pub const MAX_REPOS: usize = 16;
 
-    if scope.repos.is_empty() {
-        reasons.push("scope.repos is empty".to_owned());
+/// A template, by name, as the policy has it.
+type Named<'a> = (&'a RepoName, &'a TemplateName, &'a Template);
+
+/// Checks that a complete ticket fits its templates and the registry: each repository's terms
+/// within its template ([`check_repo`]), the lease's terms within every one of them (one
+/// signing key, one committer name, the strictest `max_ttl` and `max_ops_per_minute`). Used at
+/// submission, at approval (on the signed ticket) and on every request (against the current
+/// config).
+pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
+    let mut reasons = Vec::new();
+    if ticket.repos.is_empty() {
+        reasons.push("repos is empty: name at least one repository".to_owned());
     }
-    for repo in &scope.repos {
-        if config.repo(repo).is_none() {
-            reasons.push(format!("repo {repo} is not in the registry"));
-        } else if !template.repos.contains(repo) {
-            reasons.push(format!("repo {repo} is not allowed by the template"));
-        }
-    }
-    if scope.operations.is_empty() {
-        reasons.push("scope.operations is empty".to_owned());
-    }
-    for op in scope.operations.difference(&template.operations) {
-        reasons.push(format!("operation {op} is not allowed by the template"));
-    }
-    let signs = scope.operations.contains(&Operation::CommitSign);
-    let pushes = scope.operations.contains(&Operation::Push);
-    if (signs || pushes) && scope.branches.is_empty() {
-        reasons.push("commit_sign and push need at least one branch".to_owned());
-    }
-    for branch in &scope.branches {
-        if !template
-            .branches
-            .iter()
-            .any(|allowed| allowed.covers(branch))
-        {
-            reasons.push(format!(
-                "branch {branch} is not within the template's branches ({})",
-                join(&template.branches)
-            ));
-        }
-    }
-    if scope.force_push && !template.force_push {
-        reasons.push("force_push is not allowed by the template".to_owned());
-    }
-    for email in scope
-        .committer_emails
-        .difference(&template.committer_emails)
-    {
+    if ticket.repos.len() > MAX_REPOS {
         reasons.push(format!(
-            "committer email {email} is not allowed by the template"
+            "repos names {} repositories, at most {MAX_REPOS}",
+            ticket.repos.len()
         ));
     }
-    if signs && scope.committer_emails.is_empty() {
-        reasons.push("commit_sign needs at least one committer email".to_owned());
-    }
-    // Without commit_sign the key is unused: None, or still the template's after a narrowing
-    // dropped commit_sign.
-    let key_ok = match &scope.signing_key {
-        None => !signs,
-        Some(key) => template.signing_key.as_ref() == Some(key),
-    };
-    if !key_ok {
-        reasons.push("scope.signing_key must be the template's signing key".to_owned());
-    }
-    // The same for the name: the template's while the lease signs (a template whose name
-    // changed no longer fits its leases), never one the template doesn't set.
-    let name_ok = match &scope.committer_name {
-        None => !signs || template.committer_name.is_none(),
-        Some(name) => template.committer_name.as_ref() == Some(name),
-    };
-    if !name_ok {
-        reasons.push("scope.committer_name must be the template's committer_name".to_owned());
-    }
-    if pushes {
-        for repo in &scope.repos {
-            if let Some(entry) = config.repo(repo)
-                && push_modes(&entry.push_modes, template).is_empty()
-            {
-                reasons.push(format!(
-                    "repo {repo} has no push mode allowed by both the registry and the template"
-                ));
+    let mut named: Vec<Named<'_>> = Vec::new();
+    for (repo, terms) in &ticket.repos {
+        match config.template(&terms.template) {
+            None => reasons.push(format!(
+                "repos.{repo}: template {} does not exist",
+                terms.template
+            )),
+            Some(template) => {
+                check_repo(
+                    config,
+                    repo,
+                    terms,
+                    template,
+                    Some(&ticket.common.committer_emails),
+                    &mut reasons,
+                );
+                named.push((repo, &terms.template, template));
             }
         }
     }
-
-    check_limits(ticket, template, &mut reasons);
-    check_text(ticket, template, &mut reasons);
+    check_common(ticket, &named, &mut reasons);
+    check_lease_limits(ticket, &named, &mut reasons);
+    check_text(ticket, &mut reasons);
     if let Some(caller) = &ticket.subject.caller
         && let Err(e) = caller.validate()
     {
         reasons.push(format!("subject.caller: {e}"));
     }
-
     if reasons.is_empty() {
         Ok(())
     } else {
@@ -176,29 +134,80 @@ pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
     }
 }
 
-/// The push modes a lease under `template` may use on a repo with `registry_modes`.
-pub fn push_modes(registry_modes: &BTreeSet<PushMode>, template: &Template) -> BTreeSet<PushMode> {
-    registry_modes
-        .intersection(&template.push_modes)
-        .copied()
-        .collect()
-}
-
-fn check_limits(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {
-    let limits = &ticket.limits;
-    let ttl = ticket.created_at.seconds_until(limits.expires_at);
-    if ttl <= 0 {
-        reasons.push("limits.expires_at must be after created_at".to_owned());
-    } else if u64::try_from(ttl).map_or(true, |ttl| ttl > template.max_ttl.seconds()) {
+/// Checks one repository's terms against its template and the registry (`emails`: the
+/// lease's committer emails, checked against the template when the repository signs; `None`
+/// while they are still to be chosen). Every reason, prefixed `repos.<repo>`.
+fn check_repo(
+    config: &PolicyConfig,
+    repo: &RepoName,
+    terms: &RepoTerms,
+    template: &Template,
+    emails: Option<&BTreeSet<Email>>,
+    reasons: &mut Vec<String>,
+) {
+    let at = format!("repos.{repo}");
+    let registry = config.repo(repo);
+    if registry.is_none() {
+        reasons.push(format!("{at}: repo {repo} is not in the registry"));
+    } else if !template.repos.contains(repo) {
         reasons.push(format!(
-            "the lease would last {ttl}s, over the template's max_ttl ({})",
-            template.max_ttl
+            "{at}: repo {repo} is not allowed by the template {}",
+            terms.template
         ));
     }
+    if terms.operations.is_empty() {
+        reasons.push(format!("{at}.operations is empty"));
+    }
+    for op in terms.operations.difference(&template.operations) {
+        reasons.push(format!("{at}: operation {op} is not allowed by the template"));
+    }
+    let signs = terms.operations.contains(&Operation::CommitSign);
+    let pushes = terms.operations.contains(&Operation::Push);
+    if (signs || pushes) && terms.branches.is_empty() {
+        reasons.push(format!("{at}: commit_sign and push need at least one branch"));
+    }
+    if terms.branches.len() > MAX_BRANCHES {
+        reasons.push(format!(
+            "{at}.branches is too long ({}, at most {MAX_BRANCHES})",
+            terms.branches.len()
+        ));
+    }
+    for branch in &terms.branches {
+        if !template
+            .branches
+            .iter()
+            .any(|allowed| allowed.covers(branch))
+        {
+            reasons.push(format!(
+                "{at}: branch {branch} is not within the template's branches ({})",
+                join(&template.branches)
+            ));
+        }
+    }
+    if terms.force_push && !template.force_push {
+        reasons.push(format!("{at}: force_push is not allowed by the template"));
+    }
+    if let (true, Some(emails)) = (signs, emails) {
+        for email in emails.difference(&template.committer_emails) {
+            reasons.push(format!(
+                "{at}: committer email {email} is not allowed by the template {}",
+                terms.template
+            ));
+        }
+    }
+    if pushes
+        && let Some(entry) = registry
+        && push_modes(&entry.push_modes, template).is_empty()
+    {
+        reasons.push(format!(
+            "{at}: repo {repo} has no push mode allowed by both the registry and the template"
+        ));
+    }
+    let limits = &terms.limits;
     let mut cap = |name: &str, value: u64, max: u64| {
         if value > max {
             reasons.push(format!(
-                "limits.{name} is {value}, over the template's {max}"
+                "{at}.limits.{name} is {value}, over the template's {max}"
             ));
         }
     };
@@ -213,22 +222,136 @@ fn check_limits(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>)
         template.max_pushes.into(),
     );
     cap(
-        "max_ops_per_minute",
-        limits.max_ops_per_minute.into(),
-        template.max_ops_per_minute.into(),
-    );
-    cap(
         "max_push_size",
         limits.max_push_size.bytes(),
         template.max_push_size.bytes(),
     );
+    // git reads a `receive.maxInputSize` of 0 as no limit (the review after M5.5, S7).
+    if pushes && limits.max_push_size.bytes() == 0 {
+        reasons.push(format!("{at}.limits.max_push_size must be at least 1 byte"));
+    }
+    if terms.expected_paths.len() > MAX_EXPECTED_PATHS {
+        reasons.push(format!(
+            "{at}.expected_paths is too long ({}, at most {MAX_EXPECTED_PATHS})",
+            terms.expected_paths.len()
+        ));
+    }
+    if template.require_expected_paths && terms.expected_paths.is_empty() {
+        reasons.push(format!(
+            "{at}: the template {} requires expected_paths",
+            terms.template
+        ));
+    }
+}
+
+/// The push modes a lease under `template` may use on a repo with `registry_modes`.
+pub fn push_modes(registry_modes: &BTreeSet<PushMode>, template: &Template) -> BTreeSet<PushMode> {
+    registry_modes
+        .intersection(&template.push_modes)
+        .copied()
+        .collect()
+}
+
+/// The lease's terms that must agree across its templates: the committer emails (needed when
+/// a repository signs), one signing key and one committer name.
+fn check_common(ticket: &Ticket, named: &[Named<'_>], reasons: &mut Vec<String>) {
+    let common = &ticket.common;
+    let signing: Vec<&Named<'_>> = named
+        .iter()
+        .filter(|(repo, _, _)| ticket.allows(repo, Operation::CommitSign))
+        .collect();
+    if signing.is_empty() {
+        // Nothing signs: no key or name, or still a template's after a narrowing dropped
+        // commit_sign.
+        let key_ok = common.signing_key.as_ref().is_none_or(|key| {
+            named.iter().any(|(_, _, t)| t.signing_key.as_ref() == Some(key))
+        });
+        let name_ok = common.committer_name.as_ref().is_none_or(|name| {
+            named.iter().any(|(_, _, t)| t.committer_name.as_ref() == Some(name))
+        });
+        if !key_ok {
+            reasons.push("common.signing_key must be a template's signing key".to_owned());
+        }
+        if !name_ok {
+            reasons.push("common.committer_name must be a template's committer_name".to_owned());
+        }
+        return;
+    }
+    if common.committer_emails.is_empty() {
+        reasons.push("commit_sign needs at least one committer email".to_owned());
+    }
+    let keys: BTreeSet<Option<&KeyId>> = signing.iter().map(|(_, _, t)| t.signing_key.as_ref()).collect();
+    if keys.len() > 1 {
+        let each: Vec<String> = signing
+            .iter()
+            .map(|(repo, name, t)| {
+                let key = t.signing_key.as_ref().map_or("none".to_owned(), |k| k.to_string());
+                format!("{repo} (template {name}, key {key})")
+            })
+            .collect();
+        reasons.push(format!(
+            "the repositories sign with different keys: {}; a lease signs with one key (ask \
+             one lease per repository)",
+            each.join(", ")
+        ));
+    } else if keys.first().copied().flatten() != common.signing_key.as_ref() {
+        reasons.push("common.signing_key must be the templates' signing key".to_owned());
+    }
+    let names: BTreeSet<Option<&CommitterName>> = signing
+        .iter()
+        .map(|(_, _, t)| t.committer_name.as_ref())
+        .collect();
+    if names.len() > 1 {
+        let each: Vec<String> = signing
+            .iter()
+            .map(|(repo, name, t)| {
+                let set = t
+                    .committer_name
+                    .as_ref()
+                    .map_or("none".to_owned(), |n| format!("{n:?}"));
+                format!("{repo} (template {name}, committer_name {set})")
+            })
+            .collect();
+        reasons.push(format!(
+            "the repositories' templates set different committer names: {}; a lease has one \
+             (ask one lease per repository)",
+            each.join(", ")
+        ));
+    } else if names.first().copied().flatten() != common.committer_name.as_ref() {
+        reasons.push(
+            "common.committer_name must be the templates' committer_name".to_owned(),
+        );
+    }
+}
+
+/// The lease's limits within the strictest of its templates: its TTL within every
+/// `max_ttl`, its rate within every `max_ops_per_minute`.
+fn check_lease_limits(ticket: &Ticket, named: &[Named<'_>], reasons: &mut Vec<String>) {
+    let limits = &ticket.limits;
+    let ttl = ticket.created_at.seconds_until(limits.expires_at);
+    if ttl <= 0 {
+        reasons.push("limits.expires_at must be after created_at".to_owned());
+    }
+    let mut seen: BTreeSet<&TemplateName> = BTreeSet::new();
+    for (_, name, template) in named {
+        if !seen.insert(name) {
+            continue;
+        }
+        if ttl > 0 && u64::try_from(ttl).map_or(true, |ttl| ttl > template.max_ttl.seconds()) {
+            reasons.push(format!(
+                "the lease would last {ttl}s, over the template {name}'s max_ttl ({})",
+                template.max_ttl
+            ));
+        }
+        if limits.max_ops_per_minute > template.max_ops_per_minute {
+            reasons.push(format!(
+                "limits.max_ops_per_minute is {}, over the template {name}'s {}",
+                limits.max_ops_per_minute, template.max_ops_per_minute
+            ));
+        }
+    }
     if limits.max_ops_per_minute == 0 {
         reasons.push("limits.max_ops_per_minute must be at least 1".to_owned());
-    }
-    // git reads a `receive.maxInputSize` of 0 as no limit (the review after M5.5, S7).
-    let pushes = ticket.scope.operations.contains(&Operation::Push);
-    if pushes && limits.max_push_size.bytes() == 0 {
-        reasons.push("limits.max_push_size must be at least 1 byte".to_owned());
     }
 }
 
@@ -238,8 +361,8 @@ struct Words<'a> {
     title: &'a str,
     task: &'a str,
     plan: &'a [String],
-    expected_paths: BTreeSet<&'a str>,
-    branches: usize,
+    /// Every repository's expected paths: their bytes in all are bounded.
+    expected_paths: Vec<&'a str>,
     origin_hint: Option<&'a str>,
     estimate: Option<&'a crate::ticket::Estimate>,
     amends: bool,
@@ -258,21 +381,15 @@ fn check_words(words: &Words<'_>, reasons: &mut Vec<String>) {
     for step in words.plan {
         bound("a plan step", step.chars().count(), MAX_PLAN_STEP_CHARS);
     }
-    bound(
-        "ticket.expected_paths",
-        words.expected_paths.len(),
-        MAX_EXPECTED_PATHS,
-    );
     let path_bytes = words
         .expected_paths
         .iter()
         .fold(0usize, |sum, p| sum.saturating_add(p.len()));
     bound(
-        "ticket.expected_paths (bytes in all)",
+        "expected_paths (bytes in all, every repository)",
         path_bytes,
         MAX_EXPECTED_PATHS_BYTES,
     );
-    bound("scope.branches", words.branches, MAX_BRANCHES);
     if let Some(hint) = words.origin_hint {
         bound("origin_hint", hint.chars().count(), MAX_ORIGIN_HINT_CHARS);
     }
@@ -307,15 +424,18 @@ fn check_words(words: &Words<'_>, reasons: &mut Vec<String>) {
     }
 }
 
-fn check_text(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {
+fn check_text(ticket: &Ticket, reasons: &mut Vec<String>) {
     let text = &ticket.text;
     check_words(
         &Words {
             title: &text.title,
             task: &text.task,
             plan: &text.plan,
-            expected_paths: text.expected_paths.iter().map(|p| p.as_str()).collect(),
-            branches: ticket.scope.branches.len(),
+            expected_paths: ticket
+                .repos
+                .values()
+                .flat_map(|t| t.expected_paths.iter().map(|p| p.as_str()))
+                .collect(),
             origin_hint: ticket.subject.origin_hint.as_deref(),
             estimate: text.estimate.as_ref(),
             amends: text.amends.is_some(),
@@ -326,30 +446,55 @@ fn check_text(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {
     if text.revision == 0 {
         reasons.push("ticket.revision starts at 1".to_owned());
     }
-    if template.require_expected_paths && text.expected_paths.is_empty() {
-        reasons.push("the template requires ticket.expected_paths".to_owned());
-    }
 }
 
 /// What a ticket file can be checked for without the daemon (`writ check`): the bounds of its
-/// text, what its operations need, the shortest TTL any daemon takes ([`MIN_TTL_FLOOR`]; the
-/// daemon's own `min_ttl` may be longer). Fitting a template, and the links (`amends`,
-/// `renews`, `revises`), only the daemon can check. Every reason, or none.
+/// text, what each repository's operations need, the shortest TTL any daemon takes
+/// ([`MIN_TTL_FLOOR`]; the daemon's own `min_ttl` may be longer). Fitting the templates, and
+/// the links (`amends`, `renews`, `revises`), only the daemon can check. Every reason, or
+/// none.
 pub fn check_request(request: &TicketRequest) -> Vec<String> {
     let mut reasons = Vec::new();
-    let scope = &request.scope;
-    if scope.repos.is_empty() {
-        reasons.push("scope.repos is empty".to_owned());
+    if request.repos.is_empty() {
+        reasons.push("repos is empty: name at least one repository".to_owned());
     }
-    if scope.operations.is_empty() {
-        reasons.push("scope.operations is empty".to_owned());
+    if request.repos.len() > MAX_REPOS {
+        reasons.push(format!(
+            "repos names {} repositories, at most {MAX_REPOS}",
+            request.repos.len()
+        ));
     }
-    let needs_branch = scope
-        .operations
-        .iter()
-        .any(|op| matches!(op, Operation::CommitSign | Operation::Push));
-    if needs_branch && scope.branches.is_empty() {
-        reasons.push("commit_sign and push need at least one branch".to_owned());
+    for (repo, asked) in &request.repos {
+        let at = format!("repos.{repo}");
+        if asked.operations.is_empty() {
+            reasons.push(format!("{at}.operations is empty"));
+        }
+        let needs_branch = asked
+            .operations
+            .iter()
+            .any(|op| matches!(op, Operation::CommitSign | Operation::Push));
+        if needs_branch && asked.branches.is_empty() {
+            reasons.push(format!("{at}: commit_sign and push need at least one branch"));
+        }
+        let branches = asked.branches.iter().collect::<BTreeSet<_>>().len();
+        if branches > MAX_BRANCHES {
+            reasons.push(format!(
+                "{at}.branches is too long ({branches}, at most {MAX_BRANCHES})"
+            ));
+        }
+        let paths = asked.expected_paths.iter().collect::<BTreeSet<_>>().len();
+        if paths > MAX_EXPECTED_PATHS {
+            reasons.push(format!(
+                "{at}.expected_paths is too long ({paths}, at most {MAX_EXPECTED_PATHS})"
+            ));
+        }
+        if let (true, Some(size)) = (
+            asked.operations.contains(&Operation::Push),
+            asked.limits.max_push_size,
+        ) && size.bytes() == 0
+        {
+            reasons.push(format!("{at}.limits.max_push_size must be at least 1 byte"));
+        }
     }
     let text = &request.ticket;
     check_words(
@@ -357,8 +502,11 @@ pub fn check_request(request: &TicketRequest) -> Vec<String> {
             title: &text.title,
             task: &text.task,
             plan: &text.plan,
-            expected_paths: text.expected_paths.iter().map(|p| p.as_str()).collect(),
-            branches: scope.branches.iter().collect::<BTreeSet<_>>().len(),
+            expected_paths: request
+                .repos
+                .values()
+                .flat_map(|r| r.expected_paths.iter().map(|p| p.as_str()))
+                .collect(),
             origin_hint: request.origin_hint.as_deref(),
             estimate: text.estimate.as_ref(),
             amends: text.amends.is_some(),
@@ -375,13 +523,6 @@ pub fn check_request(request: &TicketRequest) -> Vec<String> {
     }
     if request.limits.max_ops_per_minute == Some(0) {
         reasons.push("limits.max_ops_per_minute must be at least 1".to_owned());
-    }
-    if let (true, Some(size)) = (
-        scope.operations.contains(&Operation::Push),
-        request.limits.max_push_size,
-    ) && size.bytes() == 0
-    {
-        reasons.push("limits.max_push_size must be at least 1 byte".to_owned());
     }
     if let Some(caller) = &request.caller
         && let Err(e) = caller.validate()
@@ -410,87 +551,102 @@ pub struct Submission<'a> {
     pub min_ttl: Duration,
 }
 
-/// Completes a request into a ticket that fits exactly one template (the named one, or the
-/// only one it fits), or rejects it with every reason.
+/// Completes a request into a ticket: each repository's terms fitting exactly one template
+/// (the named one, the renewed lease's for that repository, or the only one that allows the
+/// repository and fits), then the lease's terms from the templates picked, the whole checked
+/// by [`fits`]; or rejects it with every reason.
 pub fn submit(
     config: &PolicyConfig,
     request: &TicketRequest,
     submission: &Submission<'_>,
 ) -> Result<Ticket, Rejection> {
     let (revision, previous_feedback) = check_links(request, submission)?;
-
-    // A renewal keeps its lease's template.
-    let renewed_template = submission.renews.map(|r| &r.lease.ticket.template);
-    let candidates: Vec<&TemplateName> = match (&request.template, renewed_template) {
-        (Some(name), Some(kept)) if name != kept => {
-            return Err(Rejection::one(format!(
-                "a renewal keeps its lease's template ({kept}), not {name}"
-            )));
-        }
-        (_, Some(kept)) if config.template(kept).is_some() => vec![kept],
-        (_, Some(kept)) => return Err(Rejection::one(format!("template {kept} does not exist"))),
-        (Some(name), None) if config.template(name).is_some() => vec![name],
-        (Some(name), None) => {
-            return Err(Rejection::one(format!("template {name} does not exist")));
-        }
-        (None, None) => config.templates().keys().collect(),
-    };
-
-    let mut fitting = Vec::new();
+    if request.repos.is_empty() {
+        return Err(Rejection::one("repos is empty: name at least one repository"));
+    }
+    if request.repos.len() > MAX_REPOS {
+        return Err(Rejection::one(format!(
+            "repos names {} repositories, at most {MAX_REPOS}",
+            request.repos.len()
+        )));
+    }
+    let renewed = submission.renews.map(|r| &r.lease.ticket);
+    let emails: Option<BTreeSet<Email>> = (!request.common.committer_emails.is_empty())
+        .then(|| request.common.committer_emails.iter().cloned().collect());
+    let mut repos = BTreeMap::new();
     let mut reasons = Vec::new();
-    let only = candidates.len() == 1;
-    for name in candidates {
-        let Some(template) = config.template(name) else {
-            continue;
-        };
-        // A template the request can't be built against (a TTL past it, an overflow) is
-        // one reason among the others, not the end of the search.
-        let ticket = match build(
-            request,
-            submission,
-            name,
-            template,
-            revision,
-            previous_feedback.clone(),
-        ) {
-            Ok(ticket) => ticket,
-            // The one template there is: its reasons, as they are.
-            Err(rejection) if only => return Err(rejection),
-            Err(rejection) => {
-                reasons.extend(
-                    rejection
-                        .reasons
-                        .into_iter()
-                        .map(|r| format!("{name}: {r}")),
-                );
+    for (repo, asked) in &request.repos {
+        let kept = renewed.and_then(|t| t.terms(repo)).map(|t| &t.template);
+        let candidates: Vec<&TemplateName> = match (&asked.template, kept) {
+            (Some(name), Some(kept)) if name != kept => {
+                reasons.push(format!(
+                    "repos.{repo}: a renewal keeps its lease's template ({kept}), not {name}"
+                ));
                 continue;
             }
+            (_, Some(kept)) => vec![kept],
+            (Some(name), None) => vec![name],
+            (None, None) => config
+                .templates()
+                .iter()
+                .filter(|(_, t)| t.repos.contains(repo))
+                .map(|(name, _)| name)
+                .collect(),
         };
-        match fits(config, &ticket) {
-            Ok(()) => fitting.push(ticket),
-            Err(why) => reasons.push(format!("{name}: {why}")),
+        let mut fitting: Vec<RepoTerms> = Vec::new();
+        let mut why: Vec<String> = Vec::new();
+        for name in &candidates {
+            let Some(template) = config.template(name) else {
+                why.push(format!("template {name} does not exist"));
+                continue;
+            };
+            let previous = renewed.and_then(|t| t.terms(repo));
+            let terms = build_terms(asked, name, template, previous);
+            let mut r = Vec::new();
+            check_repo(config, repo, &terms, template, emails.as_ref(), &mut r);
+            if r.is_empty() {
+                fitting.push(terms);
+            } else {
+                why.push(format!("{name}: {}", r.join("; ")));
+            }
+        }
+        match fitting.len() {
+            1 => {
+                if let Some(terms) = fitting.pop() {
+                    repos.insert(repo.clone(), terms);
+                }
+            }
+            0 if candidates.is_empty() => reasons.push(format!(
+                "repos.{repo} fits no template: no template allows repo {repo}"
+            )),
+            0 => reasons.push(format!("repos.{repo} fits no template: {}", why.join("; "))),
+            _ => {
+                let names: Vec<String> = fitting.iter().map(|t| t.template.to_string()).collect();
+                reasons.push(format!(
+                    "repos.{repo} fits several templates ({}): name one in repos.{repo}.template",
+                    names.join(", ")
+                ));
+            }
         }
     }
-    if let (Some(renewed), [ticket]) = (submission.renews, fitting.as_slice()) {
-        check_renewal(config, ticket, renewed, submission.now)
+    if !reasons.is_empty() {
+        return Err(Rejection { reasons });
+    }
+    let ticket = build(
+        config,
+        request,
+        submission,
+        repos,
+        emails,
+        revision,
+        previous_feedback,
+    )?;
+    fits(config, &ticket).map_err(|e| Rejection { reasons: e.reasons })?;
+    if let Some(renewed) = submission.renews {
+        check_renewal(config, &ticket, renewed, submission.now)
             .map_err(|reasons| Rejection { reasons })?;
     }
-    match fitting.len() {
-        1 => Ok(fitting.remove(0)),
-        0 if reasons.is_empty() => Err(Rejection::one("there are no templates")),
-        0 => Err(Rejection {
-            reasons: std::iter::once("the ticket fits no template".to_owned())
-                .chain(reasons)
-                .collect(),
-        }),
-        _ => {
-            let names: Vec<String> = fitting.iter().map(|t| t.template.to_string()).collect();
-            Err(Rejection::one(format!(
-                "the ticket fits several templates ({}): name one with `template:`",
-                names.join(", ")
-            )))
-        }
-    }
+    Ok(ticket)
 }
 
 /// Checks `amends` and `revises` against what the store found; returns the revision number
@@ -587,35 +743,75 @@ fn check_links(
     }
 }
 
-/// Fills a ticket from the request and the template's defaults.
-fn build(
-    request: &TicketRequest,
-    submission: &Submission<'_>,
+/// One repository's terms from the request and its template's defaults (a renewal's omitted
+/// paths are its lease's: it continues the same work).
+fn build_terms(
+    asked: &RequestRepo,
     name: &TemplateName,
     template: &Template,
+    previous: Option<&RepoTerms>,
+) -> RepoTerms {
+    let expected_paths = match (asked.expected_paths.is_empty(), previous) {
+        (true, Some(previous)) => previous.expected_paths.clone(),
+        _ => asked.expected_paths.iter().cloned().collect(),
+    };
+    let limits = &asked.limits;
+    RepoTerms {
+        template: name.clone(),
+        operations: asked.operations.iter().copied().collect(),
+        branches: asked.branches.iter().cloned().collect(),
+        force_push: asked.force_push,
+        expected_paths,
+        limits: RepoLimits {
+            max_signatures: limits.max_signatures.unwrap_or(template.max_signatures),
+            max_pushes: limits.max_pushes.unwrap_or(template.max_pushes),
+            max_push_size: limits.max_push_size.unwrap_or(template.max_push_size),
+        },
+    }
+}
+
+/// Fills the ticket around its repositories' terms: the lease's terms from the templates
+/// picked (the emails asked, else the renewed lease's, else those every signing template
+/// allows; the signing key and committer name of the signing templates; the TTL and rate
+/// asked, else the strictest of the templates').
+fn build(
+    config: &PolicyConfig,
+    request: &TicketRequest,
+    submission: &Submission<'_>,
+    repos: BTreeMap<RepoName, RepoTerms>,
+    emails: Option<BTreeSet<Email>>,
     revision: u32,
     previous_feedback: Option<String>,
 ) -> Result<Ticket, Rejection> {
-    let operations: BTreeSet<Operation> = request.scope.operations.iter().copied().collect();
-    let signs = operations.contains(&Operation::CommitSign);
-    // A renewal's omitted emails and paths are its lease's, not the template's: it continues
-    // the same work.
+    let templates: Vec<&Template> = repos
+        .values()
+        .filter_map(|terms| config.template(&terms.template))
+        .collect();
+    let signing: Vec<&Template> = repos
+        .values()
+        .filter(|terms| terms.operations.contains(&Operation::CommitSign))
+        .filter_map(|terms| config.template(&terms.template))
+        .collect();
     let renewed = submission.renews.map(|r| &r.lease.ticket);
-    let committer_emails = if !request.scope.committer_emails.is_empty() {
-        request.scope.committer_emails.iter().cloned().collect()
-    } else if let (true, Some(renewed)) = (signs, renewed) {
-        renewed.scope.committer_emails.clone()
-    } else if signs {
-        template.committer_emails.clone()
-    } else {
-        BTreeSet::new()
+    let committer_emails = match (emails, renewed, signing.as_slice()) {
+        (Some(emails), _, _) => emails,
+        (None, _, []) => BTreeSet::new(),
+        (None, Some(renewed), _) => renewed.common.committer_emails.clone(),
+        (None, None, [first, rest @ ..]) => first
+            .committer_emails
+            .iter()
+            .filter(|e| rest.iter().all(|t| t.committer_emails.contains(*e)))
+            .cloned()
+            .collect(),
     };
-    let expected_paths = match (request.ticket.expected_paths.is_empty(), renewed) {
-        (true, Some(renewed)) => renewed.text.expected_paths.clone(),
-        _ => request.ticket.expected_paths.iter().cloned().collect(),
-    };
+    let first_signing = signing.first();
+    let strictest_ttl = templates.iter().map(|t| t.max_ttl).min();
+    let strictest_rate = templates.iter().map(|t| t.max_ops_per_minute).min();
     let limits = &request.limits;
-    let ttl = limits.ttl.unwrap_or(template.max_ttl);
+    let ttl = limits
+        .ttl
+        .or(strictest_ttl)
+        .ok_or_else(|| Rejection::one("no template for the lease's TTL"))?;
     if ttl < submission.min_ttl {
         return Err(Rejection::one(format!(
             "limits.ttl is {ttl}, under the minimum of {}",
@@ -632,37 +828,24 @@ fn build(
         None => expires_at,
     };
     Ok(Ticket {
-        kind: TicketKind::V2,
+        kind: TicketKind::V3,
         id: submission.id.clone(),
         created_at: submission.now,
-        template: name.clone(),
         subject: Subject {
             session_key: submission.session_key.clone(),
             origin_hint: request.origin_hint.clone(),
             caller: request.caller.clone(),
         },
-        scope: Scope {
-            repos: request.scope.repos.iter().cloned().collect(),
-            operations,
-            branches: request.scope.branches.iter().cloned().collect(),
-            force_push: request.scope.force_push,
+        common: Common {
             committer_emails,
-            committer_name: if signs {
-                template.committer_name.clone()
-            } else {
-                None
-            },
-            signing_key: if signs {
-                template.signing_key.clone()
-            } else {
-                None
-            },
+            committer_name: first_signing.and_then(|t| t.committer_name.clone()),
+            signing_key: first_signing.and_then(|t| t.signing_key.clone()),
         },
+        repos,
         text: TicketText {
             title: request.ticket.title.clone(),
             task: request.ticket.task.clone(),
             plan: request.ticket.plan.clone(),
-            expected_paths,
             estimate: request.ticket.estimate,
             amends: request.ticket.amends.clone(),
             renews: request.ticket.renews.clone(),
@@ -672,12 +855,10 @@ fn build(
         },
         limits: Limits {
             expires_at,
-            max_signatures: limits.max_signatures.unwrap_or(template.max_signatures),
-            max_pushes: limits.max_pushes.unwrap_or(template.max_pushes),
             max_ops_per_minute: limits
                 .max_ops_per_minute
-                .unwrap_or(template.max_ops_per_minute),
-            max_push_size: limits.max_push_size.unwrap_or(template.max_push_size),
+                .or(strictest_rate)
+                .unwrap_or(1),
         },
         on_violation: request.on_violation,
     })
@@ -713,10 +894,11 @@ pub fn renewable(renewed: Renewed<'_>, now: Timestamp) -> Result<(), String> {
 }
 
 /// Checks a renewal against the lease it renews, at submission and again at approval: the
-/// lease can still be renewed ([`renewable`]), the renewal keeps its template and subject,
-/// stays within its scope (repos, operations, branches, force push, committer emails,
-/// expected paths, `on_violation`: [`narrow::widenings`](crate::narrow::widenings)), and the
-/// template's `max_renewals` holds. Every reason, or none.
+/// lease can still be renewed ([`renewable`]), the renewal keeps each repository's template
+/// and its subject, stays within its terms (repositories, operations, branches, force push,
+/// committer emails, expected paths, `on_violation`:
+/// [`narrow::widenings`](crate::narrow::widenings)), and every template's `max_renewals`
+/// holds. Every reason, or none.
 pub fn check_renewal(
     config: &PolicyConfig,
     ticket: &Ticket,
@@ -732,11 +914,15 @@ pub fn check_renewal(
     if ticket.text.renews.as_ref() != Some(id) {
         reasons.push(format!("the ticket does not renew lease {id}"));
     }
-    if ticket.template != lease.ticket.template {
-        reasons.push(format!(
-            "a renewal keeps its lease's template ({}), not {}",
-            lease.ticket.template, ticket.template
-        ));
+    for (repo, terms) in &ticket.repos {
+        if let Some(kept) = lease.ticket.terms(repo)
+            && kept.template != terms.template
+        {
+            reasons.push(format!(
+                "repos.{repo}: a renewal keeps its lease's template ({}), not {}",
+                kept.template, terms.template
+            ));
+        }
     }
     if ticket.subject != lease.ticket.subject {
         reasons.push(format!(
@@ -746,13 +932,16 @@ pub fn check_renewal(
     for widening in crate::narrow::widenings(&lease.ticket, ticket) {
         reasons.push(format!("wider than lease {id}: {widening}"));
     }
-    match config.template(&ticket.template).map(|t| t.max_renewals) {
-        Some(Some(max)) if renewed.renewals >= max => reasons.push(format!(
-            "template {} allows {max} renewals of a lease, and lease {id} is renewal {} of its chain",
-            ticket.template, renewed.renewals
-        )),
-        Some(_) => {}
-        None => reasons.push(format!("template {} does not exist", ticket.template)),
+    // The strictest of the templates: each one's max_renewals holds.
+    for name in ticket.templates() {
+        match config.template(name).map(|t| t.max_renewals) {
+            Some(Some(max)) if renewed.renewals >= max => reasons.push(format!(
+                "template {name} allows {max} renewals of a lease, and lease {id} is renewal {} of its chain",
+                renewed.renewals
+            )),
+            Some(_) => {}
+            None => reasons.push(format!("template {name} does not exist")),
+        }
     }
     if reasons.is_empty() {
         Ok(())
