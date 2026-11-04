@@ -45,7 +45,8 @@ gets its page (the template there) written up to its plan before any code.
 | Client files | `~/.writ/known_hosts` (the daemon's pinned host key), `~/.writ/tls_pins` (its pinned TLS certificate), `~/.writ/approver.pub`, `~/.writ/reader` (the reader key) |
 | Daemon files granting access | `approvers` (who may sign), `readers` (who may use the approval API) |
 | Env vars | `WRIT_*` |
-| Agent skill | `skill/writ/SKILL.md` |
+| Agent skill | `skill/writ/SKILL.md`; at a workspace root (`writ init` with no repo named), `skill/writ-workspace/SKILL.md` |
+| Workspace record (a folder of repositories) | `<folder>/.writ-workspace` |
 
 Words: the agent submits a **ticket**; once signed it is a **lease** (and a writ).
 **Templates** cap tickets; the **repo registry** holds hard per-repo limits; the **ledger**

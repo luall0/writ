@@ -16,7 +16,7 @@ use crate::client::{Endpoint, Session};
 use crate::session::{load_key, session_dir, write_file};
 use crate::timings::{self, Phase};
 use crate::wiring::{self, SessionRef};
-use crate::{Exit, Paths, display};
+use crate::{Exit, Paths, display, workspace};
 
 /// The lease a command is about when none is named: `WRIT_SESSION`, then the one `current`
 /// points at.
@@ -35,18 +35,42 @@ fn lease_of_session(paths: &Paths) -> anyhow::Result<TicketId> {
         .map_err(|_| anyhow::anyhow!("sessions/current doesn't point at a lease"))
 }
 
-/// The timings file the repository in the current directory records runs in, and the name of
-/// its section (the repo's registry name).
-fn timings_here() -> Option<(PathBuf, String)> {
+/// The timings file runs are recorded in from the current directory, and the name of the
+/// section: a wired repository's own (its registry name), or, in a workspace (its root, or one
+/// of its repositories), the workspace's, the section then named by the lease's repositories
+/// (`None`).
+fn timings_here() -> Option<(PathBuf, Option<String>)> {
     let dir = std::env::current_dir().ok()?;
-    let wired = wiring::load(&dir).ok()??;
-    let record = wiring::record_path(&dir).ok()?;
-    let entries = wiring::read_file(&dir, &record).ok()?;
-    let path = entries
-        .iter()
-        .find(|(k, _)| k == "skill.timings")
-        .map(|(_, v)| PathBuf::from(v))?;
-    Some((path, wired.repo.to_string()))
+    if let Ok(Some(wired)) = wiring::load(&dir) {
+        let record = wired.common_dir.join("writ").join("config");
+        let own = wiring::read_file(&dir, &record)
+            .ok()?
+            .into_iter()
+            .find(|(k, _)| k == "skill.timings")
+            .map(|(_, v)| PathBuf::from(v));
+        if let Some(path) = own {
+            return Some((path, Some(wired.repo.to_string())));
+        }
+    }
+    let found = workspace::find(&dir)?;
+    Some((found.timings()?, None))
+}
+
+/// The section a workspace run goes in: the lease's repositories, sorted, joined with ` + `
+/// (`api + web`); one repository's is its own.
+fn section_of(report: &Report) -> String {
+    let mut repos: Vec<&str> = report.repos.iter().map(|r| r.as_str()).collect();
+    repos.sort_unstable();
+    repos.dedup();
+    repos.join(" + ")
+}
+
+/// The lease the repository here, or the workspace here, is pinned to (`writ init --lease`).
+fn pinned_here(dir: &Path) -> Option<TicketId> {
+    match wiring::load(dir) {
+        Ok(Some(wired)) => wired.lease,
+        _ => workspace::find(dir).and_then(|w| w.lease),
+    }
 }
 
 /// The agent's marks in the sessions of `leases` (`marks`: one `<unix time> <phase>` a line;
@@ -103,6 +127,7 @@ pub async fn close(
     print!("{}", display::report(&report, &marks, false));
     match timings_here() {
         Some((path, repo)) => {
+            let repo = repo.unwrap_or_else(|| section_of(&report));
             let mut file = timings::read(&path)?;
             let end = report
                 .chain
@@ -119,8 +144,8 @@ pub async fn close(
             );
         }
         None => println!(
-            "\nNo timings file here: run writ close in a repository writ init wired with the \
-             skill to record the run."
+            "\nNo timings file here: run writ close in a repository (or at a workspace root) \
+             writ init wired with the skill to record the run."
         ),
     }
     Ok(Exit::Ok)
@@ -129,7 +154,7 @@ pub async fn close(
 /// `writ mark <phase>`: the end of a phase, in the session the repo here works under.
 pub fn mark(paths: &Paths, phase: Phase) -> anyhow::Result<Exit> {
     let dir = std::env::current_dir().context("cannot read the current directory")?;
-    let pinned = wiring::load(&dir).ok().flatten().and_then(|w| w.lease);
+    let pinned = pinned_here(&dir);
     let session = wiring::choose_session(&paths.home, pinned.as_ref())?;
     let session_dir = session.dir(&paths.home);
     let Some(lease) = wiring::lease_id(&session_dir) else {

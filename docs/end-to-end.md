@@ -116,6 +116,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 18 | `openpgp_commits` | `openpgp` | A template signing with an OpenPGP key (`format: openpgp`, its user id in the policy): the lease's certificate is the one `writd signing-keys` prints; `writ init` wires git for gpg (`writ-sign` as `gpg.openpgp.program`, the fingerprint as `user.signingkey`); commits sign with a hostile GnuPG home and agent in the environment (never used); the agent verifies them through `writ-sign --verify` (the real gpg, `WRIT_GPG`); unverified on Forgejo until the key is added with Forgejo's GPG challenge signed through `writ prove-key` (OpenPGP), then verified; an SSH signature under the lease denied (`signature_format`) | shared |
 | 19 | `protocol_versions` | `protocols` | Every protocol version a client asks for, served in v0 with no difference an agent notices: clones and fetches with git's default, v2, v1 and v0 asked (the same refs), `ls-remote` with v2 asked, a shallow clone deepened, a `--filter=blob:none` clone made whole, a reachable non-tip commit fetched by its id, a commit no ref reaches (its branch deleted on Forgejo after the mirror synced) refused by its id with v2 asked (`not our ref`, exit 128), a push after a v2 fetch | shared |
 | 20 | `sessions_and_renewals` | `sessions` | A lease's whole life with M6: a ticket file checked (`writ check`) with an estimate; what the repo allows read from the daemon (`writ policy`, by name and in the wired clone; only that repo shown, an unknown one refused) and the ticket checked by it without being submitted (`writ request --dry-run`: on `main` rejected with its reason, then accepted, nothing stored, its `dry_run` line); a clone pinned to the lease with the skill for several agents (`writ init --lease --agents --skill-dir --agents-md`), excluded from git; a phase marked; a renewal reviewed with the original ticket and the chain, the pinned lease then refused and the renewal (`WRIT_SESSION`) pushing what the renewed lease signed; `writ close` and its report recorded in the timings file; the timings file checked and its limits changed; the approver's `writ report`; `--global`; everything undone, the timings kept | shared |
+| 21 | `workspaces` | `ws-api`, `ws-web` | A folder of two clones wired at once (`writ init` with no repo named): without a terminal, every repository's registry name required (`--repo <dir>=<name>`), nothing wired before; the `writ-workspace` skill at the folder only; `writ git` at the folder listing the repositories; one lease for both, each repository's policy read by name; a commit in each through `writ git -C`, both pushed by `origin` (Forgejo, the mirrors, two signatures and two pushes in the audit log); `writ exec -C`; a phase marked and the lease closed at the folder, the run recorded under `ws-api + ws-web`; `--undo` in one repository refused, at the folder every repository and the folder back (the timings kept) | shared |
 
 Every scenario checks, where it applies: **what the agent reads** (the exit code and the
 words, never just "it failed"), **the audit line** (event, result, code), **Forgejo's state**
@@ -124,8 +125,8 @@ through its API (where a push landed, or proof that a refused one didn't), and *
 
 ## Coverage: every command and flag
 
-Each row is a command or a flag as its binary defines it, and the scenarios (test functions)
-that use it for real. A flag given through its environment variable (`WRIT_HOME` for
+Each row is a command or a flag as its binary defines it (by its long name, or its short one
+when it has none: `writ exec -C`), and the scenarios (test functions) that use it for real. A flag given through its environment variable (`WRIT_HOME` for
 `--home`) counts: it is the same setting; `every_client_setting_works_as_a_flag` also gives
 each one as a flag. Checked: `writ`'s rows against its command-line definition
 (`writ-cli`'s `every_command_and_flag_is_in_the_end_to_end_registry`), `writd`'s against its
@@ -151,13 +152,14 @@ the scenarios (`tool/check-e2e.py`).
 | `writ init` | `an_agent_works_through_writ_git_beside_the_operator_s_own_git` |
 | `writ init --whole-repo` | `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
 | `writ init --email` | `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
-| `writ init --undo` | `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
+| `writ init --undo` | `a_dedicated_clone_is_wired_whole_and_undone_exactly`, `one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease` |
 | `writ init --url` | `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
 | `writ init --lease` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ init --agents` | `a_lease_is_renewed_closed_and_learned_from`, `an_agent_works_through_writ_git_beside_the_operator_s_own_git` |
 | `writ init --skill-dir` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ init --global` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ init --agents-md` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ init --repo` | `one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease` |
 | `writ close` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ close --summary` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ close --url` | `a_lease_is_renewed_closed_and_learned_from` |
@@ -170,8 +172,9 @@ the scenarios (`tool/check-e2e.py`).
 | `writ timings --max-notes` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ report` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ report --approval-url` | `a_lease_is_renewed_closed_and_learned_from` |
-| `writ git` | `an_agent_works_through_writ_git_beside_the_operator_s_own_git`, `every_push_denial_leaves_forgejo_and_the_mirror_unchanged` |
+| `writ git` | `an_agent_works_through_writ_git_beside_the_operator_s_own_git`, `every_push_denial_leaves_forgejo_and_the_mirror_unchanged`, `one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease` |
 | `writ exec` | `an_agent_works_through_writ_git_beside_the_operator_s_own_git` |
+| `writ exec -C` | `one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease` |
 | `writ reader` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |
 | `writ ls` | `tickets_are_requested_signed_refused_revised_amended_and_revoked`, `a_restarted_daemon_keeps_leases_mirrors_and_ledger` |
 | `writ ls --all` | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |

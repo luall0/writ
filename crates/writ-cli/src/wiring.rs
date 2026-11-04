@@ -75,6 +75,9 @@ pub struct Wiring {
     pub origin: Option<String>,
     /// The lease the repo is pinned to (`writ init --lease`): its session, not `current`.
     pub lease: Option<TicketId>,
+    /// The workspace root it was wired from (`writ.workspace`: `writ init` there, with no
+    /// repo named), whose `writ init --undo` takes it back.
+    pub workspace: Option<PathBuf>,
 }
 
 /// The session a command works under.
@@ -338,11 +341,17 @@ pub fn read_file(dir: &Path, file: &Path) -> anyhow::Result<Vec<(String, String)
 
 /// What `writ init` recorded in the repository at `dir`, if it is wired.
 pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
-    let path = record_path(dir)?;
+    load_common(&common_dir(dir)?)
+}
+
+/// What `writ init` recorded in the repository whose shared git directory is `common_dir`,
+/// if it is wired.
+pub fn load_common(common_dir: &Path) -> anyhow::Result<Option<Wiring>> {
+    let path = common_dir.join("writ").join("config");
     if !path.exists() {
         return Ok(None);
     }
-    let entries = read_file(dir, &path)?;
+    let entries = read_file(common_dir, &path)?;
     let get = |key: &str| {
         entries
             .iter()
@@ -350,12 +359,6 @@ pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
             .map(|(_, v)| v.clone())
     };
     let invalid = || anyhow::anyhow!("{} is not a Writ wiring record", path.display());
-    // `<common dir>/writ/config`.
-    let common_dir = path
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(invalid)?
-        .to_path_buf();
     let mode = get("writ.mode")
         .as_deref()
         .and_then(Mode::parse)
@@ -373,9 +376,10 @@ pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
         base_url,
         repo,
         email: get("writ.email"),
-        common_dir,
+        common_dir: common_dir.to_path_buf(),
         origin: get("writ.origin"),
         lease,
+        workspace: get("writ.workspace").map(PathBuf::from),
     }))
 }
 

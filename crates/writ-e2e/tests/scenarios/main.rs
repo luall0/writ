@@ -35,6 +35,7 @@ mod ticket_lifecycle;
 mod upstream_moved;
 mod verified_commits;
 mod whole_repo;
+mod workspaces;
 mod wrapper_mode;
 
 use std::process::Output;

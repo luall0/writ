@@ -8,7 +8,7 @@ use writ_crypto::keys::{KeyKind, generate};
 use writ_proto::{CLIENT_USER, Command, RepoPolicy, TemplateView};
 
 use crate::client::{Endpoint, Session};
-use crate::{Exit, Paths, display, wiring};
+use crate::{Exit, Paths, display, wiring, workspace};
 
 /// Prints the policy for `repo`, or for the wired repository here.
 pub async fn policy(paths: &Paths, url: &str, repo: Option<&RepoName>) -> anyhow::Result<Exit> {
@@ -16,13 +16,20 @@ pub async fn policy(paths: &Paths, url: &str, repo: Option<&RepoName>) -> anyhow
         Some(repo) => repo.clone(),
         None => {
             let dir = std::env::current_dir()?;
-            let wired = wiring::load(&dir).ok().flatten().ok_or_else(|| {
-                anyhow::anyhow!(
+            if let Some(wired) = wiring::load(&dir).ok().flatten() {
+                wired.repo
+            } else if let Ok(Some(found)) = workspace::load(&dir) {
+                anyhow::bail!(
+                    "this folder is a Writ workspace: name the repo (`writ policy <repo>`), one \
+                     of:\n{}",
+                    found.listing()
+                );
+            } else {
+                anyhow::bail!(
                     "this directory isn't a repository wired for Writ: name the repo \
                      (`writ policy <repo>`)"
-                )
-            })?;
-            wired.repo
+                );
+            }
         }
     };
     // Any key reaches the agents' listener for a read; this one is never kept.

@@ -32,6 +32,8 @@ const REPOS: &[&str] = &[
     "notes",
     "backfill",
     "sessions",
+    "ws-api",
+    "ws-web",
 ];
 
 #[test]

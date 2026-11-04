@@ -17,14 +17,59 @@ use anyhow::{Context, bail};
 /// The skill, as built into this `writ`.
 pub const SKILL: &str = include_str!("../../../skill/writ/SKILL.md");
 
+/// The workspace skill (`writ init` at a folder of repositories), as built into this `writ`.
+pub const WORKSPACE_SKILL: &str = include_str!("../../../skill/writ-workspace/SKILL.md");
+
 /// Where the skill names its timings file.
 const TIMINGS_MARK: &str = "{{TIMINGS}}";
 
-/// What says a `SKILL.md` is Writ's (`writ init` replaces only such a file).
+/// Where the workspace skill lists the workspace's repositories.
+const REPOS_MARK: &str = "{{REPOS}}";
+
+/// What says a `SKILL.md` is Writ's (`writ init` replaces, and `--undo` removes, only such a
+/// file).
 const OWNED: &str = "<!-- Written by `writ init`";
 
 /// The line `--agents-md` appends to `AGENTS.md` / `CLAUDE.md`.
 pub const POINTER: &str = "Git goes through `writ git …` here (Writ leases): read the `writ` skill before you start any task that changes files.";
+
+/// The same line at a workspace root.
+pub const WORKSPACE_POINTER: &str = "Git goes through `writ git -C <repository> …` here (Writ leases): read the `writ-workspace` skill before you start any task that changes files.";
+
+/// The files `--agents-md` adds its line to.
+pub const AGENTS_MD: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
+
+/// Which skill: one repository's, or a workspace's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Repo,
+    Workspace,
+}
+
+impl Kind {
+    /// Its folder in a skills folder, and its `name:`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Repo => "writ",
+            Kind::Workspace => "writ-workspace",
+        }
+    }
+
+    fn text(self) -> &'static str {
+        match self {
+            Kind::Repo => SKILL,
+            Kind::Workspace => WORKSPACE_SKILL,
+        }
+    }
+
+    /// The line `--agents-md` adds.
+    pub fn pointer(self) -> &'static str {
+        match self {
+            Kind::Repo => POINTER,
+            Kind::Workspace => WORKSPACE_POINTER,
+        }
+    }
+}
 
 /// An agent the skill can be installed for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -137,11 +182,15 @@ pub fn folders(agents: &BTreeSet<Agent>, global: bool) -> Vec<&'static str> {
         .collect()
 }
 
-/// Where to install: the skills folders (absolute), and the repository's root when they are
-/// in it (their paths then go in `.git/info/exclude`).
+/// Where to install: the skills folders (absolute), the root of the repository or workspace
+/// (paths in it are shown relative to it, and excluded from git when it is a repository),
+/// which skill, and for a workspace the list of its repositories the skill shows.
 pub struct Plan {
     pub folders: Vec<PathBuf>,
     pub root: PathBuf,
+    pub kind: Kind,
+    /// The workspace's repositories, as the skill lists them (Markdown lines).
+    pub repos: String,
 }
 
 /// What an installation did.
@@ -149,30 +198,44 @@ pub struct Plan {
 pub struct Installed {
     /// The `SKILL.md` files written, and whether each was new.
     pub skills: Vec<(PathBuf, bool)>,
+    /// The folders made for them (the deepest first), which `--undo` removes when empty.
+    pub created_dirs: Vec<PathBuf>,
     /// The timings file, and whether it was new.
     pub timings: Option<(PathBuf, bool)>,
     /// The lines added to `.git/info/exclude`.
     pub excluded: Vec<String>,
 }
 
-/// The skill with its timings file named (relative to the repository when it is in it).
-fn skill_text(timings: &Path, root: &Path) -> String {
-    let shown = timings.strip_prefix(root).unwrap_or(timings);
-    SKILL.replace(TIMINGS_MARK, &shown.display().to_string())
+/// The skill with its timings file named (relative to the root when it is in it), and the
+/// workspace's repositories listed.
+fn skill_text(plan: &Plan, timings: &Path) -> String {
+    let shown = timings.strip_prefix(&plan.root).unwrap_or(timings);
+    plan.kind
+        .text()
+        .replace(TIMINGS_MARK, &shown.display().to_string())
+        .replace(REPOS_MARK, &plan.repos)
 }
 
-/// Installs the skill in every folder of `plan` (`<folder>/writ/SKILL.md`), the timings file
-/// beside the first; a `SKILL.md` that isn't Writ's is never written over. In the
-/// repository, each new `writ/` folder is excluded from git (`exclude` is
+/// The folders `dir` needs made, from the deepest up to the first that exists.
+fn missing_dirs(dir: &Path) -> Vec<PathBuf> {
+    dir.ancestors()
+        .take_while(|d| !d.as_os_str().is_empty() && std::fs::symlink_metadata(d).is_err())
+        .map(Path::to_path_buf)
+        .collect()
+}
+
+/// Installs the skill in every folder of `plan` (`<folder>/<kind>/SKILL.md`), the timings
+/// file beside the first; a `SKILL.md` that isn't Writ's is never written over. In the root,
+/// each new skill folder is excluded from git when the root is a repository (`exclude`: its
 /// `.git/info/exclude`).
-pub fn install(plan: &Plan, exclude: &Path) -> anyhow::Result<Installed> {
+pub fn install(plan: &Plan, exclude: Option<&Path>) -> anyhow::Result<Installed> {
     let mut installed = Installed::default();
     let Some(first) = plan.folders.first() else {
         return Ok(installed);
     };
-    let timings = first.join("writ").join("timings.md");
+    let timings = first.join(plan.kind.name()).join("timings.md");
     for folder in &plan.folders {
-        let dir = folder.join("writ");
+        let dir = folder.join(plan.kind.name());
         let path = dir.join("SKILL.md");
         let existed = match std::fs::read_to_string(&path) {
             Ok(text) if text.contains(OWNED) => true,
@@ -183,12 +246,14 @@ pub fn install(plan: &Plan, exclude: &Path) -> anyhow::Result<Installed> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
         };
+        let missing = missing_dirs(&dir);
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("cannot create {}", dir.display()))?;
-        std::fs::write(&path, skill_text(&timings, &plan.root))
+        installed.created_dirs.extend(missing);
+        std::fs::write(&path, skill_text(plan, &timings))
             .with_context(|| format!("cannot write {}", path.display()))?;
         installed.skills.push((path, !existed));
-        if let Ok(relative) = dir.strip_prefix(&plan.root) {
+        if let (Some(exclude), Ok(relative)) = (exclude, dir.strip_prefix(&plan.root)) {
             let line = format!("/{}/", relative.display());
             if add_line(exclude, &line)? {
                 installed.excluded.push(line);
@@ -248,19 +313,65 @@ pub fn remove_line(path: &Path, line: &str, created: bool) -> anyhow::Result<()>
     std::fs::write(path, new).with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// Removes a `SKILL.md` `writ init` created, and its `writ/` folder when nothing else is in
-/// it (the timings file keeps the first one).
-pub fn remove_skill(path: &Path) -> anyhow::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("cannot remove {}", path.display())),
+/// Why `--undo` leaves a recorded skill file alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kept {
+    /// Not `<folder>/writ/SKILL.md` or `<folder>/writ-workspace/SKILL.md`, or a link.
+    NotASkillPath,
+    /// No `Written by writ init` mark: someone else's.
+    NotWrits,
+}
+
+/// Removes a `SKILL.md` `writ init` created, and its skill folder when nothing else is in it
+/// (the timings file keeps the first one). The record names it, and the record is the
+/// agent's to write too: only a regular file named `SKILL.md` in a `writ/` or
+/// `writ-workspace/` folder, with Writ's mark, is removed; anything else is kept, with why.
+pub fn remove_skill(path: &Path) -> anyhow::Result<Option<Kept>> {
+    let shaped = path.file_name().is_some_and(|n| n == "SKILL.md")
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == Kind::Repo.name() || n == Kind::Workspace.name());
+    let regular = std::fs::symlink_metadata(path).map(|m| m.file_type().is_file());
+    match regular {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+        Ok(false) => return Ok(Some(Kept::NotASkillPath)),
+        Ok(true) if !shaped => return Ok(Some(Kept::NotASkillPath)),
+        Ok(true) => {}
     }
+    let text = read_bounded(path, 1024 * 1024)?;
+    if !text.contains(OWNED) {
+        return Ok(Some(Kept::NotWrits));
+    }
+    std::fs::remove_file(path).with_context(|| format!("cannot remove {}", path.display()))?;
     if let Some(dir) = path.parent() {
         // Not empty (the timings file, another file): kept.
         let _ = std::fs::remove_dir(dir);
     }
-    Ok(())
+    Ok(None)
+}
+
+/// Removes the folders `writ init` made for its skills, when they are empty and on the way to
+/// one of `skills` (the record's own `SKILL.md` paths): never any other folder.
+pub fn remove_created_dirs(dirs: &[&str], skills: &[&str]) {
+    for dir in dirs {
+        let dir = Path::new(dir);
+        if skills.iter().any(|s| Path::new(s).starts_with(dir)) {
+            // Not empty (the timings file, the user's own files): kept.
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
+/// At most `max` bytes of the file at `path`, as text (what isn't UTF-8 replaced).
+fn read_bounded(path: &Path, max: u64) -> anyhow::Result<String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(max).read_to_end(&mut bytes))
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(test)]
@@ -333,8 +444,10 @@ mod tests {
                 root.path().join(".cursor/skills"),
             ],
             root: root.path().to_owned(),
+            kind: Kind::Repo,
+            repos: String::new(),
         };
-        let installed = install(&plan, &exclude).unwrap();
+        let installed = install(&plan, Some(&exclude)).unwrap();
         assert_eq!(installed.skills.len(), 2);
         assert!(installed.skills.iter().all(|(_, new)| *new));
         assert_eq!(
@@ -358,7 +471,7 @@ mod tests {
         assert!(root.path().join(".claude/skills/writ/timings.md").exists());
         assert!(!root.path().join(".cursor/skills/writ/timings.md").exists());
         // Again: refreshed, nothing added twice.
-        let again = install(&plan, &exclude).unwrap();
+        let again = install(&plan, Some(&exclude)).unwrap();
         assert!(again.skills.iter().all(|(_, new)| !*new));
         assert!(again.excluded.is_empty());
         assert_eq!(again.timings.as_ref().map(|(_, new)| *new), Some(false));
@@ -369,8 +482,10 @@ mod tests {
         let plan = Plan {
             folders: vec![root.path().join(".agents/skills")],
             root: root.path().to_owned(),
+            kind: Kind::Repo,
+            repos: String::new(),
         };
-        let error = install(&plan, &exclude).unwrap_err().to_string();
+        let error = install(&plan, Some(&exclude)).unwrap_err().to_string();
         assert!(error.contains("isn't Writ's"), "{error}");
         assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "my own skill");
         // Lines come back out exactly.
@@ -379,5 +494,87 @@ mod tests {
             std::fs::read_to_string(&exclude).unwrap(),
             "# git's own\n/.cursor/skills/writ/\n"
         );
+    }
+
+    #[test]
+    fn undo_removes_only_writ_s_own_skill_files_and_the_empty_folders_it_made() {
+        let root = tempfile::tempdir().unwrap();
+        let plan = Plan {
+            folders: vec![root.path().join(".claude/skills")],
+            root: root.path().to_owned(),
+            kind: Kind::Workspace,
+            repos: "- `api`: repo `api`".to_owned(),
+        };
+        let installed = install(&plan, None).unwrap();
+        let skill = root.path().join(".claude/skills/writ-workspace/SKILL.md");
+        assert_eq!(installed.skills, [(skill.clone(), true)]);
+        assert_eq!(
+            installed.created_dirs,
+            [
+                root.path().join(".claude/skills/writ-workspace"),
+                root.path().join(".claude/skills"),
+                root.path().join(".claude"),
+            ]
+        );
+        assert!(
+            installed.excluded.is_empty(),
+            "no repository: nothing excluded"
+        );
+        let text = std::fs::read_to_string(&skill).unwrap();
+        assert!(text.starts_with("---\nname: writ-workspace\n"), "{text}");
+        assert!(text.contains("- `api`: repo `api`"), "{text}");
+        assert!(
+            !text.contains(REPOS_MARK) && !text.contains(TIMINGS_MARK),
+            "{text}"
+        );
+
+        // A record naming something else: never removed.
+        let mine = root.path().join("notes.md");
+        std::fs::write(&mine, "mine").unwrap();
+        assert_eq!(remove_skill(&mine).unwrap(), Some(Kept::NotASkillPath));
+        let theirs = root.path().join("other/writ/SKILL.md");
+        std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        std::fs::write(&theirs, "their own skill").unwrap();
+        assert_eq!(remove_skill(&theirs).unwrap(), Some(Kept::NotWrits));
+        let link = root.path().join("linked/writ/SKILL.md");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&skill, &link).unwrap();
+        assert_eq!(remove_skill(&link).unwrap(), Some(Kept::NotASkillPath));
+        assert!(mine.exists() && theirs.exists() && skill.exists());
+        assert_eq!(
+            remove_skill(&root.path().join("gone/writ/SKILL.md")).unwrap(),
+            None
+        );
+
+        // Writ's own: removed, then the folders it made once empty, never another one.
+        assert_eq!(remove_skill(&skill).unwrap(), None);
+        assert!(!skill.exists());
+        let timings = root.path().join(".claude/skills/writ-workspace/timings.md");
+        assert!(timings.exists(), "the timings file stays");
+        let dirs: Vec<String> = installed
+            .created_dirs
+            .iter()
+            .map(|d| d.display().to_string())
+            .chain([root.path().join("other").display().to_string()])
+            .collect();
+        let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        let skills = skill.display().to_string();
+        remove_created_dirs(&dirs, &[skills.as_str()]);
+        assert!(timings.exists(), "a folder holding the timings file stays");
+        std::fs::remove_file(&timings).unwrap();
+        std::fs::create_dir_all(root.path().join("empty")).unwrap();
+        let empty = root.path().join("empty").display().to_string();
+        let mut with_empty = dirs.clone();
+        with_empty.push(empty.as_str());
+        remove_created_dirs(&with_empty, &[skills.as_str()]);
+        assert!(
+            !root.path().join(".claude").exists(),
+            "every folder it made, once empty"
+        );
+        assert!(
+            root.path().join("empty").exists(),
+            "not on the way to a skill: kept"
+        );
+        assert!(root.path().join("other").exists());
     }
 }

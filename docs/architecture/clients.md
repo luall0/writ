@@ -7,15 +7,15 @@ clients make the workflow pleasant, the daemon makes it safe.
 
 | Client | Role |
 |---|---|
-| `writ` CLI | `policy` (what a ticket for the repo may ask, from the daemon: templates, branches, committer emails, limits, protected refs, the ticket link), `request` (`--dry-run`: the daemon's checks, nothing submitted), `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host)), `git` and `exec` (git, or a program, with that wiring) |
-| Agent skill (`skill/writ/SKILL.md`, built into `writ`, installed by `writ init`) | Teaches the agent the ticket workflow, at the start of any task that changes files and before any edit: read what the repo allows (`writ policy`) and the timings file, think through the scope (a branch of its own within the template's patterns, never the default or a protected one; `push` unless told not to) and estimate it, write a ticket (task, plan, repos, branches, estimate, limits), check it (`writ check`, then `writ request --dry-run`) and submit it with `writ request`, wait for my decision, then work with `WRIT_SESSION` set; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; out of time or counts, a renewal; when done, `writ close` with a summary, then a note in the timings file if something explains the figures. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine. [The skill and its installer](#the-agent-skill) |
+| `writ` CLI | `policy` (what a ticket for the repo may ask, from the daemon: templates, branches, committer emails, limits, protected refs, the ticket link), `request` (`--dry-run`: the daemon's checks, nothing submitted), `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host); with no repo named, a folder of repositories: [workspaces](#workspaces)), `git` and `exec` (git, or a program, with that wiring; `git` finds the repository behind git's global options, `exec -C <dir>` runs in one) |
+| Agent skill (`skill/writ/SKILL.md`, built into `writ`, installed by `writ init`; at a workspace root, `skill/writ-workspace/SKILL.md` instead: [workspaces](#workspaces)) | Teaches the agent the ticket workflow, at the start of any task that changes files and before any edit: read what the repo allows (`writ policy`) and the timings file, think through the scope (a branch of its own within the template's patterns, never the default or a protected one; `push` unless told not to) and estimate it, write a ticket (task, plan, repos, branches, estimate, limits), check it (`writ check`, then `writ request --dry-run`) and submit it with `writ request`, wait for my decision, then work with `WRIT_SESSION` set; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; out of time or counts, a renewal; when done, `writ close` with a summary, then a note in the timings file if something explains the figures. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine. [The skill and its installer](#the-agent-skill) |
 | `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git <repo>` command for the repo in `writ.repo`, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, then `core.sshCommand`, never a plain `ssh`), with the first parent commit and the trees the daemon needs to see which paths the commit touches ([Gateway](gateway.md#signing)); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen`. Also `gpg.openpgp.program` for a lease whose key is OpenPGP: `--status-fd=2 -bsau <key>` → daemon (`writ-sign openpgp <repo>`, the object on stdin, the armored signature on stdout, `[GNUPG:] SIG_CREATED` on stderr; no GnuPG home, keyring or agent used), `--verify` → the real `gpg` (`WRIT_GPG`, an absolute path, `/usr/bin/gpg` by default), anything else refused |
 | Session agent ([M8.5](../roadmap.md#m85--non-exportable-session-keys), on when the host has the hardware) | Holds the session key so it can't be copied: a dedicated ssh-agent backed by the Secure Enclave, a TPM or a YubiKey |
 | Harness integration | Omega Code requests a lease when an agent session starts and wires the repo's git config |
 | Approvers | v1: `writ sign` + Secretive. Later: own Mac SE app, iPhone app |
 
-Code: `crates/writ-cli` (`writ`), `crates/writ-sign` (`writ-sign`), `skill/writ/` (the
-skill). The approver side of the CLI is described in [Approvals](approvals.md).
+Code: `crates/writ-cli` (`writ`), `crates/writ-sign` (`writ-sign`), `skill/writ/` and
+`skill/writ-workspace/` (the skills). The approver side of the CLI is described in [Approvals](approvals.md).
 
 `writ` reads its settings from flags or environment variables: `WRIT_URL` (agents' listener,
 `ssh://host:port` or `unix:<path>`), `WRIT_APPROVAL_URL` (approval listener: `https://host:port`, `ssh://host:port` or `unix:<path>`),
@@ -98,6 +98,20 @@ agent's configuration): the [operators' good practice](../operators/good-practic
     insteadOf = git@github.com:user/omega-code.git   # the clone's origin URL when wired
 ```
 
+`writ git` finds the repository a command works in as git does (`writ_cli::gitopts`): git's
+global options before the command are read in order (`-C`, `-c`, `--config-env`, `--git-dir`,
+`--work-tree`, `--bare`, `--namespace`, `-p`/`-P`, the pathspec and lock flags…), each with
+its value taken as git takes it (`-C` and `-c` only as the next argument, `--git-dir` either
+way), and git resolves the repository from the ones that say which (`git -C … --git-dir …
+--work-tree … --bare rev-parse --git-common-dir`, in this process's environment: `GIT_DIR`
+counts as it will for the command). An option git doesn't take before a command, or one
+missing its value, is refused with its reason, git never run: never skipped, so the wiring
+loaded is always the one of the repository git works in. The options that print and exit
+(`--version`, `--help`, `--exec-path` alone, `--list-cmds`) run git with no wiring. `writ
+exec -C <dir> -- <program>` runs the program in `<dir>` under that repository's wiring: one
+repository per process. A wiring that reaches another repository anyway (a program running
+git elsewhere) is refused by `writ-sign`, as above.
+
 Paths are absolute and quoted for `sh`, and point at one session's directory, also named by
 `writ.session` ([which session](#which-session-a-command-uses)): `<home>/sessions/current`
 unless the repo is pinned (`writ init --lease`) or `WRIT_SESSION` is set. In wrapper mode they
@@ -110,6 +124,56 @@ with `git config --get-all -z`, so a value over several lines is put back whole.
 needs a `Writ: <lease>` trailer when the repo's `ticket_link` is `trailer`
 (`git commit --trailer "Writ: wrt_…"`); `writ init` prints the lease's. Only `ssh://`
 endpoints for now (a Unix socket comes with local mode).
+
+### Workspaces
+
+Some people keep several repositories in one folder and start one agent at the folder.
+`writ init` there, with no repo named, makes the folder a **workspace** (`writ_cli::workspace`):
+
+- **Its repositories**: the folders right under it that are a repository's top (`.git` there,
+  and `git rev-parse --show-toplevel` naming the folder), sorted; a hidden folder, a link
+  (named), a name with a control character or not UTF-8 (named), and a submodule of the
+  folder's own repository (named: submodules aren't wired yet) are not. At most 256. The
+  folder's own repository, when it is one (a meta-repository ignoring its children), is a
+  member only when named (`--repo .=<name>`).
+- **Their registry names**: `--repo <dir>=<name>` (repeatable; `<dir>=-` leaves one out;
+  `-` is never a registry name), else asked on a terminal with a default (the `origin` URL's
+  last part without `.git`, else the folder's name; Enter takes it, `-` leaves it out).
+  Without a terminal, a repository nobody named is refused, naming each with its default,
+  before anything is written; so is a `--repo` folder that isn't one of them, a folder named
+  twice, two repositories under one name, a repository already wired, and a folder already a
+  workspace.
+- **Each repository wired as `writ init <repo>` wires it** (the same `wiring::settings`, its
+  own `<git common dir>/writ/config`, either mode, `--email` and `--lease` for all), with
+  `writ.workspace` naming the folder, and no skill of its own.
+- **The `writ-workspace` skill** at the folder (the agents' folders as for a repository,
+  `--global` and `--skill-dir` too), listing the repositories and their registry names: one
+  ticket naming every repository the task touches, `writ policy <repo>` for each (a ticket
+  for several must fit one template that allows them all; the trailer is per repository),
+  `writ git -C <dir> …` for every git command, `writ exec -C <dir> -- …` for a program,
+  `writ mark` and `writ close` at the folder. `--agents-md` adds its own pointer line.
+- **The record**, `<folder>/.writ-workspace` (git config format): `writ.mode`, `writ.lease`,
+  `member.<dir>.repo` for each repository (written before the repository is wired, so a run
+  stopped half way is taken back), and the `skill.*` entries. When the folder is a
+  repository, `/.writ-workspace` and the skill's folder go in its `.git/info/exclude`.
+
+At the folder, `writ git` and `writ exec` (when it is no wired repository) and `writ policy`
+(with no repo named) list the repositories; `writ mark` uses the workspace's pinned lease;
+`writ close` records the run in the workspace's timings file, in the section named by the
+lease's repositories, sorted and joined with ` + ` (`api + web`; one repository's is its
+own), from the folder or from any of its repositories.
+
+`writ init --undo` at the folder takes each repository back whose own record names this
+folder (one that doesn't is named and left), then the skill, the exclude lines, the pointer
+lines and the record: every repository's config and the folder as before, the timings file
+aside. In one of its repositories, `--undo` refuses and names the folder. The record is in
+the working folder, the agent's to write too: it is read bounded (a regular file, never a
+link, 64 KiB, at most 256 repositories, each a plain folder name right under the folder or
+`.`), and an undo removes only a `SKILL.md` in a `writ/` or `writ-workspace/` folder that
+still carries Writ's mark, only folders `writ init` made on the way to one (when empty), and
+the pointer line only from an `AGENTS.md` or `CLAUDE.md` (a repository's own undo holds to
+the same). A program that runs git across several repositories at once, and submodules, are
+in the [backlog](../backlog/README.md).
 
 ### Which session a command uses
 
@@ -185,8 +249,11 @@ agents it is asked for (`writ_cli::skill`), in as few folders as possible:
   that is is refreshed.
 - `--agents-md` appends one line pointing at the skill to `AGENTS.md` and `CLAUDE.md` (a new
   `AGENTS.md` when the repo has neither); otherwise the summary prints the line.
-- What `writ init` creates and adds is recorded (`skill.created`, `skill.exclude`,
-  `skill.agentsmd`…), and `--undo` takes exactly that back. `timings.md` stays.
+- What `writ init` creates and adds is recorded (`skill.created`, `skill.createddir`,
+  `skill.exclude`, `skill.agentsmd`…), and `--undo` takes exactly that back: the skill files
+  that are still Writ's, and the folders made for them once empty. `timings.md` stays.
+- At a [workspace](#workspaces) root, the `writ-workspace` skill instead (`writ-workspace/`
+  in the same folders), with the workspace's repositories listed.
 
 `timings.md`, beside the first `SKILL.md` (which names its path), is what the agent learns
 about sizing tickets (`writ_cli::timings`). Front matter holds its limits (`max_lines`,

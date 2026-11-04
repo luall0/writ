@@ -21,6 +21,9 @@ usual. In wrapper mode, your own `git push origin` still goes straight to the re
 
 - `writ init --undo` reverts either mode exactly.
 - One wiring per clone: undo it before switching modes.
+- For one agent at a folder of repositories, run `writ init` in the folder, with no repo
+  name: it wires every repository in it, in the mode you pick
+  ([a folder of repositories](clients.md#a-folder-of-repositories)).
 
 **In wrapper mode:**
 

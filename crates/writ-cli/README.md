@@ -11,8 +11,12 @@ The `writ` binary, for both sides.
   default: only `.git/writ/config`, the agent runs `writ git …` / `writ exec -- …` with the
   settings in the environment) or `--whole-repo` (the settings in the repo's config, for a
   clone dedicated to an agent); `writ init --undo` takes either back exactly. The session a
-  command uses (`WRIT_SESSION`, a pinned lease, `current`).
-- **The agent skill** (`skill`): `skill/writ/SKILL.md` built in, installed by `writ init` for
+  command uses (`WRIT_SESSION`, a pinned lease, `current`). `writ git` finds the repository
+  behind git's global options (`gitopts`); `writ exec -C <dir>` runs in one.
+- **Workspaces** (`workspace`, `init`): `writ init` with no repo named, at a folder of
+  repositories, wires each one, installs the `writ-workspace` skill at the folder and records
+  it in `.writ-workspace`; `--undo` there takes every repository back.
+- **The agent skill** (`skill`): `skill/writ/SKILL.md` (and `skill/writ-workspace/SKILL.md`) built in, installed by `writ init` for
   the agents asked, excluded from git; **the timings file** (`timings`): what `writ close`
   records and how it is compacted.
 - **The end of a lease** (`close`): `writ close` (the report, the run recorded), `writ mark`,

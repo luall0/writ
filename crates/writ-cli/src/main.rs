@@ -3,9 +3,10 @@
 //! Agent side: `writ policy` (what a ticket for the repo may ask), `writ request
 //! <ticket.yaml>` (submit and wait; `--dry-run` checks it only), `writ wait <id>`, `writ init
 //! <repo>` (wire a repository and install the agent skill; `--whole-repo` for a clone
-//! dedicated to an agent, `--undo`), `writ git <args>` and `writ exec -- <program>` (git, or a
-//! program, with the wiring), `writ close` (end the lease: its report, recorded in the
-//! timings file), `writ mark <phase>`, `writ timings`.
+//! dedicated to an agent, `--undo`; with no repo named, a folder of repositories: a
+//! workspace), `writ git <args>` and `writ exec [-C <dir>] -- <program>` (git, or a program,
+//! with the wiring), `writ close` (end the lease: its report, recorded in the timings file),
+//! `writ mark <phase>`, `writ timings`.
 //! Approver side: `writ reader` (the key this machine uses on the approval API), `writ ls`,
 //! `writ report <lease>`,
 //! `writ sign [<id>]` (the trusted display, then an SSHSIG through the approver's
@@ -21,6 +22,7 @@ mod approver;
 mod client;
 mod close;
 mod display;
+mod gitopts;
 mod https;
 mod init;
 mod policy;
@@ -29,6 +31,7 @@ mod session;
 mod skill;
 mod timings;
 mod wiring;
+mod workspace;
 mod wrap;
 
 use std::ffi::OsString;
@@ -151,11 +154,22 @@ enum Commands {
     },
     /// Wire the git repository in the current directory for Writ. By default nothing in its
     /// git config changes: run git through `writ git` to work under the lease (good practice:
-    /// docs/operators/good-practice.md).
+    /// docs/operators/good-practice.md). With no repo named, at a folder of repositories:
+    /// each one level down is wired, for one agent at the folder (a workspace).
     Init {
-        /// The repo's name in the daemon's registry.
-        #[arg(required_unless_present = "undo")]
+        /// The repo's name in the daemon's registry (none: the folder is a workspace).
         repo: Option<RepoName>,
+        /// At a workspace root: the registry name of the repository in <dir> (`-` leaves it
+        /// out; `.` is the folder's own repository). Repeatable; on a terminal, the others
+        /// are asked.
+        #[arg(
+            long = "repo",
+            id = "members",
+            value_name = "DIR=NAME",
+            value_parser = parse_member,
+            conflicts_with_all = ["undo", "repo"],
+        )]
+        members: Vec<(String, Option<RepoName>)>,
         /// Write the settings in the repo's git config: for a clone dedicated to an agent.
         #[arg(long, conflicts_with = "undo")]
         whole_repo: bool,
@@ -192,8 +206,13 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
         args: Vec<OsString>,
     },
-    /// Run a program (that runs git) with the repo's Writ wiring: writ exec -- <program> [args].
+    /// Run a program (that runs git) with the repo's Writ wiring: writ exec [-C <dir>] --
+    /// <program> [args].
     Exec {
+        /// Run it in <dir>, under the wiring of the repository there (one repository per
+        /// process).
+        #[arg(short = 'C', value_name = "DIR")]
+        dir: Option<PathBuf>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<OsString>,
     },
@@ -370,6 +389,10 @@ fn parse_agents(text: &str) -> Result<std::collections::BTreeSet<skill::Agent>, 
     skill::parse_agents(text)
 }
 
+fn parse_member(text: &str) -> Result<(String, Option<RepoName>), String> {
+    workspace::parse_answer(text)
+}
+
 fn parse_phase(text: &str) -> Result<timings::Phase, String> {
     text.parse()
 }
@@ -434,6 +457,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         Commands::Init { undo: true, .. } => init::undo(),
         Commands::Init {
             repo,
+            members,
             whole_repo,
             email,
             url,
@@ -444,9 +468,6 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             agents_md,
             ..
         } => {
-            let repo = repo
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("writ init needs the repo's registry name"))?;
             let url = url
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("writ init needs WRIT_URL (or --url)"))?;
@@ -455,22 +476,36 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             } else {
                 wiring::Mode::Wrapper
             };
-            init::init(
-                &paths,
-                &init::Init {
-                    url,
-                    repo,
-                    mode,
-                    email: email.as_ref(),
-                    lease: lease.as_ref(),
-                    skill: init::SkillChoice {
-                        agents: agents.clone(),
-                        skill_dir: skill_dir.clone(),
-                        global: *global,
-                        agents_md: *agents_md,
+            let skill = init::SkillChoice {
+                agents: agents.clone(),
+                skill_dir: skill_dir.clone(),
+                global: *global,
+                agents_md: *agents_md,
+            };
+            match repo {
+                Some(repo) => init::init(
+                    &paths,
+                    &init::Init {
+                        url,
+                        repo,
+                        mode,
+                        email: email.as_ref(),
+                        lease: lease.as_ref(),
+                        skill,
                     },
-                },
-            )
+                ),
+                None => init::init_workspace(
+                    &paths,
+                    &init::WorkspaceInit {
+                        url,
+                        mode,
+                        email: email.as_ref(),
+                        lease: lease.as_ref(),
+                        skill,
+                        answers: members,
+                    },
+                ),
+            }
         }
         Commands::Close {
             lease,
@@ -492,7 +527,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         ]),
         Commands::Report { id, url } => approver::report(&paths, &url.url, id).await,
         Commands::Git { args } => wrap::git(&paths, args),
-        Commands::Exec { command } => wrap::exec(&paths, command),
+        Commands::Exec { dir, command } => wrap::exec(&paths, dir.as_deref(), command),
         Commands::Reader { name } => {
             session::create_private_dir(&paths.home)?;
             println!("{}", reader::ensure(&paths.reader, name)?);
@@ -656,11 +691,15 @@ mod tests {
         let cli = <Cli as clap::CommandFactory>::command();
         let mut features = Vec::new();
         let flags = |command: &clap::Command| -> Vec<String> {
+            // A flag by its long name, or its short one when it has no long one (`-C`).
             command
                 .get_arguments()
-                .filter_map(|arg| arg.get_long())
-                .filter(|long| !matches!(*long, "help" | "version"))
-                .map(|long| format!("--{long}"))
+                .filter_map(|arg| {
+                    arg.get_long()
+                        .map(|long| format!("--{long}"))
+                        .or_else(|| arg.get_short().map(|short| format!("-{short}")))
+                })
+                .filter(|flag| !matches!(flag.as_str(), "--help" | "--version"))
                 .collect()
         };
         features.extend(flags(&cli).into_iter().map(|flag| format!("writ {flag}")));

@@ -27,6 +27,9 @@ repos:
   backfill:   { upstream: "ssh://git@forgejo/writ/backfill.git", upstream_credential: upstream-backfill, protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Renewed, closed and learned from (scenario 20).
   sessions:   { upstream: "ssh://git@forgejo/writ/sessions.git",   upstream_credential: upstream-sessions,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  # Two repositories of one workspace, one agent at their folder (scenario 21).
+  ws-api:     { upstream: "ssh://git@forgejo/writ/ws-api.git",     upstream_credential: upstream-ws-api,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  ws-web:     { upstream: "ssh://git@forgejo/writ/ws-web.git",     upstream_credential: upstream-ws-web,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Over HTTPS, with a Forgejo token the operator puts in the keystore (no deploy key).
   https:      { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # The same Forgejo repository behind a front whose certificate only the system trusts, not
@@ -34,7 +37,7 @@ repos:
   https-system: { upstream: "https://forgejo-https-system:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
 templates:
   feature:
-    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, protocols, inflight, restart, hostile, busy, notes, backfill, sessions, https, https-system]
+    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, protocols, inflight, restart, hostile, busy, notes, backfill, sessions, ws-api, ws-web, https, https-system]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     force_push: true                 # a ticket may ask for it (none does unless it says so)

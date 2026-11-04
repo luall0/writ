@@ -41,6 +41,7 @@ wrapped row loses the `│` mark that shows text the agent wrote.
 | `<home>/sessions/<lease>/` | Agent host | One per ticket: its session key, its certificate once signed, the lease's terms, and the agent signing key's public half (`signing_key.pub`, for `git verify-commit`), and for an OpenPGP key its certificate (`signing_key.asc`: import it into a GnuPG home to verify). `ended` once it was closed or renewed; `marks`, the agent's `writ mark` lines |
 | `<home>/sessions/current` | Agent host | A link to the latest granted session: what wired repos use when neither `WRIT_SESSION` nor a pinned lease says otherwise |
 | `<skills folder>/writ/SKILL.md`, `timings.md` | Agent host | The agent skill `writ init` installs, and beside the first one what the agent learns about sizing tickets. [The skill](#the-agent-skill) |
+| `<folder>/.writ-workspace`, `<skills folder>/writ-workspace/SKILL.md` | Agent host | A folder of repositories wired at once: what `writ init` did there, and the skill for an agent at that folder. [A folder of repositories](#a-folder-of-repositories) |
 
 ## `writ init` and `writ-sign`
 
@@ -68,7 +69,36 @@ removes exactly what `writ init` wrote.
 - **`--global`** installs the skill in your own folders (`~/.claude/skills`…) instead of the
   repo's.
 - **`--agents-md`** adds a line pointing at the skill to `AGENTS.md` and `CLAUDE.md`.
+- **`--repo <dir>=<name>`**, in a folder of repositories only: the registry name of the
+  repository in `<dir>`, or `-` to leave it out. Give it once per repository.
 - **`--undo`** takes back what `writ init` did. The timings file stays.
+
+## A folder of repositories
+
+Some people keep several repositories in one folder and start one agent at the folder, which
+works on all of them. Run `writ init` in that folder without a repo name. It finds the
+repositories one level down and wires each one, as `writ init <repo>` would in it.
+
+- Each repository needs its name in the daemon's registry. By default it is the last part of
+  its `origin` URL, without `.git`, or else its folder's name. On a terminal, `writ init`
+  shows that default for each repository: press Enter to keep it, type another name, or `-`
+  to leave the repository out. Without a terminal, give `--repo <dir>=<name>` for every
+  repository (`--repo vendor=-` leaves one out); otherwise nothing is wired.
+- When the folder is a git repository itself, it is left out unless you name it:
+  `--repo .=<name>`. Its submodules are never wired.
+- Folders whose names start with `.`, links and plain folders are not wired. Links are named
+  in the summary.
+- The skill goes in the folder only: the `writ-workspace` skill. It tells the agent to name
+  every repository its task changes in one ticket, and to run git as
+  `writ git -C <dir> …`. A program that runs git runs in one repository at a time:
+  `writ exec -C <dir> -- <program>`.
+- In the folder, `writ git` and `writ policy` list the repositories. `writ close` there
+  records the run in the folder's timings file, under the repositories the lease named
+  (`api + web`).
+- `writ init` records the workspace in `<folder>/.writ-workspace`. Run `writ init --undo` in
+  the folder to take every repository back, and the folder too. In one of the repositories,
+  `--undo` refuses and names the folder. The timings file stays.
+- `--whole-repo`, `--email`, `--lease` and the skill's flags apply to every repository.
 
 ## Several agents on one host
 
