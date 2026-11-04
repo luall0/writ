@@ -163,7 +163,7 @@ async fn fetch_reviewed(session: &Approvals, id: &TicketId) -> anyhow::Result<Re
 fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, full: bool) -> String {
     let mut out = display::ticket(signed, reviewed.state, now, full);
     if let Some((view, original)) = &reviewed.renewal {
-        out.push_str(&display::renewal(view, original, full));
+        out.push_str(&display::renewal_section(view, original, full));
     }
     if let Some((relation, previous)) = &reviewed.previous {
         let title = match relation {

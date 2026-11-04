@@ -602,7 +602,7 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
 /// The chain a renewal continues: the original ticket (the task as first signed: agent text,
 /// behind the gutter), which renewal this is, the time used so far, and what the renewed
 /// lease used.
-pub fn renewal(view: &writ_proto::Renewal, original: &Ticket, full: bool) -> String {
+pub fn renewal_section(view: &writ_proto::Renewal, original: &Ticket, full: bool) -> String {
     let mut out = format!(
         "\nRenewal {} of the work started as lease {}\n",
         view.number, original.id
@@ -660,14 +660,17 @@ pub fn others(others: &writ_proto::Others, now: Timestamp) -> String {
     if others.shown.is_empty() {
         return "\nOther active leases from this source: none\n".to_owned();
     }
-    let total = others.shown.len() + usize::try_from(others.more).unwrap_or(usize::MAX);
+    let total = others
+        .shown
+        .len()
+        .saturating_add(usize::try_from(others.more).unwrap_or(usize::MAX));
     let mut out = format!("\nOther active leases from this source ({total})\n");
+    // The flag's meaning once, on a row of its own: every row stays within [`WIDTH`].
+    if others.shown.iter().any(|l| l.overlap) {
+        out.push_str("  OVERLAP: a repo in common with this ticket, and branches that meet\n");
+    }
     for lease in &others.shown {
-        let flag = if lease.overlap {
-            "  OVERLAP: a repo in common, branches that meet"
-        } else {
-            ""
-        };
+        let flag = if lease.overlap { "  OVERLAP" } else { "" };
         let _ = writeln!(
             out,
             "  {}  {} left{flag}",
@@ -1040,8 +1043,109 @@ mod tests {
         t.limits.max_pushes = u32::MAX;
         t.limits.max_ops_per_minute = u32::MAX;
         t.limits.max_push_size = writ_core::units::ByteSize::from_bytes(u64::MAX);
+        // The sections M6 added, at their widest: the renewal's chain, the source's other
+        // leases (each flagged), the activity report (the e2e pipeline found an OVERLAP row
+        // 92 columns wide).
+        let id: writ_core::names::TicketId = "wrt_01M6KRSS6EEJK15XNDVRTNRQ6X".parse().unwrap();
+        let far = writ_core::units::Timestamp::from_unix(253_402_300_799).unwrap();
+        let count = writ_proto::Count {
+            used: u32::MAX,
+            max: u32::MAX,
+        };
+        let renewal = writ_proto::Renewal {
+            original: String::new(),
+            number: u32::MAX,
+            used_seconds: u64::MAX,
+            signatures: count,
+            pushes: count,
+            state: State::Exhausted,
+        };
+        let others = writ_proto::Others {
+            shown: (0..10)
+                .map(|_| writ_proto::OtherLease {
+                    id: id.clone(),
+                    repos: t.scope.repos.iter().cloned().collect(),
+                    branches: t.scope.branches.iter().map(ToString::to_string).collect(),
+                    operations: t.scope.operations.iter().copied().collect(),
+                    expires_at: far,
+                    overlap: true,
+                })
+                .collect(),
+            more: u32::MAX,
+        };
+        let report = writ_proto::Report {
+            lease: id.clone(),
+            state: State::Exhausted,
+            title: t.text.title.clone(),
+            template: t.template.clone(),
+            repos: t.scope.repos.iter().cloned().collect(),
+            expected_paths: t
+                .text
+                .expected_paths
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            summary: Some(forged.repeat(60)),
+            estimate: Some(writ_core::ticket::Estimate {
+                coding: Some(writ_core::units::Duration::from_seconds(30 * 86_400)),
+                checks: Some(writ_core::units::Duration::from_seconds(30 * 86_400)),
+                ci: Some(writ_core::units::Duration::from_seconds(30 * 86_400)),
+            }),
+            chain: vec![
+                writ_proto::ChainLink {
+                    id: id.clone(),
+                    state: State::Renewed,
+                    created_at: far,
+                    expires_at: far,
+                    ended_at: Some(far),
+                    signatures: u32::MAX,
+                    pushes: u32::MAX,
+                };
+                3
+            ],
+            granted_seconds: u64::MAX,
+            used_seconds: u64::MAX,
+            signatures: count,
+            pushes: count,
+            fetches: u64::MAX,
+            commits: vec![
+                writ_proto::ReportCommit {
+                    id: "f".repeat(64).parse().unwrap(),
+                    repo: t.scope.repos.iter().next().unwrap().clone(),
+                    lease: id.clone(),
+                    signed_at: far,
+                };
+                3
+            ],
+            pushed: Vec::new(),
+            branches: t
+                .scope
+                .branches
+                .iter()
+                .map(|b| format!("refs/heads/{b}"))
+                .collect(),
+            denials: vec![writ_proto::DenialCount {
+                code: "paths_changed".to_owned(),
+                count: u64::MAX,
+            }],
+            warnings: vec![forged.repeat(20)],
+            phases: writ_proto::Phases {
+                approval_wait_seconds: Some(u64::MAX),
+                coding_seconds: Some(u64::MAX),
+                ci_rounds_seconds: vec![u64::MAX; 20],
+                after_last_push_seconds: Some(u64::MAX),
+            },
+            truncated: true,
+        };
+        let marks = [
+            (crate::timings::Phase::Checks, u64::MAX),
+            (crate::timings::Phase::Ci, u64::MAX),
+        ];
         for full in [false, true] {
             let mut shown = ticket(&t, State::Pending, t.created_at, full);
+            shown.push_str(&renewal_section(&renewal, &t, full));
+            shown.push_str(&self::others(&others, t.created_at));
+            shown.push_str(&self::report(&report, &marks, full));
             shown.push_str(&summary(&t, true));
             shown.push_str(&changes("Changed", &diff(&full_ticket(), &t)));
             for line in shown.lines() {
