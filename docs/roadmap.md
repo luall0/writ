@@ -219,11 +219,11 @@ the docs repository `commit_sign` alone. Today a ticket has one scope for all it
 must fit one template that allows every one of them, so a multi-repo ticket asks for the
 union and is rejected, or for the intersection and is too narrow. After M6.1.5 a ticket gives
 its scope repository by repository, each part fitting a template that allows that repository,
-and stays one ticket: one approval, one lease, one session, one TTL. Most of the design below was
-settled with the user (the decision log's M6.1.5 rows); the layout is still to decide.
+and stays one ticket: one approval, one lease, one session, one TTL. The design below was
+settled with the user (the decision log's M6.1.5 rows).
 
 [The design page](backlog/per-repository-tickets.md) holds the layout, where each key lives,
-and the question left.
+and how a template is chosen.
 
 - **The layout: the lease's terms, then each repository's, no override.** `common:` (it
   replaces `scope:`) holds the committer emails, `repos:` one block per repository (its
@@ -258,9 +258,10 @@ and the question left.
 - **The committer email is common** to the lease (one signing key, one identity); it moves to
   each repository's block with [a signing key per repository in one
   lease](backlog/README.md#a-signing-key-per-repository-in-one-lease).
-- **`template` in a repository's block**: to decide with the user
-  ([the open question](backlog/per-repository-tickets.md#open-questions); recommended:
-  optional, needed only when several templates fit that repository, as today).
+- **`template` optional in a repository's block**, needed only when several templates fit
+  that repository (the daemon never guesses; the rejection names the repository and the
+  templates that fit), as today ([choosing a
+  template](backlog/per-repository-tickets.md#choosing-a-template)).
 - **Counts per repository only.** Each part's `max_signatures`, `max_pushes` and
   `max_push_size` within its own template's; the daemon counts signatures and pushes per
   repository. No lease-wide cap; the approver sees each part's counts and their sum.
@@ -289,7 +290,8 @@ and the question left.
   `--max-pushes api:2`…), the existing flags without a repository applying to every part;
   the agent told what changed, per repository.
 - **The clients**: `writ policy` for several repos at once (`writ policy api web`: each
-  template with its signing key and lease-wide terms, and whether one ticket can cover them),
+  template with its signing key and lease-wide terms, whether one ticket can cover them, and
+  `repos.<repo>.template` to name when several templates allow a repository),
   `writ check` and `writ request --dry-run` naming the repository of each problem (`writ
   check` naming the place a misplaced key goes), the activity report per
   repository.
@@ -297,7 +299,9 @@ and the question left.
   `writ-workspace` skill teach the ticket as it now reads: the lease's terms, each
   repository's block (its template, operations, branches, files, counts), the lease-wide `limits` (time and rate) held to the strictest
   template, how to read `writ policy` for it (a template's signing key and lease-wide terms),
-  and the per-repository denials and narrowing the agent may be told about. The workspace
+  and the per-repository denials and narrowing the agent may be told about; and how to pick
+  each repository's template from `writ policy` (none written when one fits, the one the
+  task needs named in the block when several do; [the steps](backlog/per-repository-tickets.md#choosing-a-template)). The workspace
   skill also gives the one-lease-per-repository rule and how to work with several sessions
   (`WRIT_SESSION` per repository's commands). Their examples are checked by `writ check`
   in a test, so a skill never shows a ticket the daemon would refuse to read. The texts
@@ -325,6 +329,9 @@ Acceptance:
       per repository.
 - [ ] A workspace task whose templates can't share a lease is done with one lease per
       repository, as the skill says (each repository's commands under its own session).
+- [ ] A repository two templates fit is rejected without a `template` in its block (the
+      repository and both templates named) and accepted naming either; one with a single
+      template needs none; a template that doesn't allow the repository is refused.
 - [ ] Both skills' ticket examples (single repository and workspace) read and pass
       `writ check` in a test; a real agent writes a per-repository ticket from the
       workspace skill alone, and a single-repository ticket from the `writ` skill alone

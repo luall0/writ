@@ -1,6 +1,6 @@
 # Per-repository tickets
 
-**Status:** specified up to one open question; picked as
+**Status:** specified; picked as
 [M6.1.5](../roadmap.md#m615--per-repository-tickets). **Area:** Lease model, Approvals,
 Clients. **Kind:** feature. **Size:** L.
 
@@ -44,7 +44,9 @@ Decided with the user (the decision log's M6.1.5 rows):
 - **Both skills** (`writ` and `writ-workspace`) rewritten for the new layout, their examples
   checked by `writ check` in a test.
 
-To decide: [`template` in the ticket](#open-questions).
+- **`template` optional in each repository's block**, needed only when several templates fit
+  that repository ([choosing a template](#choosing-a-template)); both skills and `writ
+  policy` teach it.
 
 ## The layout
 
@@ -53,7 +55,7 @@ common:                                  # the lease's, for every repository
   committer_emails: ["agent@example.org"]
 repos:                                   # each repository's own terms
   api:
-    template: backend                    # see the open question
+    template: backend                    # needed here: several templates allow api
     operations: [fetch, commit_sign, push]
     branches: ["agent/login"]
     expected_paths: ["src/auth/**"]
@@ -110,22 +112,53 @@ Kept for the record; each was written for the same task.
 - **D. Repositories only, nothing common.** The simplest model, the most repetition; the
   agent's one identity repeated in every block, free to differ for no reason.
 
-## Open questions
+## Choosing a template
 
-1. **`template` in the ticket.** Templates are the daemon's configuration: the operator writes
-   them, the agent never changes one. The ticket's `template` only picks among the templates
-   the operator allows for a repository, and today it is optional: when exactly one template
-   allows the repository and fits, the daemon picks it and the agent writes nothing. It is
-   needed only when several fit, for example a `quick-fix` template (30 minutes,
-   `commit_sign`) and a `feature` template (4 hours, `push`) both on the repository: the
-   daemon then refuses to guess (fail closed: a silent pick would choose a signing key and
-   limits nobody asked for) and the ticket must name one.
-   - (a) Keep `template` optional in each repository's block, needed only when several
-     templates fit that repository. Recommended: the operator keeps several templates per
-     repository (quick fixes beside features), and the approver sees which one applies.
-   - (b) Drop it from the ticket: a repository may be allowed by one template only (the
-     policy refused otherwise; with M6.2, `repos.<name>.templates` holding at most one).
-     Simpler tickets, but one kind of work per repository.
+Templates are the daemon's configuration: the operator writes them, the agent never changes
+one. A repository's block only picks among the templates the operator allows for that
+repository (decided with the user: `template` stays optional, as today):
+
+- **One template allows the repository and fits**: the daemon picks it, the block names none.
+- **Several fit** (a `quick-fix` template, 30 minutes and `commit_sign`, beside a `feature`
+  template, 4 hours and `push`, on one repository): the daemon refuses to guess (fail
+  closed: a silent pick would choose a signing key and limits nobody asked for), and the
+  block must name one (`repos.<name>.template`). The rejection names the repository and the
+  templates that fit.
+- The approver sees the template of each repository on `writ sign`'s screen, picked or named.
+
+It fits [`writ policy`](../architecture/clients.md#what-the-agent-reads-before-it-asks), built
+in M6: the agent reads the templates allowing each repository before it writes the ticket.
+M6.1.5 changes it to match:
+
+- `writ policy <repo>…` (one repository or several) lists, per repository, each template
+  allowing it with its terms, its signing key and its lease-wide terms (`max_ttl`,
+  `max_ops_per_minute`, `max_renewals`, `on_violation`).
+- When several templates allow a repository, it says to name one in that repository's block
+  (`repos.<repo>.template: <name>`), no longer `template:` at the top.
+- With several repositories, it says whether one ticket can cover them: their templates must
+  share one signing key, and the lease's terms are the strictest of them; otherwise one lease
+  per repository.
+
+**Both skills** (`writ` and `writ-workspace`) teach the same, with the new layout:
+
+1. Run `writ policy` for each repository the task touches, before writing the ticket.
+2. For each repository, pick the template that fits the work: the one listed when there is
+   one (then write no `template`), or, when several are listed, the one whose terms the task
+   needs (`quick-fix` for a small fix with no push, `feature` for a branch to push), named in
+   that repository's block. Never a template `writ policy` doesn't list for that repository.
+3. Keep each repository's terms within its template's (operations, branches, emails, counts),
+   and the lease's (`ttl`, rate) within the strictest of the templates picked.
+4. When the repositories' templates name different signing keys, or the strictest lease-wide
+   terms are too tight for the task (`writ policy` says so), ask one lease per repository
+   instead, each with its own `WRIT_SESSION` for that repository's commands (the workspace
+   skill).
+5. Check the ticket with `writ check` and `writ request --dry-run`: a template ambiguity, a
+   template that doesn't allow the repository, or keys in the wrong place come back named,
+   with the repository.
+
+Their ticket examples show one repository with no `template` (one fits) and, in the
+workspace skill, two repositories each naming a different template; `writ check` reads them
+in a test.
 
 ## Design
 
