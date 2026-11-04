@@ -74,6 +74,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
 | [Pending hand edits](#pending-hand-edits) | Administration | improvement | M | idea |
+| [Old upstream histories](#old-upstream-histories) | Upstream | improvement | M | idea; lowest priority, waits for a real repository that needs it |
 
 ## Signers
 
@@ -167,6 +168,29 @@ Bind a session certificate to the source address it was requested from (SSH cert
 Deploy keys or bot accounts so upstream credentials stop having account-wide access, and the
 repo registry is no longer the only per-repo boundary
 ([residual risks](../threat-model.md#residual-risks-v1)).
+
+### Old upstream histories
+
+**Lowest priority: left alone until a real repository needs it.** Since M5.6 (S1), a tree is
+read only with the five modes git writes, and `badFilemode` is an `fsck` error for every git
+the daemon runs, syncs included ([decision log](../decisions.md), 2026-11-03). An upstream
+whose history holds a mode only old tools wrote (`100664`, `100600`, `40755`…: git before mid
+2005, some early converters) can't be mirrored at all: the sync's `fsck` refuses the whole
+fetch. Writ can't rewrite those trees (rule 7, every hash would change); only the repository's
+owner can (`git filter-repo`). Ways to serve them, in order of preference
+([Q40](../decisions.md#open-questions)):
+
+1. **Read modes exactly as git does, proved against git itself**: copy git's `canon_mode`
+   (directory, file, link or submodule from the type bits), with a test that writes one tree
+   holding every mode string Writ accepts (a bounded length, zero-padded forms included) and
+   checks that `git ls-tree` and `writ_git::tree` read every entry alike. Upstream trees then
+   read as git reads them; agent pushes stay strict (an agent's git never writes these modes).
+2. **A narrow exception per repo**, as a stopgap: the registry lists the exact tree ids
+   accepted despite their mode (git's `fsck.skipList`), approved with the policy's signature
+   and audited; a new key with its five steps (rule 19).
+3. **git computes the changed paths** (`git diff-tree`), one reader of trees only: the
+   biggest change (a git process per check, every option pinned, signing's path check no
+   longer pure Rust).
 
 ## Clients
 
