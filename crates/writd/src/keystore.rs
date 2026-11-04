@@ -531,7 +531,11 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"the whole secret");
         assert_eq!(names(dir.path()), ["agent-01.age"]);
         // A directory that doesn't exist: refused, nothing made.
-        assert!(write_private(&dir.path().join("absent/x.age"), b"x").is_err());
+        let error = format!(
+            "{:#}",
+            write_private(&dir.path().join("absent/x.age"), b"x").unwrap_err()
+        );
+        assert!(error.starts_with("cannot create"), "{error}");
         assert_eq!(names(dir.path()), ["agent-01.age"]);
     }
 }
