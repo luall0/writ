@@ -392,11 +392,12 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
         "Ticket"
     };
     let _ = writeln!(out, "{kind} {}", ticket.id);
-    let _ = writeln!(
-        out,
-        "  revision {} · template {} · {state}",
-        t.revision,
-        clean(ticket.template.as_str())
+    let _ = writeln!(out, "  revision {} · {state}", t.revision);
+    // A name of up to 64 characters: a row of its own, cut like any value.
+    labelled(
+        &mut out,
+        Field::Template.label(),
+        &field(ticket, Field::Template),
     );
     let _ = writeln!(
         out,
@@ -490,14 +491,20 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
 pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
     let mut out = String::from("\nYou are signing (enforced):\n");
     let _ = writeln!(out, "  {}", ticket.id);
-    let _ = writeln!(
-        out,
-        "  template {} · expires {}",
-        clean(ticket.template.as_str()),
-        ticket.limits.expires_at
-    );
     // One row each: what doesn't fit says so, and is shown whole above.
     let room = WIDTH.saturating_sub(21);
+    let _ = writeln!(
+        out,
+        "  {:<18} {}",
+        Field::Template.label(),
+        one_row(&field(ticket, Field::Template), room, "(see above)")
+    );
+    let _ = writeln!(
+        out,
+        "  {:<18} {}",
+        Field::ExpiresAt.label(),
+        ticket.limits.expires_at
+    );
     for f in [
         Field::Repos,
         Field::Operations,
@@ -523,15 +530,19 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
         )
     };
     let _ = writeln!(out, "  {:<18} {shown}", Field::ExpectedPaths.label());
+    // Two rows, each within [`WIDTH`] whatever the numbers (the counts are `u32`: 77 columns
+    // at their largest).
     let limits = &ticket.limits;
     let _ = writeln!(
         out,
-        "  {:<18} {} signatures, {} pushes, {}/min, {} per push",
-        "limits",
-        limits.max_signatures,
-        limits.max_pushes,
-        limits.max_ops_per_minute,
-        limits.max_push_size,
+        "  {:<18} {} signatures, {} pushes, {}/min",
+        "limits", limits.max_signatures, limits.max_pushes, limits.max_ops_per_minute,
+    );
+    let _ = writeln!(
+        out,
+        "  {:<18} {}",
+        Field::MaxPushSize.label(),
+        limits.max_push_size
     );
     let _ = writeln!(
         out,
@@ -752,9 +763,16 @@ mod tests {
         t.scope.branches = (0..50)
             .map(|i| format!("agent/{}{i}", "x".repeat(200)).parse().unwrap())
             .collect();
+        t.template = "t".repeat(64).parse().unwrap();
+        // The largest limits a ticket can hold (the e2e pipeline found the limits row 80
+        // columns wide with ordinary ones).
+        t.limits.max_signatures = u32::MAX;
+        t.limits.max_pushes = u32::MAX;
+        t.limits.max_ops_per_minute = u32::MAX;
+        t.limits.max_push_size = writ_core::units::ByteSize::from_bytes(u64::MAX);
         for full in [false, true] {
             let mut shown = ticket(&t, State::Pending, t.created_at, full);
-            shown.push_str(&summary(&t, false));
+            shown.push_str(&summary(&t, true));
             shown.push_str(&changes("Changed", &diff(&full_ticket(), &t)));
             for line in shown.lines() {
                 assert!(width(line) <= WIDTH, "{} columns: {line:?}", width(line));
@@ -777,7 +795,13 @@ mod tests {
                 .take_while(|l| !l.is_empty())
                 .copied()
                 .collect();
-            assert!(summary.len() <= 12, "{summary:#?}");
+            // The heading, the id, eleven rows of terms (the limits on two), the narrowing
+            // note: no term ever takes a second row.
+            assert_eq!(summary.len(), 14, "{summary:#?}");
+            assert!(
+                summary.contains(&"  max push size      18446744073709551615 bytes"),
+                "{summary:#?}"
+            );
             assert!(
                 summary
                     .iter()
@@ -847,7 +871,7 @@ mod tests {
             .rposition(|l| *l == "You are signing (enforced):")
             .unwrap();
         assert!(
-            lines.len() - start <= 12,
+            lines.len() - start <= 13,
             "{} rows of summary",
             lines.len() - start
         );
