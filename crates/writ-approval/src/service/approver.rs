@@ -1,12 +1,13 @@
 //! The approver's side: listing and showing tickets, approving, refusing, revoking.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use writ_core::caller::{CallerFacts, ProcessRef};
 use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, Renewed, State, TicketRecord};
 use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::signed::{Refusal, Revocation};
-use writ_core::ticket::Ticket;
+use writ_core::ticket::{Operation, Ticket};
 use writ_core::units::Timestamp;
 use writ_crypto::ca::CertificateRequest;
 use writ_crypto::ssh_key::{HashAlg, PublicKey};
@@ -127,12 +128,12 @@ impl Service {
                 .saturating_add(1),
             used_seconds,
             signatures: Count {
-                used: usage.signatures,
-                max: renewed.ticket.limits.max_signatures,
+                used: usage.total().signatures,
+                max: renewed.ticket.max_signatures(),
             },
             pushes: Count {
-                used: usage.pushes,
-                max: renewed.ticket.limits.max_pushes,
+                used: usage.total().pushes,
+                max: renewed.ticket.max_pushes(),
             },
             state: renewed.state,
         }))
@@ -178,17 +179,29 @@ impl Service {
         let mut listed: Vec<OtherLease> = leases
             .iter()
             .map(|lease| {
-                let scope = &lease.ticket.scope;
-                let overlap = scope.repos.iter().any(|r| ticket.scope.repos.contains(r))
-                    && scope
-                        .branches
-                        .iter()
-                        .any(|b| ticket.scope.branches.iter().any(|mine| mine.intersects(b)));
+                let theirs = &lease.ticket.repos;
+                // The same repository, with branches both may write.
+                let overlap = theirs.iter().any(|(repo, other)| {
+                    ticket.terms(repo).is_some_and(|mine| {
+                        other
+                            .branches
+                            .iter()
+                            .any(|b| mine.branches.iter().any(|m| m.intersects(b)))
+                    })
+                });
+                let branches: BTreeSet<String> = theirs
+                    .values()
+                    .flat_map(|t| t.branches.iter().map(ToString::to_string))
+                    .collect();
+                let operations: BTreeSet<Operation> = theirs
+                    .values()
+                    .flat_map(|t| t.operations.iter().copied())
+                    .collect();
                 OtherLease {
                     id: lease.id.clone(),
-                    repos: scope.repos.iter().cloned().collect(),
-                    branches: scope.branches.iter().map(ToString::to_string).collect(),
-                    operations: scope.operations.iter().copied().collect(),
+                    repos: theirs.keys().cloned().collect(),
+                    branches: branches.into_iter().collect(),
+                    operations: operations.into_iter().collect(),
                     expires_at: lease.ticket.limits.expires_at,
                     overlap,
                 }
@@ -760,9 +773,9 @@ fn summary(record: &TicketRecord) -> Summary {
         id: ticket.id.clone(),
         lease: ticket.lease_id().clone(),
         state: record.state,
-        template: ticket.template.clone(),
+        templates: ticket.templates().into_iter().cloned().collect(),
         revision: ticket.text.revision,
-        repos: ticket.scope.repos.iter().cloned().collect(),
+        repos: ticket.repos.keys().cloned().collect(),
         created_at: ticket.created_at,
         expires_at: ticket.limits.expires_at,
         title: ticket.text.title.clone(),

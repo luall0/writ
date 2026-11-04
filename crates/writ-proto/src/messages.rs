@@ -324,7 +324,8 @@ pub struct Summary {
     /// The lease it belongs to (itself, or the lease an amendment amends).
     pub lease: TicketId,
     pub state: State,
-    pub template: TemplateName,
+    /// Each repository's template, each once (in repository order).
+    pub templates: Vec<TemplateName>,
     pub revision: u32,
     pub repos: Vec<RepoName>,
     pub created_at: Timestamp,
@@ -437,8 +438,11 @@ pub struct Report {
     pub lease: TicketId,
     pub state: State,
     pub title: String,
-    pub template: TemplateName,
+    /// Each repository's template, each once (in repository order).
+    pub templates: Vec<TemplateName>,
     pub repos: Vec<RepoName>,
+    /// Every repository's expected paths: `<repo>: <path>` when the lease names several
+    /// repositories, the path alone when it names one.
     pub expected_paths: Vec<String>,
     pub summary: Option<String>,
     pub estimate: Option<Estimate>,

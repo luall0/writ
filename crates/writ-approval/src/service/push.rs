@@ -68,8 +68,9 @@ impl Service {
                 return Err(denial);
             }
         };
-        let checked = policy::check_operation(&lease, Operation::Push)
-            .and_then(|()| policy::check_repo(&lease, repo));
+        let checked = policy::check_allowed_anywhere(&lease, Operation::Push)
+            .and_then(|()| policy::check_repo(&lease, repo))
+            .and_then(|()| policy::check_operation(&lease, repo, Operation::Push));
         match checked {
             Ok(()) => Ok(lease),
             Err(denial) => {
@@ -120,12 +121,19 @@ impl Service {
             self.after_violation(inner, &lease, &denial);
             return Err(denial);
         }
-        let max = lease.ticket.limits.max_pushes;
+        let repo = &request.repo;
+        let max = lease
+            .ticket
+            .terms(repo)
+            .map_or(0, |terms| terms.limits.max_pushes);
         // Under the same lock as the decision; the store still refuses past the limit.
-        match inner.store.consume(&lease.id, Counter::Push, max, now) {
+        match inner
+            .store
+            .consume(&lease.id, repo, Counter::Push, max, now)
+        {
             Ok(true) => {}
             Ok(false) => {
-                let reason = format!("lease {}: all {max} pushes used", lease.id);
+                let reason = format!("lease {}: all {max} pushes used in repo {repo}", lease.id);
                 return Err(refuse(
                     &mut inner,
                     &event,

@@ -242,6 +242,20 @@ impl Ticket {
             .any(|terms| terms.operations.contains(&operation))
     }
 
+    /// Every repository's `max_signatures` added up (what the approver sees as the total).
+    pub fn max_signatures(&self) -> u32 {
+        self.repos
+            .values()
+            .fold(0u32, |sum, t| sum.saturating_add(t.limits.max_signatures))
+    }
+
+    /// Every repository's `max_pushes` added up.
+    pub fn max_pushes(&self) -> u32 {
+        self.repos
+            .values()
+            .fold(0u32, |sum, t| sum.saturating_add(t.limits.max_pushes))
+    }
+
     /// The templates its repositories fit, each once.
     pub fn templates(&self) -> BTreeSet<&TemplateName> {
         self.repos.values().map(|terms| &terms.template).collect()

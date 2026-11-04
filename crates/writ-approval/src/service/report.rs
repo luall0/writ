@@ -173,8 +173,8 @@ impl Service {
                 expires_at: each.ticket.limits.expires_at,
                 ended_at: (each.state != State::Active)
                     .then(|| times.updated_at.min(each.ticket.limits.expires_at)),
-                signatures: usage.signatures,
-                pushes: usage.pushes,
+                signatures: usage.total().signatures,
+                pushes: usage.total().pushes,
             });
         }
         commits.sort_by_key(|c| c.signed_at);
@@ -186,12 +186,12 @@ impl Service {
             .min(lease.ticket.limits.expires_at);
         Ok(Gathered {
             signatures: Count {
-                used: usage.signatures,
-                max: lease.ticket.limits.max_signatures,
+                used: usage.total().signatures,
+                max: lease.ticket.max_signatures(),
             },
             pushes: Count {
-                used: usage.pushes,
-                max: lease.ticket.limits.max_pushes,
+                used: usage.total().pushes,
+                max: lease.ticket.max_pushes(),
             },
             summary: inner.store.summary(id).map_err(internal)?,
             lease,
@@ -285,13 +285,21 @@ fn build(gathered: Gathered, lines: &[AuditLine], truncated: bool) -> Report {
         lease: gathered.lease.id.clone(),
         state: gathered.lease.state,
         title: ticket.text.title.clone(),
-        template: ticket.template.clone(),
-        repos: ticket.scope.repos.iter().cloned().collect(),
+        templates: ticket.templates().into_iter().cloned().collect(),
+        repos: ticket.repos.keys().cloned().collect(),
         expected_paths: ticket
-            .text
-            .expected_paths
+            .repos
             .iter()
-            .map(ToString::to_string)
+            .flat_map(|(repo, terms)| {
+                let several = ticket.repos.len() > 1;
+                terms.expected_paths.iter().map(move |path| {
+                    if several {
+                        format!("{repo}: {path}")
+                    } else {
+                        path.to_string()
+                    }
+                })
+            })
             .collect(),
         summary: gathered.summary.clone(),
         estimate: ticket.text.estimate,

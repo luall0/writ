@@ -249,6 +249,20 @@ fn ran_out(lease: &TicketId, code: DenyCode, what: impl fmt::Display) -> Denial 
     }
 }
 
+/// Whether the lease allows `operation` in any repository (a connection, before the
+/// repository is known); otherwise an out-of-scope denial with the amendment hint.
+pub fn check_allowed_anywhere(lease: &Lease, operation: Operation) -> Result<(), Denial> {
+    if lease.ticket.allows_anywhere(operation) {
+        Ok(())
+    } else {
+        Err(outside(
+            &lease.id,
+            DenyCode::Operation,
+            format_args!("{operation} not allowed"),
+        ))
+    }
+}
+
 /// Whether the lease allows `operation` in `repo`; outside it, an out-of-scope denial with
 /// the amendment hint.
 pub fn check_operation(lease: &Lease, repo: &RepoName, operation: Operation) -> Result<(), Denial> {
@@ -437,13 +451,7 @@ fn admit<'a>(
     caller::check(lease.ticket.subject.caller.as_ref(), ctx.caller)
         .map_err(|e| deny(DenyCode::Caller, e.to_string()))?;
     // An operation the lease allows nowhere is named first, as before per-repository terms.
-    if !lease.ticket.allows_anywhere(operation) {
-        return Err(outside(
-            id,
-            DenyCode::Operation,
-            format_args!("{operation} not allowed"),
-        ));
-    }
+    check_allowed_anywhere(lease, operation)?;
     check_repo(lease, repo)?;
     check_operation(lease, repo, operation)?;
     let Some(terms) = lease.ticket.terms(repo) else {

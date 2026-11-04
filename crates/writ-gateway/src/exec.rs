@@ -116,16 +116,21 @@ async fn run_git(
             // The smaller of the lease's and the template's in force, as the hook decides it;
             // never 0, which git reads as no limit (refused at load and at submission).
             let policy = refusing.gateway.service().policy();
-            let max_push_size = policy
-                .template(&lease.ticket.template)
-                .map(|template| writ_core::policy::max_push_size(&lease.ticket, template))
+            let max_push_size = lease
+                .ticket
+                .terms(repo)
+                .and_then(|terms| {
+                    policy
+                        .template(&terms.template)
+                        .map(|template| writ_core::policy::max_push_size(terms, template))
+                })
                 .filter(|max| *max > 0);
             match max_push_size {
                 Some(max) => run_prepared(refusing, repo, max, prepared, channel).await,
                 None => {
                     let reason = format!(
-                        "lease {}: its template {} is no longer configured",
-                        lease.id, lease.ticket.template
+                        "lease {}: repo {repo}'s template is no longer configured",
+                        lease.id
                     );
                     let reason = refusing.deny(reason, Some(repo)).await;
                     refuse(channel, reason).await;
@@ -171,7 +176,7 @@ async fn authorize(
         }
         Refusal::Logged(denial.to_string())
     })?;
-    if !lease.ticket.scope.repos.contains(repo) {
+    if !lease.ticket.repos.contains_key(repo) {
         return Err(Refusal::Unlogged(format!(
             "outside ticket {}: repo {repo} is not in the lease",
             lease.id

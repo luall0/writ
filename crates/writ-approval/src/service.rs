@@ -628,7 +628,7 @@ impl Service {
 
     /// The public key (OpenSSH text) commits are signed with under `ticket`, if it signs.
     fn signing_public_key(&self, ticket: &Ticket) -> Result<Option<String>, ServiceError> {
-        let Some(id) = &ticket.scope.signing_key else {
+        let Some(id) = &ticket.common.signing_key else {
             return Ok(None);
         };
         let key = writ_signer::public_key(&*self.opened()?.signer, id).map_err(internal)?;
@@ -639,7 +639,7 @@ impl Service {
     /// in OpenPGP.
     fn signing_certificate(&self, ticket: &Ticket) -> Option<String> {
         ticket
-            .scope
+            .common
             .signing_key
             .as_ref()
             .and_then(|id| self.openpgp_certificate(id))

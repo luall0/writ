@@ -407,7 +407,7 @@ async fn read_updates(
     Ok(facts)
 }
 
-/// The commits the push brings (at most the lease's `max_signatures`, and
+/// The commits the push brings (at most the repository's `max_signatures` in the lease, and
 /// [`MAX_PUSH_COMMITS`]), each with the digest of the paths it touches when the ledger holds
 /// it for this lease and repo with its paths: the others are decided without them (refused,
 /// or nothing to compare), so they are never walked.
@@ -418,7 +418,11 @@ async fn read_commits(
     lease: &Lease,
     repo: &RepoName,
 ) -> Result<Vec<(CommitId, Option<String>)>, String> {
-    let max = usize::try_from(lease.ticket.limits.max_signatures)
+    let signatures = lease
+        .ticket
+        .terms(repo)
+        .map_or(0, |terms| terms.limits.max_signatures);
+    let max = usize::try_from(signatures)
         .unwrap_or(usize::MAX)
         .min(MAX_PUSH_COMMITS);
     let new_commits = quarantine

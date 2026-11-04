@@ -32,7 +32,7 @@ impl Service {
             .lease_for(&mut inner, cert, caller, now)
             .and_then(|lease| {
                 if let Some(operation) = operation {
-                    policy::check_operation(&lease, operation)?;
+                    policy::check_allowed_anywhere(&lease, operation)?;
                 }
                 Ok(lease)
             });
@@ -112,7 +112,7 @@ impl Service {
         // active whatever happens.
         match inner
             .store
-            .consume(&lease.id, Counter::Fetch, u32::MAX, now)
+            .consume(&lease.id, repo, Counter::Fetch, u32::MAX, now)
         {
             Ok(true) => {}
             Ok(false) => {

@@ -84,7 +84,7 @@ impl Service {
         )?;
         let mut event = AuditEvent::new(now, EventKind::DryRun, Outcome::Allowed)
             .caller(caller)
-            .reason(format!("fits template {}", ticket.template));
+            .reason(format!("fits {}", fitted(&ticket)));
         // The lease it would amend or renew; its own id is never used.
         if ticket.lease_id() != &ticket.id {
             event = event.lease(ticket.lease_id());
@@ -336,8 +336,11 @@ impl Service {
             // Telegram turns URLs and @mentions in it into links. `writ sign` shows the title.
             title: format!("{kind} waiting"),
             message: format!(
-                "{} (template {}, revision {}). To review it: writ sign {}",
-                ticket.id, ticket.template, ticket.text.revision, ticket.id
+                "{} ({}, revision {}). To review it: writ sign {}",
+                ticket.id,
+                fitted(ticket),
+                ticket.text.revision,
+                ticket.id
             ),
             priority: Priority::Default,
             tags: vec!["writ".to_owned(), "ticket".to_owned()],
@@ -446,5 +449,15 @@ impl Service {
             }
         };
         Ok(Ok(decision))
+    }
+}
+
+/// The templates a ticket fits, for a line of the log or a notification: `template t`, or
+/// `templates a, b` (each repository's, each once).
+fn fitted(ticket: &writ_core::ticket::Ticket) -> String {
+    let names: Vec<String> = ticket.templates().iter().map(ToString::to_string).collect();
+    match names.as_slice() {
+        [one] => format!("template {one}"),
+        _ => format!("templates {}", names.join(", ")),
     }
 }

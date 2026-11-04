@@ -228,8 +228,9 @@ impl Service {
                 return Err(denial);
             }
         };
-        let checked = policy::check_operation(&lease, Operation::CommitSign)
-            .and_then(|()| policy::check_repo(&lease, repo));
+        let checked = policy::check_allowed_anywhere(&lease, Operation::CommitSign)
+            .and_then(|()| policy::check_repo(&lease, repo))
+            .and_then(|()| policy::check_operation(&lease, repo, Operation::CommitSign));
         match checked {
             Ok(()) => Ok(()),
             Err(denial) => {
@@ -305,7 +306,7 @@ impl Service {
             }
         };
         let (SignObject::Commit { commit, .. }, Some(key)) =
-            (&signing.object, &lease.ticket.scope.signing_key)
+            (&signing.object, &lease.ticket.common.signing_key)
         else {
             // The policy refuses both before this point (`ObjectType`, `Config`).
             tracing::error!("an allowed signature without a commit or a signing key");
@@ -332,13 +333,23 @@ impl Service {
         }
         // An OpenPGP signature's time: a 32-bit count of seconds.
         let time = u32::try_from(now.unix()).unwrap_or(u32::MAX);
-        let max = lease.ticket.limits.max_signatures;
+        let repo = &signing.repo;
+        let max = lease
+            .ticket
+            .terms(repo)
+            .map_or(0, |terms| terms.limits.max_signatures);
         // Under the same lock as the decision: the counter can't have moved, but the store
         // refuses past the limit whatever happens.
-        match inner.store.consume(&lease.id, Counter::Signature, max, now) {
+        match inner
+            .store
+            .consume(&lease.id, repo, Counter::Signature, max, now)
+        {
             Ok(true) => {}
             Ok(false) => {
-                let reason = format!("lease {}: all {max} signatures used", lease.id);
+                let reason = format!(
+                    "lease {}: all {max} signatures used in repo {repo}",
+                    lease.id
+                );
                 return Err(deny(
                     &mut inner,
                     &event,
@@ -446,9 +457,9 @@ impl Service {
         // still fit the template in force, as the first phase checked.
         if let Err(why) = writ_core::fit::fits(&self.policy(), &current.ticket) {
             let reason = format!(
-                "lease {} no longer fits template {}: {why} (changed while the commit was being \
-                 signed); the signature was discarded",
-                current.id, current.ticket.template
+                "lease {} no longer fits its templates: {why} (changed while the commit was \
+                 being signed); the signature was discarded",
+                current.id
             );
             return Err(deny(inner, event, Denial::new(DenyCode::Config, reason)));
         }

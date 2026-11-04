@@ -257,6 +257,16 @@ impl Usage {
     pub fn of(&self, repo: &RepoName) -> RepoUsage {
         self.repos.get(repo).copied().unwrap_or_default()
     }
+
+    /// Every repository's counts added up (for the report and the approver's screen).
+    pub fn total(&self) -> RepoUsage {
+        self.repos
+            .values()
+            .fold(RepoUsage::default(), |sum, used| RepoUsage {
+                signatures: sum.signatures.saturating_add(used.signatures),
+                pushes: sum.pushes.saturating_add(used.pushes),
+            })
+    }
 }
 
 /// Feedback a refusal may carry: not blank, at most
