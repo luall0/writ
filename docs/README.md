@@ -53,8 +53,7 @@ conventions, hard rules and commands, and points here for details.
   refusing, narrowing.
 - [Identity](architecture/identity.md): session keys and daemon-issued certificates, local
   mode process chain checks.
-- [Clients](architecture/clients.md): `writ` CLI, agent skill, `writ-sign`, `writ try`,
-  harness, git config of an agent host.
+- [Clients](architecture/clients.md): `writ` CLI, agent skill, `writ-sign`, harness, git config of an agent host.
 - [Deployment](architecture/deployment.md): Docker compose, network exposure, host hardening.
 
 ## Engineering

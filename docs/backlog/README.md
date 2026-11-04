@@ -69,12 +69,13 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
 | [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
-| [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | idea |
+| [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | picked as [M7.1](../roadmap.md#m71--local-mode-on-linux) |
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
 | [One program, several repositories](#one-program-several-repositories) | Clients | feature | M | idea (left out of [M6.1](../roadmap.md#m61--multi-repo-workspaces)) |
 | [Submodules](#submodules) | Clients, Gateway | feature | M | idea (left out of [M6.1](../roadmap.md#m61--multi-repo-workspaces)) |
+| [Managing the daemon from the CLI](daemon-management-from-the-cli.md) | Administration, Signers, Upstream, Clients | improvement | L | specified; picked as [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) |
 | [Pending hand edits](#pending-hand-edits) | Administration | improvement | M | idea |
 | [Old upstream histories](#old-upstream-histories) | Upstream | improvement | M | idea; lowest priority, waits for a real repository that needs it |
 
@@ -156,7 +157,8 @@ Same, on the iPhone (Secure Enclave + Face ID), to approve away from the Mac.
 `writ-platform-linux`: a `CallerAttestor` from `SO_PEERCRED` and `/proc` (executable path,
 start time as the pid's generation) and a pidfd `SessionWatcher`, so leases bound to a session
 work for agents on a Linux workstation too. Only implementations and a config preset
-([Platform interfaces](../architecture/platform.md)).
+([Platform interfaces](../architecture/platform.md)). Picked: the plan is
+[M7.1](../roadmap.md#m71--local-mode-on-linux).
 
 ### Source-address pinning
 

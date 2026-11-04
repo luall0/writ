@@ -6,7 +6,7 @@ the signed ticket becomes a scoped, time-boxed **lease**. The daemon `writd` hol
 signing keys and the credentials for the remotes (GitHub, Codeberg, Forgejo…), is the
 agents' git remote, checks every signature and push against the lease, and is the only thing
 that pushes upstream. Rust; detached mode (Docker on Linux) and local mode (native on the
-Mac), same protocol.
+Mac, or on Linux from M7.1), same protocol.
 
 Full documentation lives in [`docs/`](docs/README.md). This file holds what every agent must
 know before touching the repo.
@@ -195,7 +195,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Secure Enclave on the Mac without a paid Apple account, the local daemon isolated from my user | [docs/architecture/macos-secure-enclave.md](docs/architecture/macos-secure-enclave.md) |
 | Approver signatures, `writ sign` display, refusing, narrowing (`writ-approval`, `writ-crypto`) | [docs/architecture/approvals.md](docs/architecture/approvals.md) |
 | Session keys, certificates, revocation, local mode process chain | [docs/architecture/identity.md](docs/architecture/identity.md) |
-| `writ` CLI, `writ-sign`, the agent skill, `writ try`, agent host git config | [docs/architecture/clients.md](docs/architecture/clients.md) |
+| `writ` CLI, `writ-sign`, the agent skill, agent host git config | [docs/architecture/clients.md](docs/architecture/clients.md) |
 | Docker, compose, network exposure, host hardening, launchd | [docs/architecture/deployment.md](docs/architecture/deployment.md) |
 | Setting the daemon up, every key of `writd.yaml`, `policy.yaml`, the ticket file and the clients' settings, good practice beside an agent | [docs/operators/](docs/operators/README.md) |
 | Crates, external tool versions, pinning | [docs/stack.md](docs/stack.md) |

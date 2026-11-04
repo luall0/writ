@@ -28,7 +28,7 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
 | `repos.<name>.upstream` | URL | **required** | Where the daemon fetches and pushes: `ssh://[user@]host[:port]/path` or `https://[user@]host[:port]/path`. Printable ASCII. Never `http://`, never a password in the URL, no user or host starting with `-` ([gateway](../architecture/gateway.md#upstream)) |
-| `repos.<name>.upstream_credential` | Key id | **required** | The SSH key (`writd upstream-keys` prints it) or, for `https://`, the token ([how](setup.md#https-upstreams-and-tokens)) the daemon uses for `upstream`. An id is a key or a token, never both |
+| `repos.<name>.upstream_credential` | Key id | **required** | The SSH key (`writd upstream-keys` prints it) or, for `https://`, the token ([how](setup.md#https-upstreams-and-tokens)) the daemon uses for `upstream`. An id is a key or a token, never both. Declared with its kind and algorithm in [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) |
 | `repos.<name>.protected_refs` | Ref patterns | `[]` | Refs no lease may push, whatever its branches: full refs (`refs/heads/main`, `refs/tags/*`), ignoring case |
 | `repos.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | How pushes may reach upstream. [Push modes](#push-modes) |
 | `repos.<name>.ticket_link` | `ledger_only`, `trailer` or `notes` | `ledger_only` | How a commit shows its lease on the remote. [Linking commits](#linking-commits-to-leases-ticket_link) |
@@ -71,7 +71,7 @@ the agent gets every reason.
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
-| `templates.<name>.repos` | Repo names, at least one | **required** | The repos a ticket may ask for. Each must be in the registry |
+| `templates.<name>.repos` | Repo names, at least one | **required** | The repos a ticket may ask for. Each must be in the registry. In [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) each repo names its templates instead |
 | `templates.<name>.operations` | `fetch`, `commit_sign`, `push`, at least one | **required** | The operations a ticket may ask for |
 | `templates.<name>.branches` | Branch patterns | `[]` | The branches a ticket may ask for: short names, at most one trailing `*` (`agent/*`, `agent/fix-*`). Required with `commit_sign` or `push` |
 | `templates.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | The [push modes](#push-modes) its leases may use, within each repo's |

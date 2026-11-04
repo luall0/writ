@@ -44,4 +44,42 @@ spike decided ([macOS Secure Enclave](macos-secure-enclave.md#m0-results)). The 
 awake for agents to work while I'm away (lid open, or on power with a display); with FileVault
 the daemon starts at the first login after a boot. It is
 the local [configuration preset](platform.md#configuration-presets), with the macOS
-implementations plugged in. Built in [M7](../roadmap.md#m7--local-mode-on-the-mac).
+implementations plugged in. Installed by the [installer](#installing-and-uninstalling)'s
+`local` setup. Built in [M7](../roadmap.md#m7--local-mode-on-the-mac).
+
+## Local (Linux)
+
+The same on a Linux workstation: a systemd system service running as the dedicated system
+user `writd`, its state in `/var/lib/writ` (`0700`), the agents' socket in `/run/writ/`
+reachable through a `writ` group my user is in, with the Linux process chain (`SO_PEERCRED`
+and `/proc`) and a pidfd watcher. Installed by the installer's `local` setup. Built in
+[M7.1](../roadmap.md#m71--local-mode-on-linux).
+
+## Installing and uninstalling
+
+One installer for every setup: `make install` asks which setup to install, offering only
+those this build has on this OS (`SETUP=<name>` answers without asking), and
+`make uninstall` takes back whichever was installed.
+
+| Setup | Where | What it installs | Built in |
+|---|---|---|---|
+| `local` | The Mac | The `_writd` user, the binaries, the LaunchDaemon, `writd init`, my user's `~/.writ/` | [M7](../roadmap.md#m7--local-mode-on-the-mac) |
+| `local` | A Linux workstation | The `writd` user and `writ` group, the binaries, the systemd unit, `writd init`, my user's `~/.writ/` | [M7.1](../roadmap.md#m71--local-mode-on-linux) |
+| `detached` | The daemon host (Linux, Docker) | The image, the compose file and `writd.yaml`, the volumes, `writd init`, the stack started | [M8](../roadmap.md#m8--detached-deployment) |
+| `client` | A machine using a detached daemon (the approver's Mac, an agent host) | `writ` and `writ-sign`, `~/.writ/` with the daemon's endpoints and pins, the approval and reader keys on the approver's machine | [M8](../roadmap.md#m8--detached-deployment) |
+
+Every setup shares the same frame:
+
+- `DRY_RUN=1` lists every change and makes none.
+- The installer runs as my user and asks `sudo` only for the steps that need root; secrets
+  (the keystore's passphrase) are asked on the terminal, never stored or passed as an
+  argument.
+- It writes a manifest as it goes, so a failed install stops and says what was done, and the
+  uninstall removes exactly what was made, nothing else.
+- Run again, it upgrades: new binaries (or image), the daemon restarted in order, the
+  keystore, state, configuration and pins kept.
+- `make uninstall` keeps the daemon's data (keystore, state, ledger, audit log, or the Docker
+  volumes) unless `PURGE=1` is confirmed on the terminal. On a machine where agents work, it
+  lists the repos `writ init` wired (`~/.writ/repos`) and asks whether to take Writ out of
+  them too: yes runs `writ init --undo` in each, as my user; no leaves them wired and names
+  them. With no terminal, `REPOS=undo` or `REPOS=keep` answers, or it refuses.

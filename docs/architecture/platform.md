@@ -15,8 +15,8 @@ a YubiKey) means writing an implementation of an existing interface and register
 |---|---|---|---|
 | `Signer` | Where keys live and how they sign ([signer.md](signer.md)) | Software (age keystore) | YubiKey PIV, TPM, Secure Enclave, ssh-agent |
 | `Transport` | How clients reach the daemon; every transport carries the same SSH protocol | TCP (SSH gateway); Unix socket (local mode) | — |
-| `CallerAttestor` | What the network or the kernel says about the caller, as `CallerFacts` | Network (source address); macOS process chain (local mode) | Linux process chain |
-| `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS (local mode) | Linux |
+| `CallerAttestor` | What the network or the kernel says about the caller, as `CallerFacts` | Network (source address); macOS process chain (local mode); Linux process chain (local mode, M7.1) | — |
+| `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS (local mode); Linux pidfd (local mode, M7.1) | — |
 | `KeystoreUnlock` | How the keystore's data key is recovered at unseal | Passphrase + approver signature | M7.6: generalized into a recipient unwrapping one secret ([hardware-wrapped secrets](../backlog/hardware-wrapped-secrets.md)); the Secure Enclave, a recovery identity; later YubiKey, TPM, cloud KMS |
 | `Notifier` | How I'm told something is waiting or went wrong | Telegram (Bot API) | Native macOS notifications, approver apps, any other sink |
 | `Clock` | What time it is: every expiry, rate window and certificate validity | The system clock | — |
@@ -158,7 +158,7 @@ attach refused).
 | `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, Telegram notifier, passphrase unlock, system clock), and, behind a `testing` feature, fakes of each trait and the contract suites (`writ_platform::contract`) every implementation runs |
 | `writ-signer` | The `Signer` trait, the software backend, cross-platform hardware backends behind Cargo features (YubiKey) |
 | `writ-platform-macos` | Everything macOS-only: process hardening (M5: `PT_DENY_ATTACH` in its one `unsafe` module), later Unix socket transport extras, process chain attestor (libproc, code signature), kqueue watcher, the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and `KeystoreUnlock` |
-| `writ-platform-linux` | Linux-only implementations: process hardening (M5, through `rustix`, no `unsafe`); later `SO_PEERCRED` + `/proc` attestor, pidfd watcher, TPM |
+| `writ-platform-linux` | Linux-only implementations: process hardening (M5, through `rustix`, no `unsafe`); from M7.1 the `SO_PEERCRED` + `/proc` attestor and the pidfd watcher; later TPM |
 | `writd` | `platform.rs`: builds the set of implementations from the configuration and the target OS. The **only** place outside the platform crates with `#[cfg(target_os = …)]` |
 
 The Unix socket transport itself is portable (Unix), so it lives in `writ-platform`; what is

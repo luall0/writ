@@ -66,7 +66,7 @@ Each step is drawn in [Flows](flows.md).
 | Mode | Where the daemon runs | Typical signer |
 |---|---|---|
 | **Detached** | Linux server, Docker (homelab) | Software keys (v1), YubiKey / TPM later |
-| **Local** | My Mac, native | Secure Enclave |
+| **Local** | My Mac, native (a Linux workstation from [M7.1](roadmap.md#m71--local-mode-on-linux)) | Secure Enclave on the Mac, software keys on Linux |
 
 Same daemon, same protocol. Details in [Architecture overview](architecture/overview.md#deployment-modes).
 
@@ -80,7 +80,9 @@ approval is bounded to what the agent keys can do.
 
 - Personal use (my own projects)
 - Detached mode in Docker with a software signer; signer interface ready for YubiKey
-- Local mode on the Mac
+- Local mode on the Mac and on Linux
+- One installer for every setup (local, detached, client), and an uninstall that leaves the
+  machine as it was
 - SSH and OpenPGP commit signing, each key declared with its algorithm and hash
   ([M5.5](roadmap.md#m55--signature-formats-and-key-algorithms)); push/fetch through the daemon's git gateway; upstream over SSH to any
   remote (GitHub, Codeberg, Forgejo, GitLab…)

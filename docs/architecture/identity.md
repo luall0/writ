@@ -48,4 +48,6 @@ None of this is special-cased in the core: the Unix socket is a `Transport`, the
 produced by a `CallerAttestor` as `CallerFacts`, exit notices come from a `SessionWatcher`, and
 `writ-core` checks the lease's caller constraint against the facts, denying when a fact is
 missing ([Platform interfaces](platform.md#caller-facts-and-the-policy)). The macOS
-implementations live in `writ-platform-macos`; a Linux one can be added the same way.
+implementations live in `writ-platform-macos`; the Linux ones (`SO_PEERCRED` and `/proc`, a
+pidfd watcher, no code identity) come the same way in `writ-platform-linux`
+([M7.1](../roadmap.md#m71--local-mode-on-linux)).

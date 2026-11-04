@@ -76,7 +76,7 @@ flowchart LR
 | Approval service | Verifies approver SSHSIGs over tickets, admin changes and unseal requests | [approvals.md](approvals.md) |
 | Session identity, process chain | Daemon-issued SSH certificates; kernel peer checks in local mode | [identity.md](identity.md) |
 | Platform interfaces | `Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnlock`, `Notifier` (and `Signer`): what makes a mode a configuration | [platform.md](platform.md) |
-| Clients | `writ` CLI, agent skill, `writ-sign`, `writ try`, harness | [clients.md](clients.md) |
+| Clients | `writ` CLI, agent skill, `writ-sign`, harness | [clients.md](clients.md) |
 | Deployment | Docker compose, network exposure, host hardening | [deployment.md](deployment.md) |
 
 ## Repository layout

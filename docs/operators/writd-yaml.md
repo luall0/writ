@@ -36,7 +36,8 @@ moved aside at the next start, never applied. To change them:
 ## Signing keys: `signing_keys.<id>`
 
 Each key agents' commits are signed with, declared once. `<id>` is the name a template's
-`signing_key` uses.
+`signing_key` uses. These declarations move to the signed policy in
+[M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli), with the upstream credentials.
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
@@ -88,7 +89,7 @@ Programs are named by absolute path, never looked up in `PATH`, and checked at s
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
-| `mirrors.known_hosts` | Path | **required** | The remotes' SSH host keys, pinned by hand. An authority file ([how](setup.md#upstream-keys-and-host-keys)) |
+| `mirrors.known_hosts` | Path | **required** | The remotes' SSH host keys, pinned by hand. An authority file ([how](setup.md#upstream-keys-and-host-keys)). Moves to the signed policy in [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) |
 | `mirrors.ca_certs` | Path | the system's CAs | For `https://` upstreams behind your own CA: a PEM file that **replaces** the system's CAs. An authority file ([how](setup.md#https-upstreams-and-tokens)) |
 | `mirrors.git` | Absolute path | `/usr/bin/git` | The git the daemon runs: 2.45 or newer, 2.47 for `https://` upstreams |
 | `mirrors.ssh` | Absolute path | `/usr/bin/ssh` | The OpenSSH client for `ssh://` upstreams |
