@@ -33,7 +33,7 @@ an unchanged core.
 | M4.7 | [Ticket link in git notes](history/m4.7-ticket-link-in-git-notes.md) ✅ | `ticket_link: notes`: each pushed commit's lease in a git note (`refs/notes/commits`, or `refs/notes/writ`), written and pushed by the daemon after the branch, merged with the remote's, the commit untouched |
 | M5 | [Sealed start and admin changes](history/m5-sealed-start-and-signed-admin-changes.md) ✅ | Encrypted keystore (one age file per secret, a boot tier for the transport keys), `writd init`, `writ unseal`, signed admin changes to approvers, readers, templates and registry applied live, keys made by a signed policy, `writ admin token`, process hardening, the end-to-end pipeline on the sealed keystore |
 | M5.5 | [Signature formats and key algorithms](history/m5.5-signature-formats-and-key-algorithms.md) ✅ | OpenPGP commit signatures beside SSH; each signing key declared with its format, algorithm (Ed25519, P-256, P-384, RSA 3072/4096) and hash, checked against its backend at start; `writd keys create` |
-| M5.6 | [Review after M5.5](#m56--review-after-m55) | The security and code quality review after M5 and M5.5 and its fixes: tree modes read as git reads them, upload-pack in protocol v0, admin changes bound to their version, a removed approver's leases revoked, the author checked like the committer, a bounded trusted display, notes appended, the three test layers hardened |
+| M5.6 | [Review after M5.5](history/m5.6-review-after-m5.5.md) ✅ | The security and code quality review after M5 and M5.5 and its fixes: tree modes read as git reads them, upload-pack in protocol v0, admin changes bound to their version, a removed approver's leases revoked, the author checked like the committer, a bounded trusted display, notes appended, the three test layers hardened |
 | M5.7 | [Memory wiped on free](#m57--memory-wiped-on-free) | A zero-on-free allocator in `writd`, `writ` and `writ-sign`, so no library's freed copy of a secret stays in memory; measured under heavy load, then on by default or a build of its own |
 | M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
@@ -163,37 +163,17 @@ the `Signer` with the hash and a `RawSignature`, RSA through `aws-lc-rs`, P-384,
 declared in `writd.yaml` (format, algorithm, hash, backend) and checked at start, OpenPGP user
 ids in the policy, `writd keys create`, OpenPGP v4 signatures and certificates written by the
 daemon, `writ-sign` as `gpg.openpgp.program`, `writ prove-key` for an OpenPGP key, end-to-end
-scenario 18 on Forgejo. The integration and end-to-end runs are left for the user.
+scenario 18 on Forgejo. Its integration and end-to-end runs passed with M5.6's.
 
 ## M5.6 — Review after M5.5
 
-A stop between M5.5 and M6, asked for by the user: a security and code quality review of the
-whole code after M5 and M5.5 (about 48,000 lines of sources, their tests, the tooling and the
-docs), a report discussed in the chat, then every finding fixed except those a later milestone
-takes (below), each with the test that would have caught it, and the rules of
-[security.md](security.md) and [conventions.md](conventions.md) sharpened so the next change
-doesn't bring them back. No new feature beyond what the fixes need. The findings, their
-fixes and what is left: [history/m5.6-review-after-m5.5.md](history/m5.6-review-after-m5.5.md)
-(in progress until the user's `make ci` and `make e2e`, then a second review pass).
-
-Decided with the user:
-
-- **Upload-pack speaks protocol v0 only** (S4): in v2, git ignores
-  `uploadpack.allow*SHA1InWant` and serves any object the mirror holds by its id. The agent's
-  `GIT_PROTOCOL` is not passed to `upload-pack`; `uploadpack.allowReachableSHA1InWant=true`
-  keeps `git fetch origin <sha>` of a reachable commit working, an unreachable one refused.
-- **Removing an approver revokes the leases it signed** (L5), in the same admin change: one
-  audit line each, their certificates barred at once, named in the change's reply.
-- **The author is checked like the committer** (D2): its email must be in the lease's
-  `committer_emails`, denied with its own code.
-- **A note a commit already has keeps its form** (L11): the `Writ:` line is appended once, the
-  person's note left as written (no more `cat_sort_uniq`).
-- **A signed admin change names the version it replaces** (S3), not only its digest, so a
-  change can't be applied again after the text comes back to an earlier version.
-- **Left to later milestones**, each written into its section: SIGTERM handled as an orderly
-  stop (M7 for launchd, M8 for `docker stop`); `writd keys create` refused while the daemon
-  runs, like `writd recover` (M7); a whole-repo clone's signing settings following the lease
-  in force (M6).
+**Done.** Moved to [history/m5.6-review-after-m5.5.md](history/m5.6-review-after-m5.5.md):
+the review after M5 and M5.5 and every finding fixed with its test (a tree read only with the
+modes git writes, upload-pack in protocol v0, admin changes bound to their daemon and version,
+a removed approver's leases revoked, the author checked, a trusted display within 78 columns,
+notes appended), the three test layers and the source rules hardened, a second review in four
+passes; SIGTERM (M7, M8), `writd keys create` while the daemon runs (M7) and a whole-repo
+clone following its lease (M6) left in their sections. `make ci` and `make e2e` passed.
 
 ## M5.7 — Memory wiped on free
 
