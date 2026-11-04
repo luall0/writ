@@ -21,7 +21,7 @@ use crate::lease::{Lease, State, Usage, is_exhausted};
 use crate::names::{CommitId, KeyFingerprint, RepoName, TicketId};
 use crate::pattern::{PathSet, RefName};
 use crate::text;
-use crate::ticket::Operation;
+use crate::ticket::{Operation, RepoTerms};
 use crate::units::Timestamp;
 
 /// The window of `max_ops_per_minute`.
@@ -249,16 +249,16 @@ fn ran_out(lease: &TicketId, code: DenyCode, what: impl fmt::Display) -> Denial 
     }
 }
 
-/// Whether the lease allows `operation`; outside it, an out-of-scope denial with the
-/// amendment hint.
-pub fn check_operation(lease: &Lease, operation: Operation) -> Result<(), Denial> {
-    if lease.ticket.allows(operation) {
+/// Whether the lease allows `operation` in `repo`; outside it, an out-of-scope denial with
+/// the amendment hint.
+pub fn check_operation(lease: &Lease, repo: &RepoName, operation: Operation) -> Result<(), Denial> {
+    if lease.ticket.allows(repo, operation) {
         Ok(())
     } else {
         Err(outside(
             &lease.id,
             DenyCode::Operation,
-            format_args!("{operation} not allowed"),
+            format_args!("{operation} not allowed in repo {repo}"),
         ))
     }
 }
@@ -266,7 +266,7 @@ pub fn check_operation(lease: &Lease, operation: Operation) -> Result<(), Denial
 /// Whether the lease names `repo`; outside it, an out-of-scope denial with the amendment
 /// hint.
 pub fn check_repo(lease: &Lease, repo: &RepoName) -> Result<(), Denial> {
-    if lease.ticket.scope.repos.contains(repo) {
+    if lease.ticket.repos.contains_key(repo) {
         Ok(())
     } else {
         Err(outside(
@@ -413,12 +413,13 @@ pub struct FetchRequest {
     pub repo: RepoName,
 }
 
-/// The checks every operation starts with. Returns the template and the repo entry.
+/// The checks every operation starts with. Returns the repository's template, its registry
+/// entry and its terms in the lease.
 fn admit<'a>(
     ctx: &Context<'a>,
     operation: Operation,
     repo: &RepoName,
-) -> Result<(&'a Template, &'a RepoEntry), Denial> {
+) -> Result<(&'a Template, &'a RepoEntry, &'a RepoTerms), Denial> {
     let lease = ctx.lease;
     let id = &lease.id;
     match lease.state {
@@ -435,12 +436,26 @@ fn admit<'a>(
     }
     caller::check(lease.ticket.subject.caller.as_ref(), ctx.caller)
         .map_err(|e| deny(DenyCode::Caller, e.to_string()))?;
-    check_operation(lease, operation)?;
+    // An operation the lease allows nowhere is named first, as before per-repository terms.
+    if !lease.ticket.allows_anywhere(operation) {
+        return Err(outside(
+            id,
+            DenyCode::Operation,
+            format_args!("{operation} not allowed"),
+        ));
+    }
     check_repo(lease, repo)?;
-    let (Some(template), Some(entry)) = (
-        ctx.config.template(&lease.ticket.template),
-        ctx.config.repo(repo),
-    ) else {
+    check_operation(lease, repo, operation)?;
+    let Some(terms) = lease.ticket.terms(repo) else {
+        return Err(outside(
+            id,
+            DenyCode::Repo,
+            format_args!("repo {repo} not allowed"),
+        ));
+    };
+    let (Some(template), Some(entry)) =
+        (ctx.config.template(&terms.template), ctx.config.repo(repo))
+    else {
         return Err(deny(
             DenyCode::Config,
             format!("lease {id}: its template or repo {repo} is no longer configured"),
@@ -449,19 +464,17 @@ fn admit<'a>(
     fit::fits(ctx.config, &lease.ticket).map_err(|why| {
         deny(
             DenyCode::Config,
-            format!(
-                "lease {id} no longer fits template {}: {why}",
-                lease.ticket.template
-            ),
+            format!("lease {id} no longer fits its templates: {why}"),
         )
     })?;
-    Ok((template, entry))
+    Ok((template, entry, terms))
 }
 
-/// The largest push the lease may make under `template` (the one in force): the smaller of
-/// the two. What the gateway hands git (`receive.maxInputSize`) before the hook decides.
-pub fn max_push_size(ticket: &crate::ticket::Ticket, template: &Template) -> u64 {
-    ticket
+/// The largest push the lease may make to a repository with `terms` under `template` (the
+/// one in force): the smaller of the two. What the gateway hands git (`receive.maxInputSize`)
+/// before the hook decides.
+pub fn max_push_size(terms: &RepoTerms, template: &Template) -> u64 {
+    terms
         .limits
         .max_push_size
         .bytes()
@@ -486,7 +499,7 @@ fn check_rate(ctx: &Context<'_>) -> Result<(), Denial> {
 
 /// May the daemon sign this object under the lease?
 pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, Denial> {
-    let (template, entry) = admit(ctx, Operation::CommitSign, &request.repo)?;
+    let (template, entry, terms) = admit(ctx, Operation::CommitSign, &request.repo)?;
     let lease = ctx.lease;
     let id = &lease.id;
     let mut allowed = Allowed::default();
@@ -520,7 +533,7 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
             ),
         ));
     }
-    if lease.ticket.scope.signing_key.is_none() {
+    if lease.ticket.common.signing_key.is_none() {
         return Err(deny(
             DenyCode::Config,
             format!("lease {id} has no signing key"),
@@ -528,7 +541,7 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
     }
     let email_allowed = lease
         .ticket
-        .scope
+        .common
         .committer_emails
         .iter()
         .any(|e| e.as_str() == request.committer_email);
@@ -544,7 +557,7 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
     }
     let author_allowed = lease
         .ticket
-        .scope
+        .common
         .committer_emails
         .iter()
         .any(|e| e.as_str() == request.author_email);
@@ -559,7 +572,7 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
             ),
         ));
     }
-    if let Some(name) = &lease.ticket.scope.committer_name {
+    if let Some(name) = &lease.ticket.common.committer_name {
         for (code, who, found) in [
             (
                 DenyCode::CommitterName,
@@ -611,27 +624,28 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
     }
     // The count and the rate first: they are cheap, and a request refused by them never
     // pays for the path match (the review after M5.5, S8).
-    if ctx.usage.signatures >= lease.ticket.limits.max_signatures {
+    if ctx.usage.of(&request.repo).signatures >= terms.limits.max_signatures {
         return Err(deny(
             DenyCode::Limit,
             format!(
-                "lease {id}: all {} signatures used",
-                lease.ticket.limits.max_signatures
+                "lease {id}: all {} signatures used in repo {}",
+                terms.limits.max_signatures, request.repo
             ),
         ));
     }
     check_rate(ctx)?;
-    check_paths(ctx, template, request, &mut allowed)?;
+    check_paths(ctx, template, terms, request, &mut allowed)?;
     Ok(allowed)
 }
 
 fn check_paths(
     ctx: &Context<'_>,
     template: &Template,
+    terms: &RepoTerms,
     request: &SignRequest,
     allowed: &mut Allowed,
 ) -> Result<(), Denial> {
-    let expected = &ctx.lease.ticket.text.expected_paths;
+    let expected = &terms.expected_paths;
     if template.paths_check == PathsCheck::Off || expected.is_empty() {
         return Ok(());
     }
@@ -695,10 +709,9 @@ fn list_paths(paths: &[&str]) -> String {
 
 /// May this push go upstream under the lease?
 pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, Denial> {
-    let (template, entry) = admit(ctx, Operation::Push, &request.repo)?;
+    let (template, entry, scope) = admit(ctx, Operation::Push, &request.repo)?;
     let lease = ctx.lease;
     let id = &lease.id;
-    let scope = &lease.ticket.scope;
 
     match request.mode {
         PushMode::Gateway | PushMode::Proxy => {}
@@ -814,7 +827,7 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
             ));
         }
     }
-    let max_size = max_push_size(&lease.ticket, template);
+    let max_size = max_push_size(scope, template);
     if request.pack_size > max_size {
         return Err(outside(
             id,
@@ -822,12 +835,12 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
             format_args!("the push is {} bytes, over {max_size}", request.pack_size),
         ));
     }
-    if ctx.usage.pushes >= lease.ticket.limits.max_pushes {
+    if ctx.usage.of(&request.repo).pushes >= scope.limits.max_pushes {
         return Err(deny(
             DenyCode::Limit,
             format!(
-                "lease {id}: all {} pushes used",
-                lease.ticket.limits.max_pushes
+                "lease {id}: all {} pushes used in repo {}",
+                scope.limits.max_pushes, request.repo
             ),
         ));
     }

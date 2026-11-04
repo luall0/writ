@@ -12,13 +12,14 @@
 //! [`activate_renewal`] and [`apply_amendment`] (the approval service) verifies it before
 //! calling them.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::PolicyConfig;
-use crate::names::{KeyFingerprint, TicketId};
+use crate::names::{KeyFingerprint, RepoName, TicketId};
 use crate::net::Source;
 use crate::ticket::Operation;
 use crate::ticket::Ticket;
@@ -235,12 +236,27 @@ impl Lease {
 }
 
 /// What a lease has used so far, gathered by the daemon from the store.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Usage {
+    /// Each repository's counts (a repository with none used yet may be missing).
+    pub repos: BTreeMap<RepoName, RepoUsage>,
+    /// Allowed operations in the last [`crate::policy::RATE_WINDOW_SECONDS`], every
+    /// repository together (one rate per lease).
+    pub ops_last_minute: u32,
+}
+
+/// What a lease used in one repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RepoUsage {
     pub signatures: u32,
     pub pushes: u32,
-    /// Allowed operations in the last [`crate::policy::RATE_WINDOW_SECONDS`].
-    pub ops_last_minute: u32,
+}
+
+impl Usage {
+    /// The counts of `repo` (zero when none is used yet).
+    pub fn of(&self, repo: &RepoName) -> RepoUsage {
+        self.repos.get(repo).copied().unwrap_or_default()
+    }
 }
 
 /// Feedback a refusal may carry: not blank, at most
@@ -411,17 +427,21 @@ fn check_approval(
     Ok(())
 }
 
-/// Whether every operation the lease allows is used up: signatures (with `commit_sign`) and
-/// pushes (with `push`). `fetch` has no count, so a lease that allows it is never exhausted:
-/// it ends by expiry, closing or revocation. (This keeps exhaustion monotone: dropping an
-/// operation while narrowing never revives a used-up lease.)
+/// Whether every operation the lease allows is used up, in every repository: signatures
+/// (with `commit_sign`) and pushes (with `push`). `fetch` has no count, so a repository that
+/// allows it is never used up: the lease ends by expiry, closing or revocation. (This keeps
+/// exhaustion monotone: dropping an operation while narrowing never revives a used-up lease.)
 pub fn is_exhausted(ticket: &Ticket, usage: &Usage) -> bool {
-    let signs = ticket.allows(Operation::CommitSign);
-    let pushes = ticket.allows(Operation::Push);
-    !ticket.allows(Operation::Fetch)
-        && (signs || pushes)
-        && (!signs || usage.signatures >= ticket.limits.max_signatures)
-        && (!pushes || usage.pushes >= ticket.limits.max_pushes)
+    !ticket.repos.is_empty()
+        && ticket.repos.iter().all(|(repo, terms)| {
+            let has = |op| terms.operations.contains(&op);
+            let (signs, pushes) = (has(Operation::CommitSign), has(Operation::Push));
+            let used = usage.of(repo);
+            !has(Operation::Fetch)
+                && (signs || pushes)
+                && (!signs || used.signatures >= terms.limits.max_signatures)
+                && (!pushes || used.pushes >= terms.limits.max_pushes)
+        })
 }
 
 /// The state an active lease should move to now, if any (`expired` first, then `exhausted`).

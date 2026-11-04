@@ -349,7 +349,10 @@ const MOVED: [(&str, &str); 10] = [
     ("scope.force_push", "repos.<repo>.force_push"),
     ("scope.committer_emails", "common.committer_emails"),
     ("ticket.expected_paths", "repos.<repo>.expected_paths"),
-    ("limits.max_signatures", "repos.<repo>.limits.max_signatures"),
+    (
+        "limits.max_signatures",
+        "repos.<repo>.limits.max_signatures",
+    ),
     ("limits.max_pushes", "repos.<repo>.limits.max_pushes"),
     ("limits.max_push_size", "repos.<repo>.limits.max_push_size"),
 ];
@@ -378,7 +381,11 @@ pub fn old_layout(text: &str) -> Vec<String> {
     if keys.template.is_some() {
         found.push("template");
     }
-    for (section, map) in [("scope", &keys.scope), ("ticket", &keys.ticket), ("limits", &keys.limits)] {
+    for (section, map) in [
+        ("scope", &keys.scope),
+        ("ticket", &keys.ticket),
+        ("limits", &keys.limits),
+    ] {
         if let Some(map) = map {
             for key in map.keys() {
                 found.push(match (section, key.as_str()) {

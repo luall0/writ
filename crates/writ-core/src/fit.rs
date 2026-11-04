@@ -13,8 +13,8 @@ use crate::lease::{Lease, Renewed, State, TicketRecord};
 use crate::names::{CommitterName, Email, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
 use crate::ticket::Operation;
 use crate::ticket::{
-    Common, Limits, RepoLimits, RepoTerms, RequestRepo, Subject, Ticket, TicketKind,
-    TicketRequest, TicketText,
+    Common, Limits, RepoLimits, RepoTerms, RequestRepo, Subject, Ticket, TicketKind, TicketRequest,
+    TicketText,
 };
 use crate::units::{Duration, Timestamp};
 
@@ -159,12 +159,16 @@ fn check_repo(
         reasons.push(format!("{at}.operations is empty"));
     }
     for op in terms.operations.difference(&template.operations) {
-        reasons.push(format!("{at}: operation {op} is not allowed by the template"));
+        reasons.push(format!(
+            "{at}: operation {op} is not allowed by the template"
+        ));
     }
     let signs = terms.operations.contains(&Operation::CommitSign);
     let pushes = terms.operations.contains(&Operation::Push);
     if (signs || pushes) && terms.branches.is_empty() {
-        reasons.push(format!("{at}: commit_sign and push need at least one branch"));
+        reasons.push(format!(
+            "{at}: commit_sign and push need at least one branch"
+        ));
     }
     if terms.branches.len() > MAX_BRANCHES {
         reasons.push(format!(
@@ -264,10 +268,14 @@ fn check_common(ticket: &Ticket, named: &[Named<'_>], reasons: &mut Vec<String>)
         // Nothing signs: no key or name, or still a template's after a narrowing dropped
         // commit_sign.
         let key_ok = common.signing_key.as_ref().is_none_or(|key| {
-            named.iter().any(|(_, _, t)| t.signing_key.as_ref() == Some(key))
+            named
+                .iter()
+                .any(|(_, _, t)| t.signing_key.as_ref() == Some(key))
         });
         let name_ok = common.committer_name.as_ref().is_none_or(|name| {
-            named.iter().any(|(_, _, t)| t.committer_name.as_ref() == Some(name))
+            named
+                .iter()
+                .any(|(_, _, t)| t.committer_name.as_ref() == Some(name))
         });
         if !key_ok {
             reasons.push("common.signing_key must be a template's signing key".to_owned());
@@ -280,12 +288,18 @@ fn check_common(ticket: &Ticket, named: &[Named<'_>], reasons: &mut Vec<String>)
     if common.committer_emails.is_empty() {
         reasons.push("commit_sign needs at least one committer email".to_owned());
     }
-    let keys: BTreeSet<Option<&KeyId>> = signing.iter().map(|(_, _, t)| t.signing_key.as_ref()).collect();
+    let keys: BTreeSet<Option<&KeyId>> = signing
+        .iter()
+        .map(|(_, _, t)| t.signing_key.as_ref())
+        .collect();
     if keys.len() > 1 {
         let each: Vec<String> = signing
             .iter()
             .map(|(repo, name, t)| {
-                let key = t.signing_key.as_ref().map_or("none".to_owned(), |k| k.to_string());
+                let key = t
+                    .signing_key
+                    .as_ref()
+                    .map_or("none".to_owned(), |k| k.to_string());
                 format!("{repo} (template {name}, key {key})")
             })
             .collect();
@@ -318,9 +332,7 @@ fn check_common(ticket: &Ticket, named: &[Named<'_>], reasons: &mut Vec<String>)
             each.join(", ")
         ));
     } else if names.first().copied().flatten() != common.committer_name.as_ref() {
-        reasons.push(
-            "common.committer_name must be the templates' committer_name".to_owned(),
-        );
+        reasons.push("common.committer_name must be the templates' committer_name".to_owned());
     }
 }
 
@@ -474,7 +486,9 @@ pub fn check_request(request: &TicketRequest) -> Vec<String> {
             .iter()
             .any(|op| matches!(op, Operation::CommitSign | Operation::Push));
         if needs_branch && asked.branches.is_empty() {
-            reasons.push(format!("{at}: commit_sign and push need at least one branch"));
+            reasons.push(format!(
+                "{at}: commit_sign and push need at least one branch"
+            ));
         }
         let branches = asked.branches.iter().collect::<BTreeSet<_>>().len();
         if branches > MAX_BRANCHES {
@@ -562,7 +576,9 @@ pub fn submit(
 ) -> Result<Ticket, Rejection> {
     let (revision, previous_feedback) = check_links(request, submission)?;
     if request.repos.is_empty() {
-        return Err(Rejection::one("repos is empty: name at least one repository"));
+        return Err(Rejection::one(
+            "repos is empty: name at least one repository",
+        ));
     }
     if request.repos.len() > MAX_REPOS {
         return Err(Rejection::one(format!(
@@ -855,10 +871,7 @@ fn build(
         },
         limits: Limits {
             expires_at,
-            max_ops_per_minute: limits
-                .max_ops_per_minute
-                .or(strictest_rate)
-                .unwrap_or(1),
+            max_ops_per_minute: limits.max_ops_per_minute.or(strictest_rate).unwrap_or(1),
         },
         on_violation: request.on_violation,
     })
