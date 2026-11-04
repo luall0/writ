@@ -113,6 +113,12 @@ ledger, the paths again, case twins), accepted pushes upstream before the mirror
 The throwaway GitHub repo check is left for the user
 ([manual checks](guides/manual-checks.md#a-throwaway-github-repo-m4)).
 
+## M4.1 — Real end-to-end scenarios
+
+**Done.** Moved to [history/m4.1-real-end-to-end-scenarios.md](history/m4.1-real-end-to-end-scenarios.md):
+the operator's and the agent's paths run for real in containers against Forgejo, in CI; every
+command and flag in a scenario; the guides' commands the ones the pipeline runs.
+
 ## M4.5 — HTTPS upstream
 
 **Done.** Moved to [history/m4.5-https-upstream.md](history/m4.5-https-upstream.md): an
@@ -142,6 +148,13 @@ pushed after the branch by a notes job under the mirror lock (merged with `cat_s
 the remote's ref moved, one retry, the notes waiting for the next push otherwise); unsigned
 notes commits; the commits untouched.
 
+## M5 — Sealed start and signed admin changes
+
+**Done.** Moved to [history/m5-sealed-start-and-signed-admin-changes.md](history/m5-sealed-start-and-signed-admin-changes.md):
+the encrypted keystore and its boot tier, `writd init`, `writ unseal`, signed admin changes
+to approvers, readers and the policy applied live, keys made by a signed policy, `writ admin
+token`, process hardening.
+
 ## M5.5 — Signature formats and key algorithms
 
 **Done.** Moved to [history/m5.5-signature-formats-and-key-algorithms.md](history/m5.5-signature-formats-and-key-algorithms.md):
@@ -158,7 +171,9 @@ whole code after M5 and M5.5 (about 48,000 lines of sources, their tests, the to
 docs), a report discussed in the chat, then every finding fixed except those a later milestone
 takes (below), each with the test that would have caught it, and the rules of
 [security.md](security.md) and [conventions.md](conventions.md) sharpened so the next change
-doesn't bring them back. No new feature beyond what the fixes need.
+doesn't bring them back. No new feature beyond what the fixes need. The findings, their
+fixes and what is left: [history/m5.6-review-after-m5.5.md](history/m5.6-review-after-m5.5.md)
+(in progress until the user's `make ci` and `make e2e`, then a second review pass).
 
 Decided with the user:
 

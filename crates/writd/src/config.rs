@@ -14,6 +14,9 @@
 //!   in_all: 60                       # all sources together
 //! sign_requests:                     # held at once (16 in all, daemon-wide)
 //!   per_lease: 4                     # per lease, 1 to 16
+//! signing_keys:                      # every key a template's signing_key names (M5.5)
+//!   agent-01: { format: ssh, algorithm: ed25519 }      # hash: the strongest allowed
+//!   agent-pgp: { format: openpgp, algorithm: p256, hash: sha256 }
 //! keystore:
 //!   sealed:                          # M5: one age file per secret, sealed at start
 //!     dir: data/keys                 # every secret but the boot tier's (0700)

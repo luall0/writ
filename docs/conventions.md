@@ -88,6 +88,12 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   cases beats two `Option`s that are `Some` together.
 - **No parameter that is always one value**: a constant the callee owns (the SSHSIG namespace
   `git` in `Service::sign`) is one less input to trust.
+- **A type that stands for a check's result has private fields** and is made only by the
+  check (`CheckedAdmin`, `CheckedToken`): holding one proves the check ran, whatever order
+  its callers call things in.
+- **One function for one job across crates**: what two clients both need (the terminal
+  escaping, a URL's parsing) lives once, in the crate they share (`writ_core::text::escaped`),
+  so the two can't drift (`writ-sign` once took a port `writ` refused).
 
 ## Errors
 
@@ -132,6 +138,16 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   Client side: `writ-cli`'s `session` (`create_private_dir`, `write_private`, `load_key`).
 - **Key material moves, it isn't copied**: when a library takes ownership (rustls), no other
   copy is kept.
+- **A buffer that will hold a secret never grows by itself**: a `Vec` or `String` that grows
+  frees its smaller buffer unwiped, a copy of the secret in each. Size it up front
+  (`String::with_capacity`), or grow it into a new `Zeroizing` buffer by hand
+  (`limits::read_within`).
+- **A secret's file is written whole**: to a private temporary file beside it, synced, then
+  linked into place (never over a file there) and the directory synced; the temporary file
+  removed whatever happens (`keystore::write_private`).
+- **Redaction covers every form a secret comes back in** (as is, and as the protocol sends it:
+  `base64(user:token)` for HTTP Basic), and runs again after the text is cleaned: a hidden
+  character inside the secret is stripped by the cleaning and would rebuild it.
 
 ## Logging and the audit log
 
@@ -156,8 +172,18 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   `spawn_blocking` (`Gateway::authorize`, `api::blocking`). No lock is held across an `.await`.
 - **Nothing slow under the service's state lock**: no signer call, device, network or
   subprocess while it is held, since every approval, revocation and decision waits on it.
-  Decide under the lock, act outside, check again under the lock (`Service::sign`'s three
-  phases). What is reserved in the first phase is never given back on failure.
+  Decide under the lock, act outside, check again under the lock, against the policy in force
+  too (`Service::sign`'s three phases). What is reserved in the first phase is never given
+  back on failure. **Nor under any other lock a change needs**: a value read under a lock for
+  a slow call is copied out first: `match self.lock().get(..) { Some(&v) => slow(v) }` holds
+  the guard for the whole arm (`Service::openpgp_created`). Work done under the lock is
+  bounded by the input's bounds (the path match by the ticket's), cheap checks first.
+- **A request that changes state runs to its end**: on a task of its own, never inside a
+  future its transport drops when the client goes away (hyper drops an HTTPS request's on
+  EOF); only the reply is lost. **A wait for a client ends with it**: raced against its
+  channel (`writ wait`).
+- **A task that serves connections owns them**: in a `JoinSet` its abort ends, never spawned
+  loose (dropping a `JoinHandle` detaches the task, it doesn't stop it).
 - **Bounded everything** from untrusted peers: every read has a limit and refuses past it
   (`MAX_BODY`, `MAX_SIGN_INPUT`, `MAX_HOOK_INPUT`), handshakes and headers have timeouts, and a
   cut-short input is refused rather than decided on in part.
@@ -169,6 +195,12 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   `GIT_SSH_COMMAND` from `writ git` / `writ exec`). A client that acts on them checks that it
   runs in the context they were made for, and refuses with both sides named otherwise
   (`writ-sign` and `writ.gitdir`). A convenience, never a boundary: the daemon decides.
+- **A client file that pins trust** (`known_hosts`, `tls_pins`) is the user's (or root's)
+  and writable by nobody else, checked on the file opened (`client::read_pins`): whoever could
+  rewrite a pin could stand in for the daemon.
+- **What the trusted display prints fits 80 columns, row by row** (`display::WIDTH`): agent
+  text goes through `display::block` or `display::cut`, each continuation behind the gutter;
+  the terminal never wraps a row.
 
 ## Comments and docs
 

@@ -37,7 +37,7 @@ deny = [
     { crate = "openssl", reason = "TLS is rustls with ring" },
     { crate = "openssl-sys", reason = "TLS is rustls with ring" },
     { crate = "native-tls", reason = "TLS is rustls with ring" },
-    { crate = "rsa", reason = "RSA keys are not accepted; the crate has a known timing side channel (Marvin)" },
+    { crate = "rsa", reason = "RSA keys sign through aws-lc-rs (constant time); this crate has a known timing side channel (Marvin)" },
     { crate = "tracing-log", reason = "a log bridge would print ureq's URLs, which hold the bot token, at trace level" },
     { crate = "env_logger", reason = "logging goes through tracing only (writd installs the one subscriber)" },
 ]

@@ -30,11 +30,17 @@ one of them answers it in its commit message. "Not touched" is a valid answer; s
 
 1. **Inputs.** Does it add or change an untrusted input (a field, a command, a file, a
    header)? It is in the [inventory](#untrusted-inputs), with its size, time and count
-   bounds (in bytes as well as in count, including what is built from it), its parser, and a
-   hostile-input test; costly work on it comes after the cheapest authorization check.
+   bounds (in bytes as well as in count, including what is built from it, and in CPU for
+   what is matched under a lock), its parser, and a hostile-input test; costly work on it
+   comes after the cheapest authorization check. A format another program also reads (a git
+   tree, a protocol) is read as that program reads it, or what it reads differently is
+   refused ([parsed as git parses](#untrusted-inputs)).
 2. **Authority.** Does it add a way to grant, widen or read? It goes through an approver
    signature (grants), a reader key (reads), or a template (scope), never a flag or a client
-   check (hard rules 1, 5).
+   check (hard rules 1, 5). A signed document that changes state names what it applies to
+   once and only there: the daemon, and the version it replaces by a number that only grows
+   (a digest of content can come back). A check whose type stands for its result has
+   private fields: only the check makes one.
 3. **Fail closed.** Every error, unknown value, poisoned lock and missing fact denies;
    fallbacks go toward deny ([details](#fail-closed-in-practice)).
 4. **Audit.** Every allow, deny, grant, refusal, revocation and admin change writes its line;
@@ -43,11 +49,17 @@ one of them answers it in its commit message. "Not touched" is a valid answer; s
    revocation reaches it, and it is rebuilt from the store at startup. A revocation decided
    while handling a request bars the certificate before the lock is released.
 6. **Secrets.** No key, token or passphrase in an error, a log, a reply, `Debug`, or a file
-   others can read; zeroized; moved, never copied ([details](#secrets)).
+   others can read; zeroized, in buffers sized up front (a `Vec` or `String` growing by
+   itself frees an unwiped copy each time); moved, never copied; written whole (a temporary
+   file, synced, linked or renamed into place); redacted in every form it can come back in,
+   after the text is cleaned ([details](#secrets)).
 7. **Display.** Does agent or daemon text reach a terminal or a notification? It is escaped,
-   bounded, and never mistaken for Writ's own words ([details](#what-people-see)).
+   bounded in rows and in width (the terminal must never wrap it), and never mistaken for
+   Writ's own words ([details](#what-people-see)).
 8. **Dependencies.** A new crate or feature follows [the dependency rules](#dependencies).
 9. **Guarantees.** A guarantee touched has its tests in the registry, trying to break it.
+   A request that changes state runs to its end once started (never dropped with its
+   client's connection); one that waits for a client ends with it.
 10. **Threat model.** A new trust boundary, residual risk or weaker guarantee is written in
     the threat model in the same change, with the user's go-ahead.
 
@@ -56,6 +68,12 @@ one of them answers it in its commit message. "Not touched" is a valid answer; s
 Everything here comes from someone the daemon doesn't trust (an agent, a network peer, a
 reader with `decisions: open`). Each has a bound, a strict parser, and a hostile-input test.
 
+- **Parsed as its other readers parse it.** Where git (or ssh, or a remote) also reads an
+  input, the daemon reads it the same way, or refuses what they would read differently: a
+  tree entry mode git reads as a directory (`40755`) was read as a file, and hid a subtree
+  from the path check (the review after M5.5, S1). A setting that holds in one protocol
+  version only pins that version (upload-pack speaks v0: in v2, git ignores
+  `allow*SHA1InWant`).
 - **Bound bytes, not only counts.** A limit on how many things also needs one on how big each
   is, and on what the daemon builds from them: the touched-paths walk was bounded in entries,
   paths and depth, yet one long directory name over many files made it hold the name once per
