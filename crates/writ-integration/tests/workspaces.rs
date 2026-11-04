@@ -166,9 +166,11 @@ fn ledger(daemon: &Daemon, lease: &str) -> Vec<(String, String)> {
 fn workspace() -> (Daemon, String, std::path::PathBuf) {
     let daemon = Daemon::start(POLICY, Approvals::Ssh);
     let lease = daemon.lease("both", BOTH);
-    let root = daemon.root().join("ws");
+    // As the processes see it: on macOS the temporary directory is a link
+    // (`/var` → `/private/var`), and `writ` records the folder it runs in.
+    fs::create_dir_all(daemon.root().join("ws/api")).unwrap();
+    let root = fs::canonicalize(daemon.root().join("ws")).unwrap();
     let upstream = daemon.remote.repo("demo");
-    fs::create_dir_all(root.join("api")).unwrap();
     let api = root.join("api");
     git_ok(&daemon, &api, &["init", "-q", "-b", "main"]);
     git_ok(
