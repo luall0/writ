@@ -379,4 +379,73 @@ fn a_version_altered_at_rest_keeps_the_daemon_sealed_and_writd_recover_needs_the
         stderr(&out)
     );
     assert!(stderr(&daemon.run(&["ls"], "")).contains("daemon sealed"));
+    daemon.stop();
+
+    // What the unseal's refusal says to do: `writd recover` the file you trust (the review
+    // after M5.5, S12). It shows the two others as the state holds them; answered no, nothing
+    // changes; yes, all three are sealed again, the altered approvers replaced.
+    let trusted = format!("{in_force}{line}");
+    fs::write(&file, &trusted).unwrap();
+    let recover_answering = |answer: &str| {
+        daemon.writd_with(
+            &["recover", "writd.yaml", "approvers", file.to_str().unwrap()],
+            &format!("{PASSPHRASE}\n{answer}\n"),
+        )
+    };
+    let out = recover_answering("n");
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("--- policy") && stdout(&out).contains("--- readers"),
+        "the other two shown: {}",
+        stdout(&out)
+    );
+    assert!(stderr(&out).contains("not recovered"), "{}", stderr(&out));
+    let out = recover_answering("y");
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("approvers: version 3 in force (recovered on the host)"),
+        "{}",
+        stdout(&out)
+    );
+    daemon.restart();
+    let out = daemon.run(
+        &["unseal", "--key", eve_pub.to_str().unwrap()],
+        &format!("{PASSPHRASE}\n"),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "eve's key is out: {}",
+        stdout(&out)
+    );
+    let out = daemon.run(
+        &["unseal", "--key", second_pub.to_str().unwrap()],
+        &format!("{PASSPHRASE}\n"),
+    );
+    assert!(out.status.success(), "recovered: {}", stderr(&out));
+}
+
+/// The review after M5.5 (L6): the keystore's `recipient` file is what every key and token
+/// sealed after an unseal is encrypted to, and what approvers encrypt tokens to (`writ info`).
+/// One replaced at rest (by whoever can write the keys directory) is refused at the unseal:
+/// it must be the identity the passphrase opened.
+#[test]
+fn a_recipient_file_that_isn_t_the_keystore_s_stops_the_unseal() {
+    let mut daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    assert!(daemon.unseal().status.success());
+    daemon.stop();
+    let path = daemon.root().join("s/keys/recipient");
+    // Another X25519 recipient (age's own documentation's example): valid, and not this one.
+    let theirs = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+    assert_ne!(fs::read_to_string(&path).unwrap().trim(), theirs);
+    fs::write(&path, format!("{theirs}\n")).unwrap();
+    daemon.restart();
+    let out = daemon.unseal();
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("not this keystore's recipient"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stderr(&daemon.run(&["ls"], "")).contains("daemon sealed"));
 }

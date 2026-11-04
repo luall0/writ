@@ -33,7 +33,7 @@ impl AuthorityKey {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let array: [u8; 32] = bytes
             .try_into()
-            .map_err(|_| CryptoError::Pem("authority key (not 32 bytes)"))?;
+            .map_err(|_| CryptoError::AuthorityKey(bytes.len()))?;
         Ok(Self(Zeroizing::new(array)))
     }
 
@@ -136,10 +136,12 @@ mod tests {
         // The same key from its bytes gives the same MAC; other lengths are refused.
         let again = AuthorityKey::from_bytes(key.as_bytes()).unwrap();
         assert_eq!(again.sign_head(&head(2, "cc")).unwrap(), mac);
-        assert!(matches!(
-            AuthorityKey::from_bytes(&[0; 31]),
-            Err(CryptoError::Pem("authority key (not 32 bytes)"))
-        ));
+        for len in [0, 31, 33] {
+            assert!(matches!(
+                AuthorityKey::from_bytes(&vec![0; len]),
+                Err(CryptoError::AuthorityKey(n)) if n == len
+            ));
+        }
         assert_eq!(format!("{key:?}"), "AuthorityKey(<redacted>)");
     }
 }

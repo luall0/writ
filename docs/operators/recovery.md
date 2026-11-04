@@ -23,7 +23,7 @@ be fixed afterwards.
 | Lost one reader key, you still have another | `writ admin apply readers` without the lost key |
 | Lost every reader key (a lost Mac usually means both kinds) | [`writd recover`](#writd-recover-step-by-step) `readers`, and `approvers` if needed |
 | Found `<file>.unapplied-<time>` on the host | Someone edited that file by hand. It was never applied. To apply it: `writ admin apply`, or `writd recover` |
-| The daemon won't unseal: "altered at rest" | Someone changed the daemon's copies of the files without the keystore. Find out how (audit log, host logs). Then `writd recover` each file you trust, or restore a backup of `state_dir` |
+| The daemon won't unseal: "altered at rest" | Someone changed the daemon's copies of the files without the keystore. Find out how (audit log, host logs). Then `writd recover` the file that was altered, from a copy you trust: it shows you the other two and asks whether you trust them (step 3 below). Or restore a backup of `state_dir` |
 | The daemon won't start: "no authority files in force" | Its state lost its copies (a new or emptied `state_dir`). Restore a backup of `state_dir`, or run `writd init` if it was never initialized |
 | Lost the passphrase | It can't be recovered, by design. [Start over](#starting-over) |
 | Lost the keys directory, the boot directory or the host, and you have backups | Restore them at the same paths, same owner, same modes. Then start and unseal |
@@ -53,6 +53,12 @@ secret, so it gives nobody anything new.
    parse, keep at least one approver and one reader, and no key may be both. Then it puts the
    file in force, writes an `admin` line to the audit log ("recovered on the host"), and
    writes the file back. A wrong passphrase changes nothing.
+
+   After "altered at rest", it also shows you the other two files as the daemon's state holds
+   them, since nothing vouches for them any more, and asks `Trust them and seal all three
+   with this keystore? [y/N]`. Read them. Answer `y` only if they are what you expect: all
+   three are then sealed again. Any other answer changes nothing. If one of them is wrong
+   too, answer no and recover that one first.
 4. **Start the daemon and unseal it** with the new key: `writ unseal --key <new key>.pub`.
 5. **Check** from your machine: `writ admin show approvers` shows the new version.
 

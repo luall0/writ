@@ -415,3 +415,38 @@ fn every_algorithm_s_openpgp_signature_verifies_with_gpg() {
         }
     }
 }
+
+/// A backend that signs with another hash than the one asked for (a broken or lying device).
+struct OtherHash(SoftwareSigner);
+
+impl Signer for OtherHash {
+    fn list_keys(&self) -> Result<Vec<writ_signer::KeyInfo>, SignerError> {
+        self.0.list_keys()
+    }
+    fn sign(&self, id: &KeyId, data: &[u8], hash: SignerHash) -> Result<RawSignature, SignerError> {
+        let other = match hash {
+            Some(Hash::Sha512) => Some(Hash::Sha256),
+            _ => Some(Hash::Sha512),
+        };
+        self.0.sign(id, data, other)
+    }
+    fn capabilities(&self) -> writ_signer::Capabilities {
+        self.0.capabilities()
+    }
+}
+
+/// The review after M5.5 (L8): the SSHSIG was assembled from whatever the backend answered,
+/// as long as it encoded: one signing with another hash than asked made a signature its
+/// SSHSIG mislabels. It is refused, as an OpenPGP one is.
+#[test]
+fn a_backend_answering_with_another_hash_makes_no_sshsig() {
+    let honest =
+        SoftwareSigner::new([(id("k"), KeyPair::generate(KeyAlgorithm::Rsa3072).unwrap())])
+            .unwrap();
+    assert!(sshsig(&honest, &id("k"), "git", Hash::Sha512, b"x").is_ok());
+    let lying = OtherHash(honest);
+    match sshsig(&lying, &id("k"), "git", Hash::Sha512, b"x") {
+        Err(SignerError::Failed(key)) => assert_eq!(key, id("k")),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+}

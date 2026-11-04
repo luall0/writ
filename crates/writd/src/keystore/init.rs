@@ -2,9 +2,9 @@
 //! daemon's user; asks for the passphrase twice (one line of stdin when it isn't a terminal).
 //!
 //! It makes the keystore's identity (wrapped with the passphrase), the boot tier (the host
-//! key, the TLS key and its certificate), the CA key, every agent signing key `writd.yaml`
-//! declares (as declared) and every `ssh://` upstream credential the policy names, each its
-//! own age file to the identity's recipient;
+//! key, the TLS key and its certificate), the CA key, every agent signing key a template
+//! uses (as `writd.yaml` declares it) and every `ssh://` upstream credential the policy names,
+//! each its own age file to the identity's recipient;
 //! then prints what the operator pins and registers. It refuses a keystore already there, and
 //! leaves nothing behind when it fails.
 
@@ -78,6 +78,13 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
         &passphrase,
         &crate::platform::enroll,
     )?;
+    // The keystore and the state are made together or not at all: a state that can't take
+    // the files' first versions leaves the directories empty again, so `writd init` can run
+    // once more (the review after M5.5, L7: they stayed full, and every later init refused).
+    let mut undo = Undo {
+        dirs: [&sealed.dir, &sealed.boot],
+        done: false,
+    };
     crate::authority::seed(
         &store,
         &made.authority,
@@ -85,6 +92,7 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
         crate::now()?,
         config.min_ttl,
     )?;
+    undo.done = true;
     print(sealed, &policy, &made);
     Ok(())
 }

@@ -272,7 +272,9 @@ fn pem_decode(text: &[u8], label: &str) -> Result<Zeroizing<Vec<u8>>> {
     if lines.next() != Some(begin.as_str()) || lines.next_back() != Some(end.as_str()) {
         return Err(malformed());
     }
-    let mut body = Zeroizing::new(String::new());
+    // Sized up front: a String that grows frees each smaller buffer unwiped, a copy of the
+    // private key in each (the review after M5.5).
+    let mut body = Zeroizing::new(String::with_capacity(text.len()));
     for line in lines {
         body.push_str(line.trim_end_matches('\r'));
     }

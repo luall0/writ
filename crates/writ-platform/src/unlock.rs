@@ -30,15 +30,30 @@ impl DataKey {
     pub fn identity(&self) -> Result<age::x25519::Identity> {
         use bech32::ToBase32;
         // age's own text encoding of an identity (bech32), parsed back: age builds
-        // one from that text only. The text is wiped once parsed.
-        let text = Zeroizing::new(
-            bech32::encode(
-                "age-secret-key-",
-                self.0.as_slice().to_base32(),
-                bech32::Variant::Bech32,
-            )
-            .map_err(|_| PlatformError::Unlock("cannot encode the keystore identity".to_owned()))?,
+        // one from that text only. The text, and the 5-bit groups it is made from, are wiped
+        // once used (the review after M5.5); bech32's checksum work and age's parse keep
+        // copies of their own (the threat model's row on libraries' buffers).
+        let mut groups = self.0.as_slice().to_base32();
+        let mut text = Zeroizing::new(String::with_capacity(96));
+        let encoded = bech32::encode_to_fmt(
+            &mut *text,
+            "age-secret-key-",
+            &groups,
+            bech32::Variant::Bech32,
         );
+        for group in &mut groups {
+            *group = bech32::u5::default();
+        }
+        std::hint::black_box(&groups);
+        drop(groups);
+        match encoded {
+            Ok(Ok(())) => {}
+            _ => {
+                return Err(PlatformError::Unlock(
+                    "cannot encode the keystore identity".to_owned(),
+                ));
+            }
+        }
         text.parse::<age::x25519::Identity>()
             .map_err(|_| PlatformError::Unlock("cannot read the keystore identity".to_owned()))
     }

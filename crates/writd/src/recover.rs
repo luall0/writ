@@ -8,6 +8,8 @@
 
 use std::path::Path;
 
+use std::io::Read as _;
+
 use anyhow::{Context, bail};
 use writ_core::authority::AdminTarget;
 use writ_store::{AuditEvent, AuditLog, EventKind, Outcome, Store};
@@ -44,6 +46,7 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
         text.clone(),
         crate::now()?,
         config.min_ttl,
+        |others| trust_others(target, others),
     )?;
     let mut audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
     audit
@@ -58,4 +61,41 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
     crate::authority::write_back(path, &text)?;
     println!("{target}: version {version} in force (recovered on the host). Start the daemon.");
     Ok(())
+}
+
+/// The versions in force are altered (their MAC isn't this keystore's): shows the operator
+/// the other two files as the state holds them, and asks whether to seal them with `target`'s.
+/// Only `y` or `yes` trusts them; anything else, or no answer, changes nothing.
+fn trust_others(target: AdminTarget, others: &[(AdminTarget, &str)]) -> anyhow::Result<bool> {
+    use std::io::{BufRead as _, Write as _};
+    let mut out = std::io::stdout().lock();
+    writeln!(
+        out,
+        "The versions in force don't carry this keystore's MAC: they were altered at rest, or \
+         the state is another keystore's. Recovering {target} seals the other two with it. As \
+         the state holds them:"
+    )?;
+    for (other, text) in others {
+        writeln!(out, "--- {other}")?;
+        for line in text.lines() {
+            writeln!(
+                out,
+                "  {}",
+                writ_core::text::strip(line, writ_core::text::Newlines::Drop, 4096)
+            )?;
+        }
+    }
+    write!(
+        out,
+        "Trust them and seal all three with this keystore? [y/N] "
+    )?;
+    out.flush()?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .lock()
+        .take(16)
+        .read_line(&mut answer)
+        .context("cannot read the answer")?;
+    writeln!(out)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }

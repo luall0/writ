@@ -200,8 +200,10 @@ fn head(in_force: &InForce) -> AuthorityHead {
 
 /// Puts `text` in force for `target` on the host (`writd recover`), after checking it
 /// against the other two files in force: a new version, its head under `key`'s MAC.
-/// The versions in force must carry the key's MAC already: recovery opens the keystore, it
-/// doesn't take versions nobody can vouch for.
+/// When the versions in force don't carry the key's MAC (altered at rest, the case the
+/// recovery guide sends here), nobody vouches for the other two: `trust` is shown them and
+/// must say yes (the operator, who holds the passphrase), or nothing changes (the review
+/// after M5.5, S12: recovery used to refuse there, leaving only a backup).
 pub fn recover(
     store: &Store,
     key: &AuthorityKey,
@@ -209,15 +211,25 @@ pub fn recover(
     text: String,
     now: Timestamp,
     min_ttl: Duration,
+    trust: impl FnOnce(&[(AdminTarget, &str)]) -> anyhow::Result<bool>,
 ) -> anyhow::Result<(u64, u64, TextDigest)> {
     let Some(loaded) = load(store, min_ttl)? else {
         bail!("no authority files in force: `writd init` records them");
     };
     if !key.verify_head(&loaded.in_force.entries(), &loaded.in_force.mac) {
-        bail!(
-            "the versions in force don't carry this keystore's MAC: they were altered, or the \
-             state is another keystore's"
-        );
+        let others: Vec<(AdminTarget, &str)> = loaded
+            .texts
+            .iter()
+            .filter(|(t, _)| **t != target)
+            .map(|(t, text)| (*t, text.as_str()))
+            .collect();
+        if !trust(&others)? {
+            bail!(
+                "not recovered: the versions in force don't carry this keystore's MAC (altered, \
+                 or another keystore's state), and the others weren't trusted. Recover each \
+                 file you trust, or restore a backup of state_dir"
+            );
+        }
     }
     let mut texts = loaded.texts.clone();
     texts.insert(target, text.clone());

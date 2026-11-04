@@ -169,10 +169,15 @@ pub fn sshsig(
     let signer_hash = writ_crypto::algorithm::signer_hash(SignatureFormat::Ssh, algorithm, hash);
     let failed = |_| SignerError::Failed(id.clone());
     let data = writ_crypto::sshsig::signed_data_with(namespace, hash, msg).map_err(failed)?;
-    let signature = signer
-        .sign(id, &data, signer_hash)?
-        .to_ssh()
-        .map_err(failed)?;
+    let raw = signer.sign(id, &data, signer_hash)?;
+    // What the backend answered must be what was asked: the key's algorithm, this hash. A
+    // backend answering otherwise (another hash, another key) makes no SSHSIG, as an OpenPGP
+    // one is refused the same way (the review after M5.5, L8).
+    if raw.algorithm() != algorithm || raw.hash() != signer_hash {
+        tracing::error!(key = %id, "the signer answered with another algorithm or hash");
+        return Err(SignerError::Failed(id.clone()));
+    }
+    let signature = raw.to_ssh().map_err(failed)?;
     writ_crypto::sshsig::assemble_with(public.key_data(), namespace, hash, signature)
         .map_err(failed)
 }

@@ -33,13 +33,34 @@ pub fn private_dir(path: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("cannot create {} as a private directory", path.display()))
 }
 
-/// Creates a new file only the daemon can read (0600); fails if it exists.
+/// Creates a new file only the daemon can read (0600); fails if it exists. Whole or not at
+/// all (the review after M5.5, L7: a write cut short left a truncated secret beside its
+/// public half, which every later unseal failed on): written to a private temporary file,
+/// synced, then linked into place (a link, unlike a rename, never replaces a file there) and
+/// the directory synced; the temporary file is removed whatever happens.
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let mut file = writ_platform::fs::create_new_private_file(path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
-    std::io::Write::write_all(&mut file, bytes)
-        .and_then(|()| file.sync_all())
-        .with_context(|| format!("cannot write {}", path.display()))
+    let dir = path
+        .parent()
+        .with_context(|| format!("{} has no directory", path.display()))?;
+    let name = path
+        .file_name()
+        .with_context(|| format!("{} has no file name", path.display()))?
+        .to_string_lossy();
+    let temporary = dir.join(format!(".{name}.new-{}", writ_crypto::keys::random_hex(8)?));
+    let written = (|| {
+        let mut file = writ_platform::fs::create_new_private_file(&temporary)
+            .with_context(|| format!("cannot create {}", temporary.display()))?;
+        std::io::Write::write_all(&mut file, bytes)
+            .and_then(|()| file.sync_all())
+            .with_context(|| format!("cannot write {}", temporary.display()))?;
+        std::fs::hard_link(&temporary, path)
+            .with_context(|| format!("cannot create {}", path.display()))?;
+        std::fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .with_context(|| format!("cannot sync {}", dir.display()))
+    })();
+    let _ = std::fs::remove_file(&temporary);
+    written
 }
 
 /// An agent signing key, opened: its key and what its file says it is (format, creation
@@ -451,6 +472,17 @@ pub fn open(
     let KeystoreConfig::Sealed(sealed) = &config.keystore else {
         bail!("only a sealed keystore is opened at unseal");
     };
+    // The recipient file is what every key and token sealed from now on is encrypted to (and
+    // what `writ info` gives approvers): it must be this identity's, or someone who could
+    // write it would receive them (the review after M5.5, L6).
+    let recipient = sealed::recipient(sealed)?;
+    if recipient.to_string() != identity.to_public().to_string() {
+        bail!(
+            "{}: not this keystore's recipient (replaced?): refused, nothing would be sealed to \
+             it",
+            sealed::Layout(sealed).recipient().display()
+        );
+    }
     let files = sealed::SecretFiles::new(vec![Box::new(identity)]);
     Ok(Opened {
         keys: sealed::keys(sealed, declared, policy, &files)?,
@@ -459,8 +491,47 @@ pub fn open(
         bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &files)?,
         live: Live::Sealed {
             sealed: sealed.clone(),
-            recipient: sealed::recipient(sealed)?,
+            recipient,
             files,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The review after M5.5 (L7): a secret's file is there whole or not at all, never over
+    /// another, and no temporary file is left either way.
+    #[test]
+    fn a_secret_file_is_written_whole_never_over_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-01.age");
+        write_private(&path, b"the whole secret").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"the whole secret");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(names(dir.path()), ["agent-01.age"]);
+        // There already: refused, the first one untouched, nothing left behind.
+        let error = format!("{:#}", write_private(&path, b"another").unwrap_err());
+        assert!(error.starts_with("cannot create"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"the whole secret");
+        assert_eq!(names(dir.path()), ["agent-01.age"]);
+        // A directory that doesn't exist: refused, nothing made.
+        assert!(write_private(&dir.path().join("absent/x.age"), b"x").is_err());
+        assert_eq!(names(dir.path()), ["agent-01.age"]);
+    }
 }

@@ -59,6 +59,9 @@ pub enum CryptoError {
     /// A PEM block that isn't the expected certificate or key.
     #[error("invalid TLS {0}")]
     Pem(&'static str),
+    /// The authority MAC's key isn't 32 bytes (a damaged `authority.age`).
+    #[error("invalid authority key: {0} bytes, not 32")]
+    AuthorityKey(usize),
     #[error("TLS: {0}")]
     Tls(#[from] rustls::Error),
     #[error("cannot generate the TLS certificate: {0}")]
