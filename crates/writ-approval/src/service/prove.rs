@@ -59,9 +59,14 @@ impl Service {
             .ok_or_else(|| super::internal(format!("{} is not declared", proof.key)))
             .and_then(|key_use| {
                 // An OpenPGP signature carries its time: a 32-bit count of seconds, never a
-                // guess.
-                let time = u32::try_from(self.now()?.unix())
-                    .map_err(|_| super::internal("the clock is past 2106"))?;
+                // guess. An SSH signature carries none.
+                let time = match key_use.format {
+                    writ_crypto::algorithm::SignatureFormat::Openpgp => {
+                        u32::try_from(self.now()?.unix())
+                            .map_err(|_| super::internal("the clock is past 2106"))?
+                    }
+                    writ_crypto::algorithm::SignatureFormat::Ssh => 0,
+                };
                 Ok((key_use, time))
             });
         // An OpenPGP signature has no namespace: the remote's token is signed as a document

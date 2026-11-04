@@ -718,6 +718,59 @@ fn bound_lease(h: &Harness) -> (Ticket, u64) {
     (ticket, serial)
 }
 
+/// The second review after M5.5 (R4): the retry of the revocations the store couldn't record
+/// took them all, and a store error part way dropped the ones not reached yet: those leases
+/// stayed active in the store (their certificates refused only until a restart).
+#[test]
+fn revocations_left_unrecorded_survive_a_retry_that_fails_part_way() {
+    let h = Harness::new(Decisions::Signed);
+    let bound = |pid: u32| {
+        let (ticket, key) = h.submit(&BOUND.replace("pid: 4242", &format!("pid: {pid}")));
+        h.approve(&ticket).unwrap();
+        let Decision::Active { certificate, .. } = h.wait(&ticket.id, &key) else {
+            panic!("expected an active lease");
+        };
+        (
+            ticket,
+            Certificate::from_openssh(&certificate).unwrap().serial(),
+        )
+    };
+    let (first, first_serial) = bound(4242);
+    let (second, second_serial) = bound(4243);
+    // Both sessions end; the store fails both revocations' lookups, so neither is recorded
+    // (their certificates are refused all the same).
+    h.store_breaker.fail_lease_lookups_after(0, 2);
+    let mut revocations = h.service.subscribe_revocations();
+    h.watcher.exit(4242, 7);
+    h.watcher.exit(4243, 7);
+    // A lease is announced once its recording was tried: both tried, then the log mended.
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.len() < 2 {
+        let serial = next_revocation(&mut revocations);
+        assert!([first_serial, second_serial].contains(&serial), "{serial}");
+        seen.insert(serial);
+    }
+    assert!(h.service.is_revoked(first_serial) && h.service.is_revoked(second_serial));
+    // The next request's retry fails at its first lookup, whichever lease that is.
+    h.store_breaker.fail_lease_lookup_after(0);
+    let shown = h.service.show(&first.id);
+    assert!(
+        matches!(shown, Err(ServiceError::Internal(_))),
+        "the retry's store error fails the request: {:?}",
+        shown.map(|s| s.state)
+    );
+    // The request after records both: the one not reached was kept.
+    for ticket in [&first, &second] {
+        assert_eq!(
+            h.service.show(&ticket.id).unwrap().state,
+            State::Revoked,
+            "{}",
+            ticket.id
+        );
+    }
+    assert_eq!(h.events("revoke", "done"), 2);
+}
+
 #[test]
 fn a_restart_watches_bound_sessions_again() {
     let h = Harness::new(Decisions::Signed);

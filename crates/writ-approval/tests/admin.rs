@@ -396,6 +396,74 @@ fn removing_an_approver_revokes_the_leases_it_signed() {
     );
 }
 
+/// The second review after M5.5 (R3): the leases a removed approver signed were listed after
+/// the change was in force, and a list the store couldn't give left them running. Listed
+/// under the change's lock now, before anything is written: the change is refused instead.
+#[test]
+fn a_removal_whose_leases_can_t_be_listed_is_refused_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let shown = h.service.admin_show(AdminTarget::Approvers).unwrap();
+    let other = generate(KeyKind::Ed25519).unwrap();
+    let both = format!(
+        "{}other {}\n",
+        shown.text,
+        other.public_key().to_openssh().unwrap()
+    );
+    let apply = |text: &str, broken: bool| {
+        let request = change(
+            &h.approver,
+            AdminTarget::Approvers,
+            current(&h, AdminTarget::Approvers),
+            text,
+        );
+        let checked = h.service.check_admin(&request, &facts()).unwrap();
+        if broken {
+            // The change's sweep lists the active leases first; the second list is the
+            // change's own.
+            h.store_breaker.fail_lease_list_after(1);
+        }
+        h.service.commit_admin(
+            &checked,
+            parsed_approvers(text),
+            vec![],
+            Default::default(),
+            &facts(),
+        )
+    };
+    assert_eq!(apply(&both, false).unwrap().revoked, vec![]);
+    let by_other = lease_by(&h, &other);
+    let repo = "omega-code".parse().unwrap();
+    let version = h
+        .service
+        .admin_show(AdminTarget::Approvers)
+        .unwrap()
+        .version;
+    // Removing it, the list fails: refused, the version and the lease as they were.
+    let refused = apply(&shown.text, true);
+    assert!(
+        matches!(refused, Err(ServiceError::Internal(_))),
+        "{:?}",
+        refused.map(|a| a.version)
+    );
+    assert_eq!(
+        h.service
+            .admin_show(AdminTarget::Approvers)
+            .unwrap()
+            .version,
+        version
+    );
+    assert!(h.service.fetch(&by_other, &facts(), &repo).is_ok());
+    let denied = h.events("admin", "denied");
+    assert_eq!(denied.len(), 1, "{denied:?}");
+    assert_eq!(
+        denied[0]["reason"],
+        "approvers: internal error (see the daemon's log)"
+    );
+    // The store back: the same removal applies, and revokes the lease.
+    assert_eq!(apply(&shown.text, false).unwrap().revoked.len(), 1);
+}
+
 #[test]
 fn an_unsigned_wrongly_signed_or_stale_change_is_refused_and_logged() {
     let dir = tempfile::tempdir().unwrap();

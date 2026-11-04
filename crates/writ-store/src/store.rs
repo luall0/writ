@@ -51,20 +51,48 @@ pub struct Store {
     conn: Connection,
     /// Set by a test to make a lease lookup fail (feature `testing` only).
     #[cfg(feature = "testing")]
-    breaker: Option<std::sync::Arc<std::sync::atomic::AtomicI64>>,
+    breaker: Option<std::sync::Arc<Switch>>,
 }
 
-/// Makes one lease lookup of a [`Store`] fail, to test what a fault in the middle of an
+/// What a [`StoreBreaker`] set: lookups to let through, then lookups to fail.
+#[cfg(feature = "testing")]
+#[derive(Debug)]
+struct Switch {
+    /// -1: off; n: n more lookups work, then the failures start.
+    after: std::sync::atomic::AtomicI64,
+    /// How many lookups fail in a row once they start.
+    failures: std::sync::atomic::AtomicU32,
+    /// -1: off; n: n more lease lists work, the one after fails, then off.
+    lists_after: std::sync::atomic::AtomicI64,
+}
+
+/// Makes lease lookups of a [`Store`] fail, to test what a fault in the middle of an
 /// operation leaves behind (feature `testing`).
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone)]
-pub struct StoreBreaker(std::sync::Arc<std::sync::atomic::AtomicI64>);
+pub struct StoreBreaker(std::sync::Arc<Switch>);
 
 #[cfg(feature = "testing")]
 impl StoreBreaker {
     /// The next `succeed` lease lookups work, the one after fails, then they work again.
     pub fn fail_lease_lookup_after(&self, succeed: u32) {
+        self.fail_lease_lookups_after(succeed, 1);
+    }
+
+    /// The next `succeed` lease lookups work, the `fail` after fail, then they work again.
+    pub fn fail_lease_lookups_after(&self, succeed: u32, fail: u32) {
+        let ordering = std::sync::atomic::Ordering::SeqCst;
+        self.0.failures.store(fail, ordering);
         self.0
+            .after
+            .store(if fail == 0 { -1 } else { i64::from(succeed) }, ordering);
+    }
+
+    /// The next `succeed` lists of leases by state work, the one after fails, then they work
+    /// again.
+    pub fn fail_lease_list_after(&self, succeed: u32) {
+        self.0
+            .lists_after
             .store(i64::from(succeed), std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -91,7 +119,11 @@ impl Store {
     /// [`Store::open`], with a [`StoreBreaker`] (feature `testing`).
     #[cfg(feature = "testing")]
     pub fn open_breakable(path: &Path) -> Result<(Self, StoreBreaker)> {
-        let switch = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1));
+        let switch = std::sync::Arc::new(Switch {
+            after: std::sync::atomic::AtomicI64::new(-1),
+            failures: std::sync::atomic::AtomicU32::new(0),
+            lists_after: std::sync::atomic::AtomicI64::new(-1),
+        });
         let mut store = Self::open(path)?;
         store.breaker = Some(switch.clone());
         Ok((store, StoreBreaker(switch)))
@@ -336,16 +368,21 @@ impl Store {
     pub fn lease(&self, id: &TicketId) -> Result<Option<Lease>> {
         #[cfg(feature = "testing")]
         if let Some(switch) = &self.breaker {
-            // -1: off; n: n more lookups work; 0: this one fails, then off.
+            // -1: off; n: n more lookups work; 0: this one fails, then off once the failures
+            // asked for are done.
             let ordering = std::sync::atomic::Ordering::SeqCst;
-            match switch.load(ordering) {
+            match switch.after.load(ordering) {
                 0 => {
-                    switch.store(-1, ordering);
+                    let left = switch.failures.load(ordering).saturating_sub(1);
+                    switch.failures.store(left, ordering);
+                    if left == 0 {
+                        switch.after.store(-1, ordering);
+                    }
                     return Err(StoreError::Io(std::io::Error::other(
                         "the store was broken by the test",
                     )));
                 }
-                n if n > 0 => switch.store(n.saturating_sub(1), ordering),
+                n if n > 0 => switch.after.store(n.saturating_sub(1), ordering),
                 _ => {}
             }
         }
@@ -358,6 +395,21 @@ impl Store {
 
     /// Every lease in a state (e.g. the active ones, reloaded after unsealing).
     pub fn leases(&self, state: State) -> Result<Vec<Lease>> {
+        #[cfg(feature = "testing")]
+        if let Some(switch) = &self.breaker {
+            // -1: off; n: n more lists work; 0: this one fails, then off.
+            let ordering = std::sync::atomic::Ordering::SeqCst;
+            match switch.lists_after.load(ordering) {
+                0 => {
+                    switch.lists_after.store(-1, ordering);
+                    return Err(StoreError::Io(std::io::Error::other(
+                        "the store was broken by the test",
+                    )));
+                }
+                n if n > 0 => switch.lists_after.store(n.saturating_sub(1), ordering),
+                _ => {}
+            }
+        }
         let mut statement = self.conn.prepare(&lease_query("l.state = ?1"))?;
         let rows = statement.query_map([state.as_str()], raw_lease)?;
         rows.map(|row| row.map_err(StoreError::from).and_then(RawLease::decode))

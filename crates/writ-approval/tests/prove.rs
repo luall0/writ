@@ -372,6 +372,51 @@ fn a_proof_the_signer_or_the_audit_log_fails_is_never_handed_out() {
     assert_eq!(h.events("prove", "allowed").len(), 1);
 }
 
+/// The second review after M5.5 (R5): a proof the daemon couldn't prepare (an OpenPGP
+/// signature's time past 2106, a key not declared) returned without the proof's audit line.
+/// Refused and logged as its outcome; an SSH key, whose signature carries no time, still
+/// proves.
+#[test]
+fn a_proof_the_clock_can_t_date_is_refused_and_logged() {
+    use writ_crypto::algorithm::{Hash, KeyAlgorithm};
+    let past_2106 = (1u64 << 32) - START + 1;
+    let doc = document(KEY, "gitea", "0123456789abcdef");
+    // OpenPGP: refused, one `prove` line saying so, the signer never asked.
+    let dir = tempfile::tempdir().unwrap();
+    let policy = format!(
+        "{POLICY}\nsigning_keys:\n  {KEY}:\n    uids: [\"Agent <user+agent@example.org>\"]\n"
+    );
+    let clock = Arc::new(FakeClock::at_unix(START));
+    let h = TestServiceBuilder::new(&policy)
+        .clock(clock.clone())
+        .openpgp(KeyAlgorithm::Ed25519, Hash::Sha512)
+        .build(dir.path());
+    clock.advance(past_2106);
+    let refused = h
+        .service
+        .prove(&signed_by(&h.approver, APPROVAL_NAMESPACE, &doc), &facts());
+    assert!(
+        matches!(refused, Err(ServiceError::Internal(_))),
+        "{:?}",
+        refused.map(|p| p.signature)
+    );
+    let lines = h.events("prove", "denied");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["reason"], "internal error (see the daemon's log)");
+    assert!(h.events("prove", "allowed").is_empty());
+    // SSH: proved, the clock left out.
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock::at_unix(START));
+    let h = TestServiceBuilder::new(POLICY)
+        .clock(clock.clone())
+        .build(dir.path());
+    clock.advance(past_2106);
+    h.service
+        .prove(&signed_by(&h.approver, APPROVAL_NAMESPACE, &doc), &facts())
+        .unwrap();
+    assert_eq!(h.events("prove", "allowed").len(), 1);
+}
+
 #[test]
 fn an_openpgp_key_proves_itself_in_openpgp_never_over_a_commit_shaped_message() {
     use writ_crypto::algorithm::{Hash, KeyAlgorithm};
