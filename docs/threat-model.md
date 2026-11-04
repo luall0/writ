@@ -44,7 +44,7 @@ that can read another agent's session files can act under that lease. In local m
 constraint ties a lease to one agent session's process tree, so another agent is refused; in
 detached mode only the OS keeps agents apart (one user, container or VM each). M6 adds
 `max_active_per_source` (`1` for a host meant for one agent) and shows the approver the host's
-other active leases ([M6](roadmap.md#m6--agent-skill-amendments-and-close)).
+other active leases ([M6](roadmap.md#m6--agent-skill-amendments-renewals-and-close)).
 
 Mitigations: short TTL, one key per lease, revocation list. Later: non-exportable session
 keys ([M8.5](roadmap.md#m85--non-exportable-session-keys): Secure Enclave, TPM) and

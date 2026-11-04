@@ -93,5 +93,5 @@ through Writ.
 - **One agent per OS user, container or VM** when several agents share a host. Under one user,
   each could read the others' session files and use their leases
   ([threat model](../threat-model.md#1-agent--daemon-session-certificate)). Each gets its own
-  `~/.writ` (0700). From [M6](../roadmap.md#m6--agent-skill-amendments-and-close),
+  `~/.writ` (0700). From [M6](../roadmap.md#m6--agent-skill-amendments-renewals-and-close),
   `max_active_per_source: 1` limits a host to one active lease.

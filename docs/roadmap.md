@@ -35,7 +35,8 @@ an unchanged core.
 | M5.5 | [Signature formats and key algorithms](history/m5.5-signature-formats-and-key-algorithms.md) ✅ | OpenPGP commit signatures beside SSH; each signing key declared with its format, algorithm (Ed25519, P-256, P-384, RSA 3072/4096) and hash, checked against its backend at start; `writd keys create` |
 | M5.6 | [Review after M5.5](history/m5.6-review-after-m5.5.md) ✅ | The security and code quality review after M5 and M5.5 and its fixes: tree modes read as git reads them, upload-pack in protocol v0, admin changes bound to their version, a removed approver's leases revoked, the author checked like the committer, a bounded trusted display, notes appended, the three test layers hardened |
 | M5.7 | [Memory wiped on free](history/m5.7-memory-wiped-on-free.md) ✅ | Writ's own zero-on-free allocator in `writd`, `writ` and `writ-sign`, on in every build: no library's freed copy of a secret stays in memory, at no measurable cost under heavy load |
-| M6 | [Agent skill, amendments, close](#m6--agent-skill-amendments-and-close) | The Writ skill, amendments, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
+| M6 | [Agent skill, amendments, renewals, close](#m6--agent-skill-amendments-renewals-and-close) | The Writ skill installed by `writ init` for each agent, adaptive timings, amendments, renewals, the estimate, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
+| M6.1 | [Multi-repo workspaces](#m61--multi-repo-workspaces) | One agent at the root of a folder of repositories: `writ init` at the root, the `writ-workspace` skill, `writ git` reading git's global options, `writ exec -C` |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, `writ try` |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
 | M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, unsealing with no passphrase |
@@ -183,35 +184,92 @@ barrier, checked on the optimized code; `realloc` as a new block and a wiped fre
 allocator of `writd`, `writ` and `writ-sign`, on in every build: under heavy load it cost
 nothing measurable on macOS or Linux (`make bench-alloc`).
 
-## M6 — Agent skill, amendments and close
+## M6 — Agent skill, amendments, renewals and close
 
 The workflow the agent follows ([Clients](architecture/clients.md#client-list),
-[Flows § 6 and § 6b](flows.md#6-out-of-ticket-request)).
+[Flows § 6 and § 6b](flows.md#6-out-of-ticket-request)), and the first real task through Writ.
+Settled with the user before building (the decision log's M6 rows).
 
-- `skill/writ/SKILL.md`: think through the scope, write and submit the ticket, wait, revise on
-  refusal, amend on an out-of-ticket denial, close with a summary. One skill for both
-  wirings: the agent always runs git through `writ git …` (any command; plain git is the
-  same in a `--whole-repo` clone), and adds the `Writ:` trailer where the repo's `ticket_link`
-  is `trailer`; decided in M3.
-- Amendments (`amends: <id>`): the original lease runs while pending, replaced once signed.
+**The skill and its installer**
+
+- `skill/writ/SKILL.md`: think through the scope, estimate the work, write and submit the
+  ticket, wait, revise on refusal, amend on an out-of-ticket denial, renew when time runs out,
+  close with a summary. One skill for both wirings: the agent always runs git through
+  `writ git …` (plain git is the same in a `--whole-repo` clone), and adds the `Writ:` trailer
+  where the repo's `ticket_link` is `trailer`; decided in M3. Built into the `writ` binary,
+  so the skill always matches the CLI that installs it.
+- **`writ init` installs the skill** for the agents it is asked for, in as few folders as
+  possible (OpenCode reads `.claude/skills` and `.agents/skills` too, and wants a skill
+  once): Claude Code (`.claude/skills/writ/`), `.agents/skills/writ/` (Codex, Gemini CLI,
+  GitHub Copilot, Amp…), OpenCode (`.opencode/skills/writ/`, only when neither of the two
+  others is picked), Cursor (`.cursor/skills/writ/`). On a terminal it asks, with the agents
+  it detects in the repo and the user's home pre-selected; `--agents <list>|none` answers for
+  it, `--skill-dir <path>` installs in any other folder, `--global` in the user's folders
+  instead of the repo. In the repo, each installed path is added to `.git/info/exclude`
+  (never committed, never against `expected_paths`), recorded for `--undo`, which removes
+  what it installed and the exclude lines. Without a terminal and without `--agents` or
+  `--skill-dir`, `writ init` fails before wiring anything and lists the flags.
+  `--agents-md` appends one line pointing at the skill to `AGENTS.md` / `CLAUDE.md` (recorded
+  for `--undo`); without it, the summary prints the line to add by hand.
+- **Adaptive timings.** Beside `SKILL.md`, which Writ owns (rewritten by `writ init`, never
+  edited by the agent), `timings.md` holds what the agent learns about sizing tickets: per
+  repo, a summary line (runs, median and maximum of the time used, signatures, pushes,
+  renewals, estimated vs real time) and the last runs in full, plus short notes the agent
+  writes (at most a few per repo). `writ close` appends the run's figures from its activity
+  report and compacts the file with fixed rules; the limits (`max_lines`, `max_bytes`,
+  `keep_runs`, `max_notes`) live in the file's front matter and `writ timings` changes or
+  prints them. The skill reads it before writing a ticket.
+- **`writ mark <phase>`**: the agent marks the end of a phase (coding, checks, CI) when it
+  doesn't line up with a commit or a push; kept on the agent's host, shown as the agent's
+  mark in the report.
+
+**The lease model**
+
+- **`writ-ticket/2`**: the ticket gains `ticket.renews` and `ticket.estimate`; tickets of
+  `writ-ticket/1` are read from the state as they were, and a pending ticket or an active
+  lease from before M6 is ended at the daemon's first start with M6 (logged).
+- **Amendments** (`amends: <id>`): the original lease runs while pending, replaced once signed.
   An amendment changes scope, not time (decided after the M3.5 review,
   [M3.6](history/m3.6-review-after-m3.5.md)): its `expires_at` is capped at the lease's, so
   the certificate's `valid_before` stays the lease's end and a chain of amendments can't
   stretch a lease.
+- **Renewals** (`renews: <id>`): more time is a renewal, signed like any ticket (a Touch ID,
+  never silent). From the lease's session key, for a lease that is active, or expired or used
+  up within `renew_grace` (`writd.yaml`, 24 h by default) of its `expires_at`; never a revoked,
+  closed or already renewed one. Same template; a fresh `ttl` and limits within it; repos,
+  branches, operations, committer emails and expected paths the same or narrower, and
+  `on_violation` as strict. Once signed it is a lease of its own (its id, a certificate for
+  the same session key); the renewed lease ends at once (`renewed`, its certificate refused),
+  and the new one may push the commits signed under the leases it renews (the ledger accepts
+  the chain), still checked against its own scope. A renewal replaces its lease for
+  `max_active_per_source`. Chains are unlimited unless the template's `max_renewals` caps
+  them. `writ sign` shows the original ticket as a reminder, the chain (renewals so far, time
+  used in all), what was used, and what changed.
+- **The estimate** (`ticket.estimate`: `coding`, `checks`, `ci`, each a duration, all
+  optional): agent-written, never read by the policy; `writ sign` shows it beside the TTL
+  asked ("estimates 45m of work, asks 2h"), and the activity report beside the real figures.
+
+**Closing and the report**
+
 - `writ close` and the activity report: commits, pushes, branches, denials, time used vs
-  granted, files touched vs `expected_paths`.
-- **Each agent on its own lease.** Today `~/.writ/sessions/current` is one link per Writ
-  home, moved by every granted `writ request`, and a wired repo follows it: two agents sharing
-  a home silently swap leases, and one's work lands under the other's lease when that lease
-  covers it. The session is now chosen, in `writ git`, `writ exec`, `writ init` and
-  `writ-sign`, in this order: `WRIT_SESSION=<lease>`, then the repo's pinned lease
-  (`writ init --lease <id>`, kept in the record; a whole-repo clone gets that lease's paths),
-  then `current`. A chosen session that is unknown or ended is refused with a reason, never
-  replaced by `current`; one command uses one session, so `writ-sign` refuses a commit when
-  `WRIT_SESSION` names another session than the settings git gave it (a whole-repo clone
-  pinned elsewhere). `writ request` prints the `WRIT_SESSION` line for its lease and warns when
-  it moves `current` while another lease in the same home is active. The skill sets
-  `WRIT_SESSION` for every command after its grant.
+  granted, files touched vs `expected_paths`, the estimate vs the real time per phase (from
+  the daemon's timestamps: lease start to first signature ≈ coding, a push to the next
+  signature ≈ a CI round and its fix; plus the approval wait and the renewals; labeled as
+  approximate), and the agent's marks.
+
+**Each agent on its own lease**
+
+- Today `~/.writ/sessions/current` is one link per Writ home, moved by every granted
+  `writ request`, and a wired repo follows it: two agents sharing a home silently swap leases,
+  and one's work lands under the other's lease when that lease covers it. The session is now
+  chosen, in `writ git`, `writ exec`, `writ init` and `writ-sign`, in this order:
+  `WRIT_SESSION=<lease>`, then the repo's pinned lease (`writ init --lease <id>`, kept in the
+  record; a whole-repo clone gets that lease's paths), then `current`. A chosen session that is
+  unknown or ended is refused with a reason, never replaced by `current`; one command uses one
+  session, so `writ-sign` refuses a commit when `WRIT_SESSION` names another session than the
+  settings git gave it (a whole-repo clone pinned elsewhere). `writ request` prints the
+  `WRIT_SESSION` line for its lease and warns when it moves `current` while another lease in
+  the same home is active. The skill sets `WRIT_SESSION` for every command after its grant.
 - **A whole-repo clone's signing settings follow its lease** (found by the
   [M5.6 review](#m56--review-after-m55), L19): today `writ init --whole-repo` writes
   `gpg.format`, `gpg.<format>.program`, `user.signingkey` and `user.email` once, from the lease
@@ -221,17 +279,17 @@ The workflow the agent follows ([Clients](architecture/clients.md#client-list),
   `writ init` computes them once per run (its record for `--undo` and its summary from the
   same values) and reads the previous values with `git config --get-all -z`, so a value over
   several lines is kept whole.
-- **The host's other leases on the approver's screen.** The ticket records the source it was
-  submitted from (an IPv4 address, an IPv6 /64, as `submissions.per_source` counts them; local
-  mode is one source), and `writ sign` shows the other active leases from that source: id,
-  repos, branches, operations, time left, at most 10 and a count, an overlap with the new
-  ticket flagged (a repo in common and branch patterns that intersect). Display only.
+- **The host's other leases on the approver's screen.** The daemon records the source each
+  ticket was submitted from (an IPv4 address, an IPv6 /64, as `submissions.per_source` counts
+  them; local mode is one source), and `writ sign` shows the other active leases from that
+  source: id, repos, branches, operations, time left, at most 10 and a count, an overlap with
+  the new ticket flagged (a repo in common and branch patterns that intersect). Display only.
 - **`max_active_per_source`** in `writd.yaml` (no limit by default): the active leases one
   source may hold at once. Checked at submission (refused early, with its code) and again when
   the ticket is signed (a lease granted meanwhile makes the signature refused, fail closed); an
-  amendment replaces its lease, it doesn't add one. A host meant for one agent sets `1`, and
-  its agents can't reach each other's leases. Its row in the operator reference and the
-  template, a test of its effect (rule 19).
+  amendment or a renewal replaces its lease, it doesn't add one. A host meant for one agent
+  sets `1`, and its agents can't reach each other's leases. Its row in the operator reference
+  and the template, a test of its effect (rule 19).
 - The threat model and the operators' good practice already say, since this milestone was
   planned, that an agent's reach in detached mode is every active lease on its host unless
   agents are isolated; M6 checks them against what was built.
@@ -239,11 +297,17 @@ The workflow the agent follows ([Clients](architecture/clients.md#client-list),
 Acceptance:
 - [ ] A real feature on a personal repo goes from prompt to pushed branch through Writ, with
       exactly one Touch ID (the ticket), while I'm away.
-- [ ] A refusal round-trip and an amendment round-trip both work from the agent's side using
-      only the skill.
-- [ ] The activity report matches the audit log for that lease.
+- [ ] A refusal round-trip, an amendment round-trip and a renewal both work from the agent's
+      side using only the skill.
+- [ ] The activity report matches the audit log for that lease; `timings.md` takes the run
+      and stays within its limits, whatever the number of runs.
 - [ ] An amendment applied minutes before the lease ends doesn't move its end: `writ ls`, the
       lease and the certificate all end at the original time.
+- [ ] A renewal of an expired lease within `renew_grace` pushes the commits signed under the
+      lease it renews; one second past `renew_grace`, from another session key, of a revoked,
+      closed or already renewed lease, or wider than its lease, it is refused with its reason;
+      `max_renewals` holds on both sides; the renewed lease's certificate is refused once the
+      renewal is signed.
 - [ ] Two agents on one host and one Writ home, each with its `WRIT_SESSION`: every signature
       and push lands under its own lease in the ledger, whichever lease `current` points at.
       A `WRIT_SESSION` naming an unknown or ended lease is refused with its reason, and
@@ -254,13 +318,50 @@ Acceptance:
 - [ ] `writ init --lease`: a pinned repo uses its lease in both wirings; in a whole-repo clone
       pinned to one lease, `writ-sign` refuses a commit with `WRIT_SESSION` naming another,
       with its reason.
+- [ ] `writ init` installs the skill where each agent finds it, once for OpenCode, excluded
+      from git; `--undo` removes exactly what it added; without a terminal and without
+      `--agents` or `--skill-dir` it refuses before wiring anything.
 - [ ] `writ sign` lists the source's other active leases and flags an overlap; 11 of them
       show 10 and the count; a lease from another source isn't listed.
 - [ ] `max_active_per_source`: one below the limit a submission is accepted, at the limit it
       is refused with its code; a lease granted between submission and signature makes the
-      signature refused; a lease ending frees its slot; an amendment doesn't count twice.
-- [ ] `WRIT_SESSION`, `writ init --lease` and `max_active_per_source` are used for real by
-      end-to-end scenarios, with their rows in the registries (rules 18 and 19).
+      signature refused; a lease ending frees its slot; an amendment or a renewal doesn't
+      count twice.
+- [ ] Every new command, flag, key and variable (`writ close`, `writ timings`, `writ mark`,
+      `writ init --lease`, `--agents`, `--skill-dir`, `--global`, `--agents-md`,
+      `WRIT_SESSION`, `max_active_per_source`, `renew_grace`, `max_renewals`,
+      `ticket.renews`, `ticket.estimate`) is used for real by end-to-end scenarios, with its
+      rows in the registries (rules 18 and 19).
+
+## M6.1 — Multi-repo workspaces
+
+Some people keep several repositories in one folder and open one agent at its root, which
+manages them all. The skill's folder is then the root's, not each repository's.
+
+- **`writ init` at a workspace root**: the child repositories one level down are found (the
+  root itself may be a repository too, a meta-repo with its children ignored); each is mapped
+  to its registry name (by default its `origin` URL's last part, else its folder's name,
+  confirmed on a terminal; `--repo <dir>=<name>`, repeatable, answers for it) and wired; the
+  workspace is recorded so `writ init --undo` at the root takes every repository back.
+- **The `writ-workspace` skill**, installed at the root instead of `writ`: one ticket naming
+  every repository the task touches, `writ git -C <repo> …` for each command, the trailer per
+  repository, timings per repository.
+- **`writ git` reads git's global options as git does**, in order (`-C`, `-c`,
+  `--git-dir`, `--work-tree`, `--no-pager`, `-p`, `-P`, `--namespace`, `--bare`…), to find the
+  repository a command works in; what it can't resolve is refused. At an unwired root it
+  lists the workspace's repositories.
+- **`writ exec -C <dir> -- …`**: one repository per process. A program that runs git across
+  several repositories at once stays in the [backlog](backlog/README.md), and so do
+  submodules.
+
+Acceptance:
+- [ ] An agent started at a workspace root works on two of its repositories under one lease,
+      through `writ git -C`, with the `writ-workspace` skill only.
+- [ ] `writ git` finds the repository behind every global option git takes before its
+      command, and refuses what it can't resolve, with its reason.
+- [ ] `writ init --undo` at the root restores every repository and the root exactly.
+- [ ] The new flags (`--repo`, `writ exec -C`) are used for real by end-to-end scenarios,
+      with their rows in the registry.
 
 ## M7 — Local mode on the Mac
 

@@ -73,6 +73,8 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
+| [One program, several repositories](#one-program-several-repositories) | Clients | feature | M | idea (left out of [M6.1](../roadmap.md#m61--multi-repo-workspaces)) |
+| [Submodules](#submodules) | Clients, Gateway | feature | M | idea (left out of [M6.1](../roadmap.md#m61--multi-repo-workspaces)) |
 | [Pending hand edits](#pending-hand-edits) | Administration | improvement | M | idea |
 | [Old upstream histories](#old-upstream-histories) | Upstream | improvement | M | idea; lowest priority, waits for a real repository that needs it |
 
@@ -198,6 +200,22 @@ owner can (`git filter-repo`). Ways to serve them, in order of preference
 
 Request the lease automatically when an agent tab opens, bind it to that tab's session (process
 chain in local mode), and wire the repo's git config ([Q10](../decisions.md)).
+
+### One program, several repositories
+
+`writ exec -- <program>` passes one repository's settings to everything the program runs, and
+`writ-sign` refuses a commit made in any other repository. A program that runs git in several
+repositories of a workspace at once (a script looping over them) would need each git to get
+its own repository's settings: a generated configuration with one `includeIf "gitdir:…"`
+section per wired repository (through `GIT_CONFIG_GLOBAL`, including the user's own global
+configuration), and `writ-sign` choosing the repository by the git directory it runs in.
+
+### Submodules
+
+A submodule is a repository inside another, and a commit in the parent records which commit
+of the child it points to. Supporting them means wiring the child as its own repository (its
+registry name), signing the parent's commits that move a pointer like any other, and fetching
+the child through the daemon too (`git submodule update` reaches the child's own remote).
 
 ## Administration
 
