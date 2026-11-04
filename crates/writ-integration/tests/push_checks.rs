@@ -203,6 +203,14 @@ fn git_takes_in_no_more_than_the_template_in_force_allows() {
         "wide",
         &SMALL_PUSHES.replace("max_push_size: 2KB", "max_push_size: 1MB"),
     );
+    // Committed (and signed) while the lease still fits its template.
+    let mut random = vec![0u8; 20_000];
+    std::io::Read::read_exact(&mut fs::File::open("/dev/urandom").unwrap(), &mut random).unwrap();
+    let content = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    gateway.commit_signed_as("wide", &lease, &work, "big", &content);
     let shown = gateway.service.admin_show(AdminTarget::Policy).unwrap();
     let lowered = shown
         .text
@@ -241,15 +249,10 @@ fn git_takes_in_no_more_than_the_template_in_force_allows() {
         )
         .unwrap();
 
-    // A pack of about 40KB: under the lease's 1MB, over the template's 2KB. git refuses it
-    // before the hook, from the template's bound.
-    let mut random = vec![0u8; 20_000];
-    std::io::Read::read_exact(&mut fs::File::open("/dev/urandom").unwrap(), &mut random).unwrap();
-    let content = random
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    gateway.commit_signed_as("wide", &lease, &work, "big", &content);
+    // The pack, about 40KB, under the lease's 1MB and over the template's 2KB, now: signing
+    // refuses a lease that no longer fits, the push is checked for its operation and repo
+    // only, then decided whole at the hook. git refuses it first, from the template's bound,
+    // so the daemon never takes in a pack the policy would refuse.
     let out = gateway.git_as(
         "wide",
         &work,
