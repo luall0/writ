@@ -50,7 +50,10 @@ impl Gateway {
                 .await?;
             let (gateway, acceptor) = (self.clone(), acceptor.clone());
             tokio::spawn(async move {
-                let _slot = slot;
+                // Held by the connection and by each request's task: the slot is given back
+                // once both ended, so requests cut off by their client still count against
+                // the listener's caps (no more in flight than connections allowed).
+                let slot = Arc::new(slot);
                 // The listener's one deadline to get in: the same as SSH's.
                 let tls = match tokio::time::timeout(
                     crate::limits::AUTH_DEADLINE,
@@ -83,6 +86,7 @@ impl Gateway {
                     .and_then(|cert| writ_crypto::tls::certificate_spki(cert.as_ref()));
                 let service = hyper::service::service_fn(move |request| {
                     let (gateway, facts, reader) = (gateway.clone(), facts.clone(), reader.clone());
+                    let slot = slot.clone();
                     async move {
                         let still = reader
                             .as_deref()
@@ -104,7 +108,11 @@ impl Gateway {
                         // change half applied (the state changed, the gateway not told)
                         // would stay so until a restart (the review after M5.5, S6). The
                         // task runs to its end; only the reply is lost.
-                        let served = tokio::spawn(handle(gateway, facts, request)).await;
+                        let served = tokio::spawn(async move {
+                            let _slot = slot;
+                            handle(gateway, facts, request).await
+                        })
+                        .await;
                         Ok::<_, std::convert::Infallible>(served.unwrap_or_else(|_| {
                             error(StatusCode::INTERNAL_SERVER_ERROR, "the request stopped")
                         }))

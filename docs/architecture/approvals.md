@@ -87,6 +87,8 @@ at unseal). They change only by:
   in force, every active lease signed by a key it no longer holds, as the daemon revokes on a
   violation (the certificate barred first, a `revoke` line each naming the removed approver
   and the version, the lease's sessions dropped). `writ admin apply` lists the leases revoked.
+  They are listed under the change's lock, before anything is written: a list the store can't
+  give refuses the change (fail closed), rather than leaving them running.
   A policy that names an agent signing key or an `ssh://` upstream credential the keystore
   lacks makes the daemon create it before the checks (Ed25519, sealed to the keystore's
   recipient with its `.pub`, handed to the running signer through

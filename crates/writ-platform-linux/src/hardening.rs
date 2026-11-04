@@ -3,7 +3,8 @@
 //! - No core dumps: `RLIMIT_CORE` 0, soft and hard (required).
 //! - No debugger: not dumpable (`PR_SET_DUMPABLE` 0), so a process of the same user can't
 //!   attach (`ptrace`) nor read `/proc/<pid>/mem`, and no core is written either; and no
-//!   tracer already attached (`TracerPid` 0), which not dumpable doesn't detach (required).
+//!   tracer already attached (`TracerPid` 0), which not dumpable doesn't detach (required;
+//!   a debug build being developed under `gdb` or `strace` runs with a warning, as on macOS).
 //! - Memory locked: `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)`, only when the lock
 //!   limit is unlimited or the process has `CAP_IPC_LOCK` (under a smaller limit, an
 //!   allocation would fail once it is reached, and the process abort). Otherwise a warning
@@ -56,19 +57,32 @@ fn not_dumpable() -> HardeningOutcome {
         // Not dumpable stops a new attach; one already there (`strace -f writd run`, a
         // debugger quicker than this step) goes on reading: refused then (the review after
         // M5.5, as macOS refuses a traced start).
-        (Ok(()), Ok(DumpableBehavior::NotDumpable)) => match tracer() {
-            Ok(0) => HardeningOutcome::Applied,
-            Ok(pid) => HardeningOutcome::Refused {
-                why: format!("the process is traced (by pid {pid}): it runs untraced only"),
-            },
-            Err(why) => HardeningOutcome::Refused { why },
-        },
+        (Ok(()), Ok(DumpableBehavior::NotDumpable)) => untraced(tracer(), cfg!(debug_assertions)),
         (Err(e), _) | (_, Err(e)) => HardeningOutcome::Refused {
             why: format!("making the process not dumpable (PR_SET_DUMPABLE 0) failed: {e}"),
         },
         (Ok(()), Ok(other)) => HardeningOutcome::Refused {
             why: format!("the process is still dumpable ({other:?}) after PR_SET_DUMPABLE 0"),
         },
+    }
+}
+
+/// The outcome once not dumpable, by the pid tracing the process (`tracer`, 0: none): applied
+/// untraced; traced, refused in a release build and a warning in a `debug` one (writd being
+/// developed under `gdb` or `strace`), as on macOS; unknown, refused.
+fn untraced(tracer: Result<u32, String>, debug: bool) -> HardeningOutcome {
+    match tracer {
+        Ok(0) => HardeningOutcome::Applied,
+        Ok(pid) if debug => HardeningOutcome::NotApplied {
+            why: format!("the process is traced (by pid {pid}): this debug build runs anyway"),
+            fix: "start it without a debugger".to_owned(),
+        },
+        Ok(pid) => HardeningOutcome::Refused {
+            why: format!(
+                "the process is traced (by pid {pid}): a release build doesn't run traced"
+            ),
+        },
+        Err(why) => HardeningOutcome::Refused { why },
     }
 }
 
@@ -143,5 +157,30 @@ mod tests {
         }
         // This test process isn't traced.
         assert_eq!(tracer(), Ok(0));
+    }
+
+    /// The second review after M5.5: a traced start was refused in every build, where macOS
+    /// lets a debug build run under a debugger with a warning. Never a release build.
+    #[test]
+    fn a_traced_start_is_refused_in_a_release_build_and_a_warning_in_a_debug_one() {
+        for debug in [false, true] {
+            assert_eq!(untraced(Ok(0), debug), HardeningOutcome::Applied);
+            assert!(
+                matches!(
+                    untraced(Err("no TracerPid".to_owned()), debug),
+                    HardeningOutcome::Refused { ref why } if why == "no TracerPid"
+                ),
+                "{debug}"
+            );
+        }
+        assert!(matches!(
+            untraced(Ok(4242), false),
+            HardeningOutcome::Refused { ref why }
+                if why.contains("pid 4242") && why.contains("a release build doesn't run traced")
+        ));
+        assert!(matches!(
+            untraced(Ok(4242), true),
+            HardeningOutcome::NotApplied { ref why, .. } if why.contains("pid 4242")
+        ));
     }
 }

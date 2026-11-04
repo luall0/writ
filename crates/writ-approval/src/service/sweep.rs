@@ -184,12 +184,15 @@ impl Service {
     /// certificates stay refused meanwhile. Whether any was recorded.
     fn record_unrecorded(&self, inner: &mut Inner, now: Timestamp) -> Result<bool, ServiceError> {
         let mut changed = false;
-        for (id, reason) in std::mem::take(&mut inner.unrecorded) {
+        let mut pending = std::mem::take(&mut inner.unrecorded).into_iter();
+        while let Some((id, reason)) = pending.next() {
             let lease = match inner.store.lease(&id) {
                 Ok(Some(lease)) => lease,
                 Ok(None) => continue,
                 Err(e) => {
+                    // This one and every one not reached yet stay for the next sweep.
                     inner.unrecorded.insert(id, reason);
+                    inner.unrecorded.extend(pending);
                     return Err(internal(e));
                 }
             };

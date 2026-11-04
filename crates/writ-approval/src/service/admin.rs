@@ -12,6 +12,7 @@ use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::caller::CallerFacts;
 use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
+use writ_core::lease::Lease;
 use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::signed::Admin;
 use writ_crypto::allowed_signers::AllowedSigner;
@@ -275,6 +276,27 @@ impl Service {
                 return Err(e);
             }
         };
+        // The leases a removed approver signed, listed under the lock (no approval lands
+        // meanwhile: `approve` checks its approver under it), before anything is written: a
+        // list the store can't give refuses the change, rather than leaving them running.
+        let unapproved = match &kept {
+            Some(kept) => match inner.store.leases(writ_core::lease::State::Active) {
+                Ok(active) => active
+                    .into_iter()
+                    .filter(|lease| !kept.contains(&lease.approval.approver))
+                    .collect(),
+                Err(e) => {
+                    tracing::error!(error = %e, "cannot list the leases the approvers signed");
+                    let denial = AuditEvent::new(now, EventKind::Admin, Outcome::Denied)
+                        .approver(&checked.approver)
+                        .caller(caller)
+                        .reason(format!("{target}: internal error (see the daemon's log)"));
+                    Self::write_best_effort(&mut inner, &denial);
+                    return Err(internal(e));
+                }
+            },
+            None => Vec::new(),
+        };
         let digest = checked.admin.text.digest();
         let mut in_force = self.in_force();
         let sealed = old
@@ -370,10 +392,7 @@ impl Service {
             AdminParsed::Readers => {}
         }
         drop(inner);
-        let revoked = match kept {
-            Some(kept) => self.revoke_unapproved(&kept, version),
-            None => Vec::new(),
-        };
+        let revoked = self.revoke_unapproved(unapproved, version);
         self.changed.notify_waiters();
         Ok(AdminApplied {
             target,
@@ -385,33 +404,15 @@ impl Service {
         })
     }
 
-    /// Revokes every active lease signed by an approver key not in `kept` (the approvers
-    /// `version` put in force): removing a key takes back what it granted. Each lease is
+    /// Revokes `leases`, the active ones signed by an approver key `version` removed (listed
+    /// under the change's lock): removing a key takes back what it granted. Each lease is
     /// revoked as the daemon revokes on a violation (its certificate barred first, its audit
     /// line, its sessions dropped); the ids revoked are returned for the change's reply. A
     /// revocation that can't be recorded leaves the certificate refused in memory, and is
     /// logged.
-    fn revoke_unapproved(&self, kept: &BTreeSet<KeyFingerprint>, version: u64) -> Vec<TicketId> {
-        let active = match self.lock().and_then(|inner| {
-            inner
-                .store
-                .leases(writ_core::lease::State::Active)
-                .map_err(internal)
-        }) {
-            Ok(active) => active,
-            Err(e) => {
-                tracing::error!(
-                    error = %e.detail(),
-                    "cannot list the leases a removed approver signed; revoke them by hand"
-                );
-                return Vec::new();
-            }
-        };
+    fn revoke_unapproved(&self, leases: Vec<Lease>, version: u64) -> Vec<TicketId> {
         let mut revoked = Vec::new();
-        for lease in active
-            .into_iter()
-            .filter(|lease| !kept.contains(&lease.approval.approver))
-        {
+        for lease in leases {
             let reason = format!(
                 "its approver {} was removed from approvers (version {version})",
                 lease.approval.approver

@@ -133,7 +133,7 @@ pub enum HardeningOutcome {
     /// before it reads a secret.
     Refused { why: String },
     /// A step the host's limits decide (memory locking on Linux), not allowed there: a
-    /// warning, with the optional fix. Also a traced debug build on macOS.
+    /// warning, with the optional fix. Also a debug build started traced (macOS, Linux).
     NotApplied { why: String, fix: String },
     /// The platform has no call for it (memory locking on macOS): one info line.
     Unavailable { why: String },

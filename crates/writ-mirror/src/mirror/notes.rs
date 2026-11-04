@@ -5,7 +5,7 @@
 //! A batch of notes becomes one commit of its own (a tree mapping each annotated commit's id
 //! to its note, no parent), merged into the mirror's notes ref with `git notes merge -s
 //! union`: a note a commit already has is kept as it is written, the batch's text after it (a
-//! blank line between, as `git notes append` writes it); a note whose lines the ref holds
+//! blank line between, as `git notes append` writes it); a line the commit's note holds
 //! already is left out of the batch, so none is written twice. The ref is pushed without
 //! force, so a remote that moved it meanwhile refuses (`fetch first`, `non-fast-forward`):
 //! then that one ref is fetched from upstream, the batch
@@ -218,15 +218,15 @@ impl MirrorGuard {
         .await
     }
 
-    /// Merges into the mirror's notes ref the notes of `notes` it doesn't hold yet (a retry
-    /// after a push whose answer was lost, or a ref fetched from upstream, may hold some):
-    /// nothing is written twice.
+    /// Merges into the mirror's notes ref the lines of `notes` it doesn't hold yet (a retry
+    /// after a push whose answer was lost, or a ref fetched from upstream, may hold some, of
+    /// a note or all of it): no line is written twice.
     async fn merge_missing(&self, notes_ref: &str, notes: &[Note], until: Instant) -> Result<()> {
-        let held = self.notes_held(notes_ref, notes, until).await;
+        let held = self.lines_held(notes_ref, notes, until).await;
         let missing: Vec<Note> = notes
             .iter()
-            .filter(|note| !held.contains(&note.commit))
-            .cloned()
+            .zip(held)
+            .filter_map(|(note, held)| unwritten(note, &held))
             .collect();
         if missing.is_empty() {
             return Ok(());
@@ -235,23 +235,23 @@ impl MirrorGuard {
         self.merge_notes(notes_ref, &batch, until).await
     }
 
-    /// The commits of `notes` whose note in `notes_ref` already holds every line of the new
-    /// one. Read in one `cat-file --batch`, each note under every fan-out git writes (`ab…`,
-    /// `ab/cd…`, `ab/cd/ef…`). Best effort: a read that fails holds nothing, and the note is
-    /// merged again (a line twice at worst, never one lost).
-    async fn notes_held(
+    /// For each of `notes`, in order, the lines its commit's note in `notes_ref` holds
+    /// already. Read in one `cat-file --batch`, each note under every fan-out git writes
+    /// (`ab…`, `ab/cd…`, `ab/cd/ef…`). Best effort: a read that fails holds nothing, and the
+    /// notes are merged whole (a line twice at worst, never one lost).
+    async fn lines_held(
         &self,
         notes_ref: &str,
         notes: &[Note],
         until: Instant,
-    ) -> BTreeSet<CommitId> {
+    ) -> Vec<BTreeSet<String>> {
+        let none = || vec![BTreeSet::new(); notes.len()];
         let mut input = String::new();
-        let mut asked: Vec<&Note> = Vec::new();
-        for note in notes {
-            let id = note.commit.as_str();
-            for path in fanouts(id) {
+        let mut asked: Vec<usize> = Vec::new();
+        for (at, note) in notes.iter().enumerate() {
+            for path in fanouts(note.commit.as_str()) {
                 let _ = writeln!(input, "{notes_ref}:{path}");
-                asked.push(note);
+                asked.push(at);
             }
         }
         let mut cmd = git::command(&self.shared.config.git, Hooks::None);
@@ -261,27 +261,22 @@ impl MirrorGuard {
         let left = until.saturating_duration_since(Instant::now());
         let Ok(done) = process::run(cmd, Some(input.into_bytes()), left, MAX_NOTES_READ).await
         else {
-            return BTreeSet::new();
+            return none();
         };
         if !done.status.success() {
-            return BTreeSet::new();
+            return none();
         }
         let texts = batch_texts(&done.stdout);
         if texts.len() != asked.len() {
-            return BTreeSet::new();
+            return none();
         }
-        asked
-            .into_iter()
-            .zip(texts)
-            .filter_map(|(note, text)| {
-                let text = String::from_utf8_lossy(text?);
-                let lines: BTreeSet<&str> = text.lines().collect();
-                note.text
-                    .lines()
-                    .all(|line| lines.contains(line))
-                    .then(|| note.commit.clone())
-            })
-            .collect()
+        let mut held = none();
+        for (at, text) in asked.into_iter().zip(texts) {
+            if let (Some(lines), Some(text)) = (held.get_mut(at), text) {
+                lines.extend(String::from_utf8_lossy(text).lines().map(str::to_owned));
+            }
+        }
+        held
     }
 
     /// Merges the batch into the mirror's notes ref (made the batch if there is none): a note
@@ -524,6 +519,18 @@ fn from_now(deadline: Duration) -> Instant {
     now.checked_add(deadline).unwrap_or(now)
 }
 
+/// `note` with only the lines `held` lacks (in its order), or `None` when it lacks none.
+fn unwritten(note: &Note, held: &BTreeSet<String>) -> Option<Note> {
+    let mut text = String::new();
+    for line in note.text.lines().filter(|line| !held.contains(*line)) {
+        let _ = writeln!(text, "{line}");
+    }
+    (!text.is_empty()).then(|| Note {
+        commit: note.commit.clone(),
+        text,
+    })
+}
+
 /// The paths a commit's note may be under in a notes tree: none, one and two levels of
 /// fan-out (`ab/cd…`), as git writes them for a growing number of notes.
 fn fanouts(id: &str) -> Vec<String> {
@@ -599,6 +606,31 @@ mod tests {
         assert_eq!(batch_texts(b"6b91 blob 99\nshort\n").len(), 0);
         assert_eq!(batch_texts(b"6b91 blob x\n").len(), 0);
         assert!(batch_texts(b"").is_empty());
+    }
+
+    /// The second review after M5.5: a note was skipped only when its commit held all of its
+    /// lines, so a batch with one line written already (a push whose answer was lost) and one
+    /// new wrote the first again.
+    #[test]
+    fn only_the_lines_a_note_lacks_are_written() {
+        let commit: CommitId = "8b137891791fe96927ad78e64b0aad7bded08bdc".parse().unwrap();
+        let note = Note {
+            commit: commit.clone(),
+            text: "Writ: wrt_A\nWrit: wrt_B\n".to_owned(),
+        };
+        let held = |lines: &[&str]| lines.iter().map(|l| (*l).to_owned()).collect();
+        assert_eq!(unwritten(&note, &held(&[])), Some(note.clone()));
+        assert_eq!(
+            unwritten(&note, &held(&["Reviewed by Sam", "", "Writ: wrt_A"])),
+            Some(Note {
+                commit,
+                text: "Writ: wrt_B\n".to_owned()
+            })
+        );
+        assert_eq!(
+            unwritten(&note, &held(&["Writ: wrt_B", "Writ: wrt_A"])),
+            None
+        );
     }
 
     #[test]

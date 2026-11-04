@@ -50,30 +50,41 @@ impl Service {
         let signer = &*self.opened()?.signer;
         // Declared: check_proof refused a key no template signs with, and every such key is
         // declared (checked at start and at each policy change). Fail closed all the same.
-        let key_use = self
+        // Either failure is logged as the proof's outcome, under the lock (below).
+        let prepared = self
             .config
             .signing_keys
             .get(&proof.key)
             .copied()
-            .ok_or_else(|| super::internal(format!("{} is not declared", proof.key)))?;
-        // An OpenPGP signature carries its time: a 32-bit count of seconds, never a guess.
-        let time = u32::try_from(self.now()?.unix())
-            .map_err(|_| super::internal("the clock is past 2106"))?;
+            .ok_or_else(|| super::internal(format!("{} is not declared", proof.key)))
+            .and_then(|key_use| {
+                // An OpenPGP signature carries its time: a 32-bit count of seconds, never a
+                // guess.
+                let time = u32::try_from(self.now()?.unix())
+                    .map_err(|_| super::internal("the clock is past 2106"))?;
+                Ok((key_use, time))
+            });
         // An OpenPGP signature has no namespace: the remote's token is signed as a document
         // (Forgejo's and Gitea's GPG key check), never one that could pass as a commit or a
         // tag (checked first).
-        let signed = writ_signer::public_key(signer, &proof.key).and_then(|public| {
-            self.signature(
-                signer,
-                &proof.key,
-                key_use,
-                proof.namespace.as_str(),
-                message,
-                time,
-            )
-            .map(|signature| (public, signature))
+        let signed = prepared.as_ref().ok().map(|&(key_use, time)| {
+            writ_signer::public_key(signer, &proof.key).and_then(|public| {
+                self.signature(
+                    signer,
+                    &proof.key,
+                    key_use,
+                    proof.namespace.as_str(),
+                    message,
+                    time,
+                )
+                .map(|signature| (public, signature))
+            })
         });
         let (now, mut inner) = self.begin()?;
+        denied.or_failed(&mut inner, prepared)?;
+        let Some(signed) = signed else {
+            return denied.failed(&mut inner, internal("a proof prepared but not signed"));
+        };
         let (public, signature) = match signed {
             Ok(signed) => signed,
             Err(e) => {
@@ -88,7 +99,7 @@ impl Service {
                 return denied.deny(&mut inner, RefusalCode::Proof, reason);
             }
         };
-        let public_key = public.to_openssh().map_err(internal)?;
+        let public_key = denied.or_failed(&mut inner, public.to_openssh().map_err(internal))?;
         let event = AuditEvent::new(now, EventKind::Prove, Outcome::Allowed)
             .caller(caller)
             .approver(&approver)

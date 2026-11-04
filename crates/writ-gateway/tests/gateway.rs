@@ -1219,11 +1219,46 @@ async fn an_unseal_cut_off_by_its_https_client_still_runs_to_its_end() {
     sent.abort();
     connection.abort();
     let _ = connection.await;
+
+    // The request still running holds its connection's slot (the second review after M5.5:
+    // a request on a task of its own must not escape the listener's caps): with it, this
+    // source has 15 more connections, not 16.
+    let connect = || async {
+        let config = writ_crypto::tls::pinned_client_config(&daemon.pin, &daemon.reader).unwrap();
+        let stream = daemon.https.connect(peer()).await.unwrap();
+        tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(
+                rustls::pki_types::ServerName::try_from("writd").unwrap(),
+                stream,
+            )
+            .await
+    };
+    let mut open = Vec::new();
+    for _ in 1..16 {
+        open.push(connect().await.expect("a connection within the cap"));
+    }
+    // any error: over the cap the listener drops the connection before TLS, which the
+    // client sees as the stream ending in its handshake.
+    assert!(
+        connect().await.is_err(),
+        "a 17th connection from one source"
+    );
     held.release.notify_one();
     eventually_async("the unseal to run to its end", || {
         held.finished.load(std::sync::atomic::Ordering::Acquire)
     })
     .await;
+    // Ended, it gives the slot back (the 15 others still open).
+    let deadline = std::time::Instant::now() + writ_platform::testing::WAIT_LIMIT;
+    while connect().await.is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the slot of the finished request never came back"
+        );
+        // poll: the request's task ends just after the unsealer returns, with no signal.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    drop(open);
 }
 
 /// The review after M5.5 (T3): the SSH environment and the authentication attempts are bounds
