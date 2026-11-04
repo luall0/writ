@@ -86,7 +86,7 @@ fn the_approver_narrows_every_term_and_the_lease_holds_to_them() {
 
     // The lease holds to them: one push, then the next refused for the count.
     agent.clone_from_forgejo(&stack, "narrowing", "work");
-    agent.ok_in("work", "writ init narrowing");
+    agent.ok_in("work", "writ init narrowing --agents none");
     agent.ok_in("work", "git checkout -q -b agent/narrow");
     let first = agent.commit("work", &id, "a.txt", "one");
     expect(

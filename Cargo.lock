@@ -4100,6 +4100,7 @@ name = "writ-sign"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "tempfile",
  "writ-alloc",
  "writ-core",
  "writ-crypto",

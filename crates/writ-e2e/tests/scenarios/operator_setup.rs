@@ -31,6 +31,7 @@ const REPOS: &[&str] = &[
     "busy",
     "notes",
     "backfill",
+    "sessions",
 ];
 
 #[test]

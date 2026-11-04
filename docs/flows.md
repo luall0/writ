@@ -200,14 +200,47 @@ If the agent genuinely needs more, the skill tells it to submit an **amendment**
 (`amends: <id>`) explaining why. I sign or refuse it like any ticket. The denied operation is
 not replayed; the agent retries after the amendment is signed.
 
+If the agent runs out of time or counts, the skill tells it to submit a **renewal**
+(`renews: <id>`, § 6c), never an amendment: an amendment changes scope, not time.
+
 ## 6b. Closing a ticket
 
-When the work is done, the agent runs `writ close` with a short summary. The daemon:
-- ends the lease and revokes the certificate
-- produces an **activity report**: commits signed, pushes, branches, denials, time used vs
-  granted, files touched vs `expected_paths`
+When the work is done (or stops for good), the agent runs `writ close --summary "…"` with its
+session key (as user `writ`, like `writ wait`; to another session the lease doesn't exist).
+The daemon:
 
-I review the report alongside the branch before merging.
+- ends an active lease (`closed`, its certificate on the deny list, its sessions dropped); a
+  lease that already ended (expired, used up, renewed) keeps its state and gets the summary,
+  so its report still comes back;
+- writes one `close` line;
+- builds the **activity report** of the lease and the leases it renews (`Service::close`),
+  from its state (the chain, each lease's counters, the ledger) under the lock, then from its
+  audit log read without the lock (the chain's lines): commits signed, pushes and branches,
+  fetches, denials by code (counted ones included), the warnings of its signatures (files
+  outside `expected_paths`), time used against time granted, the estimate, and the phases
+  (submission to grant, grant to first signature, each push to the next signature, the last
+  push to the end), labeled approximate.
+
+`writ close` prints it, adds the agent's own phase marks (`writ mark`, kept on its host),
+marks the session ended, and records the run in the skill's `timings.md` (compacted to its
+limits). I read the same report with `writ report <lease>` before merging.
+
+## 6c. Renewing a lease
+
+```mermaid
+sequenceDiagram
+  participant A as Agent (skill + writ)
+  participant D as writd
+  participant AP as writ sign (Mac)
+  A->>D: writ request: renews A (A's session key), a fresh ttl, the same scope or narrower
+  D->>D: A active, or ended ≤ renew_grace ago; same template and subject; within A; max_renewals
+  D-->>AP: shown with A's terms (diff), the chain's original ticket, time used, A's counts
+  AP->>D: approval (SSHSIG)
+  D->>D: checked again; under one change: B active (new certificate, same key), A renewed
+  D->>D: A's certificate on the deny list, its sessions dropped; log grant (B) and renew (A)
+  D-->>A: lease B + certificate
+  A->>D: WRIT_SESSION=B: push the commits A signed (the ledger accepts B's chain)
+```
 
 ## 7. Daemon startup: sealed
 

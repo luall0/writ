@@ -575,7 +575,7 @@ fn writd_under_heavy_load() {
                 &agent.home,
                 &["clone", "-q", upstream.to_str().unwrap(), "work"],
             );
-            agent.writ_ok(&agent.work, &["init", "demo"]);
+            agent.writ_ok(&agent.work, &["init", "demo", "--agents", "none"]);
         }
         next("setup", started);
 

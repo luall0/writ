@@ -207,7 +207,7 @@ Settled with the user before building (the decision log's M6 rows).
   it, `--skill-dir <path>` installs in any other folder, `--global` in the user's folders
   instead of the repo. In the repo, each installed path is added to `.git/info/exclude`
   (never committed, never against `expected_paths`), recorded for `--undo`, which removes
-  what it installed and the exclude lines. Without a terminal and without `--agents` or
+  what it installed and the exclude lines (the timings file stays: what the agent learned). Without a terminal and without `--agents` or
   `--skill-dir`, `writ init` fails before wiring anything and lists the flags.
   `--agents-md` appends one line pointing at the skill to `AGENTS.md` / `CLAUDE.md` (recorded
   for `--undo`); without it, the summary prints the line to add by hand.
@@ -222,12 +222,17 @@ Settled with the user before building (the decision log's M6 rows).
 - **`writ mark <phase>`**: the agent marks the end of a phase (coding, checks, CI) when it
   doesn't line up with a commit or a push; kept on the agent's host, shown as the agent's
   mark in the report.
+- **`writ check <file>`** (asked by the user while building): a ticket file checked as far as
+  it can be without the daemon (the same text checks the daemon runs), or the timings file
+  checked for every line `writ close` would drop or rewrite; nothing sent, exit 3 with every
+  problem.
 
 **The lease model**
 
-- **`writ-ticket/2`**: the ticket gains `ticket.renews` and `ticket.estimate`; tickets of
-  `writ-ticket/1` are read from the state as they were, and a pending ticket or an active
-  lease from before M6 is ended at the daemon's first start with M6 (logged).
+- **Versions**: the ticket (`writ-ticket/1`, nothing deployed before M6) gains
+  `ticket.renews` and `ticket.estimate`; the state records the version it was written in, and
+  `writd` refuses at start a state of another version, naming both (no migration chain, no
+  legacy reading).
 - **Amendments** (`amends: <id>`): the original lease runs while pending, replaced once signed.
   An amendment changes scope, not time (decided after the M3.5 review,
   [M3.6](history/m3.6-review-after-m3.5.md)): its `expires_at` is capped at the lease's, so
@@ -319,15 +324,16 @@ Acceptance:
       pinned to one lease, `writ-sign` refuses a commit with `WRIT_SESSION` naming another,
       with its reason.
 - [ ] `writ init` installs the skill where each agent finds it, once for OpenCode, excluded
-      from git; `--undo` removes exactly what it added; without a terminal and without
-      `--agents` or `--skill-dir` it refuses before wiring anything.
+      from git; `--undo` removes exactly what it added, the timings file aside; without a
+      terminal and without `--agents` or `--skill-dir` it refuses before wiring anything.
 - [ ] `writ sign` lists the source's other active leases and flags an overlap; 11 of them
       show 10 and the count; a lease from another source isn't listed.
 - [ ] `max_active_per_source`: one below the limit a submission is accepted, at the limit it
       is refused with its code; a lease granted between submission and signature makes the
       signature refused; a lease ending frees its slot; an amendment or a renewal doesn't
       count twice.
-- [ ] Every new command, flag, key and variable (`writ close`, `writ timings`, `writ mark`,
+- [ ] Every new command, flag, key and variable (`writ close`, `writ report`, `writ check`,
+      `writ timings`, `writ mark`,
       `writ init --lease`, `--agents`, `--skill-dir`, `--global`, `--agents-md`,
       `WRIT_SESSION`, `max_active_per_source`, `renew_grace`, `max_renewals`,
       `ticket.renews`, `ticket.estimate`) is used for real by end-to-end scenarios, with its

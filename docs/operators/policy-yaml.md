@@ -85,6 +85,7 @@ the agent gets every reason.
 | `templates.<name>.max_push_size` | Size | **required** | The largest pack one push may send: at least 1 byte when the template allows `push` (git would read 0 as no limit). Lowering it applies to the leases already granted too |
 | `templates.<name>.paths_check` | `off`, `warn` or `deny` | `warn` | Compares the files each commit touches with the ticket's `expected_paths`. [Paths check](#paths-check) |
 | `templates.<name>.require_expected_paths` | Boolean | `false` | Whether a ticket must list `expected_paths` to fit this template |
+| `templates.<name>.max_renewals` | Count | no limit | How many [renewals](ticket.md#renewals) one lease's chain may have. Each renewal is signed anyway; this caps how long one task can run |
 
 ### Paths check
 

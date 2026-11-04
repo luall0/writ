@@ -16,9 +16,10 @@ use crate::ServiceError;
 
 impl Service {
     /// A push upstream took under `lease`: when its repo's `ticket_link` is `notes`, its
-    /// commits (those the ledger holds for this lease and repo) wait for their note, to be
-    /// pushed with the repo's upstream credential. Returns whether the repo asks for notes (the
-    /// gateway then starts its notes job). Nothing is logged: the push has its line.
+    /// commits (those the ledger holds for this lease, or a lease it renews, and repo) wait
+    /// for their note, to be pushed with the repo's upstream credential. Returns whether the
+    /// repo asks for notes (the gateway then starts its notes job). Nothing is logged: the
+    /// push has its line.
     pub fn notes_to_write(
         &self,
         lease: &TicketId,
@@ -33,9 +34,11 @@ impl Service {
             return Ok(false);
         }
         let inner = self.lock()?;
+        let mut leases = vec![lease.clone()];
+        leases.extend(inner.store.predecessors(lease).map_err(internal)?);
         inner
             .store
-            .notes_add_pending(lease, repo, commits, &entry.upstream_credential)
+            .notes_add_pending(&leases, repo, commits, &entry.upstream_credential)
             .map_err(internal)?;
         Ok(true)
     }

@@ -28,6 +28,8 @@ signing_keys:                      # every key a template's signing_key names
 # submissions:
 #   per_source: 10                 # tickets one source submits a minute, 1 to 1000
 #   in_all: 60                     # all sources together, 1 to 10000
+# max_active_per_source: null      # active leases one source holds at once; null: no limit
+# renew_grace: 24h                 # renewing an expired or used-up lease, 0s to 7d
 # sign_requests:
 #   per_lease: 4                   # commit sign requests held at once per lease, 1 to 16
 

@@ -13,7 +13,12 @@ ticket:
   task: "Add GitHub OAuth login to the web app, behind a feature flag"
   # plan: []                       # one-line steps, in order, e.g. ["Callback route", "Tests"]
   # expected_paths: []             # globs, e.g. ["src/auth/**", "tests/auth/**"]
+  # estimate:                      # how long the agent thinks it takes; shown, never checked
+  #   coding: 45m                  # writing the change
+  #   checks: 15m                  # the checks it runs before committing
+  #   ci: 30m                      # waiting on remote CI after its pushes
   # amends: null                   # the active lease (of this session) this ticket amends
+  # renews: null                   # the lease (of this session) this ticket renews: more time
   # revises: null                  # the refused ticket (of this session) this one revises
 
 # template: null                   # null: the only template the ticket fits

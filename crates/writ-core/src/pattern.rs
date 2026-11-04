@@ -138,6 +138,17 @@ impl Glob1 {
         }
     }
 
+    /// Some name is matched by both.
+    fn intersects(&self, other: &Glob1) -> bool {
+        match (self, other) {
+            (Self::Exact(a), _) => other.matches(a),
+            (_, Self::Exact(b)) => self.matches(b),
+            (Self::Prefix(a), Self::Prefix(b)) => {
+                a.starts_with(b.as_str()) || b.starts_with(a.as_str())
+            }
+        }
+    }
+
     fn text(&self) -> String {
         match self {
             Self::Exact(exact) => exact.clone(),
@@ -219,6 +230,11 @@ glob1_pattern!(
 );
 
 impl BranchPattern {
+    /// Whether some branch is matched by both patterns (two leases could push it).
+    pub fn intersects(&self, other: &BranchPattern) -> bool {
+        self.0.intersects(&other.0)
+    }
+
     /// Matches the ref if it is a branch whose name the pattern matches.
     pub fn matches_ref(&self, name: &RefName) -> bool {
         name.branch().is_some_and(|branch| self.0.matches(branch))
@@ -355,6 +371,24 @@ mod tests {
 
     fn refname(r: &str) -> RefName {
         r.parse().unwrap()
+    }
+
+    #[test]
+    fn branch_patterns_intersect_when_a_branch_matches_both() {
+        let b = |text: &str| text.parse::<BranchPattern>().unwrap();
+        for (x, y, both) in [
+            ("agent/*", "agent/fix-*", true),
+            ("agent/fix-*", "agent/*", true),
+            ("agent/x", "agent/*", true),
+            ("agent/x", "agent/x", true),
+            ("*", "main", true),
+            ("agent/x", "agent/y", false),
+            ("agent/a-*", "agent/b-*", false),
+            ("agent/x", "agent/x-*", false),
+            ("agent/x-*", "agent/x", false),
+        ] {
+            assert_eq!(b(x).intersects(&b(y)), both, "{x} {y}");
+        }
     }
 
     #[test]

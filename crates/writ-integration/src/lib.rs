@@ -10,6 +10,7 @@
 //! - [`gateway`]: the gateway in-process, driven by the real `git` and `ssh`.
 //! - [`remote`]: a test remote (an SSH server serving git), standing in for GitHub or Forgejo.
 //! - [`https_remote`]: the same repositories over HTTPS with a token (`git http-backend`).
+//! - [`clone`]: an agent's clone of `demo`, and plain `git` and `writ` run in it.
 //!
 //! Scenarios never touch the user's `~/.ssh`, git configuration or ssh-agent: `HOME`,
 //! `GIT_CONFIG_*` and `SSH_AUTH_SOCK` are always set to throwaway values.
@@ -27,6 +28,7 @@
 
 pub mod agent;
 pub mod binaries;
+pub mod clone;
 pub mod daemon;
 pub mod gateway;
 pub mod https_remote;

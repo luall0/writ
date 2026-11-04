@@ -5,7 +5,7 @@
 //! runs (`writ-sign`, `ssh`, hooks).
 //!
 //! In a repository wired with `--whole-repo` the settings are in its config already, and the
-//! program runs as it is.
+//! program runs as it is (`writ-sign` checks `WRIT_SESSION` against them).
 
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
@@ -47,14 +47,19 @@ fn run(
     let mut command = Command::new(program);
     command.args(args);
     if wired.mode == Mode::Wrapper {
-        let settings = wiring::settings_for(paths, &wired)?;
+        // One session for the whole command: chosen once, every setting from it.
+        let session = wiring::choose_session(&paths.home, wired.lease.as_ref())?;
+        let settings = wiring::settings_with(paths, &wired, &session)?;
         let existing = std::env::var("GIT_CONFIG_COUNT").ok();
         command.envs(wiring::config_env(existing.as_deref(), &settings)?);
         // Over the caller's own GIT_SSH_COMMAND, which git (and writ-sign) would take first.
         let home = std::path::absolute(&paths.home).context("cannot resolve WRIT_HOME")?;
         let known_hosts = std::path::absolute(&paths.known_hosts)
             .context("cannot resolve the known_hosts path")?;
-        command.env("GIT_SSH_COMMAND", wiring::ssh_command(&home, &known_hosts));
+        command.env(
+            "GIT_SSH_COMMAND",
+            wiring::ssh_command(&session.dir(&home), &known_hosts),
+        );
     }
     let error = command.exec();
     bail!("cannot run {}: {error}", PathBuf::from(program).display())

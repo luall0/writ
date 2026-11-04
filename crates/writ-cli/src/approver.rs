@@ -103,11 +103,14 @@ async fn pick_pending(session: &Approvals, id: Option<TicketId>) -> anyhow::Resu
     }
 }
 
-/// A pending ticket as the daemon shows it, decoded strictly, and what it follows.
+/// A pending ticket as the daemon shows it, decoded strictly, what it follows, the chain a
+/// renewal continues (with its original ticket), and the other leases of its source.
 struct Reviewed {
     submitted: Ticket,
     state: State,
     previous: Option<(Relation, Ticket)>,
+    renewal: Option<(writ_proto::Renewal, Ticket)>,
+    others: writ_proto::Others,
 }
 
 /// Fetches ticket `id` and checks it is the one asked for, canonical, and waiting.
@@ -138,10 +141,20 @@ async fn fetch_reviewed(session: &Approvals, id: &TicketId) -> anyhow::Result<Re
         )),
         None => None,
     };
+    let renewal = match shown.renewal {
+        Some(view) => {
+            let original = Ticket::from_canonical(view.original.as_bytes())
+                .context("the daemon sent an original ticket that isn't canonical")?;
+            Some((view, original))
+        }
+        None => None,
+    };
     Ok(Reviewed {
         submitted,
         state: shown.state,
         previous,
+        renewal,
+        others: shown.others,
     })
 }
 
@@ -149,6 +162,9 @@ async fn fetch_reviewed(session: &Approvals, id: &TicketId) -> anyhow::Result<Re
 /// since the ticket it follows, and what the approver narrowed.
 fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, full: bool) -> String {
     let mut out = display::ticket(signed, reviewed.state, now, full);
+    if let Some((view, original)) = &reviewed.renewal {
+        out.push_str(&display::renewal(view, original, full));
+    }
     if let Some((relation, previous)) = &reviewed.previous {
         let title = match relation {
             Relation::Revises => format!(
@@ -156,12 +172,14 @@ fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, full: bool) -> S
                 previous.text.revision, previous.id
             ),
             Relation::Amends => format!("Changes from the terms in force of lease {}", previous.id),
+            Relation::Renews => format!("Changes from the terms of lease {}, renewed", previous.id),
         };
         out.push_str(&display::changes(
             &title,
             &display::diff(previous, &reviewed.submitted),
         ));
     }
+    out.push_str(&display::others(&reviewed.others, now));
     let narrowed = display::diff(&reviewed.submitted, signed);
     if !narrowed.is_empty() {
         out.push_str(&display::changes(
@@ -329,6 +347,20 @@ pub async fn unseal(paths: &Paths, url: &str, signer: &Signer) -> anyhow::Result
             drop(request);
             let unsealed: Unsealed = session.call(&Command::Unseal, &body).await??;
             println!("Unsealed (signed by {}).", unsealed.signed_by);
+            Ok(Exit::Ok)
+        })
+        .await
+}
+
+/// `writ report`: a lease's activity report, as the daemon builds it.
+pub async fn report(paths: &Paths, url: &str, id: &TicketId) -> anyhow::Result<Exit> {
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let report: writ_proto::Report = session
+                .call(&Command::Report { id: id.clone() }, b"")
+                .await??;
+            print!("{}", display::report(&report, &[], false));
             Ok(Exit::Ok)
         })
         .await

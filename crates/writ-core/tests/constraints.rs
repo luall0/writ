@@ -485,6 +485,64 @@ fn pushed_commits_signed_under_this_lease() {
             },
             Some(DenyCode::Unsigned),
         ),
+        // A renewal pushes what the leases it renews signed, and nothing more.
+        (
+            "signed under the lease this one renews",
+            |w, r| {
+                w.lease.ticket.text.renews = Some(ticket_id(98));
+                r.predecessors = vec![ticket_id(98)];
+                r.commits[0].signed_under = vec![under(ticket_id(98).as_str(), "omega-code")];
+            },
+            None,
+        ),
+        (
+            "signed under the lease that one renewed",
+            |w, r| {
+                w.lease.ticket.text.renews = Some(ticket_id(98));
+                r.predecessors = vec![ticket_id(98), ticket_id(97)];
+                r.commits[0].signed_under = vec![under(ticket_id(97).as_str(), "omega-code")];
+            },
+            None,
+        ),
+        (
+            "signed under a predecessor for another repo",
+            |w, r| {
+                w.lease.ticket.text.renews = Some(ticket_id(98));
+                r.predecessors = vec![ticket_id(98)];
+                r.commits[0].signed_under = vec![under(ticket_id(98).as_str(), "homelab-scripts")];
+            },
+            Some(DenyCode::Unsigned),
+        ),
+        (
+            "signed under a lease outside the chain",
+            |w, r| {
+                w.lease.ticket.text.renews = Some(ticket_id(98));
+                r.predecessors = vec![ticket_id(98)];
+                r.commits[0].signed_under = vec![under(ticket_id(99).as_str(), "omega-code")];
+            },
+            Some(DenyCode::Unsigned),
+        ),
+        (
+            "a lease that renews nothing given a chain",
+            |_, r| {
+                r.predecessors = vec![ticket_id(98)];
+                r.commits[0].signed_under = vec![under(ticket_id(98).as_str(), "omega-code")];
+            },
+            Some(DenyCode::Invalid),
+        ),
+        (
+            "a chain that doesn't start with the lease renewed",
+            |w, r| {
+                w.lease.ticket.text.renews = Some(ticket_id(98));
+                r.predecessors = vec![ticket_id(99), ticket_id(98)];
+            },
+            Some(DenyCode::Invalid),
+        ),
+        (
+            "a renewal given no chain",
+            |w, _| w.lease.ticket.text.renews = Some(ticket_id(98)),
+            Some(DenyCode::Invalid),
+        ),
     ]);
 }
 

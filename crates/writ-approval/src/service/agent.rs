@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use writ_core::caller::CallerFacts;
 use writ_core::fit::{self, Submission};
-use writ_core::lease::{Lease, State};
+use writ_core::lease::{Lease, Renewed, State};
 use writ_core::names::{KeyFingerprint, TicketId};
+use writ_core::net::Source;
 use writ_core::ticket::{Ticket, TicketRequest};
 use writ_core::units::Timestamp;
 use writ_crypto::keys;
@@ -111,16 +112,36 @@ impl Service {
             Some(id) => inner.store.lease(id).map_err(internal)?,
             None => None,
         };
+        let renews = match &request.ticket.renews {
+            Some(id) => match inner.store.lease(id).map_err(internal)? {
+                Some(lease) => {
+                    let chain = inner.store.predecessors(id).map_err(internal)?;
+                    Some((lease, u32::try_from(chain.len()).map_err(internal)?))
+                }
+                None => None,
+            },
+            None => None,
+        };
         let revises = match &request.ticket.revises {
             Some(id) => inner.store.ticket(id).map_err(internal)?,
             None => None,
         };
+        let source = Source::of(caller.source_addr);
+        if let Err(error) = self.within_active(&inner, source, &request, &session, renews.as_ref())
+        {
+            return reject(&mut inner, error);
+        }
         let random = keys::random_array::<10>().map_err(internal)?;
         let submission = Submission {
             id: TicketId::from_parts(self.clock.now_ms(), random),
             now,
             session_key: session,
             amends: amends.as_ref(),
+            renews: renews.as_ref().map(|(lease, renewals)| Renewed {
+                lease,
+                renewals: *renewals,
+                grace: self.config.renew_grace,
+            }),
             revises: revises.as_ref(),
             min_ttl: self.config.min_ttl,
         };
@@ -142,7 +163,7 @@ impl Service {
         Self::logged(&mut inner, event, |inner| {
             inner
                 .store
-                .insert_pending(&ticket, &pubkey, now)
+                .insert_pending(&ticket, &pubkey, source, now)
                 .map_err(internal)
         })?;
         drop(inner);
@@ -152,6 +173,56 @@ impl Service {
             id: ticket.id.clone(),
             canonical: canonical_text(&ticket)?,
         })
+    }
+
+    /// `max_active_per_source`: refused when the source already holds as many active leases
+    /// as the limit. An amendment adds no lease; a renewal of an active lease of this source
+    /// (from the same session) replaces it.
+    fn within_active(
+        &self,
+        inner: &Inner,
+        source: Source,
+        request: &TicketRequest,
+        session: &KeyFingerprint,
+        renews: Option<&(Lease, u32)>,
+    ) -> Result<(), ServiceError> {
+        let Some(max) = self.config.max_active_per_source else {
+            return Ok(());
+        };
+        if request.ticket.amends.is_some() {
+            return Ok(());
+        }
+        let replaced = renews.map(|(lease, _)| lease).filter(|lease| {
+            lease.state == State::Active && &lease.ticket.subject.session_key == session
+        });
+        Self::active_slots(inner, source, max, replaced.map(|l| &l.id))
+    }
+
+    /// Whether `source` may hold one more active lease under `max` (`replaced`: an active
+    /// lease the new one ends, which doesn't count).
+    pub(super) fn active_slots(
+        inner: &Inner,
+        source: Source,
+        max: u32,
+        replaced: Option<&TicketId>,
+    ) -> Result<(), ServiceError> {
+        let held = inner
+            .store
+            .active_from(source)
+            .map_err(internal)?
+            .iter()
+            .filter(|lease| Some(&lease.id) != replaced)
+            .count();
+        if u32::try_from(held).map_or(true, |held| held >= max) {
+            return Err(ServiceError::refused(
+                RefusalCode::TooManyActive,
+                format!(
+                    "this source ({source}) already holds {held} active leases \
+                     (max_active_per_source: {max})"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Counts a submission against the rates ([`submissions`](super::submissions)): from
@@ -201,6 +272,8 @@ impl Service {
     fn notify_waiting(&self, ticket: &Ticket) {
         let kind = if ticket.text.amends.is_some() {
             "Amendment"
+        } else if ticket.text.renews.is_some() {
+            "Renewal"
         } else {
             "Ticket"
         };
@@ -314,7 +387,9 @@ impl Service {
             },
             State::Expired => Decision::Expired,
             State::Revoked => Decision::Revoked,
-            state @ (State::Closed | State::Exhausted) => Decision::Ended { state },
+            state @ (State::Closed | State::Exhausted | State::Renewed) => {
+                Decision::Ended { state }
+            }
         };
         Ok(Ok(decision))
     }

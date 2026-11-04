@@ -1445,3 +1445,216 @@ fn a_template_tightened_while_signing_discards_the_signature() {
         lines[0]
     );
 }
+
+/// A push of `commit` (its paths' digest as git would compute it again) to a new branch,
+/// under the lease of `cert`.
+fn pushing(
+    cert: &CertIdentity,
+    commit: &writ_core::names::CommitId,
+    paths: Option<String>,
+) -> writ_approval::Pushing {
+    writ_approval::Pushing {
+        cert: cert.clone(),
+        caller: CallerFacts::default(),
+        repo: "omega-code".parse().unwrap(),
+        updates: vec![writ_core::policy::RefUpdate {
+            name: "refs/heads/agent/oauth-login".to_owned(),
+            old: None,
+            new: Some(commit.clone()),
+            fast_forward: true,
+            case_twin: false,
+        }],
+        commits: vec![(commit.clone(), paths)],
+        pack_size: 100,
+    }
+}
+
+#[test]
+fn a_renewal_ends_its_lease_and_pushes_what_that_lease_signed() {
+    let h = Harness::new();
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let (first, first_cert) = h.lease_with(&key, FEATURE);
+    let ours = h
+        .sign(
+            &first_cert,
+            &build("src/a.rs", EMAIL, &trailer(&first)),
+            "omega-code",
+        )
+        .unwrap();
+    let (other, other_cert) = h.lease(FEATURE);
+    let theirs = h
+        .sign(
+            &other_cert,
+            &build("src/b.rs", EMAIL, &trailer(&other)),
+            "omega-code",
+        )
+        .unwrap();
+    // The lease runs out with its commit signed and not pushed.
+    h.clock.advance(4 * 3600);
+    h.service.sweep();
+    let renewal = format!("{FEATURE}  renews: {first}\n");
+    let (second, second_cert) = h.lease_with(&key, &renewal);
+    assert_ne!(second, first, "a lease of its own");
+    assert_eq!(
+        second_cert.session_key, first_cert.session_key,
+        "for the same key"
+    );
+    let store = Store::open(&h.db).unwrap();
+    assert_eq!(store.lease(&first).unwrap().unwrap().state, State::Renewed);
+    assert!(h.service.is_revoked(first_cert.serial));
+    assert!(!h.service.is_revoked(second_cert.serial));
+    // The renewal pushes what the lease it renews signed.
+    let digest = |lease: &TicketId| h.ledger(lease)[0].paths_digest.clone();
+    h.service
+        .push(&pushing(&second_cert, &ours.commit, digest(&first)))
+        .unwrap();
+    // Not another lease's commit, nor through the renewed lease's certificate.
+    let refused = h
+        .service
+        .push(&pushing(&second_cert, &theirs.commit, digest(&other)))
+        .unwrap_err();
+    assert_eq!(refused.code, DenyCode::Unsigned, "{refused}");
+    let ended = h
+        .service
+        .push(&pushing(&first_cert, &ours.commit, digest(&first)))
+        .unwrap_err();
+    assert_eq!(ended.code, DenyCode::NotActive, "{ended}");
+    assert!(ended.to_string().contains("is renewed"), "{ended}");
+    // Renewed once: another renewal of it is refused.
+    let again = h
+        .service
+        .submit(
+            key.public_key(),
+            renewal.as_bytes(),
+            &CallerFacts::default(),
+        )
+        .unwrap_err();
+    assert_eq!(again.code(), Some(writ_approval::RefusalCode::Rejected));
+    assert!(
+        again.reason_text().contains("it was renewed already"),
+        "{}",
+        again.reason_text()
+    );
+    // Logged: the grant names the lease it renews, the renewed lease's end has its line.
+    let grants = h.events("grant", "allowed");
+    let grant = grants
+        .iter()
+        .find(|l| l["lease"] == second.as_str())
+        .unwrap();
+    assert_eq!(grant["reason"], format!("renews lease {first}"));
+    let renewed = h.events("renew", "done");
+    assert_eq!(renewed.len(), 1);
+    assert_eq!(renewed[0]["lease"], first.as_str());
+    assert_eq!(renewed[0]["cert"], first_cert.serial);
+}
+
+#[test]
+fn a_renewal_is_refused_past_its_grace_or_from_another_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock::at_unix(START));
+    let test = TestServiceBuilder::new(POLICY)
+        .clock(clock.clone())
+        .renew_grace(writ_core::units::Duration::from_seconds(60))
+        .build(dir.path());
+    let h = Harness {
+        _dir: dir,
+        db: std::path::PathBuf::new(),
+        test,
+        clock,
+    };
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let (first, _) = h.lease_with(&key, FEATURE);
+    let renewal = format!("{FEATURE}  renews: {first}\n");
+    let submit = |key: &PrivateKey| {
+        h.service.submit(
+            key.public_key(),
+            renewal.as_bytes(),
+            &CallerFacts::default(),
+        )
+    };
+    let reasons = |result: Result<writ_proto::Submitted, writ_approval::ServiceError>| match result
+    {
+        Err(writ_approval::ServiceError::Refused { code, reasons, .. }) => {
+            assert_eq!(code, writ_approval::RefusalCode::Rejected);
+            reasons.join("; ")
+        }
+        other => panic!("expected a rejection, got {other:?}"),
+    };
+    // Another session: the lease doesn't exist for it.
+    let stranger = generate(KeyKind::Ed25519).unwrap();
+    assert!(
+        reasons(submit(&stranger)).contains(&format!("ticket {first} (renews) does not exist"))
+    );
+    // Expired 59 seconds ago: taken (withdrawn again); 60: refused.
+    h.clock.advance(4 * 3600 + 59);
+    let taken = submit(&key).unwrap();
+    h.service
+        .revoke(&taken.id, &h.revocation(&taken.id), &CallerFacts::default())
+        .unwrap();
+    h.clock.advance(1);
+    assert!(reasons(submit(&key)).contains("more than renew_grace (1m) ago"));
+}
+
+#[test]
+fn the_report_matches_the_audit_log_phase_by_phase() {
+    let h = Harness::new();
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let (lease, cert) = h.lease_with(&key, FEATURE);
+    let digest = |n: usize| h.ledger(&lease)[n].paths_digest.clone();
+    // Coding: five minutes to the first commit (outside expected_paths: a warning).
+    h.clock.advance(300);
+    let first = h
+        .sign(
+            &cert,
+            &build("docs/a.md", EMAIL, &trailer(&lease)),
+            "omega-code",
+        )
+        .unwrap();
+    h.clock.advance(300);
+    h.service
+        .push(&pushing(&cert, &first.commit, digest(0)))
+        .unwrap();
+    // A CI round: twenty minutes from the push to the fix.
+    h.clock.advance(1200);
+    let second = h
+        .sign(
+            &cert,
+            &build("src/b.rs", EMAIL, &trailer(&lease)),
+            "omega-code",
+        )
+        .unwrap();
+    h.clock.advance(200);
+    h.service
+        .push(&pushing(&cert, &second.commit, digest(1)))
+        .unwrap();
+    h.clock.advance(100);
+    let report = h
+        .service
+        .close(
+            &lease,
+            key.public_key(),
+            &writ_proto::CloseRequest {
+                summary: "OAuth login behind a flag".to_owned(),
+            },
+            &CallerFacts::default(),
+        )
+        .unwrap();
+    assert_eq!(report.phases.coding_seconds, Some(300));
+    assert_eq!(report.phases.ci_rounds_seconds, [1200]);
+    assert_eq!(report.phases.after_last_push_seconds, Some(100));
+    assert_eq!(report.used_seconds, 2100);
+    // Every signature and push the audit log holds, and nothing else.
+    let signed: Vec<_> = h
+        .events("sign", "allowed")
+        .iter()
+        .map(|l| l["commit"].as_str().unwrap().to_owned())
+        .collect();
+    let reported: Vec<_> = report.commits.iter().map(|c| c.id.to_string()).collect();
+    assert_eq!(reported, signed);
+    assert_eq!(report.pushed.len(), h.events("push", "allowed").len());
+    assert_eq!(report.branches, ["refs/heads/agent/oauth-login"]);
+    assert_eq!(report.signatures.used, 2);
+    assert_eq!(report.pushes.used, 2);
+    assert_eq!(report.warnings, ["files outside expected_paths: docs/a.md"]);
+    assert!(!report.truncated);
+}

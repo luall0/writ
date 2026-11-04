@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize};
 use writ_core::authority::{AdminTarget, PreviousToken, TextDigest};
 use writ_core::lease::State;
-use writ_core::names::{KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
+use writ_core::names::{CommitId, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
 use writ_core::signed::BootNonce;
+use writ_core::ticket::{Estimate, Operation};
 use writ_core::units::Timestamp;
 use zeroize::Zeroizing;
 
@@ -281,8 +282,64 @@ pub struct Shown {
     pub state: State,
     /// The ticket's canonical bytes (as submitted while pending, as signed once approved).
     pub canonical: String,
-    /// What it follows: the refused ticket it revises, or the lease terms it amends.
+    /// What it follows: the refused ticket it revises, or the lease terms it amends or renews.
     pub previous: Option<Previous>,
+    /// For a renewal: the chain it continues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal: Option<Renewal>,
+    /// The other active leases submitted from the same source (the daemon's record of it):
+    /// display only.
+    #[serde(default)]
+    pub others: Others,
+}
+
+/// The chain a renewal continues, for the approver: the task as first signed, and what the
+/// work used so far.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Renewal {
+    /// The canonical bytes of the chain's first lease as it was signed: the original ticket.
+    pub original: String,
+    /// Which renewal this one is in the chain (1 for the first).
+    pub number: u32,
+    /// The seconds every lease of the chain has run so far, together.
+    pub used_seconds: u64,
+    /// What the renewed lease used of its counts.
+    pub signatures: Count,
+    pub pushes: Count,
+    /// The renewed lease's state (active, expired, exhausted).
+    pub state: State,
+}
+
+/// A count used against its limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Count {
+    pub used: u32,
+    pub max: u32,
+}
+
+/// The other active leases from a ticket's source: the first ones, and how many more.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Others {
+    pub shown: Vec<OtherLease>,
+    /// How many more there are, not shown.
+    pub more: u32,
+}
+
+/// One active lease from the same source as the ticket shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OtherLease {
+    pub id: TicketId,
+    pub repos: Vec<RepoName>,
+    /// The branch patterns, as written.
+    pub branches: Vec<String>,
+    pub operations: Vec<Operation>,
+    pub expires_at: Timestamp,
+    /// A repo in common with the ticket shown, and branch patterns that intersect.
+    pub overlap: bool,
 }
 
 /// The ticket a revision or an amendment follows, for the diff `writ sign` shows.
@@ -301,6 +358,114 @@ pub enum Relation {
     Revises,
     /// The terms in force of the lease this one amends.
     Amends,
+    /// The terms in force of the lease this one renews.
+    Renews,
+}
+
+/// Body of [`Command::Close`](crate::Command::Close).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloseRequest {
+    /// The agent's summary of the work: shown as written, never acted on.
+    pub summary: String,
+}
+
+/// Reply to [`Command::Close`](crate::Command::Close) and
+/// [`Command::Report`](crate::Command::Report): what a lease (and the leases it renews) did,
+/// from the daemon's state and its audit log. Agent text (title, summary, the paths named in
+/// warnings) is shown as written, escaped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Report {
+    pub lease: TicketId,
+    pub state: State,
+    pub title: String,
+    pub template: TemplateName,
+    pub repos: Vec<RepoName>,
+    pub expected_paths: Vec<String>,
+    pub summary: Option<String>,
+    pub estimate: Option<Estimate>,
+    /// Every lease of the work: the ones it renews first (the oldest first), then itself.
+    pub chain: Vec<ChainLink>,
+    /// Of the whole chain: the seconds its leases were granted (each one's TTL) and ran.
+    pub granted_seconds: u64,
+    pub used_seconds: u64,
+    /// Of the lease itself.
+    pub signatures: Count,
+    pub pushes: Count,
+    /// Fetches of the whole chain.
+    pub fetches: u64,
+    /// Every commit signed, from the ledger (the whole chain), in signing order.
+    pub commits: Vec<ReportCommit>,
+    /// Every push upstream took (the whole chain), in order.
+    pub pushed: Vec<ReportPush>,
+    /// The refs pushed, each once.
+    pub branches: Vec<String>,
+    /// The denials, by code, counted ones included.
+    pub denials: Vec<DenialCount>,
+    /// The warnings its signatures carried (files outside `expected_paths` with
+    /// `paths_check: warn`, paths not checked), each once.
+    pub warnings: Vec<String>,
+    /// The time spent in each phase, derived from the daemon's timestamps: approximate.
+    pub phases: Phases,
+    /// Whether the audit log held more lines for the chain than the report reads.
+    pub truncated: bool,
+}
+
+/// One lease of a report's chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainLink {
+    pub id: TicketId,
+    pub state: State,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
+    /// When it ended (none while it runs).
+    pub ended_at: Option<Timestamp>,
+    pub signatures: u32,
+    pub pushes: u32,
+}
+
+/// A commit in a report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportCommit {
+    pub id: CommitId,
+    pub repo: RepoName,
+    pub lease: TicketId,
+    pub signed_at: Timestamp,
+}
+
+/// A push in a report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportPush {
+    pub at: Timestamp,
+    pub repo: Option<RepoName>,
+    pub refs: Vec<String>,
+}
+
+/// How many denials of one code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DenialCount {
+    pub code: String,
+    pub count: u64,
+}
+
+/// The time of each phase of the work, from the daemon's timestamps (approximate: a commit
+/// marks the end of coding, the next commit after a push the end of a CI round and its fix).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Phases {
+    /// From submission to the grant (each lease of the chain, together).
+    pub approval_wait_seconds: Option<u64>,
+    /// From the first grant to the first signature.
+    pub coding_seconds: Option<u64>,
+    /// For each push followed by a signature: the time between them.
+    pub ci_rounds_seconds: Vec<u64>,
+    /// From the last push to the end.
+    pub after_last_push_seconds: Option<u64>,
 }
 
 /// Body of [`Command::Approve`].

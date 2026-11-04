@@ -33,7 +33,7 @@ fn commits_are_verified_once_the_signing_key_is_registered_and_proven() {
             .replace("template: feature", "template: verified"),
     );
     agent.clone_from_forgejo(&stack, "verified", "work");
-    agent.ok_in("work", "writ init verified");
+    agent.ok_in("work", "writ init verified --agents none");
     agent.ok_in("work", "git checkout -q -b agent/verified");
     let push = |file: &str| {
         let commit = agent.commit("work", &lease, file, file);

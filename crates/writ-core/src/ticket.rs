@@ -4,8 +4,8 @@
 //! # Canonical encoding
 //!
 //! A ticket is a [`Canonical`] document of kind `writ-ticket/1`: its fields in the order
-//! declared below, sizes in bytes and timestamps as `YYYY-MM-DDTHH:MM:SSZ`. Fixtures in
-//! `tests/fixtures/` pin the format.
+//! declared below, sizes in bytes, durations as their text (`45m`) and timestamps as
+//! `YYYY-MM-DDTHH:MM:SSZ`. Fixtures in `tests/fixtures/` pin the format.
 
 use std::collections::BTreeSet;
 
@@ -108,14 +108,50 @@ pub struct TicketText {
     pub task: String,
     pub plan: Vec<String>,
     pub expected_paths: BTreeSet<PathPattern>,
+    /// How long the agent thinks the work takes: shown to the approver and in the activity
+    /// report, never read by the policy.
+    pub estimate: Option<Estimate>,
     /// The lease this ticket amends, if any.
     pub amends: Option<TicketId>,
+    /// The lease this ticket renews, if any: once signed, a lease of its own that ends the
+    /// renewed one and may push the commits it signed.
+    pub renews: Option<TicketId>,
     /// The refused ticket this one revises, if any.
     pub revises: Option<TicketId>,
     /// 1 for a first submission, then one more than the ticket it revises.
     pub revision: u32,
     /// The approver's feedback on the ticket it revises.
     pub previous_feedback: Option<String>,
+}
+
+/// The agent's estimate of the work, phase by phase: writing the change, the checks it runs
+/// before committing, and waiting on remote CI after its pushes (with the fixes it brings).
+/// Agent-written, display-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Estimate {
+    #[serde(default)]
+    pub coding: Option<Duration>,
+    #[serde(default)]
+    pub checks: Option<Duration>,
+    #[serde(default)]
+    pub ci: Option<Duration>,
+}
+
+impl Estimate {
+    /// The phases' durations added up, none when no phase is given.
+    pub fn total(&self) -> Option<Duration> {
+        let phases = [self.coding, self.checks, self.ci];
+        if phases.iter().all(Option::is_none) {
+            return None;
+        }
+        Some(Duration::from_seconds(
+            phases
+                .iter()
+                .flatten()
+                .fold(0u64, |sum, phase| sum.saturating_add(phase.seconds())),
+        ))
+    }
 }
 
 /// How much, and until when.
@@ -144,7 +180,8 @@ impl Canonical for Ticket {
 }
 
 impl Ticket {
-    /// The lease this ticket belongs to once signed: the amended lease, or itself.
+    /// The lease this ticket belongs to once signed: the amended lease, or itself (a renewal is
+    /// a lease of its own).
     pub fn lease_id(&self) -> &TicketId {
         self.text.amends.as_ref().unwrap_or(&self.id)
     }
@@ -208,7 +245,11 @@ pub struct RequestText {
     #[serde(default)]
     pub expected_paths: Vec<PathPattern>,
     #[serde(default)]
+    pub estimate: Option<Estimate>,
+    #[serde(default)]
     pub amends: Option<TicketId>,
+    #[serde(default)]
+    pub renews: Option<TicketId>,
     #[serde(default)]
     pub revises: Option<TicketId>,
 }

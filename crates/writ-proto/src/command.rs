@@ -12,12 +12,17 @@ pub enum Command {
     Request,
     /// `writ wait <id>`: wait until the ticket is decided. Reply: [`Decision`].
     Wait { id: TicketId },
+    /// `writ close <lease>`: end the lease with a summary ([`CloseRequest`] on stdin), the
+    /// connection's key being its session key. Reply: [`Report`].
+    Close { id: TicketId },
     /// `writ info`: how this daemon takes decisions. Reply: [`Info`].
     Info,
     /// `writ ls [--all]`: pending tickets and active leases, or every ticket. Reply: [`Listing`].
     List { all: bool },
     /// `writ show <id>`: a ticket's canonical bytes and the revision it follows. Reply: [`Shown`].
     Show { id: TicketId },
+    /// `writ report <lease>`: a lease's activity report. Reply: [`Report`].
+    Report { id: TicketId },
     /// `writ approve <id>`: an approval ([`ApproveRequest`] on stdin). Reply: [`Ack`].
     Approve { id: TicketId },
     /// `writ refuse <id>`: a refusal ([`RefuseRequest`] on stdin). Reply: [`Ack`].
@@ -90,6 +95,8 @@ impl Command {
         match (verb, arg) {
             ("request", None) => Some(Self::Request),
             ("wait", Some(_)) => Some(Self::Wait { id: id()? }),
+            ("close", Some(_)) => Some(Self::Close { id: id()? }),
+            ("report", Some(_)) => Some(Self::Report { id: id()? }),
             ("info", None) => Some(Self::Info),
             ("ls", None) => Some(Self::List { all: false }),
             ("ls", Some("--all")) => Some(Self::List { all: true }),
@@ -108,6 +115,8 @@ impl Command {
         match self {
             Self::Request => "writ request".to_owned(),
             Self::Wait { id } => format!("writ wait {id}"),
+            Self::Close { id } => format!("writ close {id}"),
+            Self::Report { id } => format!("writ report {id}"),
             Self::Info => "writ info".to_owned(),
             Self::List { all: false } => "writ ls".to_owned(),
             Self::List { all: true } => "writ ls --all".to_owned(),
@@ -126,7 +135,7 @@ impl Command {
 
     /// Whether this command is served on the approval listener (the others on the agents').
     pub fn is_approval(&self) -> bool {
-        !matches!(self, Self::Request | Self::Wait { .. })
+        !matches!(self, Self::Request | Self::Wait { .. } | Self::Close { .. })
     }
 
     /// The HTTPS route of an approval command: method and path (with its query). Agent
@@ -137,6 +146,7 @@ impl Command {
     /// | info | `GET /v1/info` |
     /// | ls, ls --all | `GET /v1/tickets`, `GET /v1/tickets?all=true` |
     /// | show | `GET /v1/tickets/<id>` |
+    /// | report | `GET /v1/tickets/<id>/report` |
     /// | approve, refuse, revoke | `POST /v1/tickets/<id>/approve` (`refuse`, `revoke`) |
     /// | prove | `POST /v1/proofs` |
     /// | unseal | `POST /v1/unseal` |
@@ -144,11 +154,12 @@ impl Command {
     /// | admin token (show, apply) | `GET /v1/tokens/<id>`, `POST /v1/tokens` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
-            Self::Request | Self::Wait { .. } => None,
+            Self::Request | Self::Wait { .. } | Self::Close { .. } => None,
             Self::Info => Some(("GET", "/v1/info".to_owned())),
             Self::List { all: false } => Some(("GET", "/v1/tickets".to_owned())),
             Self::List { all: true } => Some(("GET", "/v1/tickets?all=true".to_owned())),
             Self::Show { id } => Some(("GET", format!("/v1/tickets/{id}"))),
+            Self::Report { id } => Some(("GET", format!("/v1/tickets/{id}/report"))),
             Self::Approve { id } => Some(("POST", format!("/v1/tickets/{id}/approve"))),
             Self::Refuse { id } => Some(("POST", format!("/v1/tickets/{id}/refuse"))),
             Self::Revoke { id } => Some(("POST", format!("/v1/tickets/{id}/revoke"))),
@@ -175,6 +186,7 @@ impl Command {
             ("GET", ["tickets"], None) => Self::List { all: false },
             ("GET", ["tickets"], Some("all=true")) => Self::List { all: true },
             ("GET", ["tickets", t], None) => Self::Show { id: id(t)? },
+            ("GET", ["tickets", t, "report"], None) => Self::Report { id: id(t)? },
             ("POST", ["tickets", t, "approve"], None) => Self::Approve { id: id(t)? },
             ("POST", ["tickets", t, "refuse"], None) => Self::Refuse { id: id(t)? },
             ("POST", ["tickets", t, "revoke"], None) => Self::Revoke { id: id(t)? },

@@ -12,6 +12,8 @@
 //! submissions:                       # ticket submissions a minute (each 1 or more)
 //!   per_source: 10                   # per address (an IPv6 host by its /64; local: one)
 //!   in_all: 60                       # all sources together
+//! max_active_per_source: 1           # active leases one source may hold (no limit by default)
+//! renew_grace: 24h                   # renewing an expired or used-up lease (0s to 7d)
 //! sign_requests:                     # held at once (16 in all, daemon-wide)
 //!   per_lease: 4                     # per lease, 1 to 16
 //! signing_keys:                      # every key a template's signing_key names (M5.5)
@@ -70,6 +72,13 @@ pub struct Config {
     /// The submission rates, per minute; the defaults suit one person's agents.
     #[serde(default)]
     pub submissions: SubmissionsConfig,
+    /// The most active leases one source may hold at once: none by default; `1` for a host
+    /// meant for one agent.
+    #[serde(default)]
+    pub max_active_per_source: Option<u32>,
+    /// How long after its `expires_at` an expired or used-up lease can still be renewed.
+    #[serde(default = "default_renew_grace")]
+    pub renew_grace: Duration,
     /// Sign requests held at once per lease.
     #[serde(default)]
     pub sign_requests: SignRequestsConfig,
@@ -93,6 +102,10 @@ fn default_max_pending() -> usize {
 
 fn default_min_ttl() -> Duration {
     writ_core::fit::DEFAULT_MIN_TTL
+}
+
+fn default_renew_grace() -> Duration {
+    writ_core::fit::DEFAULT_RENEW_GRACE
 }
 
 /// `signing_keys.<id>`: an agent signing key, declared. Refused at start, never adjusted, on a
@@ -552,6 +565,19 @@ impl Config {
             )));
         }
         config.submissions.limits().check().map_err(fail)?;
+        if config.max_active_per_source == Some(0) {
+            return Err(fail(
+                "max_active_per_source: 0, must be at least 1 (no lease could ever be granted)"
+                    .to_owned(),
+            ));
+        }
+        if config.renew_grace > writ_core::fit::RENEW_GRACE_CEILING {
+            return Err(fail(format!(
+                "renew_grace: {}, must be at most {}",
+                config.renew_grace,
+                writ_core::fit::RENEW_GRACE_CEILING
+            )));
+        }
         config.mirrors.check().map_err(fail)?;
         let per_lease = config.sign_requests.per_lease;
         if !(1..=writ_gateway::MAX_SIGN_REQUESTS).contains(&per_lease) {
@@ -793,6 +819,38 @@ mod tests {
         for (yaml, said) in [
             ("min_ttl: 9s", "min_ttl: 9s, must be from 10s to 1d"),
             ("min_ttl: 86401s", "min_ttl: 86401s, must be from 10s to 1d"),
+        ] {
+            let error = format!("{:#}", with(yaml).unwrap_err());
+            assert!(error.contains(said), "{yaml}: {error}");
+        }
+    }
+
+    #[test]
+    fn max_active_per_source_and_renew_grace_are_bounded_on_both_sides() {
+        let with = |yaml: &str| load(&format!("{MINIMAL}{yaml}\n"));
+        let defaults = load(MINIMAL).unwrap();
+        assert_eq!(defaults.max_active_per_source, None);
+        assert_eq!(defaults.renew_grace.seconds(), 86_400);
+        assert_eq!(
+            with("max_active_per_source: 1")
+                .unwrap()
+                .max_active_per_source,
+            Some(1)
+        );
+        assert_eq!(with("renew_grace: 0s").unwrap().renew_grace.seconds(), 0);
+        assert_eq!(
+            with("renew_grace: 7d").unwrap().renew_grace.seconds(),
+            7 * 86_400
+        );
+        for (yaml, said) in [
+            (
+                "max_active_per_source: 0",
+                "max_active_per_source: 0, must be at least 1",
+            ),
+            (
+                "renew_grace: 604801s",
+                "renew_grace: 604801s, must be at most 7d",
+            ),
         ] {
             let error = format!("{:#}", with(yaml).unwrap_err());
             assert!(error.contains(said), "{yaml}: {error}");

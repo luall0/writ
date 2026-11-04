@@ -64,11 +64,12 @@ impl Store {
     }
 
     /// Marks the commits a push took upstream as waiting for their note, pushed with
-    /// `credential`: only the ledger's entries for this lease and repo (a commit nobody signed
-    /// here gets no note), and a note already written stays written. One transaction.
+    /// `credential`: only the ledger's entries for the pushing lease (or a lease it renews:
+    /// `leases`) and repo (a commit nobody signed here gets no note), and a note already
+    /// written stays written. One transaction.
     pub fn notes_add_pending(
         &self,
-        lease: &TicketId,
+        leases: &[TicketId],
         repo: &RepoName,
         commits: &[CommitId],
         credential: &KeyId,
@@ -80,13 +81,15 @@ impl Store {
                  WHERE lease_id = ?1 AND repo = ?2 AND commit_id = ?3
                    AND (note IS NULL OR note = 'pending')",
             )?;
-            for commit in commits {
-                statement.execute(params![
-                    lease.as_str(),
-                    repo.as_str(),
-                    commit.as_str(),
-                    credential.as_str()
-                ])?;
+            for lease in leases {
+                for commit in commits {
+                    statement.execute(params![
+                        lease.as_str(),
+                        repo.as_str(),
+                        commit.as_str(),
+                        credential.as_str()
+                    ])?;
+                }
             }
         }
         tx.commit()?;

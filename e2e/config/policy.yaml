@@ -25,6 +25,8 @@ repos:
   notes:      { upstream: "ssh://git@forgejo/writ/notes.git",      upstream_credential: upstream-notes,      protected_refs: ["refs/heads/main", "refs/tags/*"], ticket_link: notes }
   # Without notes until scenario 15 switches it (and back).
   backfill:   { upstream: "ssh://git@forgejo/writ/backfill.git", upstream_credential: upstream-backfill, protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  # Renewed, closed and learned from (scenario 20).
+  sessions:   { upstream: "ssh://git@forgejo/writ/sessions.git",   upstream_credential: upstream-sessions,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Over HTTPS, with a Forgejo token the operator puts in the keystore (no deploy key).
   https:      { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # The same Forgejo repository behind a front whose certificate only the system trusts, not
@@ -32,7 +34,7 @@ repos:
   https-system: { upstream: "https://forgejo-https-system:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
 templates:
   feature:
-    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, protocols, inflight, restart, hostile, busy, notes, backfill, https, https-system]
+    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, protocols, inflight, restart, hostile, busy, notes, backfill, sessions, https, https-system]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     force_push: true                 # a ticket may ask for it (none does unless it says so)
@@ -43,6 +45,7 @@ templates:
     max_pushes: 50
     max_ops_per_minute: 200
     max_push_size: 50MB
+    max_renewals: 3                  # scenario 20 renews once
   # Its own signing key: the one scenario that registers and proves a key on the Forgejo
   # account (verified_commits) leaves every other scenario's commits unverified.
   verified:

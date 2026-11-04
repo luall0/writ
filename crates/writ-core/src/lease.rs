@@ -1,14 +1,16 @@
 //! The lifecycle of a ticket and of the lease it becomes.
 //!
 //! ```text
-//! pending ──approve──▶ active ──▶ closed | exhausted | expired | revoked
+//! pending ──approve──▶ active ──▶ closed | exhausted | expired | revoked | renewed
 //!    │ └─approve (amendment)──▶ applied      (the amended lease takes its scope)
 //!    └──▶ refused | expired | revoked
+//! exhausted | expired ──a renewal approved──▶ renewed
 //! ```
 //!
 //! Every other transition is refused ([`State::can_become`]). Approving needs a verified
-//! approver signature over the signed ticket's canonical bytes: the caller of [`activate`]
-//! and [`apply_amendment`] (the approval service) verifies it before calling them.
+//! approver signature over the signed ticket's canonical bytes: the caller of [`activate`],
+//! [`activate_renewal`] and [`apply_amendment`] (the approval service) verifies it before
+//! calling them.
 
 use std::fmt;
 use std::str::FromStr;
@@ -17,9 +19,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::PolicyConfig;
 use crate::names::{KeyFingerprint, TicketId};
+use crate::net::Source;
 use crate::ticket::Operation;
 use crate::ticket::Ticket;
-use crate::units::Timestamp;
+use crate::units::{Duration, Timestamp};
 use crate::{fit, narrow};
 
 /// The SSHSIG namespace of every approval.
@@ -45,10 +48,12 @@ pub enum State {
     Expired,
     /// Revoked by the approver, a violation, the session ending, or withdrawn while pending.
     Revoked,
+    /// A renewal of it was signed: the renewal is the lease in force now.
+    Renewed,
 }
 
 impl State {
-    pub const ALL: [State; 8] = [
+    pub const ALL: [State; 9] = [
         State::Pending,
         State::Refused,
         State::Active,
@@ -57,15 +62,18 @@ impl State {
         State::Exhausted,
         State::Expired,
         State::Revoked,
+        State::Renewed,
     ];
 
-    /// The transitions of the lifecycle; nothing else is allowed.
+    /// The transitions of the lifecycle; nothing else is allowed. A lease that expired or was
+    /// used up can still be renewed (within `renew_grace`); nothing else leaves an end.
     pub fn can_become(self, next: State) -> bool {
         use State::*;
         matches!(
             (self, next),
             (Pending, Active | Applied | Refused | Expired | Revoked)
-                | (Active, Closed | Exhausted | Expired | Revoked)
+                | (Active, Closed | Exhausted | Expired | Revoked | Renewed)
+                | (Exhausted | Expired, Renewed)
         )
     }
 
@@ -83,6 +91,7 @@ impl State {
             State::Exhausted => "exhausted",
             State::Expired => "expired",
             State::Revoked => "revoked",
+            State::Renewed => "renewed",
         }
     }
 }
@@ -135,6 +144,22 @@ pub enum LifecycleError {
     /// daemon watches to revoke it: an amendment can't drop, add or move it.
     #[error("an amendment must keep the lease's subject (session key and process)")]
     SubjectChanged,
+    /// An amendment changes a lease's scope, not its time: the certificate keeps the lease's
+    /// end (M3.6).
+    #[error(
+        "the amendment ends at {amendment}, after its lease ({lease}): an amendment can't move a lease's end; renew it instead"
+    )]
+    AmendmentOutlivesLease {
+        amendment: Timestamp,
+        lease: Timestamp,
+    },
+    #[error("a renewal is activated with the lease it renews")]
+    RenewalWithoutLease,
+    #[error("ticket {ticket} does not renew lease {lease}")]
+    RenewsAnotherLease { ticket: TicketId, lease: TicketId },
+    /// Why the lease can't be renewed (any more), or the renewal doesn't stay within it.
+    #[error("{}", .0.join("; "))]
+    Renewal(Vec<String>),
 }
 
 /// Checks a transition.
@@ -170,6 +195,9 @@ pub struct TicketRecord {
     pub feedback_by: Option<KeyFingerprint>,
     /// Once approved.
     pub approval: Option<Approval>,
+    /// Where it was submitted from: the daemon's own fact, never signed (`None` where nobody
+    /// recorded one, as in a test's record).
+    pub source: Option<Source>,
 }
 
 impl TicketRecord {
@@ -181,6 +209,7 @@ impl TicketRecord {
             feedback: None,
             feedback_by: None,
             approval: None,
+            source: None,
         }
     }
 }
@@ -256,7 +285,56 @@ pub fn activate(
     if record.ticket.text.amends.is_some() {
         return Err(LifecycleError::ActivatingAmendment);
     }
+    if record.ticket.text.renews.is_some() {
+        return Err(LifecycleError::RenewalWithoutLease);
+    }
     check_approval(config, &record.ticket, &signed, &approval, now)?;
+    Ok(Lease {
+        id: signed.id.clone(),
+        ticket: signed,
+        approval,
+        state: State::Active,
+        cert_serial,
+    })
+}
+
+/// The lease a renewal renews, as the daemon found it, and how many renewals it already is
+/// (0 for a lease that renews nothing).
+#[derive(Debug, Clone, Copy)]
+pub struct Renewed<'a> {
+    pub lease: &'a Lease,
+    pub renewals: u32,
+    /// How long after its `expires_at` an expired or used-up lease can still be renewed
+    /// (`writd.yaml`'s `renew_grace`).
+    pub grace: Duration,
+}
+
+/// Turns a pending renewal into an active lease once its approval is verified, checking again
+/// that the lease it renews can still be renewed and that the signed renewal stays within it
+/// ([`fit::check_renewal`]). Returns the new lease and the state the renewed lease moves to
+/// ([`State::Renewed`]).
+pub fn activate_renewal(
+    config: &PolicyConfig,
+    record: &TicketRecord,
+    signed: Ticket,
+    approval: Approval,
+    cert_serial: u64,
+    renewed: Renewed<'_>,
+    now: Timestamp,
+) -> Result<Lease, LifecycleError> {
+    transition(record.state, State::Active)?;
+    if record.ticket.text.amends.is_some() {
+        return Err(LifecycleError::ActivatingAmendment);
+    }
+    if record.ticket.text.renews.as_ref() != Some(&renewed.lease.id) {
+        return Err(LifecycleError::RenewsAnotherLease {
+            ticket: record.ticket.id.clone(),
+            lease: renewed.lease.id.clone(),
+        });
+    }
+    transition(renewed.lease.state, State::Renewed)?;
+    check_approval(config, &record.ticket, &signed, &approval, now)?;
+    fit::check_renewal(config, &signed, renewed, now).map_err(LifecycleError::Renewal)?;
     Ok(Lease {
         id: signed.id.clone(),
         ticket: signed,
@@ -292,6 +370,12 @@ pub fn apply_amendment(
     if signed.subject != lease.ticket.subject {
         return Err(LifecycleError::SubjectChanged);
     }
+    if signed.limits.expires_at > lease.ticket.limits.expires_at {
+        return Err(LifecycleError::AmendmentOutlivesLease {
+            amendment: signed.limits.expires_at,
+            lease: lease.ticket.limits.expires_at,
+        });
+    }
     check_approval(config, &amendment.ticket, &signed, &approval, now)?;
     let applied = TicketRecord {
         ticket: signed.clone(),
@@ -299,6 +383,7 @@ pub fn apply_amendment(
         feedback: None,
         feedback_by: None,
         approval: Some(approval.clone()),
+        source: amendment.source,
     };
     let updated = Lease {
         ticket: signed,

@@ -536,6 +536,8 @@ fn start_service(
             max_pending: config.max_pending,
             min_ttl: config.min_ttl,
             submissions: config.submissions.limits(),
+            max_active_per_source: config.max_active_per_source,
+            renew_grace: config.renew_grace,
             ca_public,
             daemon,
             in_force,

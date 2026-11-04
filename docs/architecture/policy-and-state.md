@@ -89,18 +89,28 @@ them never pays for the path match. That match is bounded by the ticket: at most
 
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
-Tables (`writ_store::Store`, schema version in `PRAGMA user_version`, now 5; an older one is migrated in one transaction, a newer one is refused):
+Tables (`writ_store::Store`). The state carries its version: `PRAGMA user_version` (the
+state version, `STATE_VERSION`, now 7) and `formats.ticket_kind` (the ticket format it stores,
+`writ-ticket/1`). A new database gets the whole schema at once; a database of any other version
+or ticket format is refused at open, both versions named (`StoreError::OtherVersion`,
+`OtherTicketFormat`): no migration chain, never a silent mix. A format change bumps the version
+and the operator starts that version from a new state directory ([decisions](../decisions.md)).
 
 | Table | Holds |
 |---|---|
-| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with (schema 2). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, and `current_ticket`: the row whose terms are in force (itself, or the last applied amendment), and the certificate issued for it (schema 2) |
+| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with, the source it came from (`source`: an IPv4 address, an IPv6 /64 or `local`; what `max_active_per_source` and `writ sign`'s other leases are counted by) and the lease it renews (`renews`). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, `current_ticket` (the row whose terms are in force: itself, or the last applied amendment), the certificate issued for it, and the closing summary (`summary`) |
+| `formats` | One row: the ticket format the state holds |
 | `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s). The daemon's timer sweep deletes rows an hour past the window (`Store::prune_ops`): a clock set back by up to an hour still counts what it must |
 | `ledger` | `(commit, lease, repo)` → signer key id, time, the digest of the paths the commit touched as signing computed them (`writ_git::paths::digest`; none when unknown, schema 4). The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry. Under `ticket_link: notes` (schema 5), each entry's `note`: none (not asked for), `pending` once upstream took the commit (with `note_credential`, the credential of that push, which pushes the note), `written` once the note is upstream; a written note stays written |
 
 - Stored tickets are decoded strictly (canonical bytes only), and an approval must be complete
   and under `writ-approval`: a record edited by hand fails closed.
 - State changes are compare-and-set (`… WHERE state = <expected>`) and follow the lifecycle;
-  applying an amendment updates the amendment and its lease in one transaction.
+  applying an amendment updates the amendment and its lease in one transaction, and so does
+  granting a renewal (the new lease active, the renewed one `renewed`).
+- A lease's chain (`Store::predecessors`: the lease it renews, then that one's…, at most
+  10,000) is one recursive query: a push under a renewal accepts the commits its predecessors
+  signed, and notes are marked for them too.
 - `consume` raises a counter only while it is under the limit and the lease is active, and
   records the operation, in one transaction.
 - WAL journal, `synchronous = FULL`, foreign keys on, a 5 s busy timeout.
@@ -116,15 +126,18 @@ caller ([Identity](identity.md#local-mode-process-chain-checks)).
 {"time":"2026-10-31T14:05:09Z","event":"sign","result":"allowed","lease":"wrt_01JD8X","cert":1842,"repo":"omega-code","commit":"9e1c2f…","committer":"user+agent@…","process_chain":["/Applications/Omega Code.app/…/omega","/usr/local/bin/claude","/usr/bin/git","/usr/local/bin/writ-sign"]}
 ```
 
-Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`,
-`refuse`, `amend`, `revoke`, `expire`, `exhaust`, `close`, `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `prove` (an agent
+Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`
+(a renewal's grant names the lease it renews in `reason`), `refuse`, `amend`, `renew` (a lease
+ended by its renewal's grant), `revoke`, `expire`, `exhaust`, `close` (done: the agent closed
+its lease, or added its summary to one that had ended: `reason` says `already <state>`), `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `prove` (an agent
 signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `notes`
 (a lease's [notes](gateway.md#notes) pushed upstream, or not, one line per lease and push of
 the notes ref), `admin`, `seal`, `unseal`, `key` (an agent signing key made on the host by
 `writd keys create`, with its format and algorithm)), `result` (`allowed`, `denied`, `done`), `lease`,
 `ticket`, `cert`, `approver`, `repo`, `commit`, `refs`, `committer`, `key` (a proof's key, the
 credential that pushed notes, a key made), `namespace`, `message_sha256` (a proof's namespace and the
-digest of its message, never the message), `count` (how many notes a `notes` line is about),
+digest of its message, never the message), `count` (how many notes a `notes` line is about, or
+how many denials or connections a coalesced line counts),
 `code`, `reason`, `warnings`, `source_addr`, `process_chain`.
 
 - `seal` (done): the daemon started sealed. `unseal`: allowed (the approver who signed, or

@@ -11,8 +11,13 @@
 //!   `writ init --undo` puts them back.
 //!
 //! What `writ init` records lives in `<git common dir>/writ/config` (git config format): never
-//! in the working tree, so it can't be committed, and it travels with the clone. Paths in the
-//! settings point at `<home>/sessions/current`, so a wired repo follows the current lease.
+//! in the working tree, so it can't be committed, and it travels with the clone.
+//!
+//! The settings point at one session ([`choose_session`]): `WRIT_SESSION` when it is set, then
+//! the lease the repo is pinned to (`writ init --lease`), then `<home>/sessions/current`. A
+//! session named by the first two must be on this host and not ended, or the command is
+//! refused: never replaced by `current`. `writ.session` names the session's directory, so
+//! `writ-sign` signs with that session only, in its lease's format.
 //!
 //! The clone's `origin` URL, as it was when wired, is rewritten to the daemon
 //! (`url.<daemon>/<repo>.git.insteadOf`), so `git push origin` and `git fetch origin` under the
@@ -24,7 +29,7 @@ use std::process::Command;
 
 use anyhow::{Context, bail};
 use writ_core::canonical::Canonical;
-use writ_core::names::RepoName;
+use writ_core::names::{RepoName, TicketId};
 use writ_core::ticket::Ticket;
 
 use crate::Paths;
@@ -68,6 +73,77 @@ pub struct Wiring {
     pub common_dir: PathBuf,
     /// The clone's `origin` URL when it was wired (`writ.origin`), rewritten to the daemon.
     pub origin: Option<String>,
+    /// The lease the repo is pinned to (`writ init --lease`): its session, not `current`.
+    pub lease: Option<TicketId>,
+}
+
+/// The session a command works under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionRef {
+    /// `<home>/sessions/current`, whichever lease it points at.
+    Current,
+    /// `<home>/sessions/<lease>`.
+    Lease(TicketId),
+}
+
+impl SessionRef {
+    /// The session's directory under `home`.
+    pub fn dir(&self, home: &Path) -> PathBuf {
+        let sessions = home.join("sessions");
+        match self {
+            Self::Current => sessions.join("current"),
+            Self::Lease(id) => sessions.join(id.as_str()),
+        }
+    }
+}
+
+/// The file in a session's directory that says it ended (closed, renewed), with why.
+pub const ENDED: &str = "ended";
+
+/// The session a command in a repo wired as `wiring` works under: `WRIT_SESSION`, then the
+/// repo's pinned lease, then `current`. One named that is unknown on this host, ended (its
+/// `ended` file) or past its end is refused with the reason, never replaced by `current`.
+pub fn choose_session(home: &Path, pinned: Option<&TicketId>) -> anyhow::Result<SessionRef> {
+    let (id, from) = match std::env::var("WRIT_SESSION") {
+        Ok(text) if !text.is_empty() => {
+            let id: TicketId = text
+                .parse()
+                .map_err(|e| anyhow::anyhow!("WRIT_SESSION {}: {e}", display::clean(&text)))?;
+            (id, "WRIT_SESSION")
+        }
+        _ => match pinned {
+            Some(id) => (id.clone(), "the lease this repository is pinned to"),
+            None => return Ok(SessionRef::Current),
+        },
+    };
+    check_session(home, &id).map_err(|why| anyhow::anyhow!("{from} names lease {id}: {why}"))?;
+    Ok(SessionRef::Lease(id))
+}
+
+/// Why the session of lease `id` can't be used, if it can't: not on this host, ended, or past
+/// its end by this host's clock.
+pub fn check_session(home: &Path, id: &TicketId) -> Result<(), String> {
+    let dir = SessionRef::Lease(id.clone()).dir(home);
+    let Ok(bytes) = std::fs::read(dir.join("lease.json")) else {
+        return Err(format!(
+            "no granted session for it on this host ({})",
+            dir.display()
+        ));
+    };
+    let lease = Ticket::from_canonical(&bytes)
+        .map_err(|_| format!("its session's lease.json doesn't read ({})", dir.display()))?;
+    if let Ok(ended) = std::fs::read_to_string(dir.join(ENDED)) {
+        return Err(format!("it ended ({})", display::clean(ended.trim())));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(u64::MAX);
+    let ended = u64::try_from(lease.limits.expires_at.unix()).map_or(true, |end| now >= end);
+    if ended {
+        return Err(format!("it expired at {}", lease.limits.expires_at));
+    }
+    Ok(())
 }
 
 /// One git setting: its key and value.
@@ -86,6 +162,8 @@ pub struct Target<'a> {
     pub common_dir: &'a Path,
     /// The clone's `origin` URL, rewritten to the daemon.
     pub origin: Option<&'a str>,
+    /// The session the settings point at.
+    pub session: &'a SessionRef,
 }
 
 /// The settings that wire a repository, in order (`<key> <value>`).
@@ -101,8 +179,10 @@ pub fn settings(
         repo,
         common_dir,
         origin,
+        session,
     } = *target;
-    let session = home.join("sessions").join("current");
+    let session_ref = session;
+    let session = session_ref.dir(home);
     let path = |p: PathBuf| p.display().to_string();
     let mut settings: Vec<(&'static str, String)> = vec![
         ("remote.writ.url", format!("{base_url}/{repo}.git")),
@@ -113,6 +193,7 @@ pub fn settings(
         ("writ.url", base_url.to_owned()),
         ("writ.repo", repo.to_string()),
         ("writ.gitdir", path(common_dir.to_path_buf())),
+        ("writ.session", path(session.clone())),
     ];
     // The lease's key signs in OpenPGP when its session holds the key's certificate: git
     // then calls `writ-sign` as `gpg`, and names the key by its fingerprint.
@@ -132,7 +213,7 @@ pub fn settings(
         ("commit.gpgSign", "true".to_owned()),
         // Tags are never signed by the daemon (releases stay a human act).
         ("tag.gpgSign", "false".to_owned()),
-        ("core.sshCommand", ssh_command(home, known_hosts)),
+        ("core.sshCommand", ssh_command(&session, known_hosts)),
     ]);
     if let Some(email) = email {
         settings.push(("user.email", email.to_owned()));
@@ -155,10 +236,10 @@ fn openpgp_fingerprint(session: &Path) -> Option<String> {
     writ_crypto::openpgp::certificate_fingerprint(&text).ok()
 }
 
-/// The SSH command to reach the daemon with the current session: nothing from the user's own
-/// SSH setup (no config, no agent, no other key, no prompt), only the daemon's pinned host key.
-pub fn ssh_command(home: &Path, known_hosts: &Path) -> String {
-    let session = home.join("sessions").join("current");
+/// The SSH command to reach the daemon with the session in `session` (its directory): nothing
+/// from the user's own SSH setup (no config, no agent, no other key, no prompt), only the
+/// daemon's pinned host key.
+pub fn ssh_command(session: &Path, known_hosts: &Path) -> String {
     format!(
         "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -i {} \
          -o {} -o {} -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes",
@@ -180,9 +261,9 @@ pub fn writ_sign_program() -> String {
         .map_or_else(|| "writ-sign".to_owned(), |path| path.display().to_string())
 }
 
-/// The current lease's single committer email, if it allows exactly one.
-pub fn lease_email(home: &Path) -> Option<String> {
-    let bytes = std::fs::read(home.join("sessions/current/lease.json")).ok()?;
+/// The single committer email of the lease in `session`, if it allows exactly one.
+pub fn lease_email(session: &Path) -> Option<String> {
+    let bytes = std::fs::read(session.join("lease.json")).ok()?;
     let lease = Ticket::from_canonical(&bytes).ok()?;
     match lease.scope.committer_emails.iter().collect::<Vec<_>>()[..] {
         [only] => Some(only.as_str().to_owned()),
@@ -190,9 +271,9 @@ pub fn lease_email(home: &Path) -> Option<String> {
     }
 }
 
-/// The current lease's id, if there is one on this host.
-pub fn lease_id(home: &Path) -> Option<String> {
-    let bytes = std::fs::read(home.join("sessions/current/lease.json")).ok()?;
+/// The id of the lease in `session`, if there is one on this host.
+pub fn lease_id(session: &Path) -> Option<String> {
+    let bytes = std::fs::read(session.join("lease.json")).ok()?;
     Some(Ticket::from_canonical(&bytes).ok()?.lease_id().to_string())
 }
 
@@ -271,6 +352,10 @@ pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
     let repo = get("writ.repo")
         .and_then(|r| r.parse().ok())
         .ok_or_else(invalid)?;
+    let lease = match get("writ.lease") {
+        Some(text) => Some(text.parse().map_err(|_| invalid())?),
+        None => None,
+    };
     Ok(Some(Wiring {
         mode,
         base_url,
@@ -278,21 +363,30 @@ pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
         email: get("writ.email"),
         common_dir,
         origin: get("writ.origin"),
+        lease,
     }))
 }
 
-/// The settings of a wired repository, with this host's paths and the current lease.
-pub fn settings_for(paths: &Paths, wiring: &Wiring) -> anyhow::Result<Vec<Setting>> {
+/// The settings of a wired repository, with this host's paths and the session `session`.
+pub fn settings_with(
+    paths: &Paths,
+    wiring: &Wiring,
+    session: &SessionRef,
+) -> anyhow::Result<Vec<Setting>> {
     let home = std::path::absolute(&paths.home).context("cannot resolve WRIT_HOME")?;
     let known_hosts =
         std::path::absolute(&paths.known_hosts).context("cannot resolve the known_hosts path")?;
-    let email = wiring.email.clone().or_else(|| lease_email(&home));
+    let email = wiring
+        .email
+        .clone()
+        .or_else(|| lease_email(&session.dir(&home)));
     Ok(settings(
         &Target {
             base_url: &wiring.base_url,
             repo: &wiring.repo,
             common_dir: &wiring.common_dir,
             origin: wiring.origin.as_deref(),
+            session,
         },
         &home,
         &known_hosts,
@@ -355,6 +449,7 @@ mod tests {
                 repo: &"omega-code".parse().unwrap(),
                 common_dir: Path::new("/opt/agent/omega/.git"),
                 origin: None,
+                session: &SessionRef::Current,
             },
             home.path(),
             Path::new("/opt/agent/.writ/known_hosts"),
@@ -379,6 +474,7 @@ mod tests {
                 repo: &"omega-code".parse().unwrap(),
                 common_dir: Path::new("/opt/agent/omega/.git"),
                 origin: None,
+                session: &SessionRef::Current,
             },
             home.path(),
             Path::new("/opt/agent/.writ/known_hosts"),
@@ -396,6 +492,7 @@ mod tests {
                 repo: &"omega-code".parse().unwrap(),
                 common_dir: Path::new("/opt/agent/omega/.git"),
                 origin: Some("git@github.com:user/omega-code.git"),
+                session: &SessionRef::Current,
             },
             Path::new("/opt/agent/.writ"),
             Path::new("/opt/agent/.writ/known_hosts"),
@@ -408,6 +505,7 @@ mod tests {
             ("writ.url", "ssh://git@writ.home:2222"),
             ("writ.repo", "omega-code"),
             ("writ.gitdir", "/opt/agent/omega/.git"),
+            ("writ.session", "/opt/agent/.writ/sessions/current"),
             ("gpg.format", "ssh"),
             ("gpg.ssh.program", "/usr/local/bin/writ-sign"),
             (
@@ -447,6 +545,7 @@ mod tests {
                     repo: &repo,
                     common_dir: Path::new("/r/.git"),
                     origin,
+                    session: &SessionRef::Current,
                 },
                 Path::new("/h"),
                 Path::new("/k"),
@@ -470,7 +569,7 @@ mod tests {
     #[test]
     fn paths_are_quoted_for_sh() {
         assert_eq!(quote("/a b/it's"), r"'/a b/it'\''s'");
-        let ssh = ssh_command(Path::new("/x y/$(id)"), Path::new("/k"));
+        let ssh = ssh_command(Path::new("/x y/$(id)/sessions/current"), Path::new("/k"));
         assert!(
             ssh.contains("-i '/x y/$(id)/sessions/current/key'"),
             "{ssh}"

@@ -195,7 +195,7 @@ fn many_agents_and_a_busy_remote_share_one_daemon() {
                     "a lease among many",
                 );
                 agent.clone_from_forgejo(stack, "busy", "work");
-                agent.ok_in("work", "writ init busy");
+                agent.ok_in("work", "writ init busy --agents none");
                 Worker {
                     agent,
                     lease,

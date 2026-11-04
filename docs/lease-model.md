@@ -145,7 +145,9 @@ ticket:
   task: "Add GitHub OAuth login to the web app, behind a feature flag"
   plan: ["Add OAuth client config and callback route", "Store tokens in the existing session store", "Feature flag + tests"]
   expected_paths: ["src/auth/**", "src/routes/oauth*", "tests/auth/**"]
+  estimate: { coding: 45m, checks: 15m, ci: 30m }   # optional: shown, never checked
   amends: null                   # the lease this ticket amends
+  renews: null                   # the lease this ticket renews
   revises: null                  # the refused ticket this one revises
 limits:                          # each optional: omitted, the template's maximum
   ttl: 2h
@@ -158,7 +160,9 @@ on_violation: deny_and_notify    # optional
 
 A ticket that fits several templates must name one. Text is bounded so a ticket stays
 reviewable (title 200 characters on one line, task 4,000 characters on at most 100 lines,
-plan 50 one-line steps of 500, 100 expected paths).
+plan 50 one-line steps of 500, 100 expected paths, each phase of the estimate at most 30
+days). `writ check <ticket.yaml>` checks a file against what can be checked without the
+daemon (the same function the daemon runs on the text, `fit::check_request`).
 
 ## The complete ticket
 
@@ -207,7 +211,12 @@ ticket:                          # written by the agent, reviewed by me
     - "Store tokens in the existing session store"
     - "Feature flag + tests"
   expected_paths: ["src/auth/**", "src/routes/oauth*", "tests/auth/**"]   # see Q24
+  estimate:                      # the agent's, display-only: each phase a duration or null
+    coding: 45m
+    checks: 15m
+    ci: 30m
   amends: null                   # id of the lease this one amends, if any
+  renews: null                   # id of the lease this one renews, if any
   revises: wrt_01JD8W...         # id of the refused ticket this one revises, if any
   revision: 2                    # 1, then one more than the ticket it revises
   previous_feedback: "Don't touch billing; keep the session store as is"
@@ -223,9 +232,11 @@ on_violation: deny_and_notify    # deny_and_notify | revoke_lease
 ```
 
 The lease record adds what is not signed: its **state**, the **approval** (approver key
-fingerprint, namespace `writ-approval`, the SSHSIG), the **certificate serial** and the
-counters. A lease's id is its first ticket's id: the certificate's key id and the `Writ:`
-trailer carry it, and it stays when amendments replace the terms.
+fingerprint, namespace `writ-approval`, the SSHSIG), the **certificate serial**, the
+counters, the **source** the ticket came from (an IPv4 address, an IPv6 /64, or `local`, as
+the per-source limits count it), the lease it renews, and the closing summary. A lease's id
+is its first ticket's id: the certificate's key id and the `Writ:` trailer carry it, and it
+stays when amendments replace the terms. A renewal is a lease of its own, with its own id.
 
 ### Canonical encoding
 
@@ -288,11 +299,15 @@ stateDiagram-v2
   active --> expired: expires_at reached
   active --> revoked: manual / violation policy
   active --> revoked: session process exits (local mode)
+  active --> renewed: a renewal of it signed
+  expired --> renewed: a renewal signed within renew_grace
+  exhausted --> renewed: a renewal signed within renew_grace
   applied --> [*]
   closed --> [*]
   exhausted --> [*]
   expired --> [*]
   revoked --> [*]
+  renewed --> [*]
 ```
 
 `submitted` and `rejected_by_policy` are answers to `writ request`, never stored. Every
@@ -302,9 +317,30 @@ An **amendment** is a new ticket with `amends: <id>`, from the same session (sam
 key), submitted while the lease is active. While pending, the original lease keeps running;
 once signed, the amendment becomes `applied` and its terms replace the lease's: the lease
 keeps its id, certificate and counters (its `max_signatures` is the new total, not more on
-top). An amendment changes scope, not time: its `expires_at` is capped at the lease's, since
-the certificate keeps its `valid_before` (enforced from M6). If the lease ended before the
-amendment is signed, the amendment can't be applied.
+top). An amendment changes scope, not time: its `expires_at` is capped at the lease's when it
+is submitted, and one that would end later is refused when signed
+(`LifecycleError::AmendmentOutlivesLease`), since the certificate keeps its `valid_before`.
+If the lease ended before the amendment is signed, the amendment can't be applied.
+
+A **renewal** is a new ticket with `renews: <id>`: more time for the same work, signed like any
+ticket ([M6](decisions.md)). The rules, checked at submission and again at signing
+(`fit::check_renewal`):
+
+- it comes from the renewed lease's session (same session key, same bound process);
+- the renewed lease is active, or expired or exhausted no longer than `renew_grace`
+  (`writd.yaml`, 24 h by default, 0 to 7 days) after its `expires_at`; never revoked, closed or
+  renewed already;
+- it keeps the lease's template; its `ttl` and limits are new, within the template;
+- its scope, expected paths and `on_violation` are the same or narrower
+  (`narrow::widenings`); committer emails and expected paths left out are the lease's;
+- the template's `max_renewals`, when set, caps how many renewals one chain holds.
+
+Once signed, the renewal is a lease of its own (its id, a certificate for the same session
+key) and the renewed lease becomes `renewed` in the same change, its certificate refused. A
+push under the renewal accepts the commits its predecessors signed, still checked against its
+own scope (`PushRequest.predecessors`). It doesn't count twice against
+`max_active_per_source`. `writ sign` shows the chain's original ticket, which renewal this
+is, the time used so far and the renewed lease's counts.
 
 A lease is **exhausted** when every operation it allows is used up: signatures with
 `commit_sign`, pushes with `push`. `fetch` has no count, so a lease that allows it never
@@ -319,7 +355,11 @@ revives a used-up lease.
 - A lease is used only while it still fits its template **under the current config**: if an
   admin change tightens or removes the template or a repo, its leases are denied (fail
   closed) until amended.
-- Leases are **never extended silently**. Extending is a new signed approval.
+- Leases are **never extended silently**. More time is a renewal: a new signed approval, a
+  new lease.
+- `max_active_per_source` (`writd.yaml`, no limit by default): the active leases one source may
+  hold, checked when a ticket is submitted and again when it is signed (`TooManyActive`); an
+  amendment adds no lease, a renewal replaces its own.
 - **Every ticket must fit a template** (Q14). An approval can't exceed a template; new
   templates are admin changes.
 - The ticket's text (title, task, plan) is written by the agent: shown to me as-is, never

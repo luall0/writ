@@ -30,6 +30,7 @@ mod remote_protection;
 mod restart;
 mod revocation_and_expiry;
 mod sealed_keystore;
+mod sessions_and_renewals;
 mod ticket_lifecycle;
 mod upstream_moved;
 mod verified_commits;
@@ -46,7 +47,7 @@ use writ_e2e::{Stack, stderr};
 fn wired(stack: &Stack, agent: &Agent, repo: &str) -> (String, String) {
     let lease = agent.lease(stack, &ticket(&[repo], &["agent/*"], "1h", ""));
     agent.clone_from_forgejo(stack, repo, "work");
-    agent.ok_in("work", &format!("writ init {repo}"));
+    agent.ok_in("work", &format!("writ init {repo} --agents none"));
     (lease, "work".to_owned())
 }
 

@@ -182,6 +182,10 @@ pub struct Template {
     pub paths_check: PathsCheck,
     #[serde(default)]
     pub require_expected_paths: bool,
+    /// How many renewals one lease's chain may have (none: no limit). Each is signed anyway;
+    /// this caps how long one task can run under the template.
+    #[serde(default)]
+    pub max_renewals: Option<u32>,
 }
 
 fn default_push_modes() -> BTreeSet<PushMode> {

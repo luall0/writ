@@ -140,6 +140,7 @@ impl Coalesced {
                 lines.push(
                     AuditEvent::new(now, kind, outcome)
                         .lease(&lease)
+                        .count(count)
                         .reason(reason),
                 );
             }

@@ -36,7 +36,9 @@ it or refuse it. The full signed ticket and its lifecycle:
 | `ticket.task` | Text | **required** | What the agent was asked to do |
 | `ticket.plan` | List of steps | `[]` | The agent's steps, in order |
 | `ticket.expected_paths` | Path globs | `[]` | The files the work should touch (`src/auth/**`): `*` and `?` within a directory, `**` across. At most 100 patterns, 16 KiB in all, each at most 1,024 bytes with 16 of `*`, `?`, `[`, `{`. Compared with each commit per the template's `paths_check`. Required if the template sets `require_expected_paths` |
-| `ticket.amends` | Lease id | — | Replaces the terms of an active lease of the same session, once signed. Changes the scope, not the time |
+| `ticket.estimate` | `coding`, `checks`, `ci`: each a duration, all optional | — | How long the agent thinks the work takes: writing the change, the checks it runs before committing, waiting on remote CI after its pushes. Each at most `30d`. Shown to you beside the TTL asked, and in the activity report beside the real time. Never checked |
+| `ticket.amends` | Lease id | — | Replaces the terms of an active lease of the same session, once signed. Changes the scope, not the time: it ends when its lease ends |
+| `ticket.renews` | Lease id | — | More time for a lease of the same session. [Renewals](#renewals) |
 | `ticket.revises` | Ticket id | — | A new version of a refused ticket of the same session. You see the earlier feedback beside it |
 | `limits.ttl` | Duration | the template's `max_ttl` | How long the lease lasts, counted from submission. At least the daemon's `min_ttl` (`5m` by default), at most the template's `max_ttl` |
 | `limits.max_signatures` | Count | the template's | At most the template's |
@@ -49,6 +51,23 @@ it or refuse it. The full signed ticket and its lifecycle:
 | `caller.descends_from.generation` | Number | — | Its pid generation (`pidversion`), so a reused pid doesn't match |
 | `caller.descends_from.code_identity.signing_id` | Text | — | Its code-signing identifier must match too |
 | `caller.descends_from.code_identity.team_id` | Text | — | And its team id |
+
+## Renewals
+
+A renewal asks for more time for the same work. You sign it like any ticket.
+
+- It names a lease of the same session that is active, or that expired or was used up less
+  than the daemon's `renew_grace` ago (`24h` by default). A revoked, closed or already renewed
+  lease can't be renewed.
+- It keeps the lease's template. Its `ttl` and limits are new, within the template.
+- Its scope stays the same or narrower: repos, operations, branches, committer emails,
+  expected paths, `force_push`, `on_violation`. Committer emails and expected paths left out
+  are the lease's.
+- Once you sign it, it is a lease of its own, and the renewed lease ends at once
+  (`renewed`). The new lease may push the commits the renewed one signed.
+- The template's `max_renewals` caps how many renewals one lease's chain may have.
+- `writ sign` shows you the original ticket, the renewals so far, the time used in all, and
+  what changed.
 
 ## `caller` (local mode)
 

@@ -9,8 +9,8 @@
 //! | Listener | Authenticated as | Commands |
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
-//! | agents | a plain session key | [`Command::Request`], [`Command::Wait`] |
-//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`] |
+//! | agents | a plain session key | [`Command::Request`], [`Command::Wait`], [`Command::Close`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`] |
 //!
 //! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
 //! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed".
@@ -31,10 +31,11 @@ pub mod sign;
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
-    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, CreatedKey, Decision, Decisions,
-    Info, KeyRole, Listing, PassphraseText, Previous, ProveRequest, Proved, RefuseRequest,
-    Relation, RevokeRequest, SealedBoot, Shown, Submitted, Summary, TokenApplied, TokenRequest,
-    TokenShown, UnsealRequest, Unsealed,
+    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, ChainLink, CloseRequest, Count,
+    CreatedKey, Decision, Decisions, DenialCount, Info, KeyRole, Listing, OtherLease, Others,
+    PassphraseText, Phases, Previous, ProveRequest, Proved, RefuseRequest, Relation, Renewal,
+    Report, ReportCommit, ReportPush, RevokeRequest, SealedBoot, Shown, Submitted, Summary,
+    TokenApplied, TokenRequest, TokenShown, UnsealRequest, Unsealed,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -60,6 +61,8 @@ mod tests {
         for command in [
             Command::Request,
             Command::Wait { id: id.clone() },
+            Command::Close { id: id.clone() },
+            Command::Report { id: id.clone() },
             Command::Info,
             Command::List { all: false },
             Command::List { all: true },
@@ -86,6 +89,9 @@ mod tests {
             "writ request now",
             "writ wait",
             "writ wait wrt_nope",
+            "writ close",
+            "writ close wrt_nope",
+            "writ report",
             "writ ls -a",
             "writ ls --all extra",
             "writ  ls",
@@ -120,6 +126,7 @@ mod tests {
             Command::List { all: false },
             Command::List { all: true },
             Command::Show { id: id.clone() },
+            Command::Report { id: id.clone() },
             Command::Approve { id: id.clone() },
             Command::Refuse { id: id.clone() },
             Command::Revoke { id: id.clone() },
@@ -139,12 +146,15 @@ mod tests {
         }
         assert_eq!(Command::Request.http_route(), None);
         assert_eq!(Command::Wait { id: id.clone() }.http_route(), None);
+        assert_eq!(Command::Close { id: id.clone() }.http_route(), None);
         for (method, path) in [
             ("POST", "/v1/info"),
             ("GET", "/v1/tickets?all=1"),
             ("GET", "/v1/tickets?all=true&x=1"),
             ("GET", "/v1/tickets/wrt_nope"),
             ("GET", &format!("/v1/tickets/{id}/approve")),
+            ("POST", &format!("/v1/tickets/{id}/report")),
+            ("POST", &format!("/v1/tickets/{id}/close")),
             ("POST", &format!("/v1/tickets/{id}/sign")),
             ("POST", "/v1/request"),
             ("GET", "/v1/proofs"),

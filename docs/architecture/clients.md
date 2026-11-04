@@ -7,8 +7,8 @@ clients make the workflow pleasant, the daemon makes it safe.
 
 | Client | Role |
 |---|---|
-| `writ` CLI | `request`, `wait`, `sign`, `refuse`, `close`, `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host)), `git` and `exec` (git, or a program, with that wiring) |
-| Agent skill | Teaches the agent the ticket workflow: think through the scope before coding, write a ticket (task, plan, repos, branches, limits, template), submit it with `writ request`, wait for my decision; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; when done, `writ close` with a summary. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine |
+| `writ` CLI | `request`, `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host)), `git` and `exec` (git, or a program, with that wiring) |
+| Agent skill (`skill/writ/SKILL.md`, built into `writ`, installed by `writ init`) | Teaches the agent the ticket workflow: read the timings file, think through the scope and estimate it before coding, write a ticket (task, plan, repos, branches, estimate, limits), check it (`writ check`) and submit it with `writ request`, wait for my decision, then work with `WRIT_SESSION` set; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; out of time or counts, a renewal; when done, `writ close` with a summary, then a note in the timings file if something explains the figures. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine. [The skill and its installer](#the-agent-skill) |
 | `writ try` | Borrowed from secrets-dispatcher: sets up a temporary local daemon and wires one repo, then restores everything on Ctrl-C. `--dry-run` lists every change first |
 | `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git <repo>` command for the repo in `writ.repo`, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, then `core.sshCommand`, never a plain `ssh`), with the first parent commit and the trees the daemon needs to see which paths the commit touches ([Gateway](gateway.md#signing)); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen`. Also `gpg.openpgp.program` for a lease whose key is OpenPGP: `--status-fd=2 -bsau <key>` → daemon (`writ-sign openpgp <repo>`, the object on stdin, the armored signature on stdout, `[GNUPG:] SIG_CREATED` on stderr; no GnuPG home, keyring or agent used), `--verify` → the real `gpg` (`WRIT_GPG`, an absolute path, `/usr/bin/gpg` by default), anything else refused |
 | Session agent ([M8.5](../roadmap.md#m85--non-exportable-session-keys), on when the host has the hardware) | Holds the session key so it can't be copied: a dedicated ssh-agent backed by the Secure Enclave, a TPM or a YubiKey |
@@ -26,7 +26,8 @@ skill). The approver side of the CLI is described in [Approvals](approvals.md).
 is pinned; `writd host-key` prints it), `WRIT_TLS_PINS` (default `~/.writ/tls_pins`, lines
 `[host]:port SHA256:…` pinning the HTTPS certificate; `writd tls-fingerprint` prints it) and
 `WRIT_READER` (default `~/.writ/reader`: the key the approval API lets in; `writ reader
-[<name>]` makes it on first use and prints the line for the daemon's `readers` file), and
+[<name>]` makes it on first use and prints the line for the daemon's `readers` file),
+`WRIT_SESSION` (the lease an agent works under: [the session](#which-session-a-command-uses)), and
 `WRIT_SSH_KEYGEN` (the ssh-keygen `writ sign` runs, an absolute path; default
 `/usr/bin/ssh-keygen`, never looked up in `PATH`). It never reads `~/.ssh` or uses the user's ssh-agent
 for connections: it would offer personal keys to the daemon. Exit statuses: 0 done, 1 error,
@@ -76,12 +77,13 @@ agent's configuration): the [operators' good practice](../operators/good-practic
     url = ssh://git@writ.home:2222      # where writ-sign sends commits to sign
     repo = omega-code                   # the repo they are for (a registry name)
     gitdir = /path/to/omega/.git        # its git common dir: writ-sign signs nothing made elsewhere
+    session = <home>/sessions/current   # the session: its lease's format, checked against WRIT_SESSION
 [gpg]
     format = ssh
 [gpg "ssh"]
     program = /path/to/writ-sign        # next to `writ`, or `writ-sign` in PATH
 [user]
-    signingkey = <home>/sessions/current/signing_key.pub
+    signingkey = <home>/sessions/current/signing_key.pub   # <home>/sessions/<lease> when pinned
     email = user+agent@example.org      # --email, or the lease's when it allows one
 # A lease whose key signs in OpenPGP (its session holds signing_key.asc): instead,
 #   gpg.format = openpgp, gpg.openpgp.program = /path/to/writ-sign,
@@ -96,12 +98,81 @@ agent's configuration): the [operators' good practice](../operators/good-practic
     insteadOf = git@github.com:user/omega-code.git   # the clone's origin URL when wired
 ```
 
-Paths are absolute and quoted for `sh`, and point at `<home>/sessions/current`: a wired repo
-follows whichever lease is current. In wrapper mode they are computed each time from
-`WRIT_HOME`, and the email is the current lease's unless `--email` was given. Each commit
+Paths are absolute and quoted for `sh`, and point at one session's directory, also named by
+`writ.session` ([which session](#which-session-a-command-uses)): `<home>/sessions/current`
+unless the repo is pinned (`writ init --lease`) or `WRIT_SESSION` is set. In wrapper mode they
+are computed once per command from `WRIT_HOME`, and the email is the session's lease's unless
+`--email` was given; `writ init` computes them once per run (its record for `--undo`, the
+config it writes and its summary come from the same values) and reads the values it replaces
+with `git config --get-all -z`, so a value over several lines is put back whole. Each commit
 needs a `Writ: <lease>` trailer when the repo's `ticket_link` is `trailer`
-(`git commit --trailer "Writ: wrt_…"`); `writ init` prints the current lease's. Only `ssh://`
+(`git commit --trailer "Writ: wrt_…"`); `writ init` prints the lease's. Only `ssh://`
 endpoints for now (a Unix socket comes with local mode).
+
+### Which session a command uses
+
+`writ git`, `writ exec`, `writ init`, `writ mark` and `writ-sign` work under one session,
+chosen in this order:
+
+1. `WRIT_SESSION=<lease>`, which `writ request` prints with each grant;
+2. the lease the repo is pinned to (`writ init --lease <id>`, kept in the record as
+   `writ.lease`; a whole-repo clone gets that session's paths);
+3. `<home>/sessions/current`, the latest grant.
+
+A session named by the first two must be on this host, not ended (its `ended` file: closed,
+or renewed by another lease) and not past its end, or the command is refused with the reason:
+never replaced by `current` (`wiring::choose_session`). One command uses one session: with
+`WRIT_SESSION` set, `writ-sign` refuses a commit when the settings git gave it name another
+session (`writ.session`: a whole-repo clone pinned elsewhere, or `current` pointing at another
+lease). `writ request` warns when the grant moves `current` while another lease of the same
+home still runs. A client check, never a boundary: the daemon decides by the certificate.
+
+`writ-sign` asks the daemon for the format of the session's lease (`signing_key.asc` in the
+session: OpenPGP; otherwise SSH), whichever way git called it (`gpg.ssh.program` or
+`gpg.openpgp.program`), and answers in git's way for that call; git stores either in the
+commit's signature header. So a whole-repo clone follows its lease when the next lease's key
+signs in another format, with no change to its config. Settings without `writ.session` (a
+wiring from before M6) ask in git's way, and the daemon refuses the other format
+(`signature_format`).
+
+### The agent skill
+
+`writ init` installs `skill/writ/SKILL.md` (built into `writ` with `include_str!`, so the
+skill always matches the CLI) as `<folder>/writ/SKILL.md` in each skills folder of the
+agents it is asked for (`writ_cli::skill`), in as few folders as possible:
+
+| Agent (`--agents`) | In the repo | `--global` |
+|---|---|---|
+| Claude Code (`claude`) | `.claude/skills` | `~/.claude/skills` |
+| Codex, Gemini CLI, GitHub Copilot, Amp (`agents`) | `.agents/skills` | `~/.agents/skills` |
+| OpenCode (`opencode`), only without the two above, which it reads too | `.opencode/skills` | `~/.config/opencode/skills` |
+| Cursor (`cursor`) | `.cursor/skills` | `~/.cursor/skills` |
+
+- On a terminal, `writ init` asks, the agents it detects (`.claude/`, `CLAUDE.md`,
+  `.agents/`, `.codex/`, `AGENTS.md`, `.opencode/`, `opencode.json`, `.cursor/`, and their
+  folders in the home) pre-selected; `--agents` or `--skill-dir <folder>` answer for it.
+  Without a terminal and without them it fails before wiring anything.
+- In the repo, each `writ/` folder installed is added to `.git/info/exclude`: never committed,
+  never against `expected_paths`.
+- A `SKILL.md` that isn't Writ's (no `Written by writ init` mark) is never written over; one
+  that is is refreshed.
+- `--agents-md` appends one line pointing at the skill to `AGENTS.md` and `CLAUDE.md` (a new
+  `AGENTS.md` when the repo has neither); otherwise the summary prints the line.
+- What `writ init` creates and adds is recorded (`skill.created`, `skill.exclude`,
+  `skill.agentsmd`…), and `--undo` takes exactly that back. `timings.md` stays.
+
+`timings.md`, beside the first `SKILL.md` (which names its path), is what the agent learns
+about sizing tickets (`writ_cli::timings`). Front matter holds its limits (`max_lines`,
+`max_bytes`, `keep_runs`, `max_notes`; `writ timings` changes them within their bounds). Per
+repository: a `summary:` line adding up every run (`key=value`, minutes), an `averages:` line
+regenerated from it, the last runs in full (`runs:`, one line each from the activity report:
+time used against granted, the estimate against the phases, the counts, the agent's marks),
+and the agent's notes (`notes:`). `writ close` appends a run and compacts with fixed rules:
+the last `keep_runs` runs and `max_notes` notes (the same note once) per repository; then,
+while over `max_lines` or `max_bytes`, the oldest run of the repository with the most, then
+the oldest note, then the least recently updated repository. The file is untrusted: what
+doesn't parse is rewritten, every line is cut to 400 characters, and `writ check` names every
+line `writ close` would drop or rewrite.
 
 The SSH command never reaches the user's own SSH setup: no `~/.ssh/config` (`-F /dev/null`), no
 other key and no agent (`IdentitiesOnly`, `IdentityAgent=none`: Secretive's keys are never

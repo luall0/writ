@@ -1,9 +1,12 @@
 //! `writ`, the Writ CLI.
 //!
 //! Agent side: `writ request <ticket.yaml>` (submit and wait), `writ wait <id>`, `writ init
-//! <repo>` (wire a repository; `--whole-repo` for a clone dedicated to an agent, `--undo`),
-//! `writ git <args>` and `writ exec -- <program>` (git, or a program, with the wiring).
+//! <repo>` (wire a repository and install the agent skill; `--whole-repo` for a clone
+//! dedicated to an agent, `--undo`), `writ git <args>` and `writ exec -- <program>` (git, or a
+//! program, with the wiring), `writ close` (end the lease: its report, recorded in the
+//! timings file), `writ mark <phase>`, `writ timings`.
 //! Approver side: `writ reader` (the key this machine uses on the approval API), `writ ls`,
+//! `writ report <lease>`,
 //! `writ sign [<id>]` (the trusted display, then an SSHSIG through the approver's
 //! ssh-agent), `writ refuse <id>`, `writ revoke <id>`, `writ prove-key <key id> --namespace
 //! <ns>` (an agent signing key's proof for a remote, the message on stdin).
@@ -15,11 +18,14 @@
 mod agent;
 mod approver;
 mod client;
+mod close;
 mod display;
 mod https;
 mod init;
 mod reader;
 mod session;
+mod skill;
+mod timings;
 mod wiring;
 mod wrap;
 
@@ -148,6 +154,23 @@ enum Commands {
         /// The daemon's agents listener, ssh://host:port.
         #[arg(long, env = "WRIT_URL")]
         url: Option<String>,
+        /// Pin the repo to this lease: its session, never `current` (WRIT_SESSION still
+        /// comes first).
+        #[arg(long, conflicts_with = "undo")]
+        lease: Option<TicketId>,
+        /// The agents the skill is installed for, without asking: claude, agents (Codex,
+        /// Gemini CLI, Copilot, Amp…), opencode, cursor, comma-separated; or none.
+        #[arg(long, conflicts_with = "undo", value_parser = parse_agents)]
+        agents: Option<std::collections::BTreeSet<skill::Agent>>,
+        /// Also install the skill in this skills folder (<path>/writ/SKILL.md).
+        #[arg(long, conflicts_with = "undo")]
+        skill_dir: Option<PathBuf>,
+        /// Install in your own folders (~/.claude/skills…) instead of the repo's.
+        #[arg(long, conflicts_with = "undo")]
+        global: bool,
+        /// Add a line pointing at the skill to AGENTS.md / CLAUDE.md.
+        #[arg(long, conflicts_with = "undo")]
+        agents_md: bool,
     },
     /// Run any git command with the repo's Writ wiring (signing by the daemon, the session's
     /// SSH command, the `writ` remote), without changing its git config.
@@ -160,12 +183,55 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<OsString>,
     },
+    /// End a lease with a summary: prints its activity report and records the run in the
+    /// timings file. The lease: the one named, WRIT_SESSION, or the current one.
+    Close {
+        lease: Option<TicketId>,
+        /// What was done, what is left (shown to the approver as written).
+        #[arg(long, short = 'm')]
+        summary: String,
+        #[command(flatten)]
+        url: AgentUrl,
+    },
+    /// Check a ticket file (as far as can be without the daemon), or the timings file (what
+    /// `writ close` would drop or rewrite). Sends nothing; exit 3 with every problem.
+    Check {
+        /// The file (`-` for stdin).
+        file: PathBuf,
+    },
+    /// Mark the end of a phase (coding, checks, ci) the daemon can't see: shown as yours in
+    /// the activity report.
+    Mark {
+        #[arg(value_parser = parse_phase)]
+        phase: timings::Phase,
+    },
+    /// The timings file's limits (the repo here): change them, then the file is compacted.
+    Timings {
+        /// The most lines the file keeps.
+        #[arg(long)]
+        max_lines: Option<usize>,
+        /// The most bytes the file keeps.
+        #[arg(long)]
+        max_bytes: Option<usize>,
+        /// The runs listed per repository (every run stays in its summary).
+        #[arg(long)]
+        keep_runs: Option<usize>,
+        /// The notes kept per repository.
+        #[arg(long)]
+        max_notes: Option<usize>,
+    },
     /// Print this machine's reader key line for the daemon's `readers` file (the key is made
     /// on first use).
     Reader {
         /// The name the daemon logs for this reader.
         #[arg(default_value = "approver")]
         name: String,
+    },
+    /// A lease's activity report (commits, pushes, denials, time used).
+    Report {
+        id: TicketId,
+        #[command(flatten)]
+        url: ApprovalUrl,
     },
     /// List tickets waiting and active leases.
     Ls {
@@ -286,6 +352,14 @@ enum AdminCommand {
     },
 }
 
+fn parse_agents(text: &str) -> Result<std::collections::BTreeSet<skill::Agent>, String> {
+    skill::parse_agents(text)
+}
+
+fn parse_phase(text: &str) -> Result<timings::Phase, String> {
+    text.parse()
+}
+
 fn paths(cli: &Cli) -> anyhow::Result<Paths> {
     let home = match &cli.home {
         Some(home) => home.clone(),
@@ -336,6 +410,11 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             whole_repo,
             email,
             url,
+            lease,
+            agents,
+            skill_dir,
+            global,
+            agents_md,
             ..
         } => {
             let repo = repo
@@ -356,9 +435,35 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                     repo,
                     mode,
                     email: email.as_ref(),
+                    lease: lease.as_ref(),
+                    skill: init::SkillChoice {
+                        agents: agents.clone(),
+                        skill_dir: skill_dir.clone(),
+                        global: *global,
+                        agents_md: *agents_md,
+                    },
                 },
             )
         }
+        Commands::Close {
+            lease,
+            summary,
+            url,
+        } => close::close(&paths, &url.url, lease.as_ref(), summary).await,
+        Commands::Mark { phase } => close::mark(&paths, *phase),
+        Commands::Check { file } => close::check(file),
+        Commands::Timings {
+            max_lines,
+            max_bytes,
+            keep_runs,
+            max_notes,
+        } => close::timings(&[
+            ("max_lines", *max_lines),
+            ("max_bytes", *max_bytes),
+            ("keep_runs", *keep_runs),
+            ("max_notes", *max_notes),
+        ]),
+        Commands::Report { id, url } => approver::report(&paths, &url.url, id).await,
         Commands::Git { args } => wrap::git(&paths, args),
         Commands::Exec { command } => wrap::exec(&paths, command),
         Commands::Reader { name } => {

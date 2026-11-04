@@ -14,23 +14,25 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
-use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
 use writ_core::fit::{self, Submission};
 use writ_core::lease::{
     self, APPROVAL_NAMESPACE, Approval, Lease, LifecycleError, State, TicketRecord,
 };
 use writ_core::names::{CommitId, KeyFingerprint, KeyId, TicketId};
+use writ_core::net::Source;
 use writ_core::policy::RATE_WINDOW_SECONDS;
 use writ_core::ticket::{Ticket, TicketRequest};
 use writ_core::units::Timestamp;
 use writ_store::{
-    Counter, LedgerEntry, OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, Store, StoreError,
+    Counter, LedgerEntry, OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, STATE_VERSION, Store,
+    StoreError,
 };
 
 /// Stand-ins: the store keeps these as text and never parses them.
 const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIStandInSessionKey";
 const CERT: &str = "ssh-ed25519-cert-v01@openssh.com AAAAStandInCertificate";
+const SOURCE: Source = Source::Local;
 
 const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 
@@ -86,6 +88,7 @@ fn ticket(n: u64, yaml: &str, amends: Option<&Lease>) -> Ticket {
         now: t(0),
         session_key: fp('S'),
         amends,
+        renews: None,
         revises: None,
         min_ttl: fit::DEFAULT_MIN_TTL,
     };
@@ -100,7 +103,7 @@ fn ticket(n: u64, yaml: &str, amends: Option<&Lease>) -> Ticket {
 /// Submits and activates ticket `n` in the store, with certificate serial `n`.
 fn active_lease(store: &Store, n: u64) -> Lease {
     let ticket = ticket(n, REQUEST, None);
-    store.insert_pending(&ticket, KEY, t(0)).unwrap();
+    store.insert_pending(&ticket, KEY, SOURCE, t(0)).unwrap();
     let record = store.ticket(&ticket.id).unwrap().unwrap();
     let lease = lease::activate(&config(), &record, ticket, approval(), n, t(10)).unwrap();
     store.activate(&lease, CERT, t(10)).unwrap();
@@ -140,14 +143,14 @@ fn leases_and_ledger_survive_a_reopen() {
             .ledger_append(&entry(2, &lease.id, "omega-code"))
             .unwrap();
         let pending = ticket(2, REQUEST, None);
-        store.insert_pending(&pending, KEY, t(0)).unwrap();
+        store.insert_pending(&pending, KEY, SOURCE, t(0)).unwrap();
         let refused = ticket(3, REQUEST, None);
-        store.insert_pending(&refused, KEY, t(0)).unwrap();
+        store.insert_pending(&refused, KEY, SOURCE, t(0)).unwrap();
         store
             .refuse(&refused.id, "split it", Some(&fp('A')), t(5))
             .unwrap();
         let open = ticket(4, REQUEST, None);
-        store.insert_pending(&open, KEY, t(0)).unwrap();
+        store.insert_pending(&open, KEY, SOURCE, t(0)).unwrap();
         store.refuse(&open.id, "anyone", None, t(5)).unwrap();
         (lease, pending, refused)
     };
@@ -173,7 +176,10 @@ fn leases_and_ledger_survive_a_reopen() {
     );
     assert_eq!(
         store.ticket(&pending.id).unwrap().unwrap(),
-        TicketRecord::pending(pending.clone())
+        TicketRecord {
+            source: Some(SOURCE),
+            ..TicketRecord::pending(pending.clone())
+        }
     );
     let refused = store.ticket(&refused.id).unwrap().unwrap();
     assert_eq!(
@@ -194,7 +200,7 @@ fn leases_and_ledger_survive_a_reopen() {
 fn a_narrowed_lease_is_stored_as_signed() {
     let store = Store::open_in_memory().unwrap();
     let submitted = ticket(1, REQUEST, None);
-    store.insert_pending(&submitted, KEY, t(0)).unwrap();
+    store.insert_pending(&submitted, KEY, SOURCE, t(0)).unwrap();
     let mut signed = submitted.clone();
     signed.limits.max_signatures = 1;
     let record = store.ticket(&submitted.id).unwrap().unwrap();
@@ -259,7 +265,7 @@ fn transitions_are_compare_and_set() {
     // The same id twice.
     let again = ticket(1, REQUEST, None);
     assert!(matches!(
-        store.insert_pending(&again, KEY, t(16)),
+        store.insert_pending(&again, KEY, SOURCE, t(16)),
         Err(StoreError::Duplicate(_))
     ));
 }
@@ -308,7 +314,7 @@ fn counters_never_go_over_the_limit() {
     assert!(!store.consume(&lease.id, Counter::Fetch, 0, t(51)).unwrap());
     // Nor from a pending ticket.
     let pending = ticket(2, REQUEST, None);
-    store.insert_pending(&pending, KEY, t(0)).unwrap();
+    store.insert_pending(&pending, KEY, SOURCE, t(0)).unwrap();
     assert!(
         !store
             .consume(&pending.id, Counter::Fetch, 0, t(52))
@@ -402,7 +408,9 @@ fn an_amendment_replaces_the_terms_in_force() {
         .replace("[omega-code]", "[omega-code, homelab-scripts]")
         .replace("  task:", &format!("  amends: {}\n  task:", lease.id));
     let amendment = ticket(2, &amended_yaml, Some(&lease));
-    store.insert_pending(&amendment, KEY, t(40)).unwrap();
+    store
+        .insert_pending(&amendment, KEY, SOURCE, t(40))
+        .unwrap();
     let record = store.ticket(&amendment.id).unwrap().unwrap();
     let (updated, applied) = lease::apply_amendment(
         &config(),
@@ -443,7 +451,9 @@ fn an_amendment_of_an_ended_lease_changes_nothing() {
     let lease = active_lease(&store, 1);
     let amended_yaml = REQUEST.replace("  task:", &format!("  amends: {}\n  task:", lease.id));
     let amendment = ticket(2, &amended_yaml, Some(&lease));
-    store.insert_pending(&amendment, KEY, t(40)).unwrap();
+    store
+        .insert_pending(&amendment, KEY, SOURCE, t(40))
+        .unwrap();
     let record = store.ticket(&amendment.id).unwrap().unwrap();
     let (updated, applied) = lease::apply_amendment(
         &config(),
@@ -505,7 +515,7 @@ fn a_pushed_commit_waits_for_its_note_until_written() {
     // 9 nobody's.
     store
         .notes_add_pending(
-            &a.id,
+            std::slice::from_ref(&a.id),
             &omega,
             &[commit(1), commit(2), commit(4), commit(5), commit(9)],
             &up,
@@ -519,10 +529,10 @@ fn a_pushed_commit_waits_for_its_note_until_written() {
 
     // Another lease's push adds its own; oldest signature first, at most `limit`.
     store
-        .notes_add_pending(&b.id, &omega, &[commit(4)], &up)
+        .notes_add_pending(std::slice::from_ref(&b.id), &omega, &[commit(4)], &up)
         .unwrap();
     store
-        .notes_add_pending(&a.id, &omega, &[commit(3)], &up)
+        .notes_add_pending(std::slice::from_ref(&a.id), &omega, &[commit(3)], &up)
         .unwrap();
     assert_eq!(
         store.notes_pending(&omega, 2).unwrap(),
@@ -543,13 +553,18 @@ fn a_pushed_commit_waits_for_its_note_until_written() {
         [note(2, &a.id, "upstream-01"), note(3, &a.id, "upstream-01")]
     );
     store
-        .notes_add_pending(&a.id, &omega, &[commit(1)], &up)
+        .notes_add_pending(std::slice::from_ref(&a.id), &omega, &[commit(1)], &up)
         .unwrap();
     assert_eq!(store.notes_pending(&omega, 10).unwrap().len(), 2);
 
     // Still waiting, pushed again by another credential: that one pushes its note.
     store
-        .notes_add_pending(&a.id, &omega, &[commit(2)], &credential("upstream-02"))
+        .notes_add_pending(
+            std::slice::from_ref(&a.id),
+            &omega,
+            &[commit(2)],
+            &credential("upstream-02"),
+        )
         .unwrap();
     assert_eq!(
         store.notes_pending(&omega, 1).unwrap(),
@@ -580,7 +595,12 @@ fn commits_with_no_note_state_are_listed_newest_first() {
     let up = credential("upstream-01");
     // 2 waits, 3 is written: neither is unrecorded.
     store
-        .notes_add_pending(&a.id, &omega, &[commit(2), commit(3)], &up)
+        .notes_add_pending(
+            std::slice::from_ref(&a.id),
+            &omega,
+            &[commit(2), commit(3)],
+            &up,
+        )
         .unwrap();
     store
         .notes_written(&omega, &[note(3, &a.id, "upstream-01")])
@@ -701,17 +721,39 @@ fn tampered_records_fail_closed() {
 }
 
 #[test]
-fn a_newer_schema_is_refused() {
+fn a_state_of_another_version_is_refused_and_never_written_over() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("writ.db");
     drop(Store::open(&path).unwrap());
+    let set = |version: i64| {
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+    };
+    for version in [STATE_VERSION - 1, STATE_VERSION + 1, 0] {
+        set(version);
+        assert!(
+            matches!(
+                Store::open(&path),
+                Err(StoreError::OtherVersion { found, expected: STATE_VERSION }) if found == version
+            ),
+            "version {version}"
+        );
+    }
+    // Its version back: read again (the refusals above changed nothing).
+    set(STATE_VERSION);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.count(State::Pending).unwrap(), 0);
+    drop(store);
+    // A state that holds tickets of another format is refused too.
     rusqlite::Connection::open(&path)
         .unwrap()
-        .pragma_update(None, "user_version", 7)
+        .execute("UPDATE formats SET ticket_kind = 'writ-ticket/0'", [])
         .unwrap();
     assert!(matches!(
         Store::open(&path),
-        Err(StoreError::SchemaTooNew(7))
+        Err(StoreError::OtherTicketFormat { found, expected: "writ-ticket/1" }) if found == "writ-ticket/0"
     ));
 }
 
@@ -750,65 +792,238 @@ fn a_listing_holds_the_most_recent_tickets_only() {
     assert!(ids(0).is_empty());
 }
 
-#[test]
-fn a_version_1_database_is_migrated() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("writ.db");
-    {
-        // The M1 schema, with one pending ticket.
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tickets (id TEXT PRIMARY KEY, canonical BLOB NOT NULL, state TEXT NOT NULL,
-                 lease_id TEXT NOT NULL, feedback TEXT, approver TEXT, namespace TEXT, sshsig TEXT,
-                 cert_serial INTEGER UNIQUE, current_ticket TEXT REFERENCES tickets(id),
-                 signatures INTEGER NOT NULL DEFAULT 0, pushes INTEGER NOT NULL DEFAULT 0,
-                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL) STRICT;
-             CREATE TABLE ops (lease_id TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
-             CREATE TABLE ledger (commit_id TEXT NOT NULL, lease_id TEXT NOT NULL, repo TEXT NOT NULL,
-                 key_id TEXT NOT NULL, signed_at INTEGER NOT NULL,
-                 PRIMARY KEY (commit_id, lease_id, repo)) STRICT;
-             PRAGMA user_version = 1;",
-        )
-        .unwrap();
-        let pending = ticket(1, REQUEST, None);
-        conn.execute(
-            "INSERT INTO tickets (id, canonical, state, lease_id, created_at, updated_at)
-             VALUES (?1, ?2, 'pending', ?1, 0, 0)",
-            rusqlite::params![pending.id.as_str(), pending.canonical_bytes().unwrap()],
-        )
-        .unwrap();
-    }
-    let store = Store::open(&path).unwrap();
-    let pending = store.tickets(State::Pending).unwrap();
-    assert_eq!(pending.len(), 1);
-    assert_eq!(store.session_pubkey(&pending[0].ticket.id).unwrap(), None);
-    assert_eq!(pending[0].feedback_by, None);
-    let version: i64 = rusqlite::Connection::open(&path)
-        .unwrap()
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(version, 6);
-    // The authority tables exist, empty: nothing in force until `writd init`.
-    assert_eq!(store.authority_in_force().unwrap(), None);
-    // The ledger gained its paths digest column: an entry keeps one, or none.
-    let lease = active_lease(&store, 2);
-    for n in [1, 2] {
-        store
-            .ledger_append(&entry(n, &lease.id, "omega-code"))
-            .unwrap();
-    }
-    let kept: Vec<_> = store
-        .ledger_for_lease(&lease.id)
-        .unwrap()
-        .into_iter()
-        .map(|e| e.paths_digest)
-        .collect();
-    assert_eq!(kept, [None, Some("digest-2".to_owned())]);
-    // And its note columns: none asked for, then pending once pushed.
-    let repo = "omega-code".parse().unwrap();
-    assert!(store.notes_pending(&repo, 10).unwrap().is_empty());
+/// A renewal of `renewed` (its lease ended, `from`), submitted and granted as ticket `n`.
+fn renew(store: &Store, renewed: &Lease, from: State, n: u64) -> Lease {
+    let yaml = REQUEST.replace(
+        "  title: Add OAuth login\n",
+        &format!("  title: Add OAuth login\n  renews: {}\n", renewed.id),
+    );
+    let submission = Submission {
+        id: id(n),
+        now: t(0),
+        session_key: fp('S'),
+        amends: None,
+        renews: Some(lease::Renewed {
+            lease: renewed,
+            renewals: 0,
+            grace: fit::DEFAULT_RENEW_GRACE,
+        }),
+        revises: None,
+        min_ttl: fit::DEFAULT_MIN_TTL,
+    };
+    let ticket = fit::submit(
+        &config(),
+        &TicketRequest::from_yaml(&yaml).unwrap(),
+        &submission,
+    )
+    .unwrap();
+    store.insert_pending(&ticket, KEY, SOURCE, t(0)).unwrap();
+    let record = store.ticket(&ticket.id).unwrap().unwrap();
+    let mut ended = renewed.clone();
+    ended.state = from;
+    let new = lease::activate_renewal(
+        &config(),
+        &record,
+        ticket,
+        approval(),
+        n,
+        lease::Renewed {
+            lease: &ended,
+            renewals: 0,
+            grace: fit::DEFAULT_RENEW_GRACE,
+        },
+        t(20),
+    )
+    .unwrap();
     store
-        .notes_add_pending(&lease.id, &repo, &[commit(1)], &credential("upstream-01"))
+        .activate_renewal(&new, CERT, &renewed.id, from, t(20))
         .unwrap();
-    assert_eq!(store.notes_pending(&repo, 10).unwrap().len(), 1);
+    new
+}
+
+#[test]
+fn a_renewal_ends_its_lease_and_the_chain_is_followed_back() {
+    let store = Store::open_in_memory().unwrap();
+    let first = active_lease(&store, 1);
+    let second = renew(&store, &first, State::Active, 2);
+    store
+        .transition(&second.id, State::Active, State::Expired, t(30))
+        .unwrap();
+    let third = renew(&store, &second, State::Expired, 3);
+    assert_eq!(
+        store.lease(&first.id).unwrap().unwrap().state,
+        State::Renewed
+    );
+    assert_eq!(
+        store.lease(&second.id).unwrap().unwrap().state,
+        State::Renewed
+    );
+    assert_eq!(
+        store.lease(&third.id).unwrap().unwrap().state,
+        State::Active
+    );
+    assert_eq!(
+        store.predecessors(&third.id).unwrap(),
+        [second.id.clone(), first.id.clone()]
+    );
+    assert_eq!(
+        store.predecessors(&second.id).unwrap(),
+        vec![first.id.clone()]
+    );
+    assert!(store.predecessors(&first.id).unwrap().is_empty());
+    // A lease is recorded as the renewal of the lease it names only (a renewed lease ending
+    // again is refused by its state: the next test).
+    let again = store.activate_renewal(&third, CERT, &first.id, State::Active, t(40));
+    assert!(
+        matches!(again, Err(StoreError::Corrupt { .. })),
+        "{again:?}"
+    );
+    assert_eq!(
+        store.lease(&third.id).unwrap().unwrap().state,
+        State::Active
+    );
+}
+
+#[test]
+fn a_renewal_that_cannot_end_its_lease_grants_nothing() {
+    let store = Store::open_in_memory().unwrap();
+    let first = active_lease(&store, 1);
+    store
+        .transition(&first.id, State::Active, State::Revoked, t(15))
+        .unwrap();
+    // Built as if the lease were still active: the store finds it revoked and records neither.
+    let yaml = REQUEST.replace(
+        "  title: Add OAuth login\n",
+        &format!("  title: Add OAuth login\n  renews: {}\n", first.id),
+    );
+    let mut active = first.clone();
+    active.state = State::Active;
+    let submission = Submission {
+        id: id(2),
+        now: t(0),
+        session_key: fp('S'),
+        amends: None,
+        renews: Some(lease::Renewed {
+            lease: &active,
+            renewals: 0,
+            grace: fit::DEFAULT_RENEW_GRACE,
+        }),
+        revises: None,
+        min_ttl: fit::DEFAULT_MIN_TTL,
+    };
+    let ticket = fit::submit(
+        &config(),
+        &TicketRequest::from_yaml(&yaml).unwrap(),
+        &submission,
+    )
+    .unwrap();
+    store.insert_pending(&ticket, KEY, SOURCE, t(0)).unwrap();
+    let record = store.ticket(&ticket.id).unwrap().unwrap();
+    let new = lease::activate_renewal(
+        &config(),
+        &record,
+        ticket,
+        approval(),
+        2,
+        lease::Renewed {
+            lease: &active,
+            renewals: 0,
+            grace: fit::DEFAULT_RENEW_GRACE,
+        },
+        t(20),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.activate_renewal(&new, CERT, &first.id, State::Active, t(20)),
+        Err(StoreError::Conflict {
+            expected: State::Active,
+            ..
+        })
+    ));
+    assert_eq!(
+        store.ticket(&new.id).unwrap().unwrap().state,
+        State::Pending,
+        "not granted"
+    );
+    assert_eq!(
+        store.lease(&first.id).unwrap().unwrap().state,
+        State::Revoked
+    );
+}
+
+#[test]
+fn the_source_is_kept_and_active_leases_are_found_by_it() {
+    let store = Store::open_in_memory().unwrap();
+    let here: Source = "192.0.2.7".parse().unwrap();
+    let there: Source = "2001:db8::/64".parse().unwrap();
+    let submit = |n: u64, source: Source| {
+        let ticket = ticket(n, REQUEST, None);
+        store.insert_pending(&ticket, KEY, source, t(0)).unwrap();
+        let record = store.ticket(&ticket.id).unwrap().unwrap();
+        assert_eq!(record.source, Some(source));
+        let lease = lease::activate(&config(), &record, ticket, approval(), n, t(10)).unwrap();
+        store.activate(&lease, CERT, t(10)).unwrap();
+        lease
+    };
+    let a = submit(1, here);
+    let b = submit(2, here);
+    let c = submit(3, there);
+    let ids = |source| -> Vec<TicketId> {
+        store
+            .active_from(source)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.id)
+            .collect()
+    };
+    assert_eq!(ids(here), [a.id.clone(), b.id.clone()]);
+    assert_eq!(ids(there), vec![c.id]);
+    assert!(ids(Source::Local).is_empty());
+    // An ended lease isn't active any more.
+    store
+        .transition(&b.id, State::Active, State::Expired, t(30))
+        .unwrap();
+    assert_eq!(ids(here), [a.id]);
+}
+
+#[test]
+fn closing_ends_an_active_lease_and_keeps_an_ended_one_s_end() {
+    let store = Store::open_in_memory().unwrap();
+    let a = active_lease(&store, 1);
+    store
+        .close(&a.id, State::Active, "done: login works", t(100))
+        .unwrap();
+    assert_eq!(store.lease(&a.id).unwrap().unwrap().state, State::Closed);
+    assert_eq!(
+        store.summary(&a.id).unwrap().as_deref(),
+        Some("done: login works")
+    );
+    assert_eq!(store.times(&a.id).unwrap().updated_at, t(100));
+    // Expired at 50, closed at 200: its state and end stay.
+    let b = active_lease(&store, 2);
+    store
+        .transition(&b.id, State::Active, State::Expired, t(50))
+        .unwrap();
+    store
+        .close(&b.id, State::Expired, "ran out", t(200))
+        .unwrap();
+    assert_eq!(store.lease(&b.id).unwrap().unwrap().state, State::Expired);
+    assert_eq!(
+        store.times(&b.id).unwrap(),
+        writ_store::LeaseTimes {
+            created_at: t(0),
+            updated_at: t(50)
+        }
+    );
+    // Compared and set on the state it is in; a pending ticket is no lease.
+    assert!(matches!(
+        store.close(&a.id, State::Active, "again", t(300)),
+        Err(StoreError::Conflict { .. })
+    ));
+    let pending = ticket(3, REQUEST, None);
+    store.insert_pending(&pending, KEY, SOURCE, t(0)).unwrap();
+    assert!(matches!(
+        store.close(&pending.id, State::Pending, "x", t(300)),
+        Err(StoreError::Lifecycle(_))
+    ));
 }

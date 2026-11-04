@@ -12,12 +12,15 @@ mod store;
 
 #[cfg(feature = "testing")]
 pub use audit::{AuditBreaker, looks_secret};
-pub use audit::{AuditEvent, AuditLog, EventKind, MAX_FIELD_CHARS, MAX_LIST_ITEMS, Outcome};
+pub use audit::{
+    AuditEvent, AuditLine, AuditLog, EventKind, MAX_FIELD_CHARS, MAX_LINE_BYTES, MAX_LIST_ITEMS,
+    Outcome, read_lines,
+};
 #[cfg(feature = "testing")]
 pub use store::StoreBreaker;
 pub use store::{
-    AuthorityHead, AuthorityHow, AuthorityVersion, Counter, LedgerEntry,
-    OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, Store,
+    AuthorityHead, AuthorityHow, AuthorityVersion, Counter, LeaseTimes, LedgerEntry,
+    OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, STATE_VERSION, Store,
 };
 
 use writ_core::lease::{LifecycleError, State};
@@ -41,8 +44,18 @@ pub enum StoreError {
     Duplicate(TicketId),
     #[error(transparent)]
     Lifecycle(#[from] LifecycleError),
-    #[error("the database schema is version {0}, newer than this writd")]
-    SchemaTooNew(i64),
+    /// The state was written by a writd of another state version: never read, never
+    /// migrated (docs/decisions.md).
+    #[error(
+        "the state is version {found}, this writd reads version {expected}: start this version \
+         from a new state directory"
+    )]
+    OtherVersion { found: i64, expected: i64 },
+    #[error("the state holds tickets of format {found}, this writd reads {expected}")]
+    OtherTicketFormat {
+        found: String,
+        expected: &'static str,
+    },
     #[error("can't encode an audit event: {0}")]
     Encode(#[from] serde_json::Error),
 }

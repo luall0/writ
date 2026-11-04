@@ -138,7 +138,7 @@ fn many_agents_and_a_person_write_notes_on_one_ref_and_none_is_lost() {
                     let branch = format!("agent/n{i}");
                     let lease = agent.lease(stack, &ticket(&[REPO], &[branch.as_str()], "1h", ""));
                     agent.clone_from_forgejo(stack, REPO, "work");
-                    agent.ok_in("work", &format!("writ init {REPO}"));
+                    agent.ok_in("work", &format!("writ init {REPO} --agents none"));
                     (agent, lease, branch)
                 })
             })

@@ -84,6 +84,7 @@ pub fn submission(n: u64) -> Submission<'static> {
         now: t0(),
         session_key: fp('S'),
         amends: None,
+        renews: None,
         revises: None,
         min_ttl: fit::DEFAULT_MIN_TTL,
     }
@@ -180,6 +181,7 @@ pub fn push_request(lease: &Lease) -> PushRequest {
         }],
         commits: vec![signed(2), signed(3)],
         pack_size: 10_000,
+        predecessors: Vec::new(),
     }
 }
 

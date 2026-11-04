@@ -284,7 +284,7 @@ remote_branch() { # remote_branch <branch> <why>: where it is on GitHub
 MAIN=$(remote_branch main "to check later that it never moves")
 mirror_branch() { git -C "$DIR/daemon/data/repos/demo.git" rev-parse --verify -q "refs/heads/$1" 2>/dev/null || true; }
 # Step 5, the check's commands.
-writ init demo
+writ init demo --agents claude
 writ git fetch origin
 git checkout -q -b agent/manual-check origin/main
 echo hi > notes.txt && writ git add notes.txt

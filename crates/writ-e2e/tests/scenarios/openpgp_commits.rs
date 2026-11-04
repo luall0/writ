@@ -7,8 +7,10 @@
 //! unverified until the key is added to the account with its proof: Forgejo's GPG challenge
 //! (`/user/gpg_key_token`) signed in OpenPGP through `writ prove-key` (an approval); then
 //! verified, the signer the account. The agent verifies them itself through `writ-sign
-//! --verify`, handed to the real gpg (`WRIT_GPG`). A sign request in SSH under this lease is
-//! denied (`signature_format`), logged, nothing signed.
+//! --verify`, handed to the real gpg (`WRIT_GPG`). git calling `writ-sign` the SSH way still
+//! gets an OpenPGP signature (the session's lease decides); without the session in the
+//! settings (an older wiring), a sign request in SSH under this lease is denied
+//! (`signature_format`), logged, nothing signed.
 
 use writ_e2e::Stack;
 use writ_e2e::agent::{expect, ticket};
@@ -43,7 +45,7 @@ fn an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified() {
 
     // Wired for gpg.
     agent.clone_from_forgejo(&stack, "openpgp", "work");
-    agent.ok_in("work", "writ init openpgp");
+    agent.ok_in("work", "writ init openpgp --agents none");
     agent.ok_in("work", "git checkout -q -b agent/openpgp");
     assert_eq!(
         agent.ok_in("work", "writ git config gpg.format").trim(),
@@ -157,8 +159,8 @@ fn an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified() {
     let out = agent.in_dir(
         "work",
         &format!(
-            "writ git -c gpg.format=ssh -c gpg.ssh.program=$(command -v writ-sign) commit -q \
-             --allow-empty -m 'ssh' --trailer 'Writ: {lease}'"
+            "writ git -c writ.session= -c gpg.format=ssh -c gpg.ssh.program=$(command -v writ-sign) \
+             commit -q --allow-empty -m 'ssh' --trailer 'Writ: {lease}'"
         ),
     );
     let (_, err) = expect(&out, 128, "an SSH signature under an OpenPGP lease");

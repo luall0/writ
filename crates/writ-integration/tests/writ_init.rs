@@ -195,7 +195,7 @@ fn wrapper_mode_signs_through_writ_git_and_leaves_the_operator_s_git_alone() {
 
     // Wired: nothing in the repo's git config changes.
     let before = local_config(&daemon, &repo);
-    let out = writ_ok(&daemon, &repo, &["init", "demo"]);
+    let out = writ_ok(&daemon, &repo, &["init", "demo", "--agents", "none"]);
     assert!(out.contains("wrapper mode"), "{out}");
     assert!(
         out.contains("`writ git push origin` and `writ git fetch origin` go through the daemon"),
@@ -204,7 +204,7 @@ fn wrapper_mode_signs_through_writ_git_and_leaves_the_operator_s_git_alone() {
     assert!(out.contains("Committer email: agent@writ."), "{out}");
     assert_eq!(local_config(&daemon, &repo), before);
     assert!(repo.join(".git/writ/config").is_file());
-    let again = writ(&daemon, &repo, &["init", "demo"]);
+    let again = writ(&daemon, &repo, &["init", "demo", "--agents", "none"]);
     assert_eq!(again.status.code(), Some(1));
     assert!(
         stderr(&again).contains("already wired for Writ (wrapper mode, repo demo)"),
@@ -430,7 +430,11 @@ fn whole_repo_mode_wires_a_dedicated_clone_and_undo_restores_it() {
     );
     let before = local_config(&daemon, &repo);
 
-    let out = writ_ok(&daemon, &repo, &["init", "demo", "--whole-repo"]);
+    let out = writ_ok(
+        &daemon,
+        &repo,
+        &["init", "demo", "--whole-repo", "--agents", "none"],
+    );
     assert!(out.contains("whole repo"), "{out}");
     assert!(
         out.contains("every push and fetch to it goes through the daemon, plain git too"),
@@ -576,7 +580,7 @@ fn an_openpgp_lease_signs_through_writ_sign_as_gpg_with_no_gnupg_home_of_its_own
     fs::write(repo.join("README"), "demo\n").unwrap();
     git_ok(&daemon, &repo, &["add", "-A"]);
     git_ok(&daemon, &repo, &["commit", "-q", "-m", "seed"]);
-    writ_ok(&daemon, &repo, &["init", "demo"]);
+    writ_ok(&daemon, &repo, &["init", "demo", "--agents", "none"]);
     // Wired for gpg: writ-sign as the program, the key by its fingerprint.
     assert_eq!(
         writ_ok(&daemon, &repo, &["git", "config", "gpg.format"]).trim(),
@@ -660,27 +664,36 @@ fn an_openpgp_lease_signs_through_writ_sign_as_gpg_with_no_gnupg_home_of_its_own
         stderr(&out)
     );
 
-    // git asked for an SSH signature under this lease: denied by the daemon, logged.
-    let out = writ(
-        &daemon,
-        &repo,
-        &[
-            "git",
-            "-c",
-            "gpg.format=ssh",
-            "-c",
-            &format!(
-                "gpg.ssh.program={}",
-                writ_integration::binaries::bin("writ-sign").display()
-            ),
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            &format!("ssh\n\nWrit: {id}"),
-        ],
+    // git calls writ-sign the SSH way: the session's lease signs in OpenPGP, so OpenPGP it
+    // is (a whole-repo clone follows its lease when the key changes format).
+    let ssh_way = |extra: &[&str], message: &str| {
+        let program = format!(
+            "gpg.ssh.program={}",
+            writ_integration::binaries::bin("writ-sign").display()
+        );
+        let mut args = vec!["git", "-c", "gpg.format=ssh", "-c", program.as_str()];
+        args.extend_from_slice(extra);
+        let message = format!("{message}\n\nWrit: {id}");
+        args.extend(["commit", "-q", "--allow-empty", "-m", message.as_str()]);
+        writ(&daemon, &repo, &args)
+    };
+    let out = ssh_way(&[], "called the ssh way");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let body = git_ok(&daemon, &repo, &["cat-file", "commit", "HEAD"]);
+    assert!(body.contains("-----BEGIN PGP SIGNATURE-----"), "{body}");
+    let followed = git_ok(&daemon, &repo, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    // Without the session in the settings (a wiring from before M6), git's way is what is
+    // asked: an SSH signature under an OpenPGP lease is denied by the daemon, logged.
+    let out = ssh_way(&["-c", "writ.session="], "ssh");
+    // git's own failure (128) after writ-sign's refusal.
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("git asked for ssh"),
+        "{}",
+        stderr(&out)
     );
-    assert_ne!(out.status.code(), Some(0), "{}", stderr(&out));
     let denied = audit_events(&daemon.audit(), "sign", "denied");
     assert_eq!(
         denied.last().unwrap()["code"],
@@ -688,5 +701,5 @@ fn an_openpgp_lease_signs_through_writ_sign_as_gpg_with_no_gnupg_home_of_its_own
         "{}",
         daemon.audit()
     );
-    assert_eq!(ledger(&daemon, &id), [commit]);
+    assert_eq!(ledger(&daemon, &id), [commit, followed]);
 }

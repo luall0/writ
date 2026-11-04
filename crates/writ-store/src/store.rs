@@ -16,6 +16,7 @@ mod schema;
 
 pub use authority::{AuthorityHead, AuthorityHow, AuthorityVersion};
 pub use ledger::{LedgerEntry, PendingNote};
+pub use schema::STATE_VERSION;
 
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -23,6 +24,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 use writ_core::lease::{self, Lease, State, TicketRecord, Usage};
 use writ_core::names::{KeyFingerprint, TicketId};
+use writ_core::net::Source;
 use writ_core::policy::RATE_WINDOW_SECONDS;
 use writ_core::ticket::Ticket;
 use writ_core::units::Timestamp;
@@ -32,6 +34,18 @@ use self::rows::{
 };
 use crate::{Result, StoreError};
 use writ_core::canonical::Canonical;
+
+/// The most leases [`Store::predecessors`] follows back: a bound on the work of one lookup,
+/// whatever the chain (a template without `max_renewals` lets it grow).
+pub const MAX_CHAIN: usize = 10_000;
+
+/// When a ticket was submitted, and when its row last changed state (a lease's end, once it
+/// ended).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseTimes {
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
 
 /// How long an operation stays in `ops` past the rate window before [`Store::prune_ops`]
 /// deletes it: a clock set back by up to this much still finds what the window must count.
@@ -139,25 +153,30 @@ impl Store {
     }
 
     /// Stores a freshly submitted ticket (`pending`), with the session public key it was
-    /// submitted with (OpenSSH text; its fingerprint is the ticket's `subject.session_key`).
+    /// submitted with (OpenSSH text; its fingerprint is the ticket's `subject.session_key`)
+    /// and the source it came from.
     pub fn insert_pending(
         &self,
         ticket: &Ticket,
         session_pubkey: &str,
+        source: Source,
         now: Timestamp,
     ) -> Result<()> {
         let bytes = ticket
             .canonical_bytes()
             .map_err(|e| corrupt(ticket.id.as_str(), e))?;
         let inserted = self.conn.execute(
-            "INSERT INTO tickets (id, canonical, state, lease_id, session_pubkey, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO tickets (id, canonical, state, lease_id, session_pubkey, source, renews,
+                 created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) ON CONFLICT (id) DO NOTHING",
             params![
                 ticket.id.as_str(),
                 bytes,
                 State::Pending.as_str(),
                 ticket.lease_id().as_str(),
                 session_pubkey,
+                source.to_string(),
+                ticket.text.renews.as_ref().map(TicketId::as_str),
                 now.unix()
             ],
         )?;
@@ -305,6 +324,125 @@ impl Store {
             ],
         )?;
         self.expect_changed(changed, &lease.id, State::Pending)
+    }
+
+    /// Records a renewal's new lease (as [`Store::activate`]) and ends the lease it renews
+    /// (`renewed`, from `renewed_from`), in one transaction: both or neither.
+    pub fn activate_renewal(
+        &self,
+        lease: &Lease,
+        certificate: &str,
+        renewed: &TicketId,
+        renewed_from: State,
+        now: Timestamp,
+    ) -> Result<()> {
+        lease::transition(renewed_from, State::Renewed)?;
+        if lease.ticket.text.renews.as_ref() != Some(renewed) {
+            return Err(corrupt(lease.id.as_str(), "not a renewal of this lease"));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        self.activate(lease, certificate, now)?;
+        let changed = tx.execute(
+            "UPDATE tickets SET state = ?2, updated_at = ?3
+             WHERE id = ?1 AND state = ?4 AND cert_serial IS NOT NULL",
+            params![
+                renewed.as_str(),
+                State::Renewed.as_str(),
+                now.unix(),
+                renewed_from.as_str()
+            ],
+        )?;
+        self.expect_changed(changed, renewed, renewed_from)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The leases `id` renews, the one it names first, then the one that one names, and so on
+    /// (at most [`MAX_CHAIN`]); none for a lease that renews nothing.
+    pub fn predecessors(&self, id: &TicketId) -> Result<Vec<TicketId>> {
+        let mut statement = self.conn.prepare(
+            "WITH RECURSIVE chain(id, depth) AS (
+                 SELECT renews, 1 FROM tickets WHERE id = ?1 AND renews IS NOT NULL
+                 UNION ALL
+                 SELECT t.renews, c.depth + 1 FROM tickets t JOIN chain c ON t.id = c.id
+                 WHERE t.renews IS NOT NULL AND c.depth < ?2
+             )
+             SELECT id FROM chain ORDER BY depth",
+        )?;
+        let max = i64::try_from(MAX_CHAIN).map_err(|_| corrupt("chain", "bound out of range"))?;
+        let rows = statement.query_map(params![id.as_str(), max], |r| r.get::<_, String>(0))?;
+        rows.map(|row| {
+            let text = row?;
+            text.parse().map_err(|e| corrupt(id.as_str(), e))
+        })
+        .collect()
+    }
+
+    /// The active leases submitted from `source`, oldest first.
+    pub fn active_from(&self, source: Source) -> Result<Vec<Lease>> {
+        let mut statement = self
+            .conn
+            .prepare(&lease_query("l.state = ?1 AND l.source = ?2"))?;
+        let rows = statement.query_map(
+            params![State::Active.as_str(), source.to_string()],
+            raw_lease,
+        )?;
+        rows.map(|row| row.map_err(StoreError::from).and_then(RawLease::decode))
+            .collect()
+    }
+
+    /// When a ticket was submitted and when its row last changed state.
+    pub fn times(&self, id: &TicketId) -> Result<LeaseTimes> {
+        let (created, updated): (i64, i64) = self
+            .conn
+            .query_row(
+                "SELECT created_at, updated_at FROM tickets WHERE id = ?1",
+                [id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(id.clone()))?;
+        let at = |t| Timestamp::from_unix(t).map_err(|e| corrupt(id.as_str(), e));
+        Ok(LeaseTimes {
+            created_at: at(created)?,
+            updated_at: at(updated)?,
+        })
+    }
+
+    /// Closes a lease with the agent's summary: an active one becomes `closed`; one that
+    /// already ended (`from`, any end) keeps its state and gets the summary. Compare-and-set
+    /// on `from`.
+    pub fn close(&self, id: &TicketId, from: State, summary: &str, now: Timestamp) -> Result<()> {
+        let to = if from == State::Active {
+            lease::transition(from, State::Closed)?
+        } else if from.is_terminal() && from != State::Applied && from != State::Refused {
+            from
+        } else {
+            return Err(lease::LifecycleError::Transition {
+                from,
+                to: State::Closed,
+            }
+            .into());
+        };
+        let changed = self.conn.execute(
+            "UPDATE tickets SET state = ?2, summary = ?3, updated_at = CASE WHEN ?2 = ?4 THEN updated_at ELSE ?5 END
+             WHERE id = ?1 AND state = ?4 AND cert_serial IS NOT NULL",
+            params![id.as_str(), to.as_str(), summary, from.as_str(), now.unix()],
+        )?;
+        self.expect_changed(changed, id, from)
+    }
+
+    /// The summary a lease was closed with.
+    pub fn summary(&self, id: &TicketId) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT summary FROM tickets WHERE id = ?1",
+                [id.as_str()],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     /// Applies a signed amendment: the amendment becomes `applied` with its signed terms, and

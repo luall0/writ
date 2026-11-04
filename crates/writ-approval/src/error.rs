@@ -15,6 +15,8 @@ pub enum RefusalCode {
     SessionKey,
     /// Too many tickets wait, in all or for this session.
     TooManyPending,
+    /// The ticket's source holds as many active leases as `max_active_per_source` allows.
+    TooManyActive,
     /// More submissions from this address than the rate allows.
     RateLimited,
     /// The ticket or lease isn't in a state that allows this (not pending, nothing to revoke,
@@ -27,6 +29,8 @@ pub enum RefusalCode {
     Lifecycle,
     /// The feedback is empty or too long.
     Feedback,
+    /// A closing summary that is empty or too long.
+    Summary,
     /// The ticket's session can't be used: its stored key doesn't match, or the daemon can't
     /// watch the process the lease is bound to.
     Session,

@@ -115,6 +115,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 17 | `hardening_limits` | — | `writd init`, which hardens itself as `writd run` does, under the two conditions the compose file doesn't give the daemon: as `writ` under a 64 KiB lock limit (many hosts' default), the memory lock not applied and said once on stderr with its fix (`ulimit -l unlimited`), the other steps applied, the keystore made all the same (a warning, never a refusal); as root, every step applied. With scenario 16 (unlimited, as `writ`), the three conditions M5 checked by hand in a Linux container | shared |
 | 18 | `openpgp_commits` | `openpgp` | A template signing with an OpenPGP key (`format: openpgp`, its user id in the policy): the lease's certificate is the one `writd signing-keys` prints; `writ init` wires git for gpg (`writ-sign` as `gpg.openpgp.program`, the fingerprint as `user.signingkey`); commits sign with a hostile GnuPG home and agent in the environment (never used); the agent verifies them through `writ-sign --verify` (the real gpg, `WRIT_GPG`); unverified on Forgejo until the key is added with Forgejo's GPG challenge signed through `writ prove-key` (OpenPGP), then verified; an SSH signature under the lease denied (`signature_format`) | shared |
 | 19 | `protocol_versions` | `protocols` | Every protocol version a client asks for, served in v0 with no difference an agent notices: clones and fetches with git's default, v2, v1 and v0 asked (the same refs), `ls-remote` with v2 asked, a shallow clone deepened, a `--filter=blob:none` clone made whole, a reachable non-tip commit fetched by its id, a commit no ref reaches (its branch deleted on Forgejo after the mirror synced) refused by its id with v2 asked (`not our ref`, exit 128), a push after a v2 fetch | shared |
+| 20 | `sessions_and_renewals` | `sessions` | A lease's whole life with M6: a ticket file checked (`writ check`) with an estimate; a clone pinned to the lease with the skill for several agents (`writ init --lease --agents --skill-dir --agents-md`), excluded from git; a phase marked; a renewal reviewed with the original ticket and the chain, the pinned lease then refused and the renewal (`WRIT_SESSION`) pushing what the renewed lease signed; `writ close` and its report recorded in the timings file; the timings file checked and its limits changed; the approver's `writ report`; `--global`; everything undone, the timings kept | shared |
 
 Every scenario checks, where it applies: **what the agent reads** (the exit code and the
 words, never just "it failed"), **the audit line** (event, result, code), **Forgejo's state**
@@ -149,6 +150,23 @@ the scenarios (`tool/check-e2e.py`).
 | `writ init --email` | `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
 | `writ init --undo` | `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
 | `writ init --url` | `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
+| `writ init --lease` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ init --agents` | `a_lease_is_renewed_closed_and_learned_from`, `an_agent_works_through_writ_git_beside_the_operator_s_own_git` |
+| `writ init --skill-dir` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ init --global` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ init --agents-md` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ close` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ close --summary` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ close --url` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ check` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ mark` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ timings` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ timings --max-lines` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ timings --max-bytes` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ timings --keep-runs` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ timings --max-notes` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ report` | `a_lease_is_renewed_closed_and_learned_from` |
+| `writ report --approval-url` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ git` | `an_agent_works_through_writ_git_beside_the_operator_s_own_git`, `every_push_denial_leaves_forgejo_and_the_mirror_unchanged` |
 | `writ exec` | `an_agent_works_through_writ_git_beside_the_operator_s_own_git` |
 | `writ reader` | `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says` |

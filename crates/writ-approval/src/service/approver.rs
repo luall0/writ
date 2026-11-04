@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use writ_core::caller::{CallerFacts, ProcessRef};
-use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, State, TicketRecord};
+use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, Renewed, State, TicketRecord};
 use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::signed::{Refusal, Revocation};
 use writ_core::ticket::Ticket;
@@ -13,8 +13,8 @@ use writ_crypto::ssh_key::{HashAlg, PublicKey};
 use writ_crypto::{keys, sshsig};
 use writ_platform::WatchHandle;
 use writ_proto::{
-    Ack, ApproveRequest, Decisions, Listing, Previous, RefuseRequest, Relation, RevokeRequest,
-    Shown, Summary,
+    Ack, ApproveRequest, Count, Decisions, Listing, OtherLease, Others, Previous, RefuseRequest,
+    Relation, Renewal, RevokeRequest, Shown, Summary,
 };
 use writ_store::{AuditEvent, EventKind, Outcome};
 
@@ -26,6 +26,9 @@ use writ_core::canonical::Canonical;
 /// The most tickets `writ ls --all` returns: the most recent ones (the audit log holds the
 /// whole history), so a listing never loads an unbounded table under the state lock.
 pub const MAX_LISTED: usize = 200;
+
+/// The most other active leases of a source `writ sign` lists (the rest are counted).
+pub const MAX_OTHERS: usize = 10;
 
 impl Service {
     /// Pending tickets and active leases, or the [`MAX_LISTED`] most recent tickets.
@@ -44,24 +47,29 @@ impl Service {
         })
     }
 
-    /// A ticket's canonical bytes, and what it follows (for the diff).
+    /// A ticket's canonical bytes, what it follows (for the diff), the chain a renewal
+    /// continues, and the other active leases from its source.
     pub fn show(&self, id: &TicketId) -> Result<Shown, ServiceError> {
-        let (_, inner) = self.begin()?;
+        let (now, inner) = self.begin()?;
         let record = inner.record(id)?;
-        let previous = if let Some(lease) = &record.ticket.text.amends {
-            inner
+        let follows = match (&record.ticket.text.amends, &record.ticket.text.renews) {
+            (Some(lease), _) => Some((lease, Relation::Amends)),
+            (None, Some(lease)) => Some((lease, Relation::Renews)),
+            (None, None) => None,
+        };
+        let previous = match follows {
+            Some((lease, relation)) => inner
                 .store
                 .lease(lease)
                 .map_err(internal)?
                 .map(|lease| -> Result<Previous, ServiceError> {
                     Ok(Previous {
-                        relation: Relation::Amends,
+                        relation,
                         canonical: canonical_text(&lease.ticket)?,
                     })
                 })
-                .transpose()?
-        } else {
-            None
+                .transpose()?,
+            None => None,
         };
         let previous = match (previous, &record.ticket.text.revises) {
             (Some(previous), _) => Some(previous),
@@ -78,11 +86,116 @@ impl Service {
                 .transpose()?,
             (None, None) => None,
         };
+        let renewal = match &record.ticket.text.renews {
+            Some(lease) => Self::renewal_view(&inner, lease, now)?,
+            None => None,
+        };
         Ok(Shown {
             state: record.state,
             canonical: canonical_text(&record.ticket)?,
             previous,
+            renewal,
+            others: Self::others(&inner, &record, now)?,
         })
+    }
+
+    /// The chain a renewal of `lease` continues: its original ticket, which renewal it is,
+    /// the time used so far, and what the renewed lease used of its counts.
+    fn renewal_view(
+        inner: &Inner,
+        lease: &TicketId,
+        now: Timestamp,
+    ) -> Result<Option<Renewal>, ServiceError> {
+        let Some(renewed) = inner.store.lease(lease).map_err(internal)? else {
+            return Ok(None);
+        };
+        let chain = inner.store.predecessors(lease).map_err(internal)?;
+        let root = chain.last().unwrap_or(lease);
+        let original = inner.record(root)?;
+        let mut used_seconds = Self::used_seconds(inner, &renewed, now)?;
+        for id in &chain {
+            if let Some(earlier) = inner.store.lease(id).map_err(internal)? {
+                used_seconds =
+                    used_seconds.saturating_add(Self::used_seconds(inner, &earlier, now)?);
+            }
+        }
+        let usage = inner.store.usage(lease, now).map_err(internal)?;
+        Ok(Some(Renewal {
+            original: canonical_text(&original.ticket)?,
+            number: u32::try_from(chain.len())
+                .map_err(internal)?
+                .saturating_add(1),
+            used_seconds,
+            signatures: Count {
+                used: usage.signatures,
+                max: renewed.ticket.limits.max_signatures,
+            },
+            pushes: Count {
+                used: usage.pushes,
+                max: renewed.ticket.limits.max_pushes,
+            },
+            state: renewed.state,
+        }))
+    }
+
+    /// The seconds a lease ran: from its submission to its end (now while it runs), never
+    /// past its `expires_at`.
+    pub(super) fn used_seconds(
+        inner: &Inner,
+        lease: &Lease,
+        now: Timestamp,
+    ) -> Result<u64, ServiceError> {
+        let times = inner.store.times(&lease.id).map_err(internal)?;
+        let end = if lease.state == State::Active {
+            now
+        } else {
+            times.updated_at
+        };
+        let end = end.min(lease.ticket.limits.expires_at);
+        Ok(u64::try_from(times.created_at.seconds_until(end).max(0)).unwrap_or(0))
+    }
+
+    /// The other active leases submitted from the ticket's source (not the lease it amends or
+    /// renews): the first [`MAX_OTHERS`], and how many more; an overlap flagged.
+    fn others(
+        inner: &Inner,
+        record: &TicketRecord,
+        now: Timestamp,
+    ) -> Result<Others, ServiceError> {
+        let Some(source) = record.source else {
+            return Ok(Others::default());
+        };
+        let ticket = &record.ticket;
+        let skip = [Some(ticket.lease_id()), ticket.text.renews.as_ref()];
+        let leases: Vec<Lease> = inner
+            .store
+            .active_from(source)
+            .map_err(internal)?
+            .into_iter()
+            .filter(|lease| !skip.contains(&Some(&lease.id)) && lease.is_in_force(now))
+            .collect();
+        let more = u32::try_from(leases.len().saturating_sub(MAX_OTHERS)).map_err(internal)?;
+        let shown = leases
+            .iter()
+            .take(MAX_OTHERS)
+            .map(|lease| {
+                let scope = &lease.ticket.scope;
+                let overlap = scope.repos.iter().any(|r| ticket.scope.repos.contains(r))
+                    && scope
+                        .branches
+                        .iter()
+                        .any(|b| ticket.scope.branches.iter().any(|mine| mine.intersects(b)));
+                OtherLease {
+                    id: lease.id.clone(),
+                    repos: scope.repos.iter().cloned().collect(),
+                    branches: scope.branches.iter().map(ToString::to_string).collect(),
+                    operations: scope.operations.iter().copied().collect(),
+                    expires_at: lease.ticket.limits.expires_at,
+                    overlap,
+                }
+            })
+            .collect();
+        Ok(Others { shown, more })
     }
 
     /// Verifies an approver's SSHSIG over `signed` (namespace `writ-approval`); returns the
@@ -160,9 +273,11 @@ impl Service {
             now,
             denied: denied.approver(&approver),
         };
-        let state = match &record.ticket.text.amends {
-            Some(lease_id) => self.apply_amendment_approval(&mut inner, lease_id, approving)?,
-            None => self.grant_lease(&mut inner, approving)?,
+        let state = match (&record.ticket.text.amends, &record.ticket.text.renews) {
+            (Some(lease_id), _) => {
+                self.apply_amendment_approval(&mut inner, lease_id, approving)?
+            }
+            (None, renews) => self.grant_lease(&mut inner, approving, renews.as_ref())?,
         };
         drop(inner);
         self.changed.notify_waiters();
@@ -215,11 +330,13 @@ impl Service {
         Ok(State::Applied)
     }
 
-    /// An approved ticket becomes an active lease, with a certificate for its session key.
+    /// An approved ticket becomes an active lease, with a certificate for its session key. A
+    /// renewal (`renews`) also ends the lease it renews, in the same change.
     fn grant_lease(
         &self,
         inner: &mut Inner,
         approving: Approving<'_>,
+        renews: Option<&TicketId>,
     ) -> Result<State, ServiceError> {
         let Approving {
             record,
@@ -229,13 +346,64 @@ impl Service {
             now,
             denied,
         } = approving;
+        let renewed = match renews {
+            None => None,
+            Some(id) => match inner.store.lease(id).map_err(internal) {
+                Ok(Some(lease)) => {
+                    let chain = inner.store.predecessors(id).map_err(internal);
+                    let chain = denied.or_failed(inner, chain)?;
+                    let renewals =
+                        denied.or_failed(inner, u32::try_from(chain.len()).map_err(internal))?;
+                    Some((lease, renewals))
+                }
+                Ok(None) => {
+                    return denied.deny(
+                        inner,
+                        RefusalCode::WrongState,
+                        format!("lease {id} is missing"),
+                    );
+                }
+                Err(e) => return denied.failed(inner, e),
+            },
+        };
         let session_key = match self.session_key(inner, record) {
             Ok(key) => key,
             Err(reason) => return denied.deny(inner, RefusalCode::Session, reason),
         };
+        // Checked again: a lease granted since the submission takes the slot it counted on.
+        if let (Some(max), Some(source)) = (self.config.max_active_per_source, record.source) {
+            let replaced = renewed
+                .as_ref()
+                .map(|(lease, _)| lease)
+                .filter(|lease| {
+                    lease.state == State::Active
+                        && lease.ticket.subject.session_key == record.ticket.subject.session_key
+                })
+                .map(|lease| &lease.id);
+            if let Err(e) = Self::active_slots(inner, source, max, replaced) {
+                return denied.deny(inner, RefusalCode::TooManyActive, e.reason_text());
+            }
+        }
         let approver = approval.approver.clone();
         let serial = denied.or_failed(inner, keys::random_serial().map_err(internal))?;
-        let lease = match lease::activate(&self.policy(), record, signed, approval, serial, now) {
+        let policy = self.policy();
+        let activated = match &renewed {
+            None => lease::activate(&policy, record, signed, approval, serial, now),
+            Some((old, renewals)) => lease::activate_renewal(
+                &policy,
+                record,
+                signed,
+                approval,
+                serial,
+                Renewed {
+                    lease: old,
+                    renewals: *renewals,
+                    grace: self.config.renew_grace,
+                },
+                now,
+            ),
+        };
+        let lease = match activated {
             Ok(lease) => lease,
             Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
         };
@@ -268,17 +436,36 @@ impl Service {
                 .map_err(internal)
         });
         let certificate = denied.or_failed(inner, issued)?;
-        let event = AuditEvent::new(now, EventKind::Grant, Outcome::Allowed)
+        let mut event = AuditEvent::new(now, EventKind::Grant, Outcome::Allowed)
             .lease(&lease.id)
             .cert(serial)
             .approver(&approver)
             .caller(caller);
-        Self::logged(inner, event, |inner| {
-            inner
+        if let Some((old, _)) = &renewed {
+            event = event.reason(format!("renews lease {}", old.id));
+        }
+        Self::logged(inner, event, |inner| match &renewed {
+            None => inner
                 .store
                 .activate(&lease, &certificate, now)
-                .map_err(internal)
+                .map_err(internal),
+            Some((old, _)) => inner
+                .store
+                .activate_renewal(&lease, &certificate, &old.id, old.state, now)
+                .map_err(internal),
         })?;
+        if let Some((old, _)) = &renewed {
+            // The renewed lease ended with the change: its certificate is refused and its
+            // sessions dropped (the renewal's certificate is a new one, for the same key).
+            self.bar_serial(old.cert_serial);
+            inner.watches.remove(&old.id);
+            let ended = AuditEvent::new(now, EventKind::Renew, Outcome::Done)
+                .lease(&old.id)
+                .cert(old.cert_serial)
+                .reason(format!("renewed by lease {}", lease.id));
+            Self::log_best_effort(inner, &ended);
+            self.deny_serial(old.cert_serial);
+        }
         if let Some(watch) = watch {
             inner.watches.insert(lease.id.clone(), watch);
         }

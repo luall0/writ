@@ -34,7 +34,9 @@ pub fn check(submitted: &Ticket, signed: &Ticket) -> Result<(), NarrowingError> 
     same("ticket.title", a.title == b.title);
     same("ticket.task", a.task == b.task);
     same("ticket.plan", a.plan == b.plan);
+    same("ticket.estimate", a.estimate == b.estimate);
     same("ticket.amends", a.amends == b.amends);
+    same("ticket.renews", a.renews == b.renews);
     same("ticket.revises", a.revises == b.revises);
     same("ticket.revision", a.revision == b.revision);
     same(
@@ -42,7 +44,36 @@ pub fn check(submitted: &Ticket, signed: &Ticket) -> Result<(), NarrowingError> 
         a.previous_feedback == b.previous_feedback,
     );
 
-    let (a, b) = (&submitted.scope, &signed.scope);
+    reasons.extend(widenings(submitted, signed));
+
+    let (a, b) = (&submitted.limits, &signed.limits);
+    let mut at_most = |name: &str, narrower: bool| {
+        if !narrower {
+            reasons.push(format!("limits.{name} raised"));
+        }
+    };
+    at_most("expires_at", b.expires_at <= a.expires_at);
+    at_most("max_signatures", b.max_signatures <= a.max_signatures);
+    at_most("max_pushes", b.max_pushes <= a.max_pushes);
+    at_most(
+        "max_ops_per_minute",
+        b.max_ops_per_minute <= a.max_ops_per_minute,
+    );
+    at_most("max_push_size", b.max_push_size <= a.max_push_size);
+
+    if reasons.is_empty() {
+        Ok(())
+    } else {
+        Err(NarrowingError { reasons })
+    }
+}
+
+/// Everything `next` allows that `previous` didn't, in scope, expected paths and
+/// `on_violation` (limits and time aside): what a narrowing, and a renewal of a lease, may
+/// never do. Empty when `next` stays within `previous`.
+pub fn widenings(previous: &Ticket, next: &Ticket) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let (a, b) = (&previous.scope, &next.scope);
     for repo in b.repos.difference(&a.repos) {
         reasons.push(format!("scope.repos adds {repo}"));
     }
@@ -62,7 +93,7 @@ pub fn check(submitted: &Ticket, signed: &Ticket) -> Result<(), NarrowingError> 
     }
 
     // An empty expected_paths turns the path check off, so emptying it widens.
-    let (a, b) = (&submitted.text.expected_paths, &signed.text.expected_paths);
+    let (a, b) = (&previous.text.expected_paths, &next.text.expected_paths);
     if !a.is_empty() {
         if b.is_empty() {
             reasons.push("ticket.expected_paths emptied (turns the path check off)".to_owned());
@@ -71,28 +102,8 @@ pub fn check(submitted: &Ticket, signed: &Ticket) -> Result<(), NarrowingError> 
             reasons.push(format!("ticket.expected_paths adds {path}"));
         }
     }
-
-    let (a, b) = (&submitted.limits, &signed.limits);
-    let mut at_most = |name: &str, narrower: bool| {
-        if !narrower {
-            reasons.push(format!("limits.{name} raised"));
-        }
-    };
-    at_most("expires_at", b.expires_at <= a.expires_at);
-    at_most("max_signatures", b.max_signatures <= a.max_signatures);
-    at_most("max_pushes", b.max_pushes <= a.max_pushes);
-    at_most(
-        "max_ops_per_minute",
-        b.max_ops_per_minute <= a.max_ops_per_minute,
-    );
-    at_most("max_push_size", b.max_push_size <= a.max_push_size);
-    if signed.on_violation < submitted.on_violation {
+    if next.on_violation < previous.on_violation {
         reasons.push("on_violation made less strict".to_owned());
     }
-
-    if reasons.is_empty() {
-        Ok(())
-    } else {
-        Err(NarrowingError { reasons })
-    }
+    reasons
 }

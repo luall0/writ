@@ -268,6 +268,7 @@ pub enum Field {
     Title,
     Task,
     Plan,
+    Estimate,
     ExpectedPaths,
 }
 
@@ -293,6 +294,7 @@ impl Field {
             Self::Title => "title",
             Self::Task => "task",
             Self::Plan => "plan",
+            Self::Estimate => "estimate",
             Self::ExpectedPaths => "expected paths",
         }
     }
@@ -348,12 +350,32 @@ pub fn field(ticket: &Ticket, field: Field) -> String {
         Field::Title => clean(&text.title),
         Field::Task => clean(&text.task),
         Field::Plan => quoted(&text.plan),
+        Field::Estimate => estimate(text.estimate.as_ref()),
         Field::ExpectedPaths => quoted(text.expected_paths.iter().map(|p| p.as_str())),
     }
 }
 
+/// The agent's estimate in one row (made of durations only: nothing to clean): each phase,
+/// and the total.
+pub fn estimate(estimate: Option<&writ_core::ticket::Estimate>) -> String {
+    let Some(e) = estimate else {
+        return "(none)".to_owned();
+    };
+    let phase =
+        |d: Option<writ_core::units::Duration>| d.map_or("—".to_owned(), |d| d.to_string());
+    let total = e.total().map_or("—".to_owned(), |d| {
+        duration(i64::try_from(d.seconds()).unwrap_or(i64::MAX))
+    });
+    format!(
+        "{total} in all (coding {}, checks {}, ci {})",
+        phase(e.coding),
+        phase(e.checks),
+        phase(e.ci)
+    )
+}
+
 /// Every field, in display order.
-pub const FIELDS: [Field; 20] = [
+pub const FIELDS: [Field; 21] = [
     Field::Template,
     Field::ExpiresAt,
     Field::SessionKey,
@@ -373,6 +395,7 @@ pub const FIELDS: [Field; 20] = [
     Field::Title,
     Field::Task,
     Field::Plan,
+    Field::Estimate,
     Field::ExpectedPaths,
 ];
 
@@ -393,6 +416,8 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     let t = &ticket.text;
     let kind = if t.amends.is_some() {
         "Amendment"
+    } else if t.renews.is_some() {
+        "Renewal"
     } else {
         "Ticket"
     };
@@ -413,6 +438,9 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     );
     if let Some(lease) = &t.amends {
         let _ = writeln!(out, "  amends lease {lease}");
+    }
+    if let Some(lease) = &t.renews {
+        let _ = writeln!(out, "  renews lease {lease}");
     }
     if let Some(revised) = &t.revises {
         let _ = writeln!(out, "  revises ticket {revised}");
@@ -480,6 +508,16 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     if !plan.is_empty() {
         out.push_str(&block(&plan, "    ", full));
     }
+    let asked = ticket.created_at.seconds_until(ticket.limits.expires_at);
+    labelled(
+        &mut out,
+        "estimate",
+        &format!(
+            "{}; the lease asks {}",
+            field(ticket, Field::Estimate),
+            duration(asked)
+        ),
+    );
     if let Some(feedback) = &t.previous_feedback {
         let _ = writeln!(
             out,
@@ -557,6 +595,233 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
     );
     if narrowed {
         out.push_str("  (narrowed by you: see above)\n");
+    }
+    out
+}
+
+/// The chain a renewal continues: the original ticket (the task as first signed: agent text,
+/// behind the gutter), which renewal this is, the time used so far, and what the renewed
+/// lease used.
+pub fn renewal(view: &writ_proto::Renewal, original: &Ticket, full: bool) -> String {
+    let mut out = format!(
+        "\nRenewal {} of the work started as lease {}\n",
+        view.number, original.id
+    );
+    labelled(
+        &mut out,
+        "time used so far",
+        &format!(
+            "{} (every lease of the work together)",
+            duration(i64::try_from(view.used_seconds).unwrap_or(i64::MAX))
+        ),
+    );
+    labelled(
+        &mut out,
+        "renewed lease",
+        &format!(
+            "{}: {}/{} signatures, {}/{} pushes used",
+            view.state,
+            view.signatures.used,
+            view.signatures.max,
+            view.pushes.used,
+            view.pushes.max
+        ),
+    );
+    out.push_str("  The original ticket, as you signed it (written by the agent):\n");
+    out.push_str("  title\n");
+    out.push_str(&block(&original.text.title, "    ", full));
+    out.push_str("  task\n");
+    out.push_str(&block(&original.text.task, "    ", full));
+    if !original.text.plan.is_empty() {
+        let plan = original
+            .text
+            .plan
+            .iter()
+            .enumerate()
+            .map(|(i, step)| format!("{}. {step}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str("  plan\n");
+        out.push_str(&block(&plan, "    ", full));
+    }
+    labelled(&mut out, "repos", &field(original, Field::Repos));
+    labelled(&mut out, "branches", &field(original, Field::Branches));
+    labelled(
+        &mut out,
+        "expires at",
+        &original.limits.expires_at.to_string(),
+    );
+    out
+}
+
+/// The other active leases from the ticket's source (the daemon's record of where tickets
+/// come from): one row each with its id, time left and an overlap flag, then its scope.
+pub fn others(others: &writ_proto::Others, now: Timestamp) -> String {
+    if others.shown.is_empty() {
+        return "\nOther active leases from this source: none\n".to_owned();
+    }
+    let total = others.shown.len() + usize::try_from(others.more).unwrap_or(usize::MAX);
+    let mut out = format!("\nOther active leases from this source ({total})\n");
+    for lease in &others.shown {
+        let flag = if lease.overlap {
+            "  OVERLAP: a repo in common, branches that meet"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            out,
+            "  {}  {} left{flag}",
+            lease.id,
+            duration(now.seconds_until(lease.expires_at))
+        );
+        rows_after(
+            &mut out,
+            "    ",
+            &format!(
+                "repos {} · branches {} · {}",
+                list(&lease.repos),
+                list(&lease.branches),
+                list(&lease.operations)
+            ),
+        );
+    }
+    if others.more > 0 {
+        let _ = writeln!(out, "  … and {} more (writ ls)", others.more);
+    }
+    out
+}
+
+/// An activity report (`writ close`, `writ report`): what the lease and the leases it renews
+/// did, from the daemon. The title, the summary and the paths in warnings are the agent's:
+/// behind the gutter, escaped. `marks`: the agent's own phase marks (client-side), if any.
+pub fn report(
+    report: &writ_proto::Report,
+    marks: &[(crate::timings::Phase, u64)],
+    full: bool,
+) -> String {
+    let secs = |s: u64| duration(i64::try_from(s).unwrap_or(i64::MAX));
+    let mut out = format!(
+        "Activity report of lease {} ({})\n",
+        report.lease, report.state
+    );
+    out.push_str("  title\n");
+    out.push_str(&block(&report.title, "    ", full));
+    labelled(&mut out, "template", &clean(report.template.as_str()));
+    labelled(&mut out, "repos", &list(&report.repos));
+    if report.chain.len() > 1 {
+        let ids: Vec<String> = report.chain.iter().map(|l| l.id.to_string()).collect();
+        labelled(&mut out, "renewal chain", &ids.join(" → "));
+    }
+    out.push_str("\nTime\n");
+    labelled(
+        &mut out,
+        "used",
+        &format!(
+            "{} of {} granted",
+            secs(report.used_seconds),
+            secs(report.granted_seconds)
+        ),
+    );
+    labelled(&mut out, "estimate", &estimate(report.estimate.as_ref()));
+    let phases = &report.phases;
+    let opt = |v: Option<u64>| v.map_or("—".to_owned(), secs);
+    labelled(
+        &mut out,
+        "approval wait",
+        &opt(phases.approval_wait_seconds),
+    );
+    labelled(
+        &mut out,
+        "coding",
+        &format!("{} (to the first commit)", opt(phases.coding_seconds)),
+    );
+    let rounds = if phases.ci_rounds_seconds.is_empty() {
+        "none".to_owned()
+    } else {
+        phases
+            .ci_rounds_seconds
+            .iter()
+            .map(|r| secs(*r))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    labelled(
+        &mut out,
+        "ci rounds",
+        &format!("{rounds} (a push to the next commit)"),
+    );
+    labelled(
+        &mut out,
+        "after last push",
+        &opt(phases.after_last_push_seconds),
+    );
+    if !marks.is_empty() {
+        let marked: Vec<String> = marks
+            .iter()
+            .map(|(phase, s)| format!("{} {}", phase.as_str(), secs(*s)))
+            .collect();
+        labelled(&mut out, "agent's marks", &marked.join(", "));
+    }
+    out.push_str("  (approximate: derived from when commits were signed and pushes went out)\n");
+    out.push_str("\nActivity\n");
+    labelled(
+        &mut out,
+        "signatures",
+        &format!("{} of {}", report.signatures.used, report.signatures.max),
+    );
+    labelled(
+        &mut out,
+        "pushes",
+        &format!("{} of {}", report.pushes.used, report.pushes.max),
+    );
+    labelled(&mut out, "fetches", &report.fetches.to_string());
+    labelled(&mut out, "branches", &list(&report.branches));
+    let denials: Vec<String> = report
+        .denials
+        .iter()
+        .map(|d| format!("{} ×{}", clean(&d.code), d.count))
+        .collect();
+    labelled(
+        &mut out,
+        "denials",
+        &if denials.is_empty() {
+            "none".to_owned()
+        } else {
+            denials.join(", ")
+        },
+    );
+    for commit in &report.commits {
+        labelled(
+            &mut out,
+            "commit",
+            &format!(
+                "{} {} ({})",
+                commit.id,
+                clean(commit.repo.as_str()),
+                commit.signed_at
+            ),
+        );
+    }
+    out.push_str("  expected paths\n");
+    out.push_str(&block(
+        &if report.expected_paths.is_empty() {
+            "(none: not checked)".to_owned()
+        } else {
+            report.expected_paths.join("\n")
+        },
+        "    ",
+        full,
+    ));
+    if !report.warnings.is_empty() {
+        out.push_str("  warnings (files outside expected_paths)\n");
+        out.push_str(&block(&report.warnings.join("\n"), "    ", full));
+    }
+    if let Some(summary) = &report.summary {
+        out.push_str("\nSummary (written by the agent, untrusted)\n");
+        out.push_str(&block(summary, "    ", full));
+    }
+    if report.truncated {
+        out.push_str("\n(the audit log held more lines for this lease than a report reads)\n");
     }
     out
 }

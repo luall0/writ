@@ -31,7 +31,7 @@ fn an_agent_works_through_writ_git_beside_the_operator_s_own_git() {
     let main = stack.forgejo.branch("demo", "main").unwrap();
 
     // Step 5: wired, fetched through the daemon, a signed commit pushed.
-    let out = doc_step(&work, "writ init demo", &[]);
+    let out = doc_step(&work, "writ init demo --agents claude", &[]);
     assert!(out.contains("`writ git push origin`"), "{out}");
     doc_step(&work, "writ git fetch origin", &[]);
     doc_step(

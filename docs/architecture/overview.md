@@ -133,7 +133,7 @@ Planned, created by the milestone that needs them:
 
 ```
 crates/
-skill/writ/SKILL.md     the agent skill (M6)
+skill/writ/SKILL.md     the agent skill, built into `writ` and installed by `writ init`
 deploy/                 Dockerfile, compose.yaml (M8, built on e2e/'s images)
 spikes/                 throwaway spike code, outside the workspace, removed once done
 ```

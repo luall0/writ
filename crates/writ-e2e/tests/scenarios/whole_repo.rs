@@ -20,7 +20,7 @@ fn a_dedicated_clone_is_wired_whole_and_undone_exactly() {
     // Wired whole, with the settings as flags (no WRIT_URL in the environment).
     let out = agent.in_dir(
         "work",
-        &format!("env -u WRIT_URL writ init whole --whole-repo --email agent@writ.invalid --url {AGENTS_URL}"),
+        &format!("env -u WRIT_URL writ init whole --whole-repo --email agent@writ.invalid --url {AGENTS_URL} --agents none"),
     );
     let (out, _) = expect(&out, 0, "writ init --whole-repo");
     assert!(

@@ -178,7 +178,7 @@ git clone -q git@github.com:<you>/writ-throwaway.git "$(mktemp -d)/w" && cd "$_"
 
 <!-- e2e: crates/writ-e2e/tests/scenarios/wrapper_mode.rs -->
 ```sh
-writ init demo          # prints that `writ git push origin` goes through the daemon
+writ init demo --agents claude   # prints that `writ git push origin` goes through the daemon
 writ git fetch origin   # through the daemon
 git checkout -q -b agent/manual-check origin/main
 echo hi > notes.txt && writ git add notes.txt

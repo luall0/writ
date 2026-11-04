@@ -96,7 +96,7 @@ impl Service {
             Err(denial) => return Err(refuse(&mut inner, &event, denial)),
         };
         let event = event.lease(&lease.id);
-        let request = match self.push_request(&mut inner, pushing) {
+        let request = match self.push_request(&mut inner, pushing, &lease.id) {
             Ok(request) => request,
             Err(denial) => return Err(refuse(&mut inner, &event, denial)),
         };
@@ -144,7 +144,7 @@ impl Service {
     }
 
     /// The new commits of a push whose paths the gateway must compute again: those the
-    /// ledger holds for this lease and repo with the paths signing saw. The others need none,
+    /// ledger holds for this lease (or a lease it renews) and repo with the paths signing saw. The others need none,
     /// so a push of commits nobody signed costs no walk of their trees: `decide_push` refuses
     /// a commit with no entry here whatever its paths, and has nothing to compare for one
     /// signed with its paths unknown. A read under the state lock (no sweep, nothing logged);
@@ -156,21 +156,33 @@ impl Service {
         commits: &[CommitId],
     ) -> Result<BTreeSet<CommitId>, ServiceError> {
         let inner = self.lock()?;
+        let chain = inner.store.predecessors(lease).map_err(internal)?;
         let mut checked = BTreeSet::new();
         for commit in commits {
             let entries = inner.store.ledger_entries(commit).map_err(internal)?;
-            if entries
-                .iter()
-                .any(|e| &e.lease == lease && &e.repo == repo && e.paths_digest.is_some())
-            {
+            if entries.iter().any(|e| {
+                (&e.lease == lease || chain.contains(&e.lease))
+                    && &e.repo == repo
+                    && e.paths_digest.is_some()
+            }) {
                 checked.insert(commit.clone());
             }
         }
         Ok(checked)
     }
 
-    /// The policy's view of a push: each new commit with every ledger entry for it.
-    fn push_request(&self, inner: &mut Inner, pushing: &Pushing) -> Result<PushRequest, Denial> {
+    /// The policy's view of a push: each new commit with every ledger entry for it, and the
+    /// leases the pushing lease renews.
+    fn push_request(
+        &self,
+        inner: &mut Inner,
+        pushing: &Pushing,
+        lease: &TicketId,
+    ) -> Result<PushRequest, Denial> {
+        let predecessors = inner
+            .store
+            .predecessors(lease)
+            .map_err(|e| Denial::new(DenyCode::Invalid, internal(e).to_string()))?;
         let mut commits = Vec::with_capacity(pushing.commits.len());
         for (id, paths) in &pushing.commits {
             let entries = inner
@@ -196,6 +208,7 @@ impl Service {
             updates: pushing.updates.clone(),
             commits,
             pack_size: pushing.pack_size,
+            predecessors,
         })
     }
 }

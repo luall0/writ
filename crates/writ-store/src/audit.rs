@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use writ_core::caller::CallerFacts;
 use writ_core::names::{CommitId, KeyFingerprint, KeyId, ProofNamespace, RepoName, TicketId};
 use writ_core::policy::Denial;
@@ -40,6 +40,8 @@ pub enum EventKind {
     Refuse,
     /// An amendment was applied to its lease.
     Amend,
+    /// A lease ended because its renewal was signed (the renewal's own line is a `grant`).
+    Renew,
     Revoke,
     Expire,
     Exhaust,
@@ -403,6 +405,77 @@ impl AuditLog {
         self.file.sync_data()?;
         self.dirty = false;
         Ok(())
+    }
+}
+
+/// What a lease's activity report reads back from a line of the log: the fields it uses, the
+/// others ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AuditLine {
+    pub time: Timestamp,
+    pub event: String,
+    pub result: String,
+    #[serde(default)]
+    pub lease: Option<TicketId>,
+    #[serde(default)]
+    pub repo: Option<RepoName>,
+    #[serde(default)]
+    pub refs: Vec<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub count: Option<u64>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// The longest line [`read_lines`] reads: a line is bounded when written (every text cut to
+/// [`MAX_FIELD_CHARS`], every list to [`MAX_LIST_ITEMS`]), so a longer one isn't the log's.
+pub const MAX_LINE_BYTES: usize = 512 * 1024;
+
+/// The lines of the log at `path` about any of `leases`, in order, at most `max` (and
+/// whether there were more). Read as it is on disk, without the service's lock: the log is
+/// only ever appended to. A line that doesn't parse (cut by a crash) or is longer than
+/// [`MAX_LINE_BYTES`] is skipped.
+pub fn read_lines(path: &Path, leases: &[TicketId], max: usize) -> Result<(Vec<AuditLine>, bool)> {
+    use std::io::BufRead;
+    let needles: Vec<String> = leases
+        .iter()
+        .map(|id| format!("\"lease\":\"{id}\""))
+        .collect();
+    let mut reader = std::io::BufReader::new(File::open(path)?);
+    let mut lines = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = (&mut reader)
+            .take(u64::try_from(MAX_LINE_BYTES).unwrap_or(u64::MAX))
+            .read_until(b'\n', &mut line)?;
+        if read == 0 {
+            return Ok((lines, false));
+        }
+        if !line.ends_with(b"\n") && read >= MAX_LINE_BYTES {
+            // Past the bound: the rest of that line is skipped.
+            let mut rest = Vec::new();
+            reader.read_until(b'\n', &mut rest)?;
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(&line) else {
+            continue;
+        };
+        if !needles.iter().any(|needle| text.contains(needle.as_str())) {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<AuditLine>(text) else {
+            continue;
+        };
+        if !parsed.lease.as_ref().is_some_and(|l| leases.contains(l)) {
+            continue;
+        }
+        if lines.len() >= max {
+            return Ok((lines, true));
+        }
+        lines.push(parsed);
     }
 }
 

@@ -7,7 +7,11 @@
 //! `key.pub`, `key-cert.pub` (the certificate, valid until the lease expires), `ticket.json`
 //! (as submitted), `lease.json` (as signed: narrowed if the approver narrowed it) and
 //! `signing_key.pub` (the daemon's key for the lease's commits, when it signs);
-//! `<home>/sessions/current` points at it.
+//! `<home>/sessions/current` points at it, and `writ request` prints the `WRIT_SESSION` line
+//! that keeps an agent on its own lease whatever `current` points at.
+//!
+//! A renewal comes from the renewed lease's session too (same key), in a session directory of
+//! its own; once granted, the renewed session says it ended (`ended`).
 
 use std::fs;
 use std::path::Path;
@@ -45,9 +49,23 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> an
     // An amendment comes from the lease's own session, a revision from the refused ticket's
     // (same key): the daemon refuses either from another session. A revision is a new ticket,
     // so it gets its own session directory, with that same key.
-    let (key, new_session) = match (&parsed.ticket.amends, &parsed.ticket.revises) {
-        (Some(lease), _) => (load_key(&session_dir(paths, lease).join("key"))?, false),
-        (None, Some(refused)) => {
+    let (key, new_session) = match (
+        &parsed.ticket.amends,
+        &parsed.ticket.renews,
+        &parsed.ticket.revises,
+    ) {
+        (Some(lease), _, _) => (load_key(&session_dir(paths, lease).join("key"))?, false),
+        (None, Some(lease), _) => {
+            let path = session_dir(paths, lease).join("key");
+            let key = load_key(&path).with_context(|| {
+                format!(
+                    "a renewal of {lease} comes from its session, and it isn't on this host                      (looked in {})",
+                    path.display()
+                )
+            })?;
+            (key, true)
+        }
+        (None, None, Some(refused)) => {
             let path = session_dir(paths, refused).join("key");
             let key = load_key(&path).with_context(|| {
                 format!(
@@ -58,7 +76,7 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> an
             })?;
             (key, true)
         }
-        (None, None) => (generate(KeyKind::Ed25519)?, true),
+        (None, None, None) => (generate(KeyKind::Ed25519)?, true),
     };
     let endpoint = Endpoint::parse(url)?;
     let session = Session::connect(&endpoint, &paths.known_hosts, CLIENT_USER, key.clone()).await?;
@@ -159,6 +177,11 @@ async fn decide(
             write_file(&dir.join("lease.json"), &lease)?;
             write_signing_key(dir, signing_key.as_deref())?;
             write_signing_certificate(dir, signing_certificate.as_deref())?;
+            if let Some(renewed) = &terms.text.renews {
+                let ended = session_dir(paths, renewed).join(crate::wiring::ENDED);
+                write_file(&ended, format!("renewed by lease {id}\n"))?;
+            }
+            let others = other_active(paths, id);
             point_current(paths, id)?;
             println!(
                 "Lease {id} granted until {}: {} on {}, branches {}.",
@@ -169,6 +192,16 @@ async fn decide(
             );
             print_narrowing(submitted, &terms);
             println!("Session files: {}", dir.display());
+            println!("Work under this lease, whatever `current` points at:");
+            println!("export WRIT_SESSION={id}");
+            if !others.is_empty() {
+                eprintln!(
+                    "writ: warning: `current` now points at {id}, and this home has other active \
+                     leases ({}): an agent relying on `current` would move to this one; give \
+                     each agent its WRIT_SESSION.",
+                    others.join(", ")
+                );
+            }
             Ok(Exit::Ok)
         }
         Decision::Applied {
@@ -220,6 +253,24 @@ async fn decide(
             Ok(Exit::Ended)
         }
     }
+}
+
+/// The other sessions of this home whose lease is still running (granted, not ended, not
+/// past its end): those `current` moving could take an agent away from.
+fn other_active(paths: &Paths, id: &TicketId) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(paths.home.join("sessions")) else {
+        return Vec::new();
+    };
+    let mut others: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| name.parse::<TicketId>().ok())
+        .filter(|other| other != id)
+        .filter(|other| crate::wiring::check_session(&paths.home, other).is_ok())
+        .map(|other| other.to_string())
+        .collect();
+    others.sort();
+    others
 }
 
 /// `signing_key.pub`: the public key the daemon signs the lease's commits with (git's

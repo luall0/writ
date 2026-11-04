@@ -114,7 +114,7 @@ fn a_certificate_the_system_trusts_is_refused_when_the_operator_named_their_cas(
     let agent = stack.agent("https-system");
     let lease = agent.lease(&stack, &ticket(&[SYSTEM_REPO], &["agent/*"], "1h", ""));
     agent.clone_from_forgejo(&stack, HTTPS_REPO, "work");
-    agent.ok_in("work", &format!("writ init {SYSTEM_REPO}"));
+    agent.ok_in("work", &format!("writ init {SYSTEM_REPO} --agents none"));
     let out = agent.in_dir("work", "writ git fetch origin");
     expect(
         &out,

@@ -60,6 +60,25 @@ triggering the signature; it is the trusted display
 - It signs exactly the canonical bytes it displayed (fetched from the daemon, then decoded and
   re-encoded locally to check they match).
 
+### What `writ sign` shows beside the ticket
+
+- **A renewal** (`renews`): which renewal of the work it is, the time every lease of the chain
+  ran so far, what the renewed lease used of its counts and its state, the chain's original
+  ticket as it was signed (its title, task and plan behind the gutter, its repos, branches and
+  end), and the changes from the renewed lease's terms.
+- **The estimate**: the agent's, phase by phase, beside the time the lease asks for
+  ("35m in all (coding 20m, checks 5m, ci 10m); the lease asks 2h").
+- **The other active leases from the ticket's source** (the daemon's record of where each
+  ticket came from, never the agent's claim): the first 10 (`MAX_OTHERS`) with their id, time
+  left, repos, branches and operations, `OVERLAP` on those with a repo in common and branch
+  patterns that meet, and how many more. Display only: `max_active_per_source` is what limits
+  them.
+
+All of it comes before the enforced terms, which stay last, right above the prompt.
+
+`writ report <lease>` prints a lease's activity report ([closing](../flows.md#6b-closing-a-ticket)),
+the same the agent got from `writ close`.
+
 ## Admin changes
 
 After `writd init`, the policy (repo registry and templates), `approvers` and `readers` are

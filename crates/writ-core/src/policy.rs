@@ -230,6 +230,17 @@ fn outside(lease: &TicketId, code: DenyCode, what: impl fmt::Display) -> Denial 
     }
 }
 
+/// The lease ran out (of time or of counts): a denial with the renewal hint.
+fn ran_out(lease: &TicketId, code: DenyCode, what: impl fmt::Display) -> Denial {
+    Denial {
+        code,
+        reason: format!("lease {lease} {what}"),
+        hint: Some(format!(
+            "If the work isn't done, submit a renewal (ticket.renews: {lease})"
+        )),
+    }
+}
+
 /// Whether the lease allows `operation`; outside it, an out-of-scope denial with the
 /// amendment hint.
 pub fn check_operation(lease: &Lease, operation: Operation) -> Result<(), Denial> {
@@ -346,6 +357,9 @@ pub struct PushRequest {
     /// Every commit the push brings that the daemon's mirror didn't have.
     pub commits: Vec<PushedCommit>,
     pub pack_size: u64,
+    /// The leases this lease renews, the one it names first, then the one that one names…
+    /// (from the store): their commits may be pushed under it too.
+    pub predecessors: Vec<TicketId>,
 }
 
 /// One ref update. `None` is the zero id: `old: None` creates, `new: None` deletes.
@@ -397,17 +411,15 @@ fn admit<'a>(
     let id = &lease.id;
     match lease.state {
         State::Active => {}
-        State::Expired => return Err(deny(DenyCode::Expired, format!("lease {id} expired"))),
-        State::Exhausted => {
-            return Err(deny(DenyCode::Exhausted, format!("lease {id} is used up")));
-        }
+        State::Expired => return Err(ran_out(id, DenyCode::Expired, "expired")),
+        State::Exhausted => return Err(ran_out(id, DenyCode::Exhausted, "is used up")),
         other => return Err(deny(DenyCode::NotActive, format!("lease {id} is {other}"))),
     }
     if lease.ticket.is_expired(ctx.now) {
-        return Err(deny(DenyCode::Expired, format!("lease {id} expired")));
+        return Err(ran_out(id, DenyCode::Expired, "expired"));
     }
     if is_exhausted(&lease.ticket, ctx.usage) {
-        return Err(deny(DenyCode::Exhausted, format!("lease {id} is used up")));
+        return Err(ran_out(id, DenyCode::Exhausted, "is used up"));
     }
     caller::check(lease.ticket.subject.caller.as_ref(), ctx.caller)
         .map_err(|e| deny(DenyCode::Caller, e.to_string()))?;
@@ -726,17 +738,21 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
             _ => {}
         }
     }
+    // The chain must start with the lease this one says it renews: anything else is a fault
+    // in the daemon's lookup, never a reason to accept more.
+    if request.predecessors.first() != lease.ticket.text.renews.as_ref() {
+        return Err(Denial::internal());
+    }
     for commit in &request.commits {
-        let Some(entry) = commit
-            .signed_under
-            .iter()
-            .find(|entry| &entry.lease == id && entry.repo == request.repo)
-        else {
+        let Some(entry) = commit.signed_under.iter().find(|entry| {
+            (&entry.lease == id || request.predecessors.contains(&entry.lease))
+                && entry.repo == request.repo
+        }) else {
             return Err(outside(
                 id,
                 DenyCode::Unsigned,
                 format_args!(
-                    "commit {} was not signed under this lease for repo {}",
+                    "commit {} was not signed under this lease (or a lease it renews) for repo {}",
                     commit.id, request.repo
                 ),
             ));

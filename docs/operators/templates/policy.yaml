@@ -31,6 +31,7 @@ templates:
     # force_push: false            # whether a ticket may ask for force pushes
     # paths_check: warn            # off | warn | deny: commits vs the ticket's expected_paths
     # require_expected_paths: false
+    # max_renewals: null           # null: no limit on a lease's renewals (each one is signed)
 
 # signing_keys:                    # the user ids of each OpenPGP signing key (writd.yaml declares it)
 #   openpgp_agent:

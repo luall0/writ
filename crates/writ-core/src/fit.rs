@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 
 use crate::config::{PolicyConfig, PushMode, Template};
-use crate::lease::{Lease, State, TicketRecord};
+use crate::lease::{Lease, Renewed, State, TicketRecord};
 use crate::names::{KeyFingerprint, TemplateName, TicketId};
 use crate::ticket::Operation;
 use crate::ticket::{Limits, Scope, Subject, Ticket, TicketKind, TicketRequest, TicketText};
@@ -43,6 +43,13 @@ pub const DEFAULT_MIN_TTL: Duration = Duration::from_seconds(5 * 60);
 pub const MIN_TTL_FLOOR: Duration = Duration::from_seconds(10);
 /// The most `min_ttl` may be.
 pub const MIN_TTL_CEILING: Duration = Duration::from_seconds(86_400);
+/// How long after its `expires_at` an expired or used-up lease can be renewed, by default
+/// (`writd.yaml`'s `renew_grace`): long enough for a night's wait on CI.
+pub const DEFAULT_RENEW_GRACE: Duration = Duration::from_seconds(86_400);
+/// The most `renew_grace` may be.
+pub const RENEW_GRACE_CEILING: Duration = Duration::from_seconds(7 * 86_400);
+/// The most one phase of `ticket.estimate` may say.
+pub const MAX_ESTIMATE: Duration = Duration::from_seconds(30 * 86_400);
 
 /// A ticket the daemon won't put in front of the approver, with every reason.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -216,58 +223,163 @@ fn check_limits(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>)
     }
 }
 
-fn check_text(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {
-    let text = &ticket.text;
+/// The agent's words and links, as a request and a complete ticket both hold them: what the
+/// text bounds are checked on, the same way for both ([`check_request`] and [`fits`]).
+struct Words<'a> {
+    title: &'a str,
+    task: &'a str,
+    plan: &'a [String],
+    expected_paths: BTreeSet<&'a str>,
+    branches: usize,
+    origin_hint: Option<&'a str>,
+    estimate: Option<&'a crate::ticket::Estimate>,
+    amends: bool,
+    renews: bool,
+}
+
+fn check_words(words: &Words<'_>, reasons: &mut Vec<String>) {
     let mut bound = |name: &str, len: usize, max: usize| {
         if len > max {
             reasons.push(format!("{name} is too long ({len}, at most {max})"));
         }
     };
-    bound("ticket.title", text.title.chars().count(), MAX_TITLE_CHARS);
-    bound("ticket.task", text.task.chars().count(), MAX_TASK_CHARS);
-    bound("ticket.plan", text.plan.len(), MAX_PLAN_STEPS);
-    for step in &text.plan {
+    bound("ticket.title", words.title.chars().count(), MAX_TITLE_CHARS);
+    bound("ticket.task", words.task.chars().count(), MAX_TASK_CHARS);
+    bound("ticket.plan", words.plan.len(), MAX_PLAN_STEPS);
+    for step in words.plan {
         bound("a plan step", step.chars().count(), MAX_PLAN_STEP_CHARS);
     }
     bound(
         "ticket.expected_paths",
-        text.expected_paths.len(),
+        words.expected_paths.len(),
         MAX_EXPECTED_PATHS,
     );
-    let path_bytes = text
+    let path_bytes = words
         .expected_paths
         .iter()
-        .fold(0usize, |sum, p| sum.saturating_add(p.as_str().len()));
+        .fold(0usize, |sum, p| sum.saturating_add(p.len()));
     bound(
         "ticket.expected_paths (bytes in all)",
         path_bytes,
         MAX_EXPECTED_PATHS_BYTES,
     );
-    bound("scope.branches", ticket.scope.branches.len(), MAX_BRANCHES);
-    if let Some(hint) = &ticket.subject.origin_hint {
+    bound("scope.branches", words.branches, MAX_BRANCHES);
+    if let Some(hint) = words.origin_hint {
         bound("origin_hint", hint.chars().count(), MAX_ORIGIN_HINT_CHARS);
     }
-    let task_lines = text.task.split('\n').count();
+    let task_lines = words.task.split('\n').count();
     if task_lines > MAX_TASK_LINES {
         reasons.push(format!(
             "ticket.task has {task_lines} lines, at most {MAX_TASK_LINES}"
         ));
     }
-    if text.title.contains(['\n', '\r']) {
+    if words.title.contains(['\n', '\r']) {
         reasons.push("ticket.title must be one line".to_owned());
     }
-    if text.plan.iter().any(|step| step.contains(['\n', '\r'])) {
+    if words.plan.iter().any(|step| step.contains(['\n', '\r'])) {
         reasons.push("a plan step must be one line".to_owned());
     }
-    if text.title.trim().is_empty() {
+    if words.title.trim().is_empty() {
         reasons.push("ticket.title is empty".to_owned());
     }
+    if let Some(estimate) = words.estimate {
+        for (name, phase) in [
+            ("coding", estimate.coding),
+            ("checks", estimate.checks),
+            ("ci", estimate.ci),
+        ] {
+            if phase.is_some_and(|d| d > MAX_ESTIMATE) {
+                reasons.push(format!("ticket.estimate.{name} is over {MAX_ESTIMATE}"));
+            }
+        }
+    }
+    if words.amends && words.renews {
+        reasons.push("a ticket can't both amend and renew a lease".to_owned());
+    }
+}
+
+fn check_text(ticket: &Ticket, template: &Template, reasons: &mut Vec<String>) {
+    let text = &ticket.text;
+    check_words(
+        &Words {
+            title: &text.title,
+            task: &text.task,
+            plan: &text.plan,
+            expected_paths: text.expected_paths.iter().map(|p| p.as_str()).collect(),
+            branches: ticket.scope.branches.len(),
+            origin_hint: ticket.subject.origin_hint.as_deref(),
+            estimate: text.estimate.as_ref(),
+            amends: text.amends.is_some(),
+            renews: text.renews.is_some(),
+        },
+        reasons,
+    );
     if text.revision == 0 {
         reasons.push("ticket.revision starts at 1".to_owned());
     }
     if template.require_expected_paths && text.expected_paths.is_empty() {
         reasons.push("the template requires ticket.expected_paths".to_owned());
     }
+}
+
+/// What a ticket file can be checked for without the daemon (`writ check`): the bounds of its
+/// text, what its operations need, the shortest TTL any daemon takes ([`MIN_TTL_FLOOR`]; the
+/// daemon's own `min_ttl` may be longer). Fitting a template, and the links (`amends`,
+/// `renews`, `revises`), only the daemon can check. Every reason, or none.
+pub fn check_request(request: &TicketRequest) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let scope = &request.scope;
+    if scope.repos.is_empty() {
+        reasons.push("scope.repos is empty".to_owned());
+    }
+    if scope.operations.is_empty() {
+        reasons.push("scope.operations is empty".to_owned());
+    }
+    let needs_branch = scope
+        .operations
+        .iter()
+        .any(|op| matches!(op, Operation::CommitSign | Operation::Push));
+    if needs_branch && scope.branches.is_empty() {
+        reasons.push("commit_sign and push need at least one branch".to_owned());
+    }
+    let text = &request.ticket;
+    check_words(
+        &Words {
+            title: &text.title,
+            task: &text.task,
+            plan: &text.plan,
+            expected_paths: text.expected_paths.iter().map(|p| p.as_str()).collect(),
+            branches: scope.branches.iter().collect::<BTreeSet<_>>().len(),
+            origin_hint: request.origin_hint.as_deref(),
+            estimate: text.estimate.as_ref(),
+            amends: text.amends.is_some(),
+            renews: text.renews.is_some(),
+        },
+        &mut reasons,
+    );
+    if let Some(ttl) = request.limits.ttl
+        && ttl < MIN_TTL_FLOOR
+    {
+        reasons.push(format!(
+            "limits.ttl is {ttl}, under {MIN_TTL_FLOOR}, the least any daemon takes"
+        ));
+    }
+    if request.limits.max_ops_per_minute == Some(0) {
+        reasons.push("limits.max_ops_per_minute must be at least 1".to_owned());
+    }
+    if let (true, Some(size)) = (
+        scope.operations.contains(&Operation::Push),
+        request.limits.max_push_size,
+    ) && size.bytes() == 0
+    {
+        reasons.push("limits.max_push_size must be at least 1 byte".to_owned());
+    }
+    if let Some(caller) = &request.caller
+        && let Err(e) = caller.validate()
+    {
+        reasons.push(format!("caller: {e}"));
+    }
+    reasons
 }
 
 /// What the daemon knows about a submission, besides the request itself.
@@ -280,6 +392,9 @@ pub struct Submission<'a> {
     pub session_key: KeyFingerprint,
     /// The lease named by `ticket.amends`, as found in the store.
     pub amends: Option<&'a Lease>,
+    /// The lease named by `ticket.renews`, as found in the store, with its renewals so far
+    /// and the daemon's `renew_grace`.
+    pub renews: Option<Renewed<'a>>,
     /// The ticket named by `ticket.revises`, as found in the store.
     pub revises: Option<&'a TicketRecord>,
     /// The shortest TTL a ticket may ask for (`writd.yaml`'s `min_ttl`).
@@ -295,10 +410,21 @@ pub fn submit(
 ) -> Result<Ticket, Rejection> {
     let (revision, previous_feedback) = check_links(request, submission)?;
 
-    let candidates: Vec<&TemplateName> = match &request.template {
-        Some(name) if config.template(name).is_some() => vec![name],
-        Some(name) => return Err(Rejection::one(format!("template {name} does not exist"))),
-        None => config.templates().keys().collect(),
+    // A renewal keeps its lease's template.
+    let renewed_template = submission.renews.map(|r| &r.lease.ticket.template);
+    let candidates: Vec<&TemplateName> = match (&request.template, renewed_template) {
+        (Some(name), Some(kept)) if name != kept => {
+            return Err(Rejection::one(format!(
+                "a renewal keeps its lease's template ({kept}), not {name}"
+            )));
+        }
+        (_, Some(kept)) if config.template(kept).is_some() => vec![kept],
+        (_, Some(kept)) => return Err(Rejection::one(format!("template {kept} does not exist"))),
+        (Some(name), None) if config.template(name).is_some() => vec![name],
+        (Some(name), None) => {
+            return Err(Rejection::one(format!("template {name} does not exist")));
+        }
+        (None, None) => config.templates().keys().collect(),
     };
 
     let mut fitting = Vec::new();
@@ -335,6 +461,10 @@ pub fn submit(
             Ok(()) => fitting.push(ticket),
             Err(why) => reasons.push(format!("{name}: {why}")),
         }
+    }
+    if let (Some(renewed), [ticket]) = (submission.renews, fitting.as_slice()) {
+        check_renewal(config, ticket, renewed, submission.now)
+            .map_err(|reasons| Rejection { reasons })?;
     }
     match fitting.len() {
         1 => Ok(fitting.remove(0)),
@@ -380,6 +510,27 @@ fn check_links(
         }
         (None, Some(_)) => return Err(Rejection::one("unexpected amended lease")),
     }
+    match (&request.ticket.renews, submission.renews) {
+        (None, None) => {}
+        (Some(_), _) if request.ticket.amends.is_some() => {
+            return Err(Rejection::one(
+                "a ticket can't both amend and renew a lease",
+            ));
+        }
+        // As for an amendment: to another session the lease doesn't exist.
+        (Some(id), Some(renewed))
+            if &renewed.lease.id == id
+                && renewed.lease.ticket.subject.session_key == submission.session_key =>
+        {
+            renewable(renewed, submission.now).map_err(Rejection::one)?;
+        }
+        (Some(id), _) => {
+            return Err(Rejection::one(format!(
+                "ticket {id} (renews) does not exist"
+            )));
+        }
+        (None, Some(_)) => return Err(Rejection::one("unexpected renewed lease")),
+    }
     match (&request.ticket.revises, submission.revises) {
         (None, None) => Ok((1, None)),
         // Like an amendment: only the session the feedback was written for sees the ticket;
@@ -396,6 +547,11 @@ fn check_links(
             if previous.ticket.text.amends != request.ticket.amends {
                 return Err(Rejection::one(format!(
                     "a revision of {id} must amend the same lease as {id}"
+                )));
+            }
+            if previous.ticket.text.renews != request.ticket.renews {
+                return Err(Rejection::one(format!(
+                    "a revision of {id} must renew the same lease as {id}"
                 )));
             }
             let revision = previous
@@ -433,12 +589,21 @@ fn build(
 ) -> Result<Ticket, Rejection> {
     let operations: BTreeSet<Operation> = request.scope.operations.iter().copied().collect();
     let signs = operations.contains(&Operation::CommitSign);
+    // A renewal's omitted emails and paths are its lease's, not the template's: it continues
+    // the same work.
+    let renewed = submission.renews.map(|r| &r.lease.ticket);
     let committer_emails = if !request.scope.committer_emails.is_empty() {
         request.scope.committer_emails.iter().cloned().collect()
+    } else if let (true, Some(renewed)) = (signs, renewed) {
+        renewed.scope.committer_emails.clone()
     } else if signs {
         template.committer_emails.clone()
     } else {
         BTreeSet::new()
+    };
+    let expected_paths = match (request.ticket.expected_paths.is_empty(), renewed) {
+        (true, Some(renewed)) => renewed.text.expected_paths.clone(),
+        _ => request.ticket.expected_paths.iter().cloned().collect(),
     };
     let limits = &request.limits;
     let ttl = limits.ttl.unwrap_or(template.max_ttl);
@@ -452,6 +617,11 @@ fn build(
         .now
         .checked_add(ttl)
         .ok_or_else(|| Rejection::one("limits.ttl is too long"))?;
+    // An amendment changes scope, not time: it ends with its lease (M3.6).
+    let expires_at = match submission.amends {
+        Some(lease) => expires_at.min(lease.ticket.limits.expires_at),
+        None => expires_at,
+    };
     Ok(Ticket {
         kind: TicketKind::V1,
         id: submission.id.clone(),
@@ -478,8 +648,10 @@ fn build(
             title: request.ticket.title.clone(),
             task: request.ticket.task.clone(),
             plan: request.ticket.plan.clone(),
-            expected_paths: request.ticket.expected_paths.iter().cloned().collect(),
+            expected_paths,
+            estimate: request.ticket.estimate,
             amends: request.ticket.amends.clone(),
+            renews: request.ticket.renews.clone(),
             revises: request.ticket.revises.clone(),
             revision,
             previous_feedback,
@@ -495,6 +667,84 @@ fn build(
         },
         on_violation: request.on_violation,
     })
+}
+
+/// Whether the lease can be renewed at `now`: active, or expired or used up no longer than
+/// `renew_grace` ago (counted from its `expires_at`); never revoked, closed or renewed.
+pub fn renewable(renewed: Renewed<'_>, now: Timestamp) -> Result<(), String> {
+    let lease = renewed.lease;
+    let id = &lease.id;
+    match lease.state {
+        State::Active | State::Expired | State::Exhausted => {}
+        State::Renewed => {
+            return Err(format!(
+                "lease {id} can't be renewed: it was renewed already"
+            ));
+        }
+        state => return Err(format!("lease {id} can't be renewed: it is {state}")),
+    }
+    let end = lease.ticket.limits.expires_at;
+    let last = end
+        .checked_add(renewed.grace)
+        .ok_or_else(|| format!("lease {id} can't be renewed: its end is out of range"))?;
+    // From `last` on, the grace is over (the same "at or past" as an expiry): with a grace of
+    // 0s, only a lease still in force can be renewed.
+    if (lease.state != State::Active || lease.ticket.is_expired(now)) && now >= last {
+        return Err(format!(
+            "lease {id} can't be renewed: it ended at {end}, more than renew_grace ({}) ago",
+            renewed.grace
+        ));
+    }
+    Ok(())
+}
+
+/// Checks a renewal against the lease it renews, at submission and again at approval: the
+/// lease can still be renewed ([`renewable`]), the renewal keeps its template and subject,
+/// stays within its scope (repos, operations, branches, force push, committer emails,
+/// expected paths, `on_violation`: [`narrow::widenings`](crate::narrow::widenings)), and the
+/// template's `max_renewals` holds. Every reason, or none.
+pub fn check_renewal(
+    config: &PolicyConfig,
+    ticket: &Ticket,
+    renewed: Renewed<'_>,
+    now: Timestamp,
+) -> Result<(), Vec<String>> {
+    let lease = renewed.lease;
+    let id = &lease.id;
+    let mut reasons = Vec::new();
+    if let Err(why) = renewable(renewed, now) {
+        reasons.push(why);
+    }
+    if ticket.text.renews.as_ref() != Some(id) {
+        reasons.push(format!("the ticket does not renew lease {id}"));
+    }
+    if ticket.template != lease.ticket.template {
+        reasons.push(format!(
+            "a renewal keeps its lease's template ({}), not {}",
+            lease.ticket.template, ticket.template
+        ));
+    }
+    if ticket.subject != lease.ticket.subject {
+        reasons.push(format!(
+            "a renewal keeps lease {id}'s subject (session key and process)"
+        ));
+    }
+    for widening in crate::narrow::widenings(&lease.ticket, ticket) {
+        reasons.push(format!("wider than lease {id}: {widening}"));
+    }
+    match config.template(&ticket.template).map(|t| t.max_renewals) {
+        Some(Some(max)) if renewed.renewals >= max => reasons.push(format!(
+            "template {} allows {max} renewals of a lease, and lease {id} is renewal {} of its chain",
+            ticket.template, renewed.renewals
+        )),
+        Some(_) => {}
+        None => reasons.push(format!("template {} does not exist", ticket.template)),
+    }
+    if reasons.is_empty() {
+        Ok(())
+    } else {
+        Err(reasons)
+    }
 }
 
 fn join<T: std::fmt::Display>(items: impl IntoIterator<Item = T>) -> String {

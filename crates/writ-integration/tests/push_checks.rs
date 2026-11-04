@@ -104,7 +104,9 @@ fn a_commit_not_signed_under_this_lease_is_refused() {
     assert_refused(
         &gateway,
         &out,
-        &format!("commit {unsigned} was not signed under this lease for repo demo"),
+        &format!(
+            "commit {unsigned} was not signed under this lease (or a lease it renews) for repo demo"
+        ),
         "unsigned",
     );
     // An unsigned commit under a signed one: the signed commit is in the ledger, its parent

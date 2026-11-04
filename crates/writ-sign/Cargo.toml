@@ -15,6 +15,7 @@ anyhow.workspace = true
 [dev-dependencies]
 # The count of blocks wiped: the test that proves the global allocator is the wiping one.
 writ-alloc = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

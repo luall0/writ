@@ -17,6 +17,12 @@
 //! would offer the user's own keys and agent and trust their `known_hosts`, so without a
 //! configured command nothing is sent.
 //!
+//! The session is the one the settings name (`writ.session`, written by `writ init` or `writ
+//! git`): its lease's key decides the format asked of the daemon (an OpenPGP certificate in the
+//! session: OpenPGP; otherwise SSH), whichever way git called this program, so a whole-repo
+//! clone follows its lease when the lease's key changes format. With `WRIT_SESSION` set, the
+//! settings must be for that very session, or nothing is sent: one command, one session.
+//!
 //! The daemon's refusal reaches the agent's terminal (git prints this program's stderr when
 //! it fails), escaped like any text from elsewhere ([`clean`]). When ssh itself fails, the
 //! session certificate says why the daemon may have turned it away ([`diagnose`]).
@@ -207,8 +213,9 @@ fn sign_openpgp() -> anyhow::Result<()> {
     if object.len() > writ_proto::sign::MAX_SIGN_INPUT {
         bail!("the object on stdin is too large");
     }
-    let signature = ask_daemon("openpgp", object)?;
-    check_openpgp_signature(&signature)?;
+    let format = session_format()?.unwrap_or("openpgp");
+    let signature = ask_daemon(format, object)?;
+    check_answer(format, &signature)?;
     let mut stdout = std::io::stdout().lock();
     stdout
         .write_all(&signature)
@@ -234,8 +241,9 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
     }
     let object = std::fs::read(&request.file)
         .with_context(|| format!("cannot read {}", request.file.display()))?;
-    let signature = ask_daemon(&request.namespace, object)?;
-    check_signature(&signature)?;
+    let format = session_format()?.unwrap_or("git");
+    let signature = ask_daemon(format, object)?;
+    check_answer(format, &signature)?;
     let mut sig_path = request.file.into_os_string();
     sig_path.push(".sig");
     std::fs::write(&sig_path, &signature).with_context(|| {
@@ -245,6 +253,60 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// The format the session the settings name signs in (`openpgp` when it holds its key's
+/// certificate, `signing_key.asc`; `git`, SSH, otherwise), after checking `WRIT_SESSION`
+/// against it; none for settings that name no session.
+fn session_format() -> anyhow::Result<Option<&'static str>> {
+    let Some(session) = git_config("writ.session") else {
+        return Ok(None);
+    };
+    let session = PathBuf::from(session);
+    check_session(&session, std::env::var("WRIT_SESSION").ok().as_deref())?;
+    Ok(Some(if session.join("signing_key.asc").is_file() {
+        "openpgp"
+    } else {
+        "git"
+    }))
+}
+
+/// With `WRIT_SESSION` set, the settings are for that session: its own directory, or
+/// `current` pointing at it. Otherwise this commit would go out under another lease than the
+/// one asked for.
+fn check_session(session: &Path, wanted: Option<&str>) -> anyhow::Result<()> {
+    let Some(wanted) = wanted.filter(|w| !w.is_empty()) else {
+        return Ok(());
+    };
+    let name = session
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let lease = match name.as_deref() {
+        Some("current") => std::fs::read_link(session)
+            .ok()
+            .map(|target| target.to_string_lossy().into_owned()),
+        other => other.map(str::to_owned),
+    };
+    if lease.as_deref() == Some(wanted) {
+        return Ok(());
+    }
+    bail!(
+        "WRIT_SESSION names lease {}, but this repository's Writ settings are for {} ({}): one \
+         command signs under one session; unset WRIT_SESSION, or work in a clone wired for \
+         that lease",
+        clean(wanted),
+        clean(lease.as_deref().unwrap_or("no lease")),
+        clean(&session.display().to_string())
+    )
+}
+
+/// The daemon's answer is one armored signature in `format`, nothing else.
+fn check_answer(format: &str, signature: &[u8]) -> anyhow::Result<()> {
+    if format == "openpgp" {
+        check_openpgp_signature(signature)
+    } else {
+        check_signature(signature)
+    }
 }
 
 /// Sends `object` (with its evidence) to the daemon to be signed in `format` (`git`: SSH, in
@@ -434,6 +496,33 @@ mod tests {
             Ok(_) => panic!("expected an error, got a success"),
             Err(e) => format!("{e:#}"),
         }
+    }
+
+    #[test]
+    fn writ_session_must_name_the_session_the_settings_are_for() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions");
+        let a = "wrt_01JD8X0000000000000000000A";
+        let b = "wrt_01JD8X0000000000000000000B";
+        std::fs::create_dir_all(sessions.join(a)).unwrap();
+        std::fs::create_dir_all(sessions.join(b)).unwrap();
+        std::os::unix::fs::symlink(a, sessions.join("current")).unwrap();
+        // Unset: whatever the settings name.
+        assert!(check_session(&sessions.join(b), None).is_ok());
+        assert!(check_session(&sessions.join(b), Some("")).is_ok());
+        // The session itself, or `current` pointing at it.
+        assert!(check_session(&sessions.join(a), Some(a)).is_ok());
+        assert!(check_session(&sessions.join("current"), Some(a)).is_ok());
+        // Another: refused, both named.
+        let error = error_of(check_session(&sessions.join(b), Some(a)));
+        assert!(
+            error.starts_with(&format!(
+                "WRIT_SESSION names lease {a}, but this repository's Writ settings are for {b}"
+            )),
+            "{error}"
+        );
+        let error = error_of(check_session(&sessions.join("current"), Some(b)));
+        assert!(error.contains(&format!("settings are for {a}")), "{error}");
     }
 
     #[test]

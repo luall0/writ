@@ -127,6 +127,59 @@ pub fn source_group(addr: IpAddr) -> IpAddr {
     }
 }
 
+/// Where a ticket came from, as the per-source limits count it: an address's group
+/// ([`source_group`]: an IPv4 address, an IPv6 /64), or the local socket (local mode is one
+/// source). Text form: the group's address (`192.0.2.7`, `2001:db8::/64`), or `local`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Source {
+    Address(IpAddr),
+    Local,
+}
+
+impl Source {
+    /// The source of a caller with this address (none: the local socket).
+    pub fn of(addr: Option<IpAddr>) -> Self {
+        addr.map_or(Self::Local, |addr| Self::Address(source_group(addr)))
+    }
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Address(addr @ IpAddr::V4(_)) => write!(f, "{addr}"),
+            Self::Address(addr @ IpAddr::V6(_)) => write!(f, "{addr}/64"),
+            Self::Local => f.write_str("local"),
+        }
+    }
+}
+
+impl FromStr for Source {
+    type Err = String;
+
+    /// Reads what [`Source`]'s `Display` writes, and only that.
+    fn from_str(text: &str) -> Result<Self, String> {
+        let invalid = || format!("invalid source {text:?}");
+        if text == "local" {
+            return Ok(Self::Local);
+        }
+        let addr: IpAddr = match text.strip_suffix("/64") {
+            Some(v6) => v6
+                .parse::<std::net::Ipv6Addr>()
+                .map(IpAddr::V6)
+                .map_err(|_| invalid())?,
+            None => text
+                .parse::<std::net::Ipv4Addr>()
+                .map(IpAddr::V4)
+                .map_err(|_| invalid())?,
+        };
+        let source = Self::of(Some(addr));
+        if source.to_string() != text {
+            return Err(invalid());
+        }
+        Ok(source)
+    }
+}
+
 /// Who may connect to a listener.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sources {
@@ -229,6 +282,34 @@ mod tests {
         assert_eq!(source_group(ip("192.0.2.7")), ip("192.0.2.7"));
         assert_ne!(source_group(ip("192.0.2.7")), source_group(ip("192.0.2.8")));
         assert_eq!(source_group(ip("::ffff:192.0.2.7")), ip("192.0.2.7"));
+    }
+
+    #[test]
+    fn a_source_reads_back_what_it_writes_and_nothing_else() {
+        for (addr, text) in [
+            (Some(ip("192.0.2.7")), "192.0.2.7"),
+            (Some(ip("::ffff:192.0.2.7")), "192.0.2.7"),
+            (Some(ip("2001:db8::1")), "2001:db8::/64"),
+            (None, "local"),
+        ] {
+            let source = Source::of(addr);
+            assert_eq!(source.to_string(), text);
+            assert_eq!(text.parse::<Source>(), Ok(source));
+        }
+        for bad in [
+            "",
+            "Local",
+            "2001:db8::1/64",
+            "2001:db8::",
+            "192.0.2.7/32",
+            "x",
+        ] {
+            assert_eq!(
+                bad.parse::<Source>(),
+                Err(format!("invalid source {bad:?}")),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

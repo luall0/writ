@@ -388,6 +388,9 @@ fn every_transition_of_the_diagram_and_no_other() {
         (Active, Exhausted),
         (Active, Expired),
         (Active, Revoked),
+        (Active, Renewed),
+        (Expired, Renewed),
+        (Exhausted, Renewed),
     ]
     .into();
     for from in State::ALL {
@@ -984,4 +987,445 @@ fn the_push_size_git_gets_is_the_smaller_of_the_lease_s_and_the_template_s() {
     let one = REQUEST.replace("max_push_size: 1MB", "max_push_size: 1");
     let t = fit::submit(&self::config(), &request(&one), &submission(1)).unwrap();
     assert_eq!(t.limits.max_push_size.bytes(), 1);
+}
+
+// Renewals.
+
+/// [`REQUEST`] as a renewal of `lease`: no template named, an hour more, the emails and paths
+/// left out (the lease's).
+fn renewal_yaml(lease: &writ_core::lease::Lease) -> String {
+    REQUEST
+        .replace("template: feature-branch\n", "")
+        .replace("  ttl: 2h\n", "  ttl: 1h\n")
+        .replace(
+            "  expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
+            &format!("  renews: {}\n", lease.id),
+        )
+}
+
+fn renewing<'a>(
+    lease: &'a writ_core::lease::Lease,
+    renewals: u32,
+    grace: u64,
+    at: i64,
+) -> Submission<'a> {
+    Submission {
+        renews: Some(lease::Renewed {
+            lease,
+            renewals,
+            grace: Duration::from_seconds(grace),
+        }),
+        now: later(at),
+        ..submission(5)
+    }
+}
+
+/// The lease of [`REQUEST`] (it ends at `later(7200)`), in `state`.
+fn lease_in(state: State) -> writ_core::lease::Lease {
+    let mut lease = lease();
+    lease.state = state;
+    lease
+}
+
+#[test]
+fn a_renewal_continues_its_lease_under_a_new_one() {
+    let lease = lease_in(State::Expired);
+    let renewal = fit::submit(
+        &config(),
+        &request(&renewal_yaml(&lease)),
+        &renewing(&lease, 0, 86_400, 7_260),
+    )
+    .unwrap();
+    // The lease's template, emails and paths; its own time and id.
+    assert_eq!(renewal.template, lease.ticket.template);
+    assert_eq!(
+        renewal.scope.committer_emails,
+        lease.ticket.scope.committer_emails
+    );
+    assert_eq!(
+        renewal.text.expected_paths,
+        lease.ticket.text.expected_paths
+    );
+    assert_eq!(renewal.text.renews.as_ref(), Some(&lease.id));
+    assert_eq!(renewal.limits.expires_at, later(7_260 + 3_600));
+    assert_eq!(renewal.lease_id(), &renewal.id, "a lease of its own");
+
+    let record = TicketRecord::pending(renewal.clone());
+    let renewed = lease::Renewed {
+        lease: &lease,
+        renewals: 0,
+        grace: Duration::from_seconds(86_400),
+    };
+    let new = lease::activate_renewal(
+        &config(),
+        &record,
+        renewal.clone(),
+        approval(),
+        9,
+        renewed,
+        later(7_300),
+    )
+    .unwrap();
+    assert_eq!(new.id, renewal.id);
+    assert_eq!(new.state, State::Active);
+    assert_eq!(new.cert_serial, 9);
+    // A renewal is never activated as a plain ticket.
+    assert_eq!(
+        lease::activate(&config(), &record, renewal, approval(), 9, later(7_300)),
+        Err(LifecycleError::RenewalWithoutLease)
+    );
+}
+
+#[test]
+fn renew_grace_holds_on_both_sides() {
+    let lease = lease_in(State::Expired);
+    let yaml = renewal_yaml(&lease);
+    let end = 7_200;
+    // One second before the grace is over: taken; at it: refused, naming it.
+    assert!(
+        fit::submit(
+            &config(),
+            &request(&yaml),
+            &renewing(&lease, 0, 600, end + 599)
+        )
+        .is_ok()
+    );
+    let refused = fit::submit(
+        &config(),
+        &request(&yaml),
+        &renewing(&lease, 0, 600, end + 600),
+    )
+    .unwrap_err();
+    assert_eq!(
+        refused.reasons,
+        [format!(
+            "lease {} can't be renewed: it ended at 2026-10-31T16:02:11Z, more than renew_grace (10m) ago",
+            lease.id
+        )]
+    );
+    // With no grace, a lease still in force is renewable, one past its end isn't.
+    let active = lease_in(State::Active);
+    assert!(
+        fit::submit(
+            &config(),
+            &request(&yaml),
+            &renewing(&active, 0, 0, end - 1)
+        )
+        .is_ok()
+    );
+    assert_rejected(
+        fit::submit(&config(), &request(&yaml), &renewing(&active, 0, 0, end)),
+        "more than renew_grace (0s) ago",
+    );
+    // A used-up lease is renewable too.
+    let exhausted = lease_in(State::Exhausted);
+    assert!(fit::submit(&config(), &request(&yaml), &renewing(&exhausted, 0, 0, 600)).is_ok());
+}
+
+#[test]
+fn only_an_active_expired_or_used_up_lease_of_the_same_session_is_renewed() {
+    for (state, why) in [
+        (State::Revoked, "it is revoked"),
+        (State::Closed, "it is closed"),
+        (State::Renewed, "it was renewed already"),
+    ] {
+        let lease = lease_in(state);
+        assert_rejected(
+            fit::submit(
+                &config(),
+                &request(&renewal_yaml(&lease)),
+                &renewing(&lease, 0, 86_400, 600),
+            ),
+            &format!("lease {} can't be renewed: {why}", lease.id),
+        );
+    }
+    let lease = lease_in(State::Active);
+    // Another session: the lease doesn't exist.
+    let mut elsewhere = renewing(&lease, 0, 86_400, 600);
+    elsewhere.session_key = fp('K');
+    assert_rejected(
+        fit::submit(&config(), &request(&renewal_yaml(&lease)), &elsewhere),
+        &format!("ticket {} (renews) does not exist", lease.id),
+    );
+    // Not both an amendment and a renewal.
+    let both =
+        renewal_yaml(&lease).replace("  renews:", &format!("  amends: {}\n  renews:", lease.id));
+    let mut with_both = renewing(&lease, 0, 86_400, 600);
+    with_both.amends = Some(&lease);
+    assert_rejected(
+        fit::submit(&config(), &request(&both), &with_both),
+        "a ticket can't both amend and renew a lease",
+    );
+    // Another template.
+    let other = format!("template: quick-fix\n{}", renewal_yaml(&lease));
+    assert_rejected(
+        fit::submit(
+            &config(),
+            &request(&other),
+            &renewing(&lease, 0, 86_400, 600),
+        ),
+        "a renewal keeps its lease's template (feature-branch), not quick-fix",
+    );
+}
+
+#[test]
+fn a_renewal_stays_within_its_lease() {
+    let lease = lease_in(State::Active);
+    let yaml = renewal_yaml(&lease);
+    let wider = [
+        (
+            yaml.replace("[omega-code]", "[omega-code, homelab-scripts]"),
+            "scope.repos adds homelab-scripts",
+        ),
+        (
+            yaml.replace("agent/oauth-*", "agent/*"),
+            "scope.branches adds agent/*",
+        ),
+        (
+            yaml.replace(
+                "  renews:",
+                "  expected_paths: [\"src/auth/**\", \"docs/**\"]\n  renews:",
+            ),
+            "ticket.expected_paths adds docs/**",
+        ),
+    ];
+    for (yaml, expected) in wider {
+        let result = fit::submit(
+            &config(),
+            &request(&yaml),
+            &renewing(&lease, 0, 86_400, 600),
+        );
+        assert_rejected(
+            result,
+            &format!("wider than lease {}: {expected}", lease.id),
+        );
+    }
+    // An email the template allows and the lease doesn't have.
+    let mut fewer = lease.clone();
+    fewer.ticket.scope.committer_emails.clear();
+    fewer
+        .ticket
+        .scope
+        .committer_emails
+        .insert("user+other@example.org".parse().unwrap());
+    assert_rejected(
+        fit::submit(&config(), &request(&yaml.replace("  branches: [\"agent/oauth-*\"]\n", "  branches: [\"agent/oauth-*\"]\n  committer_emails: [\"user+agent@example.org\"]\n")), &renewing(&fewer, 0, 86_400, 600)),
+        "scope.committer_emails adds user+agent@example.org",
+    );
+    // Less strict on violations, and an operation the lease didn't have.
+    let mut strict = lease.clone();
+    strict.ticket.on_violation = OnViolation::RevokeLease;
+    strict.ticket.scope.operations.remove(&Operation::Fetch);
+    let result = fit::submit(
+        &config(),
+        &request(&yaml),
+        &renewing(&strict, 0, 86_400, 600),
+    );
+    assert_rejected(result.clone(), "on_violation made less strict");
+    assert_rejected(result, "scope.operations adds fetch");
+    // Narrower is fine.
+    let narrower = yaml.replace("agent/oauth-*", "agent/oauth-login");
+    assert!(
+        fit::submit(
+            &config(),
+            &request(&narrower),
+            &renewing(&lease, 0, 86_400, 600)
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn max_renewals_holds_on_both_sides() {
+    let policy = POLICY.replacen(
+        "    paths_check: warn\n",
+        "    paths_check: warn\n    max_renewals: 2\n",
+        1,
+    );
+    assert_ne!(policy, POLICY, "the fixture changed");
+    let config = writ_core::config::PolicyConfig::from_yaml(&policy).unwrap();
+    let lease = lease_in(State::Active);
+    let yaml = renewal_yaml(&lease);
+    // The lease is the chain's first renewal: a second is allowed, a third isn't.
+    assert!(fit::submit(&config, &request(&yaml), &renewing(&lease, 1, 86_400, 600)).is_ok());
+    assert_rejected(
+        fit::submit(&config, &request(&yaml), &renewing(&lease, 2, 86_400, 600)),
+        "template feature-branch allows 2 renewals of a lease",
+    );
+    // No limit without the key.
+    assert!(
+        fit::submit(
+            &self::config(),
+            &request(&yaml),
+            &renewing(&lease, 1_000, 86_400, 600)
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_renewal_is_checked_again_when_it_is_signed() {
+    let lease = lease_in(State::Expired);
+    let renewal = fit::submit(
+        &config(),
+        &request(&renewal_yaml(&lease)),
+        &renewing(&lease, 0, 600, 7_300),
+    )
+    .unwrap();
+    let record = TicketRecord::pending(renewal.clone());
+    let at = |lease: &writ_core::lease::Lease, now: i64| {
+        lease::activate_renewal(
+            &config(),
+            &record,
+            renewal.clone(),
+            approval(),
+            9,
+            lease::Renewed {
+                lease,
+                renewals: 0,
+                grace: Duration::from_seconds(600),
+            },
+            later(now),
+        )
+    };
+    assert!(at(&lease, 7_799).is_ok());
+    // Signed once the grace is over.
+    assert!(
+        matches!(at(&lease, 7_800), Err(LifecycleError::Renewal(reasons)) if reasons[0].contains("more than renew_grace"))
+    );
+    // The lease was renewed (or revoked) meanwhile.
+    assert_eq!(
+        at(&lease_in(State::Renewed), 7_300),
+        Err(LifecycleError::Transition {
+            from: State::Renewed,
+            to: State::Renewed
+        })
+    );
+    // The lease's terms narrowed meanwhile (an amendment): the renewal is now wider.
+    let mut amended = lease.clone();
+    amended.ticket.scope.branches = BTreeSet::from(["agent/oauth-login".parse().unwrap()]);
+    assert!(
+        matches!(at(&amended, 7_300), Err(LifecycleError::Renewal(reasons)) if reasons.iter().any(|r| r.contains("scope.branches adds agent/oauth-*")))
+    );
+    // Another lease.
+    let other = lease_of(fit::submit(&config(), &request(REQUEST), &submission(3)).unwrap());
+    assert!(matches!(
+        at(&other, 7_300),
+        Err(LifecycleError::RenewsAnotherLease { .. })
+    ));
+}
+
+#[test]
+fn an_amendment_ends_with_its_lease() {
+    let lease = lease();
+    // Asked for 4h, ten minutes in: capped at the lease's end.
+    let yaml = REQUEST.replace("ttl: 2h", "ttl: 4h").replace(
+        "  expected_paths:",
+        &format!("  amends: {}\n  expected_paths:", lease.id),
+    );
+    let with_lease = Submission {
+        amends: Some(&lease),
+        now: later(600),
+        ..submission(2)
+    };
+    let amendment = fit::submit(&config(), &request(&yaml), &with_lease).unwrap();
+    assert_eq!(amendment.limits.expires_at, lease.ticket.limits.expires_at);
+    // One that would end later (built by hand: the daemon never makes one) is refused.
+    let mut longer = amendment.clone();
+    longer.limits.expires_at = lease.ticket.limits.expires_at.saturating_sub_seconds(-1);
+    let record = TicketRecord::pending(longer.clone());
+    assert_eq!(
+        lease::apply_amendment(&config(), &lease, &record, longer, approval(), later(700)),
+        Err(LifecycleError::AmendmentOutlivesLease {
+            amendment: later(7_201),
+            lease: later(7_200),
+        })
+    );
+    // At the lease's end exactly: applied.
+    let record = TicketRecord::pending(amendment.clone());
+    assert!(
+        lease::apply_amendment(
+            &config(),
+            &lease,
+            &record,
+            amendment,
+            approval(),
+            later(700)
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn the_estimate_is_shown_never_checked_and_bounded() {
+    let with = |coding: &str| {
+        REQUEST.replace(
+            "  expected_paths:",
+            &format!("  estimate:\n    coding: {coding}\n    ci: 20m\n  expected_paths:"),
+        )
+    };
+    let ticket = fit::submit(&config(), &request(&with("30d")), &submission(1)).unwrap();
+    let estimate = ticket.text.estimate.unwrap();
+    assert_eq!(estimate.coding, Some(Duration::from_seconds(30 * 86_400)));
+    assert_eq!(estimate.checks, None);
+    assert_eq!(
+        estimate.total(),
+        Some(Duration::from_seconds(30 * 86_400 + 1_200))
+    );
+    assert_rejected(
+        fit::submit(&config(), &request(&with("2592001s")), &submission(1)),
+        "ticket.estimate.coding is over 30d",
+    );
+    assert_eq!(writ_core::ticket::Estimate::default().total(), None);
+}
+
+#[test]
+fn a_ticket_file_is_checked_without_the_daemon_as_the_daemon_would() {
+    // Clean: nothing to say (fitting a template is the daemon's to check).
+    assert!(fit::check_request(&request(REQUEST)).is_empty());
+    let cases = [
+        (REQUEST.replace("title: Add OAuth login", "title: \"  \""), "ticket.title is empty"),
+        (REQUEST.replace("title: Add OAuth login", &format!("title: {}", "x".repeat(201))), "ticket.title is too long (201, at most 200)"),
+        (REQUEST.replace("  branches: [\"agent/oauth-*\"]\n", ""), "commit_sign and push need at least one branch"),
+        (REQUEST.replace("ttl: 2h", "ttl: 9s"), "limits.ttl is 9s, under 10s, the least any daemon takes"),
+        (REQUEST.replace("max_ops_per_minute: 5", "max_ops_per_minute: 0"), "limits.max_ops_per_minute must be at least 1"),
+        (REQUEST.replace("max_push_size: 1MB", "max_push_size: 0"), "limits.max_push_size must be at least 1 byte"),
+        (
+            REQUEST.replace("  expected_paths:", "  estimate: { ci: 31d }\n  expected_paths:"),
+            "ticket.estimate.ci is over 30d",
+        ),
+        (
+            REQUEST.replace("  expected_paths:", "  amends: wrt_01JD8X0000000000000000000A\n  renews: wrt_01JD8X0000000000000000000A\n  expected_paths:"),
+            "a ticket can't both amend and renew a lease",
+        ),
+    ];
+    for (yaml, expected) in cases {
+        let reasons = fit::check_request(&request(&yaml));
+        assert!(
+            reasons.iter().any(|r| r == expected),
+            "{expected:?} not in {reasons:?}"
+        );
+        // The daemon refuses it too (the TTL against its own min_ttl, said its way).
+        let daemon = match expected {
+            e if e.starts_with("limits.ttl") => "under the minimum of 5m",
+            // The daemon looks the links up first: unknown here.
+            e if e.contains("amend and renew") => "(amends) does not exist",
+            e => e,
+        };
+        let rejected = fit::submit(&config(), &request(&yaml), &submission(1));
+        assert!(
+            rejected
+                .as_ref()
+                .is_err_and(|r| r.to_string().contains(daemon)),
+            "the daemon on {expected:?}: {rejected:?}"
+        );
+    }
+    // At the bounds: clean.
+    let at = REQUEST
+        .replace(
+            "title: Add OAuth login",
+            &format!("title: {}", "x".repeat(200)),
+        )
+        .replace("ttl: 2h", "ttl: 10s");
+    assert!(fit::check_request(&request(&at)).is_empty());
 }

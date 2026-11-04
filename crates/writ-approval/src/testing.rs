@@ -65,6 +65,8 @@ pub struct TestServiceBuilder {
     decisions: Decisions,
     max_pending: usize,
     submissions: SubmissionLimits,
+    max_active_per_source: Option<u32>,
+    renew_grace: writ_core::units::Duration,
     watcher: Arc<dyn SessionWatcher>,
     notifier: Arc<dyn Notifier>,
     clock: Arc<dyn Clock>,
@@ -81,6 +83,8 @@ impl TestServiceBuilder {
             decisions: Decisions::Signed,
             max_pending: 20,
             submissions: SubmissionLimits::default(),
+            max_active_per_source: None,
+            renew_grace: writ_core::fit::DEFAULT_RENEW_GRACE,
             watcher: Arc::new(FakeWatcher::new()),
             notifier: Arc::new(RecordingNotifier::new()),
             clock: Arc::new(FakeClock::at_unix(START)),
@@ -102,6 +106,18 @@ impl TestServiceBuilder {
 
     pub fn max_pending(mut self, max_pending: usize) -> Self {
         self.max_pending = max_pending;
+        self
+    }
+
+    /// `max_active_per_source` (no limit otherwise).
+    pub fn max_active_per_source(mut self, max: u32) -> Self {
+        self.max_active_per_source = Some(max);
+        self
+    }
+
+    /// `renew_grace` (the daemon's default, 24 h, otherwise).
+    pub fn renew_grace(mut self, grace: writ_core::units::Duration) -> Self {
+        self.renew_grace = grace;
         self
     }
 
@@ -225,6 +241,8 @@ impl TestServiceBuilder {
                 max_pending: self.max_pending,
                 min_ttl: writ_core::fit::DEFAULT_MIN_TTL,
                 submissions: self.submissions,
+                max_active_per_source: self.max_active_per_source,
+                renew_grace: self.renew_grace,
                 ca_public: ca_key.public_key().clone(),
                 daemon: daemon.clone(),
                 in_force,

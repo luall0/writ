@@ -18,8 +18,8 @@ use common::*;
 use writ_core::caller::{CallerConstraint, CodeIdentity, ProcessMatch};
 use writ_core::canonical::Canonical;
 use writ_core::ticket::Operation;
-use writ_core::ticket::{OnViolation, Ticket};
-use writ_core::units::ByteSize;
+use writ_core::ticket::{Estimate, OnViolation, Ticket};
+use writ_core::units::{ByteSize, Duration};
 
 const FULL: &[u8] = include_bytes!("fixtures/ticket-full.json");
 const MINIMAL: &[u8] = include_bytes!("fixtures/ticket-minimal.json");
@@ -40,7 +40,13 @@ fn full() -> Ticket {
         },
     });
     ticket.text.title = "Add OAuth login \"v2\" — é\u{1b}[2J".to_owned();
+    ticket.text.estimate = Some(Estimate {
+        coding: Some(Duration::from_seconds(45 * 60)),
+        checks: None,
+        ci: Some(Duration::from_seconds(90 * 60)),
+    });
     ticket.text.amends = Some(ticket_id(10));
+    ticket.text.renews = Some(ticket_id(13));
     ticket.text.revises = Some(ticket_id(11));
     ticket.text.revision = 2;
     ticket.text.previous_feedback = Some("Don't touch billing".to_owned());
@@ -183,7 +189,14 @@ fn every_field_change_changes_the_bytes() {
         ("ticket.expected_paths", |t| {
             t.text.expected_paths.insert("docs/**".parse().unwrap());
         }),
+        ("ticket.estimate", |t| t.text.estimate = None),
+        ("ticket.estimate.checks", |t| {
+            if let Some(e) = &mut t.text.estimate {
+                e.checks = Some(Duration::from_seconds(60));
+            }
+        }),
         ("ticket.amends", |t| t.text.amends = None),
+        ("ticket.renews", |t| t.text.renews = None),
         ("ticket.revises", |t| t.text.revises = Some(ticket_id(12))),
         ("ticket.revision", |t| t.text.revision = 3),
         ("ticket.previous_feedback", |t| {

@@ -21,7 +21,7 @@ fn every_push_denial_leaves_forgejo_and_the_mirror_unchanged() {
         &ticket(&["denials"], &["agent/*"], "1h", "  max_push_size: 1MB\n"),
     );
     agent.clone_from_forgejo(&stack, "denials", "work");
-    agent.ok_in("work", "writ init denials");
+    agent.ok_in("work", "writ init denials --agents none");
     let w = "work";
     let main = stack.forgejo.branch("denials", "main").unwrap();
     let push = |refspec: &str| agent.in_dir(w, &format!("writ git push origin {refspec}"));
@@ -90,7 +90,9 @@ fn every_push_denial_leaves_forgejo_and_the_mirror_unchanged() {
         &stack,
         &lease,
         &push("HEAD:refs/heads/agent/unsigned"),
-        &format!("commit {unsigned} was not signed under this lease for repo denials"),
+        &format!(
+            "commit {unsigned} was not signed under this lease (or a lease it renews) for repo denials"
+        ),
         "unsigned",
     );
     let on_top = agent.commit(w, &lease, "c.txt", "c");
@@ -112,7 +114,7 @@ fn every_push_denial_leaves_forgejo_and_the_mirror_unchanged() {
     let other = stack.agent("denials-other");
     let theirs_lease = other.lease(&stack, &ticket(&["denials"], &["agent/*"], "1h", ""));
     other.clone_from_forgejo(&stack, "denials", "work");
-    other.ok_in("work", "writ init denials");
+    other.ok_in("work", "writ init denials --agents none");
     let theirs = other.commit("work", &theirs_lease, "d.txt", "d");
     agent.ok_in(
         w,
@@ -229,7 +231,7 @@ fn every_push_denial_leaves_forgejo_and_the_mirror_unchanged() {
         ),
     );
     no_fetch.clone_from_forgejo(&stack, "denials", "work");
-    no_fetch.ok_in("work", "writ init denials");
+    no_fetch.ok_in("work", "writ init denials --agents none");
     let out = no_fetch.in_dir("work", "writ git fetch origin");
     expect(&out, 128, "a fetch without fetch");
     assert!(

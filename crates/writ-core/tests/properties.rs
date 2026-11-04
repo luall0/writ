@@ -200,7 +200,9 @@ fn arb_request() -> impl Strategy<Value = TicketRequest> {
             task: "Do it".to_owned(),
             plan: vec!["Step".to_owned()],
             expected_paths: parse_all(paths),
+            estimate: None,
             amends: None,
+            renews: None,
             revises: None,
         },
         limits: RequestLimits {
@@ -369,6 +371,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
                 updates,
                 commits,
                 pack_size,
+                predecessors: Vec::new(),
             })
         });
     let fetch = select(REPOS.to_vec()).prop_map(|r| Op::Fetch(FetchRequest { repo: repo(r) }));
@@ -549,6 +552,7 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
                             }],
                         }],
                         pack_size: size,
+                        predecessors: Vec::new(),
                     }),
                     _ => Op::Fetch(FetchRequest { repo: repo_name }),
                 };

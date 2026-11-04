@@ -71,6 +71,8 @@ A declared key nobody uses yet may be missing. Make it with `writd keys create`
 | `min_ttl` | 10s to 1d | `5m` | The shortest lease a ticket may ask for, and the smallest `max_ttl` a template may set. [Why it matters](#min_ttl-and-notifications) |
 | `submissions.per_source` | 1 to 1000 | `10` | Tickets one source may submit per minute. A source is an IPv4 address, an IPv6 /64, or the one local client in local mode |
 | `submissions.in_all` | 1 to 10000 | `60` | Tickets all sources together may submit per minute |
+| `max_active_per_source` | 1 or more | no limit | Active leases one source may hold at once. Set `1` on a host meant for one agent: then its agents can't reach each other's leases. An amendment or a renewal doesn't count twice. Checked when a ticket arrives and again when you sign it |
+| `renew_grace` | 0s to 7d | `24h` | How long after its end an expired or used-up lease can still be [renewed](ticket.md#renewals). `0s`: only a lease still running can be |
 | `sign_requests.per_lease` | 1 to 16 | `4` | Commit signatures one lease may have in progress at once (16 across the daemon). One more is refused, not queued |
 
 ### `min_ttl` and notifications

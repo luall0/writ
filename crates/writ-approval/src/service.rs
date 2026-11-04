@@ -14,6 +14,7 @@ mod notes;
 mod openpgp;
 mod prove;
 mod push;
+mod report;
 mod sign;
 mod submissions;
 mod sweep;
@@ -85,6 +86,10 @@ pub struct ServiceConfig {
     pub min_ttl: writ_core::units::Duration,
     /// The submission rates (per source, all sources together).
     pub submissions: SubmissionLimits,
+    /// The most active leases one source may hold at once (`None`: no limit).
+    pub max_active_per_source: Option<u32>,
+    /// How long after its `expires_at` an expired or used-up lease can still be renewed.
+    pub renew_grace: writ_core::units::Duration,
     /// The CA's public key (its private key comes at unseal, and must be this one's).
     pub ca_public: PublicKey,
     /// The fingerprint of the daemon's SSH host key: what an unseal signature names.
@@ -333,6 +338,7 @@ impl Service {
             State::Expired,
             State::Closed,
             State::Exhausted,
+            State::Renewed,
         ] {
             revoked.extend(
                 store
