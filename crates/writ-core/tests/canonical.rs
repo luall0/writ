@@ -287,8 +287,18 @@ fn only_canonical_bytes_decode() {
     ];
     for (name, bytes) in variants {
         assert_ne!(bytes.as_bytes(), FULL, "{name}: variant is identical");
+        // Refused as not the canonical form, or as no ticket at all: never decoded. Either
+        // variant of the error is the refusal (its text says which byte).
         assert!(
-            Ticket::from_canonical(bytes.as_bytes()).is_err(),
+            matches!(
+                Ticket::from_canonical(bytes.as_bytes()),
+                Err(writ_core::canonical::CanonicalError::NotCanonical {
+                    kind: "writ-ticket/1"
+                } | writ_core::canonical::CanonicalError::Decode {
+                    kind: "writ-ticket/1",
+                    ..
+                })
+            ),
             "{name} decoded"
         );
     }

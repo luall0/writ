@@ -620,10 +620,32 @@ fn narrowing_accepts_only_narrower_tickets() {
     for (name, change) in wider {
         let mut signed = submitted.clone();
         change(&mut signed);
-        assert!(
-            narrow::check(&submitted, &signed).is_err(),
-            "{name} should be refused"
-        );
+        // Refused for exactly this change (the review after M5.5: any refusal passed).
+        let reasons = narrow::check(&submitted, &signed).unwrap_err().reasons;
+        let expected = match name {
+            "longer ttl" => "limits.expires_at raised",
+            "another repo" => "scope.repos adds homelab-scripts",
+            "wider branch pattern" => "scope.branches adds agent/*",
+            "another branch" => "scope.branches adds agent/other",
+            "force push" => "scope.force_push turned on",
+            "another email" => "scope.committer_emails adds user+fix@example.org",
+            "more signatures" => "limits.max_signatures raised",
+            "more pushes" => "limits.max_pushes raised",
+            "faster rate" => "limits.max_ops_per_minute raised",
+            "bigger pushes" => "limits.max_push_size raised",
+            "expected paths emptied" => "ticket.expected_paths emptied (turns the path check off)",
+            "expected path added" => "ticket.expected_paths adds src/**",
+            "another session key" | "origin hint changed" => "subject changed",
+            "other template" => "template changed",
+            "other id" => "id changed",
+            "other text" => "ticket.title changed",
+            "other plan" => "ticket.plan changed",
+            "other signing key" => "scope.signing_key changed",
+            "now amends" => "ticket.amends changed",
+            "earlier creation" => "created_at changed",
+            other => panic!("no reason written for {other}"),
+        };
+        assert_eq!(reasons, [expected], "{name}");
     }
 }
 

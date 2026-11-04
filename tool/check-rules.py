@@ -35,8 +35,46 @@ PRINT_ALLOWED = {
 }
 CFG_TARGET_OS = re.compile(r"cfg!?\s*\([^)]*target_os")
 PRINT = re.compile(r"\b(e?println!|e?print!|dbg!)")
-BARE_IS_ERR = re.compile(r"\b(prop_)?assert!\(.*\.is_err\(\)")
-BARE_FAILURE = re.compile(r"assert!\(!.*\.success\(\)")
+BARE_IS_ERR = re.compile(r"\b(prop_)?assert!\(.*\.is_err\(\)", re.S)
+BARE_FAILURE = re.compile(r"\bassert!\(\s*!.*\.success\(\)", re.S)
+ASSERT_START = re.compile(r"\b(prop_)?assert!\(")
+STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def assertion(lines, start):
+    """The `assert!(...)` starting at line `start` (0-based), whole: its lines joined until its
+    parentheses close (string literals left out, so a parenthesis in one doesn't count)."""
+    text, depth = "", 0
+    for line in lines[start:start + 40]:
+        code = STRING.sub('""', line.split("//", 1)[0])
+        text += " " + code
+        depth += code.count("(") - code.count(")")
+        if depth <= 0 and "assert" in text:
+            break
+    return text
+
+
+def next_item(lines, number):
+    """The 0-based index of the first line after line `number` (1-based) that isn't an
+    attribute or a comment: the item a `#[cfg(test)]` applies to."""
+    for i in range(number, min(len(lines), number + 20)):
+        stripped = lines[i].strip()
+        if stripped and not stripped.startswith(("#[", "//")):
+            return i
+    return None
+
+
+def item_end(lines, start):
+    """The 0-based index of the last line of the item starting at `start`: where its braces
+    close, or its first line if it has none before a `;`."""
+    depth, seen = 0, False
+    for i in range(start, len(lines)):
+        code = STRING.sub('""', lines[i].split("//", 1)[0])
+        depth += code.count("{") - code.count("}")
+        seen = seen or "{" in code
+        if (seen and depth <= 0) or (not seen and code.rstrip().endswith(";")):
+            return i
+    return len(lines) - 1
 LOCK_SKIP = re.compile(r"if let Ok\(.*\.lock\(\)")
 SLEEP = re.compile(r"\b(thread|time)::sleep\(")
 RELATIVE_COMMAND = re.compile(r'Command::new\("[^/"][^"]*"\)')
@@ -73,41 +111,51 @@ for crate in sorted(p for p in CRATES.iterdir() if p.is_dir()):
         )
         lines = text.splitlines()
         in_tests = test_file
+        # The last line of a `#[cfg(test)]` item that isn't the test module (a helper): test
+        # code up to there only, never the rest of the file.
+        test_item_end = 0
         for number, line in enumerate(lines, 1):
             code = line.split("//", 1)[0]
             # A marker comment may sit up to three lines above (a comment over two lines).
             previous = " ".join(lines[i].strip() for i in range(max(0, number - 4), number - 1))
             if line.strip().startswith("#[cfg(test)]"):
-                # By convention the tests module ends the file: the rest is test code.
-                in_tests = True
+                item = next_item(lines, number)
+                if item is not None and lines[item].strip().startswith("mod "):
+                    # By convention the tests module ends the file: the rest is test code.
+                    in_tests = True
+                elif item is not None:
+                    test_item_end = item_end(lines, item) + 1
+            testing = in_tests or number <= test_item_end
+            # Asserts are read whole: rustfmt splits a long one over several lines.
+            statement = assertion(lines, number - 1) if ASSERT_START.search(code) else ""
             if CFG_TARGET_OS.search(code) and not platform_ok:
                 errors.append(f"{rel}:{number}: #[cfg(target_os)] outside the platform crates")
             if library_src and rel not in PRINT_ALLOWED and PRINT.search(code):
                 errors.append(f"{rel}:{number}: a library logs with tracing, not print macros")
-            if in_tests and BARE_IS_ERR.search(code) and "any error:" not in previous:
+            if testing and BARE_IS_ERR.search(statement) and "any error:" not in previous:
                 errors.append(
                     f"{rel}:{number}: assert the exact error, not is_err() "
                     "(or say why any error will do in a `// any error:` comment above)"
                 )
-            if in_tests and BARE_FAILURE.search(code):
+            if testing and BARE_FAILURE.search(statement):
                 errors.append(f"{rel}:{number}: assert the exact exit code, not !success()")
-            if not in_tests and LOCK_SKIP.search(code) and "poisoned:" not in previous:
+            if not testing and LOCK_SKIP.search(code) and "poisoned:" not in previous:
                 errors.append(
                     f"{rel}:{number}: a poisoned lock must not silently skip work "
                     "(fail closed, recover the data, or say why in a `// poisoned:` comment)"
                 )
-            if in_tests and SLEEP.search(code) and "poll:" not in previous:
+            if testing and SLEEP.search(code) and "poll:" not in previous:
                 errors.append(
                     f"{rel}:{number}: no sleep in tests: wait for a signal "
                     "(or say what is polled in a `// poll:` comment above)"
                 )
-            if not in_tests and RELATIVE_COMMAND.search(code) and "PATH:" not in previous:
+            if not testing and RELATIVE_COMMAND.search(code) and "PATH:" not in previous:
                 errors.append(
                     f"{rel}:{number}: run programs by absolute path, or say why PATH is trusted "
                     "in a `// PATH:` comment above"
                 )
             above = lines[number - 2].strip() if number >= 2 else ""
-            if not in_tests and DENIED_ALLOW.search(code) and not above.startswith("//"):
+            if not testing and DENIED_ALLOW.search(code) and not above.startswith("//"):
                 errors.append(f"{rel}:{number}: an #[allow] of a denied lint says why, above it")
 
 # The rules above treat everything after `#[cfg(test)]` as test code, so a test module must

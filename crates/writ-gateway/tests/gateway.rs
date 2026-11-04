@@ -449,9 +449,17 @@ async fn one_connection_holds_at_most_four_channels() {
     for _ in 0..4 {
         open.push(agent.channel_open_session().await.unwrap());
     }
+    // any error: the refusal is the gateway dropping the open; what it logged says why.
     assert!(
         agent.channel_open_session().await.is_err(),
         "a fifth channel is refused"
+    );
+    let refused = daemon.audit("connect", "denied");
+    assert!(
+        refused.iter().any(|l| l["reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("channel refused: at most 4 per connection"))),
+        "{refused:?}"
     );
     // A channel closed gives its slot back. The server frees it with no signal the client
     // can see, so the open is retried until it passes, within the test deadline.
@@ -520,6 +528,7 @@ async fn a_caller_the_attestor_cannot_attest_is_turned_away() {
     let stream = daemon.agents.connect(peer()).await.unwrap();
     let connected =
         client::connect_stream(Arc::new(client::Config::default()), stream, Accept).await;
+    // any error: the connection is dropped before the SSH handshake; the line below says why.
     assert!(
         connected.is_err(),
         "no SSH session without attested caller facts"
@@ -844,10 +853,18 @@ async fn https_clients_refuse_another_certificate() {
 async fn https_turns_away_a_caller_the_attestor_cannot_attest() {
     let daemon = Daemon::start(FakeAttestor::failing()).await;
     let pin = daemon.pin.clone();
+    // any error: the connection is dropped before the TLS handshake; the line says why.
     assert!(
         https(&daemon, &pin, "GET", "/v1/info", Vec::new())
             .await
             .is_err()
+    );
+    let lines = daemon.audit("connect", "denied");
+    assert!(
+        lines.iter().any(|l| l["reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("caller turned away"))),
+        "logged like its SSH twin: {lines:?}"
     );
 }
 

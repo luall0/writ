@@ -938,12 +938,14 @@ mod tests {
                 "{bad}: {error}"
             );
         }
-        assert!(
+        let error = format!(
+            "{:#}",
             load(&format!(
                 "{MINIMAL}notifiers: [{{ ntfy: \"https://x/y\" }}]\n"
             ))
-            .is_err()
+            .unwrap_err()
         );
+        assert!(error.contains("unknown variant `ntfy`"), "{error}");
         // Checked at load as the notifier reads them, not found missing at unseal (the review
         // after M5.5): the chat id, the Bot API URL, one notifier per sealed token.
         for (notifiers, why) in [

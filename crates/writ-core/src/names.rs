@@ -433,10 +433,12 @@ mod tests {
                 .parse::<CommitId>()
                 .is_ok()
         );
-        assert!(
+        assert_eq!(
             "9E1C2F0000000000000000000000000000000000"
                 .parse::<CommitId>()
-                .is_err()
+                .unwrap_err()
+                .kind,
+            "commit id"
         );
         assert_eq!("9e1c".parse::<CommitId>().unwrap_err().kind, "commit id");
         let fp = format!("SHA256:{}", "A".repeat(43));
@@ -445,10 +447,12 @@ mod tests {
             "SHA256:short".parse::<KeyFingerprint>().unwrap_err().kind,
             "key fingerprint"
         );
-        assert!(
+        assert_eq!(
             format!("MD5:{}", "A".repeat(43))
                 .parse::<KeyFingerprint>()
-                .is_err()
+                .unwrap_err()
+                .kind,
+            "key fingerprint"
         );
     }
 }

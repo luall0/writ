@@ -180,47 +180,39 @@ fn only_valid_session_certificates_get_in() {
         )
     };
     let key = |name: &str| gateway.root().join("keys").join(name);
+    // Refused at authentication, and for nothing else (a host key ssh distrusts, a gateway
+    // gone): git's 128 and ssh's own words for a key the server didn't take.
+    let refused = |out: std::process::Output, what: &str| {
+        assert_eq!(out.status.code(), Some(128), "{what}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("Permission denied (publickey)"),
+            "{what}: {}",
+            stderr(&out)
+        );
+    };
 
     assert!(ls_remote(&key("session"), true).status.success());
 
     let other_ca = CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap());
     gateway.forged_session(&other_ca, "foreign", 0, now() + 3600);
-    assert!(
-        !ls_remote(&key("foreign"), true).status.success(),
-        "unknown CA"
-    );
+    refused(ls_remote(&key("foreign"), true), "unknown CA");
 
     gateway.forged_session(&gateway.ca, "expired", 0, now() - 10);
-    assert!(
-        !ls_remote(&key("expired"), true).status.success(),
-        "expired"
-    );
+    refused(ls_remote(&key("expired"), true), "expired");
 
     gateway.forged_session(&gateway.ca, "early", now() + 600, now() + 3600);
-    assert!(
-        !ls_remote(&key("early"), true).status.success(),
-        "not valid yet"
-    );
+    refused(ls_remote(&key("early"), true), "not valid yet");
 
     // Our own CA, valid dates, but no lease behind it: refused.
     gateway.forged_session(&gateway.ca, "leaseless", 0, now() + 3600);
-    assert!(
-        !ls_remote(&key("leaseless"), true).status.success(),
-        "no lease"
-    );
+    refused(ls_remote(&key("leaseless"), true), "no lease");
 
-    assert!(
-        !ls_remote(&key("session"), false).status.success(),
-        "plain key"
-    );
+    refused(ls_remote(&key("session"), false), "plain key");
 
     let lease = gateway.session("revoked");
     assert!(ls_remote(&key("revoked"), true).status.success());
     gateway.revoke(&lease);
-    assert!(
-        !ls_remote(&key("revoked"), true).status.success(),
-        "revoked"
-    );
+    refused(ls_remote(&key("revoked"), true), "revoked");
 
     // Commands other than git and writ-sign are refused with a reason.
     let ssh = gateway.ssh_command(&key("session"), true);

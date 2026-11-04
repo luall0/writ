@@ -221,8 +221,9 @@ mod tests {
         );
         let link = sub.join("link");
         std::os::unix::fs::symlink(&file, &link).unwrap();
-        assert!(
-            create_new_private_file(&link).is_err(),
+        assert_eq!(
+            create_new_private_file(&link).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists,
             "never through a link"
         );
     }

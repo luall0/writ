@@ -455,6 +455,8 @@ fn session_watcher_unsupported<W: SessionWatcher + ?Sized>(watcher: &W) {
         );
     }
     drop(tx);
+    // any error: a timeout (nothing came) or a disconnection (the callback dropped, never
+    // called) both say it never called back.
     assert!(
         rx.recv_timeout(QUIET_PERIOD).is_err(),
         "an unsupported watcher must never call back"
@@ -477,6 +479,7 @@ fn assert_fires_once(rx: &std::sync::mpsc::Receiver<()>, what: &str) {
         rx.recv_timeout(CALLBACK_TIMEOUT).is_ok(),
         "{what}: the callback must be called within {CALLBACK_TIMEOUT:?}"
     );
+    // any error: a timeout or a disconnection, no second call either way.
     assert!(
         rx.recv_timeout(QUIET_PERIOD).is_err(),
         "{what}: the callback must be called only once"

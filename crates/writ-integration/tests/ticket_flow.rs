@@ -218,9 +218,12 @@ fn revocation_and_expiry_drop_sessions_and_refuse_the_certificate() {
         ends_within(&mut open, Duration::from_secs(5)),
         "the open session was not dropped"
     );
+    let out = daemon.ls_remote(&session);
+    assert_eq!(out.status.code(), Some(128), "a revoked certificate got in");
     assert!(
-        !daemon.ls_remote(&session).status.success(),
-        "a revoked certificate got in"
+        stderr(&out).contains("Permission denied (publickey)"),
+        "refused at authentication: {}",
+        stderr(&out)
     );
 
     // Expiry: the same, when expires_at passes. A ticket asks for at least 5 minutes; the
@@ -247,9 +250,16 @@ fn revocation_and_expiry_drop_sessions_and_refuse_the_certificate() {
         ends_within(&mut open, Duration::from_secs(10)),
         "the session outlived the lease"
     );
-    assert!(
-        !daemon.ls_remote(&session).status.success(),
+    let out = daemon.ls_remote(&session);
+    assert_eq!(
+        out.status.code(),
+        Some(128),
         "an expired certificate got in"
+    );
+    assert!(
+        stderr(&out).contains("Permission denied (publickey)"),
+        "refused at authentication: {}",
+        stderr(&out)
     );
 
     assert!(daemon.audited("revoke", "done") >= 1, "{}", daemon.audit());
