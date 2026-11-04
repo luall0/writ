@@ -264,6 +264,9 @@ fn writ_sign_sees_the_source_s_other_active_leases() {
     let overlapping: Vec<_> = shown.others.shown.iter().filter(|l| l.overlap).collect();
     assert_eq!(overlapping.len(), 1);
     assert_eq!(overlapping[0].branches, ["agent/oauth-*"]);
+    // Listed first, so never the one left out (the test clock gives every id the same time:
+    // without that, which ten are shown would be the ids' random parts).
+    assert!(shown.others.shown[0].overlap);
     assert!(shown.others.shown.iter().all(|l| l.id != ended));
     // From the other source, only its own lease is there.
     let elsewhere = h

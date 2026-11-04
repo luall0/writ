@@ -156,7 +156,7 @@ impl Service {
     }
 
     /// The other active leases submitted from the ticket's source (not the lease it amends or
-    /// renews): the first [`MAX_OTHERS`], and how many more; an overlap flagged.
+    /// renews): [`MAX_OTHERS`] of them, those that overlap the ticket first, and how many more.
     fn others(
         inner: &Inner,
         record: &TicketRecord,
@@ -175,9 +175,8 @@ impl Service {
             .filter(|lease| !skip.contains(&Some(&lease.id)) && lease.is_in_force(now))
             .collect();
         let more = u32::try_from(leases.len().saturating_sub(MAX_OTHERS)).map_err(internal)?;
-        let shown = leases
+        let mut listed: Vec<OtherLease> = leases
             .iter()
-            .take(MAX_OTHERS)
             .map(|lease| {
                 let scope = &lease.ticket.scope;
                 let overlap = scope.repos.iter().any(|r| ticket.scope.repos.contains(r))
@@ -195,6 +194,10 @@ impl Service {
                 }
             })
             .collect();
+        // An overlap is never the one left out: those come first, then the others by id.
+        listed.sort_by(|a, b| b.overlap.cmp(&a.overlap).then_with(|| a.id.cmp(&b.id)));
+        listed.truncate(MAX_OTHERS);
+        let shown = listed;
         Ok(Others { shown, more })
     }
 

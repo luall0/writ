@@ -69,9 +69,10 @@ triggering the signature; it is the trusted display
 - **The estimate**: the agent's, phase by phase, beside the time the lease asks for
   ("35m in all (coding 20m, checks 5m, ci 10m); the lease asks 2h").
 - **The other active leases from the ticket's source** (the daemon's record of where each
-  ticket came from, never the agent's claim): the first 10 (`MAX_OTHERS`) with their id, time
+  ticket came from, never the agent's claim): 10 of them (`MAX_OTHERS`) with their id, time
   left, repos, branches and operations, `OVERLAP` on those with a repo in common and branch
-  patterns that meet, and how many more. Display only: `max_active_per_source` is what limits
+  patterns that meet, and how many more. Overlapping leases come first: one is never the
+  lease left out. Display only: `max_active_per_source` is what limits
   them.
 
 All of it comes before the enforced terms, which stay last, right above the prompt.
