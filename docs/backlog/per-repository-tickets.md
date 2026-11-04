@@ -1,6 +1,6 @@
 # Per-repository tickets
 
-**Status:** specified up to its open questions; picked as
+**Status:** specified up to one open question; picked as
 [M6.1.5](../roadmap.md#m615--per-repository-tickets). **Area:** Lease model, Approvals,
 Clients. **Kind:** feature. **Size:** L.
 
@@ -15,50 +15,45 @@ narrow for the task).
 
 ## Proposal
 
-A ticket says what is common to the whole lease, then what each repository gets. Each part
-fits a template that allows its repository, and it stays one ticket: one approval, one lease,
-one session, one TTL. **No key is ever overridden**: the approver reads each term in one
-place and never has to merge two in their head.
+A ticket gives what is common to the whole lease, then what each repository gets. Each
+repository's terms fit a template that allows that repository, and it stays one ticket: one
+approval, one lease, one session, one TTL. **No key is ever overridden**: each term has one
+fixed place, so the approver reads it there and never merges two in their head.
 
-Already decided with the user (the decision log's M6.1.5 row):
+Decided with the user (the decision log's M6.1.5 rows):
 
+- **The layout: fixed places** (proposition A of four; the others below). `common:` holds
+  the lease's terms (it replaces `scope:`), `repos:` one block per repository.
+- **The committer email is common** (`common.committer_emails`): the lease signs with one
+  key, so it has one identity. It moves to each repository's block with
+  [a signing key per repository in one lease](README.md#a-signing-key-per-repository-in-one-lease).
+- **A new ticket version, the old layout refused.** `writ-ticket/3`; a ticket in today's
+  layout (`scope`, `limits.max_signatures`, `ticket.expected_paths`…) is refused, naming the
+  new place of each key. Writ isn't deployed anywhere yet: no conversion, and the state's
+  version moves too (a daemon finding an older state refuses to start, as since M6).
 - **Counts per repository only** (`max_signatures`, `max_pushes`, `max_push_size`), each
   within its repository's template; no lease-wide cap, the approver sees each and the sum.
 - **Lease-wide terms, the strictest template wins**: the TTL at most the smallest `max_ttl`,
   `max_ops_per_minute` at most the smallest, `max_renewals` the smallest, the strictest
   `on_violation`.
-- **One signing key per lease**: parts whose templates name different keys are rejected,
-  each template and key named.
+- **One signing key per lease**: repositories whose templates name different keys are
+  rejected, each template and key named.
 - **Otherwise, one lease per repository**, as the workspace skill says.
+- **Narrowing per repository**: `--branch api:agent/x`, `--drop-op web:push`,
+  `--max-pushes api:2`…; a flag without a repository applies to every repository.
 - **Both skills** (`writ` and `writ-workspace`) rewritten for the new layout, their examples
   checked by `writ check` in a test.
 
-To decide: **the layout** (below), then the [open questions](#open-questions).
+To decide: [`template` in the ticket](#open-questions).
 
-## The layout: four propositions
-
-Every proposition is written for the same task, so they can be compared: an API (`api`,
-template `backend`: push on `agent/*`) and a web app (`web`, template `frontend`: push on
-`review/*` only), one committer email, three hours. A single-repository ticket follows each.
-
-What stays as it is in all four: `ticket.title`, `task`, `plan`, `estimate`, `amends`,
-`renews`, `revises`; `origin_hint`; `caller`; `limits.ttl` and `limits.max_ops_per_minute`
-(the lease's). What moves: `template`, `ticket.expected_paths` and the counts go per
-repository (each repository has its own template and its own files); `on_violation` stays
-lease-wide (it revokes the whole lease).
-
-### A. Fixed places: the lease's terms, then each repository's
-
-Each key has one place, always the same: what is about the lease (the agent's identity, time,
-rate, what happens on a violation) at the top, what is about a repository (its template,
-operations, branches, files, counts) in its block. Nothing is shared between blocks.
+## The layout
 
 ```yaml
-scope:                                   # the lease's, for every repository
+common:                                  # the lease's, for every repository
   committer_emails: ["agent@example.org"]
 repos:                                   # each repository's own terms
   api:
-    template: backend
+    template: backend                    # see the open question
     operations: [fetch, commit_sign, push]
     branches: ["agent/login"]
     expected_paths: ["src/auth/**"]
@@ -76,10 +71,10 @@ ticket:
 limits: { ttl: 3h }                      # the lease's: time and rate
 ```
 
-One repository:
+One repository is one block:
 
 ```yaml
-scope:
+common:
   committer_emails: ["agent@example.org"]
 repos:
   my-repo:
@@ -91,143 +86,58 @@ ticket: { title: "Add OAuth login", task: "…" }
 limits: { ttl: 2h }
 ```
 
-`writ sign` shows the lease's terms once, then one block per repository, in the same order as
-the file.
+Where each key lives:
 
-- **For:** one rule to learn ("about the lease, or about a repository"); the screen and the
-  file have the same shape; a key in the wrong place is refused, naming where it goes; one
-  repository is just one block.
-- **Against:** terms the repositories share (`operations`, often) are written in each block.
+| Place | Keys |
+|---|---|
+| Top level (the lease's) | `common.committer_emails`; `ticket.title`, `task`, `plan`, `estimate`, `amends`, `renews`, `revises`; `limits.ttl`, `limits.max_ops_per_minute`; `on_violation`; `origin_hint`; `caller.*` |
+| `repos.<name>` (one block per repository, at least one) | `template`, `operations`, `branches`, `force_push`, `expected_paths`, `limits.max_signatures`, `limits.max_pushes`, `limits.max_push_size` |
+| Gone | `template` at the top, `scope.*` (now `common` and the blocks), `ticket.expected_paths` and the counts in the top `limits` (now in the blocks): each refused, naming its new place |
 
-### B. A common scope added to by each repository
+`writ sign` shows the lease's terms once, then one block per repository, in the file's order,
+within 78 columns.
 
-`scope` holds what every repository gets; each repository's block may only **add** to the
-lists (operations, branches, files, emails), never remove or replace. Scalars (template,
-counts, `force_push`) are per repository only.
+### The propositions not chosen
 
-```yaml
-scope:                                   # every repository gets these
-  operations: [fetch, commit_sign]
-  committer_emails: ["agent@example.org"]
-repos:
-  api:                                   # … plus these
-    template: backend
-    operations: [push]
-    branches: ["agent/login"]
-    expected_paths: ["src/auth/**"]
-    limits: { max_signatures: 10, max_pushes: 4 }
-  web:
-    template: frontend
-    operations: [push]
-    branches: ["review/login"]
-    expected_paths: ["app/login/**"]
-    limits: { max_signatures: 6, max_pushes: 2 }
-limits: { ttl: 3h }
-```
+Kept for the record; each was written for the same task.
 
-`writ sign` shows the common terms, then each repository's additions, then (to remove any
-doubt) each repository's whole scope.
-
-- **For:** short when the repositories share a lot; never a conflict (a union can't contradict).
-- **Against:** a repository's operations are in two places, so the reviewer adds them up;
-  the full scope on screen makes it readable, but the file isn't.
-
-### C. Each key either common or per repository, chosen by the ticket
-
-A key may be written in `scope` (it then holds for every repository) or in repositories'
-blocks, never both: a key in `scope` and in a block is refused. The counts and the template
-are always per repository.
-
-```yaml
-scope:
-  operations: [fetch, commit_sign, push] # common: no block may say operations
-  committer_emails: ["agent@example.org"]
-repos:
-  api:
-    template: backend
-    branches: ["agent/login"]            # per repository: not in scope
-    expected_paths: ["src/auth/**"]
-    limits: { max_signatures: 10, max_pushes: 4 }
-  web:
-    template: frontend
-    branches: ["review/login"]
-    expected_paths: ["app/login/**"]
-    limits: { max_signatures: 6, max_pushes: 2 }
-limits: { ttl: 3h }
-```
-
-`writ sign` shows the common terms, then each repository's.
-
-- **For:** the shortest; nothing is merged, each key has one value.
-- **Against:** the place of a key changes from one ticket to the next, so the reviewer looks
-  in both every time; more ways to write the same ticket (harder for the skills to teach and
-  for `writ check` to explain).
-
-### D. Repositories only, nothing common
-
-No `scope` at all: every term is in a repository's block, the email too; only `ticket` and
-`limits` (time, rate) are the lease's.
-
-```yaml
-repos:
-  api:
-    template: backend
-    operations: [fetch, commit_sign, push]
-    branches: ["agent/login"]
-    committer_emails: ["agent@example.org"]
-    expected_paths: ["src/auth/**"]
-    limits: { max_signatures: 10, max_pushes: 4 }
-  web:
-    template: frontend
-    operations: [fetch, commit_sign, push]
-    branches: ["review/login"]
-    committer_emails: ["agent@example.org"]
-    expected_paths: ["app/login/**"]
-    limits: { max_signatures: 6, max_pushes: 2 }
-limits: { ttl: 3h }
-```
-
-- **For:** the simplest model; each block reads alone; different emails per repository
-  possible.
-- **Against:** the most repetition; the agent's identity (one key per lease, so one signer)
-  is repeated and could differ between blocks for no reason.
-
-### Recommendation: A
-
-Each term has one fixed place, so the reviewer always knows where to look, the screen
-mirrors the file, and a misplaced key gets a precise refusal. The repetition it costs is in
-`operations` only, which is short, and seeing each repository's operations whole is what the
-review needs. The email stays common because the lease signs with one key: one identity.
+- **B. A common scope added to by each repository**: `scope` holds what every repository
+  gets, each block may only add to the lists. Short, but a repository's operations are in two
+  places, so the reviewer adds them up.
+- **C. Each key either common or per repository, chosen by the ticket, never both.** The
+  shortest, but a key's place changes from one ticket to the next, so the reviewer looks in
+  both every time, and there are more ways to write one ticket.
+- **D. Repositories only, nothing common.** The simplest model, the most repetition; the
+  agent's one identity repeated in every block, free to differ for no reason.
 
 ## Open questions
 
-1. **The layout:** A, B, C or D (recommended: A).
-2. **The committer email:** common to the lease (A, B, C) or per repository (D, or added to
-   A's blocks)? Recommended: common, since there is one signing key per lease; a repository
-   that needs another email gets its own lease.
-3. **Today's layout** (`scope.repos` a list, the other keys in `scope`, `limits` holding the
-   counts, `ticket.expected_paths`):
-   - (a) still read, converted to the new one (every repository given the same terms), and
-     shown converted; refused when mixed with the new keys. Recommended: tickets written
-     before, and agents still on the old skill, keep working.
-   - (b) refused in new tickets, with a message naming the new place of each key; leases
-     already granted still read.
-4. **`template` at the top for one repository:** keep `template:` at the top as a shortcut
-   when the ticket names one repository, or only in the block? Recommended: only in the
-   block (one place, A's rule), the top-level key refused in the new layout.
-5. **Narrowing flags:** `--branch api:agent/x`, `--drop-op web:push`, `--max-pushes api:2`,
-   a flag without a repository applying to every repository (recommended), or one flag per
-   repository required when the ticket has several?
+1. **`template` in the ticket.** Templates are the daemon's configuration: the operator writes
+   them, the agent never changes one. The ticket's `template` only picks among the templates
+   the operator allows for a repository, and today it is optional: when exactly one template
+   allows the repository and fits, the daemon picks it and the agent writes nothing. It is
+   needed only when several fit, for example a `quick-fix` template (30 minutes,
+   `commit_sign`) and a `feature` template (4 hours, `push`) both on the repository: the
+   daemon then refuses to guess (fail closed: a silent pick would choose a signing key and
+   limits nobody asked for) and the ticket must name one.
+   - (a) Keep `template` optional in each repository's block, needed only when several
+     templates fit that repository. Recommended: the operator keeps several templates per
+     repository (quick fixes beside features), and the approver sees which one applies.
+   - (b) Drop it from the ticket: a repository may be allowed by one template only (the
+     policy refused otherwise; with M6.2, `repos.<name>.templates` holding at most one).
+     Simpler tickets, but one kind of work per repository.
 
 ## Design
 
-- `writ-core`: the ticket's scope as lease terms plus one part per repository
-  (`writ-ticket/3`); the fit per part against its template (the template named, or the only
+- `writ-core`: the ticket as the lease's terms (`common`, `ticket`, `limits`) plus one part
+  per repository (`writ-ticket/3`, the only kind read: no conversion of the old one); the fit per part against its template (the template named, or the only
   one allowing the repository and fitting), plus the lease-wide terms against every part's
   template and the one signing key; narrowing, renewals and amendments per part; every sign
   and push request checked against its repository's part, counts kept per repository.
-- `writ-store`: counts per lease and repository; the old kind read for leases granted before.
-- `writ-cli`: `writ sign`'s display (the lease's terms, then each repository, within 78
+- `writ-store`: counts per lease and repository; a new state version (an older state
+  refused at start, as since M6).
+- `writ-cli`: `writ check` and the dry run refusing the old layout, naming each key's new
+  place; `writ sign`'s display (the lease's terms, then each repository, within 78
   columns), narrowing per repository, `writ policy` for several repositories (each template's
   signing key and lease-wide terms, whether one ticket can cover them), `writ check` naming
   each problem's repository and place, both skills.

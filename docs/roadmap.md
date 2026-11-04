@@ -222,15 +222,45 @@ its scope repository by repository, each part fitting a template that allows tha
 and stays one ticket: one approval, one lease, one session, one TTL. Most of the design below was
 settled with the user (the decision log's M6.1.5 rows); the layout is still to decide.
 
-[The design page](backlog/per-repository-tickets.md) holds the layout's propositions and
-the questions left.
+[The design page](backlog/per-repository-tickets.md) holds the layout, where each key lives,
+and the question left.
 
-- **The layout: the lease's terms, then each repository's, no override.** Each term is read
-  in one place: the approver never merges two. Which keys are the lease's and which each
-  repository's, and how today's layout is read, are to decide with the user from the
-  [four propositions](backlog/per-repository-tickets.md#the-layout-four-propositions)
-  (recommended: A, fixed places). Whatever the choice, `writ-ticket/3` canonical bytes hold
-  every repository's full terms (the old kind still read for leases already granted).
+- **The layout: the lease's terms, then each repository's, no override.** `common:` (it
+  replaces `scope:`) holds the committer emails, `repos:` one block per repository (its
+  `template`, `operations`, `branches`, `force_push`, `expected_paths`, and its counts in
+  `limits`); `ticket` and `limits` (time and rate) stay the lease's. Each term has one fixed
+  place, and a key elsewhere is refused, naming where it goes.
+
+  ```yaml
+  common:
+    committer_emails: ["agent@example.org"]
+  repos:
+    api:
+      template: backend
+      operations: [fetch, commit_sign, push]
+      branches: ["agent/login"]
+      expected_paths: ["src/auth/**"]
+      limits: { max_signatures: 10, max_pushes: 4 }
+    web:
+      template: frontend
+      operations: [fetch, commit_sign, push]
+      branches: ["review/login"]
+      expected_paths: ["app/login/**"]
+      limits: { max_signatures: 6, max_pushes: 2 }
+  ticket: { title: "Login across the API and the web app", task: "…" }
+  limits: { ttl: 3h }
+  ```
+
+- **A new ticket version, the old layout refused.** `writ-ticket/3`, the only kind read; a
+  ticket in today's layout is refused, naming each key's new place, and the state's version
+  moves (an older state refused at start). Writ isn't deployed anywhere yet: nothing to
+  convert.
+- **The committer email is common** to the lease (one signing key, one identity); it moves to
+  each repository's block with [a signing key per repository in one
+  lease](backlog/README.md#a-signing-key-per-repository-in-one-lease).
+- **`template` in a repository's block**: to decide with the user
+  ([the open question](backlog/per-repository-tickets.md#open-questions); recommended:
+  optional, needed only when several templates fit that repository, as today).
 - **Counts per repository only.** Each part's `max_signatures`, `max_pushes` and
   `max_push_size` within its own template's; the daemon counts signatures and pushes per
   repository. No lease-wide cap; the approver sees each part's counts and their sum.
@@ -281,16 +311,15 @@ Acceptance:
       emails and paths) is granted with one signature, and each repository's requests are
       held to its own part: an operation, a branch or a path allowed in one and not in the
       other is denied there, with its code, and allowed in the first.
-- [ ] A part that fits no template allowing its repository rejects the whole ticket, naming
-      the repository and why; so do parts whose templates name different signing keys
-      (each template and key named); a ticket under the old layout fits and is enforced as
-      before.
+- [ ] A repository whose terms fit no template allowing it rejects the whole ticket, naming
+      the repository and why; so do repositories whose templates name different signing
+      keys (each template and key named).
 - [ ] Each part's counts hold, each tested on both sides; the lease's TTL, rate, renewals
       and `on_violation` are the strictest of its templates', each tested on both sides
       (a ticket asking more than the strictest rejected, naming the template).
 - [ ] Every key is read in its one place (a key elsewhere refused, naming where it goes),
-      the canonical bytes round-trip (property tests), and a lease granted before reads
-      unchanged.
+      a ticket in the old layout refused naming each key's new place, the canonical bytes
+      round-trip (property tests), and an older state refused at start.
 - [ ] Narrowing per repository is a strict subset of what was submitted (a widening refused),
       shown to the approver and the agent per repository; amendments and renewals checked
       per repository.
