@@ -72,3 +72,6 @@ conventions, hard rules and commands, and points here for details.
   and write down; answering an advisory.
 - [Manual checks](guides/manual-checks.md): the checks that need a person (Touch ID with
   Secretive), step by step against the development daemon.
+- [Manual checks with a real agent](guides/manual-checks-e2e.md): a real agent on a throwaway
+  GitHub repository, prompts that never mention Writ: one task with one Touch ID, then a
+  refusal, an amendment and a renewal (M6).

@@ -257,3 +257,10 @@ Then start one under the debugger (`lldb -- target/debug/writd run dev/writd.yam
 a debug build keeps running, its log saying `PT_DENY_ATTACH` was skipped because the process
 is traced; a release build (`cargo build --release -p writd`, then under `lldb` the same way)
 refuses to start, saying it is traced. When both pass, note it under the acceptance item in M5's history page.
+
+## A real agent end to end (M6)
+
+The checks with a real agent (OpenCode, Claude Code…) on a throwaway GitHub repository, its
+prompts never naming Writ: one task from prompt to pushed branch with one Touch ID, a custom
+committer name, then a refusal, an amendment and a renewal handled from the skill alone. Their
+own page: [manual checks with a real agent](manual-checks-e2e.md).
