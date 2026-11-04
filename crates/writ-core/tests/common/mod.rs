@@ -16,6 +16,9 @@ pub const POLICY: &str = include_str!("../fixtures/policy.yaml");
 
 pub const AGENT_EMAIL: &str = "user+agent@example.org";
 
+/// The name of the commits in [`sign_request`].
+pub const AGENT_NAME: &str = "Writ agent";
+
 /// The ticket most tests start from: feature-branch, omega-code, agent/oauth-*, 2h.
 pub const REQUEST: &str = r#"
 template: feature-branch
@@ -153,6 +156,8 @@ pub fn sign_request(lease: &Lease) -> SignRequest {
         object_format: Some(ObjectFormat::Sha1),
         committer_email: AGENT_EMAIL.to_owned(),
         author_email: AGENT_EMAIL.to_owned(),
+        committer_name: Some(AGENT_NAME.to_owned()),
+        author_name: Some(AGENT_NAME.to_owned()),
         writ_trailers: vec![lease.id.to_string()],
         touched_paths: Some(vec!["src/auth/login.rs".to_owned()]),
     }

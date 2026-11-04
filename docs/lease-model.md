@@ -76,6 +76,7 @@ templates:
     push_modes: [gateway, proxy]           # default [gateway]; never direct_ssh here
     force_push: false                      # default false: tickets can't ask for it
     committer_emails: ["user+agent@example.org"]   # required with commit_sign
+    committer_name: "Writ agent"           # optional: the name on every commit; unset, not checked
     signing_key: agent-ed25519-01          # required with commit_sign: the signer key for commits
     max_ttl: 4h
     max_signatures: 50
@@ -100,7 +101,11 @@ templates:
 
 Every limit is required, so a template never caps by accident. A template caps every part
 of a ticket: repos, operations, branches, force push, committer emails, the signing key and
-each limit. `quick-fix` lists `dotfiles`, but `dotfiles` only allows `direct_ssh` and the
+each limit. Its `committer_name`, when set, is not something a ticket asks for: the daemon
+copies it into every lease that signs, and every commit's author and committer must carry
+exactly that name (git's `user.name`, which `writ git` and a whole-repo clone set from the
+lease). Unset, the name isn't checked. It doesn't make a remote show a commit as verified
+(the email and the key do); it keeps an agent from signing as someone else by name. `quick-fix` lists `dotfiles`, but `dotfiles` only allows `direct_ssh` and the
 template only `gateway` (the default), so a quick-fix ticket can sign for `dotfiles` but not
 push to it.
 
@@ -168,7 +173,7 @@ daemon (the same function the daemon runs on the text, `fit::check_request`).
 
 What the approver signs, and once signed, the lease's terms. The daemon fills `id`,
 `created_at`, `subject.session_key` (from the key sent with the request), the template's
-committer emails and signing key, `limits.expires_at = created_at + ttl` (so time spent
+committer emails, committer name and signing key, `limits.expires_at = created_at + ttl` (so time spent
 waiting for my signature counts), every omitted limit, `revision` and `previous_feedback`
 (prefixed `[not signed by an approver]` when the refusal was unsigned, with `decisions: open`).
 A ticket asks for at least the daemon's `min_ttl` (`ttl`, and a template's `max_ttl`; 5 minutes
@@ -180,7 +185,7 @@ together at most 60 (the operator's `submissions` in `writd.yaml` sets both), an
 holds at most `max_pending` (20) waiting.
 
 ```yaml
-kind: writ-ticket/1              # the format: an approval can't be read as anything else
+kind: writ-ticket/2              # the format: an approval can't be read as anything else
 id: wrt_01JD8X...
 created_at: 2026-10-31T14:02:11Z
 template: feature-branch
@@ -201,6 +206,7 @@ scope:                           # WHAT
   branches: ["agent/*"]
   force_push: false
   committer_emails: ["user+agent@…"]
+  committer_name: Writ agent     # from the template; null without commit_sign or when it sets none
   signing_key: agent-ed25519-01  # from the template; null without commit_sign
 
 ticket:                          # written by the agent, reviewed by me
@@ -273,7 +279,7 @@ any field changes the bytes. A new format gets a new `kind`.
 | Pushed commits signed under this lease | Pack vs ledger | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
 | Repo (direct_ssh) | Remote, via a repo-scoped deploy key | 🟢 if deploy key · 🔴 account-wide otherwise |
 | Push host (direct_ssh) | `session-bind` host key | 🟢 Strong |
-| Committer and author identity (both emails in `committer_emails`) | Commit bytes parsed by the daemon | 🟢 Strong |
+| Committer and author identity (both emails in `committer_emails`; both names the lease's `committer_name` when it has one) | Commit bytes parsed by the daemon | 🟢 Strong |
 | Caller = lease holder | Session certificate | 🟡 Strong-ish (bearer; bounded by scope + TTL) |
 | Origin host | Source address / hint | 🟠 Advisory |
 | Process tree (local mode only) | Kernel peer credentials, via the `CallerAttestor` ([platform](architecture/platform.md)) | 🟢 Strong (extra layer) |
@@ -332,7 +338,9 @@ ticket ([M6](decisions.md)). The rules, checked at submission and again at signi
   renewed already;
 - it keeps the lease's template; its `ttl` and limits are new, within the template;
 - its scope, expected paths and `on_violation` are the same or narrower
-  (`narrow::widenings`); committer emails and expected paths left out are the lease's;
+  (`narrow::widenings`); committer emails and expected paths left out are the lease's; the
+  committer name the same (from the template: a template whose name changed meanwhile can't
+  renew the lease);
 - the template's `max_renewals`, when set, caps how many renewals one chain holds.
 
 Once signed, the renewal is a lease of its own (its id, a certificate for the same session
@@ -374,8 +382,8 @@ revives a used-up lease.
   fewer repos, operations or committer emails; branches each within a submitted pattern;
   force push off; each limit and `expires_at` lower or equal; `on_violation` as strict or
   stricter; `expected_paths` a non-empty subset (emptying it would turn the path check off),
-  or any if none were submitted. Id, time, template, subject, signing key and text can't
-  change.
+  or any if none were submitted. Id, time, template, subject, signing key, committer name and
+  text can't change.
 - **Force push** covers non-fast-forward updates and deleting a branch. Creating a branch is
   never one.
 - Only branches (`refs/heads/…`) can be pushed; any other ref is denied even if no pattern

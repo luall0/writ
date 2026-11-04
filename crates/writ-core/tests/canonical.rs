@@ -40,6 +40,7 @@ fn full() -> Ticket {
         },
     });
     ticket.text.title = "Add OAuth login \"v2\" — é\u{1b}[2J".to_owned();
+    ticket.scope.committer_name = Some("Writ agent — Zoë".parse().unwrap());
     ticket.text.estimate = Some(Estimate {
         coding: Some(Duration::from_seconds(45 * 60)),
         checks: None,
@@ -102,10 +103,10 @@ fn fixtures_are_stable() {
 
 #[test]
 fn the_format_starts_with_its_kind() {
-    assert!(FULL.starts_with(br#"{"kind":"writ-ticket/1","id":"wrt_"#));
+    assert!(FULL.starts_with(br#"{"kind":"writ-ticket/2","id":"wrt_"#));
     assert_eq!(
         Ticket::KIND,
-        "writ-ticket/1",
+        "writ-ticket/2",
         "KIND is the serde name of the marker"
     );
 }
@@ -179,6 +180,12 @@ fn every_field_change_changes_the_bytes() {
                 .committer_emails
                 .insert("x@example.org".parse().unwrap());
         }),
+        ("scope.committer_name", |t| {
+            t.scope.committer_name = Some("Writ agent — Zoe".parse().unwrap())
+        }),
+        ("scope.committer_name removed", |t| {
+            t.scope.committer_name = None
+        }),
         ("scope.signing_key", |t| {
             t.scope.signing_key = Some("agent-ed25519-02".parse().unwrap())
         }),
@@ -249,10 +256,10 @@ fn only_canonical_bytes_decode() {
         ),
         (
             "keys reordered",
-            text.replacen(r#"{"kind":"writ-ticket/1","#, "{", 1)
+            text.replacen(r#"{"kind":"writ-ticket/2","#, "{", 1)
                 .replacen(
                     r#""on_violation""#,
-                    r#""kind":"writ-ticket/1","on_violation""#,
+                    r#""kind":"writ-ticket/2","on_violation""#,
                     1,
                 ),
         ),
@@ -282,7 +289,7 @@ fn only_canonical_bytes_decode() {
         ),
         (
             "other kind",
-            text.replacen("writ-ticket/1", "writ-ticket/2", 1),
+            text.replacen("writ-ticket/2", "writ-ticket/3", 1),
         ),
         (
             "size as text",
@@ -306,9 +313,9 @@ fn only_canonical_bytes_decode() {
             matches!(
                 Ticket::from_canonical(bytes.as_bytes()),
                 Err(writ_core::canonical::CanonicalError::NotCanonical {
-                    kind: "writ-ticket/1"
+                    kind: "writ-ticket/2"
                 } | writ_core::canonical::CanonicalError::Decode {
-                    kind: "writ-ticket/1",
+                    kind: "writ-ticket/2",
                     ..
                 })
             ),

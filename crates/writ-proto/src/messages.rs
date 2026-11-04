@@ -2,11 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 use writ_core::authority::{AdminTarget, PreviousToken, TextDigest};
+use writ_core::config::{PathsCheck, TicketLink};
 use writ_core::lease::State;
-use writ_core::names::{CommitId, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
+use writ_core::names::{
+    CommitId, CommitterName, Email, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId,
+};
 use writ_core::signed::BootNonce;
 use writ_core::ticket::{Estimate, Operation};
-use writ_core::units::Timestamp;
+use writ_core::units::{ByteSize, Duration, Timestamp};
 use zeroize::Zeroizing;
 
 /// Reply to [`Command::Request`]: the ticket is waiting for the approver.
@@ -16,6 +19,60 @@ pub struct Submitted {
     pub id: TicketId,
     /// The complete ticket the daemon built, as canonical bytes.
     pub canonical: String,
+}
+
+/// Reply to [`Command::DryRun`](crate::Command::DryRun): the ticket passed every check a
+/// submission gets. Nothing was stored, nobody was told.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checked {
+    /// The complete ticket the daemon would build, as canonical bytes (its id is a fresh one,
+    /// never used).
+    pub canonical: String,
+}
+
+/// Reply to [`Command::Policy`](crate::Command::Policy): what a ticket for one repo may ask,
+/// from the policy in force. Only that repo: never its upstream, its credential, another
+/// repo or what a template allows elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoPolicy {
+    pub repo: RepoName,
+    /// The refs no lease may push (the registry's `protected_refs`).
+    pub protected_refs: Vec<String>,
+    /// How a commit names its lease: `trailer` means every commit needs `Writ: <lease>`.
+    pub ticket_link: TicketLink,
+    /// Every template that allows the repo, by name: a ticket must fit one.
+    pub templates: Vec<TemplateView>,
+    /// The shortest `ttl` a ticket may ask for.
+    pub min_ttl: Duration,
+    /// How long after its end a lease can still be renewed.
+    pub renew_grace: Duration,
+    /// The most active leases one source may hold at once (none: no limit).
+    pub max_active_per_source: Option<u32>,
+}
+
+/// A template, as far as one repo is concerned: the largest ticket it accepts for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateView {
+    pub name: TemplateName,
+    pub operations: Vec<Operation>,
+    /// The branch patterns a ticket's branches must be within, as written.
+    pub branches: Vec<String>,
+    pub committer_emails: Vec<Email>,
+    /// The name every commit must carry as author and committer (none: not checked).
+    pub committer_name: Option<CommitterName>,
+    pub force_push: bool,
+    pub max_ttl: Duration,
+    pub max_signatures: u32,
+    pub max_pushes: u32,
+    pub max_ops_per_minute: u32,
+    pub max_push_size: ByteSize,
+    pub paths_check: PathsCheck,
+    pub require_expected_paths: bool,
+    /// How many renewals one lease's chain may have (none: no limit).
+    pub max_renewals: Option<u32>,
 }
 
 /// Reply to [`Command::Wait`]: how the ticket was decided.

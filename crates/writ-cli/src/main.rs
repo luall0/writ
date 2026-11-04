@@ -1,6 +1,7 @@
 //! `writ`, the Writ CLI.
 //!
-//! Agent side: `writ request <ticket.yaml>` (submit and wait), `writ wait <id>`, `writ init
+//! Agent side: `writ policy` (what a ticket for the repo may ask), `writ request
+//! <ticket.yaml>` (submit and wait; `--dry-run` checks it only), `writ wait <id>`, `writ init
 //! <repo>` (wire a repository and install the agent skill; `--whole-repo` for a clone
 //! dedicated to an agent, `--undo`), `writ git <args>` and `writ exec -- <program>` (git, or a
 //! program, with the wiring), `writ close` (end the lease: its report, recorded in the
@@ -22,6 +23,7 @@ mod close;
 mod display;
 mod https;
 mod init;
+mod policy;
 mod reader;
 mod session;
 mod skill;
@@ -123,6 +125,18 @@ enum Commands {
         /// Return once submitted; `writ wait <id>` later.
         #[arg(long)]
         no_wait: bool,
+        /// Check the ticket as the daemon would on submission (templates, limits, the lease it
+        /// amends or renews), without submitting it: nothing stored, nobody asked.
+        #[arg(long, conflicts_with = "no_wait")]
+        dry_run: bool,
+        #[command(flatten)]
+        url: AgentUrl,
+    },
+    /// What a ticket for a repo may ask (templates, branches, committer emails, limits,
+    /// protected refs), from the daemon's policy: the repo named, or this wired repository's.
+    Policy {
+        /// The repo's name in the daemon's registry (default: the wired repository's).
+        repo: Option<RepoName>,
         #[command(flatten)]
         url: AgentUrl,
     },
@@ -398,9 +412,22 @@ fn signer(paths: &Paths, args: &SignerArgs) -> approver::Signer {
 async fn run(cli: Cli) -> anyhow::Result<Exit> {
     let paths = paths(&cli)?;
     match &cli.command {
-        Commands::Request { file, no_wait, url } => {
-            agent::request(&paths, &url.url, file, *no_wait).await
+        Commands::Request {
+            file,
+            no_wait,
+            dry_run,
+            url,
+        } => {
+            let mode = if *dry_run {
+                agent::Mode::DryRun
+            } else if *no_wait {
+                agent::Mode::NoWait
+            } else {
+                agent::Mode::Wait
+            };
+            agent::request(&paths, &url.url, file, mode).await
         }
+        Commands::Policy { repo, url } => policy::policy(&paths, &url.url, repo.as_ref()).await,
         Commands::Wait { id, lease, url } => {
             agent::wait(&paths, &url.url, id, lease.as_ref()).await
         }

@@ -26,7 +26,7 @@ signing_keys:                      # every key a template's signing_key names
 # max_pending: 20                  # tickets waiting for the approver at once, 1 or more
 # min_ttl: 5m                      # the shortest ticket ttl and template max_ttl, 10s to 1d
 # submissions:
-#   per_source: 10                 # tickets one source submits a minute, 1 to 1000
+#   per_source: 10                 # tickets one source submits a minute, 1 to 1000 (policy reads and dry runs count)
 #   in_all: 60                     # all sources together, 1 to 10000
 # max_active_per_source: null      # active leases one source holds at once; null: no limit
 # renew_grace: 24h                 # renewing an expired or used-up lease, 0s to 7d

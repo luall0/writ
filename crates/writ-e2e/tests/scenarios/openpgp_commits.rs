@@ -10,7 +10,9 @@
 //! --verify`, handed to the real gpg (`WRIT_GPG`). git calling `writ-sign` the SSH way still
 //! gets an OpenPGP signature (the session's lease decides); without the session in the
 //! settings (an older wiring), a sign request in SSH under this lease is denied
-//! (`signature_format`), logged, nothing signed.
+//! (`signature_format`), logged, nothing signed. The template's `committer_name` is on every
+//! commit, over the agent's own git name, and a commit under another name is refused
+//! (`committer_name`).
 
 use writ_e2e::Stack;
 use writ_e2e::agent::{expect, ticket};
@@ -45,7 +47,13 @@ fn an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified() {
 
     // Wired for gpg.
     agent.clone_from_forgejo(&stack, "openpgp", "work");
-    agent.ok_in("work", "writ init openpgp --agents none");
+    // The agent's own git has another name: the lease's wins under `writ git`.
+    agent.ok_in("work", "git config user.name 'Someone Else'");
+    let out = agent.ok_in("work", "writ init openpgp --agents none");
+    assert!(
+        out.contains("Committer name: Writ agent (the lease's)."),
+        "{out}"
+    );
     agent.ok_in("work", "git checkout -q -b agent/openpgp");
     assert_eq!(
         agent.ok_in("work", "writ git config gpg.format").trim(),
@@ -153,6 +161,41 @@ fn an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified() {
     let (verified, why) = stack.forgejo.verification("openpgp", &second);
     assert!(verified, "{why}");
     assert_eq!(why["signer"]["email"], EMAIL, "{why}");
+    // The template's committer_name: every commit carries it, set by `writ git` over the
+    // agent's own git name; verified all the same (the email and the key decide that).
+    assert_eq!(
+        agent
+            .ok_in(
+                "work",
+                "git log -1 --format='%an|%cn' && git config user.name"
+            )
+            .trim(),
+        "Writ agent|Writ agent\nSomeone Else"
+    );
+    // Another name: refused with its code, nothing signed.
+    let before = agent.ok_in("work", "git rev-parse HEAD");
+    let out = agent.in_dir(
+        "work",
+        &format!(
+            "GIT_COMMITTER_NAME='Someone Else' writ git commit -q --allow-empty -m 'renamed' \
+             --trailer 'Writ: {lease}'"
+        ),
+    );
+    let (_, err) = expect(&out, 128, "a commit under another committer name");
+    assert!(
+        err.contains(
+            "committer name \"Someone Else\" is not the lease's committer_name \"Writ agent\""
+        ),
+        "{err}"
+    );
+    assert_eq!(agent.ok_in("work", "git rev-parse HEAD"), before);
+    assert!(
+        stack.audit().iter().any(|e| e["event"] == "sign"
+            && e["result"] == "denied"
+            && e["code"] == "committer_name"
+            && e["lease"] == lease.as_str()),
+        "the denial is logged"
+    );
 
     // An SSH signature asked under this lease: denied, logged, nothing signed.
     let before = agent.ok_in("work", "git rev-parse HEAD");

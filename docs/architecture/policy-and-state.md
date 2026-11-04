@@ -22,7 +22,7 @@ Every request → find the single lease matching the caller's certificate → al
 | Function | Input facts | Checks, in order |
 |---|---|---|
 | `resolve_lease` | Certificate key id, serial, session key fingerprint | Exactly one lease matches all three |
-| `decide_sign` | Repo, object kind, committer and author emails, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, author email in the lease's committer emails (`author`), the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
+| `decide_sign` | Repo, object kind, committer and author emails and names, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, author email in the lease's committer emails (`author`), both names the lease's `committer_name` when it has one (`committer_name`, `author_name`), the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
 | `decide_push` | Repo, push mode, ref updates (old, new, fast-forward, a twin ignoring case), new commits with their ledger entries and the digest of the paths each touches (computed again from the objects git verified), pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, updated once (ignoring case), without a twin ignoring case in the repo, not protected, a branch, within the lease's branches, no force push or deletion unless allowed; every new commit in the ledger for this lease and repo, touching the paths signing saw (when it saw them); size; `max_pushes`; rate |
 | `decide_fetch` | Repo | Common checks, rate (`Service::fetch` then takes one operation of the rate window under the same lock) |
 
@@ -90,8 +90,8 @@ them never pays for the path match. That match is bounded by the ticket: at most
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
 Tables (`writ_store::Store`). The state carries its version: `PRAGMA user_version` (the
-state version, `STATE_VERSION`, now 7) and `formats.ticket_kind` (the ticket format it stores,
-`writ-ticket/1`). A new database gets the whole schema at once; a database of any other version
+state version, `STATE_VERSION`, now 8) and `formats.ticket_kind` (the ticket format it stores,
+`writ-ticket/2`). A new database gets the whole schema at once; a database of any other version
 or ticket format is refused at open, both versions named (`StoreError::OtherVersion`,
 `OtherTicketFormat`): no migration chain, never a silent mix. A format change bumps the version
 and the operator starts that version from a new state directory ([decisions](../decisions.md)).
@@ -128,7 +128,7 @@ caller ([Identity](identity.md#local-mode-process-chain-checks)).
 
 Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`
 (a renewal's grant names the lease it renews in `reason`), `refuse`, `amend`, `renew` (a lease
-ended by its renewal's grant), `revoke`, `expire`, `exhaust`, `close` (done: the agent closed
+ended by its renewal's grant), `dry_run` (a ticket checked as a submission, nothing stored: allowed with the template it fits, or denied with the reasons), `policy` (what a ticket for a repo may ask was read: allowed with the repo, denied for a repo not in the registry), `revoke`, `expire`, `exhaust`, `close` (done: the agent closed
 its lease, or added its summary to one that had ended: `reason` says `already <state>`), `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `prove` (an agent
 signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `notes`
 (a lease's [notes](gateway.md#notes) pushed upstream, or not, one line per lease and push of

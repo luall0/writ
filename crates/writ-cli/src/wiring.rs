@@ -218,6 +218,10 @@ pub fn settings(
     if let Some(email) = email {
         settings.push(("user.email", email.to_owned()));
     }
+    // The lease's committer_name, when its template sets one: the daemon refuses any other.
+    if let Some(name) = lease_name(&session) {
+        settings.push(("user.name", name));
+    }
     let mut settings: Vec<Setting> = settings
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
@@ -269,6 +273,14 @@ pub fn lease_email(session: &Path) -> Option<String> {
         [only] => Some(only.as_str().to_owned()),
         _ => None,
     }
+}
+
+/// The name the lease in `session` requires of its commits (its template's
+/// `committer_name`), if it requires one.
+pub fn lease_name(session: &Path) -> Option<String> {
+    let bytes = std::fs::read(session.join("lease.json")).ok()?;
+    let lease = Ticket::from_canonical(&bytes).ok()?;
+    lease.scope.committer_name.map(String::from)
 }
 
 /// The id of the lease in `session`, if there is one on this host.

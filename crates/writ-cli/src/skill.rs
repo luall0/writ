@@ -24,7 +24,7 @@ const TIMINGS_MARK: &str = "{{TIMINGS}}";
 const OWNED: &str = "<!-- Written by `writ init`";
 
 /// The line `--agents-md` appends to `AGENTS.md` / `CLAUDE.md`.
-pub const POINTER: &str = "Git goes through `writ git …` here (Writ leases): read the `writ` skill before any commit, push or fetch.";
+pub const POINTER: &str = "Git goes through `writ git …` here (Writ leases): read the `writ` skill before you start any task that changes files.";
 
 /// An agent the skill can be installed for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

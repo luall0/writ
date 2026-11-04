@@ -85,6 +85,12 @@ string_newtype!(
     Email, "email", validate_email
 );
 string_newtype!(
+    /// The name commits under a template must carry as author and committer
+    /// (`committer_name`), compared exactly: what git writes, so no character git would strip
+    /// or refuse, and nothing hidden.
+    CommitterName, "committer name", validate_committer_name
+);
+string_newtype!(
     /// An OpenPGP user id a key is certified with: `Name <local@domain>` (or `<local@domain>`
     /// alone), printable ASCII, the address an [`Email`].
     Uid, "OpenPGP user id", validate_uid
@@ -149,6 +155,34 @@ fn validate_email(value: &str) -> Result<(), &'static str> {
         }
         _ => Err("must be local@domain"),
     }
+}
+
+/// The most characters a [`CommitterName`] holds.
+pub const MAX_COMMITTER_NAME: usize = 100;
+
+/// 1 to [`MAX_COMMITTER_NAME`] characters, none hidden ([`crate::text::is_hidden_char`]:
+/// controls, newlines, bidi and zero-width characters), no `<` or `>` (git refuses them in a
+/// name), and neither first nor last a character git strips from a name's ends (whitespace,
+/// `.`, `,`, `:`, `;`, `"`, `'`, `\`): the name git writes is then exactly this one.
+fn validate_committer_name(value: &str) -> Result<(), &'static str> {
+    let count = value.chars().count();
+    if count == 0 || count > MAX_COMMITTER_NAME {
+        return Err("must be 1 to 100 characters");
+    }
+    if value.chars().any(crate::text::is_hidden_char) {
+        return Err("no control, newline, bidi or invisible characters");
+    }
+    if value.contains(['<', '>']) {
+        return Err("no '<' or '>'");
+    }
+    let crud =
+        |c: char| c.is_whitespace() || matches!(c, '.' | ',' | ':' | ';' | '"' | '\'' | '\\');
+    if value.starts_with(crud) || value.ends_with(crud) {
+        return Err(
+            "must not start or end with a space or one of . , : ; \" ' \\ (git strips them)",
+        );
+    }
+    Ok(())
 }
 
 /// `Name <email>`: printable ASCII and spaces, at most 256 characters, the name without

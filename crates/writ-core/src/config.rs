@@ -8,7 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::names::{Email, KeyId, RepoName, TemplateName, Uid};
+use crate::names::{CommitterName, Email, KeyId, RepoName, TemplateName, Uid};
 use crate::pattern::{BranchPattern, RefPattern};
 use crate::ticket::Operation;
 use crate::units::{ByteSize, Duration};
@@ -170,6 +170,10 @@ pub struct Template {
     /// Committer emails a ticket may use (required with `commit_sign`).
     #[serde(default)]
     pub committer_emails: BTreeSet<Email>,
+    /// The name every commit's author and committer must carry (none: not checked). It goes
+    /// into each lease's terms, and the agent's git is set to it.
+    #[serde(default)]
+    pub committer_name: Option<CommitterName>,
     /// The signer key that signs commits under this template (required with `commit_sign`).
     #[serde(default)]
     pub signing_key: Option<KeyId>,
@@ -306,7 +310,8 @@ impl PolicyConfig {
     /// every template's `signing_key` is declared; user ids are given only to declared
     /// OpenPGP keys; and every committer email a template allows has a user id on the
     /// OpenPGP key it signs with (a remote shows a commit whose committer the key doesn't
-    /// carry as unverified). The first problem is the error, naming its field.
+    /// carry as unverified), as `<committer_name> <email>` when the template sets a name.
+    /// The first problem is the error, naming its field.
     pub fn check_signing_keys(
         &self,
         declared: &BTreeMap<KeyId, DeclaredFormat>,
@@ -334,6 +339,20 @@ impl PolicyConfig {
                              would sign commits a remote shows as unverified)"
                         ),
                     ));
+                }
+                // The commits carry the template's name: the key's user id for each email
+                // must be that identity, so the certificate and the commits agree.
+                if let Some(committer) = &template.committer_name {
+                    let wanted = format!("{committer} <{email}>");
+                    if !uids.iter().any(|uid| uid.as_str() == wanted) {
+                        return Err(FieldError::at(
+                            format!("templates.{name}.committer_name"),
+                            format!(
+                                "signing_keys.{id}.uids has no user id {wanted:?}: the OpenPGP \
+                                 key must carry the name the commits do"
+                            ),
+                        ));
+                    }
                 }
             }
         }

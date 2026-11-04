@@ -15,7 +15,7 @@ lists them.
 | `--known-hosts` | `WRIT_KNOWN_HOSTS` | `<home>/known_hosts` | The daemon's pinned SSH host key ([setup, step 7](setup.md#steps)) |
 | `--tls-pins` | `WRIT_TLS_PINS` | `<home>/tls_pins` | The daemon's pinned TLS certificate, for an `https://` approval URL |
 | `--reader` | `WRIT_READER` | `<home>/reader` | Your reader key. `writ reader <name>` creates it and prints the line for the daemon's `readers` |
-| `--url` | `WRIT_URL` | none | The agents' listener, `ssh://host:port`. Used by `request`, `wait`, `close`, `init` |
+| `--url` | `WRIT_URL` | none | The agents' listener, `ssh://host:port`. Used by `request`, `wait`, `close`, `policy`, `init` |
 | `--approval-url` | `WRIT_APPROVAL_URL` | none | The approval listener, `https://host:port` or `ssh://host:port`. Used by `ls`, `sign`, `refuse`, `revoke`, `report`, `prove-key` |
 | none | `WRIT_SESSION` | none | The lease an agent works under: `writ git`, `writ exec`, `writ close`, `writ mark` and `writ-sign` use its session, whatever `current` points at. Set it to the line `writ request` prints. A lease this host doesn't have, or that ended, is refused, never replaced by `current`. [Several agents](#several-agents-on-one-host) |
 | `--key` | `WRIT_APPROVAL_KEY` | `<home>/approver.pub` | Your approval key's **public** half (a private key file is refused) |
@@ -57,7 +57,9 @@ removes exactly what `writ init` wrote.
 
 - **`--whole-repo`** writes the settings in the repo's config, for a clone dedicated to an
   agent.
-- **`--email`** is the committer email (default: the lease's, when it allows one).
+- **`--email`** is the committer email (default: the lease's, when it allows one). The name
+  is the lease's when its template sets `committer_name`: `writ git` sets git's `user.name`
+  to it, whatever your own git says.
 - **`--lease`** pins the repo to a lease: its session, never `current` (`WRIT_SESSION` still
   comes first).
 - **`--agents`** says who gets the skill, without asking: `claude`, `agents`, `opencode`,
@@ -95,6 +97,9 @@ terminal and without them, it refuses and wires nothing.
 - In the repo, each `writ/` folder installed goes in `.git/info/exclude`: never committed.
 - `SKILL.md` is Writ's: a new `writ init` replaces it. A `SKILL.md` that isn't Writ's is never
   written over.
+- The skill has the agent start each task that changes files, before any edit, with
+  `writ policy` (what a ticket for the repo may ask: run it yourself to see what your agents
+  see) and the ticket, checked with `writ request --dry-run` before it is submitted.
 - `timings.md` beside the first one is what the agent learns. `writ close` records each run in
   it and keeps it within its limits; `writ timings` changes them; `writ check timings.md`
   says what `writ close` would drop or rewrite. `writ init --undo` keeps it.

@@ -1,5 +1,8 @@
 //! The agent's side: `writ request` and `writ wait`.
 //!
+//! `writ request --dry-run` sends the ticket for every check a submission gets and writes
+//! nothing: no session, no key kept.
+//!
 //! `writ request` generates a session key (or reuses the session's: an amendment's lease, a
 //! revision's refused ticket), submits the ticket file over the agents' listener
 //! authenticated with that key (so the daemon knows the submitter holds it), and waits for
@@ -21,7 +24,7 @@ use writ_core::names::TicketId;
 use writ_core::ticket::{Ticket, TicketRequest};
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::LineEnding;
-use writ_proto::{CLIENT_USER, Command, Decision, Submitted};
+use writ_proto::{CLIENT_USER, Checked, Command, Decision, Submitted};
 
 use crate::client::{Endpoint, Session};
 use crate::display;
@@ -31,8 +34,20 @@ use crate::session::{
 use crate::{Exit, Paths};
 use writ_core::canonical::Canonical;
 
-/// Submits a ticket file and, unless `no_wait`, waits for the decision.
-pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> anyhow::Result<Exit> {
+/// What `writ request` does once the ticket file is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Submit it and wait for the decision.
+    Wait,
+    /// Submit it and return.
+    NoWait,
+    /// Have the daemon check it, and submit nothing.
+    DryRun,
+}
+
+/// Submits a ticket file and, in [`Mode::Wait`], waits for the decision; in
+/// [`Mode::DryRun`], only has the daemon check it.
+pub async fn request(paths: &Paths, url: &str, file: &Path, mode: Mode) -> anyhow::Result<Exit> {
     let text = if file == Path::new("-") {
         std::io::read_to_string(std::io::stdin()).context("cannot read the ticket from stdin")?
     } else {
@@ -80,6 +95,11 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> an
     };
     let endpoint = Endpoint::parse(url)?;
     let session = Session::connect(&endpoint, &paths.known_hosts, CLIENT_USER, key.clone()).await?;
+    if mode == Mode::DryRun {
+        return session
+            .run(async |session| dry_run(session, &text).await)
+            .await;
+    }
     session
         .run(async |session| {
             let submitted: Submitted =
@@ -119,12 +139,39 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, no_wait: bool) -> an
                 "Waiting for the approver: `writ sign {}` on the approver's machine.",
                 submitted.id
             );
-            if no_wait {
+            if mode == Mode::NoWait {
                 return Ok(Exit::Ok);
             }
             decide(paths, session, &submitted.id, &dir, Some(&ticket)).await
         })
         .await
+}
+
+/// The daemon's checks on `text`, as a submission would get them; nothing is kept.
+async fn dry_run(session: &Session, text: &str) -> anyhow::Result<Exit> {
+    let checked: Checked = match session.call(&Command::DryRun, text.as_bytes()).await? {
+        Ok(checked) => checked,
+        Err(error) => {
+            eprintln!("writ: {}", display::clean(&error.message));
+            for reason in &error.reasons {
+                eprintln!("  - {}", display::clean(reason));
+            }
+            return Ok(Exit::Rejected);
+        }
+    };
+    let ticket = Ticket::from_canonical(checked.canonical.as_bytes())
+        .context("the daemon sent a ticket that isn't canonical")?;
+    println!(
+        "The daemon would accept this ticket (template {}): {} on {}, branches {}, until {} if \
+         submitted now.",
+        ticket.template,
+        display::list(&ticket.scope.operations),
+        display::list(&ticket.scope.repos),
+        display::list(&ticket.scope.branches),
+        ticket.limits.expires_at,
+    );
+    println!("Nothing was submitted: `writ request` without --dry-run sends it.");
+    Ok(Exit::Ok)
 }
 
 /// Waits for a ticket submitted earlier from this host.
@@ -190,6 +237,12 @@ async fn decide(
                 display::list(&terms.scope.repos),
                 display::list(&terms.scope.branches),
             );
+            if let Some(name) = &terms.scope.committer_name {
+                println!(
+                    "Commits must carry the name {} as author and committer (`writ git` sets it).",
+                    display::clean(name.as_str())
+                );
+            }
             print_narrowing(submitted, &terms);
             println!("Session files: {}", dir.display());
             println!("Work under this lease, whatever `current` points at:");

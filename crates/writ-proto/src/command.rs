@@ -2,7 +2,7 @@
 //! route (`POST /v1/tickets/<id>/approve`).
 
 use writ_core::authority::AdminTarget;
-use writ_core::names::{KeyId, TicketId};
+use writ_core::names::{KeyId, RepoName, TicketId};
 
 /// A command run over the daemon's SSH protocol (the exec line).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +10,12 @@ pub enum Command {
     /// `writ request`: submit the ticket file on stdin; the connection's key is the session
     /// key. Reply: [`Submitted`].
     Request,
+    /// `writ request --dry-run`: every check a submission gets, on the ticket file on stdin,
+    /// and nothing stored or sent to the approver. Reply: [`Checked`].
+    DryRun,
+    /// `writ policy <repo>`: what a ticket for one repo may ask, from the policy in force.
+    /// Reply: [`RepoPolicy`].
+    Policy { repo: RepoName },
     /// `writ wait <id>`: wait until the ticket is decided. Reply: [`Decision`].
     Wait { id: TicketId },
     /// `writ close <lease>`: end the lease with a summary ([`CloseRequest`] on stdin), the
@@ -94,6 +100,10 @@ impl Command {
         let id = || arg?.parse::<TicketId>().ok();
         match (verb, arg) {
             ("request", None) => Some(Self::Request),
+            ("request", Some("--dry-run")) => Some(Self::DryRun),
+            ("policy", Some(repo)) => Some(Self::Policy {
+                repo: repo.parse().ok()?,
+            }),
             ("wait", Some(_)) => Some(Self::Wait { id: id()? }),
             ("close", Some(_)) => Some(Self::Close { id: id()? }),
             ("report", Some(_)) => Some(Self::Report { id: id()? }),
@@ -114,6 +124,8 @@ impl Command {
     pub fn line(&self) -> String {
         match self {
             Self::Request => "writ request".to_owned(),
+            Self::DryRun => "writ request --dry-run".to_owned(),
+            Self::Policy { repo } => format!("writ policy {repo}"),
             Self::Wait { id } => format!("writ wait {id}"),
             Self::Close { id } => format!("writ close {id}"),
             Self::Report { id } => format!("writ report {id}"),
@@ -135,7 +147,19 @@ impl Command {
 
     /// Whether this command is served on the approval listener (the others on the agents').
     pub fn is_approval(&self) -> bool {
-        !matches!(self, Self::Request | Self::Wait { .. } | Self::Close { .. })
+        !self.is_agent()
+    }
+
+    /// Whether this command is served on the agents' listener, to a plain key.
+    pub fn is_agent(&self) -> bool {
+        matches!(
+            self,
+            Self::Request
+                | Self::DryRun
+                | Self::Policy { .. }
+                | Self::Wait { .. }
+                | Self::Close { .. }
+        )
     }
 
     /// The HTTPS route of an approval command: method and path (with its query). Agent
@@ -154,7 +178,11 @@ impl Command {
     /// | admin token (show, apply) | `GET /v1/tokens/<id>`, `POST /v1/tokens` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
-            Self::Request | Self::Wait { .. } | Self::Close { .. } => None,
+            Self::Request
+            | Self::DryRun
+            | Self::Policy { .. }
+            | Self::Wait { .. }
+            | Self::Close { .. } => None,
             Self::Info => Some(("GET", "/v1/info".to_owned())),
             Self::List { all: false } => Some(("GET", "/v1/tickets".to_owned())),
             Self::List { all: true } => Some(("GET", "/v1/tickets?all=true".to_owned())),

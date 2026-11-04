@@ -7,8 +7,8 @@ clients make the workflow pleasant, the daemon makes it safe.
 
 | Client | Role |
 |---|---|
-| `writ` CLI | `request`, `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host)), `git` and `exec` (git, or a program, with that wiring) |
-| Agent skill (`skill/writ/SKILL.md`, built into `writ`, installed by `writ init`) | Teaches the agent the ticket workflow: read the timings file, think through the scope and estimate it before coding, write a ticket (task, plan, repos, branches, estimate, limits), check it (`writ check`) and submit it with `writ request`, wait for my decision, then work with `WRIT_SESSION` set; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; out of time or counts, a renewal; when done, `writ close` with a summary, then a note in the timings file if something explains the figures. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine. [The skill and its installer](#the-agent-skill) |
+| `writ` CLI | `policy` (what a ticket for the repo may ask, from the daemon: templates, branches, committer emails, limits, protected refs, the ticket link), `request` (`--dry-run`: the daemon's checks, nothing submitted), `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host)), `git` and `exec` (git, or a program, with that wiring) |
+| Agent skill (`skill/writ/SKILL.md`, built into `writ`, installed by `writ init`) | Teaches the agent the ticket workflow, at the start of any task that changes files and before any edit: read what the repo allows (`writ policy`) and the timings file, think through the scope (a branch of its own within the template's patterns, never the default or a protected one; `push` unless told not to) and estimate it, write a ticket (task, plan, repos, branches, estimate, limits), check it (`writ check`, then `writ request --dry-run`) and submit it with `writ request`, wait for my decision, then work with `WRIT_SESSION` set; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; out of time or counts, a renewal; when done, `writ close` with a summary, then a note in the timings file if something explains the figures. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine. [The skill and its installer](#the-agent-skill) |
 | `writ try` | Borrowed from secrets-dispatcher: sets up a temporary local daemon and wires one repo, then restores everything on Ctrl-C. `--dry-run` lists every change first |
 | `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git <repo>` command for the repo in `writ.repo`, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, then `core.sshCommand`, never a plain `ssh`), with the first parent commit and the trees the daemon needs to see which paths the commit touches ([Gateway](gateway.md#signing)); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen`. Also `gpg.openpgp.program` for a lease whose key is OpenPGP: `--status-fd=2 -bsau <key>` → daemon (`writ-sign openpgp <repo>`, the object on stdin, the armored signature on stdout, `[GNUPG:] SIG_CREATED` on stderr; no GnuPG home, keyring or agent used), `--verify` → the real `gpg` (`WRIT_GPG`, an absolute path, `/usr/bin/gpg` by default), anything else refused |
 | Session agent ([M8.5](../roadmap.md#m85--non-exportable-session-keys), on when the host has the hardware) | Holds the session key so it can't be copied: a dedicated ssh-agent backed by the Secure Enclave, a TPM or a YubiKey |
@@ -85,6 +85,7 @@ agent's configuration): the [operators' good practice](../operators/good-practic
 [user]
     signingkey = <home>/sessions/current/signing_key.pub   # <home>/sessions/<lease> when pinned
     email = user+agent@example.org      # --email, or the lease's when it allows one
+    name = Writ agent                   # the lease's committer_name, when its template sets one
 # A lease whose key signs in OpenPGP (its session holds signing_key.asc): instead,
 #   gpg.format = openpgp, gpg.openpgp.program = /path/to/writ-sign,
 #   user.signingkey = <the certificate's fingerprint>
@@ -102,7 +103,9 @@ Paths are absolute and quoted for `sh`, and point at one session's directory, al
 `writ.session` ([which session](#which-session-a-command-uses)): `<home>/sessions/current`
 unless the repo is pinned (`writ init --lease`) or `WRIT_SESSION` is set. In wrapper mode they
 are computed once per command from `WRIT_HOME`, and the email is the session's lease's unless
-`--email` was given; `writ init` computes them once per run (its record for `--undo`, the
+`--email` was given, and the name (`user.name`) the lease's `committer_name` when it has one
+(the daemon refuses a commit under any other name; in a whole-repo clone, like the email, the
+one of the lease current at `writ init`); `writ init` computes them once per run (its record for `--undo`, the
 config it writes and its summary come from the same values) and reads the values it replaces
 with `git config --get-all -z`, so a value over several lines is put back whole. Each commit
 needs a `Writ: <lease>` trailer when the repo's `ticket_link` is `trailer`
@@ -134,6 +137,31 @@ commit's signature header. So a whole-repo clone follows its lease when the next
 signs in another format, with no change to its config. Settings without `writ.session` (a
 wiring from before M6) ask in git's way, and the daemon refuses the other format
 (`signature_format`).
+
+### What the agent reads before it asks
+
+Before it writes a ticket, the agent asks the daemon what a ticket for its repo may ask:
+`writ policy [<repo>]` (the repo named, or the wired repository's) runs `writ policy <repo>`
+on the agents' listener as user `writ`, with a throwaway key (no lease exists yet), and prints
+the reply (`writ_proto::RepoPolicy`): each template that allows the repo (operations, branch
+patterns, committer emails, force push, `max_ttl` and the counts, `paths_check`,
+`require_expected_paths`, `max_renewals`), the repo's protected refs and `ticket_link`, and
+the daemon's `min_ttl`, `renew_grace` and `max_active_per_source`. Only that repo: never its
+upstream, its credential, a signing key, another repo or what a template allows elsewhere. A
+repo not in the registry is refused (exit 3). Then `writ request --dry-run <file>` sends the
+ticket for every check a submission gets (`writ request --dry-run` on the wire: the rates,
+the waiting tickets, `max_active_per_source`, the templates, the lease it amends, renews or
+revises) and the daemon stores nothing and tells nobody; the reply is the ticket it would
+build (`Checked`). The key is the one the real submission would use (a revision's, an
+amendment's or a renewal's session key), and nothing is written on the host. Both count
+against the [submission rates](../operators/writd-yaml.md) and write an audit line (`policy`,
+`dry_run`). Reads, never grants: every ticket is checked again when it is submitted and when
+it is signed.
+
+Before any lease, `writ init` says the committer email will be the lease's (and that
+`writ policy` lists the ones a ticket may ask for), rather than suggesting `--email`: an email
+given there overrides the lease's for every commit, and one the lease doesn't allow makes
+every signature refused.
 
 ### The agent skill
 

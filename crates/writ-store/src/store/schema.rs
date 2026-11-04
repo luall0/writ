@@ -10,7 +10,7 @@ use crate::{Result, StoreError};
 
 /// The version of the state's format: the schema below and the ticket format it stores
 /// ([`Ticket::KIND`]). Kept in `PRAGMA user_version`, and the ticket format in `formats`.
-pub const STATE_VERSION: i64 = 7;
+pub const STATE_VERSION: i64 = 8;
 
 /// How long a write waits for another connection's transaction before failing.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

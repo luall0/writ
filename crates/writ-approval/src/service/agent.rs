@@ -1,4 +1,5 @@
-//! The agent's side: submitting a ticket, waiting for the decision.
+//! The agent's side: submitting a ticket (or checking it, `writ request --dry-run`), waiting
+//! for the decision.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +14,7 @@ use writ_core::units::Timestamp;
 use writ_crypto::keys;
 use writ_crypto::ssh_key::{Algorithm, EcdsaCurve, PublicKey};
 use writ_platform::{Notification, Priority};
-use writ_proto::{Decision, Submitted};
+use writ_proto::{Checked, Decision, Submitted};
 use writ_store::{AuditEvent, EventKind, Outcome};
 
 use super::submissions::{Line, Scope};
@@ -34,10 +35,83 @@ impl Service {
         caller: &CallerFacts,
     ) -> Result<Submitted, ServiceError> {
         let (now, mut inner) = self.begin()?;
-        Self::within_rate(&mut inner, caller, now)?;
+        let (ticket, source) = self.admit(
+            &mut inner,
+            now,
+            session_key,
+            text,
+            caller,
+            EventKind::Submit,
+        )?;
+        let pubkey = session_key.to_openssh().map_err(internal)?;
+        let event = AuditEvent::new(now, EventKind::Submit, Outcome::Allowed)
+            .ticket(&ticket.id)
+            .lease(ticket.lease_id())
+            .caller(caller);
+        Self::logged(&mut inner, event, |inner| {
+            inner
+                .store
+                .insert_pending(&ticket, &pubkey, source, now)
+                .map_err(internal)
+        })?;
+        drop(inner);
+        self.changed.notify_waiters();
+        self.notify_waiting(&ticket);
+        Ok(Submitted {
+            id: ticket.id.clone(),
+            canonical: canonical_text(&ticket)?,
+        })
+    }
+
+    /// Checks a ticket file exactly as [`submit`](Self::submit) would (the rates, the
+    /// session, the waiting tickets, `max_active_per_source`, the templates, the lease it
+    /// amends, renews or revises), and stores nothing: no ticket, no notification. Its line
+    /// is a `dry_run`; it counts against the submission rates like a submission.
+    pub fn dry_run(
+        &self,
+        session_key: &PublicKey,
+        text: &[u8],
+        caller: &CallerFacts,
+    ) -> Result<Checked, ServiceError> {
+        let (now, mut inner) = self.begin()?;
+        let (ticket, _) = self.admit(
+            &mut inner,
+            now,
+            session_key,
+            text,
+            caller,
+            EventKind::DryRun,
+        )?;
+        let mut event = AuditEvent::new(now, EventKind::DryRun, Outcome::Allowed)
+            .caller(caller)
+            .reason(format!("fits template {}", ticket.template));
+        // The lease it would amend or renew; its own id is never used.
+        if ticket.lease_id() != &ticket.id {
+            event = event.lease(ticket.lease_id());
+        } else if let Some(renewed) = &ticket.text.renews {
+            event = event.lease(renewed);
+        }
+        Self::logged(&mut inner, event, |_| Ok(()))?;
+        Ok(Checked {
+            canonical: canonical_text(&ticket)?,
+        })
+    }
+
+    /// Everything a submission is checked for, before it is stored: the ticket the daemon
+    /// would build, and the source it came from. A refusal is logged as `kind`, denied.
+    fn admit(
+        &self,
+        inner: &mut Inner,
+        now: Timestamp,
+        session_key: &PublicKey,
+        text: &[u8],
+        caller: &CallerFacts,
+        kind: EventKind,
+    ) -> Result<(Ticket, Source), ServiceError> {
+        Self::within_rate(inner, caller, now)?;
         let reject = |inner: &mut Inner, error: ServiceError| {
             let reason = error.reason_text();
-            let event = AuditEvent::new(now, EventKind::Submit, Outcome::Denied)
+            let event = AuditEvent::new(now, kind, Outcome::Denied)
                 .caller(caller)
                 .reason(reason);
             Self::log_best_effort(inner, &event);
@@ -55,7 +129,7 @@ impl Service {
                 }
         ) {
             return reject(
-                &mut inner,
+                inner,
                 ServiceError::refused(
                     RefusalCode::SessionKey,
                     format!(
@@ -66,7 +140,7 @@ impl Service {
         }
         let Ok(text) = std::str::from_utf8(text) else {
             return reject(
-                &mut inner,
+                inner,
                 ServiceError::refused(RefusalCode::NotUtf8, "the ticket file is not UTF-8"),
             );
         };
@@ -74,7 +148,7 @@ impl Service {
             Ok(request) => request,
             Err(e) => {
                 return reject(
-                    &mut inner,
+                    inner,
                     ServiceError::rejected("ticket rejected", vec![e.to_string()]),
                 );
             }
@@ -82,7 +156,7 @@ impl Service {
         let waiting = inner.store.count(State::Pending).map_err(internal)?;
         if waiting >= self.config.max_pending {
             return reject(
-                &mut inner,
+                inner,
                 ServiceError::refused(
                     RefusalCode::TooManyPending,
                     format!(
@@ -101,7 +175,7 @@ impl Service {
             .count();
         if mine >= MAX_PENDING_PER_SESSION {
             return reject(
-                &mut inner,
+                inner,
                 ServiceError::refused(
                     RefusalCode::TooManyPending,
                     format!("this session already has {mine} tickets waiting for the approver"),
@@ -127,9 +201,8 @@ impl Service {
             None => None,
         };
         let source = Source::of(caller.source_addr);
-        if let Err(error) = self.within_active(&inner, source, &request, &session, renews.as_ref())
-        {
-            return reject(&mut inner, error);
+        if let Err(error) = self.within_active(inner, source, &request, &session, renews.as_ref()) {
+            return reject(inner, error);
         }
         let random = keys::random_array::<10>().map_err(internal)?;
         let submission = Submission {
@@ -146,33 +219,13 @@ impl Service {
             min_ttl: self.config.min_ttl,
         };
         let policy = self.policy();
-        let ticket = match fit::submit(&policy, &request, &submission) {
-            Ok(ticket) => ticket,
-            Err(rejection) => {
-                return reject(
-                    &mut inner,
-                    ServiceError::rejected("ticket rejected", rejection.reasons),
-                );
-            }
-        };
-        let pubkey = session_key.to_openssh().map_err(internal)?;
-        let event = AuditEvent::new(now, EventKind::Submit, Outcome::Allowed)
-            .ticket(&ticket.id)
-            .lease(ticket.lease_id())
-            .caller(caller);
-        Self::logged(&mut inner, event, |inner| {
-            inner
-                .store
-                .insert_pending(&ticket, &pubkey, source, now)
-                .map_err(internal)
-        })?;
-        drop(inner);
-        self.changed.notify_waiters();
-        self.notify_waiting(&ticket);
-        Ok(Submitted {
-            id: ticket.id.clone(),
-            canonical: canonical_text(&ticket)?,
-        })
+        match fit::submit(&policy, &request, &submission) {
+            Ok(ticket) => Ok((ticket, source)),
+            Err(rejection) => reject(
+                inner,
+                ServiceError::rejected("ticket rejected", rejection.reasons),
+            ),
+        }
     }
 
     /// `max_active_per_source`: refused when the source already holds as many active leases
@@ -229,7 +282,8 @@ impl Service {
     /// the caller's source, and from all sources together. Over a rate, it is refused; only
     /// the first refusal of a burst is logged one by one, the others counted and their count
     /// logged later, so a flood can't fill the audit log and no refusal goes uncounted.
-    fn within_rate(
+    /// Dry runs and policy reads count too.
+    pub(super) fn within_rate(
         inner: &mut Inner,
         caller: &CallerFacts,
         now: Timestamp,

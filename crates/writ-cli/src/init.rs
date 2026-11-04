@@ -354,11 +354,37 @@ fn print_summary(
         ),
         (None, _) => println!("No `origin` remote: push to the `writ` remote."),
     }
-    match email {
-        Some((_, email)) => println!("Committer email: {}.", crate::display::clean(email)),
-        None => {
+    let has_lease = settings
+        .iter()
+        .find(|(k, _)| k == "writ.session")
+        .and_then(|(_, v)| wiring::lease_id(std::path::Path::new(v)))
+        .is_some();
+    match (email, &wiring.email, has_lease) {
+        (Some((_, email)), Some(_), _) => println!(
+            "Committer email: {} (--email; the lease must allow it).",
+            crate::display::clean(email)
+        ),
+        (Some((_, email)), None, _) => {
+            println!(
+                "Committer email: {} (the lease's).",
+                crate::display::clean(email)
+            )
+        }
+        // Before any lease, the email comes from the lease once it is granted: an --email
+        // here would override it with one the lease may not allow.
+        (None, _, false) => println!(
+            "Committer email: the lease's, once one is granted (`writ policy` lists the emails \
+             a ticket may ask for)."
+        ),
+        (None, _, true) => {
             println!("No committer email: the lease allows none or several; use --email.")
         }
+    }
+    if let Some((_, name)) = settings.iter().find(|(k, _)| k == "user.name") {
+        println!(
+            "Committer name: {} (the lease's).",
+            crate::display::clean(name)
+        );
     }
     match session {
         SessionRef::Lease(id) => println!(

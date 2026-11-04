@@ -53,8 +53,17 @@ pub struct Commit {
     parents: Vec<ObjectId>,
     author_email: String,
     committer_email: String,
+    /// The names, as written; boxed, so a commit stays small to move around.
+    names: Box<Names>,
     /// Where the message starts in `bytes`.
     message: usize,
+}
+
+/// A commit's author and committer names, as written (`None`: not UTF-8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Names {
+    author: Option<String>,
+    committer: Option<String>,
 }
 
 impl Commit {
@@ -89,12 +98,14 @@ impl Commit {
         let author_email = email(author)
             .and_then(|e| String::from_utf8(e.to_vec()).ok())
             .ok_or(CommitError::Ident("author"))?;
+        let author_name = name(author).ok_or(CommitError::Ident("author"))?;
         let committer = lines
             .value(b"committer")
             .ok_or(CommitError::Missing("committer"))?;
         let committer_email = email(committer)
             .and_then(|e| String::from_utf8(e.to_vec()).ok())
             .ok_or(CommitError::Ident("committer"))?;
+        let committer_name = name(committer).ok_or(CommitError::Ident("committer"))?;
         lines.value(b"encoding");
         while lines.value(b"mergetag").is_some() {
             // Its continuation lines (the tag object, one space in front of each line).
@@ -117,6 +128,10 @@ impl Commit {
             parents,
             author_email,
             committer_email,
+            names: Box::new(Names {
+                author: author_name,
+                committer: committer_name,
+            }),
             message,
         })
     }
@@ -146,6 +161,17 @@ impl Commit {
     /// The committer's email, as written (compared exactly by the policy).
     pub fn committer_email(&self) -> &str {
         &self.committer_email
+    }
+
+    /// The author's name, as written (`None`: not UTF-8); compared exactly by the policy when
+    /// the lease has a `committer_name`.
+    pub fn author_name(&self) -> Option<&str> {
+        self.names.author.as_deref()
+    }
+
+    /// The committer's name, as written (`None`: not UTF-8).
+    pub fn committer_name(&self) -> Option<&str> {
+        self.names.committer.as_deref()
     }
 
     /// The message: everything after the blank line.
@@ -191,6 +217,17 @@ fn email(ident: &[u8]) -> Option<&[u8]> {
         return None;
     }
     ident.get(open.checked_add(1)?..close)
+}
+
+/// The name of a well-formed ident line value (`Name <email> 1700000000 +0000`, as [`email`]
+/// accepts it): what comes before `<`, without the one space git writes before it. The outer
+/// `None`: not an ident; the inner one: a name that isn't UTF-8.
+fn name(ident: &[u8]) -> Option<Option<String>> {
+    email(ident)?;
+    let open = ident.iter().position(|&b| b == b'<')?;
+    let before = ident.get(..open)?;
+    let name = before.strip_suffix(b" ").unwrap_or(before);
+    Some(String::from_utf8(name.to_vec()).ok())
 }
 
 /// The header lines, read in order.
@@ -258,6 +295,29 @@ mod tests {
     }
 
     #[test]
+    fn names_are_read_as_written_and_a_name_that_isn_t_utf8_is_none() {
+        let ident = |author: &[u8]| {
+            let mut bytes = format!("tree {TREE}\nauthor ").into_bytes();
+            bytes.extend_from_slice(author);
+            bytes.extend_from_slice(b" 1 +0000\ncommitter Writ agent <a@x> 1 +0000\n\nm\n");
+            Commit::parse(bytes)
+        };
+        let c = ident("Zoë  Ñ <a@x>".as_bytes()).unwrap();
+        assert_eq!(c.author_name(), Some("Zoë  Ñ"));
+        assert_eq!(c.committer_name(), Some("Writ agent"));
+        // No space before `<`, or no name at all: as written.
+        assert_eq!(ident(b"Writ<a@x>").unwrap().author_name(), Some("Writ"));
+        assert_eq!(ident(b"<a@x>").unwrap().author_name(), Some(""));
+        // Latin-1 bytes: not UTF-8, never guessed.
+        assert_eq!(ident(b"Zo\xeb <a@x>").unwrap().author_name(), None);
+        // Still an ident or nothing.
+        assert_eq!(
+            ident(b"Writ <a@x").unwrap_err(),
+            CommitError::Ident("author")
+        );
+    }
+
+    #[test]
     fn parses_what_git_writes() {
         let c = Commit::parse(commit(&base(""), "Subject\n\nWrit: wrt_X\n")).unwrap();
         assert_eq!(c.tree().as_str(), TREE);
@@ -265,6 +325,8 @@ mod tests {
         assert_eq!(c.parents()[0].as_str(), PARENT);
         assert_eq!(c.committer_email(), "agent@writ");
         assert_eq!(c.author_email(), "a@x");
+        assert_eq!(c.author_name(), Some("A U"));
+        assert_eq!(c.committer_name(), Some("Agent"));
         assert_eq!(c.message(), b"Subject\n\nWrit: wrt_X\n");
         assert_eq!(c.writ_trailers(), vec!["wrt_X".to_owned()]);
         assert_eq!(c.algo(), HashAlgo::Sha1);

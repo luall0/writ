@@ -12,6 +12,7 @@ mod coalesced;
 mod gateway;
 mod notes;
 mod openpgp;
+mod policy;
 mod prove;
 mod push;
 mod report;

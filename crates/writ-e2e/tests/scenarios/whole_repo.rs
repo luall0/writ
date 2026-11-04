@@ -24,7 +24,7 @@ fn a_dedicated_clone_is_wired_whole_and_undone_exactly() {
     );
     let (out, _) = expect(&out, 0, "writ init --whole-repo");
     assert!(
-        out.contains("Committer email: agent@writ.invalid."),
+        out.contains("Committer email: agent@writ.invalid (--email; the lease must allow it)."),
         "{out}"
     );
     let config = agent.ok_in("work", "git config --local --list");

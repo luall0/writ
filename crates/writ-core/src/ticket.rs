@@ -3,7 +3,7 @@
 //!
 //! # Canonical encoding
 //!
-//! A ticket is a [`Canonical`] document of kind `writ-ticket/1`: its fields in the order
+//! A ticket is a [`Canonical`] document of kind `writ-ticket/2`: its fields in the order
 //! declared below, sizes in bytes, durations as their text (`45m`) and timestamps as
 //! `YYYY-MM-DDTHH:MM:SSZ`. Fixtures in `tests/fixtures/` pin the format.
 
@@ -13,17 +13,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::caller::CallerConstraint;
 use crate::canonical::Canonical;
-use crate::names::{Email, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
+use crate::names::{CommitterName, Email, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
 use crate::pattern::{BranchPattern, PathPattern};
 use crate::units::{ByteSize, Duration, Timestamp};
 use crate::yaml::{FieldError, parse_yaml};
 
-/// The format marker; only `"writ-ticket/1"` ([`Ticket::KIND`]) is accepted.
+/// The format marker; only `"writ-ticket/2"` ([`Ticket::KIND`]) is accepted (`/2` added
+/// `scope.committer_name`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TicketKind {
     #[default]
-    #[serde(rename = "writ-ticket/1")]
-    V1,
+    #[serde(rename = "writ-ticket/2")]
+    V2,
 }
 
 /// A complete ticket: what an approval signs, and once signed, the lease's terms.
@@ -95,6 +96,9 @@ pub struct Scope {
     pub branches: BTreeSet<BranchPattern>,
     pub force_push: bool,
     pub committer_emails: BTreeSet<Email>,
+    /// The name every commit's author and committer must carry, from the template's
+    /// `committer_name` (`None`: not checked, and always `None` without `commit_sign`).
+    pub committer_name: Option<CommitterName>,
     /// The signer key for commits, from the template (`None` without `commit_sign`).
     pub signing_key: Option<KeyId>,
 }
@@ -176,7 +180,7 @@ pub enum OnViolation {
 }
 
 impl Canonical for Ticket {
-    const KIND: &'static str = "writ-ticket/1";
+    const KIND: &'static str = "writ-ticket/2";
 }
 
 impl Ticket {

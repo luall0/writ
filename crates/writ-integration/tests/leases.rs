@@ -1,7 +1,8 @@
 //! M6 with the real binaries: each agent on its own lease (`WRIT_SESSION`, a repo pinned with
 //! `writ init --lease`), `max_active_per_source` at submission and at signing, renewals (the
 //! commits of the renewed lease pushed under the renewal, `max_renewals`, `renew_grace`), a
-//! whole-repo clone following its lease's format, and the skill `writ init` installs.
+//! whole-repo clone following its lease's format, the skill `writ init` installs, and what an
+//! agent reads and checks before it asks (`writ policy`, `writ request --dry-run`).
 
 #![allow(
     clippy::unwrap_used,
@@ -517,5 +518,153 @@ fn a_whole_repo_clone_follows_its_lease_s_format_and_undo_is_exact() {
     assert_eq!(
         git_ok(&daemon, &repo, &["config", "--local", "--list", "-z"]),
         before
+    );
+}
+
+#[test]
+fn writ_policy_and_a_dry_run_tell_the_agent_what_fits_before_it_asks() {
+    let daemon = Daemon::start(POLICY, Approvals::Ssh);
+    let repo = clone(&daemon, "policy");
+    // Before any lease, the committer email is the coming lease's: no hint to set one.
+    let out = writ_ok(&daemon, &repo, &["init", "demo", "--agents", "none"], &[]);
+    assert!(
+        out.contains("Committer email: the lease's, once one is granted (`writ policy` lists"),
+        "{out}"
+    );
+    assert!(!out.contains("use --email"), "{out}");
+    // What a ticket may ask, for the wired repo.
+    let out = writ_ok(&daemon, &repo, &["policy"], &[]);
+    for words in [
+        "What a ticket for repo demo may ask",
+        "protected refs      refs/heads/main (never pushed",
+        "ticket link         the daemon's ledger only",
+        "Template feature:",
+        "branches            agent/*",
+        "committer emails    agent@writ",
+        "max ttl             2h",
+        "renewals            at most 1 per lease",
+    ] {
+        assert!(out.contains(words), "{words:?} not in:\n{out}");
+    }
+    assert!(
+        !out.contains("remote.invalid") && !out.contains("upstream-01"),
+        "{out}"
+    );
+    let out = writ(&daemon, &repo, &["policy", "elsewhere"], &[]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("writ: repo elsewhere is not in the registry"),
+        "{}",
+        stderr(&out)
+    );
+    // A dry run: on main, rejected with the daemon's reason; on a branch of its own, accepted.
+    let main = daemon.root().join("main.yaml");
+    fs::write(&main, ticket("main", "")).unwrap();
+    let out = writ(
+        &daemon,
+        &repo,
+        &["request", "--dry-run", main.to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("branch main is not within the template's branches (agent/*)"),
+        "{}",
+        stderr(&out)
+    );
+    let good = daemon.root().join("good.yaml");
+    fs::write(&good, ticket("agent/oauth", "")).unwrap();
+    let out = writ_ok(
+        &daemon,
+        &repo,
+        &["request", "--dry-run", good.to_str().unwrap()],
+        &[],
+    );
+    assert!(
+        out.contains("The daemon would accept this ticket (template feature): fetch, commit_sign, push on demo, branches agent/oauth"),
+        "{out}"
+    );
+    // Nothing submitted, no session on this host; the lines in the audit log.
+    let listed = stdout(&daemon.run(&["ls", "--all"], ""));
+    assert!(!listed.contains("wrt_"), "{listed}");
+    let sessions = daemon.root().join("writ/sessions");
+    assert!(
+        !sessions.exists() || fs::read_dir(&sessions).unwrap().next().is_none(),
+        "a dry run keeps no session"
+    );
+    assert_eq!(audit_events(&daemon.audit(), "dry_run", "denied").len(), 1);
+    assert_eq!(audit_events(&daemon.audit(), "dry_run", "allowed").len(), 1);
+    assert_eq!(audit_events(&daemon.audit(), "policy", "allowed").len(), 1);
+    assert_eq!(audit_events(&daemon.audit(), "policy", "denied").len(), 1);
+    assert!(audit_events(&daemon.audit(), "submit", "allowed").is_empty());
+}
+
+#[test]
+fn a_template_s_committer_name_is_set_on_commits_and_any_other_refused() {
+    let policy = POLICY.replace(
+        "    committer_emails: [\"agent@writ\"]\n",
+        "    committer_emails: [\"agent@writ\"]\n    committer_name: \"Writ agent\"\n",
+    );
+    let daemon = Daemon::start(&policy, Approvals::Ssh);
+    let (a, out, _) = granted(&daemon, "a", &ticket("agent/a", ""), &[]);
+    assert!(
+        out.contains("Commits must carry the name Writ agent as author and committer"),
+        "{out}"
+    );
+    let repo = clone(&daemon, "named");
+    // The operator's own name, in the clone's config: plain git keeps it.
+    git_ok(
+        &daemon,
+        &repo,
+        &["config", "--local", "user.name", "Pat Operator"],
+    );
+    let out = writ_ok(&daemon, &repo, &["init", "demo", "--agents", "none"], &[]);
+    assert!(
+        out.contains("Committer name: Writ agent (the lease's)."),
+        "{out}"
+    );
+    let out = writ_ok(&daemon, &repo, &["policy"], &[]);
+    assert!(
+        out.contains("committer name      Writ agent (every commit"),
+        "{out}"
+    );
+
+    // Through `writ git`, the lease's name, as author and committer.
+    assert!(commit(&daemon, &repo, "n1", Some(&a)).status.success());
+    let idents = git_ok(&daemon, &repo, &["log", "-1", "--format=%an|%cn|%ae|%ce"]);
+    assert_eq!(idents.trim(), "Writ agent|Writ agent|agent@writ|agent@writ");
+    assert_eq!(
+        git_ok(&daemon, &repo, &["config", "user.name"]).trim(),
+        "Pat Operator"
+    );
+
+    // Any other name, as committer or as author: refused, with the reason and its code.
+    fs::write(repo.join("n2"), "n2\n").unwrap();
+    git_ok(&daemon, &repo, &["add", "n2"]);
+    for (variable, who, code) in [
+        ("GIT_COMMITTER_NAME", "committer", "committer_name"),
+        ("GIT_AUTHOR_NAME", "author", "author_name"),
+    ] {
+        let out = writ(
+            &daemon,
+            &repo,
+            &["git", "commit", "-q", "-m", "n2"],
+            &[("WRIT_SESSION", &a), (variable, "Pat Operator")],
+        );
+        assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains(&format!(
+                "{who} name \"Pat Operator\" is not the lease's committer_name \"Writ agent\""
+            )),
+            "{}",
+            stderr(&out)
+        );
+        let denied = audit_events(&daemon.audit(), "sign", "denied");
+        assert_eq!(denied.last().unwrap()["code"], code);
+    }
+    assert_eq!(
+        ledger(&daemon, &a).len(),
+        1,
+        "nothing signed under another name"
     );
 }

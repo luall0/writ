@@ -16,7 +16,7 @@ each listener has a role:
 | Listener (role) | SSH user and authentication | Commands |
 |---|---|---|
 | agents | `git` + an **SSH user certificate** issued by the daemon for an active lease ([Identity](identity.md#session-identity)) | **git** `upload-pack` (fetch) and `receive-pack` (push), so a plain `git fetch/push writ` works; **sign** for the `writ-sign` shim: `writ-sign git <repo>` or `writ-sign openpgp <repo>` (the commit and its evidence in, the armored SSHSIG or OpenPGP signature out; [signing](#signing)) |
-| agents | `writ` + a plain key: the session key of a ticket | **lease** commands: `writ request` (submit the ticket on stdin), `writ wait <id>` (it ends with its answer, or when its channel or connection does) |
+| agents | `writ` + a plain key: the session key of a ticket | **lease** commands: `writ request` (submit the ticket on stdin), `writ request --dry-run` (every check a submission gets, nothing stored), `writ policy <repo>` (what a ticket for that repo may ask), `writ wait <id>` (it ends with its answer, or when its channel or connection does), `writ close <lease>` (its summary on stdin) |
 | approvals (SSH) | any user, a key listed in the daemon's `readers` file (a certificate is refused) | the approval API: `writ info`, `ls`, `show`, `approve`, `refuse`, `revoke` ([Approvals](approvals.md#reaching-the-daemon)) |
 | approvals (HTTPS) | mutual TLS 1.3: the daemon's pinned self-signed certificate, and a client certificate for a key in `readers` | the same API as `GET`/`POST` routes (`crates/writ-gateway/src/https.rs`) |
 

@@ -201,7 +201,10 @@ fn wrapper_mode_signs_through_writ_git_and_leaves_the_operator_s_git_alone() {
         out.contains("`writ git push origin` and `writ git fetch origin` go through the daemon"),
         "{out}"
     );
-    assert!(out.contains("Committer email: agent@writ."), "{out}");
+    assert!(
+        out.contains("Committer email: agent@writ (the lease's)."),
+        "{out}"
+    );
     assert_eq!(local_config(&daemon, &repo), before);
     assert!(repo.join(".git/writ/config").is_file());
     let again = writ(&daemon, &repo, &["init", "demo", "--agents", "none"]);

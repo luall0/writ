@@ -259,6 +259,7 @@ pub enum Field {
     Branches,
     ForcePush,
     CommitterEmails,
+    CommitterName,
     SigningKey,
     MaxSignatures,
     MaxPushes,
@@ -285,6 +286,7 @@ impl Field {
             Self::Branches => "branches",
             Self::ForcePush => "force push",
             Self::CommitterEmails => "committer emails",
+            Self::CommitterName => "committer name",
             Self::SigningKey => "signing key",
             Self::MaxSignatures => "max signatures",
             Self::MaxPushes => "max pushes",
@@ -334,6 +336,10 @@ pub fn field(ticket: &Ticket, field: Field) -> String {
         Field::Branches => list(&scope.branches),
         Field::ForcePush => if scope.force_push { "yes" } else { "no" }.to_owned(),
         Field::CommitterEmails => list(&scope.committer_emails),
+        Field::CommitterName => scope
+            .committer_name
+            .as_ref()
+            .map_or("(none: not checked)".to_owned(), |n| clean(n.as_str())),
         Field::SigningKey => scope
             .signing_key
             .as_ref()
@@ -375,7 +381,7 @@ pub fn estimate(estimate: Option<&writ_core::ticket::Estimate>) -> String {
 }
 
 /// Every field, in display order.
-pub const FIELDS: [Field; 21] = [
+pub const FIELDS: [Field; 22] = [
     Field::Template,
     Field::ExpiresAt,
     Field::SessionKey,
@@ -386,6 +392,7 @@ pub const FIELDS: [Field; 21] = [
     Field::Branches,
     Field::ForcePush,
     Field::CommitterEmails,
+    Field::CommitterName,
     Field::SigningKey,
     Field::MaxSignatures,
     Field::MaxPushes,
@@ -463,6 +470,7 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
         Field::Branches,
         Field::ForcePush,
         Field::CommitterEmails,
+        Field::CommitterName,
         Field::SigningKey,
     ] {
         row(&mut out, f);
@@ -554,6 +562,7 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
         Field::Branches,
         Field::ForcePush,
         Field::CommitterEmails,
+        Field::CommitterName,
     ] {
         let _ = writeln!(
             out,
@@ -1037,6 +1046,8 @@ mod tests {
             .map(|i| format!("agent/{}{i}", "x".repeat(200)).parse().unwrap())
             .collect();
         t.template = "t".repeat(64).parse().unwrap();
+        // The longest committer name, one word wide and full-width characters.
+        t.scope.committer_name = Some("名".repeat(100).parse().unwrap());
         // The largest limits a ticket can hold (the e2e pipeline found the limits row 80
         // columns wide with ordinary ones).
         t.limits.max_signatures = u32::MAX;
@@ -1169,9 +1180,9 @@ mod tests {
                 .take_while(|l| !l.is_empty())
                 .copied()
                 .collect();
-            // The heading, the id, eleven rows of terms (the limits on two), the narrowing
+            // The heading, the id, twelve rows of terms (the limits on two), the narrowing
             // note: no term ever takes a second row.
-            assert_eq!(summary.len(), 14, "{summary:#?}");
+            assert_eq!(summary.len(), 15, "{summary:#?}");
             assert!(
                 summary.contains(&"  max push size      18446744073709551615 bytes"),
                 "{summary:#?}"
@@ -1245,7 +1256,7 @@ mod tests {
             .rposition(|l| *l == "You are signing (enforced):")
             .unwrap();
         assert!(
-            lines.len() - start <= 13,
+            lines.len() - start <= 14,
             "{} rows of summary",
             lines.len() - start
         );

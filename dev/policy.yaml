@@ -11,6 +11,7 @@ templates:
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ.invalid"]
+    committer_name: "Writ agent 1"
     signing_key: agent-dev-01
     max_ttl: 4h
     max_signatures: 50

@@ -59,12 +59,14 @@ templates:
     max_pushes: 50
     max_ops_per_minute: 200
     max_push_size: 50MB
-  # An OpenPGP key (writd.yaml declares it), certified for the account's email below.
+  # An OpenPGP key (writd.yaml declares it), certified for the account's email below, with
+  # the name every commit carries (scenario 18).
   openpgp:
     repos: [openpgp]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ.invalid"]
+    committer_name: "Writ agent"
     signing_key: agent-e2e-pgp
     max_ttl: 4h
     max_signatures: 100

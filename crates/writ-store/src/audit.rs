@@ -34,6 +34,12 @@ pub const MAX_LIST_ITEMS: usize = 64;
 pub enum EventKind {
     /// A ticket was submitted (allowed: pending; denied: rejected by policy).
     Submit,
+    /// A ticket checked as a submission would be (`writ request --dry-run`), nothing stored
+    /// (allowed: it would be accepted; denied: it wouldn't, with the reasons).
+    DryRun,
+    /// What a ticket for one repo may ask was read (`writ policy`; denied: a repo not in the
+    /// registry).
+    Policy,
     /// An approval was accepted (allowed) or refused (denied).
     Grant,
     /// The approver refused a ticket.

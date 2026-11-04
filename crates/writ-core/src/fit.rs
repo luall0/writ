@@ -140,6 +140,15 @@ pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
     if !key_ok {
         reasons.push("scope.signing_key must be the template's signing key".to_owned());
     }
+    // The same for the name: the template's while the lease signs (a template whose name
+    // changed no longer fits its leases), never one the template doesn't set.
+    let name_ok = match &scope.committer_name {
+        None => !signs || template.committer_name.is_none(),
+        Some(name) => template.committer_name.as_ref() == Some(name),
+    };
+    if !name_ok {
+        reasons.push("scope.committer_name must be the template's committer_name".to_owned());
+    }
     if pushes {
         for repo in &scope.repos {
             if let Some(entry) = config.repo(repo)
@@ -623,7 +632,7 @@ fn build(
         None => expires_at,
     };
     Ok(Ticket {
-        kind: TicketKind::V1,
+        kind: TicketKind::V2,
         id: submission.id.clone(),
         created_at: submission.now,
         template: name.clone(),
@@ -638,6 +647,11 @@ fn build(
             branches: request.scope.branches.iter().cloned().collect(),
             force_push: request.scope.force_push,
             committer_emails,
+            committer_name: if signs {
+                template.committer_name.clone()
+            } else {
+                None
+            },
             signing_key: if signs {
                 template.signing_key.clone()
             } else {

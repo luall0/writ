@@ -1,5 +1,7 @@
 //! Scenario 20, a lease's whole life as M6 gives it: a ticket file checked before it is sent
-//! (`writ check`), with an estimate; a clone pinned to the lease and the skill installed for
+//! (`writ check`), with an estimate; what the repo allows read from the daemon (`writ
+//! policy`), and the ticket checked by it without being submitted (`writ request --dry-run`);
+//! a clone pinned to the lease and the skill installed for
 //! several agents (`writ init --lease --agents --skill-dir --agents-md`), excluded from git; a
 //! phase marked (`writ mark`); a renewal, which the approver reviews with the original ticket
 //! and the chain, after which the pinned lease is refused and the renewal (`WRIT_SESSION`)
@@ -47,6 +49,70 @@ fn a_lease_is_renewed_closed_and_learned_from() {
     agent.write("ticket.yaml", &ticket("agent/s", ""), "0644");
     let (out, _) = expect(&agent.run("writ check ticket.yaml"), 0, "writ check");
     assert!(out.contains("a well-formed ticket file"), "{out}");
+
+    // What a ticket for the repo may ask, from the daemon: the repo named, outside any clone.
+    let out = agent.ok(&format!("writ policy {REPO} --url \"$WRIT_URL\""));
+    for words in [
+        "What a ticket for repo sessions may ask",
+        "refs/heads/main, refs/tags/* (never pushed",
+        "Template feature:",
+        "branches            agent/*",
+        "committer emails    agent@writ.invalid, second@writ.invalid",
+        "renewals            at most 3 per lease",
+    ] {
+        assert!(out.contains(words), "{words:?} not in:\n{out}");
+    }
+    // Only this repo: nothing of its upstream, its credential or the template's other repos.
+    for hidden in ["forgejo", "upstream-sessions", "lifecycle"] {
+        assert!(!out.contains(hidden), "{hidden:?} in:\n{out}");
+    }
+    let (_, err) = expect(
+        &agent.run("writ policy nowhere"),
+        3,
+        "writ policy for a repo not in the registry",
+    );
+    assert!(err.contains("repo nowhere is not in the registry"), "{err}");
+    let (_, err) = expect(&agent.run("writ policy"), 1, "writ policy outside a clone");
+    assert!(
+        err.contains("name the repo (`writ policy <repo>`)"),
+        "{err}"
+    );
+
+    // The daemon checks a ticket without submitting it: on the default branch, then the real one.
+    agent.write("main.yaml", &ticket("main", ""), "0644");
+    let (_, err) = expect(
+        &agent.run("writ request --dry-run main.yaml"),
+        3,
+        "a dry run on main",
+    );
+    assert!(
+        err.contains("branch main is not within the template's branches (agent/*)"),
+        "{err}"
+    );
+    let (out, _) = expect(
+        &agent.run("writ request --dry-run ticket.yaml"),
+        0,
+        "a dry run",
+    );
+    assert!(
+        out.contains("The daemon would accept this ticket (template feature)"),
+        "{out}"
+    );
+    assert!(out.contains("Nothing was submitted"), "{out}");
+    agent.ok("test ! -e .writ/sessions");
+    let audit = stack.audit();
+    assert!(
+        audit.iter().any(|e| e["event"] == "dry_run"
+            && e["result"] == "allowed"
+            && e["reason"] == "fits template feature"),
+        "no dry_run line"
+    );
+    assert!(
+        audit
+            .iter()
+            .any(|e| e["event"] == "policy" && e["result"] == "allowed" && e["repo"] == REPO),
+        "no policy line"
+    );
     let lease = agent.lease(&stack, &ticket("agent/s", ""));
 
     // Pinned to the lease, the skill for Claude Code and Cursor, one more folder, a pointer.
@@ -59,6 +125,12 @@ fn a_lease_is_renewed_closed_and_learned_from() {
         ),
     );
     assert!(out.contains(&format!("Pinned to lease {lease}")), "{out}");
+    // In the wired clone, `writ policy` is about its repo.
+    let out = agent.ok_in("work", "writ policy");
+    assert!(
+        out.contains("What a ticket for repo sessions may ask"),
+        "{out}"
+    );
     agent.ok_in(
         "work",
         "test -f .claude/skills/writ/SKILL.md && test -f .cursor/skills/writ/SKILL.md && \

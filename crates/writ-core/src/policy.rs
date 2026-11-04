@@ -67,6 +67,10 @@ pub enum DenyCode {
     Committer,
     /// The author email is not in the lease's committer emails (`author`, a violation).
     Author,
+    /// The committer name is not the lease's `committer_name` (`committer_name`, a violation).
+    CommitterName,
+    /// The author name is not the lease's `committer_name` (`author_name`, a violation).
+    AuthorName,
     /// The commit's object format isn't its repo's (`object_format`). Not a violation: a
     /// repository of the other format, never anything the ticket allowed.
     ObjectFormat,
@@ -117,6 +121,8 @@ impl DenyCode {
                 | DenyCode::ObjectType
                 | DenyCode::Committer
                 | DenyCode::Author
+                | DenyCode::CommitterName
+                | DenyCode::AuthorName
                 | DenyCode::TicketLink
                 | DenyCode::Paths
                 | DenyCode::Ref
@@ -145,6 +151,8 @@ impl DenyCode {
             DenyCode::ObjectFormat => "object_format",
             DenyCode::Committer => "committer",
             DenyCode::Author => "author",
+            DenyCode::CommitterName => "committer_name",
+            DenyCode::AuthorName => "author_name",
             DenyCode::TicketLink => "ticket_link",
             DenyCode::Paths => "paths",
             DenyCode::Ref => "ref",
@@ -341,6 +349,10 @@ pub struct SignRequest {
     /// The author email from the commit object: checked like the committer's, so a commit
     /// can't be signed as written by someone the lease doesn't name.
     pub author_email: String,
+    /// The committer and author names from the commit object (`None`: not UTF-8), checked
+    /// when the lease has a `committer_name`.
+    pub committer_name: Option<String>,
+    pub author_name: Option<String>,
     /// The values of every `Writ:` trailer in the commit message.
     pub writ_trailers: Vec<String>,
     /// Paths the commit changes relative to its parents, if the daemon could compute them.
@@ -546,6 +558,36 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
                 text::shown(&request.author_email, VALUE_SHOWN)
             ),
         ));
+    }
+    if let Some(name) = &lease.ticket.scope.committer_name {
+        for (code, who, found) in [
+            (
+                DenyCode::CommitterName,
+                "committer",
+                &request.committer_name,
+            ),
+            (DenyCode::AuthorName, "author", &request.author_name),
+        ] {
+            if found.as_deref() != Some(name.as_str()) {
+                let shown = found.as_deref().map_or_else(
+                    || "not UTF-8".to_owned(),
+                    |found| format!("{:?}", text::shown(found, VALUE_SHOWN)),
+                );
+                // No amendment changes it: the name is the template's.
+                return Err(Denial {
+                    code,
+                    reason: format!(
+                        "{who} name {shown} is not the lease's committer_name {:?}",
+                        name.as_str()
+                    ),
+                    hint: Some(format!(
+                        "commit with git's user.name set to {:?} (`writ git` sets it from the \
+                         lease)",
+                        name.as_str()
+                    )),
+                });
+            }
+        }
     }
     if entry.ticket_link == TicketLink::Trailer {
         match request.writ_trailers.as_slice() {

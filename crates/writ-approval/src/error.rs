@@ -15,6 +15,8 @@ pub enum RefusalCode {
     SessionKey,
     /// Too many tickets wait, in all or for this session.
     TooManyPending,
+    /// The repo named isn't in the registry (`writ policy`).
+    UnknownRepo,
     /// The ticket's source holds as many active leases as `max_active_per_source` allows.
     TooManyActive,
     /// More submissions from this address than the rate allows.

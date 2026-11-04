@@ -18,8 +18,8 @@ use zeroize::Zeroizing;
 use crate::channel::reply;
 use crate::{Gateway, limits};
 
-/// Runs an agent command (`writ request`, `writ wait`, `writ close`) for the session key the
-/// client authenticated with.
+/// Runs an agent command (`writ request`, its dry run, `writ policy`, `writ wait`, `writ
+/// close`) for the session key the client authenticated with.
 pub(crate) async fn run_agent(
     gateway: Gateway,
     key: PublicKey,
@@ -38,6 +38,13 @@ pub(crate) async fn run_agent(
             Ok(body) => encoded(blocking(move || service.submit(&key, &body, &facts)).await),
             Err(e) => encoded::<()>(Err(e)),
         },
+        Command::DryRun => match read_body(&mut rx).await {
+            Ok(body) => encoded(blocking(move || service.dry_run(&key, &body, &facts)).await),
+            Err(e) => encoded::<()>(Err(e)),
+        },
+        Command::Policy { repo } => {
+            encoded(blocking(move || service.repo_policy(&repo, &facts)).await)
+        }
         Command::Close { id } => match read_body(&mut rx).await {
             Ok(body) => match writ_proto::decode_body::<writ_proto::CloseRequest>(&body) {
                 Ok(request) => {
@@ -166,9 +173,11 @@ pub(crate) async fn approval_reply(
             None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
         },
         Command::TokenApply => token_apply(gateway, facts, &body).await,
-        Command::Request | Command::Wait { .. } | Command::Close { .. } => {
-            encoded::<()>(Err(ApiError::new("command not allowed here")))
-        }
+        Command::Request
+        | Command::DryRun
+        | Command::Policy { .. }
+        | Command::Wait { .. }
+        | Command::Close { .. } => encoded::<()>(Err(ApiError::new("command not allowed here"))),
     }
 }
 

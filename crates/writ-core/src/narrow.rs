@@ -91,6 +91,11 @@ pub fn widenings(previous: &Ticket, next: &Ticket) -> Vec<String> {
     for email in b.committer_emails.difference(&a.committer_emails) {
         reasons.push(format!("scope.committer_emails adds {email}"));
     }
+    // Another name, or none where there was one, is another identity: never by narrowing or
+    // renewal.
+    if b.committer_name != a.committer_name {
+        reasons.push("scope.committer_name changed".to_owned());
+    }
 
     // An empty expected_paths turns the path check off, so emptying it widens.
     let (a, b) = (&previous.text.expected_paths, &next.text.expected_paths);

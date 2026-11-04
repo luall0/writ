@@ -9,7 +9,7 @@
 //! | Listener | Authenticated as | Commands |
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
-//! | agents | a plain session key | [`Command::Request`], [`Command::Wait`], [`Command::Close`] |
+//! | agents | a plain session key | [`Command::Request`], [`Command::DryRun`], [`Command::Policy`], [`Command::Wait`], [`Command::Close`] |
 //! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`] |
 //!
 //! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
@@ -31,11 +31,12 @@ pub mod sign;
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
-    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, ChainLink, CloseRequest, Count,
-    CreatedKey, Decision, Decisions, DenialCount, Info, KeyRole, Listing, OtherLease, Others,
-    PassphraseText, Phases, Previous, ProveRequest, Proved, RefuseRequest, Relation, Renewal,
-    Report, ReportCommit, ReportPush, RevokeRequest, SealedBoot, Shown, Submitted, Summary,
-    TokenApplied, TokenRequest, TokenShown, UnsealRequest, Unsealed,
+    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, ChainLink, Checked, CloseRequest,
+    Count, CreatedKey, Decision, Decisions, DenialCount, Info, KeyRole, Listing, OtherLease,
+    Others, PassphraseText, Phases, Previous, ProveRequest, Proved, RefuseRequest, Relation,
+    Renewal, RepoPolicy, Report, ReportCommit, ReportPush, RevokeRequest, SealedBoot, Shown,
+    Submitted, Summary, TemplateView, TokenApplied, TokenRequest, TokenShown, UnsealRequest,
+    Unsealed,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -60,6 +61,10 @@ mod tests {
         let id = TicketId::from_parts(1_800_000_000_000, [7; 10]);
         for command in [
             Command::Request,
+            Command::DryRun,
+            Command::Policy {
+                repo: "omega-code".parse().unwrap(),
+            },
             Command::Wait { id: id.clone() },
             Command::Close { id: id.clone() },
             Command::Report { id: id.clone() },
@@ -87,6 +92,12 @@ mod tests {
             "",
             "writ",
             "writ request now",
+            "writ request --dry-run now",
+            "writ request --dry",
+            "writ policy",
+            "writ policy ../x",
+            "writ policy demo extra",
+            "writ policy demo --all",
             "writ wait",
             "writ wait wrt_nope",
             "writ close",
@@ -145,6 +156,12 @@ mod tests {
             assert_eq!(Command::from_http(method, &path), Some(command));
         }
         assert_eq!(Command::Request.http_route(), None);
+        assert_eq!(Command::DryRun.http_route(), None);
+        let policy = Command::Policy {
+            repo: "demo".parse().unwrap(),
+        };
+        assert_eq!(policy.http_route(), None);
+        assert!(!policy.is_approval() && Command::DryRun.is_agent());
         assert_eq!(Command::Wait { id: id.clone() }.http_route(), None);
         assert_eq!(Command::Close { id: id.clone() }.http_route(), None);
         for (method, path) in [
@@ -157,6 +174,7 @@ mod tests {
             ("POST", &format!("/v1/tickets/{id}/close")),
             ("POST", &format!("/v1/tickets/{id}/sign")),
             ("POST", "/v1/request"),
+            ("GET", "/v1/policy/demo"),
             ("GET", "/v1/proofs"),
             ("POST", "/v1/proofs/x"),
             ("POST", "/v1/proofs?key=agent-01"),

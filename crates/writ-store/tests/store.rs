@@ -749,11 +749,11 @@ fn a_state_of_another_version_is_refused_and_never_written_over() {
     // A state that holds tickets of another format is refused too.
     rusqlite::Connection::open(&path)
         .unwrap()
-        .execute("UPDATE formats SET ticket_kind = 'writ-ticket/0'", [])
+        .execute("UPDATE formats SET ticket_kind = 'writ-ticket/1'", [])
         .unwrap();
     assert!(matches!(
         Store::open(&path),
-        Err(StoreError::OtherTicketFormat { found, expected: "writ-ticket/1" }) if found == "writ-ticket/0"
+        Err(StoreError::OtherTicketFormat { found, expected: "writ-ticket/2" }) if found == "writ-ticket/1"
     ));
 }
 

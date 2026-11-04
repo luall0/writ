@@ -14,7 +14,11 @@ sequenceDiagram
   participant AP as writ sign (Mac)
   participant SC as Secretive
   Me->>A: "build feature X on omega-code"
+  A->>D: writ policy: what a ticket for the repo may ask
+  D-->>A: templates (branches, emails, limits), protected refs, ticket link
   A->>A: think through scope, write ticket (task, plan, repos, branches, limits)
+  A->>D: writ request --dry-run: every submission check, nothing stored
+  D-->>A: would be accepted, or rejected + reasons
   A->>A: writ request → generates session key
   A->>D: submit ticket + session pubkey
   alt doesn't fit any template
@@ -56,6 +60,8 @@ and `signing_key.pub`, the daemon's key for the lease's commits),
 with `current` pointing at it. `writ request` exits 0 when granted, 3 when rejected by
 policy, 4 when refused, 5 when the ticket expired or was withdrawn. `writ sign` and
 `writ refuse` reach the approval listener ([Approvals](architecture/approvals.md#reaching-the-daemon)).
+`writ policy` and `writ request --dry-run` run on the agents' listener too, before any edit:
+reads that grant nothing ([what the agent reads before it asks](architecture/clients.md#what-the-agent-reads-before-it-asks)).
 
 ## 2. Signed commit
 
