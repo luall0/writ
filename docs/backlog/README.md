@@ -73,8 +73,8 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
-| [One program, several repositories](#one-program-several-repositories) | Clients | feature | M | idea (left out of [M6.1](../roadmap.md#m61--multi-repo-workspaces)) |
-| [Submodules](#submodules) | Clients, Gateway | feature | M | idea (left out of [M6.1](../roadmap.md#m61--multi-repo-workspaces)) |
+| [One program, several repositories](#one-program-several-repositories) | Clients | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
+| [Submodules](#submodules) | Clients, Gateway | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
 | [Managing the daemon from the CLI](daemon-management-from-the-cli.md) | Administration, Signers, Upstream, Clients | improvement | L | specified; picked as [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) |
 | [Pending hand edits](#pending-hand-edits) | Administration | improvement | M | idea |
 | [Old upstream histories](#old-upstream-histories) | Upstream | improvement | M | idea; lowest priority, waits for a real repository that needs it |

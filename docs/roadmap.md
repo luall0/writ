@@ -37,7 +37,7 @@ picked.
 | M5.6 | [Review after M5.5](history/m5.6-review-after-m5.5.md) ✅ | The security and code quality review after M5 and M5.5 and its fixes: tree modes read as git reads them, upload-pack in protocol v0, admin changes bound to their version, a removed approver's leases revoked, the author checked like the committer, a bounded trusted display, notes appended, the three test layers hardened |
 | M5.7 | [Memory wiped on free](history/m5.7-memory-wiped-on-free.md) ✅ | Writ's own zero-on-free allocator in `writd`, `writ` and `writ-sign`, on in every build: no library's freed copy of a secret stays in memory, at no measurable cost under heavy load |
 | M6 | [Agent skill, amendments, renewals, close](history/m6-agent-skill-amendments-renewals-and-close.md) ✅ | The Writ skill installed by `writ init` for each agent, adaptive timings, amendments, renewals, the estimate, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
-| M6.1 | [Multi-repo workspaces](#m61--multi-repo-workspaces) | One agent at the root of a folder of repositories: `writ init` at the root, the `writ-workspace` skill, `writ git` reading git's global options, `writ exec -C` |
+| M6.1 | [Multi-repo workspaces](history/m6.1-multi-repo-workspaces.md) ✅ | One agent at the root of a folder of repositories: `writ init` at the root, the `writ-workspace` skill, `writ git` reading git's global options, `writ exec -C` |
 | M6.1.5 | [Per-repository tickets](#m615--per-repository-tickets) | A ticket whose scope is given repository by repository (template, operations, branches, emails, expected paths, counts), each part checked against its own template; one lease, one approval |
 | M6.2 | [Managing the daemon from the CLI](#m62--managing-the-daemon-from-the-cli) | Every key declared in the signed policy, upstream host keys pinned by signed changes, repos naming their templates; `writ admin repo\|template\|key\|host` to read, add step by step and edit one field at a time, with no host access |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
@@ -204,33 +204,12 @@ amendment and a renewal ([manual checks with a real agent](guides/manual-checks-
 
 ## M6.1 — Multi-repo workspaces
 
-Some people keep several repositories in one folder and open one agent at its root, which
-manages them all. The skill's folder is then the root's, not each repository's.
-
-- **`writ init` at a workspace root**: the child repositories one level down are found (the
-  root itself may be a repository too, a meta-repo with its children ignored); each is mapped
-  to its registry name (by default its `origin` URL's last part, else its folder's name,
-  confirmed on a terminal; `--repo <dir>=<name>`, repeatable, answers for it) and wired; the
-  workspace is recorded so `writ init --undo` at the root takes every repository back.
-- **The `writ-workspace` skill**, installed at the root instead of `writ`: one ticket naming
-  every repository the task touches, `writ git -C <repo> …` for each command, the trailer per
-  repository, timings per repository.
-- **`writ git` reads git's global options as git does**, in order (`-C`, `-c`,
-  `--git-dir`, `--work-tree`, `--no-pager`, `-p`, `-P`, `--namespace`, `--bare`…), to find the
-  repository a command works in; what it can't resolve is refused. At an unwired root it
-  lists the workspace's repositories.
-- **`writ exec -C <dir> -- …`**: one repository per process. A program that runs git across
-  several repositories at once stays in the [backlog](backlog/README.md), and so do
-  submodules.
-
-Acceptance:
-- [ ] An agent started at a workspace root works on two of its repositories under one lease,
-      through `writ git -C`, with the `writ-workspace` skill only.
-- [ ] `writ git` finds the repository behind every global option git takes before its
-      command, and refuses what it can't resolve, with its reason.
-- [ ] `writ init --undo` at the root restores every repository and the root exactly.
-- [ ] The new flags (`--repo`, `writ exec -C`) are used for real by end-to-end scenarios,
-      with their rows in the registry.
+**Done.** Moved to [history/m6.1-multi-repo-workspaces.md](history/m6.1-multi-repo-workspaces.md):
+`writ init` at a folder of repositories (each wired under its registry name, `--repo`
+answering, the folder's own repository only when named, the workspace recorded in
+`.writ-workspace` so `--undo` there takes every repository back), the `writ-workspace` skill
+at the folder, `writ git` reading git's global options and letting git resolve the
+repository, `writ exec -C`, timings per set of repositories. `make ci` and `make e2e` passed.
 
 ## M6.1.5 — Per-repository tickets
 
