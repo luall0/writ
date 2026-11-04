@@ -91,7 +91,8 @@ fn commits_are_verified_once_the_signing_key_is_registered_and_proven() {
         .run_with(&on_terminal("not-the-token"), b"n\n");
     let (screen, _) = expect(&out, 6, "a proof answered no");
     assert!(
-        screen.contains("Sign this proof for agent-e2e-verify? [y/N]"),
+        screen.contains("  key        agent-e2e-verify\n")
+            && screen.contains("Sign this proof? [y/N]"),
         "{screen}"
     );
     assert!(screen.contains("Nothing signed."), "{screen}");

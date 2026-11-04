@@ -46,7 +46,7 @@ pub fn width(text: &str) -> usize {
 /// one row, possibly empty), between words: a row ends at its last space (the space itself
 /// not shown), and only a word longer than a row is cut inside, so a name or an id is never
 /// shown as two (`ABCDE123` then `45`).
-fn cut(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn cut(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows = vec![String::new()];
     let mut used = 0;
@@ -102,7 +102,12 @@ fn labelled(out: &mut String, label: &str, value: &str) {
 
 /// `value` after `head`, cut into rows that fit [`WIDTH`]: each continuation indented under
 /// the value, behind the gutter.
-fn rows_after(out: &mut String, head: &str, value: &str) {
+pub(crate) fn rows_after(out: &mut String, head: &str, value: &str) {
+    // A value that fits after the head is one row as it is.
+    if width(head) + width(value) <= WIDTH {
+        let _ = writeln!(out, "{head}{value}");
+        return;
+    }
     let rest = format!("{}{GUTTER}", " ".repeat(width(head)));
     let mut rows = cut(value, WIDTH.saturating_sub(width(&rest))).into_iter();
     let _ = writeln!(out, "{head}{}", rows.next().unwrap_or_default());

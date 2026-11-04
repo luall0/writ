@@ -230,10 +230,15 @@ pub async fn sign(
             let answer = if review.yes {
                 "y".to_owned()
             } else {
-                print!(
-                    "Sign this ticket with {}? [y]es / [n]o / [r]efuse: ",
-                    signer.key.display()
+                // The key on a row of its own (a path of any length, cut to fit), the prompt
+                // one short row.
+                let mut key = String::new();
+                display::rows_after(
+                    &mut key,
+                    "Approval key: ",
+                    &display::clean(&signer.key.display().to_string()),
                 );
+                print!("{key}Sign this ticket? [y]es / [n]o / [r]efuse: ");
                 std::io::stdout()
                     .flush()
                     .context("cannot write to the terminal")?;

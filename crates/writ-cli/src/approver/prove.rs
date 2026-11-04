@@ -47,32 +47,39 @@ fn read_message(input: impl std::io::Read) -> anyhow::Result<ProofMessage> {
     Ok(ProofMessage::try_from(text)?)
 }
 
-/// What is about to be signed, for the terminal.
+/// What is about to be signed, for the terminal: every row within [`display::WIDTH`], the
+/// message (the remote's text, up to 4096 bytes) cut into rows behind the gutter.
 fn render(proof: &Proof) -> String {
+    use std::fmt::Write as _;
     let message = proof.message.as_str();
-    format!(
-        "Prove an agent signing key to a remote.\n\
-         \x20 key        {key}\n\
-         \x20 namespace  {namespace}\n\
-         \x20 message    {len} bytes, exactly (hidden characters, newlines included, as \\u{{…}}):\n\
-         \x20   │ {shown}\n\
-         The daemon's key {key} signs this message in namespace {namespace:?}, and nothing else.\n",
-        key = proof.key,
-        namespace = proof.namespace.as_str(),
-        len = message.len(),
-        shown = display::clean(message),
-    )
+    let mut out = String::from("Prove an agent signing key to a remote.\n");
+    display::rows_after(&mut out, "  key        ", proof.key.as_str());
+    display::rows_after(&mut out, "  namespace  ", proof.namespace.as_str());
+    let _ = writeln!(
+        out,
+        "  message    {} bytes, exactly; hidden characters (newlines too) as \\u{{…}}:",
+        message.len()
+    );
+    let indent = "    ";
+    let room =
+        display::WIDTH.saturating_sub(display::width(indent) + display::width(display::GUTTER));
+    for row in display::cut(&display::clean(message), room) {
+        let _ = writeln!(out, "{indent}{}{row}", display::GUTTER);
+    }
+    out.push_str("The daemon's key signs this message, in this namespace, and nothing else.\n");
+    out
 }
 
 /// Asks on the terminal (stdin holds the message): only `y` or `yes` signs.
-fn confirm(key: &KeyId) -> anyhow::Result<bool> {
+fn confirm() -> anyhow::Result<bool> {
     let tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
         .context("no terminal to ask on: check the proof above and pass --yes")?;
     let mut out = &tty;
-    write!(out, "Sign this proof for {key}? [y/N]: ").context("cannot write to the terminal")?;
+    // The key is named above: the prompt stays one short row.
+    write!(out, "Sign this proof? [y/N]: ").context("cannot write to the terminal")?;
     out.flush().context("cannot write to the terminal")?;
     let mut answer = String::new();
     BufReader::new(&tty)
@@ -94,7 +101,7 @@ pub async fn prove_key(
     let message = read_message(std::io::stdin().lock())?;
     let proof = Proof::new(asked.key, asked.namespace, message);
     eprint!("{}", render(&proof));
-    if !asked.yes && !confirm(&proof.key)? {
+    if !asked.yes && !confirm()? {
         eprintln!("Nothing signed.");
         return Ok(Exit::NotSigned);
     }
@@ -203,5 +210,40 @@ mod tests {
         assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'));
         assert!(shown.contains("namespace  gitea\n"), "{shown}");
         assert!(shown.contains("13 bytes"), "{shown}");
+    }
+
+    /// The e2e pipeline found the prompts and rows naming a key or a path wider than the
+    /// terminal: every row of the proof fits, the longest key id and message included.
+    #[test]
+    fn every_row_of_a_proof_fits_the_terminal() {
+        let proof = Proof::new(
+            "k".repeat(64).parse().unwrap(),
+            "gitea".parse().unwrap(),
+            "日\u{1b}"
+                .repeat(MAX_PROOF_MESSAGE_BYTES / 4)
+                .try_into()
+                .unwrap(),
+        );
+        let shown = render(&proof);
+        for line in shown.lines() {
+            assert!(
+                display::width(line) <= display::WIDTH,
+                "{} columns: {line:?}",
+                display::width(line)
+            );
+        }
+        assert!(
+            shown.contains(&format!("  key        {}\n", "k".repeat(64))),
+            "{shown}"
+        );
+        // Every character of the message is shown, behind the gutter.
+        let rows: String = shown
+            .lines()
+            .filter_map(|l| l.strip_prefix("    │ "))
+            .collect();
+        assert_eq!(
+            rows,
+            display::clean(proof.message.as_str()).replace(' ', "")
+        );
     }
 }
