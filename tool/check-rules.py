@@ -38,6 +38,8 @@ PRINT = re.compile(r"\b(e?println!|e?print!|dbg!)")
 BARE_IS_ERR = re.compile(r"\b(prop_)?assert!\(.*\.is_err\(\)", re.S)
 BARE_FAILURE = re.compile(r"\bassert!\(\s*!.*\.success\(\)", re.S)
 ASSERT_START = re.compile(r"\b(prop_)?assert!\(")
+GIT_RUN = re.compile(r'Command::new\("git"\)')
+GIT_ISOLATED = re.compile(r"env_clear|GIT_CONFIG_GLOBAL|GIT_CONFIG_NOSYSTEM")
 STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
@@ -143,6 +145,14 @@ for crate in sorted(p for p in CRATES.iterdir() if p.is_dir()):
                 errors.append(
                     f"{rel}:{number}: a poisoned lock must not silently skip work "
                     "(fail closed, recover the data, or say why in a `// poisoned:` comment)"
+                )
+            # A test's git never reads the user's own config (hard rule 8): the environment
+            # cleared, or the global and system configs cut off, within the command's builder.
+            window = " ".join(lines[number - 1:number + 13])
+            if testing and GIT_RUN.search(code) and not GIT_ISOLATED.search(window):
+                errors.append(
+                    f"{rel}:{number}: a test's git reads the user's config: clear its "
+                    "environment or set GIT_CONFIG_GLOBAL and GIT_CONFIG_NOSYSTEM"
                 )
             if testing and SLEEP.search(code) and "poll:" not in previous:
                 errors.append(

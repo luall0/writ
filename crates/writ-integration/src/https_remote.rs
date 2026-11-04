@@ -282,6 +282,9 @@ async fn backend(state: &State, request: Request<Incoming>, user: &str) -> Respo
                 .arg("-C")
                 .arg(state.root.join(repo))
                 .args(&args)
+                // Never the user's git config (hard rule 8).
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .output()
                 .unwrap();
             assert!(out.status.success(), "{args:?}: {out:?}");

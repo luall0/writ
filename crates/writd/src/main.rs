@@ -734,8 +734,42 @@ mod tests {
                 "{feature} is not in docs/end-to-end.md's coverage registry"
             );
         }
-        // And what main dispatches is that table: an unknown command gets the usage.
-        assert_eq!(usage().lines().count(), COMMANDS.len());
+        // And what main dispatches is that table, read from main's own match (the review
+        // after M5.5: the usage is made from the table, so counting its lines proved nothing).
+        let source = include_str!("main.rs");
+        let dispatch = source
+            .split("let result = match args.as_slice() {")
+            .nth(1)
+            .and_then(|rest| rest.split("        _ => {").next())
+            .expect("main's dispatch");
+        let mut dispatched: Vec<String> = dispatch
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("[\""))
+            .map(|arm| {
+                let words: Vec<&str> = arm
+                    .split(['"', ',', ' ', ']'])
+                    .filter(|w| {
+                        !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                    })
+                    .collect();
+                // `["keys", "create", …]` is one command of two words.
+                match words.as_slice() {
+                    ["keys", "create", ..] => "keys create".to_owned(),
+                    [first, ..] => (*first).to_owned(),
+                    [] => String::new(),
+                }
+            })
+            .collect();
+        dispatched.sort();
+        let mut listed: Vec<String> = COMMANDS
+            .iter()
+            .map(|(name, _)| (*name).to_owned())
+            .collect();
+        listed.sort();
+        assert_eq!(
+            dispatched, listed,
+            "main dispatches exactly the commands COMMANDS lists"
+        );
     }
 
     #[test]

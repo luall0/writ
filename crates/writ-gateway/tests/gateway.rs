@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use russh::ChannelMsg;
 use russh::client::{self, Handle};
@@ -512,6 +513,7 @@ async fn a_connection_that_never_authenticates_is_closed() {
     let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
     // A peer that opens a connection and never speaks SSH: closed after the deadline (paused
     // time runs ahead while everything waits).
+    let started = tokio::time::Instant::now();
     let mut stream = daemon.agents.connect(peer()).await.unwrap();
     let mut seen = Vec::new();
     let read = stream.read_to_end(&mut seen).await;
@@ -519,6 +521,20 @@ async fn a_connection_that_never_authenticates_is_closed() {
     assert!(
         seen.starts_with(b"SSH-2.0-"),
         "the server's id, then the close"
+    );
+    // Both sides of the deadline (the review after M5.5): open until 20 s from the accept,
+    // closed then, and the refusal logged.
+    let open_for = started.elapsed();
+    assert!(
+        (Duration::from_secs(20)..Duration::from_secs(21)).contains(&open_for),
+        "closed after {open_for:?}"
+    );
+    let lines = daemon.audit("connect", "denied");
+    assert!(
+        lines.iter().any(|l| l["reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("no SSH handshake within 20 s"))),
+        "{lines:?}"
     );
 }
 
@@ -1208,4 +1224,60 @@ async fn an_unseal_cut_off_by_its_https_client_still_runs_to_its_end() {
         held.finished.load(std::sync::atomic::Ordering::Acquire)
     })
     .await;
+}
+
+/// The review after M5.5 (T3): the SSH environment and the authentication attempts are bounds
+/// of the untrusted-input inventory with no test of their own. Every `env` request is refused,
+/// `GIT_PROTOCOL` included (upload-pack speaks v0 only), and the command still runs; a key
+/// is tried six times at most, the seventh attempt ends the connection.
+#[tokio::test]
+async fn env_requests_are_refused_and_authentication_stops_after_six_attempts() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let agent = Daemon::with_key(&daemon.agents, "writ", &key)
+        .await
+        .unwrap();
+    for (name, value) in [("GIT_PROTOCOL", "version=2"), ("LD_PRELOAD", "/tmp/x.so")] {
+        let mut channel = agent.channel_open_session().await.unwrap();
+        channel.set_env(true, name, value).await.unwrap();
+        let answer = loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Success) => break "success",
+                Some(ChannelMsg::Failure) => break "failure",
+                Some(_) => {}
+                None => break "closed",
+            }
+        };
+        assert_eq!(answer, "failure", "{name}");
+    }
+    // The connection is fine after: a command runs.
+    let info: Result<Submitted, ApiError> = call(&agent, Command::Request, TICKET.as_bytes()).await;
+    assert!(info.is_ok(), "{info:?}");
+
+    // Six keys not in readers, one after the other on one connection: each refused; the
+    // seventh attempt isn't answered, the connection is ended.
+    let mut handle = Daemon::connect(&daemon.approvals).await;
+    for attempt in 1..=6 {
+        let stranger = generate(KeyKind::Ed25519).unwrap();
+        let auth = handle
+            .authenticate_publickey("writ", PrivateKeyWithHashAlg::new(Arc::new(stranger), None))
+            .await
+            .unwrap_or_else(|e| panic!("attempt {attempt}: {e}"));
+        assert!(
+            matches!(
+                auth,
+                russh::client::AuthResult::Failure {
+                    partial_success: false,
+                    ..
+                }
+            ),
+            "attempt {attempt}: {auth:?}"
+        );
+    }
+    let stranger = generate(KeyKind::Ed25519).unwrap();
+    let seventh = handle
+        .authenticate_publickey("writ", PrivateKeyWithHashAlg::new(Arc::new(stranger), None))
+        .await;
+    // any error: the server disconnected ("Too many authentication attempts").
+    assert!(seventh.is_err(), "{seventh:?}");
 }

@@ -47,7 +47,16 @@ fn a_revocation_completes_at_once_with_fetches_and_pushes_in_flight() {
     eventually("the fetch's sync to reach upstream", || {
         gateway.remote.upload_packs() > before
     });
+    // The push in flight before the revocation, not merely started (the review after M5.5:
+    // revoked at once, it could be refused at connect, and the test pass without a push
+    // in flight): its connection allowed and logged.
+    let connected = || {
+        let audit = std::fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+        audit_events(&audit, "connect", "allowed").len()
+    };
+    let before_push = connected();
     let push = spawn(&["push", "origin", "HEAD:refs/heads/agent/x"]);
+    eventually("the push to be connected", || connected() > before_push);
 
     // The revocation: under the state lock only, never behind git, a sync or upstream.
     let started = Instant::now();

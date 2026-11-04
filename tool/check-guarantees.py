@@ -25,10 +25,16 @@ for path in (ROOT / "crates").rglob("*.rs"):
     if "/target/" in path.as_posix():
         continue
     lines = path.read_text().splitlines()
-    in_proptest = False
+    # Inside a `proptest! { … }` block: its braces counted, so a helper after the block is
+    # never taken for a test (the review after M5.5).
+    depth = 0
     for i, line in enumerate(lines):
-        if "proptest!" in line:
-            in_proptest = True
+        if depth == 0 and re.search(r"\bproptest!\s*\{", line):
+            depth = line.count("{") - line.count("}") or 1
+            continue
+        in_proptest = depth > 0
+        if in_proptest:
+            depth += line.count("{") - line.count("}")
         match = re.match(r"\s*(async\s+)?fn ([a-z0-9_]+)\s*\(", line)
         if not match:
             continue

@@ -413,6 +413,9 @@ fn mirrors_git_and_ssh_are_the_programs_named() {
     let upstream = Command::new("git")
         .args(["rev-parse", "refs/heads/agent/config"])
         .current_dir(daemon.remote.repo("demo"))
+        // Never the user's git config (hard rule 8).
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
         .unwrap();
     assert_eq!(stdout(&upstream).trim(), main, "upstream has the branch");
@@ -466,6 +469,9 @@ fn mirrors_sync_every_syncs_without_any_client() {
     let synced = Command::new("git")
         .args(["rev-parse", "refs/heads/main"])
         .current_dir(&mirror)
+        // Never the user's git config (hard rule 8).
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
         .unwrap();
     assert_eq!(stdout(&synced).trim(), main);

@@ -39,6 +39,11 @@ const SSH_FAILED: i32 = 255;
 /// The `gpg` git's OpenPGP verify calls are handed to, when `WRIT_GPG` doesn't name one.
 const DEFAULT_GPG: &str = "/usr/bin/gpg";
 
+/// The calls `writ-sign` answers, as git makes them: what the end-to-end coverage registry
+/// must list (rule 18), checked by a test against docs/end-to-end.md. `main` answers these
+/// and refuses anything else.
+const CALLS: &[&str] = &["-Y sign", "-Y verify", "--status-fd=2 -bsau", "--verify"];
+
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let rest = match args.as_slice() {
@@ -73,8 +78,9 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "writ-sign: unsupported call: it signs (-Y sign, or -bsau as gpg), and hands \
-                 verification to ssh-keygen (-Y …) or gpg (--verify)"
+                "writ-sign: unsupported call: it answers {} (signing, or verification handed \
+                 to ssh-keygen or gpg)",
+                CALLS.join(", ")
             );
             return ExitCode::FAILURE;
         }
@@ -387,6 +393,24 @@ fn check_signature(out: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every call is in the end-to-end coverage registry (the review after M5.5: `writ-sign`
+    /// had no such test, though rule 18 says `make test` fails on a flag without its row).
+    #[test]
+    fn every_call_is_in_the_end_to_end_registry() {
+        let registry = include_str!("../../../docs/end-to-end.md");
+        for call in CALLS {
+            assert!(
+                registry.contains(&format!("| `writ-sign {call}`")),
+                "writ-sign {call} is not in docs/end-to-end.md's coverage registry"
+            );
+        }
+        // And each is one `main` answers: the words it matches on are there.
+        let source = include_str!("main.rs");
+        for word in ["\"-Y\"", "\"sign\"", "is_gpg_sign", "\"--verify\""] {
+            assert!(source.contains(word), "{word}");
+        }
+    }
 
     fn os(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()

@@ -71,6 +71,7 @@ test-props:
 # make test-agent KEY=<public key .pub> [AGENT=<agent socket, default $$SSH_AUTH_SOCK>]
 test-agent:
 	@test -n "$(KEY)" || { echo "usage: make test-agent KEY=<public key .pub> [AGENT=<socket>]"; exit 2; }
+	CARGO_TARGET_DIR=target/bins $(RECORD) bins build --locked $(BINARIES) --features writd/dev-keystore
 	WRIT_TEST_AGENT_KEY="$(KEY)" SSH_AUTH_SOCK="$(or $(AGENT),$(SSH_AUTH_SOCK))" \
 		WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo nextest run --locked --workspace --run-ignored only \
 		-E 'binary_id(writ-integration::interop) & test(=your_agent_key_signs_approvals_rust_verifies)'

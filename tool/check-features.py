@@ -13,7 +13,8 @@ FORBIDDEN = {"testing", "dev-keystore"}
 
 def forbidden_in(package: str) -> list[str]:
     tree = subprocess.check_output(
-        ["cargo", "tree", "--locked", "-p", package, "-e", "normal,features",
+        # Every target: on Linux CI, the macOS-only dependencies too (the review after M5.5).
+        ["cargo", "tree", "--locked", "--target", "all", "-p", package, "-e", "normal,features",
          "--prefix", "none", "--format", "{p} [{f}]"],
         text=True,
     )

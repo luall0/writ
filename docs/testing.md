@@ -87,9 +87,16 @@ These rules hold for every test, at every level.
     `RefusalCode::Signature`, `LifecycleError::SessionKeyChanged`), or an exit status's exact
     code, never just `is_err()` or `!success()`. Where the error really is opaque (a TLS or
     SSH library's failure), the assertion says so in a `// any error: <why>` comment, and
-    `tool/check-rules.py` refuses a bare one;
+    `tool/check-rules.py` refuses a bare one (it reads an assert whole, however rustfmt splits
+    it). A refusal that is a dropped connection is checked in the audit log, by its reason; a
+    refused SSH authentication by git's 128 and ssh's `Permission denied (publickey)`, so a
+    failure for another reason doesn't pass;
   - no sleep: a poll for something that gives no signal says what it polls in a
     `// poll: <why>` comment (checked by `tool/check-rules.py`);
+  - a test that says something happened "while X was in flight" waits for X to be in flight
+    (a signal, an audit line), never only for X to have started;
+  - a test's `git` never reads the user's config: its environment cleared, or
+    `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM` set (checked by `tool/check-rules.py`);
   - every limit is tested **on both sides**: one below allowed, at the limit denied (counts,
     sizes, expiry to the second, input lengths);
   - every allowed case next to its denials passes, so the denial is the check's doing and not
@@ -148,7 +155,8 @@ Telegram Bot API (`ticket_flow.rs`), and the OpenSSH tools against `writ-crypto`
 own (`-p writd -p writ-cli -p writ-sign`, in `target/bins`, `writd` with the `dev-keystore`
 feature the tests need) and names the directory in `WRIT_BIN_DIR`, so no `testing` feature
 of another crate is compiled into the `writd` under test (`tool/check-features.py` checks the
-shipped graph in `make check`).
+shipped graph in `make check`, for every target). A test run without `WRIT_BIN_DIR` (a bare
+`cargo nextest run`) is refused with what to run instead: never against a stale build.
 
 `make ci` (`make check` then `make test`) is the one definition of green: GitHub Actions runs
 it on Linux for every push and pull request (`.github/workflows/ci.yml`, no third-party
