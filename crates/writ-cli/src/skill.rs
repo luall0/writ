@@ -209,11 +209,57 @@ pub struct Installed {
 /// The skill with its timings file named (relative to the root when it is in it), and the
 /// workspace's repositories listed.
 fn skill_text(plan: &Plan, timings: &Path) -> String {
-    let shown = timings.strip_prefix(&plan.root).unwrap_or(timings);
-    plan.kind
-        .text()
+    text(plan.kind, &plan.root, timings, &plan.repos)
+}
+
+/// The `kind` skill as built into this `writ`, for the repository or workspace at `root`: its
+/// timings file named (relative to `root` when it is in it), `repos` listed (a workspace's).
+pub fn text(kind: Kind, root: &Path, timings: &Path, repos: &str) -> String {
+    let shown = timings.strip_prefix(root).unwrap_or(timings);
+    kind.text()
         .replace(TIMINGS_MARK, &shown.display().to_string())
-        .replace(REPOS_MARK, &plan.repos)
+        .replace(REPOS_MARK, repos)
+}
+
+/// What `writ skill update` did with one skill file the record names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Updated {
+    /// Rewritten from this `writ`'s skill.
+    Written,
+    /// Already this `writ`'s skill.
+    Current,
+    /// Not there any more.
+    Gone,
+    /// Left as it is, with why.
+    Kept(Kept),
+}
+
+/// Rewrites a skill file `writ init` wrote with `text` (this `writ`'s skill). The record names
+/// it, and the record is the agent's to write too: only a regular file named `SKILL.md` in a
+/// `<kind>/` folder (`writ/` or `writ-workspace/`), with Writ's mark, is written; anything
+/// else is kept, with why.
+pub fn update(path: &Path, kind: Kind, text: &str) -> anyhow::Result<Updated> {
+    let shaped = path.file_name().is_some_and(|n| n == "SKILL.md")
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == kind.name());
+    match std::fs::symlink_metadata(path).map(|m| m.file_type().is_file()) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Updated::Gone),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+        Ok(false) => return Ok(Updated::Kept(Kept::NotASkillPath)),
+        Ok(true) if !shaped => return Ok(Updated::Kept(Kept::NotASkillPath)),
+        Ok(true) => {}
+    }
+    let current = read_bounded(path, 1024 * 1024)?;
+    if !current.contains(OWNED) {
+        return Ok(Updated::Kept(Kept::NotWrits));
+    }
+    if current == text {
+        return Ok(Updated::Current);
+    }
+    std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(Updated::Written)
 }
 
 /// The folders `dir` needs made, from the deepest up to the first that exists.
@@ -493,6 +539,87 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&exclude).unwrap(),
             "# git's own\n/.cursor/skills/writ/\n"
+        );
+    }
+
+    #[test]
+    fn update_rewrites_only_writ_s_own_skill_files_from_this_writ() {
+        let root = tempfile::tempdir().unwrap();
+        let plan = Plan {
+            folders: vec![
+                root.path().join(".claude/skills"),
+                root.path().join(".agents/skills"),
+            ],
+            root: root.path().to_owned(),
+            kind: Kind::Repo,
+            repos: String::new(),
+        };
+        install(&plan, None).unwrap();
+        let claude = root.path().join(".claude/skills/writ/SKILL.md");
+        let agents = root.path().join(".agents/skills/writ/SKILL.md");
+        let timings = root.path().join(".claude/skills/writ/timings.md");
+        let current = text(Kind::Repo, root.path(), &timings, "");
+        assert_eq!(std::fs::read_to_string(&claude).unwrap(), current);
+        // Already this writ's: left alone, said so.
+        assert_eq!(
+            update(&claude, Kind::Repo, &current).unwrap(),
+            Updated::Current
+        );
+        // An older writ's (its mark kept, another text): rewritten, the timings file named.
+        let older = current.replace("writ git", "writ old-git");
+        assert_ne!(older, current);
+        std::fs::write(&agents, &older).unwrap();
+        assert_eq!(
+            update(&agents, Kind::Repo, &current).unwrap(),
+            Updated::Written
+        );
+        assert_eq!(std::fs::read_to_string(&agents).unwrap(), current);
+        assert!(
+            current.contains(".claude/skills/writ/timings.md"),
+            "{current}"
+        );
+
+        // What the record may name that isn't Writ's skill file here: never written.
+        let theirs = root.path().join("other/writ/SKILL.md");
+        std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        std::fs::write(&theirs, "their own skill").unwrap();
+        assert_eq!(
+            update(&theirs, Kind::Repo, &current).unwrap(),
+            Updated::Kept(Kept::NotWrits)
+        );
+        let link = root.path().join("linked/writ/SKILL.md");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&agents, &link).unwrap();
+        assert_eq!(
+            update(&link, Kind::Repo, "replaced").unwrap(),
+            Updated::Kept(Kept::NotASkillPath)
+        );
+        // Writ's mark, but in the other kind's folder, or not named SKILL.md.
+        let workspace = root.path().join("ws/writ-workspace/SKILL.md");
+        std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+        std::fs::write(&workspace, &older).unwrap();
+        assert_eq!(
+            update(&workspace, Kind::Repo, &current).unwrap(),
+            Updated::Kept(Kept::NotASkillPath)
+        );
+        let named = root.path().join(".claude/skills/writ/notes.md");
+        std::fs::write(&named, &older).unwrap();
+        assert_eq!(
+            update(&named, Kind::Repo, &current).unwrap(),
+            Updated::Kept(Kept::NotASkillPath)
+        );
+        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "their own skill");
+        assert_eq!(std::fs::read_to_string(&workspace).unwrap(), older);
+        assert_eq!(std::fs::read_to_string(&named).unwrap(), older);
+        assert_eq!(std::fs::read_to_string(&agents).unwrap(), current);
+        assert_eq!(
+            update(
+                &root.path().join("gone/writ/SKILL.md"),
+                Kind::Repo,
+                &current
+            )
+            .unwrap(),
+            Updated::Gone
         );
     }
 

@@ -138,6 +138,28 @@ fn a_lease_is_renewed_closed_and_learned_from() {
         "test -f .claude/skills/writ/SKILL.md && test -f .cursor/skills/writ/SKILL.md && \
          test -f .claude/skills/writ/timings.md && test -f ../skills/writ/SKILL.md",
     );
+    // After an upgrade of writ: `writ skill update` rewrites an older skill (Writ's mark
+    // kept), leaves the current one, and keeps a file someone replaced, saying so.
+    agent.ok_in(
+        "work",
+        "sed -i 's/writ git/writ old-git/' .cursor/skills/writ/SKILL.md && \
+         printf 'my own skill\\n' > ../skills/writ/SKILL.md",
+    );
+    let out = agent.ok_in("work", "writ skill update");
+    for line in [
+        "The writ skill, from this writ:\n",
+        "  .claude/skills/writ/SKILL.md: up to date\n",
+        "  .cursor/skills/writ/SKILL.md: updated\n",
+        "/skills/writ/SKILL.md: no longer Writ's skill, left as it is\n",
+    ] {
+        assert!(out.contains(line), "{line:?}: {out}");
+    }
+    agent.ok_in(
+        "work",
+        "cmp .claude/skills/writ/SKILL.md .cursor/skills/writ/SKILL.md && \
+         grep -qx 'my own skill' ../skills/writ/SKILL.md && \
+         cp .claude/skills/writ/SKILL.md ../skills/writ/SKILL.md",
+    );
     let status = agent.ok_in("work", "git status --porcelain");
     assert_eq!(
         status.trim(),
@@ -273,6 +295,20 @@ fn a_lease_is_renewed_closed_and_learned_from() {
     agent.ok_in(
         "global",
         "test -f \"$HOME/.agents/skills/writ/SKILL.md\" && test ! -e .agents",
+    );
+    // The skill in the agent's own folders, updated from the repository that installed it.
+    agent.ok_in(
+        "global",
+        "sed -i 's/writ git/writ old-git/' \"$HOME/.agents/skills/writ/SKILL.md\"",
+    );
+    let out = agent.ok_in("global", "writ skill update");
+    assert!(
+        out.contains("/.agents/skills/writ/SKILL.md: updated\n"),
+        "{out}"
+    );
+    agent.ok_in(
+        "global",
+        "! grep -q 'writ old-git' \"$HOME/.agents/skills/writ/SKILL.md\"",
     );
     agent.ok_in(
         "global",

@@ -261,7 +261,17 @@ agents it is asked for (`writ_cli::skill`), in as few folders as possible:
   `AGENTS.md` when the repo has neither); otherwise the summary prints the line.
 - What `writ init` creates and adds is recorded (`skill.created`, `skill.createddir`,
   `skill.exclude`, `skill.agentsmd`…), and `--undo` takes exactly that back: the skill files
-  that are still Writ's, and the folders made for them once empty. `timings.md` stays.
+  that are still Writ's, and the folders made for them once empty. `timings.md` stays. A
+  `SKILL.md` it rewrote (Writ's already: a global skill another repository's `writ init`
+  made) is recorded too (`skill.written`), never removed by `--undo`.
+- `writ skill update`, after upgrading `writ`: in the repository (or at the workspace's root)
+  it runs in, every `SKILL.md` the record names (`skill.created`, `skill.written`) rewritten
+  from the skill built into this `writ`, its timings file and a workspace's repositories
+  filled in again, each said `updated` or `up to date`. The record is the agent's to write
+  too: only a regular file named `SKILL.md` in a `writ/` (`writ-workspace/`) folder, with
+  Writ's mark, is written; anything else is kept and said (`skill::update`). In a
+  workspace's repository it is refused, naming the root. Every wired repository at once
+  (`--all`) comes in M7 with `~/.writ/repos`.
 - At a [workspace](#workspaces) root, the `writ-workspace` skill instead (`writ-workspace/`
   in the same folders), with the workspace's repositories listed.
 

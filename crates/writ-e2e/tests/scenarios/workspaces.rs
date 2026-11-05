@@ -63,6 +63,22 @@ fn one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease() {
         "{skill}"
     );
     agent.ok("test ! -e ws/api/.claude && test ! -e ws/web/.claude");
+    // `writ skill update` at the folder: the workspace's skill, its repositories listed again;
+    // in one of its repositories, refused, naming the folder.
+    agent
+        .ok("sed -i 's/repo `ws-web`/repo `elsewhere`/' ws/.claude/skills/writ-workspace/SKILL.md");
+    let out = agent.ok_in("ws", "writ skill update");
+    assert!(
+        out.contains("The writ-workspace skill, from this writ:\n  .claude/skills/writ-workspace/SKILL.md: updated\n"),
+        "{out}"
+    );
+    assert_eq!(
+        agent.read("ws/.claude/skills/writ-workspace/SKILL.md"),
+        skill
+    );
+    let out = agent.in_dir("ws/api", "writ skill update");
+    let (_, err) = expect(&out, 1, "writ skill update in a workspace repository");
+    assert!(err.contains("run `writ skill update` there"), "{err}");
 
     // The folder is no repository: `writ git` there lists the workspace's.
     let out = agent.in_dir("ws", "writ git status");

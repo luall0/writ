@@ -201,6 +201,11 @@ enum Commands {
         #[arg(long, conflicts_with = "undo")]
         agents_md: bool,
     },
+    /// The agent skill writ init installed here.
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
     /// Run any git command with the repo's Writ wiring (signing by the daemon, the session's
     /// SSH command, the `writ` remote), without changing its git config.
     Git {
@@ -496,6 +501,15 @@ enum HostCommand {
         #[command(flatten)]
         signer: SignerArgs,
     },
+}
+
+/// `writ skill <verb>`.
+#[derive(Subcommand)]
+enum SkillCommand {
+    /// Rewrite the skills writ init installed in this repository or workspace from the one
+    /// built into this writ (after upgrading it). A file that isn't Writ's skill any more is
+    /// left as it is.
+    Update,
 }
 
 /// `writ admin repo <verb>`.
@@ -880,6 +894,9 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             agent::wait(&paths, &url.url, id, lease.as_ref()).await
         }
         Commands::Init { undo: true, .. } => init::undo(),
+        Commands::Skill {
+            command: SkillCommand::Update,
+        } => init::update_skills(),
         Commands::Init {
             repo,
             members,

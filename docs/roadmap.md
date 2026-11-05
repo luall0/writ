@@ -251,10 +251,17 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
   `make uninstall` takes back.
 - **`writ init` keeps the list of the repos it wires**, in `~/.writ/repos` (each repo's path
   and wiring mode, whole-repo or wrapper, and a workspace root with its children), and
-  `writ init --undo` takes a repo off it: the one client change this milestone allows, for
-  the uninstall. A repo wired before M7 isn't on it until `writ init` runs in it again. The
-  list is my user's file, so an agent can write it too: an untrusted input, with its row in
-  the [security inventory](security.md), its bounds and a hostile-input test.
+  `writ init --undo` takes a repo off it: the client changes this milestone allows, for the
+  uninstall and for `writ skill update --all`. A repo wired before M7 isn't on it until
+  `writ init` runs in it again. The list is my user's file, so an agent can write it too: an
+  untrusted input, with its row in the [security inventory](security.md), its bounds and a
+  hostile-input test.
+- **`writ skill update --all`**: after an upgrade (`make install` upgrades the binaries), the
+  skill rewritten in every repo and workspace on `~/.writ/repos`, each as
+  [`writ skill update`](history/m6.2-managing-the-daemon-from-the-cli.md#follow-up-writ-skill-update)
+  does it there (each one still holding `writ init`'s record; one that doesn't, or a
+  workspace's repository, skipped and named). `make install` ends by naming the command
+  when it upgraded `writ`.
 - **An uninstall as easy**: `make uninstall` takes the Mac back to how it was before. It reads
   the manifest the install wrote (root-owned) as it went, so it knows the setup and removes
   only what was made: the daemon stopped in order and its LaunchDaemon unloaded; every file,
@@ -310,6 +317,10 @@ Acceptance:
       wired repo, a relative path, a link, control characters, an oversized file)
       never makes it touch anything `writ init` didn't wire, and what it skips is named,
       escaped.
+- [ ] `writ skill update --all` rewrites the skill in every repo and workspace on the list
+      (wrapper, whole-repo, a workspace root), each said as `writ skill update` says it, and
+      the same hostile list makes it write nothing but Writ's own skill files at their
+      recorded paths, what it skips named, escaped.
 - [ ] My user (so any agent) can't read the daemon's keystore or attach to the daemon
       (`cat` and `lldb -p` refused), and the daemon starts again after a reboot.
 - [ ] `launchctl stop` (SIGTERM) stops the daemon as Ctrl-C does: the `stopping` line, the

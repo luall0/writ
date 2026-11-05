@@ -128,6 +128,9 @@ terminal and without them, it refuses and wires nothing.
 - In the repo, each `writ/` folder installed goes in `.git/info/exclude`: never committed.
 - `SKILL.md` is Writ's: a new `writ init` replaces it. A `SKILL.md` that isn't Writ's is never
   written over.
+- After upgrading `writ`, run `writ skill update` in each wired repository (at the folder,
+  for a folder of repositories): it rewrites the skill files `writ init` put there with this
+  `writ`'s skill, and says which changed. One you replaced with your own is left alone.
 - The skill has the agent start each task that changes files, before any edit, with
   `writ policy` (what a ticket for the repo may ask: run it yourself to see what your agents
   see) and the ticket, checked with `writ request --dry-run` before it is submitted.

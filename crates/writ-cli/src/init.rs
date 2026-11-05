@@ -293,14 +293,14 @@ fn record_skill(
     installed: &skill::Installed,
 ) -> anyhow::Result<()> {
     for (path, new) in &installed.skills {
-        if *new {
-            record(
-                dir,
-                record_path,
-                "skill.created",
-                &path.display().to_string(),
-            )?;
-        }
+        // Created: `--undo` removes it. Written over (Writ's already, a global skill another
+        // repository's `writ init` made): only `writ skill update` rewrites it.
+        let key = if *new {
+            "skill.created"
+        } else {
+            "skill.written"
+        };
+        record(dir, record_path, key, &path.display().to_string())?;
     }
     for created in &installed.created_dirs {
         record(
@@ -1038,6 +1038,65 @@ fn undo_repo(dir: &Path, wired: &Wiring) -> anyhow::Result<Undone> {
     std::fs::remove_dir_all(record_dir)
         .with_context(|| format!("cannot remove {}", record_dir.display()))?;
     Ok(undone)
+}
+
+/// `writ skill update`: every skill file the record here names (the workspace's at its root,
+/// the repository's in it) rewritten from the skill built into this `writ`, its timings file
+/// and a workspace's repositories filled in again; a file that isn't Writ's skill any more, or
+/// isn't at a skill's path, left as it is and said.
+pub fn update_skills() -> anyhow::Result<Exit> {
+    let dir = std::env::current_dir().context("cannot read the current directory")?;
+    let (root, entries, kind, repos) = if let Some(workspace) = workspace::load(&dir)? {
+        let repos = skill_repos(&workspace.members);
+        (workspace.root, workspace.entries, Kind::Workspace, repos)
+    } else {
+        let Some(wired) = wiring::load(&dir)? else {
+            bail!("this repo isn't wired for Writ: `writ init` wires it and installs the skill");
+        };
+        if let Some(found) = workspace::find(&dir) {
+            bail!(
+                "this repository was wired with the workspace at {}: run `writ skill update` \
+                 there (the skill is the workspace's)",
+                found.root.display()
+            );
+        }
+        let record_path = wired.common_dir.join("writ").join("config");
+        let entries = wiring::read_file(&dir, &record_path)?;
+        (top_level(&dir)?, entries, Kind::Repo, String::new())
+    };
+    let mut skills: Vec<&str> = Vec::new();
+    for (key, value) in &entries {
+        if (key == "skill.created" || key == "skill.written") && !skills.contains(&value.as_str()) {
+            skills.push(value);
+        }
+    }
+    let timings = entries.iter().find(|(k, _)| k == "skill.timings");
+    let (Some((_, timings)), false) = (timings, skills.is_empty()) else {
+        println!("No skill installed here (writ init --agents none): nothing to update.");
+        return Ok(Exit::Ok);
+    };
+    let text = skill::text(kind, &root, Path::new(timings), &repos);
+    println!("The {} skill, from this writ:", kind.name());
+    for path in skills {
+        let shown = Path::new(path)
+            .strip_prefix(&root)
+            .map_or_else(|_| path.to_owned(), |p| p.display().to_string());
+        let shown = display::clean(&shown);
+        match skill::update(Path::new(path), kind, &text)? {
+            skill::Updated::Written => println!("  {shown}: updated"),
+            skill::Updated::Current => println!("  {shown}: up to date"),
+            skill::Updated::Gone => {
+                println!("  {shown}: not there any more (writ init puts it back after --undo)")
+            }
+            skill::Updated::Kept(skill::Kept::NotASkillPath) => {
+                println!("  {shown}: not a Writ skill file's path, left as it is");
+            }
+            skill::Updated::Kept(skill::Kept::NotWrits) => {
+                println!("  {shown}: no longer Writ's skill, left as it is");
+            }
+        }
+    }
+    Ok(Exit::Ok)
 }
 
 /// Prints what an undo kept.
