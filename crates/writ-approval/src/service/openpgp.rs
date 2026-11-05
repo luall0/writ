@@ -150,4 +150,16 @@ impl Service {
             .get(id)
             .map(|c| c.certificate.clone())
     }
+
+    /// The fingerprint (40 hex characters) and certificate of the OpenPGP key `id`, as
+    /// certified for the policy in force; none before it has user ids.
+    pub fn openpgp_shown(&self, id: &KeyId) -> Option<writ_proto::OpenpgpShown> {
+        self.openpgp()
+            .certified
+            .get(id)
+            .map(|c| writ_proto::OpenpgpShown {
+                fingerprint: c.fingerprint.clone(),
+                certificate: c.certificate.clone(),
+            })
+    }
 }

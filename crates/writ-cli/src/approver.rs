@@ -6,6 +6,7 @@
 //! authenticate with a throwaway key: the connection grants nothing, signatures do.
 
 mod admin;
+mod manage;
 mod narrowing;
 mod prove;
 mod signer;
@@ -13,6 +14,7 @@ mod signer;
 pub use admin::{
     apply as admin_apply, show as admin_show, target as admin_target, token as admin_token,
 };
+pub use manage::{list as manage_list, show as manage_show};
 pub use narrowing::Narrowing;
 pub use prove::{ProveKey, prove_key};
 pub use signer::{Signer, default_key};

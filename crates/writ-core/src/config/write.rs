@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::{
-    DirectSsh, Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, PushMode, RepoEntry,
+    DirectSsh, Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, PushMode, RepoEntry, Section,
     Template, TicketLink, UpstreamKey,
 };
 use crate::units::ByteSize;
@@ -44,6 +44,51 @@ pub(super) fn policy(policy: &PolicyConfig) -> String {
         write_template(&mut out, template);
     }
     out
+}
+
+/// One entry of `section`, as [`policy`] writes it, unindented (`<name>:` then its fields two
+/// spaces in); none when the section has no entry by that name.
+pub(super) fn one_entry(policy: &PolicyConfig, section: Section, name: &str) -> Option<String> {
+    let mut out = String::new();
+    match section {
+        Section::Keys => {
+            let (id, key) = policy.keys.iter().find(|(id, _)| id.as_str() == name)?;
+            entry(&mut out, id.as_str());
+            write_key(&mut out, key);
+        }
+        Section::UpstreamHosts => {
+            let (host, pinned) = policy
+                .upstream_hosts
+                .iter()
+                .find(|(host, _)| host.as_str() == name)?;
+            entry(&mut out, host.as_str());
+            for key in pinned {
+                let _ = writeln!(out, "    - {}", scalar(key.as_str()));
+            }
+        }
+        Section::Repos => {
+            let (repo, body) = policy
+                .repos
+                .iter()
+                .find(|(repo, _)| repo.as_str() == name)?;
+            entry(&mut out, repo.as_str());
+            write_repo(&mut out, body);
+        }
+        Section::Templates => {
+            let (template, body) = policy
+                .templates
+                .iter()
+                .find(|(template, _)| template.as_str() == name)?;
+            entry(&mut out, template.as_str());
+            write_template(&mut out, body);
+        }
+    }
+    Some(
+        out.lines()
+            .map(|line| line.strip_prefix("  ").unwrap_or(line))
+            .map(|line| format!("{line}\n"))
+            .collect(),
+    )
 }
 
 fn section(out: &mut String, name: &str, empty: bool) {

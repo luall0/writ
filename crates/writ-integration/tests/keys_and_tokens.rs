@@ -438,3 +438,66 @@ fn the_development_keystore_takes_no_token_from_the_mac() {
         stderr(&out)
     );
 }
+
+#[test]
+fn every_declared_key_is_read_from_the_approver_s_machine_with_its_public_half_only() {
+    // A token declared and used by no repo yet: the policy may hold it before its repo.
+    let policy = POLICY.replace(
+        "keys:\n",
+        "keys:\n  token-01:\n    use: upstream\n    kind: token\n    host: 127.0.0.1\n",
+    );
+    let daemon = Daemon::start_sealed(&policy, Approvals::Https);
+    // Sealed: refused, as every read is.
+    let out = daemon.run(&["admin", "key", "list"], "");
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(stderr(&out).contains("daemon sealed"), "{}", stderr(&out));
+    let out = daemon.unseal();
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let out = daemon.run(&["admin", "key", "list"], "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let listed = stdout(&out);
+    // The upstream key: the public half `writd upstream-keys` prints, by its fingerprint.
+    let printed = daemon.print("upstream-keys");
+    let line = printed.lines().next().unwrap();
+    let public = line
+        .split(' ')
+        .skip(1)
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let fingerprint = writ_crypto::ssh_key::PublicKey::from_openssh(&public)
+        .unwrap()
+        .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
+        .to_string();
+    assert!(
+        listed
+            .lines()
+            .any(|l| l == format!("upstream-01  upstream ssh ed25519  {fingerprint}  repos demo")),
+        "{listed}"
+    );
+    assert!(
+        listed
+            .lines()
+            .any(|l| l.starts_with("agent-01  signing ssh ed25519  SHA256:")
+                && l.ends_with("  templates feature")),
+        "{listed}"
+    );
+    assert!(
+        listed.lines().any(|l| l
+            == "token-01  upstream token for 127.0.0.1  not added yet (writ admin token)  unused"),
+        "{listed}"
+    );
+    let out = daemon.run(&["admin", "key", "show", "upstream-01", "--public"], "");
+    assert_eq!(stdout(&out).trim(), public);
+
+    // Added: said, its value nowhere in what the read gives.
+    let out = add_token(&daemon, "token-01", HTTPS_TOKEN);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = daemon.run(&["admin", "key", "show", "token-01"], "");
+    let shown = stdout(&out);
+    assert!(shown.contains("\ntoken: added\n"), "{shown}");
+    assert!(!shown.contains(HTTPS_TOKEN));
+    let out = daemon.run(&["admin", "key", "list"], "");
+    assert!(!stdout(&out).contains(HTTPS_TOKEN));
+}

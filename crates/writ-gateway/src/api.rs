@@ -173,6 +173,13 @@ pub(crate) async fn approval_reply(
             None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
         },
         Command::TokenApply => token_apply(gateway, facts, &body).await,
+        Command::AdminKeys => match gateway.shared.config.admin.clone() {
+            Some(applier) => match applier.keys_show().await {
+                Ok(shown) => encoded(Ok(shown)),
+                Err(reason) => encoded::<()>(Err(ApiError::new(reason))),
+            },
+            None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
+        },
         Command::Request
         | Command::DryRun
         | Command::Policy { .. }

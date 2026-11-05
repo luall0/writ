@@ -31,7 +31,9 @@ use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{MirrorConfig, Mirrors};
 use writ_platform::{BoxFuture, KeystoreUnlock, Passphrase, UnsealRequest};
 use writ_proto::PassphraseText;
-use writ_proto::{AdminApplied, CreatedKey, KeyRole, TokenApplied, TokenShown};
+use writ_proto::{
+    AdminApplied, CreatedKey, KeyRole, KeyShown, KeysShown, TokenApplied, TokenShown,
+};
 use writ_signer::Signer;
 
 use crate::config::{Config, KeystoreConfig, NotifierConfig, TelegramConfig, TokenConfig};
@@ -414,6 +416,63 @@ impl Opener {
         Ok(TokenUse { upstream, notifier })
     }
 
+    /// Every key the policy in force declares, with its public half from the signer that
+    /// holds it, or for a token whether it was added; and what uses it.
+    fn show_keys(&self) -> Result<KeysShown, String> {
+        let inner = &self.0;
+        let open = inner.open.get().ok_or("the daemon is not open")?;
+        let policy = inner.service.policy();
+        let version = inner
+            .service
+            .in_force()
+            .versions
+            .get(&AdminTarget::Policy)
+            .map(|(version, _)| *version)
+            .ok_or("no policy version in force")?;
+        let tokens = open.tokens();
+        let mut keys = Vec::new();
+        for (id, key) in policy.keys() {
+            let users = policy.key_users(id);
+            let signer = match key {
+                writ_core::config::Key::Signing(_) => Some(&open.signing),
+                writ_core::config::Key::Upstream(writ_core::config::UpstreamKey::Ssh {
+                    ..
+                }) => Some(&open.upstream),
+                writ_core::config::Key::Upstream(writ_core::config::UpstreamKey::Token {
+                    ..
+                }) => None,
+            };
+            let public = match signer {
+                Some(signer) => Some(
+                    writ_signer::public_key(&**signer, id).map_err(|e| format!("key {id}: {e}"))?,
+                ),
+                None => None,
+            };
+            let (public_key, fingerprint) = match &public {
+                Some(public) => (
+                    Some(public.to_openssh().map_err(|e| format!("key {id}: {e}"))?),
+                    Some(
+                        public
+                            .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
+                            .to_string(),
+                    ),
+                ),
+                None => (None, None),
+            };
+            keys.push(KeyShown {
+                id: id.clone(),
+                description: key.describe(),
+                public_key,
+                fingerprint,
+                openpgp: inner.service.openpgp_shown(id),
+                token_added: signer.is_none().then(|| tokens.contains_key(id)),
+                repos: users.repos,
+                templates: users.templates,
+            });
+        }
+        Ok(KeysShown { version, keys })
+    }
+
     fn show_token(&self, id: &KeyId) -> Result<TokenShown, String> {
         self.token_use(id)?;
         let open = self.0.open.get().ok_or("the daemon is not open")?;
@@ -612,5 +671,15 @@ impl AdminApplier for Opener {
     ) -> BoxFuture<'static, Result<TokenApplied, String>> {
         let me = self.clone();
         Box::pin(async move { me.apply_token(checked, caller).await })
+    }
+
+    fn keys_show(&self) -> BoxFuture<'static, Result<KeysShown, String>> {
+        let me = self.clone();
+        // A signer's queue: off the async threads.
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || me.show_keys())
+                .await
+                .map_err(|_| "the read stopped".to_owned())?
+        })
     }
 }

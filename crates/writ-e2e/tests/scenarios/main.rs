@@ -16,6 +16,7 @@
 )]
 
 mod concurrency;
+mod daemon_management;
 mod hardening_limits;
 mod hostile_upstream;
 mod https_upstream;

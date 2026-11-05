@@ -933,3 +933,48 @@ fn a_closed_repo_refuses_every_ticket_with_its_reason() {
     // The same ticket fits once the repo allows the template again.
     writ_core::fit::submit(&config(), &request(REQUEST), &submission(1)).unwrap();
 }
+
+#[test]
+fn one_entry_is_written_alone_as_the_whole_policy_writes_it() {
+    use writ_core::config::Section;
+    let policy = PolicyConfig::from_yaml(POLICY).unwrap();
+    assert_eq!(
+        policy.entry_yaml(Section::Repos, "dotfiles").unwrap(),
+        "dotfiles:\n  upstream: \"ssh://git@github.com/user/dotfiles.git\"\n  \
+         upstream_credential: deploy-dotfiles-01\n  templates: [quick-fix]\n  push_modes: \
+         [direct_ssh]\n  direct_ssh:\n    hosts: [github.com]\n"
+    );
+    assert_eq!(
+        policy
+            .entry_yaml(Section::Keys, "upstream-forgejo-01")
+            .unwrap(),
+        "upstream-forgejo-01:\n  use: upstream\n  kind: ssh\n  algorithm: rsa4096\n"
+    );
+    assert!(
+        policy
+            .entry_yaml(Section::UpstreamHosts, "github.com")
+            .unwrap()
+            .starts_with("github.com:\n  - \"ssh-ed25519 AAAA")
+    );
+    assert!(
+        policy
+            .entry_yaml(Section::Templates, "read-only")
+            .unwrap()
+            .starts_with("read-only:\n  operations: [fetch]\n  max_ttl: 8h\n")
+    );
+    assert_eq!(policy.entry_yaml(Section::Repos, "nowhere"), None);
+    assert_eq!(
+        policy.entry_yaml(Section::Keys, "omega-code"),
+        None,
+        "another section's name"
+    );
+    // Each entry, in every section, is the text of the whole policy at its place.
+    let whole = policy.to_yaml();
+    for section in Section::ALL {
+        for name in policy.entry_names(section) {
+            let entry = policy.entry_yaml(section, &name).unwrap();
+            let indented: String = entry.lines().map(|l| format!("  {l}\n")).collect();
+            assert!(whole.contains(&indented), "{section}.{name}");
+        }
+    }
+}

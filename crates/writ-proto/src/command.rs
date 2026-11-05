@@ -56,6 +56,10 @@ pub enum Command {
     /// `writ admin token <id>`: an approver's signed `writ-token/2` ([`TokenRequest`] on
     /// stdin). Reply: [`TokenApplied`].
     TokenApply,
+    /// `writ admin key list|show`: every key the policy in force declares, each with its
+    /// public half (or, for a token, whether it was added) and what uses it. Reply:
+    /// [`KeysShown`].
+    AdminKeys,
 }
 
 impl Command {
@@ -90,6 +94,7 @@ impl Command {
                     target: target.parse().ok()?,
                 }),
                 ("apply", None) => Some(Self::AdminApply),
+                ("keys", None) => Some(Self::AdminKeys),
                 _ => None,
             };
         }
@@ -142,6 +147,7 @@ impl Command {
             Self::AdminApply => "writ admin apply".to_owned(),
             Self::TokenShow { id } => format!("writ admin token show {id}"),
             Self::TokenApply => "writ admin token apply".to_owned(),
+            Self::AdminKeys => "writ admin keys".to_owned(),
         }
     }
 
@@ -176,6 +182,7 @@ impl Command {
     /// | unseal | `POST /v1/unseal` |
     /// | admin show, admin apply | `GET /v1/admin/<target>`, `POST /v1/admin` |
     /// | admin token (show, apply) | `GET /v1/tokens/<id>`, `POST /v1/tokens` |
+    /// | admin keys | `GET /v1/keys` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request
@@ -197,6 +204,7 @@ impl Command {
             Self::AdminApply => Some(("POST", "/v1/admin".to_owned())),
             Self::TokenShow { id } => Some(("GET", format!("/v1/tokens/{id}"))),
             Self::TokenApply => Some(("POST", "/v1/tokens".to_owned())),
+            Self::AdminKeys => Some(("GET", "/v1/keys".to_owned())),
         }
     }
 
@@ -228,6 +236,7 @@ impl Command {
                 id: id.parse().ok()?,
             },
             ("POST", ["tokens"], None) => Self::TokenApply,
+            ("GET", ["keys"], None) => Self::AdminKeys,
             _ => return None,
         };
         Some(command)

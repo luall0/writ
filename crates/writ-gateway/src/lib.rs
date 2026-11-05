@@ -121,7 +121,8 @@ pub trait Unsealer: Send + Sync {
 /// It holds the sealed tokens too: which file is in force for a credential
 /// ([`AdminApplier::token_show`]), and a checked `writ-token/2` put in force
 /// ([`AdminApplier::apply_token`]: opened and checked to be a token, logged by the service
-/// against the file in force ([`Service::commit_token`]), written, used at once).
+/// against the file in force ([`Service::commit_token`]), written, used at once). And the
+/// signers: every declared key's public half ([`AdminApplier::keys_show`]).
 pub trait AdminApplier: Send + Sync {
     fn apply(
         &self,
@@ -141,6 +142,12 @@ pub trait AdminApplier: Send + Sync {
         checked: writ_approval::CheckedToken,
         caller: CallerFacts,
     ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::TokenApplied, String>>;
+
+    /// Every key the policy in force declares: its public half from the signer that holds it
+    /// (or, for a token, whether it was added), and what uses it. Never a secret.
+    fn keys_show(
+        &self,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::KeysShown, String>>;
 }
 
 /// What the gateway needs to run.

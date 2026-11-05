@@ -289,6 +289,50 @@ pub struct PolicyConfig {
     templates: BTreeMap<TemplateName, Template>,
 }
 
+/// A section of the policy, as `writ admin <noun>` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Section {
+    Keys,
+    UpstreamHosts,
+    Repos,
+    Templates,
+}
+
+impl Section {
+    pub const ALL: [Section; 4] = [
+        Section::Keys,
+        Section::UpstreamHosts,
+        Section::Repos,
+        Section::Templates,
+    ];
+
+    /// Its key in the policy (`keys`, `upstream_hosts`, `repos`, `templates`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Section::Keys => "keys",
+            Section::UpstreamHosts => "upstream_hosts",
+            Section::Repos => "repos",
+            Section::Templates => "templates",
+        }
+    }
+
+    /// The noun `writ admin` names one entry of it by (`key`, `host`, `repo`, `template`).
+    pub fn noun(self) -> &'static str {
+        match self {
+            Section::Keys => "key",
+            Section::UpstreamHosts => "host",
+            Section::Repos => "repo",
+            Section::Templates => "template",
+        }
+    }
+}
+
+impl fmt::Display for Section {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What uses a key: the repos it reaches upstream for, the templates that sign with it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeyUsers {
@@ -414,6 +458,22 @@ impl PolicyConfig {
     /// field. Read back, it is this policy.
     pub fn to_yaml(&self) -> String {
         write::policy(self)
+    }
+
+    /// The entry `name` of `section`, as [`Self::to_yaml`] writes it, unindented; none when
+    /// there is no such entry.
+    pub fn entry_yaml(&self, section: Section, name: &str) -> Option<String> {
+        write::one_entry(self, section, name)
+    }
+
+    /// The names of `section`'s entries, in order.
+    pub fn entry_names(&self, section: Section) -> Vec<String> {
+        match section {
+            Section::Keys => self.keys.keys().map(|k| k.to_string()).collect(),
+            Section::UpstreamHosts => self.upstream_hosts.keys().map(|h| h.to_string()).collect(),
+            Section::Repos => self.repos.keys().map(|r| r.to_string()).collect(),
+            Section::Templates => self.templates.keys().map(|t| t.to_string()).collect(),
+        }
     }
 
     /// Every declared key.

@@ -116,9 +116,9 @@ at unseal). They change only by:
   and the version, the lease's sessions dropped). `writ admin apply` lists the leases revoked.
   They are listed under the change's lock, before anything is written: a list the store can't
   give refuses the change (fail closed), rather than leaving them running.
-  A policy that names an agent signing key or an `ssh://` upstream credential the keystore
-  lacks makes the daemon create it before the checks (Ed25519, sealed to the keystore's
-  recipient with its `.pub`, handed to the running signer through
+  A policy that declares a signing key or an `ssh` upstream credential the keystore lacks
+  makes the daemon create it before the checks (as its `keys.<id>` declares it, sealed to the
+  keystore's recipient with its `.pub`, handed to the running signer through
   [`Signer::add_key`](signer.md#signer-interface)); the reply (`AdminApplied.created`) and
   the `admin` line give the id and public key of each key new to the signers, and `writ admin
   apply` prints them to register on the remotes. A key made for a change that then fails
@@ -130,6 +130,20 @@ A file edited on the host is never applied: at the next start it is set aside
 (`<file>.unapplied-<time>`, an `admin` line, done) and the text in force written back. A
 version altered in the state without the keystore's key keeps the daemon sealed. The whole
 state put back from an older copy is a restored backup: it carries a valid MAC.
+
+## Reading the policy entry by entry
+
+`writ admin repo|template|key|host list` and `show <name>` (M6.2) read the policy in force
+with the reader key: `writ admin show policy`'s text, parsed by `writ` only to show it (with
+the lowest `min_ttl` any daemon takes, so a policy in force always reads), each entry as the
+canonical layout writes it (`PolicyConfig::entry_yaml`). Keys add `writ admin keys` (`GET
+/v1/keys`, `KeysShown`): every declared key with its public half and fingerprint from the
+signer that holds it (the agent keys' or the upstream one's), an OpenPGP key's fingerprint
+and certificate as certified for the policy in force, a token only as added or not (never its
+value or its digest), and what uses each. `key show <id> --public` prints the public half
+alone (an OpenPGP key's certificate), for a pipe. A sealed daemon refuses these reads as it
+refuses every other; like `writ admin show`, they write no audit line (they grant nothing and
+reveal only public halves). Everything the daemon sends is shown escaped.
 
 ## `writ admin token`
 
@@ -151,7 +165,7 @@ keystore from the Mac, never in clear on the daemon host's disk.
 The service checks the daemon is open, the document decodes strictly and names this daemon,
 the signer is an approver in force, and `previous` is still the file in force (a replay, or a
 token changed meanwhile, is refused: each file is encrypted afresh, so its digest never comes
-back; only `none` could, were a token file removed by hand on the host). The daemon checks the id is one an `https://` repo or a sealed
+back; only `none` could, were a token file removed by hand on the host). The daemon checks the id is a token the policy declares (`kind: token`) or a sealed
 notifier uses, opens the ciphertext with the keystore's identity (kept open after unseal) and
 checks it is a token; then the `admin` line is written (the id, both digests, the approver:
 never the token), `tokens/<id>.age` written (the old one replaced), and the token used at
@@ -165,7 +179,7 @@ A sealed notifier without its token stays off, with a warning at unseal.
 
 Routes: `GET /v1/admin/<target>`, `POST /v1/admin` (SSH: `writ admin show <target>`,
 `writ admin apply`); `GET /v1/tokens/<id>`, `POST /v1/tokens` (SSH: `writ admin token show
-<id>`, `writ admin token apply`).
+<id>`, `writ admin token apply`); `GET /v1/keys` (SSH: `writ admin keys`).
 
 ## `writ unseal`
 

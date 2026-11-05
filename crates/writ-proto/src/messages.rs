@@ -271,6 +271,50 @@ pub struct TokenShown {
     pub previous: PreviousToken,
 }
 
+/// Reply to [`Command::AdminKeys`](crate::Command::AdminKeys): every key the policy in force
+/// declares. Public halves only: a token is never sent, only whether it was added.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeysShown {
+    /// The policy version the keys are declared in.
+    pub version: u64,
+    pub keys: Vec<KeyShown>,
+}
+
+/// One declared key, as [`KeysShown`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyShown {
+    pub id: KeyId,
+    /// What it is, in a few words (`signing ssh ed25519`, `upstream token for github.com`).
+    pub description: String,
+    /// Its public half, an OpenSSH line (none for a token).
+    #[serde(default)]
+    pub public_key: Option<String>,
+    /// Its fingerprint, as OpenSSH prints it (`SHA256:…`; none for a token).
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    /// An OpenPGP key's fingerprint and armored certificate (none before it has user ids).
+    #[serde(default)]
+    pub openpgp: Option<OpenpgpShown>,
+    /// For a token: whether it was added (`writ admin token`); none for a key.
+    #[serde(default)]
+    pub token_added: Option<bool>,
+    /// The repos that reach upstream with it.
+    pub repos: Vec<RepoName>,
+    /// The templates that sign with it.
+    pub templates: Vec<TemplateName>,
+}
+
+/// An OpenPGP key's public side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenpgpShown {
+    /// 40 hex characters.
+    pub fingerprint: String,
+    pub certificate: String,
+}
+
 /// Body of [`Command::TokenApply`](crate::Command::TokenApply).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

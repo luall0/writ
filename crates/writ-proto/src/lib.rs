@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::DryRun`], [`Command::Policy`], [`Command::Wait`], [`Command::Close`] |
-//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::AdminKeys`] |
 //!
 //! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
 //! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed".
@@ -32,11 +32,11 @@ pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
     Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, ChainLink, Checked, CloseRequest,
-    Count, CreatedKey, Decision, Decisions, DenialCount, Info, KeyRole, Listing, OtherLease,
-    Others, PassphraseText, Phases, Previous, ProveRequest, Proved, RefuseRequest, Relation,
-    Renewal, RepoPolicy, Report, ReportCommit, ReportPush, RevokeRequest, SealedBoot, Shown,
-    Submitted, Summary, TemplateView, TokenApplied, TokenRequest, TokenShown, UnsealRequest,
-    Unsealed,
+    Count, CreatedKey, Decision, Decisions, DenialCount, Info, KeyRole, KeyShown, KeysShown,
+    Listing, OpenpgpShown, OtherLease, Others, PassphraseText, Phases, Previous, ProveRequest,
+    Proved, RefuseRequest, Relation, Renewal, RepoPolicy, Report, ReportCommit, ReportPush,
+    RevokeRequest, SealedBoot, Shown, Submitted, Summary, TemplateView, TokenApplied, TokenRequest,
+    TokenShown, UnsealRequest, Unsealed,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -85,6 +85,7 @@ mod tests {
                 id: "token-01".parse().unwrap(),
             },
             Command::TokenApply,
+            Command::AdminKeys,
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -123,6 +124,8 @@ mod tests {
             "writ admin token apply token-01",
             "writ admin token apply extra more",
             "writ admin token remove token-01",
+            "writ admin keys extra",
+            "writ admin keys --public",
             "git-upload-pack 'x'",
         ] {
             assert_eq!(Command::parse(line), None, "{line:?}");
@@ -151,6 +154,7 @@ mod tests {
                 id: "token-01".parse().unwrap(),
             },
             Command::TokenApply,
+            Command::AdminKeys,
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));

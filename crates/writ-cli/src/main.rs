@@ -370,9 +370,29 @@ enum AdminCommand {
         #[command(flatten)]
         signer: SignerArgs,
     },
-    /// Add or replace the token ID (an https:// repo's upstream_credential, or a notifier's
-    /// sealed token): asked for with no echo (or one line of stdin), encrypted here to the
-    /// daemon's keystore, then one signature with your approval key. It is used at once.
+    /// The repos of the registry in force.
+    Repo {
+        #[command(subcommand)]
+        command: EntryCommand,
+    },
+    /// The templates in force.
+    Template {
+        #[command(subcommand)]
+        command: EntryCommand,
+    },
+    /// The keys the policy in force declares: signing keys and upstream credentials.
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
+    /// The upstream host keys pinned in the policy in force.
+    Host {
+        #[command(subcommand)]
+        command: EntryCommand,
+    },
+    /// Add or replace the token ID (a token the policy declares, or a notifier's sealed
+    /// token): asked for with no echo (or one line of stdin), encrypted here to the daemon's
+    /// keystore, then one signature with your approval key. It is used at once.
     Token {
         /// The credential id.
         id: String,
@@ -383,6 +403,42 @@ enum AdminCommand {
         url: ApprovalUrl,
         #[command(flatten)]
         signer: SignerArgs,
+    },
+}
+
+/// `writ admin repo|template|host <verb>`.
+#[derive(Subcommand)]
+enum EntryCommand {
+    /// One line per entry.
+    List {
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
+    /// One entry, as the policy writes it, and what uses it.
+    Show {
+        name: String,
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
+}
+
+/// `writ admin key <verb>`.
+#[derive(Subcommand)]
+enum KeyCommand {
+    /// One line per key: what it is, its fingerprint (or whether a token was added), what
+    /// uses it.
+    List {
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
+    /// One key: its declaration, public half, fingerprint, OpenPGP certificate, users.
+    Show {
+        id: String,
+        /// Only the public half (an OpenPGP key's certificate), for a pipe or pbcopy.
+        #[arg(long)]
+        public: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
     },
 }
 
@@ -573,6 +629,47 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         } => approver::admin_show(&paths, &url.url, approver::admin_target(target)?).await,
         Commands::Admin {
             command:
+                AdminCommand::Repo { command }
+                | AdminCommand::Template { command }
+                | AdminCommand::Host { command },
+        } => {
+            let section = match &cli.command {
+                Commands::Admin {
+                    command: AdminCommand::Repo { .. },
+                } => writ_core::config::Section::Repos,
+                Commands::Admin {
+                    command: AdminCommand::Template { .. },
+                } => writ_core::config::Section::Templates,
+                _ => writ_core::config::Section::UpstreamHosts,
+            };
+            match command {
+                EntryCommand::List { url } => {
+                    approver::manage_list(&paths, &url.url, section).await
+                }
+                EntryCommand::Show { name, url } => {
+                    approver::manage_show(&paths, &url.url, section, name, false).await
+                }
+            }
+        }
+        Commands::Admin {
+            command: AdminCommand::Key { command },
+        } => match command {
+            KeyCommand::List { url } => {
+                approver::manage_list(&paths, &url.url, writ_core::config::Section::Keys).await
+            }
+            KeyCommand::Show { id, public, url } => {
+                approver::manage_show(
+                    &paths,
+                    &url.url,
+                    writ_core::config::Section::Keys,
+                    id,
+                    *public,
+                )
+                .await
+            }
+        },
+        Commands::Admin {
+            command:
                 AdminCommand::Apply {
                     target,
                     file,
@@ -704,26 +801,24 @@ mod tests {
                 .collect()
         };
         features.extend(flags(&cli).into_iter().map(|flag| format!("writ {flag}")));
-        for sub in cli.get_subcommands() {
-            let name = sub.get_name();
-            // A group (`writ admin`) is its subcommands, each a command of its own.
-            let nested: Vec<_> = sub.get_subcommands().collect();
+        // A group (`writ admin`, `writ admin repo`) is its subcommands, each a command of its
+        // own, however deep.
+        let mut groups: Vec<(String, &clap::Command)> = cli
+            .get_subcommands()
+            .map(|sub| (sub.get_name().to_owned(), sub))
+            .collect();
+        while let Some((name, command)) = groups.pop() {
+            let nested: Vec<_> = command.get_subcommands().collect();
             if nested.is_empty() {
                 features.push(format!("writ {name}"));
                 features.extend(
-                    flags(sub)
+                    flags(command)
                         .into_iter()
                         .map(|flag| format!("writ {name} {flag}")),
                 );
             }
             for inner in nested {
-                let inner_name = format!("{name} {}", inner.get_name());
-                features.push(format!("writ {inner_name}"));
-                features.extend(
-                    flags(inner)
-                        .into_iter()
-                        .map(|flag| format!("writ {inner_name} {flag}")),
-                );
+                groups.push((format!("{name} {}", inner.get_name()), inner));
             }
         }
         assert!(features.len() > 40, "{features:?}");
