@@ -410,6 +410,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
             "",
             "",
             "y",
+            "",
         ],
     );
     assert!(
@@ -418,6 +419,8 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
         ),
         "{shown}"
     );
+    // Enter once it is registered: it isn't, so the check fails at reading.
+    assert!(shown.contains("  read: failed: "), "{shown}");
     assert!(
         shown.contains("as a deploy key with write access"),
         "{shown}"
@@ -543,5 +546,170 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     assert_eq!(
         approver.ok("writ admin show policy"),
         approver.ok("cat guided-before.yaml")
+    );
+}
+
+#[test]
+#[ignore = "end to end: make e2e"]
+fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgejo() {
+    // It changes the policy every scenario runs under: alone, and put back at the end.
+    let stack = Stack::exclusive();
+    let approver = &stack.approver;
+    approver.ok("writ admin show policy > scan-before.yaml");
+    let url = "--approval-url \"$WRIT_APPROVAL_URL\" --key \"$HOME/.writ/approver.pub\" --agent \"$WRIT_APPROVAL_AGENT\"";
+    // Forgejo's key, as the setup compared it with the one Forgejo publishes.
+    let compared = stack
+        .report
+        .upstream_fingerprint
+        .split(' ')
+        .nth(1)
+        .expect("ssh-keygen -lf printed a fingerprint")
+        .to_owned();
+
+    // Without a terminal, a scan isn't offered: the keys are given.
+    let refused = approver.run(&format!("writ admin host add forgejo-scan --yes {url}"));
+    let (_, why) = expect(&refused, 1, "a scan without a terminal");
+    assert!(
+        why.contains("host add scans the host on a terminal, where you compare its keys"),
+        "{why}"
+    );
+    // On a terminal: the daemon scans Forgejo under another name on the approver's
+    // signature; its key is the one compared at setup; pinned once confirmed.
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin host add forgejo-scan {url}"),
+        &["y", "y"],
+    );
+    assert!(
+        shown.contains("Scanning forgejo-scan:22 from the daemon"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!("  ssh-ed25519 {compared}\r\n")),
+        "{shown}"
+    );
+    assert!(shown.contains("Applied: policy is version "), "{shown}");
+    let host = approver.ok("writ admin host show forgejo-scan");
+    assert!(
+        host.contains(&format!("\nfingerprint: ssh-ed25519 {compared}\n")),
+        "{host}"
+    );
+    // Rescanned: the key is the one pinned, nothing to change.
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin host rescan forgejo-scan --yes {url}"),
+        &["y"],
+    );
+    assert!(
+        shown.contains(&format!("  ssh-ed25519 {compared}  (pinned)\r\n")),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("The pin already holds these keys: nothing changed."),
+        "{shown}"
+    );
+    // A pin gone stale (another key): the rescan shows Forgejo's as new, replaces it.
+    approver.ok("rm -f stale && ssh-keygen -q -t ed25519 -N '' -C '' -f stale");
+    let stale = approver.ok("cut -d' ' -f1,2 stale.pub");
+    approver.ok(&format!(
+        "writ admin host set forgejo-scan \"keys={}\" --yes {url}",
+        stale.trim()
+    ));
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin host rescan forgejo-scan {url}"),
+        &["y", "y"],
+    );
+    assert!(
+        shown.contains(&format!(
+            "  ssh-ed25519 {compared}  (new: not in the pin)\r\n"
+        )),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("with host forgejo-scan rescanned"),
+        "{shown}"
+    );
+    assert!(
+        approver
+            .ok("writ admin host show forgejo-scan")
+            .contains(&format!("\nfingerprint: ssh-ed25519 {compared}\n"))
+    );
+    // The daemon logged each scan, with what it read and who signed for it.
+    let scans: Vec<_> = stack
+        .audit()
+        .into_iter()
+        .filter(|e| e["event"] == "scan" && e["result"] == "allowed")
+        .collect();
+    assert_eq!(scans.len(), 3, "{scans:?}");
+    assert!(
+        scans.iter().all(|e| e["reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("forgejo-scan:22: ") && r.contains(&compared))
+            && e["approver"]
+                .as_str()
+                .is_some_and(|a| a.starts_with("SHA256:"))),
+        "{scans:?}"
+    );
+
+    // The check, without a terminal: setup's credential reads, syncs and writes (nothing
+    // pushed), through --approval-url too.
+    let checked = approver.ok("writ admin repo check setup");
+    assert!(
+        checked.contains("  read: ok: upstream answers with its credential"),
+        "{checked}"
+    );
+    assert!(checked.contains("  sync: ok: "), "{checked}");
+    assert!(
+        checked.contains("  write: ok: upstream takes pushes with its credential (nothing pushed)"),
+        "{checked}"
+    );
+    assert!(checked.contains("setup is ready"), "{checked}");
+    approver.ok("writ admin repo check setup --approval-url \"$WRIT_APPROVAL_URL\"");
+    let missing = approver.run("writ admin repo check nowhere");
+    let (_, why) = expect(&missing, 1, "a repo not in the registry");
+    assert!(why.contains("repo nowhere is not in the registry"), "{why}");
+
+    // A repo added step by step on a host with no pin: scanned in the same change, then
+    // checked once Enter says its credential is registered (setup's, which is).
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin repo add scanned {url}"),
+        &[
+            "ssh://git@forgejo-new/writ/setup.git",
+            "y",
+            "upstream-setup",
+            "managed",
+            "",
+            "",
+            "",
+            "",
+            "y",
+            "",
+        ],
+    );
+    assert!(
+        shown.contains("Its host forgejo-new has no pin: it is scanned now."),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!("  ssh-ed25519 {compared}\r\n")),
+        "{shown}"
+    );
+    assert!(shown.contains("scanned is ready"), "{shown}");
+    // Pinned with every key Forgejo offers.
+    let hosts = approver.ok("writ admin host list");
+    assert!(
+        hosts
+            .lines()
+            .any(|l| l.starts_with("forgejo-new  ") && l.ends_with("  repos scanned")),
+        "{hosts}"
+    );
+
+    // Put back as it was.
+    approver.ok("writ admin apply policy scan-before.yaml --yes");
+    assert_eq!(
+        approver.ok("writ admin show policy"),
+        approver.ok("cat scan-before.yaml")
     );
 }

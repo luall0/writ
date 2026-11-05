@@ -70,8 +70,15 @@ pub enum EventKind {
     Admin,
     Seal,
     Unseal,
-    /// An agent signing key made on the host (`writd keys create`), with what it is.
+    /// A key made on the host (`writd recover`), with its public half.
     Key,
+    /// An upstream host's keys read on an approver's signed `writ-scan/1` (allowed: the
+    /// fingerprints read; denied: the document refused, or the host not reached).
+    Scan,
+    /// An upstream reached with a repo's credential, nothing pushed (`writ admin repo check`:
+    /// allowed, read and write access proven and the mirror synced; denied, with the step
+    /// that failed).
+    Check,
 }
 
 /// How it ended.

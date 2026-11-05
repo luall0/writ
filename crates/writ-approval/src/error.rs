@@ -47,6 +47,11 @@ pub enum RefusalCode {
     /// An admin change that can't be accepted: not a `writ-admin/2` document, against a
     /// version no longer in force, or a file that doesn't pass the startup checks.
     Admin,
+    /// A host key scan that can't run: not a `writ-scan/1` document, another daemon's, a
+    /// nonce unknown, used or expired, too many scans a minute, or the host not reached.
+    Scan,
+    /// An upstream check that can't run: a repo not in the registry, too many checks a minute.
+    Check,
 }
 
 /// Why a request to the service failed. What a client may see is its `Display`; an internal

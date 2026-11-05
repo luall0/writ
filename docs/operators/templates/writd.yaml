@@ -34,6 +34,7 @@ keystore:                          # made once by `writd init writd.yaml`
   # sync_every: 5m                 # 10s to 1d: background sync of every mirror
   # timeout: 5m                    # 10s to 1h: one sync or upstream push
   # max_fetch: 1GiB                # 1MiB to 64GiB: the most one sync takes from upstream
+  # scan_timeout: 30s              # 1s to 5m: one handshake of a host key scan (writ admin host add)
 
 # Listeners: each is `tcp: "host:port"` (or `unix: <path>`, refused until local mode, M7),
 # with `allow`, the addresses or CIDR ranges that may connect.

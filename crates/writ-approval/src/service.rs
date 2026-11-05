@@ -16,6 +16,7 @@ mod policy;
 mod prove;
 mod push;
 mod report;
+mod scan;
 mod sign;
 mod submissions;
 mod sweep;
@@ -25,6 +26,7 @@ mod unseal;
 pub use admin::{AdminParsed, CheckedAdmin, InForce};
 pub use gateway::GatewayDenial;
 pub use push::Pushing;
+pub use scan::{CheckedScan, MAX_CHECKS_A_MINUTE, MAX_NONCES, MAX_SCANS_A_MINUTE, NONCE_SECONDS};
 pub use sign::{SignObject, SignedCommit, Signing};
 pub use submissions::{
     DEFAULT_SUBMISSIONS_IN_ALL, DEFAULT_SUBMISSIONS_PER_SOURCE, MAX_SUBMISSIONS_IN_ALL,
@@ -157,6 +159,8 @@ pub struct Service {
     policy: RwLock<Arc<PolicyConfig>>,
     /// How its signing keys sign: replaced with it.
     key_uses: RwLock<Arc<KeyUses>>,
+    /// The scan nonces handed out, the last scans and checks ([`scan`]).
+    outbound: Mutex<scan::Outbound>,
     /// The approver keys in force: replaced whole by an admin change.
     approver_keys: RwLock<Arc<Vec<PublicKey>>>,
     /// The version of each authority file in force, and the head's MAC.
@@ -372,6 +376,7 @@ impl Service {
             config,
             policy,
             key_uses,
+            outbound: Mutex::new(scan::Outbound::default()),
             approver_keys: RwLock::new(Arc::new(approver_keys)),
             in_force,
             opened: OnceLock::new(),

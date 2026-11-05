@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::names::NameError;
 
@@ -27,6 +27,49 @@ pub const HOST_KEY_TYPES: &[&str] = &[
     "ecdsa-sha2-nistp521",
     "ssh-rsa",
 ];
+
+/// A host name or address alone (no port, no brackets): what a scan reaches.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct HostName(String);
+
+impl HostName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for HostName {
+    type Error = NameError;
+
+    fn try_from(value: String) -> Result<Self, NameError> {
+        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_');
+        if value.is_empty()
+            || value.len() > 253
+            || value.starts_with('-')
+            || !value.chars().all(plain)
+        {
+            return Err(NameError {
+                kind: "host",
+                value: value.chars().take(64).collect(),
+                why: "a plain host name or address (no port, brackets or wildcard)",
+            });
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<HostName> for String {
+    fn from(value: HostName) -> String {
+        value.0
+    }
+}
+
+impl fmt::Display for HostName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// A pinned host, as ssh looks it up: a plain host name or address, or `[host]:port` for a
 /// port other than 22.

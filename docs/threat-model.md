@@ -141,6 +141,15 @@ service; it can't reach the daemon's keys, its other mirrors, or a lease. An HTT
 receives its token (that is how it authenticates): what it prints back is taken out of the
 errors agents see.
 
+Two operations reach out at an approver's request (M6.2): a host key scan, only on an
+approver's signed `writ-scan/1` naming this daemon and a one-use nonce (a reader key alone
+can't make the daemon open a connection anywhere), which reads the keys a host offers and
+pins nothing; and an upstream check, with a reader key, only of a repo the signed policy
+already names, with its credential, pushing nothing. Both bounded in number, time and size,
+logged, and what comes back shown escaped. A scan's answer is only as good as the network
+between the daemon and the host: the approver compares the keys with the ones the remote
+publishes before a second signed change pins them.
+
 ## What Writ guarantees
 
 Each guarantee names the tests that try to break it (the guarantee registry). `make check`
@@ -180,6 +189,7 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | ✅ RSA signs in constant time (AWS-LC), never through the `rsa` crate; nothing under RSA 3072, no SHA-1, no `ssh-rsa` | `rsa_signs_with_each_sha2_in_constant_time_code_and_is_stored_as_pkcs8`, `rsa_under_3072_bits_is_refused`, `a_signature_of_the_wrong_size_or_pair_is_refused` |
 | ✅ Every block `writd`, `writ` and `writ-sign` free is zeroed first, whatever code freed it (a library's copy of a secret too); `realloc` never frees an old block unwiped; the zeroing survives the optimizer | `every_block_freed_is_zero_whatever_its_size`, `every_block_freed_is_zero_whatever_its_alignment`, `a_vec_grown_many_times_leaves_no_copy_behind`, `strings_and_zeroed_blocks_too`, `blocks_freed_from_many_threads_are_all_zero`, `realloc_moves_through_a_wiped_free`, `the_checker_sees_a_block_left_unwiped`, `the_zeroing_survives_optimization_and_only_thanks_to_the_barrier`, `the_global_allocator_wipes_every_block_freed` |
 | ✅ Keys and upstream host pins change only by a signed policy change (M6.2): `writd.yaml` declares none (its old keys stop the start); a key is made by the change that declares it, of the kind its use and URL take (a token for its host only), and a key the policy no longer declares is deleted for good once the change applies (out of its signer and the keystore, its public half in the `admin` line), never while anything uses it | `the_keys_writd_yaml_held_are_refused_naming_the_policy`, `a_repo_s_credential_is_declared_for_its_url_and_its_host_pinned`, `a_removed_key_is_deleted_for_good_and_what_something_uses_is_never_removed`, `an_entry_something_uses_is_never_removed_and_one_nothing_uses_is`, `set_changes_only_the_fields_named_and_a_change_made_in_between_refuses_it` |
+| ✅ The daemon reaches a host it has no pin for only on an approver's signature (M6.2): a host key scan needs a signed `writ-scan/1` naming this daemon and a nonce it handed out, used once, for 5 minutes (a reader key alone, a replayed nonce, another daemon's document refused); a scan pins nothing; an upstream check reaches only a repo the policy names, pushing nothing; both bounded and logged, what comes back escaped | `a_scan_runs_only_on_an_approver_s_signature_over_this_daemon_and_a_fresh_nonce`, `nonces_and_scans_are_bounded`, `a_check_reaches_only_a_registered_repo_within_its_rate`, `a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked` |
 | ✅ Hardware backends: keys non-exportable | planned: M7.5 |
 
 ## What Writ does NOT guarantee

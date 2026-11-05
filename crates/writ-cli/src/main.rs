@@ -373,7 +373,7 @@ enum AdminCommand {
     /// The repos of the registry in force.
     Repo {
         #[command(subcommand)]
-        command: EntryCommand,
+        command: RepoCommand,
     },
     /// The templates in force.
     Template {
@@ -388,7 +388,7 @@ enum AdminCommand {
     /// The upstream host keys pinned in the policy in force.
     Host {
         #[command(subcommand)]
-        command: EntryCommand,
+        command: HostCommand,
     },
     /// Add or replace the token ID (a token the policy declares, or a notifier's sealed
     /// token): asked for with no echo (or one line of stdin), encrypted here to the daemon's
@@ -475,6 +475,40 @@ enum EntryCommand {
         url: ApprovalUrl,
         #[command(flatten)]
         signer: SignerArgs,
+    },
+}
+
+/// `writ admin host <verb>`.
+#[derive(Subcommand)]
+enum HostCommand {
+    #[command(flatten)]
+    Entry(EntryCommand),
+    /// Scan a pinned host again from the daemon (its keys changed, or to see whether they
+    /// did): each key shown against the pin, compared by you, then one signed change
+    /// replacing the pin. On a terminal.
+    Rescan {
+        host: String,
+        /// Sign without asking (the diff is still shown first; the keys are still compared).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+}
+
+/// `writ admin repo <verb>`.
+#[derive(Subcommand)]
+enum RepoCommand {
+    #[command(flatten)]
+    Entry(EntryCommand),
+    /// Reach the repo's upstream from the daemon with its credential: read and write access
+    /// proven with nothing pushed, its mirror synced.
+    Check {
+        repo: String,
+        #[command(flatten)]
+        url: ApprovalUrl,
     },
 }
 
@@ -962,17 +996,37 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             command: AdminCommand::Show { target, url },
         } => approver::admin_show(&paths, &url.url, approver::admin_target(target)?).await,
         Commands::Admin {
-            command: AdminCommand::Repo { command } | AdminCommand::Host { command },
-        } => {
-            use writ_core::config::Section;
-            let section = match &cli.command {
-                Commands::Admin {
-                    command: AdminCommand::Repo { .. },
-                } => Section::Repos,
-                _ => Section::UpstreamHosts,
-            };
-            entry_command(&paths, section, command, None).await
-        }
+            command: AdminCommand::Repo { command },
+        } => match command {
+            RepoCommand::Entry(command) => {
+                entry_command(&paths, writ_core::config::Section::Repos, command, None).await
+            }
+            RepoCommand::Check { repo, url } => {
+                approver::guided_check(&paths, &url.url, repo).await
+            }
+        },
+        Commands::Admin {
+            command: AdminCommand::Host { command },
+        } => match command {
+            HostCommand::Entry(command) => {
+                entry_command(
+                    &paths,
+                    writ_core::config::Section::UpstreamHosts,
+                    command,
+                    None,
+                )
+                .await
+            }
+            HostCommand::Rescan {
+                host,
+                yes,
+                url,
+                signer: args,
+            } => {
+                let signer = signer(&paths, args);
+                approver::guided_rescan(&paths, &url.url, &signer, host, *yes).await
+            }
+        },
         Commands::Admin {
             command: AdminCommand::Template { command },
         } => {

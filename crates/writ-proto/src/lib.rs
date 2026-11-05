@@ -31,12 +31,13 @@ pub mod sign;
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
-    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, ChainLink, Checked, CloseRequest,
-    Count, CreatedKey, Decision, Decisions, DenialCount, Info, KeyRole, KeyShown, KeysShown,
-    Listing, OpenpgpShown, OtherLease, Others, PassphraseText, Phases, Previous, ProveRequest,
-    Proved, RefuseRequest, Relation, RemovedKey, Renewal, RepoPolicy, Report, ReportCommit,
-    ReportPush, RevokeRequest, SealedBoot, Shown, Submitted, Summary, TemplateView, TokenApplied,
-    TokenRequest, TokenShown, UnsealRequest, Unsealed,
+    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, ChainLink, CheckStep, Checked,
+    CloseRequest, Count, CreatedKey, Decision, Decisions, DenialCount, Info, KeyRole, KeyShown,
+    KeysShown, Listing, OpenpgpShown, OtherLease, Others, PassphraseText, Phases, Previous,
+    ProveRequest, Proved, RefuseRequest, Relation, RemovedKey, Renewal, RepoPolicy, Report,
+    ReportCommit, ReportPush, RevokeRequest, ScanNonce, ScanRequest, Scanned, ScannedKey,
+    SealedBoot, Shown, Submitted, Summary, TemplateView, TokenApplied, TokenRequest, TokenShown,
+    UnsealRequest, Unsealed, UpstreamChecked,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -86,6 +87,11 @@ mod tests {
             },
             Command::TokenApply,
             Command::AdminKeys,
+            Command::ScanNonce,
+            Command::Scan,
+            Command::RepoCheck {
+                repo: "omega-code".parse().unwrap(),
+            },
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -126,6 +132,10 @@ mod tests {
             "writ admin token remove token-01",
             "writ admin keys extra",
             "writ admin keys --public",
+            "writ admin scan extra",
+            "writ admin check",
+            "writ admin check ../x",
+            "writ admin check demo extra",
             "git-upload-pack 'x'",
         ] {
             assert_eq!(Command::parse(line), None, "{line:?}");
@@ -155,6 +165,11 @@ mod tests {
             },
             Command::TokenApply,
             Command::AdminKeys,
+            Command::ScanNonce,
+            Command::Scan,
+            Command::RepoCheck {
+                repo: "omega-code".parse().unwrap(),
+            },
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));

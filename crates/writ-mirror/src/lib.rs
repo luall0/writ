@@ -35,13 +35,14 @@ mod process;
 pub mod proxy;
 pub mod quarantine;
 pub mod relay;
+pub mod scan;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod upstream;
 
 pub use mirror::{
-    LOCAL_WORK_DEADLINE, MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorGuard, Mirrors,
-    NOTES_AUTHOR, Note, NotesPushed, RefMove, SyncReport, UpstreamUpdate,
+    CheckStep, LOCAL_WORK_DEADLINE, MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig,
+    MirrorGuard, Mirrors, NOTES_AUTHOR, Note, NotesPushed, RefMove, SyncReport, UpstreamUpdate,
 };
 
 use std::path::PathBuf;

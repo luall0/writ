@@ -290,6 +290,66 @@ pub struct TokenShown {
     pub previous: PreviousToken,
 }
 
+/// Reply to [`Command::ScanNonce`](crate::Command::ScanNonce): what a `writ-scan/1` names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanNonce {
+    /// The fingerprint of the daemon's SSH host key.
+    pub daemon: KeyFingerprint,
+    /// A nonce for one scan, for a few minutes.
+    pub nonce: BootNonce,
+}
+
+/// Body of [`Command::Scan`](crate::Command::Scan).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanRequest {
+    /// The canonical bytes of the `writ-scan/1` document.
+    pub document: String,
+    /// The approver's SSHSIG over them (namespace `writ-approval`).
+    pub signature: String,
+}
+
+/// Reply to [`Command::Scan`](crate::Command::Scan): the keys the host offered, as the policy
+/// would pin them. Never pinned by the scan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scanned {
+    /// The host as ssh looks it up (`host`, or `[host]:port`): the `upstream_hosts` entry.
+    pub host: String,
+    pub keys: Vec<ScannedKey>,
+}
+
+/// One key a scanned host offered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScannedKey {
+    /// `<type> <base64>`, as a pin holds it.
+    pub key: String,
+    /// `SHA256:…`, as a remote publishes it.
+    pub fingerprint: String,
+}
+
+/// Reply to [`Command::RepoCheck`](crate::Command::RepoCheck): each step, in order, until one
+/// fails.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamChecked {
+    pub repo: RepoName,
+    pub steps: Vec<CheckStep>,
+}
+
+/// One step of an upstream check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckStep {
+    /// `read`, `sync`, `write`.
+    pub what: String,
+    pub ok: bool,
+    /// What it found, or what upstream said (cleaned, bounded).
+    pub said: String,
+}
+
 /// Reply to [`Command::AdminKeys`](crate::Command::AdminKeys): every key the policy in force
 /// declares. Public halves only: a token is never sent, only whether it was added.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

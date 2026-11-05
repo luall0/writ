@@ -60,6 +60,16 @@ pub enum Command {
     /// public half (or, for a token, whether it was added) and what uses it. Reply:
     /// [`KeysShown`].
     AdminKeys,
+    /// `writ admin host add`, first step: a one-use nonce for a `writ-scan/1`. Reply:
+    /// [`ScanNonce`].
+    ScanNonce,
+    /// `writ admin host add`: an approver's signed `writ-scan/1` ([`ScanRequest`] on stdin):
+    /// the host's keys read, never pinned. Reply: [`Scanned`].
+    Scan,
+    /// `writ admin repo check <repo>`: the repo's upstream reached with its credential, read
+    /// and write access proven with nothing pushed, the mirror synced. Reply:
+    /// [`UpstreamChecked`].
+    RepoCheck { repo: RepoName },
 }
 
 impl Command {
@@ -95,6 +105,11 @@ impl Command {
                 }),
                 ("apply", None) => Some(Self::AdminApply),
                 ("keys", None) => Some(Self::AdminKeys),
+                ("scan", None) => Some(Self::Scan),
+                ("scan-nonce", None) => Some(Self::ScanNonce),
+                ("check", Some(repo)) => Some(Self::RepoCheck {
+                    repo: repo.parse().ok()?,
+                }),
                 _ => None,
             };
         }
@@ -148,6 +163,9 @@ impl Command {
             Self::TokenShow { id } => format!("writ admin token show {id}"),
             Self::TokenApply => "writ admin token apply".to_owned(),
             Self::AdminKeys => "writ admin keys".to_owned(),
+            Self::ScanNonce => "writ admin scan-nonce".to_owned(),
+            Self::Scan => "writ admin scan".to_owned(),
+            Self::RepoCheck { repo } => format!("writ admin check {repo}"),
         }
     }
 
@@ -183,6 +201,8 @@ impl Command {
     /// | admin show, admin apply | `GET /v1/admin/<target>`, `POST /v1/admin` |
     /// | admin token (show, apply) | `GET /v1/tokens/<id>`, `POST /v1/tokens` |
     /// | admin keys | `GET /v1/keys` |
+    /// | admin scan-nonce, admin scan | `GET /v1/scan`, `POST /v1/scan` |
+    /// | admin check | `POST /v1/repos/<repo>/check` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request
@@ -205,6 +225,9 @@ impl Command {
             Self::TokenShow { id } => Some(("GET", format!("/v1/tokens/{id}"))),
             Self::TokenApply => Some(("POST", "/v1/tokens".to_owned())),
             Self::AdminKeys => Some(("GET", "/v1/keys".to_owned())),
+            Self::ScanNonce => Some(("GET", "/v1/scan".to_owned())),
+            Self::Scan => Some(("POST", "/v1/scan".to_owned())),
+            Self::RepoCheck { repo } => Some(("POST", format!("/v1/repos/{repo}/check"))),
         }
     }
 
@@ -237,6 +260,11 @@ impl Command {
             },
             ("POST", ["tokens"], None) => Self::TokenApply,
             ("GET", ["keys"], None) => Self::AdminKeys,
+            ("GET", ["scan"], None) => Self::ScanNonce,
+            ("POST", ["scan"], None) => Self::Scan,
+            ("POST", ["repos", repo, "check"], None) => Self::RepoCheck {
+                repo: repo.parse().ok()?,
+            },
             _ => return None,
         };
         Some(command)

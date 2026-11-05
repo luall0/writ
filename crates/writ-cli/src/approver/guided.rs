@@ -11,9 +11,13 @@ use std::io::{IsTerminal as _, Write as _};
 
 use anyhow::bail;
 use writ_core::authority::AdminText;
+use writ_core::canonical::Canonical;
 use writ_core::config::edit::{self, Change, FieldEdit, FieldKind};
-use writ_core::config::{Key, PolicyConfig, Section, UpstreamKey};
+use writ_core::config::hosts::HostName;
+use writ_core::config::{Key, PolicyConfig, Section, UpstreamHost, UpstreamKey};
+use writ_core::signed::Scan;
 use writ_core::upstream::Upstream;
+use writ_proto::{Command, ScanNonce, ScanRequest, Scanned, UpstreamChecked};
 
 use super::admin::sign_applied;
 use super::manage::policy_in_force;
@@ -261,6 +265,222 @@ fn credential(
     }
 }
 
+/// A host as `writ admin host add` takes it (`host`, `host:port` or `[host]:port`): the host,
+/// its port, and the `upstream_hosts` entry it is pinned under.
+pub fn host_and_port(name: &str) -> anyhow::Result<(HostName, u16, String)> {
+    let (host, port) = match name.strip_prefix('[') {
+        Some(rest) => {
+            let (host, port) = rest
+                .split_once("]:")
+                .ok_or_else(|| anyhow::anyhow!("{}: write [host]:port", clean(name)))?;
+            (host, port)
+        }
+        None => match name.split_once(':') {
+            Some((host, port)) if !port.contains(':') => (host, port),
+            _ => (name, "22"),
+        },
+    };
+    let port: u16 = port
+        .parse()
+        .ok()
+        .filter(|p| *p != 0)
+        .ok_or_else(|| anyhow::anyhow!("{}: not a port", clean(port)))?;
+    let host = HostName::try_from(host.to_owned()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let pin = UpstreamHost::of(host.as_str(), port)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .to_string();
+    Ok((host, port, pin))
+}
+
+/// Has the daemon scan `host` on `port` on the approver's signature (a `writ-scan/1` naming a
+/// nonce it handed out), shows the keys with their fingerprints, and asks whether they are the
+/// ones the remote publishes: the keys to pin when they are, none when they aren't. The scan
+/// pins nothing.
+async fn scanned(
+    session: &crate::client::Approvals,
+    signer: &Signer,
+    host: &HostName,
+    port: u16,
+    pinned: &[String],
+) -> anyhow::Result<Option<Vec<String>>> {
+    let nonce: ScanNonce = session.call(&Command::ScanNonce, b"").await??;
+    let document = Scan::new(nonce.daemon, host.clone(), port, nonce.nonce).canonical_bytes()?;
+    println!(
+        "Scanning {}:{port} from the daemon: one signature with your approval key.",
+        clean(host.as_str())
+    );
+    let request = ScanRequest {
+        signature: signer.sign(&document)?,
+        document: String::from_utf8(document)?,
+    };
+    let found: Scanned = session
+        .call(&Command::Scan, &writ_proto::encode_body(&request)?)
+        .await??;
+    println!(
+        "{} offered these keys: compare each fingerprint with the one the remote publishes \
+         (never trust a scan alone).",
+        clean(&found.host)
+    );
+    for key in &found.keys {
+        let kind = key.key.split(' ').next().unwrap_or_default();
+        // On a rescan, each against the pin.
+        let mark = match (
+            pinned.is_empty(),
+            pinned.iter().any(|p| same_key(p, &key.key)),
+        ) {
+            (true, _) => "",
+            (false, true) => "  (pinned)",
+            (false, false) => "  (new: not in the pin)",
+        };
+        println!("  {} {}{mark}", clean(kind), clean(&key.fingerprint));
+    }
+    for gone in pinned
+        .iter()
+        .filter(|p| scannable(p) && !found.keys.iter().any(|k| same_key(p, &k.key)))
+    {
+        println!(
+            "  {} (pinned, no longer offered: it goes)",
+            clean(gone.split(' ').next().unwrap_or_default())
+        );
+    }
+    print!("Do they match what the remote publishes? [y/N] ");
+    std::io::stdout().flush()?;
+    if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
+        println!("Nothing pinned.");
+        return Ok(None);
+    }
+    Ok(Some(found.keys.into_iter().map(|k| k.key).collect()))
+}
+
+/// The keys to pin for `host` on `port`, as `keys=…`: scanned (on a terminal) and compared.
+async fn pin_edit(
+    session: &crate::client::Approvals,
+    signer: &Signer,
+    host: &HostName,
+    port: u16,
+) -> anyhow::Result<Option<FieldEdit>> {
+    match scanned(session, signer, host, port, &[]).await? {
+        Some(keys) => Ok(Some(
+            FieldEdit::parse(&format!("keys={}", keys.join(","))).map_err(anyhow::Error::msg)?,
+        )),
+        None => Ok(None),
+    }
+}
+
+/// The key types a scan reads (the others' pins are kept by a rescan as they are).
+const SCANNED_TYPES: [&str; 3] = ["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384"];
+
+fn scannable(key: &str) -> bool {
+    SCANNED_TYPES.contains(&key.split(' ').next().unwrap_or_default())
+}
+
+/// The same key: its type and base64, whatever follows.
+fn same_key(a: &str, b: &str) -> bool {
+    a.split(' ').take(2).eq(b.split(' ').take(2))
+}
+
+/// `writ admin host rescan <host>`: the pinned host scanned again (its keys changed, or to
+/// see whether they did), each key shown against the pin (pinned, new, gone), compared by
+/// the approver, then one signed change replacing the pin. A pinned key of a type the scan
+/// doesn't read (RSA, P-521) is kept, said. Only on a terminal.
+pub async fn rescan(
+    paths: &Paths,
+    url: &str,
+    signer: &Signer,
+    name: &str,
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    let (host, port, entry) = host_and_port(name)?;
+    if !terminal() {
+        bail!(
+            "rescan compares the host's keys on a terminal: without one, writ admin host set {} \
+             keys=<type> <base64>,… replaces them",
+            clean(&entry)
+        );
+    }
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let (shown, policy) = policy_in_force(session).await?;
+            let Some(pinned) = policy
+                .upstream_hosts()
+                .iter()
+                .find(|(h, _)| h.as_str() == entry)
+                .map(|(_, keys)| keys.iter().map(ToString::to_string).collect::<Vec<_>>())
+            else {
+                bail!(
+                    "no host {} in the policy in force (writ admin host add {} scans and pins \
+                     it)",
+                    clean(&entry),
+                    clean(&entry)
+                );
+            };
+            let Some(mut keys) = scanned(session, signer, &host, port, &pinned).await? else {
+                return Ok(Exit::Ok);
+            };
+            for kept in pinned.iter().filter(|p| !scannable(p)) {
+                let kind = clean(kept.split(' ').next().unwrap_or_default());
+                println!(
+                    "Kept the pinned {kind} key (a scan reads no {kind} key: writ admin host set \
+                     {} keys-=… removes it).",
+                    clean(&entry)
+                );
+                keys.push(kept.clone());
+            }
+            let unchanged = keys.len() == pinned.len()
+                && keys.iter().all(|k| pinned.iter().any(|p| same_key(p, k)));
+            if unchanged {
+                println!("The pin already holds these keys: nothing changed.");
+                return Ok(Exit::Ok);
+            }
+            let keys_edit = FieldEdit::parse(&format!("keys={}", keys.join(",")))
+                .map_err(anyhow::Error::msg)?;
+            let next = edit::edit(
+                &policy,
+                Section::UpstreamHosts,
+                &entry,
+                std::slice::from_ref(&keys_edit),
+                MIN_TTL,
+            )
+            .map_err(|e| anyhow::anyhow!("not changed: {}", clean(&e.to_string())))?;
+            let text = AdminText::try_from(next.to_yaml())?;
+            let what = format!("with host {} rescanned", clean(&entry));
+            sign_applied(session, signer, &shown, &text, &what, yes).await?;
+            Ok(Exit::Ok)
+        })
+        .await
+}
+
+/// `writ admin repo check <repo>`: the repo's upstream reached with its credential, each step
+/// printed; failed when one is.
+pub async fn check(paths: &Paths, url: &str, repo: &str) -> anyhow::Result<Exit> {
+    let repo: writ_core::names::RepoName = repo.parse()?;
+    connect(paths, url)
+        .await?
+        .run(async |session| run_check(session, &repo).await)
+        .await
+}
+
+async fn run_check(
+    session: &crate::client::Approvals,
+    repo: &writ_core::names::RepoName,
+) -> anyhow::Result<Exit> {
+    println!("Checking {repo}'s upstream from the daemon (nothing is pushed)…");
+    let checked: UpstreamChecked = session
+        .call(&Command::RepoCheck { repo: repo.clone() }, b"")
+        .await??;
+    for step in &checked.steps {
+        let mark = if step.ok { "ok" } else { "failed" };
+        println!("  {}: {mark}: {}", clean(&step.what), clean(&step.said));
+    }
+    if checked.steps.iter().all(|s| s.ok) && checked.steps.len() == 3 {
+        println!("{repo} is ready: read and write access proven, its mirror synced.");
+        Ok(Exit::Ok)
+    } else {
+        Ok(Exit::Error)
+    }
+}
+
 /// What to do once a change made `section`'s entry: a new key's public half is to register,
 /// a token to add.
 fn next_steps(policy: &PolicyConfig, keys: &[String]) {
@@ -305,10 +525,33 @@ pub async fn add(
 ) -> anyhow::Result<Exit> {
     let given = parsed(given)?;
     let interactive = terminal();
-    connect(paths, url)
+    // A host by the entry it is pinned under (`[host]:port` off port 22).
+    let host = match section {
+        Section::UpstreamHosts => Some(host_and_port(name)?),
+        _ => None,
+    };
+    let name = host.as_ref().map_or(name, |(_, _, pin)| pin.as_str());
+    if section == Section::UpstreamHosts && !interactive && !given.iter().any(|g| g.field == "keys")
+    {
+        bail!(
+            "host add scans the host on a terminal, where you compare its keys: without one, \
+             give keys=<type> <base64>,…"
+        );
+    }
+    let checked_repo = connect(paths, url)
         .await?
         .run(async |session| {
             let (shown, policy) = policy_in_force(session).await?;
+            // Before anything is asked or scanned.
+            if edit::current(&policy, section, name).is_some() {
+                bail!(
+                    "there is a {} {} already (writ admin {} edit {} changes it)",
+                    section.noun(),
+                    clean(name),
+                    section.noun(),
+                    clean(name)
+                );
+            }
             let start: BTreeMap<&'static str, String> = match from {
                 Some(other) => edit::current(&policy, Section::Templates, other)
                     .ok_or_else(|| anyhow::anyhow!("no template {} to start from", clean(other)))?,
@@ -323,7 +566,16 @@ pub async fn add(
                 })
                 .collect();
             let mut new_key: Option<NewKey> = None;
-            if interactive {
+            let mut pin: Option<(String, FieldEdit)> = None;
+            if let (Some((host, port, _)), true) = (&host, interactive)
+                && !given.iter().any(|g| g.field == "keys")
+            {
+                match pin_edit(session, signer, host, *port).await? {
+                    Some(keys) => edits.push(keys),
+                    None => return Ok(None),
+                }
+            }
+            if interactive && section != Section::UpstreamHosts {
                 println!(
                     "Adding {} {}: Enter keeps what [] shows, ! leaves an optional field out, \
                      none empties a list.",
@@ -354,6 +606,18 @@ pub async fn add(
                             url
                         }
                     };
+                    // A host with no pin: scanned now, its pin in the same change.
+                    if let Ok(Upstream::Ssh(ssh)) = Upstream::parse(&upstream) {
+                        let wanted = ssh.known_hosts_name();
+                        if !policy.upstream_hosts().keys().any(|h| h.as_str() == wanted) {
+                            println!("Its host {} has no pin: it is scanned now.", clean(&wanted));
+                            let (host, port, entry) = host_and_port(&wanted)?;
+                            match pin_edit(session, signer, &host, port).await? {
+                                Some(keys) => pin = Some((entry, keys)),
+                                None => return Ok(None),
+                            }
+                        }
+                    }
                     let (repo_edit, key) = credential(&policy, name, &upstream)?;
                     asked_given.push(repo_edit);
                     new_key = key;
@@ -374,6 +638,16 @@ pub async fn add(
             }
             let mut next = policy.clone();
             let mut made = Vec::new();
+            if let Some((entry, keys)) = &pin {
+                next = edit::add(
+                    &next,
+                    Section::UpstreamHosts,
+                    entry,
+                    std::slice::from_ref(keys),
+                    MIN_TTL,
+                )
+                .map_err(|e| anyhow::anyhow!("not added: {}", clean(&e.to_string())))?;
+            }
             if let Some((id, key)) = &new_key {
                 next = edit::add(&next, Section::Keys, id, key, MIN_TTL)
                     .map_err(|e| anyhow::anyhow!("not added: {}", clean(&e.to_string())))?;
@@ -388,13 +662,30 @@ pub async fn add(
             let what = format!("with {} {} added", section.noun(), clean(name));
             if sign_applied(session, signer, &shown, &text, &what, yes)
                 .await?
-                .is_some()
+                .is_none()
             {
-                next_steps(&next, &made);
+                return Ok(None);
             }
-            Ok(Exit::Ok)
+            next_steps(&next, &made);
+            Ok((section == Section::Repos).then_some(()))
         })
-        .await
+        .await?;
+    // A repo added: its upstream checked once its credential is registered.
+    if checked_repo.is_some() {
+        let repo: writ_core::names::RepoName = name.parse()?;
+        if !interactive {
+            println!("Once its credential is registered: writ admin repo check {repo}");
+            return Ok(Exit::Ok);
+        }
+        print!("Press Enter once its credential is registered, to check its upstream: ");
+        std::io::stdout().flush()?;
+        read_line()?;
+        return connect(paths, url)
+            .await?
+            .run(async |session| run_check(session, &repo).await)
+            .await;
+    }
+    Ok(Exit::Ok)
 }
 
 /// `writ admin <noun> edit <name>`: each field asked, Enter keeping its current value; only

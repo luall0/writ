@@ -159,9 +159,12 @@ On the approval API, counted against the approval API's rates and each logged (h
   in `approvers` (hard rule 5); in M11, only an admin's key. A reader key alone can't make
   the daemon reach a host, so the scan can't be used to probe the daemon's network. The
   daemon opens an SSH connection to that host and port, reads the host keys it offers and
-  closes, bounded in time and size: one handshake per host key algorithm (Ed25519, ECDSA
-  P-256, P-384 and P-521, RSA with SHA-2), with the daemon's own SSH library (russh, in
-  `writ-mirror`), each dropped before any authentication. The keys are shown with their fingerprints, never pinned
+  closes, bounded in time (`mirrors.scan_timeout`, 30 s a handshake) and size: one handshake
+  per host key algorithm Writ verifies (Ed25519, ECDSA P-256 and P-384; RSA and P-521 hosts
+  give their keys as `keys=`, see the [decision log](../decisions.md)), with the daemon's own
+  SSH library (russh, in `writ-mirror`), each dropped before any authentication.
+  `writ admin host rescan <host>` scans a pinned host again when its keys changed: each key
+  shown against the pin, then one signed change replacing it. The keys are shown with their fingerprints, never pinned
   by the scan: a second signed change pins them, once the operator has compared them with
   the remote's published ones. Two Touch IDs for a new host, which is rare.
 - **An upstream check** (`writ admin repo check <repo>`, run by `repo add` once the key is

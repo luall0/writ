@@ -189,6 +189,43 @@ their template and are amended: the old public key stays registered for the comm
 signed); then offers to remove the old key. Without a terminal, `--yes` answers the question
 between the two changes, and the old key stays declared, unused.
 
+## The daemon's checks
+
+Two operations reach out from the daemon at an approver's request (M6.2), each bounded in
+number (10 a minute, daemon-wide) and logged.
+
+**The host key scan** (`writ admin host add <host>` with no `keys=`, `writ admin host rescan
+<host>`, and a guided `repo add` on a host with no pin) runs only on an approver's signature:
+`writ` asks the daemon for a nonce (`writ admin scan-nonce`, `GET /v1/scan`: 16 bytes, used
+once, for 5 minutes, at most 16 outstanding), signs a `writ-scan/1` document naming the daemon
+(its host key's fingerprint), the host, the port and the nonce in the `writ-approval`
+namespace, and sends it (`writ admin scan`, `POST /v1/scan`). A reader key alone can't make
+the daemon reach a host, so the scan can't probe the daemon's network. The daemon checks the
+document strictly, the signature against `approvers`, the daemon and the nonce (refused
+`scan`, or `signature`), then makes one SSH handshake per key algorithm Writ verifies
+(Ed25519, ECDSA P-256 and P-384) with its own SSH library (russh, `writ_mirror::scan`), each
+asking for that algorithm alone, dropped once the host proved it holds the key and before any
+authentication, within `mirrors.scan_timeout` (30 s by default). The keys come back with their
+fingerprints, never pinned by the scan: `writ` shows them and asks whether they are the ones
+the remote publishes, and only then signs a second change pinning them. A host offering only
+RSA or P-521 keys answers none: its keys are given as `keys=` instead. The scan needs a
+terminal, where the approver compares the keys; without one `host add` takes `keys=`.
+
+`host rescan` is for a host whose keys changed (or to see whether they did): each key read is
+shown against the pin (pinned, new), each pinned key no longer offered said as going, a pinned
+RSA or P-521 key kept as it is (a scan can't read it; `host set <host> keys-=…` removes it);
+once confirmed, one signed change replaces the pin. Nothing changes when the pin already holds
+what the host offers.
+
+**The upstream check** (`writ admin repo check <repo>`, `writ admin check <repo>`, `POST
+/v1/repos/<repo>/check`, with a reader key) reaches only a repo the policy in force names,
+with its credential, through the daemon's own git and the mirror's bounds, the mirror held
+throughout: read access (`ls-remote`), the mirror synced (its object format the policy's), and
+write access (`push --dry-run` of the mirror's branches onto upstream's: receive-pack answers,
+nothing is sent). It stops at the first step that fails; what upstream says comes back
+cleaned and bounded. A guided `repo add` runs it once Enter says the new credential is
+registered on the remote; without a terminal it says the command to run.
+
 ## `writ admin token`
 
 The `https://` upstreams' tokens and the notifiers' sealed tokens (`token.sealed`) reach the

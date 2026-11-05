@@ -16,6 +16,9 @@ writ-git.workspace = true
 writ-platform.workspace = true
 writ-signer.workspace = true
 base64ct.workspace = true
+# The host key scan (`writ admin host add`): one handshake per key algorithm, dropped before
+# authentication; already the gateway's and the CLI's.
+russh.workspace = true
 rustix.workspace = true
 ssh-key.workspace = true
 thiserror.workspace = true

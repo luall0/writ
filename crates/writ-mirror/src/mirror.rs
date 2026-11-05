@@ -12,6 +12,7 @@
 //! - [`classify`]: what a failure says, and upstream's words made safe to show.
 
 mod access;
+mod check;
 mod classify;
 mod notes;
 mod open;
@@ -32,8 +33,10 @@ use writ_signer::Signer;
 
 use crate::credential::UpstreamToken;
 use crate::known_hosts::PinnedHosts;
+
 use crate::upstream::{HttpsUrl, SshUrl};
 use crate::{MirrorError, Result};
+pub use check::CheckStep;
 
 pub use notes::{MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, NOTES_AUTHOR, Note, NotesPushed};
 
@@ -78,6 +81,8 @@ pub struct MirrorConfig {
     pub timeout: Duration,
     /// The most bytes one sync may take from upstream.
     pub max_fetch_bytes: u64,
+    /// The longest one handshake of a host key scan may take ([`crate::scan`]).
+    pub scan_timeout: Duration,
 }
 
 /// One ref a sync moved.
@@ -209,6 +214,11 @@ impl Mirrors {
     /// `upload-pack` and `receive-pack`, the reads of a push.
     pub fn git(&self) -> &Path {
         &self.shared.config.git
+    }
+
+    /// How long one handshake of a host key scan may take (`mirrors.scan_timeout`).
+    pub fn scan_timeout(&self) -> Duration {
+        self.shared.config.scan_timeout
     }
 
     /// The registered repos.

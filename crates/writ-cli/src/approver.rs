@@ -15,7 +15,10 @@ mod signer;
 pub use admin::{
     apply as admin_apply, show as admin_show, target as admin_target, token as admin_token,
 };
-pub use guided::{add as guided_add, edit_entry as guided_edit, rotate as guided_rotate};
+pub use guided::{
+    add as guided_add, check as guided_check, edit_entry as guided_edit, rescan as guided_rescan,
+    rotate as guided_rotate,
+};
 pub use manage::{
     list as manage_list, remove as manage_remove, set as manage_set, show as manage_show,
 };

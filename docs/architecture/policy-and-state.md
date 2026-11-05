@@ -138,7 +138,10 @@ its lease, or added its summary to one that had ended: `reason` says `already <s
 signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `notes`
 (a lease's [notes](gateway.md#notes) pushed upstream, or not, one line per lease and push of
 the notes ref), `admin`, `seal`, `unseal`, `key` (a key made on the host by `writd recover`,
-with its public half)), `result` (`allowed`, `denied`, `done`), `lease`,
+with its public half), `scan` (a [host key scan](approvals.md#the-daemons-checks): allowed
+with the host, port and fingerprints read and the approver who signed it, or denied with why:
+the document refused, the host not reached), `check` (an [upstream check](approvals.md#the-daemons-checks):
+allowed with each step, or denied with the step that failed and what upstream said)), `result` (`allowed`, `denied`, `done`), `lease`,
 `ticket`, `cert`, `approver`, `repo`, `commit`, `refs`, `committer`, `key` (a proof's key, the
 credential that pushed notes, a key made), `namespace`, `message_sha256` (a proof's namespace and the
 digest of its message, never the message), `count` (how many notes a `notes` line is about, or

@@ -112,6 +112,7 @@ pub(crate) fn approval_has_body(command: &Command) -> bool {
             | Command::Unseal
             | Command::AdminApply
             | Command::TokenApply
+            | Command::Scan
     )
 }
 
@@ -173,6 +174,9 @@ pub(crate) async fn approval_reply(
             None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
         },
         Command::TokenApply => token_apply(gateway, facts, &body).await,
+        Command::ScanNonce => encoded(blocking(move || service.scan_nonce()).await),
+        Command::Scan => scan(gateway, facts, &body).await,
+        Command::RepoCheck { repo } => check(gateway, facts, repo).await,
         Command::AdminKeys => match gateway.shared.config.admin.clone() {
             Some(applier) => match applier.keys_show().await {
                 Ok(shown) => encoded(Ok(shown)),
@@ -185,6 +189,116 @@ pub(crate) async fn approval_reply(
         | Command::Policy { .. }
         | Command::Wait { .. }
         | Command::Close { .. } => encoded::<()>(Err(ApiError::new("command not allowed here"))),
+    }
+}
+
+/// `writ admin host add`'s scan: the service checks the `writ-scan/1` and its signature (its
+/// nonce used); the host's keys read ([`writ_mirror::scan`]), logged with their fingerprints,
+/// and shown, never pinned.
+async fn scan(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Option<String>) {
+    let request: writ_proto::ScanRequest = match writ_proto::decode_body(body) {
+        Ok(request) => request,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let (service, caller) = (gateway.service().clone(), facts.clone());
+    let checked = match blocking(move || service.check_scan(&request, &caller)).await {
+        Ok(checked) => checked,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let (host, port) = (checked.scan().host.clone(), checked.scan().port);
+    let deadline = gateway
+        .mirrors()
+        .map(|m| m.scan_timeout())
+        .unwrap_or(writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE);
+    let scanned = writ_mirror::scan::scan(host.as_str(), port, deadline).await;
+    let service = gateway.service().clone();
+    match scanned {
+        Ok(keys) => {
+            let shown: Vec<writ_proto::ScannedKey> = keys
+                .iter()
+                .filter_map(|key| {
+                    let line = key.to_openssh().ok()?;
+                    let key_line = line.split(' ').take(2).collect::<Vec<_>>().join(" ");
+                    Some(writ_proto::ScannedKey {
+                        key: key_line,
+                        fingerprint: key
+                            .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
+                            .to_string(),
+                    })
+                })
+                .collect();
+            let fingerprints: Vec<String> = shown.iter().map(|k| k.fingerprint.clone()).collect();
+            let pin = match writ_core::config::UpstreamHost::of(host.as_str(), port) {
+                Ok(pin) => pin.to_string(),
+                Err(e) => return encoded::<()>(Err(ApiError::new(e.to_string()))),
+            };
+            let logged = checked.clone();
+            blocking(move || {
+                service.scan_logged(Some(&logged), Ok(&fingerprints), &facts);
+                Ok::<(), writ_approval::ServiceError>(())
+            })
+            .await
+            .ok();
+            encoded(Ok(writ_proto::Scanned {
+                host: pin,
+                keys: shown,
+            }))
+        }
+        Err(e) => {
+            let why = e.to_string();
+            let logged = (checked.clone(), why.clone());
+            blocking(move || {
+                service.scan_logged(Some(&logged.0), Err(&logged.1), &facts);
+                Ok::<(), writ_approval::ServiceError>(())
+            })
+            .await
+            .ok();
+            encoded::<()>(Err(ApiError::new(why)))
+        }
+    }
+}
+
+/// `writ admin repo check <repo>`: allowed by the service (in the registry, within the
+/// rate), then run by the mirrors (read, sync, write with nothing pushed), logged.
+async fn check(
+    gateway: Gateway,
+    facts: CallerFacts,
+    repo: writ_core::names::RepoName,
+) -> (Vec<u8>, Option<String>) {
+    let (service, caller, asked) = (gateway.service().clone(), facts.clone(), repo.clone());
+    if let Err(e) = blocking(move || service.check_allowed(&asked, &caller)).await {
+        return encoded::<()>(Err(e));
+    }
+    let mirrors = match gateway.mirrors() {
+        Ok(mirrors) => mirrors,
+        Err(reason) => return encoded::<()>(Err(ApiError::new(reason))),
+    };
+    let checked = mirrors.check(&repo).await;
+    let service = gateway.service().clone();
+    let (steps, refused) = match checked {
+        Ok(steps) => (
+            steps
+                .into_iter()
+                .map(|s| writ_proto::CheckStep {
+                    what: s.what.to_owned(),
+                    ok: s.ok,
+                    said: s.said,
+                })
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    };
+    let logged = (repo.clone(), steps.clone(), refused.clone());
+    blocking(move || {
+        service.check_logged(&logged.0, &logged.1, logged.2.as_deref(), &facts);
+        Ok::<(), writ_approval::ServiceError>(())
+    })
+    .await
+    .ok();
+    match refused {
+        Some(why) => encoded::<()>(Err(ApiError::new(why))),
+        None => encoded(Ok(writ_proto::UpstreamChecked { repo, steps })),
     }
 }
 

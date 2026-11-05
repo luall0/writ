@@ -223,6 +223,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: mirrors.sync_every` | `mirrors_sync_every_syncs_without_any_client` |
 | `writd.yaml: mirrors.timeout` | `an_upstream_that_never_answers_is_cut_at_the_deadline`, `a_mirror_held_past_its_deadline_is_busy_never_waited_on_forever` |
 | `writd.yaml: mirrors.max_fetch` | `a_sync_past_the_byte_cap_is_refused_on_both_sides` |
+| `writd.yaml: mirrors.scan_timeout` | `a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked` |
 | `writd.yaml: transports.agents` | `listeners_take_only_the_sources_they_allow`, `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
 | `writd.yaml: transports.approvals.ssh` | `listeners_take_only_the_sources_they_allow`, `https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled` |
 | `writd.yaml: transports.approvals.https` | `listeners_take_only_the_sources_they_allow`, `https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled`, `revocation_and_expiry_drop_sessions_and_refuse_the_certificate` |

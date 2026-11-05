@@ -234,7 +234,8 @@ local mode (M7) goes through `sudo -u _writd`. After M6.2 the operator does it a
 - **`writ admin repo|template|key|host`**: `list`, `show` (`key show --public`), `add` and
   `edit` step by step, `set <name> <field>=<value>…` for one field at a time (`+=`, `-=`, `!`),
   `remove` (`--yes` without a terminal; a removed key deleted after its id is typed again),
-  `key rotate`, `repo check` (read and write access proven with nothing pushed). Each
+  `key rotate`, `host rescan` (a pinned host scanned again when its keys changed), `repo check`
+  (read and write access proven with nothing pushed). Each
   command one signed change, shown as a diff.
 
 Acceptance:

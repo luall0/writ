@@ -367,3 +367,41 @@ fn the_documented_orders_and_escapes_are_the_encoded_ones() {
     // And it decodes back to itself.
     assert_eq!(Ticket::from_canonical(text.as_bytes()).unwrap(), t);
 }
+
+#[test]
+fn a_scan_document_is_its_daemon_host_port_and_nonce_and_nothing_else() {
+    use writ_core::signed::{BootNonce, Scan};
+    let daemon = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+        .parse()
+        .unwrap();
+    let scan = Scan::new(
+        daemon,
+        "forgejo.home".to_owned().try_into().unwrap(),
+        2222,
+        BootNonce::from_bytes([7; 16]),
+    );
+    let bytes = scan.canonical_bytes().unwrap();
+    assert_eq!(
+        String::from_utf8(bytes.clone()).unwrap(),
+        "{\"kind\":\"writ-scan/1\",\"daemon\":\"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\",\
+         \"host\":\"forgejo.home\",\"port\":2222,\"nonce\":\"07070707070707070707070707070707\"}"
+    );
+    assert_eq!(Scan::from_canonical(&bytes).unwrap(), scan);
+    let text = String::from_utf8(bytes).unwrap();
+    for (from, to, why) in [
+        ("writ-scan/1", "writ-unseal/1", "unknown variant"),
+        ("\"port\":2222", "\"port\":70000", "invalid value"),
+        ("forgejo.home", "-oProxy", "a plain host name"),
+        ("forgejo.home", "[forgejo.home]:22", "a plain host name"),
+        ("07070707070707070707070707070707", "0707", "boot nonce"),
+        (",\"nonce\"", ",\"extra\":1,\"nonce\"", "unknown field"),
+        ("{\"kind\"", "{ \"kind\"", "canonical form"),
+    ] {
+        let bad = text.replacen(from, to, 1);
+        assert_ne!(bad, text);
+        let error = Scan::from_canonical(bad.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(why), "{to}: {error}");
+    }
+}

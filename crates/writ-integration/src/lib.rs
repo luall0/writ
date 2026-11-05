@@ -35,6 +35,7 @@ pub mod https_remote;
 pub mod process;
 pub mod remote;
 pub mod telegram;
+pub mod terminal;
 pub mod tools;
 
 use std::path::Path;

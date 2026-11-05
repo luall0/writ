@@ -43,6 +43,7 @@ pub async fn no_repos(dir: &Path) -> Result<Mirrors> {
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
             max_fetch_bytes: 1 << 20,
+            scan_timeout: crate::scan::DEFAULT_HANDSHAKE_DEADLINE,
         },
         &BTreeMap::new(),
         Arc::new(signer),
@@ -72,6 +73,7 @@ mod tests {
             fresh_for: Duration::from_secs(1),
             timeout: Duration::from_secs(10),
             max_fetch_bytes: 1 << 20,
+            scan_timeout: crate::scan::DEFAULT_HANDSHAKE_DEADLINE,
         };
         let signer: Arc<dyn writ_signer::Signer> = Arc::new(signer);
         let none = BTreeMap::new();
@@ -113,6 +115,7 @@ mod tests {
             fresh_for: Duration::from_secs(1),
             timeout: Duration::from_secs(10),
             max_fetch_bytes: 1 << 20,
+            scan_timeout: crate::scan::DEFAULT_HANDSHAKE_DEADLINE,
         };
         let (none, no_tokens) = (BTreeMap::new(), BTreeMap::new());
         let open = |config: MirrorConfig| Mirrors::open(config, &none, signer.clone(), &no_tokens);

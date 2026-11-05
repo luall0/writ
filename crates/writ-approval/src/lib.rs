@@ -26,10 +26,11 @@ pub mod testing;
 
 pub use error::{RefusalCode, ServiceError};
 pub use service::{
-    AdminParsed, CheckedAdmin, CheckedToken, DEFAULT_SUBMISSIONS_IN_ALL,
-    DEFAULT_SUBMISSIONS_PER_SOURCE, GatewayDenial, InForce, KeyUse, KeyUses,
-    MAX_SUBMISSIONS_IN_ALL, MAX_SUBMISSIONS_PER_SOURCE, Opened, Pushing, Service, ServiceConfig,
-    ServicePlatform, SignObject, SignedCommit, Signing, SubmissionLimits,
+    AdminParsed, CheckedAdmin, CheckedScan, CheckedToken, DEFAULT_SUBMISSIONS_IN_ALL,
+    DEFAULT_SUBMISSIONS_PER_SOURCE, GatewayDenial, InForce, KeyUse, KeyUses, MAX_CHECKS_A_MINUTE,
+    MAX_NONCES, MAX_SCANS_A_MINUTE, MAX_SUBMISSIONS_IN_ALL, MAX_SUBMISSIONS_PER_SOURCE,
+    NONCE_SECONDS, Opened, Pushing, Service, ServiceConfig, ServicePlatform, SignObject,
+    SignedCommit, Signing, SubmissionLimits,
 };
 pub use writ_store::{EventKind, PendingNote};
 

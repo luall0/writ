@@ -185,6 +185,49 @@ impl Unseal {
     }
 }
 
+/// Only `"writ-scan/1"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ScanKind {
+    #[default]
+    #[serde(rename = "writ-scan/1")]
+    V1,
+}
+
+/// The approver asks one daemon (named by its SSH host key's fingerprint) to read the host
+/// keys `host` offers on `port` (M6.2, `writ admin host add`), once: `nonce` is one the
+/// daemon handed out for it, used once. The scan pins nothing: a second signed change does,
+/// once the approver compared the keys with the ones the remote publishes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scan {
+    pub kind: ScanKind,
+    pub daemon: KeyFingerprint,
+    pub host: crate::config::hosts::HostName,
+    pub port: u16,
+    pub nonce: BootNonce,
+}
+
+impl Canonical for Scan {
+    const KIND: &'static str = "writ-scan/1";
+}
+
+impl Scan {
+    pub fn new(
+        daemon: KeyFingerprint,
+        host: crate::config::hosts::HostName,
+        port: u16,
+        nonce: BootNonce,
+    ) -> Self {
+        Self {
+            kind: ScanKind::V1,
+            daemon,
+            host,
+            port,
+            nonce,
+        }
+    }
+}
+
 /// Only `"writ-admin/2"` (`writ-admin/1` named the version it replaced by its digest alone,
 /// so a change could be applied again once the text came back to that version).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

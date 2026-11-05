@@ -26,7 +26,7 @@ pub const PLACEHOLDER_PIN: &str = "  remote.invalid:\n    - \"ssh-ed25519 \
 pub const SSH_CREDENTIAL: &str = "    kind: ssh\n    algorithm: ed25519";
 
 /// How the remote answers a git command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     /// Runs git, like a real remote.
     Serve,
@@ -35,6 +35,8 @@ pub enum Mode {
     /// Advertises refs (valid protocol lines, each a new branch) until it has sent this many
     /// bytes, then ends: git keeps reading, as from a remote with endless refs.
     Flood(usize),
+    /// Says this on stderr and fails, as a hostile remote's message would.
+    Say(Vec<u8>),
 }
 
 struct State {
@@ -245,7 +247,7 @@ impl russh::server::Handler for Handler {
             _ => &self.state.receive_packs,
         };
         counter.fetch_add(1, Ordering::AcqRel);
-        let mode = *self.state.mode.lock().unwrap();
+        let mode = self.state.mode.lock().unwrap().clone();
         let repo = self.state.root.join(path);
         if program == "git-receive-pack"
             && let Some(args) = self.state.before_push.lock().unwrap().pop_front()
@@ -287,6 +289,15 @@ impl russh::server::Handler for Handler {
                         }
                     }
                     let _ = tx.exit_status(0).await;
+                    let _ = tx.eof().await;
+                    let _ = tx.close().await;
+                }
+                Mode::Say(said) => {
+                    let (_rx, tx) = channel.split();
+                    let mut err = tx.make_writer_ext(Some(1));
+                    let _ = tokio::io::AsyncWriteExt::write_all(&mut err, &said).await;
+                    drop(err);
+                    let _ = tx.exit_status(1).await;
                     let _ = tx.eof().await;
                     let _ = tx.close().await;
                 }

@@ -28,6 +28,7 @@
 //!   sync_every: 5m                   # background sync of every mirror
 //!   timeout: 5m                      # one sync or upstream push, then git and ssh are killed
 //!   max_fetch: 1GiB                  # the most one sync takes from upstream
+//!   scan_timeout: 30s                # one handshake of a host key scan (writ admin host add)
 //! transports:
 //!   agents:                          # TCP: `allow` is required (`0.0.0.0/0` for anyone)
 //!     - { tcp: "0.0.0.0:2222", allow: ["10.0.0.0/24"] }
@@ -197,6 +198,10 @@ pub struct MirrorsConfig {
     pub timeout: Duration,
     #[serde(default = "default_max_fetch")]
     pub max_fetch: ByteSize,
+    /// The longest one handshake of a host key scan (`writ admin host add`) may take: some
+    /// hosts are slow to answer.
+    #[serde(default = "default_scan_timeout")]
+    pub scan_timeout: Duration,
 }
 
 impl Default for MirrorsConfig {
@@ -210,6 +215,7 @@ impl Default for MirrorsConfig {
             sync_every: default_sync_every(),
             timeout: default_timeout(),
             max_fetch: default_max_fetch(),
+            scan_timeout: default_scan_timeout(),
         }
     }
 }
@@ -232,6 +238,10 @@ fn default_sync_every() -> Duration {
 
 fn default_timeout() -> Duration {
     Duration::from_seconds(300)
+}
+
+fn default_scan_timeout() -> Duration {
+    Duration::from_seconds(writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE.as_secs())
 }
 
 fn default_max_fetch() -> ByteSize {
@@ -264,6 +274,7 @@ impl MirrorsConfig {
         within("fresh_for", self.fresh_for, 0, 3_600)?;
         within("sync_every", self.sync_every, 10, 86_400)?;
         within("timeout", self.timeout, 10, 3_600)?;
+        within("scan_timeout", self.scan_timeout, 1, 300)?;
         let (min, max) = (1u64 << 20, 64u64 << 30);
         if !(min..=max).contains(&self.max_fetch.bytes()) {
             return Err(format!(
@@ -712,6 +723,7 @@ mod tests {
         assert_eq!(mirrors.sync_every.seconds(), 300);
         assert_eq!(mirrors.timeout.seconds(), 300);
         assert_eq!(mirrors.max_fetch.bytes(), 1 << 30);
+        assert_eq!(mirrors.scan_timeout.seconds(), 30);
         let with = |yaml: &str| load(&format!("{MINIMAL}mirrors: {{ {yaml} }}\n"));
         for good in [
             "fresh_for: 0s",
@@ -722,6 +734,8 @@ mod tests {
             "timeout: 1h",
             "max_fetch: 1MiB",
             "max_fetch: 64GiB",
+            "scan_timeout: 1s",
+            "scan_timeout: 5m",
             "ssh: /opt/openssh/bin/ssh",
             "git: /opt/homebrew/bin/git",
         ] {
@@ -750,6 +764,14 @@ mod tests {
                 "mirrors.max_fetch: 1048575 bytes, must be from 1MiB",
             ),
             ("max_fetch: 68719476737", "must be from 1MiB to 64GiB"),
+            (
+                "scan_timeout: 0s",
+                "mirrors.scan_timeout: 0s, must be from 1s to 5m",
+            ),
+            (
+                "scan_timeout: 301s",
+                "mirrors.scan_timeout: 301s, must be from 1s to 5m",
+            ),
             ("depth: 1", "unknown field"),
             ("git: git", "mirrors.git: git, must be an absolute path"),
             (

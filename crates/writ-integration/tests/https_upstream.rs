@@ -88,6 +88,7 @@ impl Fixture {
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
             max_fetch_bytes: 64 << 20,
+            scan_timeout: writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE,
         }
     }
 
