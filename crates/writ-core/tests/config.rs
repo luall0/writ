@@ -1261,3 +1261,97 @@ fn an_entry_something_uses_is_never_removed_and_one_nothing_uses_is() {
     );
     assert_eq!(without.templates(), policy.templates());
 }
+
+#[test]
+fn add_makes_an_entry_from_its_fields_and_says_which_required_ones_are_missing() {
+    use writ_core::config::Section;
+    use writ_core::config::edit::{add, current, missing};
+    let min = writ_core::fit::DEFAULT_MIN_TTL;
+    let given = edits(&[
+        "operations=fetch",
+        "max_ttl=1h",
+        "max_signatures=0",
+        "max_pushes=0",
+    ]);
+    assert_eq!(
+        missing(Section::Templates, &given),
+        ["max_ops_per_minute", "max_push_size"]
+    );
+    let error = add(&config(), Section::Templates, "fetch-only", &given, min)
+        .unwrap_err()
+        .to_string();
+    assert!(error.starts_with("templates.fetch-only: "), "{error}");
+    assert!(
+        error.contains("missing field `max_ops_per_minute`"),
+        "{error}"
+    );
+    let mut all = given.clone();
+    all.extend(edits(&["max_ops_per_minute=5", "max_push_size=0"]));
+    assert!(missing(Section::Templates, &all).is_empty());
+    let added = add(&config(), Section::Templates, "fetch-only", &all, min).unwrap();
+    let template = added.template(&"fetch-only".parse().unwrap()).unwrap();
+    assert_eq!(template.max_ops_per_minute, 5);
+    assert!(
+        added
+            .template_users(&"fetch-only".parse().unwrap())
+            .is_empty()
+    );
+    // One by that name already: refused, pointing to edit.
+    assert_eq!(
+        add(&config(), Section::Templates, "read-only", &all, min)
+            .unwrap_err()
+            .to_string(),
+        "templates.read-only: there is a template read-only already (writ admin template edit \
+         read-only changes it)"
+    );
+    // A host, a key, a repo naming them, chained.
+    let host = add(
+        &added,
+        Section::UpstreamHosts,
+        "codeberg.org",
+        &edits(&[&format!("keys={PIN}")]),
+        min,
+    )
+    .unwrap();
+    let key = add(
+        &host,
+        Section::Keys,
+        "codeberg-01",
+        &edits(&["use=upstream", "kind=ssh", "algorithm=rsa3072"]),
+        min,
+    );
+    // What a key is can't change, so it is set only when the key is added.
+    let key = key.unwrap();
+    let repo = add(
+        &key,
+        Section::Repos,
+        "mirror",
+        &edits(&[
+            "upstream=ssh://git@codeberg.org/me/mirror.git",
+            "upstream_credential=codeberg-01",
+            "templates=fetch-only",
+        ]),
+        min,
+    )
+    .unwrap();
+    assert_eq!(
+        repo.key_users(&"codeberg-01".parse().unwrap()).repos,
+        vec![repo_name("mirror")]
+    );
+    // The values a prompt starts from.
+    let values = current(&repo, Section::Repos, "mirror").unwrap();
+    assert_eq!(values["templates"], "fetch-only");
+    assert_eq!(values["upstream_credential"], "codeberg-01");
+    assert!(
+        !values.contains_key("push_modes"),
+        "a default isn't a value"
+    );
+    let values = current(&config(), Section::Templates, "feature-branch").unwrap();
+    assert_eq!(values["committer_emails"], "user+agent@example.org");
+    assert_eq!(values["max_ttl"], "4h");
+    assert_eq!(current(&config(), Section::Repos, "nowhere"), None);
+}
+
+fn repo_name(name: &str) -> writ_core::names::RepoName {
+    name.parse().unwrap()
+}

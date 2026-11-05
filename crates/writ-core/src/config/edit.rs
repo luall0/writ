@@ -38,6 +38,8 @@ pub struct Field {
     pub fixed: bool,
     /// What it takes, in a few words.
     pub help: &'static str,
+    /// What it is when left out, as a prompt shows it (none: required, or nothing).
+    pub default: Option<&'static str>,
 }
 
 const fn field(name: &'static str, kind: FieldKind, help: &'static str) -> Field {
@@ -47,6 +49,7 @@ const fn field(name: &'static str, kind: FieldKind, help: &'static str) -> Field
         required: false,
         fixed: false,
         help,
+        default: None,
     }
 }
 
@@ -57,6 +60,7 @@ const fn required(name: &'static str, kind: FieldKind, help: &'static str) -> Fi
         required: true,
         fixed: false,
         help,
+        default: None,
     }
 }
 
@@ -67,6 +71,15 @@ const fn fixed(name: &'static str, required: bool, help: &'static str) -> Field 
         required,
         fixed: true,
         help,
+        default: None,
+    }
+}
+
+/// `field` with what it is when left out.
+const fn or(field: Field, default: &'static str) -> Field {
+    Field {
+        default: Some(default),
+        ..field
     }
 }
 
@@ -81,10 +94,9 @@ const KEY_FIELDS: &[Field] = &[
         false,
         "ed25519, p256, p384, rsa3072 or rsa4096 (a token has none)",
     ),
-    field(
-        "hash",
-        Text,
-        "a signing key's: sha256, sha384 or sha512 (left out: the strongest allowed)",
+    or(
+        field("hash", Text, "a signing key's: sha256, sha384 or sha512"),
+        "the strongest allowed",
     ),
     field(
         "uids",
@@ -92,7 +104,10 @@ const KEY_FIELDS: &[Field] = &[
         "an OpenPGP key's user ids: `Name <local@domain>`, 1 to 16",
     ),
     field("host", Text, "a token's: the one host it is sent to"),
-    fixed("backend", false, "where the key lives: software"),
+    or(
+        fixed("backend", false, "where the key lives: software"),
+        "software",
+    ),
 ];
 
 /// A host's entry is its list of pinned keys: written `keys` here.
@@ -123,31 +138,31 @@ const REPO_FIELDS: &[Field] = &[
         List,
         "full refs no lease may push (refs/heads/main, refs/tags/*)",
     ),
-    field(
-        "push_modes",
-        List,
-        "gateway, proxy, direct_ssh (default gateway)",
+    or(
+        field("push_modes", List, "gateway, proxy, direct_ssh"),
+        "gateway",
     ),
-    field(
-        "ticket_link",
-        Text,
-        "ledger_only (default), trailer or notes",
+    or(
+        field("ticket_link", Text, "ledger_only, trailer or notes"),
+        "ledger_only",
     ),
-    field(
-        "notes_ref",
-        Text,
-        "with ticket_link notes: commits (default) or writ",
+    or(
+        field("notes_ref", Text, "with ticket_link notes: commits or writ"),
+        "commits",
     ),
-    field("object_format", Text, "sha1 (default) or sha256"),
+    or(field("object_format", Text, "sha1 or sha256"), "sha1"),
     field(
         "direct_ssh.hosts",
         List,
         "with push mode direct_ssh: the hosts the lent key reaches",
     ),
-    field(
-        "direct_ssh.allow_account_wide",
-        Flag,
-        "with push mode direct_ssh: lend a key not limited to the repo",
+    or(
+        field(
+            "direct_ssh.allow_account_wide",
+            Flag,
+            "with push mode direct_ssh: lend a key not limited to the repo",
+        ),
+        "false",
     ),
 ];
 
@@ -158,25 +173,26 @@ const TEMPLATE_FIELDS: &[Field] = &[
         List,
         "branch patterns, one trailing * at most (required with commit_sign or push)",
     ),
-    field(
-        "push_modes",
-        List,
-        "gateway, proxy, direct_ssh (default gateway)",
+    or(
+        field("push_modes", List, "gateway, proxy, direct_ssh"),
+        "gateway",
     ),
-    field(
-        "force_push",
-        Flag,
-        "whether a ticket may ask for force pushes",
+    or(
+        field(
+            "force_push",
+            Flag,
+            "whether a ticket may ask for force pushes",
+        ),
+        "false",
     ),
     field(
         "committer_emails",
         List,
         "the emails commits may carry (required with commit_sign)",
     ),
-    field(
-        "committer_name",
-        Text,
-        "the name every commit must carry (none: not checked)",
+    or(
+        field("committer_name", Text, "the name every commit must carry"),
+        "not checked",
     ),
     field(
         "signing_key",
@@ -202,15 +218,21 @@ const TEMPLATE_FIELDS: &[Field] = &[
     required(
         "max_push_size",
         Text,
-        "the largest pack one push sends (50MB)",
+        "the largest pack one push sends (50MB; at least 1 byte with push)",
     ),
-    field("paths_check", Text, "off, warn (default) or deny"),
-    field(
-        "require_expected_paths",
-        Flag,
-        "whether a ticket must list expected_paths",
+    or(field("paths_check", Text, "off, warn or deny"), "warn"),
+    or(
+        field(
+            "require_expected_paths",
+            Flag,
+            "whether a ticket must list expected_paths",
+        ),
+        "false",
     ),
-    field("max_renewals", Count, "renewals one lease's chain may have"),
+    or(
+        field("max_renewals", Count, "renewals one lease's chain may have"),
+        "no limit",
+    ),
 ];
 
 /// The fields `section`'s entries take, in the order the policy writes them.
@@ -388,16 +410,24 @@ fn value_of(kind: FieldKind, text: &str, at: &str) -> Result<Value, FieldError> 
     }
 }
 
+/// Whether an edit makes the entry (what a key is may be set) or changes it (it may not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Making {
+    New,
+    Existing,
+}
+
 /// Applies one edit to an entry (`obj`, the entry's mapping or, for a host, its list).
 fn apply(
     section: Section,
     name: &str,
     entry: &mut Value,
     edit: &FieldEdit,
+    making: Making,
 ) -> Result<(), FieldError> {
     let at = format!("{}.{name}.{}", section.as_str(), edit.field);
     let spec = field_of(section, &edit.field).map_err(|why| FieldError::at(&at, why))?;
-    if spec.fixed {
+    if spec.fixed && making == Making::Existing {
         return Err(FieldError::at(
             &at,
             format!(
@@ -491,10 +521,102 @@ pub fn edit(
     let mut tree = tree(policy)?;
     let entry = entry_mut(&mut tree, section, name)?;
     for one in edits {
-        apply(section, name, entry, one)?;
+        apply(section, name, entry, one, Making::Existing)?;
     }
     tidy(entry);
     read_back(tree, min_ttl)
+}
+
+/// `policy` with a new entry `name` in `section`, its fields from `edits` (each applied in
+/// order to an empty entry), read back whole with the daemon's checks: a required field left
+/// out is refused there, naming it.
+pub fn add(
+    policy: &PolicyConfig,
+    section: Section,
+    name: &str,
+    edits: &[FieldEdit],
+    min_ttl: Duration,
+) -> Result<PolicyConfig, FieldError> {
+    let mut tree = tree(policy)?;
+    let entries = tree
+        .entry(section.as_str().to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Value::Object(entries) = entries else {
+        return Err(FieldError::at(section.as_str(), "not a mapping"));
+    };
+    if entries.contains_key(name) {
+        return Err(FieldError::at(
+            format!("{}.{name}", section.as_str()),
+            format!(
+                "there is a {} {name} already (writ admin {} edit {name} changes it)",
+                section.noun(),
+                section.noun()
+            ),
+        ));
+    }
+    let empty = match section {
+        Section::UpstreamHosts => Value::Array(Vec::new()),
+        _ => Value::Object(Map::new()),
+    };
+    entries.insert(name.to_owned(), empty);
+    let entry = entry_mut(&mut tree, section, name)?;
+    for one in edits {
+        apply(section, name, entry, one, Making::New)?;
+    }
+    tidy(entry);
+    read_back(tree, min_ttl)
+}
+
+/// The fields `edits` don't name that `section` requires: what an `add` with no terminal
+/// refuses for, naming them.
+pub fn missing(section: Section, edits: &[FieldEdit]) -> Vec<&'static str> {
+    fields(section)
+        .iter()
+        .filter(|f| f.required && !edits.iter().any(|e| e.field == f.name))
+        .map(|f| f.name)
+        .collect()
+}
+
+/// The values the entry `name` of `section` holds, field by field as a prompt shows them (a
+/// list's values joined by commas); none when there is no such entry.
+pub fn current(
+    policy: &PolicyConfig,
+    section: Section,
+    name: &str,
+) -> Option<std::collections::BTreeMap<&'static str, String>> {
+    let mut tree = tree(policy).ok()?;
+    let entry = entry_mut(&mut tree, section, name).ok()?.clone();
+    let shown = |value: &Value| match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Array(items) => Some(
+            items
+                .iter()
+                .map(|i| match i {
+                    Value::String(t) => t.clone(),
+                    other => other.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        _ => None,
+    };
+    let mut values = std::collections::BTreeMap::new();
+    for spec in fields(section) {
+        let value = match (section, &entry) {
+            (Section::UpstreamHosts, list) => Some(list),
+            (_, Value::Object(map)) => match spec.name.split_once('.') {
+                Some((outer, inner)) => map.get(outer).and_then(|o| o.get(inner)),
+                None => map.get(spec.name),
+            },
+            _ => None,
+        };
+        if let Some(text) = value.and_then(shown) {
+            values.insert(spec.name, text);
+        }
+    }
+    Some(values)
 }
 
 /// `policy` without the entry `name` of `section`, read back whole: a template a repo names,

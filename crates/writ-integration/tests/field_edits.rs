@@ -374,3 +374,192 @@ fn a_removed_key_is_deleted_for_good_and_what_something_uses_is_never_removed() 
         "{notes:?}"
     );
 }
+
+#[test]
+fn add_and_rotate_without_a_terminal_take_what_is_given_and_ask_nothing() {
+    let daemon = Daemon::start(POLICY, Approvals::Ssh);
+
+    // Without a terminal, add asks nothing: every required field given, or refused naming
+    // the missing ones.
+    let out = daemon.run(
+        &[
+            "admin",
+            "template",
+            "add",
+            "quick",
+            "operations=fetch",
+            "max_ttl=1h",
+            "--yes",
+        ],
+        "",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains(
+            "add asks nothing without a terminal: give every required field (missing: \
+             max_signatures, max_pushes, max_ops_per_minute, max_push_size)"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(version(&daemon), "1");
+    let out = daemon.run(
+        &[
+            "admin",
+            "template",
+            "add",
+            "quick",
+            "operations=fetch",
+            "max_ttl=1h",
+            "max_signatures=0",
+            "max_pushes=0",
+            "max_ops_per_minute=5",
+            "max_push_size=0",
+            "--yes",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("with template quick added"),
+        "{}",
+        stdout(&out)
+    );
+    // --from: another template's values, the ones given replacing them.
+    let out = daemon.run(
+        &[
+            "admin",
+            "template",
+            "add",
+            "longer",
+            "--from",
+            "feature",
+            "max_ttl=4h",
+            "--yes",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let (_, policy) = in_force(&daemon);
+    let (feature, longer) = (
+        policy.template(&"feature".parse().unwrap()).unwrap(),
+        policy.template(&"longer".parse().unwrap()).unwrap(),
+    );
+    assert_eq!(longer.max_ttl.seconds(), 4 * 3600);
+    assert_eq!(longer.branches, feature.branches);
+    assert_eq!(longer.signing_key, feature.signing_key);
+    assert_eq!(longer.max_signatures, feature.max_signatures);
+    let out = daemon.run(
+        &["admin", "template", "add", "x", "--from", "nope", "--yes"],
+        "",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("no template nope to start from"),
+        "{}",
+        stderr(&out)
+    );
+    // A key: made by the change, its public half printed, what to do next said.
+    let out = daemon.run(
+        &[
+            "admin",
+            "key",
+            "add",
+            "agent-rsa",
+            "use=signing",
+            "format=ssh",
+            "algorithm=rsa3072",
+            "--yes",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(
+        said.contains("New signing key agent-rsa (register it on the remote): ssh-rsa "),
+        "{said}"
+    );
+    assert!(said.contains("Next: register agent-rsa"), "{said}");
+    // edit asks on a terminal only.
+    let out = daemon.run(&["admin", "repo", "edit", "demo", "--yes"], "");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out)
+            .contains("edit asks each field on a terminal: without one, writ admin repo set demo"),
+        "{}",
+        stderr(&out)
+    );
+
+    // rotate: a new key declared like the old one, then what used it switched to it; without
+    // a terminal --yes answers the question between the two, and the old one stays declared.
+    let out = daemon.run(&["admin", "key", "rotate", "upstream-01"], "");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("without a terminal, give --yes"),
+        "{}",
+        stderr(&out)
+    );
+    let before = version(&daemon).parse::<u64>().unwrap();
+    let out = daemon.run(&["admin", "key", "rotate", "upstream-01", "--yes"], "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(
+        said.contains(
+            "New upstream credential upstream-2 (register it on the remote): ssh-ed25519 "
+        ),
+        "{said}"
+    );
+    assert!(
+        said.contains(
+            "upstream-01 stays declared, unused: writ admin key remove upstream-01 deletes it."
+        ),
+        "{said}"
+    );
+    assert_eq!(
+        version(&daemon).parse::<u64>().unwrap(),
+        before + 2,
+        "two signed changes"
+    );
+    let (_, policy) = in_force(&daemon);
+    assert_eq!(
+        policy
+            .repo(&"demo".parse().unwrap())
+            .unwrap()
+            .upstream_credential
+            .as_str(),
+        "upstream-2"
+    );
+    assert!(policy.key_users(&"upstream-01".parse().unwrap()).is_empty());
+    // A signing key's leases are said to need amending.
+    let out = daemon.run(
+        &[
+            "admin",
+            "key",
+            "rotate",
+            "agent-01",
+            "--name",
+            "agent-next",
+            "--yes",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("stop fitting their template once it switches"),
+        "{}",
+        stdout(&out)
+    );
+    let (_, policy) = in_force(&daemon);
+    for template in ["feature", "longer"] {
+        assert_eq!(
+            policy
+                .template(&template.parse().unwrap())
+                .unwrap()
+                .signing_key
+                .as_ref()
+                .map(|k| k.as_str()),
+            Some("agent-next"),
+            "{template}"
+        );
+    }
+}

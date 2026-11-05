@@ -79,13 +79,28 @@ pub(super) async fn sign_change(
     what: &str,
     yes: bool,
 ) -> anyhow::Result<Exit> {
+    sign_applied(session, signer, shown, text, what, yes)
+        .await
+        .map(|_| Exit::Ok)
+}
+
+/// [`sign_change`], answering what the daemon applied (none: nothing to change, or not
+/// signed).
+pub(super) async fn sign_applied(
+    session: &Approvals,
+    signer: &Signer,
+    shown: &AdminShown,
+    text: &AdminText,
+    what: &str,
+    yes: bool,
+) -> anyhow::Result<Option<AdminApplied>> {
     let target = shown.target;
     if shown.text == text.as_str() {
         println!(
             "{target} version {} already holds this text: nothing to change.",
             shown.version
         );
-        return Ok(Exit::Ok);
+        return Ok(None);
     }
     println!(
         "Change of {target}: version {} (sha256 {}) {what}",
@@ -101,7 +116,7 @@ pub(super) async fn sign_change(
         std::io::stdout().flush()?;
         if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
             println!("Not signed.");
-            return Ok(Exit::Ok);
+            return Ok(None);
         }
     }
     let replaced = Replaced {
@@ -144,7 +159,7 @@ pub(super) async fn sign_change(
             _ => println!("Deleted {} {}.", clean(&key.description), key.id),
         }
     }
-    Ok(Exit::Ok)
+    Ok(Some(applied))
 }
 
 /// `writ admin token <id>`: the keystore's recipient from `writ info`, the token file in force

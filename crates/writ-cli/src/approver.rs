@@ -6,6 +6,7 @@
 //! authenticate with a throwaway key: the connection grants nothing, signatures do.
 
 mod admin;
+mod guided;
 mod manage;
 mod narrowing;
 mod prove;
@@ -14,6 +15,7 @@ mod signer;
 pub use admin::{
     apply as admin_apply, show as admin_show, target as admin_target, token as admin_token,
 };
+pub use guided::{add as guided_add, edit_entry as guided_edit, rotate as guided_rotate};
 pub use manage::{
     list as manage_list, remove as manage_remove, set as manage_set, show as manage_show,
 };

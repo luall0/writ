@@ -118,7 +118,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 20 | `sessions_and_renewals` | `sessions` | A lease's whole life with M6: a ticket file checked (`writ check`) with an estimate; what the repo allows read from the daemon (`writ policy`, by name and in the wired clone; only that repo shown, an unknown one refused) and the ticket checked by it without being submitted (`writ request --dry-run`: on `main` rejected with its reason, then accepted, nothing stored, its `dry_run` line); a clone pinned to the lease with the skill for several agents (`writ init --lease --agents --skill-dir --agents-md`), excluded from git; a phase marked; a renewal reviewed with the original ticket and the chain, the pinned lease then refused and the renewal (`WRIT_SESSION`) pushing what the renewed lease signed; `writ close` and its report recorded in the timings file; the timings file checked and its limits changed; the approver's `writ report`; `--global`; everything undone, the timings kept | shared |
 | 21 | `workspaces` | `ws-api`, `ws-web` | A folder of two clones wired at once (`writ init` with no repo named): without a terminal, every repository's registry name required (`--repo <dir>=<name>`), nothing wired before; the `writ-workspace` skill at the folder only; `writ git` at the folder listing the repositories; one lease for both, each repository's policy read by name; a commit in each through `writ git -C`, both pushed by `origin` (Forgejo, the mirrors, two signatures and two pushes in the audit log); `writ exec -C`; a phase marked and the lease closed at the folder, the run recorded under `ws-api + ws-web`; `--undo` in one repository refused, at the folder every repository and the folder back (the timings kept) | shared |
 | 22 | `per_repository` | `pr-api`, `pr-web` | Per-repository tickets (M6.1.5): `writ policy` for both repositories, its "Together:" line; a repository two templates fit rejected until its block names one; repositories signing with different keys rejected naming each template and key; one ticket under two templates granted with one signature, each repository's template in the lease; each repository held to its own part (a path outside pr-web's `expected_paths` refused at signing, `paths`; pr-api's branch refused in pr-web, `ref`; pr-web's one push, then `limit` while pr-api still pushes; Forgejo and the audit log); the same work as one lease per repository, each repository's commands under its own `WRIT_SESSION`, the other lease's repository refused (`repo`); every lease closed | shared |
-| 23 | `daemon_management` | `setup` | Managing the daemon from the approver's machine (M6.2): `writ admin repo\|template\|key\|host list` and `show` with the reader key, every entry as the policy writes it, a missing one refused with its reason; each key's public half from the daemon's signers, the one the operator registered (`--public`), an OpenPGP key's fingerprint and certificate, a token only as added (never its value, no public half); Forgejo's pin with the fingerprint the setup compared; each through `--approval-url` too (shared). Then, alone: `set` on each noun in every syntax (the first one writing the policy in Writ's layout, said), refusals naming the field (a fixed field, a field the noun lacks, what the policy refuses) with nothing sent; `remove` refused while something uses it, a key's id typed again on a terminal (a mistyped one sends nothing), the key's files deleted once the change applies and its public half in the `admin` line, a template, a host and a repo removed; the policy put back as it was (the removed key made again, new) | shared, then alone |
+| 23 | `daemon_management` | `setup` | Managing the daemon from the approver's machine (M6.2): `writ admin repo\|template\|key\|host list` and `show` with the reader key, every entry as the policy writes it, a missing one refused with its reason; each key's public half from the daemon's signers, the one the operator registered (`--public`), an OpenPGP key's fingerprint and certificate, a token only as added (never its value, no public half); Forgejo's pin with the fingerprint the setup compared; each through `--approval-url` too (shared). Then, alone: `set` on each noun in every syntax (the first one writing the policy in Writ's layout, said), refusals naming the field (a fixed field, a field the noun lacks, what the policy refuses) with nothing sent; `remove` refused while something uses it, a key's id typed again on a terminal (a mistyped one sends nothing), the key's files deleted once the change applies and its public half in the `admin` line, a template, a host and a repo removed; the policy put back as it was (the removed key made again, new). Then step by step on a terminal: `add` and `edit` on each noun (each field asked with its bounds and default or its current value, only the fields the entry needs, Enter keeping it), `template add --from`, a repo added with a new RSA credential declared in the same change, `key rotate` through both its changes and the removal it offers (and named with `--yes` without a terminal), `--yes` asking nothing but the fields; the policy put back | shared, then alone |
 
 Every scenario checks, where it applies: **what the agent reads** (the exit code and the
 words, never just "it failed"), **the audit line** (event, result, code), **Forgejo's state**
@@ -236,6 +236,53 @@ the scenarios (`tool/check-e2e.py`).
 | `writ admin key show` | `the_policy_in_force_is_read_entry_by_entry_from_the_approver_s_machine` |
 | `writ admin key show --approval-url` | `the_policy_in_force_is_read_entry_by_entry_from_the_approver_s_machine` |
 | `writ admin key show --public` | `the_policy_in_force_is_read_entry_by_entry_from_the_approver_s_machine` |
+| `writ admin repo add` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo add --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo add --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo add --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo add --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo edit` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo edit --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo edit --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo edit --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin repo edit --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template add` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template add --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template add --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template add --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template add --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template edit` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template edit --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template edit --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template edit --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template edit --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key add` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key add --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key add --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key add --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key add --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key edit` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key edit --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key edit --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key edit --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key edit --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host add` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host add --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host add --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host add --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host add --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host edit` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host edit --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host edit --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host edit --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin host edit --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin template add --from` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key rotate` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key rotate --name` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key rotate --yes` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key rotate --approval-url` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key rotate --key` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
+| `writ admin key rotate --agent` | `entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal` |
 | `writ admin repo set` | `the_policy_is_changed_field_by_field_and_entries_removed_from_the_approver_s_machine` |
 | `writ admin repo set --yes` | `the_policy_is_changed_field_by_field_and_entries_removed_from_the_approver_s_machine` |
 | `writ admin repo set --approval-url` | `the_policy_is_changed_field_by_field_and_entries_removed_from_the_approver_s_machine` |

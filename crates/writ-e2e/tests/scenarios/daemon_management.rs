@@ -338,3 +338,210 @@ fn the_policy_is_changed_field_by_field_and_entries_removed_from_the_approver_s_
         approver.ok("cat policy-before.yaml")
     );
 }
+
+/// `command` on a terminal (`script`), `answers` typed one per line: what it showed (the
+/// streams merged, rows ending in `\r\n`).
+fn on_terminal(approver: &writ_e2e::docker::Host, command: &str, answers: &[&str]) -> String {
+    let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
+    let out = approver.run_with(
+        &format!("script -qec '{command}' /dev/null"),
+        typed.as_bytes(),
+    );
+    writ_e2e::stdout(&out)
+}
+
+#[test]
+#[ignore = "end to end: make e2e"]
+fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
+    // It changes the policy every scenario runs under: alone, and put back at the end.
+    let stack = Stack::exclusive();
+    let approver = &stack.approver;
+    approver.ok("writ admin show policy > guided-before.yaml");
+    let url = "--approval-url \"$WRIT_APPROVAL_URL\" --key \"$HOME/.writ/approver.pub\" --agent \"$WRIT_APPROVAL_AGENT\"";
+
+    // A template from another one's values: each field asked, Enter keeping it, the fields a
+    // fetch-only template doesn't take never asked.
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin template add guided --from managed {url}"),
+        &["", "3h", "", "", "", "", "", "y"],
+    );
+    assert!(shown.contains("max_ttl (the longest lease"), "{shown}");
+    assert!(
+        !shown.contains("branches ("),
+        "a fetch-only template asks no branches: {shown}"
+    );
+    assert!(shown.contains("Applied: policy is version "), "{shown}");
+    let guided = approver.ok("writ admin template show guided");
+    assert!(
+        guided.contains("  operations: [fetch]\n  max_ttl: 3h\n"),
+        "{guided}"
+    );
+    // A token: its use and kind asked first, then only its host.
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin key add guided-token {url}"),
+        &["upstream", "token", "forgejo-https", "y"],
+    );
+    assert!(
+        !shown.contains("algorithm ("),
+        "a token has no algorithm: {shown}"
+    );
+    assert!(
+        shown.contains("Next: add the token for forgejo-https from forgejo-https: writ admin token guided-token"),
+        "{shown}"
+    );
+    assert!(approver.ok("writ admin key list").contains(
+        "guided-token  upstream token for forgejo-https  not added yet (writ admin token)  unused"
+    ));
+    // A repo with a new credential, declared in the same change (RSA: some remotes take only
+    // RSA keys); then edited, each field kept but those changed.
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin repo add guided-repo {url}"),
+        &[
+            "ssh://git@forgejo/writ/guided.git",
+            "new",
+            "",
+            "rsa3072",
+            "managed",
+            "",
+            "",
+            "",
+            "",
+            "y",
+        ],
+    );
+    assert!(
+        shown.contains(
+            "New upstream credential guided-repo-upstream (register it on the remote): ssh-rsa "
+        ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("as a deploy key with write access"),
+        "{shown}"
+    );
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin repo edit guided-repo {url}"),
+        &["", "", "managed,guided", "refs/heads/main", "", "", "", "y"],
+    );
+    assert!(
+        shown.contains(
+            "with repo guided-repo edited: templates=managed,guided protected_refs=refs/heads/main"
+        ),
+        "{shown}"
+    );
+    let repo = approver.ok("writ admin repo show guided-repo");
+    assert!(
+        repo.contains("  templates: [guided, managed]\n  protected_refs: [refs/heads/main]\n"),
+        "{repo}"
+    );
+    // A key's and a template's edit: only what isn't the key itself is asked.
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin key edit managed-signing {url}"),
+        &["sha512", "y"],
+    );
+    assert!(!shown.contains("algorithm ("), "{shown}");
+    assert!(
+        approver
+            .ok("writ admin key show managed-signing")
+            .contains("  hash: sha512\n")
+    );
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin template edit guided {url}"),
+        &["", "", "", "", "7", "", "", "y"],
+    );
+    assert!(shown.contains("max_ops_per_minute=7"), "{shown}");
+    // A host: given whole without a terminal (scanning one is `host add` with no keys), and
+    // an edit that changes nothing sends nothing.
+    approver.ok("rm -f guided && ssh-keygen -q -t ed25519 -N '' -C '' -f guided");
+    let key = approver.ok("cut -d' ' -f1,2 guided.pub");
+    approver.ok(&format!(
+        "writ admin host add guided.invalid \"keys={}\" --yes {url}",
+        key.trim()
+    ));
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin host edit guided.invalid {url}"),
+        &[""],
+    );
+    assert!(shown.contains("Nothing changed."), "{shown}");
+
+    // rotate on a terminal: the new key, Enter once it is registered, the switch, then the old
+    // key removed (its id typed again).
+    let shown = on_terminal(
+        approver,
+        &format!("writ admin key rotate guided-repo-upstream {url}"),
+        &["y", "", "y", "y", "guided-repo-upstream", "y"],
+    );
+    assert!(
+        shown.contains(
+            "New upstream credential guided-repo-upstream-2 (register it on the remote): ssh-rsa "
+        ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("Deleted upstream ssh rsa3072 guided-repo-upstream (SHA256:"),
+        "{shown}"
+    );
+    let keys = approver.ok("writ admin key list");
+    assert!(!keys.contains("guided-repo-upstream  "), "{keys}");
+    assert!(
+        keys.contains("guided-repo-upstream-2  upstream ssh rsa3072  SHA256:"),
+        "{keys}"
+    );
+    assert!(keys.contains("repos guided-repo"), "{keys}");
+    // Named, without a terminal: --yes answers the question between the two changes.
+    let said = approver.ok(&format!(
+        "writ admin key rotate guided-token --name guided-token-next --yes {url}"
+    ));
+    assert!(
+        said.contains("guided-token stays declared, unused"),
+        "{said}"
+    );
+    // add and edit with --yes given (the diff still shown, no question).
+    let said = approver.ok(&format!(
+        "writ admin template add guided-yes --from guided --yes {url}"
+    ));
+    assert!(said.contains("with template guided-yes added"), "{said}");
+    let said = approver.ok(&format!(
+        "writ admin key add guided-signing use=signing format=ssh algorithm=p256 --yes {url}"
+    ));
+    assert!(
+        said.contains(
+            "New signing key guided-signing (register it on the remote): ecdsa-sha2-nistp256 "
+        ),
+        "{said}"
+    );
+    let said = approver.ok(&format!(
+        "writ admin repo add guided-other upstream=ssh://git@forgejo/writ/guided-other.git upstream_credential=guided-repo-upstream-2 templates= --yes {url}"
+    ));
+    assert!(said.contains("with repo guided-other added"), "{said}");
+    for (noun, name, answers) in [
+        ("repo", "guided-other", vec!["", "", "", "", "", "", ""]),
+        ("template", "guided-yes", vec!["", "", "", "", "", "", ""]),
+        ("key", "guided-signing", vec!["sha256"]),
+        ("host", "guided.invalid", vec![""]),
+    ] {
+        let shown = on_terminal(
+            approver,
+            &format!("writ admin {noun} edit {name} --yes {url}"),
+            &answers,
+        );
+        assert!(
+            !shown.contains("Sign this change?"),
+            "{noun}: --yes asks no question: {shown}"
+        );
+    }
+
+    // Put back as it was (the keys removed or rotated made again, new).
+    approver.ok("writ admin apply policy guided-before.yaml --yes");
+    assert_eq!(
+        approver.ok("writ admin show policy"),
+        approver.ok("cat guided-before.yaml")
+    );
+}

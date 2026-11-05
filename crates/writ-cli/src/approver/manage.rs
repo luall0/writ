@@ -23,7 +23,9 @@ use crate::display::clean;
 use crate::{Exit, Paths};
 
 /// The policy in force, as the daemon holds it, and parsed for showing.
-async fn policy_in_force(session: &Approvals) -> anyhow::Result<(AdminShown, PolicyConfig)> {
+pub(super) async fn policy_in_force(
+    session: &Approvals,
+) -> anyhow::Result<(AdminShown, PolicyConfig)> {
     let shown: AdminShown = session
         .call(
             &Command::AdminShow {

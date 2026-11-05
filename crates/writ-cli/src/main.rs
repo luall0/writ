@@ -103,14 +103,14 @@ struct AgentUrl {
     url: String,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 struct ApprovalUrl {
     /// The daemon's approval listener: https://host:port, ssh://host:port or unix:<path>.
     #[arg(long = "approval-url", env = "WRIT_APPROVAL_URL")]
     url: String,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 struct SignerArgs {
     /// The approval key's public half (default: <home>/approver.pub).
     #[arg(long = "key", env = "WRIT_APPROVAL_KEY")]
@@ -378,7 +378,7 @@ enum AdminCommand {
     /// The templates in force.
     Template {
         #[command(subcommand)]
-        command: EntryCommand,
+        command: TemplateCommand,
     },
     /// The keys the policy in force declares: signing keys and upstream credentials.
     Key {
@@ -406,7 +406,7 @@ enum AdminCommand {
     },
 }
 
-/// `writ admin repo|template|host <verb>`.
+/// `writ admin repo|host <verb>`.
 #[derive(Subcommand)]
 enum EntryCommand {
     /// One line per entry.
@@ -419,6 +419,109 @@ enum EntryCommand {
         name: String,
         #[command(flatten)]
         url: ApprovalUrl,
+    },
+    /// Add one, step by step: each field asked in order with its bounds and default, the
+    /// ones given as field=value not asked. Without a terminal nothing is asked: every
+    /// required field must be given. One signature with your approval key.
+    Add {
+        name: String,
+        /// field=value for the fields not to ask.
+        #[arg(value_name = "FIELD=VALUE")]
+        given: Vec<String>,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+    /// Edit one, step by step on a terminal: each field asked, Enter keeping its value. One
+    /// signature with your approval key.
+    Edit {
+        name: String,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+    /// Change only the fields named: field=value replaces, field+=value and field-=value add
+    /// to and take from a list, field! unsets an optional field, field= empties a list. Shown
+    /// as a diff, then one signature with your approval key.
+    Set {
+        name: String,
+        /// field=value, field+=value, field-=value or field!.
+        #[arg(value_name = "FIELD=VALUE")]
+        edits: Vec<String>,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+    /// Remove it: what it affects shown first, then confirmed and signed. Refused while
+    /// something uses it.
+    Remove {
+        name: String,
+        /// Answer the questions (without a terminal too); the signature is still asked for.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+}
+
+/// `writ admin template <verb>`.
+#[derive(Subcommand)]
+enum TemplateCommand {
+    /// One line per entry.
+    List {
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
+    /// One entry, as the policy writes it, and what uses it.
+    Show {
+        name: String,
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
+    /// Add one, step by step: each field asked in order with its bounds and default, the
+    /// ones given as field=value not asked. Without a terminal nothing is asked: every
+    /// required field must be given. One signature with your approval key.
+    Add {
+        name: String,
+        /// field=value for the fields not to ask.
+        #[arg(value_name = "FIELD=VALUE")]
+        given: Vec<String>,
+        /// Start from this template's values (each still asked, Enter keeping it).
+        #[arg(long, value_name = "TEMPLATE")]
+        from: Option<String>,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+    /// Edit one, step by step on a terminal: each field asked, Enter keeping its value. One
+    /// signature with your approval key.
+    Edit {
+        name: String,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
     },
     /// Change only the fields named: field=value replaces, field+=value and field-=value add
     /// to and take from a list, field! unsets an optional field, field= empties a list. Shown
@@ -468,6 +571,34 @@ enum KeyCommand {
         #[command(flatten)]
         url: ApprovalUrl,
     },
+    /// Add one, step by step: each field asked in order with its bounds and default, the
+    /// ones given as field=value not asked. Without a terminal nothing is asked: every
+    /// required field must be given. One signature with your approval key.
+    Add {
+        name: String,
+        /// field=value for the fields not to ask.
+        #[arg(value_name = "FIELD=VALUE")]
+        given: Vec<String>,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+    /// Edit one, step by step on a terminal: each field asked, Enter keeping its value. One
+    /// signature with your approval key.
+    Edit {
+        name: String,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
     /// Change only the fields named: field=value replaces, field+=value and field-=value add
     /// to and take from a list, field! unsets an optional field, field= empties a list. Shown
     /// as a diff, then one signature with your approval key.
@@ -496,6 +627,153 @@ enum KeyCommand {
         #[command(flatten)]
         signer: SignerArgs,
     },
+    /// A new key declared like ID (ID-2, the next number, or --name), its public half printed
+    /// to register; then every repo and template that used ID switched to it, a second
+    /// signature; then ID offered for removal.
+    Rotate {
+        id: String,
+        /// The new key's id.
+        #[arg(long)]
+        name: Option<String>,
+        /// Answer the question between the two changes (without a terminal too); the old key
+        /// is then left declared, unused. The signatures are still asked for.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+}
+
+impl TemplateCommand {
+    /// The command as a repo's or a host's would be, and `add`'s `--from`.
+    fn split(&self) -> (EntryCommand, Option<String>) {
+        match self {
+            Self::List { url } => (EntryCommand::List { url: url.clone() }, None),
+            Self::Show { name, url } => (
+                EntryCommand::Show {
+                    name: name.clone(),
+                    url: url.clone(),
+                },
+                None,
+            ),
+            Self::Add {
+                name,
+                given,
+                from,
+                yes,
+                url,
+                signer,
+            } => (
+                EntryCommand::Add {
+                    name: name.clone(),
+                    given: given.clone(),
+                    yes: *yes,
+                    url: url.clone(),
+                    signer: signer.clone(),
+                },
+                from.clone(),
+            ),
+            Self::Edit {
+                name,
+                yes,
+                url,
+                signer,
+            } => (
+                EntryCommand::Edit {
+                    name: name.clone(),
+                    yes: *yes,
+                    url: url.clone(),
+                    signer: signer.clone(),
+                },
+                None,
+            ),
+            Self::Set {
+                name,
+                edits,
+                yes,
+                url,
+                signer,
+            } => (
+                EntryCommand::Set {
+                    name: name.clone(),
+                    edits: edits.clone(),
+                    yes: *yes,
+                    url: url.clone(),
+                    signer: signer.clone(),
+                },
+                None,
+            ),
+            Self::Remove {
+                name,
+                yes,
+                url,
+                signer,
+            } => (
+                EntryCommand::Remove {
+                    name: name.clone(),
+                    yes: *yes,
+                    url: url.clone(),
+                    signer: signer.clone(),
+                },
+                None,
+            ),
+        }
+    }
+}
+
+/// `writ admin repo|template|host <verb>`, for `section` (`from`: a template's `add --from`).
+async fn entry_command(
+    paths: &Paths,
+    section: writ_core::config::Section,
+    command: &EntryCommand,
+    from: Option<&str>,
+) -> anyhow::Result<Exit> {
+    match command {
+        EntryCommand::List { url } => approver::manage_list(paths, &url.url, section).await,
+        EntryCommand::Show { name, url } => {
+            approver::manage_show(paths, &url.url, section, name, false).await
+        }
+        EntryCommand::Add {
+            name,
+            given,
+            yes,
+            url,
+            signer: args,
+        } => {
+            let signer = signer(paths, args);
+            approver::guided_add(paths, &url.url, &signer, section, name, given, from, *yes).await
+        }
+        EntryCommand::Edit {
+            name,
+            yes,
+            url,
+            signer: args,
+        } => {
+            let signer = signer(paths, args);
+            approver::guided_edit(paths, &url.url, &signer, section, name, *yes).await
+        }
+        EntryCommand::Set {
+            name,
+            edits,
+            yes,
+            url,
+            signer: args,
+        } => {
+            let signer = signer(paths, args);
+            approver::manage_set(paths, &url.url, &signer, section, name, edits, *yes).await
+        }
+        EntryCommand::Remove {
+            name,
+            yes,
+            url,
+            signer: args,
+        } => {
+            let signer = signer(paths, args);
+            approver::manage_remove(paths, &url.url, &signer, section, name, *yes).await
+        }
+    }
 }
 
 fn parse_agents(text: &str) -> Result<std::collections::BTreeSet<skill::Agent>, String> {
@@ -684,49 +962,23 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             command: AdminCommand::Show { target, url },
         } => approver::admin_show(&paths, &url.url, approver::admin_target(target)?).await,
         Commands::Admin {
-            command:
-                AdminCommand::Repo { command }
-                | AdminCommand::Template { command }
-                | AdminCommand::Host { command },
+            command: AdminCommand::Repo { command } | AdminCommand::Host { command },
         } => {
             use writ_core::config::Section;
             let section = match &cli.command {
                 Commands::Admin {
                     command: AdminCommand::Repo { .. },
                 } => Section::Repos,
-                Commands::Admin {
-                    command: AdminCommand::Template { .. },
-                } => Section::Templates,
                 _ => Section::UpstreamHosts,
             };
-            match command {
-                EntryCommand::List { url } => {
-                    approver::manage_list(&paths, &url.url, section).await
-                }
-                EntryCommand::Show { name, url } => {
-                    approver::manage_show(&paths, &url.url, section, name, false).await
-                }
-                EntryCommand::Set {
-                    name,
-                    edits,
-                    yes,
-                    url,
-                    signer: args,
-                } => {
-                    let signer = signer(&paths, args);
-                    approver::manage_set(&paths, &url.url, &signer, section, name, edits, *yes)
-                        .await
-                }
-                EntryCommand::Remove {
-                    name,
-                    yes,
-                    url,
-                    signer: args,
-                } => {
-                    let signer = signer(&paths, args);
-                    approver::manage_remove(&paths, &url.url, &signer, section, name, *yes).await
-                }
-            }
+            entry_command(&paths, section, command, None).await
+        }
+        Commands::Admin {
+            command: AdminCommand::Template { command },
+        } => {
+            use writ_core::config::Section;
+            let (command, from) = command.split();
+            entry_command(&paths, Section::Templates, &command, from.as_deref()).await
         }
         Commands::Admin {
             command: AdminCommand::Key { command },
@@ -738,6 +990,36 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 }
                 KeyCommand::Show { id, public, url } => {
                     approver::manage_show(&paths, &url.url, Section::Keys, id, *public).await
+                }
+                KeyCommand::Add {
+                    name,
+                    given,
+                    yes,
+                    url,
+                    signer: args,
+                } => {
+                    let signer = signer(&paths, args);
+                    approver::guided_add(
+                        &paths,
+                        &url.url,
+                        &signer,
+                        Section::Keys,
+                        name,
+                        given,
+                        None,
+                        *yes,
+                    )
+                    .await
+                }
+                KeyCommand::Edit {
+                    name,
+                    yes,
+                    url,
+                    signer: args,
+                } => {
+                    let signer = signer(&paths, args);
+                    approver::guided_edit(&paths, &url.url, &signer, Section::Keys, name, *yes)
+                        .await
                 }
                 KeyCommand::Set {
                     name,
@@ -766,6 +1048,17 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 } => {
                     let signer = signer(&paths, args);
                     approver::manage_remove(&paths, &url.url, &signer, Section::Keys, name, *yes)
+                        .await
+                }
+                KeyCommand::Rotate {
+                    id,
+                    name,
+                    yes,
+                    url,
+                    signer: args,
+                } => {
+                    let signer = signer(&paths, args);
+                    approver::guided_rotate(&paths, &url.url, &signer, id, name.as_deref(), *yes)
                         .await
                 }
             }

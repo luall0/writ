@@ -165,6 +165,30 @@ again (a mistyped one sends nothing), since the change deletes it for good
 refuses unless `--yes` answers its questions; the signature is asked for all the same. What
 `writ` refuses here is a convenience: the daemon checks the text as it checks any change.
 
+## The guided flows
+
+`writ admin <noun> add <name> [<field>=<value>…]` asks each field in order, with its bounds and
+default (`writ_core::config::edit::fields`), the ones given not asked, and only those the
+entry needs (a template's branches with `commit_sign` or `push`, its committer emails and
+signing key with `commit_sign`; a key's fields for its use and kind; a repo's `notes_ref`
+with `ticket_link: notes`). Enter keeps what the prompt shows, `!` leaves an optional field
+out, `none` empties a list. `edit <name>` asks the same, Enter keeping each current value
+(what a key is is never asked: it doesn't change). A repo's credential is one the policy
+declares for its URL's kind, or a new key declared in the same change (its id, and an SSH
+key's algorithm; a token's host is the URL's). `template add --from <template>` starts from
+another template's values. After the change, what to do next is said: a new key's public
+half to register (a deploy key with write access), a token to add with `writ admin token`.
+Without a terminal `add` asks nothing and refuses unless every required field is given,
+naming the missing ones; `edit` refuses (`set` changes fields without one).
+
+`writ admin key rotate <id> [--name <new>]` declares a new key like the old one (`<id>-2`, the
+next number after a trailing one, or the name given), one signed change, its public half
+printed to register; once it is registered (Enter), switches every repo and template that
+used the old key to it, a second signed change (a signing key's leases then stop fitting
+their template and are amended: the old public key stays registered for the commits it
+signed); then offers to remove the old key. Without a terminal, `--yes` answers the question
+between the two changes, and the old key stays declared, unused.
+
 ## `writ admin token`
 
 The `https://` upstreams' tokens and the notifiers' sealed tokens (`token.sealed`) reach the
