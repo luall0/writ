@@ -577,4 +577,33 @@ mod tests {
         );
         assert!(root.path().join("other").exists());
     }
+
+    /// Every ticket example in both skills is one `writ check` takes (the agent copies them):
+    /// the ticket file's shape, in the current layout.
+    #[test]
+    fn the_skills_ticket_examples_are_well_formed_tickets() {
+        for (kind, text) in [("writ", SKILL), ("writ-workspace", WORKSPACE_SKILL)] {
+            let examples: Vec<&str> = text
+                .split("```yaml\n")
+                .skip(1)
+                .filter_map(|rest| rest.split_once("```").map(|(yaml, _)| yaml))
+                .collect();
+            assert!(!examples.is_empty(), "{kind}: no ticket example");
+            for yaml in examples {
+                let request = writ_core::ticket::TicketRequest::from_yaml(yaml)
+                    .unwrap_or_else(|e| panic!("{kind}: {e}\n{yaml}"));
+                let problems = writ_core::fit::check_request(&request);
+                assert!(problems.is_empty(), "{kind}: {problems:?}\n{yaml}");
+                assert!(!request.repos.is_empty(), "{kind}: a repos block");
+            }
+        }
+        // The workspace skill's example names several repositories, each with its own terms.
+        let workspace = WORKSPACE_SKILL
+            .split("```yaml\n")
+            .nth(1)
+            .and_then(|rest| rest.split_once("```"))
+            .map(|(yaml, _)| writ_core::ticket::TicketRequest::from_yaml(yaml).unwrap())
+            .unwrap();
+        assert!(workspace.repos.len() > 1);
+    }
 }

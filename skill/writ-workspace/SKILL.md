@@ -25,8 +25,8 @@ The timings file for this workspace: `{{TIMINGS}}`. Read it before writing a tic
 - **The ticket comes first.** Read the code as much as you need to scope the task, but edit
   no file before your lease is granted: the human approves the plan, not finished work, and
   the lease's time measures the work.
-- **One ticket for the task**, naming every repository it changes (`scope.repos`), and no
-  repository it doesn't.
+- **One ticket for the task**, a block under `repos` for every repository it changes, and
+  none for a repository it doesn't.
 - Run every git command through `writ git -C <folder> …`, the folder being the repository's
   in the list above (`writ git -C api commit`, `writ git -C web push`…). Plain `git` has no
   lease. From inside a repository's folder, `writ git …` works too. At this folder itself,
@@ -47,18 +47,21 @@ The timings file for this workspace: `{{TIMINGS}}`. Read it before writing a tic
 
 ## 1. See what each repository allows
 
-For each repository the task touches, by its registry name:
+Every repository the task touches, by its registry name, in one command:
 
 ```sh
-writ policy <repo>
+writ policy <repo> <repo>…
 ```
 
-It prints, from the daemon, what a ticket for that repository may ask: the templates, and
-for each the operations, the branch patterns, the committer emails, the most time and
-counts; the protected refs; whether each commit needs a `Writ: <lease>` trailer. Repositories
-can differ: one may need the trailer and another not, and a ticket naming several
-repositories must fit one template that allows them all. A ticket that asks for anything
-outside it is rejected. Read it before every ticket: it can change.
+It prints, from the daemon, what a ticket may ask in each repository: the templates, and
+for each the operations, the branch patterns, the committer emails, the signing key, the
+most time and counts; the protected refs; whether each commit needs a `Writ: <lease>`
+trailer. Repositories can differ: each one's block in the ticket fits a template of its own,
+and one may need the trailer and another not. One lease signs with one key and lasts as
+long as the strictest of its templates allows: the "Together:" section says whether one
+ticket can cover them, and in which repositories it can sign. If it can't, ask one lease per
+repository (each with its own `WRIT_SESSION`). A ticket that asks for anything outside it is
+rejected. Read it before every ticket: it can change.
 
 ## 2. Think, estimate, then write the ticket
 
@@ -73,42 +76,49 @@ outside it is rejected. Read it before every ticket: it can change.
      the ticket short. Never a default branch, never a protected ref.
    - **The operations:** `fetch`, `commit_sign` and `push`. The pushed branches are how the
      human sees your work: ask for `push` unless you were told not to push.
-   - **The committer email:** one `writ policy` lists for every repository named. Writ sets
-     it for your commits from the lease, and the committer name too when the policy sets
-     one: never set `user.name` or `user.email` yourself.
-   - **The files** you expect to touch (`expected_paths`), in every repository.
+   - **The committer email:** one `writ policy` lists for every repository that signs. Writ
+     sets it for your commits from the lease, and the committer name too when the policy
+     sets one: never set `user.name` or `user.email` yourself.
+   - **The files** you expect to touch (`expected_paths`), in each repository's block.
 3. Estimate each phase over all the repositories: `coding` (writing the change), `checks`
    (what you run before committing: tests, linters, a full CI locally), `ci` (waiting on the
    remotes' CI after your pushes, with the fixes it brings). Then ask for a `ttl` that covers
-   the estimate with a margin from the timings file, within the template's most, and counts
-   (`max_signatures`, `max_pushes`) that cover every repository's rounds together: they are
-   the lease's, not each repository's.
+   the estimate with a margin from the timings file, within the strictest template's most,
+   and counts (`max_signatures`, `max_pushes`) for each repository that cover its own rounds:
+   each repository's are its own, in its block.
 
 Write the ticket to a file (`ticket.yaml`), outside every repository (this folder is fine
 when the list above has no `.`), or in a path git ignores:
 
 ```yaml
-scope:
-  repos: [api, web]                    # every repository the task changes, as `writ policy` names them
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth-login"]
+common:
   committer_emails: ["agent@example.org"]
+repos:                                 # every repository the task changes, as `writ policy` names them
+  api:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-login"]
+    expected_paths: ["src/auth/**", "tests/auth/**"]
+    limits: { max_signatures: 10, max_pushes: 4 }
+  web:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-login"]
+    expected_paths: ["app/login/**"]
+    limits: { max_signatures: 6, max_pushes: 2 }
 ticket:
   title: "Add OAuth login"             # one line
   task: "What you were asked to do, in a few lines"
   plan: ["api: callback route", "api: token storage", "web: login button", "Tests"]
-  expected_paths: ["src/auth/**", "tests/auth/**", "app/login/**"]
   estimate: { coding: 1h, checks: 20m, ci: 30m }
 limits:
   ttl: 3h
-  max_signatures: 16
-  max_pushes: 6
 ```
 
-Every key is optional except `scope.repos`, `scope.operations`, `ticket.title` and
-`ticket.task`. When `writ policy` lists several templates, name the one you mean with
-`template: <name>` at the top. The human reads every word: be precise and honest; ask for
-what the task needs, no more.
+`common` and `limits` are the lease's, for every repository; each repository's terms and
+counts go in its block under `repos`. Every key is optional except `repos` (with each
+repository's `operations`), `ticket.title` and `ticket.task`. When `writ policy` lists
+several templates a repository's terms could fit, name the one you mean in its block
+(`template: <name>`). The human reads every word: be precise and honest; ask for what the
+task needs, no more.
 
 ## 3. Check, submit and wait
 
@@ -167,9 +177,10 @@ until it ends.
 - **A committer or author name refused** (`committer_name`, `author_name`): something set
   another name than the lease's (`GIT_AUTHOR_NAME`, `GIT_COMMITTER_NAME`, a `-c user.name`).
   Commit through plain `writ git -C <folder> commit`, which sets the lease's.
-- **Out of time or of counts** (`expired`, `exhausted`, or about to be): submit a **renewal**,
-  the same scope (or narrower) with `ticket.renews: <lease>` and a new `ttl` and counts. It
-  works up to `writ policy`'s "renew within" after the lease ended. Once signed it is a new
+- **Out of time or of counts** (`expired`, `exhausted`, a `limit` on a repository's
+  signatures or pushes, or about to be): submit a
+  **renewal**, the same scope (or narrower) with `ticket.renews: <lease>` and a new `ttl` and
+  counts. It works up to `writ policy`'s "renew within" after the lease ended. Once signed it is a new
   lease: set `WRIT_SESSION` to its id. It can push the commits your earlier lease signed.
 - **`writ git` refuses an option** before the command: git's own options go before the
   command (`-C`, `-c`, `--git-dir`…), the command's after it. Write it the way git takes it.

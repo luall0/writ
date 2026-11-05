@@ -56,7 +56,7 @@ that asks for anything outside it is rejected. Read it before every ticket: it c
    - **The committer email:** one `writ policy` lists. Writ sets it for your commits from the
      lease, and the committer name too when the policy sets one: never set `user.name` or
      `user.email` yourself.
-   - **The files** you expect to touch (`expected_paths`).
+   - **The files** you expect to touch (`expected_paths`, in the repository's block).
 3. Estimate each phase: `coding` (writing the change), `checks` (what you run before
    committing: tests, linters, a full CI locally), `ci` (waiting on the remote's CI after your
    pushes, with the fixes it brings). Then ask for a `ttl` that covers the estimate with a
@@ -66,27 +66,28 @@ that asks for anything outside it is rejected. Read it before every ticket: it c
 Write the ticket to a file (`ticket.yaml`), outside the repository or in a path git ignores:
 
 ```yaml
-scope:
-  repos: [my-repo]                     # the repository's name, as `writ policy` shows it
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth-login"]
+common:
   committer_emails: ["agent@example.org"]
+repos:
+  my-repo:                             # the repository's name, as `writ policy` shows it
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-login"]
+    expected_paths: ["src/auth/**", "tests/auth/**"]
+    limits: { max_signatures: 10, max_pushes: 4 }
 ticket:
   title: "Add OAuth login"             # one line
   task: "What you were asked to do, in a few lines"
   plan: ["Callback route", "Token storage", "Tests"]
-  expected_paths: ["src/auth/**", "tests/auth/**"]
   estimate: { coding: 40m, checks: 15m, ci: 30m }
 limits:
   ttl: 2h
-  max_signatures: 10
-  max_pushes: 4
 ```
 
-Every key is optional except `scope.repos`, `scope.operations`, `ticket.title` and
-`ticket.task`. When `writ policy` lists several templates, name the one you mean with
-`template: <name>` at the top. The human reads every word: be precise and honest; ask for
-what the task needs, no more.
+`common` and `limits` are the lease's; the repository's terms and counts go in its block
+under `repos`. Every key is optional except `repos` (with the repository's `operations`),
+`ticket.title` and `ticket.task`. When `writ policy` lists several templates your terms
+could fit, name the one you mean in the repository's block (`template: <name>`). The human
+reads every word: be precise and honest; ask for what the task needs, no more.
 
 ## 3. Check, submit and wait
 
@@ -143,9 +144,10 @@ until it ends.
 - **A committer or author name refused** (`committer_name`, `author_name`): something set
   another name than the lease's (`GIT_AUTHOR_NAME`, `GIT_COMMITTER_NAME`, a `-c user.name`).
   Commit through plain `writ git commit`, which sets the lease's.
-- **Out of time or of counts** (`expired`, `exhausted`, or about to be): submit a **renewal**,
-  the same scope (or narrower) with `ticket.renews: <lease>` and a new `ttl` and counts. It
-  works up to `writ policy`'s "renew within" after the lease ended. Once signed it is a new
+- **Out of time or of counts** (`expired`, `exhausted`, a `limit` on a repository's
+  signatures or pushes, or about to be): submit a
+  **renewal**, the same scope (or narrower) with `ticket.renews: <lease>` and a new `ttl` and
+  counts. It works up to `writ policy`'s "renew within" after the lease ended. Once signed it is a new
   lease: set `WRIT_SESSION` to its id. It can push the commits your earlier lease signed.
 - **Anything else** (`not_active`, `config`, the daemon sealed): stop and tell the human.
 

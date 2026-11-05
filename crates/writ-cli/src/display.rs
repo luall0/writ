@@ -371,8 +371,9 @@ pub fn templates(ticket: &Ticket) -> String {
     }
 }
 
-/// Each repository's operations and branches in one line, for the agent:
-/// `api: fetch, push on agent/x; web: fetch`.
+/// Each repository's template, operations and branches in one line, for the agent (the
+/// template the daemon chose when the ticket named none):
+/// `api (template backend): fetch, push on agent/x; web (template read-only): fetch`.
 pub fn repo_terms(ticket: &Ticket) -> String {
     ticket
         .repos
@@ -383,7 +384,12 @@ pub fn repo_terms(ticket: &Ticket) -> String {
             } else {
                 format!(" on {}", list(&terms.branches))
             };
-            format!("{repo}: {}{branches}", list(&terms.operations))
+            format!(
+                "{} (template {}): {}{branches}",
+                clean(repo.as_str()),
+                clean(terms.template.as_str()),
+                list(&terms.operations)
+            )
         })
         .collect::<Vec<_>>()
         .join("; ")
