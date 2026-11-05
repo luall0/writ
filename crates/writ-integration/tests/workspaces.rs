@@ -169,6 +169,13 @@ fn ledger(daemon: &Daemon, lease: &str) -> Vec<(String, String)> {
 fn workspace() -> (Daemon, String, std::path::PathBuf) {
     let daemon = Daemon::start(POLICY, Approvals::Ssh);
     let lease = daemon.lease("both", BOTH);
+    // The operator's identity in the throwaway home, as `clone` writes it: without it, git
+    // falls back to the account's full name, which a CI runner's account doesn't have.
+    fs::write(
+        daemon.root().join("home/.gitconfig"),
+        "[user]\n\tname = Operator\n\temail = me@operator.example\n",
+    )
+    .unwrap();
     // As the processes see it: on macOS the temporary directory is a link
     // (`/var` → `/private/var`), and `writ` records the folder it runs in.
     fs::create_dir_all(daemon.root().join("ws/api")).unwrap();
@@ -183,20 +190,7 @@ fn workspace() -> (Daemon, String, std::path::PathBuf) {
     );
     fs::write(api.join("README"), "workspace\n").unwrap();
     git_ok(&daemon, &api, &["add", "-A"]);
-    git_ok(
-        &daemon,
-        &api,
-        &[
-            "-c",
-            "user.name=Operator",
-            "-c",
-            "user.email=me@operator.example",
-            "commit",
-            "-q",
-            "-m",
-            "seed",
-        ],
-    );
+    git_ok(&daemon, &api, &["commit", "-q", "-m", "seed"]);
     git_ok(
         &daemon,
         &api,
