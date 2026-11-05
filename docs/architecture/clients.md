@@ -7,7 +7,7 @@ clients make the workflow pleasant, the daemon makes it safe.
 
 | Client | Role |
 |---|---|
-| `writ` CLI | `policy` (what a ticket for the repo may ask, from the daemon: templates, branches, committer emails, limits, protected refs, the ticket link), `request` (`--dry-run`: the daemon's checks, nothing submitted), `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host); with no repo named, a folder of repositories: [workspaces](#workspaces)), `git` and `exec` (git, or a program, with that wiring; `git` finds the repository behind git's global options, `exec -C <dir>` runs in one) |
+| `writ` CLI | `policy` (what a ticket for each repo named may ask, from the daemon: templates, branches, committer emails, signing key id, limits, protected refs, the ticket link; for several, whether one ticket can cover them), `request` (`--dry-run`: the daemon's checks, nothing submitted), `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host); with no repo named, a folder of repositories: [workspaces](#workspaces)), `git` and `exec` (git, or a program, with that wiring; `git` finds the repository behind git's global options, `exec -C <dir>` runs in one) |
 | Agent skill (`skill/writ/SKILL.md`, built into `writ`, installed by `writ init`; at a workspace root, `skill/writ-workspace/SKILL.md` instead: [workspaces](#workspaces)) | Teaches the agent the ticket workflow, at the start of any task that changes files and before any edit: read what the repo allows (`writ policy`) and the timings file, think through the scope (a branch of its own within the template's patterns, never the default or a protected one; `push` unless told not to) and estimate it, write a ticket (task, plan, repos, branches, estimate, limits), check it (`writ check`, then `writ request --dry-run`) and submit it with `writ request`, wait for my decision, then work with `WRIT_SESSION` set; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; out of time or counts, a renewal; when done, `writ close` with a summary, then a note in the timings file if something explains the figures. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine. [The skill and its installer](#the-agent-skill) |
 | `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git <repo>` command for the repo in `writ.repo`, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, then `core.sshCommand`, never a plain `ssh`), with the first parent commit and the trees the daemon needs to see which paths the commit touches ([Gateway](gateway.md#signing)); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen`. Also `gpg.openpgp.program` for a lease whose key is OpenPGP: `--status-fd=2 -bsau <key>` → daemon (`writ-sign openpgp <repo>`, the object on stdin, the armored signature on stdout, `[GNUPG:] SIG_CREATED` on stderr; no GnuPG home, keyring or agent used), `--verify` → the real `gpg` (`WRIT_GPG`, an absolute path, `/usr/bin/gpg` by default), anything else refused |
 | Session agent ([M8.5](../roadmap.md#m85--non-exportable-session-keys), on when the host has the hardware) | Holds the session key so it can't be copied: a dedicated ssh-agent backed by the Secure Enclave, a TPM or a YubiKey |
@@ -148,8 +148,9 @@ Some people keep several repositories in one folder and start one agent at the f
   `writ.workspace` naming the folder, and no skill of its own.
 - **The `writ-workspace` skill** at the folder (the agents' folders as for a repository,
   `--global` and `--skill-dir` too), listing the repositories and their registry names: one
-  ticket naming every repository the task touches, `writ policy <repo>` for each (a ticket
-  for several must fit one template that allows them all; the trailer is per repository),
+  ticket with a block for every repository the task touches, `writ policy <repo>…` for them
+  all (each block fits a template of its own; one signing key and the strictest template's
+  time per lease, or one lease per repository; the trailer is per repository),
   `writ git -C <dir> …` for every git command, `writ exec -C <dir> -- …` for a program,
   `writ mark` and `writ close` at the folder. `--agents-md` adds its own pointer line.
 - **The record**, `<folder>/.writ-workspace` (git config format): `writ.mode`, `writ.lease`,
@@ -203,19 +204,28 @@ wiring from before M6) ask in git's way, and the daemon refuses the other format
 
 ### What the agent reads before it asks
 
-Before it writes a ticket, the agent asks the daemon what a ticket for its repo may ask:
-`writ policy [<repo>]` (the repo named, or the wired repository's) runs `writ policy <repo>`
-on the agents' listener as user `writ`, with a throwaway key (no lease exists yet), and prints
-the reply (`writ_proto::RepoPolicy`): each template that allows the repo (operations, branch
-patterns, committer emails, force push, `max_ttl` and the counts, `paths_check`,
-`require_expected_paths`, `max_renewals`), the repo's protected refs and `ticket_link`, and
-the daemon's `min_ttl`, `renew_grace` and `max_active_per_source`. Only that repo: never its
-upstream, its credential, a signing key, another repo or what a template allows elsewhere. A
-repo not in the registry is refused (exit 3). Then `writ request --dry-run <file>` sends the
+Before it writes a ticket, the agent asks the daemon what a ticket for its repos may ask:
+`writ policy [<repo>…]` (the repos named, or the wired repository's) runs `writ policy <repo>`
+on the agents' listener as user `writ`, once per repo, each with a throwaway key (no lease
+exists yet), and prints each reply (`writ_proto::RepoPolicy`): each template that allows the
+repo (operations, branch patterns, committer emails, committer name, its signing key's id,
+force push, `max_ttl` and the counts, `paths_check`, `require_expected_paths`,
+`max_renewals`), the repo's protected refs and `ticket_link`, and the daemon's `min_ttl`,
+`renew_grace` and `max_active_per_source`. Only that repo: never its upstream, its
+credential, a signing key itself (its id only: agents get the public key with each grant),
+another repo or what a template allows elsewhere. A repo not in the registry is refused
+(exit 3). For several repos, a **Together:** section says whether one ticket can cover them,
+as the daemon fits one: for each signing key a template names, the repos with a template of
+that key may sign under it and the others only without `commit_sign`, with the strictest TTL
+and rate of those templates; a repo no template allows can't be named at all. Otherwise, one
+lease per repo. Then `writ request --dry-run <file>` sends the
 ticket for every check a submission gets (`writ request --dry-run` on the wire: the rates,
 the waiting tickets, `max_active_per_source`, the templates, the lease it amends, renews or
 revises) and the daemon stores nothing and tells nobody; the reply is the ticket it would
-build (`Checked`). The key is the one the real submission would use (a revision's, an
+build (`Checked`), printed as each repo's template and terms (`The daemon would accept this
+ticket, until <time> if submitted now: api (template backend): fetch, commit_sign, push on
+agent/x; web (template read-only): fetch.`), the template the daemon chose when the ticket
+named none. The grant line has the same shape (`Lease <id> granted until <time>: …`). The key is the one the real submission would use (a revision's, an
 amendment's or a renewal's session key), and nothing is written on the host. Both count
 against the [submission rates](../operators/writd-yaml.md) and write an audit line (`policy`,
 `dry_run`). Reads, never grants: every ticket is checked again when it is submitted and when

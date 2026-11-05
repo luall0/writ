@@ -34,6 +34,8 @@ const REPOS: &[&str] = &[
     "sessions",
     "ws-api",
     "ws-web",
+    "pr-api",
+    "pr-web",
 ];
 
 #[test]
@@ -83,7 +85,11 @@ fn the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says() {
     // One signing key per template key id, with the templates that name it.
     assert_eq!(report.signing_keys.len(), 3, "{:?}", report.signing_keys);
     assert!(report.signing_keys[0].starts_with("agent-e2e ssh-ed25519 "));
-    assert!(report.signing_keys[0].ends_with(" (templates: feature)"));
+    assert!(
+        report.signing_keys[0].ends_with(" (templates: feature, pr-backend, pr-frontend)"),
+        "{:?}",
+        report.signing_keys
+    );
     // The OpenPGP key: its fingerprint and algorithm (its certificate on the lines after).
     assert!(report.signing_keys[1].starts_with("agent-e2e-pgp openpgp "));
     assert!(report.signing_keys[1].ends_with(" (ed25519) (templates: openpgp)"));

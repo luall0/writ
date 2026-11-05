@@ -33,7 +33,7 @@ file (same format as git's `allowed_signers`) ([Q20](../decisions.md)).
 ## `writ sign`: the trusted display
 
 Secretive's Touch ID prompt doesn't show the ticket. `writ sign` must print the full ticket
-(task, plan, repos, ops, branches, limits, template, diff vs the previous revision) before
+(task, plan, repos, ops, branches, limits, templates, diff vs the previous revision) before
 triggering the signature; it is the trusted display
 ([threat model, boundary 4](../threat-model.md#4-approvals-approver-signatures)).
 
@@ -48,13 +48,20 @@ triggering the signature; it is the trusted display
   terminal made can't start with agent text that reads like one of `writ sign`'s
   (`  repos  …`). Each agent field shows at most 40 rows (runs of blank lines collapsed),
   then how many more there are (`writ sign --full` shows everything); the expected paths
-  too, under the enforced scope, one quoted item per line. Lists are quoted so two
-  different lists never read the same.
-  The enforced terms (id, template, expiry, repos, operations, branches, force push,
+  too, under their repository's enforced terms, one quoted item per line. Lists are quoted
+  so two different lists never read the same.
+- The enforced terms come in two parts, as the ticket gives them (M6.1.5): **the lease's
+  terms once** ("The lease (enforced, for every repository)": repos, committer emails and
+  name, signing key, rate, on violation), then **one block per repository** ("Repository
+  <name> (enforced)": its template, operations, branches, force push, counts, expected
+  paths).
+- The enforced terms (id, templates, expiry, repos, operations, branches, force push,
   emails, expected paths with their count, limits, on violation) are repeated in a summary
   of one row each right before the prompt (a list too long for its row is cut, `… (see
-  above)`): no amount of agent text can push what gets signed off the screen. A terminal
-  narrower than 80 columns wraps rows again: approve from one at least that wide.
+  above)`): no amount of agent text can push what gets signed off the screen. A term that
+  differs by repository reads `api: …; web: …` on its row, and the counts are the totals over
+  the repositories (each repository's are in its block). A terminal narrower than 80 columns
+  wraps rows again: approve from one at least that wide.
 - `writ sign --yes` (sign without asking) needs a named ticket: it never signs whichever
   ticket happens to be the only one waiting.
 - It signs exactly the canonical bytes it displayed (fetched from the daemon, then decoded and
@@ -288,3 +295,23 @@ bidi and invisible characters shown as `\u{…}`, then the changes since the pre
 asks `[y]es / [n]o / [r]efuse`. Narrowing flags: `--ttl`, `--drop-repo`, `--drop-op`,
 `--branch`, `--drop-email`, `--max-signatures`, `--max-pushes`, `--max-ops-per-minute`,
 `--max-push-size`, `--no-force-push`, `--revoke-on-violation`; each can only narrow.
+
+The flags on a repository's terms (`--drop-op`, `--branch`, `--max-signatures`,
+`--max-pushes`, `--max-push-size`) take `<repo>:<value>` for one repository, or the value
+alone for every one (repeatable; no registry name, branch pattern, operation or size holds
+a `:`):
+
+- `--drop-op web:push` drops push in `web`; `--drop-op push` wherever the ticket asks for it
+  (refused if it asks for it nowhere).
+- `--branch api:agent/x` replaces `api`'s branches with those named for it; `--branch
+  agent/x` replaces the branches of every repository no `--branch` names, among those that
+  have branches (a fetch-only repository has none to narrow, and giving it one would widen).
+- `--max-pushes api:2` lowers `api`'s count, refused above the ticket's; `--max-pushes 2`
+  caps every repository's at 2, never raising one, never refused.
+- A repository the ticket doesn't name is refused (`--branch dotfiles:…: the ticket doesn't
+  name repo dotfiles`); `--drop-repo` leaving no repository is refused (refuse the ticket
+  instead).
+
+The lease-wide flags (`--ttl`, `--drop-repo`, `--drop-email`, `--max-ops-per-minute`,
+`--no-force-push` for every repository, `--revoke-on-violation`) take no repository. Each
+repository's template, and the signing key, never change.

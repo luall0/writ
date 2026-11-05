@@ -88,8 +88,9 @@ repositories one level down and wires each one, as `writ init <repo>` would in i
   `--repo .=<name>`. Its submodules are never wired.
 - Folders whose names start with `.`, links and plain folders are not wired. Links are named
   in the summary.
-- The skill goes in the folder only: the `writ-workspace` skill. It tells the agent to name
-  every repository its task changes in one ticket, and to run git as
+- The skill goes in the folder only: the `writ-workspace` skill. It tells the agent to give
+  every repository its task changes a block in one ticket (`writ policy <repo>…` says
+  whether one ticket can cover them, else one lease per repository), and to run git as
   `writ git -C <dir> …`. A program that runs git runs in one repository at a time:
   `writ exec -C <dir> -- <program>`.
 - In the folder, `writ git` and `writ policy` list the repositories. `writ close` there

@@ -621,11 +621,18 @@ pub fn submit(
                 .map(|(name, _)| name)
                 .collect(),
         };
+        // Named by the ticket, or kept by a renewal: that template's own reasons, nothing to
+        // choose.
+        let chosen = asked.template.is_some() || kept.is_some();
         let mut fitting: Vec<RepoTerms> = Vec::new();
         let mut why: Vec<String> = Vec::new();
         for name in &candidates {
             let Some(template) = config.template(name) else {
-                why.push(format!("template {name} does not exist"));
+                if chosen {
+                    reasons.push(format!("repos.{repo}: template {name} does not exist"));
+                } else {
+                    why.push(format!("template {name} does not exist"));
+                }
                 continue;
             };
             let previous = renewed.and_then(|t| t.terms(repo));
@@ -634,8 +641,21 @@ pub fn submit(
             check_repo(config, repo, &terms, template, emails.as_ref(), &mut r);
             if r.is_empty() {
                 fitting.push(terms);
+            } else if chosen {
+                reasons.extend(r);
             } else {
-                why.push(format!("{name}: {}", r.join("; ")));
+                // Under "repos.<repo> fits no template:", each reason without its prefix.
+                let (colon, dot) = (format!("repos.{repo}: "), format!("repos.{repo}."));
+                let bare: Vec<&str> = r
+                    .iter()
+                    .map(|reason| {
+                        reason
+                            .strip_prefix(colon.as_str())
+                            .or_else(|| reason.strip_prefix(dot.as_str()))
+                            .unwrap_or(reason)
+                    })
+                    .collect();
+                why.push(format!("{name}: {}", bare.join("; ")));
             }
         }
         match fitting.len() {
@@ -644,6 +664,7 @@ pub fn submit(
                     repos.insert(repo.clone(), terms);
                 }
             }
+            0 if chosen => {}
             0 if candidates.is_empty() => reasons.push(format!(
                 "repos.{repo} fits no template: no template allows repo {repo}"
             )),

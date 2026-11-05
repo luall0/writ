@@ -22,15 +22,17 @@ Every request → find the single lease matching the caller's certificate → al
 | Function | Input facts | Checks, in order |
 |---|---|---|
 | `resolve_lease` | Certificate key id, serial, session key fingerprint | Exactly one lease matches all three |
-| `decide_sign` | Repo, object kind, committer and author emails and names, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, author email in the lease's committer emails (`author`), both names the lease's `committer_name` when it has one (`committer_name`, `author_name`), the trailer if the repo's `ticket_link` is `trailer`, `paths_check`, `max_signatures`, rate |
-| `decide_push` | Repo, push mode, ref updates (old, new, fast-forward, a twin ignoring case), new commits with their ledger entries and the digest of the paths each touches (computed again from the objects git verified), pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, updated once (ignoring case), without a twin ignoring case in the repo, not protected, a branch, within the lease's branches, no force push or deletion unless allowed; every new commit in the ledger for this lease and repo, touching the paths signing saw (when it saw them); size; `max_pushes`; rate |
+| `decide_sign` | Repo, object kind, committer and author emails and names, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, author email in the lease's committer emails (`author`), both names the lease's `committer_name` when it has one (`committer_name`, `author_name`), the trailer if the repo's `ticket_link` is `trailer`, `paths_check` and the expected paths of the repo's terms, the repo's `max_signatures`, rate |
+| `decide_push` | Repo, push mode, ref updates (old, new, fast-forward, a twin ignoring case), new commits with their ledger entries and the digest of the paths each touches (computed again from the objects git verified), pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, updated once (ignoring case), without a twin ignoring case in the repo, not protected, a branch, within the repo's branches in the lease, no force push or deletion unless the repo's terms allow it; every new commit in the ledger for this lease and repo, touching the paths signing saw (when it saw them); size (the smaller of the repo's `max_push_size` and its template's); the repo's `max_pushes`; rate |
 | `decide_fetch` | Repo | Common checks, rate (`Service::fetch` then takes one operation of the rate window under the same lock) |
 
 The **common checks** come first in every decision: the lease is active and before
 `expires_at`, not exhausted; the caller satisfies the lease's caller constraint
-([platform](platform.md#caller-facts-and-the-policy)); the operation and the repo are in the
-lease; the template and the repo still exist and the lease still fits its template under the
-current config. Counts and rate come last, so an out-of-scope request gets the out-of-scope
+([platform](platform.md#caller-facts-and-the-policy)); the operation is in the lease (in
+some repo: otherwise `operation`), the repo is in it (`repo`), and the operation is in that
+repo's terms (`operation`, "… not allowed in repo X"); every template and the repo still exist
+and the lease still fits its templates under the current config. Each decision then reads the
+repo's terms only. Counts and rate come last, so an out-of-scope request gets the out-of-scope
 reason.
 
 Each denial has a code (`DenyCode`). Out-of-scope codes (operation, repo, push mode, object
@@ -38,8 +40,9 @@ type, committer, author, ticket link, paths, ref, protected ref, force push, uns
 commit, paths changed since signing, size) are **violations** and trigger the lease's `on_violation`; running out of time, counts or
 rate, a wrong caller or a config change are not.
 
-Around them: `fit::submit` (a request → a complete ticket fitting one template, or every
-reason why not), `fit::fits` (a ticket within its template and the registry, used at
+Around them: `fit::submit` (a request → a complete ticket, each repo fitting a template and
+the lease-wide terms the strictest of them, or every reason why not), `fit::fits` (a ticket
+within its templates and the registry, used at
 submission, at approval and on every request), `narrow::check` (signed ⊆ submitted),
 `lease::activate` / `lease::apply_amendment` / `lease::refuse` (the lifecycle, after the
 approval service verified the SSHSIG), `lease::due_transition` (expired or exhausted now).
@@ -90,15 +93,16 @@ them never pays for the path match. That match is bounded by the ticket: at most
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
 Tables (`writ_store::Store`). The state carries its version: `PRAGMA user_version` (the
-state version, `STATE_VERSION`, now 8) and `formats.ticket_kind` (the ticket format it stores,
-`writ-ticket/2`). A new database gets the whole schema at once; a database of any other version
+state version, `STATE_VERSION`, now 9) and `formats.ticket_kind` (the ticket format it stores,
+`writ-ticket/3`). A new database gets the whole schema at once; a database of any other version
 or ticket format is refused at open, both versions named (`StoreError::OtherVersion`,
 `OtherTicketFormat`): no migration chain, never a silent mix. A format change bumps the version
 and the operator starts that version from a new state directory ([decisions](../decisions.md)).
 
 | Table | Holds |
 |---|---|
-| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with, the source it came from (`source`: an IPv4 address, an IPv6 /64 or `local`; what `max_active_per_source` and `writ sign`'s other leases are counted by) and the lease it renews (`renews`). A lease is the row of its first ticket, with the certificate serial, the `signatures` and `pushes` counters, `current_ticket` (the row whose terms are in force: itself, or the last applied amendment), the certificate issued for it, and the closing summary (`summary`) |
+| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with, the source it came from (`source`: an IPv4 address, an IPv6 /64 or `local`; what `max_active_per_source` and `writ sign`'s other leases are counted by) and the lease it renews (`renews`). A lease is the row of its first ticket, with the certificate serial, `current_ticket` (the row whose terms are in force: itself, or the last applied amendment), the certificate issued for it, and the closing summary (`summary`) |
+| `usage` | `(lease, repo)` → the `signatures` and `pushes` counters of that lease in that repo (M6.1.5, version 9: each repo counted against its own terms; a repo with nothing used yet has no row) |
 | `formats` | One row: the ticket format the state holds |
 | `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s). The daemon's timer sweep deletes rows an hour past the window (`Store::prune_ops`): a clock set back by up to an hour still counts what it must |
 | `ledger` | `(commit, lease, repo)` → signer key id, time, the digest of the paths the commit touched as signing computed them (`writ_git::paths::digest`; none when unknown, schema 4). The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry. Under `ticket_link: notes` (schema 5), each entry's `note`: none (not asked for), `pending` once upstream took the commit (with `note_credential`, the credential of that push, which pushes the note), `written` once the note is upstream; a written note stays written |
@@ -111,8 +115,9 @@ and the operator starts that version from a new state directory ([decisions](../
 - A lease's chain (`Store::predecessors`: the lease it renews, then that one's…, at most
   10,000) is one recursive query: a push under a renewal accepts the commits its predecessors
   signed, and notes are marked for them too.
-- `consume` raises a counter only while it is under the limit and the lease is active, and
-  records the operation, in one transaction.
+- `consume(lease, repo, counter, max)` raises the repo's counter only while it is under the
+  limit and the lease is active, and records the operation, in one transaction; `usage`
+  returns each repo's counters and the lease's operations in the rate window.
 - WAL journal, `synchronous = FULL`, foreign keys on, a 5 s busy timeout.
 
 ## Audit log

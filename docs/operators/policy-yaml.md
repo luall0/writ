@@ -4,7 +4,8 @@ Three sections:
 
 - **`repos`**, the repo registry: each repo agents may use, and hard limits no lease can go
   past.
-- **`templates`**: the largest ticket each one accepts. Every ticket must fit a template.
+- **`templates`**: the most a ticket may ask in a repo. Each repo of a ticket must fit a
+  template.
 - **`signing_keys`**: the user ids of each OpenPGP signing key. Optional.
 
 How they combine with tickets: [lease model](../lease-model.md). Start from the
@@ -14,7 +15,7 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
 - **Changing it:** after `writd init`, only through
   [`writ admin apply policy`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
   (or [`writd recover`](recovery.md) on the host). Editing the file on the host does nothing.
-- **Effect of a change:** immediate. A lease is used only while it still fits its template:
+- **Effect of a change:** immediate. A lease is used only while it still fits its templates:
   tighten a template, and its active leases are denied (`config`) until amended. A repo whose
   entry changes gets its mirror reopened.
 - **Unknown keys are refused**, and every error names its key:
@@ -65,14 +66,26 @@ visible link on the remote ([Q25](../decisions.md)):
 
 ## Templates: `templates.<name>`
 
-Every limit is required, so a template never caps anything by accident. A ticket names its
-template, or fits exactly one. A ticket that fits none is rejected before it reaches you, and
-the agent gets every reason.
+Every limit is required, so a template never caps anything by accident. Each repo of a
+ticket is checked against a template that allows it: the ticket names it in that repo's
+block, or the repo's terms fit exactly one. A repo that fits none rejects the ticket before
+it reaches you, and the agent gets every reason.
+
+One ticket may use several templates, one per repo. Then:
+
+- **The lease's time and rate are the strictest.** Its TTL is within every template's
+  `max_ttl`, its rate within every `max_ops_per_minute`, and its renewals within the smallest
+  `max_renewals`.
+- **The repos that sign share one key.** Their templates must name the same `signing_key`
+  and the same `committer_name`. Otherwise the agent asks one lease per repo.
+- **Counts stay per repo.** Each repo's signatures, pushes and push size are within its own
+  template's. A lease over three repos may sign up to the sum of their counts: you see each
+  one when you sign.
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
 | `templates.<name>.repos` | Repo names, at least one | **required** | The repos a ticket may ask for. Each must be in the registry. In [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) each repo names its templates instead |
-| `templates.<name>.operations` | `fetch`, `commit_sign`, `push`, at least one | **required** | The operations a ticket may ask for |
+| `templates.<name>.operations` | `fetch`, `commit_sign`, `push`, at least one | **required** | The operations a ticket may ask for in a repo |
 | `templates.<name>.branches` | Branch patterns | `[]` | The branches a ticket may ask for: short names, at most one trailing `*` (`agent/*`, `agent/fix-*`). Required with `commit_sign` or `push` |
 | `templates.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | The [push modes](#push-modes) its leases may use, within each repo's |
 | `templates.<name>.force_push` | Boolean | `false` | Whether a ticket may ask for force pushes and branch deletions |
@@ -80,17 +93,18 @@ the agent gets every reason.
 | `templates.<name>.committer_name` | A name, 1 to 100 characters | none | The name every commit signed under the template must carry, as author and committer, exactly. The agent's git is set to it from the lease (`writ git`, a whole-repo clone), and a commit with another name is refused (`committer_name`, `author_name`). No control, newline or invisible character, no `<` or `>`, and no space or `. , : ; " ' \` at either end (git strips them). Not set: the name isn't checked. A name doesn't decide whether a remote shows a commit as verified (the email and the key do); it keeps an agent from signing as someone else by name. With an OpenPGP key, each of its user ids for the template's emails must carry this name |
 | `templates.<name>.signing_key` | Key id | — | The key that signs commits under this template (`writd signing-keys` prints it). Required with `commit_sign` |
 | `templates.<name>.max_ttl` | Duration, at least `writd.yaml`'s `min_ttl` | **required** | The longest lease, counted from submission: time waiting for you counts |
-| `templates.<name>.max_signatures` | Count | **required** | The most commits one lease may sign |
-| `templates.<name>.max_pushes` | Count | **required** | The most pushes one lease may make |
-| `templates.<name>.max_ops_per_minute` | Count, at least 1 | **required** | The most signatures, pushes and fetches one lease may make per minute, all together |
-| `templates.<name>.max_push_size` | Size | **required** | The largest pack one push may send: at least 1 byte when the template allows `push` (git would read 0 as no limit). Lowering it applies to the leases already granted too |
-| `templates.<name>.paths_check` | `off`, `warn` or `deny` | `warn` | Compares the files each commit touches with the ticket's `expected_paths`. [Paths check](#paths-check) |
-| `templates.<name>.require_expected_paths` | Boolean | `false` | Whether a ticket must list `expected_paths` to fit this template |
-| `templates.<name>.max_renewals` | Count | no limit | How many [renewals](ticket.md#renewals) one lease's chain may have. Each renewal is signed anyway; this caps how long one task can run |
+| `templates.<name>.max_signatures` | Count | **required** | The most commits one lease may sign in each repo under this template |
+| `templates.<name>.max_pushes` | Count | **required** | The most pushes one lease may make in each repo under this template |
+| `templates.<name>.max_ops_per_minute` | Count, at least 1 | **required** | The most signatures, pushes and fetches one lease may make per minute, all together and in every repo. A lease over several templates gets the smallest |
+| `templates.<name>.max_push_size` | Size | **required** | The largest pack one push may send in a repo under this template: at least 1 byte when the template allows `push` (git would read 0 as no limit). Lowering it applies to the leases already granted too |
+| `templates.<name>.paths_check` | `off`, `warn` or `deny` | `warn` | Compares the files each commit touches with the `expected_paths` of its repo in the ticket. [Paths check](#paths-check) |
+| `templates.<name>.require_expected_paths` | Boolean | `false` | Whether a repo's block must list `expected_paths` to fit this template |
+| `templates.<name>.max_renewals` | Count | no limit | How many [renewals](ticket.md#renewals) one lease's chain may have. A lease over several templates gets the smallest. Each renewal is signed anyway; this caps how long one task can run |
 
 ### Paths check
 
-Only for tickets that list `expected_paths`; others are never compared.
+Only for the repos whose block in the ticket lists `expected_paths`; others are never
+compared. Each repo's commits are compared with that repo's paths.
 
 - **off**: no comparison.
 - **warn** (default): the commit is signed, and the `sign` audit line records a warning.

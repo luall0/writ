@@ -10,7 +10,7 @@ Three layers, from fixed to per-task:
 |---|---|---|
 | **Repo registry** | Me (admin approval) | Rarely. Hard limits per repo: protected refs, push modes, upstream |
 | **Templates** | Me (admin approval) | Rarely. The maximum shape a ticket can take |
-| **Ticket** | The agent | Per task. Must fit one template; I sign or refuse it |
+| **Ticket** | The agent | Per task. Each repository's terms fit a template that allows it; I sign or refuse it |
 
 The code for this page lives in `crates/writ-core` (types, template fit, narrowing, state
 machine) and is enforced by the [policy engine](architecture/policy-and-state.md).
@@ -109,8 +109,9 @@ lease). Unset, the name isn't checked. It doesn't make a remote show a commit as
 template only `gateway` (the default), so a quick-fix ticket can sign for `dotfiles` but not
 push to it.
 
-A ticket that doesn't fit any template is rejected by the daemon before it reaches me, with
-every reason sent back to the agent. Config errors name the field
+A ticket with a repository that fits no template, or whose templates disagree (the signing
+key, the committer name), is rejected by the daemon before it reaches me, with every reason
+sent back to the agent. Config errors name the field
 (`templates.quick-fix.max_ttl: invalid duration "1 hour"`).
 
 ### Patterns and units
@@ -133,49 +134,82 @@ every reason sent back to the agent. Config errors name the field
 
 ## The ticket the agent writes
 
-`writ request` sends this file; the daemon completes it into the full ticket below.
+`writ request` sends this file; the daemon completes it into the full ticket below. It gives
+the lease's terms first, then each repository's (`writ-ticket/3`, M6.1.5): each term has one
+place and nothing overrides anything.
 
 ```yaml
-template: feature-branch         # optional: omitted, the only template it fits is chosen
 origin_hint: macbook-user       # optional, advisory
 caller:                          # optional, set by a harness (see subject.caller below)
-scope:
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth-*"]
-  force_push: false              # optional
-  committer_emails: []           # optional: omitted, the template's
+common:                          # the lease's: one committer identity
+  committer_emails: []           # optional: omitted, those every signing repository's template allows
+repos:                           # one block per repository, at least one, at most 16
+  omega-code:
+    template: feature-branch     # optional: omitted, the only template that allows the repo and fits
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-*"]
+    force_push: false            # optional
+    expected_paths: ["src/auth/**", "src/routes/oauth*", "tests/auth/**"]
+    limits:                      # each optional: omitted, the template's maximum
+      max_signatures: 40
+      max_pushes: 20
+      max_push_size: 50MB
+  homelab-scripts:
+    template: feature-branch     # fetch alone fits feature-branch and quick-fix: it names one
+    operations: [fetch]
 ticket:
   title: "Add OAuth login"
   task: "Add GitHub OAuth login to the web app, behind a feature flag"
   plan: ["Add OAuth client config and callback route", "Store tokens in the existing session store", "Feature flag + tests"]
-  expected_paths: ["src/auth/**", "src/routes/oauth*", "tests/auth/**"]
   estimate: { coding: 45m, checks: 15m, ci: 30m }   # optional: shown, never checked
   amends: null                   # the lease this ticket amends
   renews: null                   # the lease this ticket renews
   revises: null                  # the refused ticket this one revises
-limits:                          # each optional: omitted, the template's maximum
+limits:                          # the lease's; each optional: omitted, the smallest of the templates'
   ttl: 2h
-  max_signatures: 40
-  max_pushes: 20
   max_ops_per_minute: 10
-  max_push_size: 50MB
 on_violation: deny_and_notify    # optional
 ```
 
-A ticket that fits several templates must name one. Text is bounded so a ticket stays
-reviewable (title 200 characters on one line, task 4,000 characters on at most 100 lines,
-plan 50 one-line steps of 500, 100 expected paths, each phase of the estimate at most 30
-days). `writ check <ticket.yaml>` checks a file against what can be checked without the
-daemon (the same function the daemon runs on the text, `fit::check_request`).
+Each repository's block is checked against its own template, which must allow that
+repository: a repository two templates fit names one in its block (the rejection names the
+repository and the templates that fit), one with a single fitting template needs none, and
+the daemon never guesses. Then the terms the repositories share:
+
+- **The lease-wide terms are the strictest of the templates'.** The TTL is within every
+  template's `max_ttl`, `max_ops_per_minute` within every one's (one rate for the session,
+  every repository together), and of the templates' `max_renewals`, the smallest. `on_violation` is the ticket's own, for the whole lease: a violation in any
+  repository applies it. No template's bound is exceeded by pairing it with a laxer one.
+- **One signing key and one committer name per lease.** The templates of the repositories
+  that sign (`commit_sign`) must name the same `signing_key` and the same `committer_name`;
+  otherwise the ticket is rejected, naming each repository, its template and its key, and
+  the agent asks one lease per repository. A repository that only fetches or pushes may use
+  a template with another key, or none.
+- **Committer emails are the lease's**, within the template of every repository that signs.
+  With no repository signing they are unused, yet the approver reads them: each one must
+  still be an email one of the lease's templates allows.
+- **Counts are per repository only.** Each repository's `max_signatures`, `max_pushes` and
+  `max_push_size` are within its own template's, and the daemon counts signatures and pushes
+  per repository; there is no lease-wide cap (a lease of three repositories may sign up to
+  the sum of their counts, which the approver sees). The rate is the lease's.
+
+A ticket in the layout before `writ-ticket/3` (`scope:`, `template:` at the top,
+`ticket.expected_paths`, the counts in `limits`) is refused, naming each key's new place;
+nothing is converted. Text is bounded so a ticket stays reviewable (title 200 characters on
+one line, task 4,000 characters on at most 100 lines, plan 50 one-line steps of 500, 16
+repositories, per repository 50 branches and 100 expected paths, 16 KiB of expected paths in
+all, each phase of the estimate at most 30 days). `writ check <ticket.yaml>` checks a file
+against what can be checked without the daemon (the same function the daemon runs on the
+text, `fit::check_request`).
 
 ## The complete ticket
 
 What the approver signs, and once signed, the lease's terms. The daemon fills `id`,
-`created_at`, `subject.session_key` (from the key sent with the request), the template's
-committer emails, committer name and signing key, `limits.expires_at = created_at + ttl` (so time spent
-waiting for my signature counts), every omitted limit, `revision` and `previous_feedback`
-(prefixed `[not signed by an approver]` when the refusal was unsigned, with `decisions: open`).
+`created_at`, `subject.session_key` (from the key sent with the request), each repository's
+template, the committer emails left out, the templates' committer name and signing key,
+`limits.expires_at = created_at + ttl` (so time spent waiting for my signature counts), every
+omitted limit, `revision` and `previous_feedback` (prefixed `[not signed by an approver]` when
+the refusal was unsigned, with `decisions: open`).
 A ticket asks for at least the daemon's `min_ttl` (`ttl`, and a template's `max_ttl`; 5 minutes
 by default, 10 seconds at the lowest, `writd.yaml`): a pending ticket holds one of the
 approver's waiting slots until it expires. The approver may still narrow a
@@ -185,10 +219,9 @@ together at most 60 (the operator's `submissions` in `writd.yaml` sets both), an
 holds at most `max_pending` (20) waiting.
 
 ```yaml
-kind: writ-ticket/2              # the format: an approval can't be read as anything else
+kind: writ-ticket/3              # the format: an approval can't be read as anything else
 id: wrt_01JD8X...
 created_at: 2026-10-31T14:02:11Z
-template: feature-branch
 
 subject:                         # WHO
   session_key: SHA256:9fq...      # the certificate is issued for this key
@@ -200,14 +233,29 @@ subject:                         # WHO
       generation: 118            # pidversion: rejects a reused pid
       code_identity: null        # optional: { signing_id, team_id } that must match too
 
-scope:                           # WHAT
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/*"]
-  force_push: false
+common:                          # WHAT, for the whole lease
   committer_emails: ["user+agent@…"]
-  committer_name: Writ agent     # from the template; null without commit_sign or when it sets none
-  signing_key: agent-ed25519-01  # from the template; null without commit_sign
+  committer_name: Writ agent     # from the templates; null when nothing signs or they set none
+  signing_key: agent-ed25519-01  # from the templates; null when nothing signs
+
+repos:                           # WHAT, repository by repository
+  homelab-scripts:
+    template: feature-branch
+    operations: [fetch]
+    branches: []
+    force_push: false
+    expected_paths: []
+    limits: { max_signatures: 50, max_pushes: 30, max_push_size: 50000000 }
+  omega-code:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-*"]
+    force_push: false
+    expected_paths: ["src/auth/**", "src/routes/oauth*", "tests/auth/**"]   # see Q24
+    limits:                      # HOW MUCH, in this repository
+      max_signatures: 40
+      max_pushes: 20
+      max_push_size: 50000000    # bytes
 
 ticket:                          # written by the agent, reviewed by me
   title: "Add OAuth login"
@@ -216,7 +264,6 @@ ticket:                          # written by the agent, reviewed by me
     - "Add OAuth client config and callback route"
     - "Store tokens in the existing session store"
     - "Feature flag + tests"
-  expected_paths: ["src/auth/**", "src/routes/oauth*", "tests/auth/**"]   # see Q24
   estimate:                      # the agent's, display-only: each phase a duration or null
     coding: 45m
     checks: 15m
@@ -227,22 +274,20 @@ ticket:                          # written by the agent, reviewed by me
   revision: 2                    # 1, then one more than the ticket it revises
   previous_feedback: "Don't touch billing; keep the session store as is"
 
-limits:                          # HOW MUCH
+limits:                          # HOW MUCH, for the whole lease
   expires_at: 2026-10-31T16:02:11Z
-  max_signatures: 40
-  max_pushes: 20
   max_ops_per_minute: 10
-  max_push_size: 50000000        # bytes
 
 on_violation: deny_and_notify    # deny_and_notify | revoke_lease
 ```
 
 The lease record adds what is not signed: its **state**, the **approval** (approver key
 fingerprint, namespace `writ-approval`, the SSHSIG), the **certificate serial**, the
-counters, the **source** the ticket came from (an IPv4 address, an IPv6 /64, or `local`, as
-the per-source limits count it), the lease it renews, and the closing summary. A lease's id
-is its first ticket's id: the certificate's key id and the `Writ:` trailer carry it, and it
-stays when amendments replace the terms. A renewal is a lease of its own, with its own id.
+counters (signatures and pushes per repository), the **source** the ticket came from (an
+IPv4 address, an IPv6 /64, or `local`, as the per-source limits count it), the lease it
+renews, and the closing summary. A lease's id is its first ticket's id: the certificate's
+key id and the `Writ:` trailer carry it, and it stays when amendments replace the terms. A
+renewal is a lease of its own, with its own id.
 
 ### Canonical encoding
 
@@ -251,9 +296,11 @@ The approval signs the ticket's **canonical bytes**, defined once in `writ-core`
 `writ sign` and the daemon always sign and verify the same bytes:
 
 - compact JSON (no whitespace), fields in the order above, `kind` first;
+- `repos` an object, its keys (the repository names) sorted by the bytes of their UTF-8
+  text, each block's fields in the order above;
 - set-like lists deduplicated and sorted, each in its own order (an independent client must
   use exactly these; the fixtures pin them):
-  - `repos`, `committer_emails`, `expected_paths`: by the bytes of their UTF-8 text;
+  - `committer_emails`, `expected_paths`: by the bytes of their UTF-8 text;
   - `operations`: `fetch`, `commit_sign`, `push`, in that order (not alphabetical);
   - `branches`: every exact name first, then every `prefix*` pattern, each group by the
     bytes of its text (`["main", "agent/*"]`, not `["agent/*", "main"]`);
@@ -272,7 +319,7 @@ any field changes the bytes. A new format gets a new `kind`.
 
 | Constraint | Checked from | Trust |
 |---|---|---|
-| TTL, counts, rate | Daemon state | 🟢 Strong |
+| TTL, counts (per repository), rate | Daemon state | 🟢 Strong |
 | Repo | Gateway endpoint | 🟢 Strong |
 | Destination ref, protected refs | Push commands received by the gateway / proxy | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
 | Force push | Ref update (old → new) | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
@@ -291,8 +338,8 @@ any field changes the bytes. A new format gets a new `kind`.
 ```mermaid
 stateDiagram-v2
   [*] --> submitted: agent submits ticket (writ request)
-  submitted --> rejected_by_policy: doesn't fit any template
-  submitted --> pending: fits a template, waiting for me
+  submitted --> rejected_by_policy: a repository fits no template, or the templates disagree
+  submitted --> pending: every repository fits a template, waiting for me
   pending --> refused: I refuse, with feedback
   pending --> expired: expires_at reached before signing
   pending --> revoked: withdrawn
@@ -301,7 +348,7 @@ stateDiagram-v2
   rejected_by_policy --> [*]: agent revises → new revision submitted
   pending --> active: approver SSHSIG verified → certificate issued
   active --> closed: agent closes the ticket with a summary
-  active --> exhausted: every counted operation used up
+  active --> exhausted: every counted operation used up, in every repository
   active --> expired: expires_at reached
   active --> revoked: manual / violation policy
   active --> revoked: session process exits (local mode)
@@ -322,8 +369,8 @@ transition not drawn here is refused (`State::can_become` in `writ-core`).
 An **amendment** is a new ticket with `amends: <id>`, from the same session (same session
 key), submitted while the lease is active. While pending, the original lease keeps running;
 once signed, the amendment becomes `applied` and its terms replace the lease's: the lease
-keeps its id, certificate and counters (its `max_signatures` is the new total, not more on
-top). An amendment changes scope, not time: its `expires_at` is capped at the lease's when it
+keeps its id, certificate and counters (each repository's `max_signatures` is the new total
+for that repository, not more on top; a repository the amendment adds starts from zero). An amendment changes scope, not time: its `expires_at` is capped at the lease's when it
 is submitted, and one that would end later is refused when signed
 (`LifecycleError::AmendmentOutlivesLease`), since the certificate keeps its `valid_before`.
 If the lease ended before the amendment is signed, the amendment can't be applied.
@@ -336,12 +383,15 @@ ticket ([M6](decisions.md)). The rules, checked at submission and again at signi
 - the renewed lease is active, or expired or exhausted no longer than `renew_grace`
   (`writd.yaml`, 24 h by default, 0 to 7 days) after its `expires_at`; never revoked, closed or
   renewed already;
-- it keeps the lease's template; its `ttl` and limits are new, within the template;
-- its scope, expected paths and `on_violation` are the same or narrower
-  (`narrow::widenings`); committer emails and expected paths left out are the lease's; the
-  committer name the same (from the template: a template whose name changed meanwhile can't
-  renew the lease);
-- the template's `max_renewals`, when set, caps how many renewals one chain holds.
+- each repository keeps its template in the lease; its `ttl` and limits are new, within the
+  templates;
+- its repositories, and in each one operations, branches, expected paths and `force_push`,
+  its committer emails and `on_violation` are the same or narrower (`narrow::widenings`,
+  repository by repository); committer emails and expected paths left out are the lease's;
+  the committer name the same (from the templates: a template whose name changed meanwhile
+  can't renew the lease);
+- each template's `max_renewals`, when set, caps how many renewals one chain holds: the
+  strictest holds.
 
 Once signed, the renewal is a lease of its own (its id, a certificate for the same session
 key) and the renewed lease becomes `renewed` in the same change, its certificate refused. A
@@ -350,25 +400,28 @@ own scope (`PushRequest.predecessors`). It doesn't count twice against
 `max_active_per_source`. `writ sign` shows the chain's original ticket, which renewal this
 is, the time used so far and the renewed lease's counts.
 
-A lease is **exhausted** when every operation it allows is used up: signatures with
-`commit_sign`, pushes with `push`. `fetch` has no count, so a lease that allows it never
-becomes exhausted (it ends by expiry, close or revocation); its signing and pushing still
-stop at their limits. This keeps exhaustion monotone: narrowing away an operation never
-revives a used-up lease.
+Signatures and pushes are counted per repository, each against its repository's limit: one
+repository's count used up refuses its own requests (`limit`) and leaves the others theirs.
+A lease is **exhausted** when every operation it allows is used up in every repository:
+signatures with `commit_sign`, pushes with `push`. `fetch` has no count, so a lease with a
+repository that allows it never becomes exhausted (it ends by expiry, close or revocation);
+its signing and pushing still stop at their limits. This keeps exhaustion monotone:
+narrowing away an operation never revives a used-up lease.
 
 ## Rules
 
 - A request must match **exactly one** lease (certificate key id, serial and session key);
   none or more than one means deny. The lease must then be active and not past `expires_at`.
-- A lease is used only while it still fits its template **under the current config**: if an
-  admin change tightens or removes the template or a repo, its leases are denied (fail
+- A lease is used only while it still fits its templates **under the current config**: if an
+  admin change tightens or removes one of them or a repo, its leases are denied (fail
   closed) until amended.
 - Leases are **never extended silently**. More time is a renewal: a new signed approval, a
   new lease.
 - `max_active_per_source` (`writd.yaml`, no limit by default): the active leases one source may
   hold, checked when a ticket is submitted and again when it is signed (`TooManyActive`); an
   amendment adds no lease, a renewal replaces its own.
-- **Every ticket must fit a template** (Q14). An approval can't exceed a template; new
+- **Every repository of a ticket must fit a template** that allows it (Q14), and the
+  lease-wide terms the strictest of those templates. An approval can't exceed a template; new
   templates are admin changes.
 - The ticket's text (title, task, plan) is written by the agent: shown to me as-is, never
   trusted by the policy engine. Only the structured scope is enforced.
@@ -377,13 +430,15 @@ revives a used-up lease.
   from any other, it is rejected and the feedback stays with the session it was written for.
   `writ request` reuses that session's key for a revision, as it does for an amendment.
 - I can **narrow** a ticket while signing it (shorter TTL, fewer repos/branches/ops, lower
-  limits). The daemon accepts the signature only if every field of the signed ticket is the
-  same as submitted or narrower, then returns the final lease to the agent. Narrower means:
-  fewer repos, operations or committer emails; branches each within a submitted pattern;
-  force push off; each limit and `expires_at` lower or equal; `on_violation` as strict or
-  stricter; `expected_paths` a non-empty subset (emptying it would turn the path check off),
-  or any if none were submitted. Id, time, template, subject, signing key, committer name and
-  text can't change.
+  limits), repository by repository or for every one ([approvals](architecture/approvals.md#narrowing)).
+  The daemon accepts the signature only if every field of the signed ticket is the same as
+  submitted or narrower, then returns the final lease to the agent. Narrower means: fewer
+  repos or committer emails; in each repository, fewer operations, branches each within a
+  submitted pattern, force push off, each count lower or equal, `expected_paths` a non-empty
+  subset (emptying it would turn the path check off) or any if none were submitted;
+  `expires_at` and the rate lower or equal; `on_violation` as strict or stricter. Id, time,
+  each repository's template, subject, signing key, committer name and text can't change, and
+  the narrowed ticket must still fit its templates.
 - **Force push** covers non-fast-forward updates and deleting a branch. Creating a branch is
   never one.
 - Only branches (`refs/heads/…`) can be pushed; any other ref is denied even if no pattern

@@ -14,22 +14,22 @@ sequenceDiagram
   participant AP as writ sign (Mac)
   participant SC as Secretive
   Me->>A: "build feature X on omega-code"
-  A->>D: writ policy: what a ticket for the repo may ask
-  D-->>A: templates (branches, emails, limits), protected refs, ticket link
-  A->>A: think through scope, write ticket (task, plan, repos, branches, limits)
+  A->>D: writ policy <repo>…: what a ticket for each repo may ask
+  D-->>A: templates (branches, emails, signing key id, limits), protected refs, ticket link
+  A->>A: think through scope, write ticket (task, plan; per repo: branches, paths, counts)
   A->>D: writ request --dry-run: every submission check, nothing stored
   D-->>A: would be accepted, or rejected + reasons
   A->>A: writ request → generates session key
   A->>D: submit ticket + session pubkey
-  alt doesn't fit any template
+  alt a repo fits no template, or the templates disagree (key, time)
     D-->>A: rejected_by_policy + reason
     A->>A: revise ticket, resubmit
-  else fits a template
+  else each repo fits a template
     D->>D: state = pending
     D-->>Me: notification: "ticket waiting" (also printed by the agent)
     Me->>AP: writ sign
     AP->>D: fetch canonical ticket
-    AP->>Me: shows ticket: task, plan, scope, limits, template, diff vs previous revision
+    AP->>Me: shows ticket: the lease's terms, a block per repo, task, plan, diff vs previous revision
     alt I sign (optionally narrowing values first)
       AP->>SC: ssh-keygen -Y sign -n writ-approval (narrowed ticket)
       SC->>Me: Touch ID
@@ -76,9 +76,9 @@ sequenceDiagram
   S->>D: writ-sign git <repo>: the commit + those objects, over SSH, session cert
   D->>D: cert → active lease, commit_sign, repo (before reading the body)
   D->>D: objects read by the ids computed from their bytes → touched paths
-  D->>D: cert → lease, object type, committer and author emails,<br/>Writ trailer (if ticket_link = trailer), paths vs expected_paths, count, rate
+  D->>D: cert → lease, object type, committer and author emails,<br/>Writ trailer (if ticket_link = trailer), paths vs the repo's expected_paths, the repo's count, rate
   alt allowed
-    D->>D: under the lock: count and rate slot taken (never given back)
+    D->>D: under the lock: the repo's count and the rate slot taken (never given back)
     D->>SG: outside the lock, through the queue (deadline): sign(SSHSIG signed data), key = template's signing_key
     SG-->>D: signature
     D->>D: under the lock: lease still the same, active, not expired, cert not on the deny list
@@ -114,7 +114,7 @@ sequenceDiagram
   D->>Q: receive-pack: the pack, fsck'd, in quarantine
   Q->>D: pre-receive hook: token, quarantine, ref updates
   D->>D: lease again, mirror held, read from the objects git verified:<br/>new commits, fast-forwards, case twins, size, paths again
-  D->>D: under one lock: ledger, decide_push (refs, protected refs, force push,<br/>every new commit signed under this lease with the same paths, size),<br/>count and rate, log PUSH
+  D->>D: under one lock: ledger, decide_push (refs, protected refs, force push,<br/>every new commit signed under this lease with the same paths, size),<br/>the repo's count and the rate, log PUSH
   alt accepted
     D->>D: lease once more
     D->>F: push --atomic --force-with-lease from the quarantine, daemon credential
@@ -139,7 +139,7 @@ sequenceDiagram
 If upstream moved, the agent fetches through the daemon, rebases, and the new commits are
 signed again under the same lease. The notes of a `ticket_link: notes` repo
 ([Notes](architecture/gateway.md#notes)) follow the branch on their own: a notes push that
-fails never undoes the branch's. A push already decided keeps its slot of the lease's count
+fails never undoes the branch's. A push already decided keeps its slot of the repo's count
 and rate when the remote refuses it.
 
 ### 3b. Push, `proxy` mode
@@ -239,7 +239,7 @@ sequenceDiagram
   participant D as writd
   participant AP as writ sign (Mac)
   A->>D: writ request: renews A (A's session key), a fresh ttl, the same scope or narrower
-  D->>D: A active, or ended ≤ renew_grace ago; same template and subject; within A; max_renewals
+  D->>D: A active, or ended ≤ renew_grace ago; each repo's template and the subject the same; within A; max_renewals
   D-->>AP: shown with A's terms (diff), the chain's original ticket, time used, A's counts
   AP->>D: approval (SSHSIG)
   D->>D: checked again; under one change: B active (new certificate, same key), A renewed

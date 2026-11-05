@@ -249,8 +249,7 @@ fn a_dry_run_checks_like_a_submission_and_stores_nothing() {
     assert_eq!(dry.reason_text(), real.reason_text());
     assert_eq!(
         dry.reason_text(),
-        "repos.omega-code fits no template: feature-branch: repos.omega-code: branch main is \
-         not within the template's branches (agent/*)"
+        "repos.omega-code: branch main is not within the template's branches (agent/*)"
     );
     let denied = h.events("dry_run", "denied");
     assert_eq!(denied.len(), 1);

@@ -16,7 +16,7 @@ repos:
     #   allow_account_wide: false
 
 templates:
-  feature-branch:                  # a ticket names it, or fits it alone
+  feature-branch:                  # a repo's block names it, or fits it alone
     repos: [my-repo]               # each in the registry
     operations: [fetch, commit_sign, push]   # fetch | commit_sign | push
     branches: ["agent/*"]          # required with commit_sign or push
@@ -29,7 +29,7 @@ templates:
     max_push_size: 50MB
     # push_modes: [gateway]        # within each repo's push_modes
     # force_push: false            # whether a ticket may ask for force pushes
-    # paths_check: warn            # off | warn | deny: commits vs the ticket's expected_paths
+    # paths_check: warn            # off | warn | deny: commits vs their repo's expected_paths
     # require_expected_paths: false
     # max_renewals: null           # null: no limit on a lease's renewals (each one is signed)
     # committer_name: null         # e.g. "Writ agent": the name every commit must carry; null: not checked

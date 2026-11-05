@@ -291,8 +291,11 @@ mod tests {
         assert_eq!((op.repo, op.value), (Some(repo("web")), Operation::Push));
         // Hostile or mistyped values: refused, never read as something else.
         for bad in ["api:", ":agent/x", "a:b:c", "../x:agent/x", "api:nope"] {
+            // any error: the repo name's or the value's own parser refuses it (their tests
+            // pin the messages); here, that nothing is read as another repo or value.
             assert!(bad.parse::<Scoped<Operation>>().is_err(), "{bad}");
         }
+        // any error: a count's parser refuses a sign, as above.
         assert!("api:-1".parse::<Scoped<u32>>().is_err());
     }
 

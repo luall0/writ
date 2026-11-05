@@ -38,7 +38,8 @@ mlkem768x25519-sha256 or curve25519-sha256 key exchange with strict kex, chacha2
 or aes256-gcm, Ed25519 and ECDSA P-256 keys (host, session and reader keys), no compression
 (RFC 4253 `zlib` would decompress before authentication), nothing with SHA-1. git runs
 through `writ_mirror::git::command` ([the daemon's git](#the-daemons-git)); `git
-receive-pack` also gets `receive.maxInputSize` set to the lease's `max_push_size`.
+receive-pack` also gets `receive.maxInputSize` set to the repo's `max_push_size` in the lease
+(the smaller of it and its template's in force).
 
 A certificate is checked twice: when it is presented (CA, validity, deny list, principal
 `git`, no critical option, then the approval service finds its single active lease and checks the caller,
@@ -56,7 +57,7 @@ anything else happens. Git itself is not reimplemented: the daemon shells out to
 
 Anything else is refused with a reason on stderr, and logged (event `command`). Repos are
 registry names, with or without `.git` (`omega-code.git`), never paths; git runs only on a repo
-in the lease's `scope.repos`, at `<repos_root>/<name>.git`. Nothing is taken from the client's
+with a block in the lease's `repos`, at `<repos_root>/<name>.git`. Nothing is taken from the client's
 environment (every SSH `env` request is refused, `GIT_PROTOCOL` included), and git runs with a
 clean environment (`PATH` and `TMPDIR` only), without the daemon user's system or global git
 config. So `upload-pack` speaks protocol v0 whatever the client asks: in v2, git ignores
@@ -138,7 +139,7 @@ in part. Any failure to reach the daemon refuses the push. The daemon then:
    can move a ref):
    - each new tip is a commit;
    - the commits no ref of the mirror reaches (`rev-list --not --all`), at most the lease's
-     `max_signatures` (and 10,000): more means some aren't signed under it;
+     `max_signatures` for this repo (and 10,000): more means some aren't signed under it;
    - for each update, whether it is a fast-forward (`merge-base --is-ancestor`), and for a new
      ref whether the mirror has one with the same name ignoring case;
    - the pack's size on disk;

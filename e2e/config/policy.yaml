@@ -30,6 +30,9 @@ repos:
   # Two repositories of one workspace, one agent at their folder (scenario 21).
   ws-api:     { upstream: "ssh://git@forgejo/writ/ws-api.git",     upstream_credential: upstream-ws-api,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
   ws-web:     { upstream: "ssh://git@forgejo/writ/ws-web.git",     upstream_credential: upstream-ws-web,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  # One ticket across two templates, and one lease per repository (scenario 22).
+  pr-api:     { upstream: "ssh://git@forgejo/writ/pr-api.git",     upstream_credential: upstream-pr-api,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  pr-web:     { upstream: "ssh://git@forgejo/writ/pr-web.git",     upstream_credential: upstream-pr-web,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Over HTTPS, with a Forgejo token the operator puts in the keystore (no deploy key).
   https:      { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # The same Forgejo repository behind a front whose certificate only the system trusts, not
@@ -37,7 +40,7 @@ repos:
   https-system: { upstream: "https://forgejo-https-system:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
 templates:
   feature:
-    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, protocols, inflight, restart, hostile, busy, notes, backfill, sessions, ws-api, ws-web, https, https-system]
+    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, protocols, inflight, restart, hostile, busy, notes, backfill, sessions, ws-api, ws-web, https, https-system, pr-api]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     force_push: true                 # a ticket may ask for it (none does unless it says so)
@@ -49,6 +52,31 @@ templates:
     max_ops_per_minute: 200
     max_push_size: 50MB
     max_renewals: 3                  # scenario 20 renews once
+  # Per-repository tickets (scenario 22): pr-api fits `feature` too (a ticket must name
+  # one), pr-web only this one's review branches, its paths checked, a shorter lease.
+  pr-backend:
+    repos: [pr-api]
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ.invalid"]
+    signing_key: agent-e2e
+    max_ttl: 4h
+    max_signatures: 20
+    max_pushes: 10
+    max_ops_per_minute: 200
+    max_push_size: 50MB
+  pr-frontend:
+    repos: [pr-web]
+    operations: [fetch, commit_sign, push]
+    branches: ["review/*"]
+    committer_emails: ["agent@writ.invalid"]
+    signing_key: agent-e2e
+    max_ttl: 1h
+    max_signatures: 10
+    max_pushes: 2
+    max_ops_per_minute: 200
+    max_push_size: 10MB
+    paths_check: deny
   # Its own signing key: the one scenario that registers and proves a key on the Forgejo
   # account (verified_commits) leaves every other scenario's commits unverified.
   verified:
