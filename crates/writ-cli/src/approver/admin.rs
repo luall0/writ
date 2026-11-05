@@ -20,6 +20,7 @@ use writ_proto::{
 };
 
 use super::{Signer, connect, read_line};
+use crate::client::Approvals;
 use crate::display::clean;
 use crate::{Exit, Paths};
 
@@ -60,63 +61,90 @@ pub async fn apply(
         .await?
         .run(async |session| {
             let shown: AdminShown = session.call(&Command::AdminShow { target }, b"").await??;
-            if shown.text == text.as_str() {
-                println!(
-                    "{target} version {} already holds this text: nothing to change.",
-                    shown.version
-                );
-                return Ok(Exit::Ok);
-            }
-            println!(
-                "Change of {target}: version {} (sha256 {}) replaced by {}",
-                shown.version,
-                shown.digest,
-                file.display()
-            );
-            print!("{}", diff(&shown.text, text.as_str()));
-            println!(
-                "Signing replaces {target} for every lease, at once (sha256 {}).",
-                text.digest()
-            );
-            if !yes {
-                print!("Sign this change? [y/N] ");
-                std::io::stdout().flush()?;
-                if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
-                    println!("Not signed.");
-                    return Ok(Exit::Ok);
-                }
-            }
-            let replaced = Replaced {
-                version: shown.version,
-                digest: shown.digest.clone(),
-            };
-            let document = Admin::new(shown.daemon.clone(), target, replaced, text.clone())
-                .canonical_bytes()?;
-            let request = AdminRequest {
-                signature: signer.sign(&document)?,
-                document: String::from_utf8(document)?,
-            };
-            let applied: AdminApplied = session
-                .call(&Command::AdminApply, &writ_proto::encode_body(&request)?)
-                .await??;
-            println!(
-                "Applied: {} is version {} (sha256 {}), signed by {}.",
-                applied.target, applied.version, applied.digest, applied.signed_by
-            );
-            for lease in &applied.revoked {
-                println!("Revoked lease {lease}: the approver key that signed it was removed.");
-            }
-            for key in &applied.created {
-                println!(
-                    "New {} {} (register it on the remote): {}",
-                    key.role.as_str(),
-                    key.id,
-                    clean(&key.public_key)
-                );
-            }
-            Ok(Exit::Ok)
+            let what = format!("replaced by {}", file.display());
+            sign_change(session, signer, &shown, &text, &what, yes).await
         })
         .await
+}
+
+/// Shows a change of the file in force (`shown`) to `text` line by line, asks (unless `yes`),
+/// signs a `writ-admin/2` naming the version it replaces, sends it, and prints what the
+/// daemon did: the version, the keys it made (to register) and deleted, the leases it
+/// revoked. `what` says where the new text comes from.
+pub(super) async fn sign_change(
+    session: &Approvals,
+    signer: &Signer,
+    shown: &AdminShown,
+    text: &AdminText,
+    what: &str,
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    let target = shown.target;
+    if shown.text == text.as_str() {
+        println!(
+            "{target} version {} already holds this text: nothing to change.",
+            shown.version
+        );
+        return Ok(Exit::Ok);
+    }
+    println!(
+        "Change of {target}: version {} (sha256 {}) {what}",
+        shown.version, shown.digest
+    );
+    print!("{}", diff(&shown.text, text.as_str()));
+    println!(
+        "Signing replaces {target} for every lease, at once (sha256 {}).",
+        text.digest()
+    );
+    if !yes {
+        print!("Sign this change? [y/N] ");
+        std::io::stdout().flush()?;
+        if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
+            println!("Not signed.");
+            return Ok(Exit::Ok);
+        }
+    }
+    let replaced = Replaced {
+        version: shown.version,
+        digest: shown.digest.clone(),
+    };
+    let document =
+        Admin::new(shown.daemon.clone(), target, replaced, text.clone()).canonical_bytes()?;
+    let request = AdminRequest {
+        signature: signer.sign(&document)?,
+        document: String::from_utf8(document)?,
+    };
+    let applied: AdminApplied = session
+        .call(&Command::AdminApply, &writ_proto::encode_body(&request)?)
+        .await??;
+    println!(
+        "Applied: {} is version {} (sha256 {}), signed by {}.",
+        applied.target, applied.version, applied.digest, applied.signed_by
+    );
+    for lease in &applied.revoked {
+        println!("Revoked lease {lease}: the approver key that signed it was removed.");
+    }
+    for key in &applied.created {
+        println!(
+            "New {} {} (register it on the remote): {}",
+            key.role.as_str(),
+            key.id,
+            clean(&key.public_key)
+        );
+    }
+    for key in &applied.removed {
+        match (&key.public_key, &key.fingerprint) {
+            (Some(public), Some(fingerprint)) => println!(
+                "Deleted {} {} ({}; its public half stays in the audit log): {}",
+                clean(&key.description),
+                key.id,
+                clean(fingerprint),
+                clean(public)
+            ),
+            _ => println!("Deleted {} {}.", clean(&key.description), key.id),
+        }
+    }
+    Ok(Exit::Ok)
 }
 
 /// `writ admin token <id>`: the keystore's recipient from `writ info`, the token file in force

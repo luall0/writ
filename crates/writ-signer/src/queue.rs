@@ -59,6 +59,9 @@ enum Work {
         key: Box<KeyPair>,
         answer: SyncSender<Result<KeyInfo, SignerError>>,
     },
+    Remove {
+        answer: SyncSender<Result<(), SignerError>>,
+    },
 }
 
 struct Job {
@@ -250,6 +253,25 @@ fn work(name: &str, backend: &dyn Signer, inbox: &Receiver<Job>, known: &RwLock<
                     }
                 }
             }
+            Work::Remove { answer } => {
+                let removed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let removed = backend.remove_key(&id);
+                    if removed.is_ok() {
+                        refresh(backend, known);
+                    }
+                    removed
+                }));
+                match removed {
+                    Ok(removed) => {
+                        let _ = answer.try_send(removed);
+                        true
+                    }
+                    Err(_) => {
+                        let _ = answer.try_send(Err(SignerError::Unavailable));
+                        false
+                    }
+                }
+            }
         };
         if !survived {
             tracing::error!(
@@ -309,6 +331,29 @@ impl Signer for QueuedSigner {
         let answer = match reply.recv_timeout(left) {
             Ok(answer) => answer,
             Err(RecvTimeoutError::Timeout) => Err(SignerError::Timeout(id)),
+            Err(RecvTimeoutError::Disconnected) => Err(SignerError::Unavailable),
+        };
+        abandoned.store(true, Ordering::Release);
+        answer
+    }
+
+    /// Through the queue, in order with the jobs before it (a signature queued before the
+    /// removal still signs; none queued after it does), until the deadline. Past it the caller
+    /// gets [`SignerError::Timeout`]; the worker skips the removal if it hasn't reached it yet,
+    /// or removes the key all the same if it has.
+    fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
+        if !self.known().capabilities.takes_keys {
+            return Err(SignerError::CannotTakeKeys(id.clone()));
+        }
+        let deadline = Instant::now()
+            .checked_add(self.deadline)
+            .ok_or(SignerError::Unavailable)?;
+        let (answer, reply) = std::sync::mpsc::sync_channel(1);
+        let abandoned = self.queue(id, Work::Remove { answer })?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        let answer = match reply.recv_timeout(left) {
+            Ok(answer) => answer,
+            Err(RecvTimeoutError::Timeout) => Err(SignerError::Timeout(id.clone())),
             Err(RecvTimeoutError::Disconnected) => Err(SignerError::Unavailable),
         };
         abandoned.store(true, Ordering::Release);

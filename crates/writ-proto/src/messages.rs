@@ -227,6 +227,25 @@ pub struct AdminApplied {
     /// `approvers` (a change of `approvers` only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub revoked: Vec<TicketId>,
+    /// The keys the new policy no longer declares: deleted from the keystore once the change
+    /// applied, for good (declaring the id again makes a new key).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<RemovedKey>,
+}
+
+/// A key a signed policy change took out of the keystore: what it was, and its public half
+/// (none for a token), kept in the `admin` line so what it signed stays verifiable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemovedKey {
+    pub id: KeyId,
+    /// What it was (`signing ssh ed25519`, `upstream token for github.com`).
+    pub description: String,
+    /// Its public half (OpenSSH text) and fingerprint; none for a token.
+    #[serde(default)]
+    pub public_key: Option<String>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
 }
 
 /// A key a signed policy change made.

@@ -14,7 +14,9 @@ mod signer;
 pub use admin::{
     apply as admin_apply, show as admin_show, target as admin_target, token as admin_token,
 };
-pub use manage::{list as manage_list, show as manage_show};
+pub use manage::{
+    list as manage_list, remove as manage_remove, set as manage_set, show as manage_show,
+};
 pub use narrowing::Narrowing;
 pub use prove::{ProveKey, prove_key};
 pub use signer::{Signer, default_key};

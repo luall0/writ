@@ -177,6 +177,7 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
             &checked,
             parsed_approvers(&text),
             vec![],
+            vec![],
             Default::default(),
             &facts(),
         )
@@ -248,6 +249,7 @@ fn a_signed_change_of_the_approvers_applies_at_once_and_is_logged() {
             &checked,
             parsed_approvers(&text),
             vec![made.clone()],
+            vec![],
             Default::default(),
             &facts(),
         )
@@ -288,6 +290,7 @@ fn a_change_replayed_after_the_text_came_back_never_applies_again() {
             .commit_admin(
                 &checked,
                 parsed_approvers(text),
+                vec![],
                 vec![],
                 Default::default(),
                 &facts(),
@@ -364,6 +367,7 @@ fn removing_an_approver_revokes_the_leases_it_signed() {
                 &checked,
                 parsed_approvers(text),
                 vec![],
+                vec![],
                 Default::default(),
                 &facts(),
             )
@@ -427,6 +431,7 @@ fn a_removal_whose_leases_can_t_be_listed_is_refused_and_changes_nothing() {
         h.service.commit_admin(
             &checked,
             parsed_approvers(text),
+            vec![],
             vec![],
             Default::default(),
             &facts(),
@@ -596,8 +601,14 @@ fn a_tightened_template_denies_its_leases_and_a_key_the_signer_lacks_is_refused(
         (*h.service.key_uses()).clone(),
     );
     let message = refused(
-        h.service
-            .commit_admin(&checked, parsed, vec![], Default::default(), &facts()),
+        h.service.commit_admin(
+            &checked,
+            parsed,
+            vec![],
+            vec![],
+            Default::default(),
+            &facts(),
+        ),
         RefusalCode::Admin,
     );
     assert!(
@@ -616,7 +627,14 @@ fn a_tightened_template_denies_its_leases_and_a_key_the_signer_lacks_is_refused(
         (*h.service.key_uses()).clone(),
     );
     h.service
-        .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
+        .commit_admin(
+            &checked,
+            parsed,
+            vec![],
+            vec![],
+            Default::default(),
+            &facts(),
+        )
         .unwrap();
     let denial = h.service.fetch(&cert, &facts(), &repo).unwrap_err();
     assert_eq!(denial.code, DenyCode::Config, "{denial:?}");
@@ -640,6 +658,7 @@ fn a_change_the_audit_log_cannot_take_changes_nothing() {
         .commit_admin(
             &checked,
             AdminParsed::Readers,
+            vec![],
             vec![],
             Default::default(),
             &facts(),
@@ -729,7 +748,14 @@ fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_log
         (*h.service.key_uses()).clone(),
     );
     h.service
-        .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
+        .commit_admin(
+            &checked,
+            parsed,
+            vec![],
+            vec![],
+            Default::default(),
+            &facts(),
+        )
         .unwrap();
     let after = h.service.openpgp_certificate(&id).unwrap();
     assert_ne!(after, before);
@@ -757,7 +783,14 @@ fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_log
         (*h.service.key_uses()).clone(),
     );
     h.service
-        .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
+        .commit_admin(
+            &checked,
+            parsed,
+            vec![],
+            vec![],
+            Default::default(),
+            &facts(),
+        )
         .unwrap();
     assert_eq!(h.service.openpgp_certificate(&id).unwrap(), after);
     let audit = std::fs::read_to_string(&h.audit_path).unwrap();

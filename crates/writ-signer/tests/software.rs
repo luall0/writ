@@ -51,10 +51,11 @@ fn the_software_backend_passes_the_contract() {
     assert!(!mixed.capabilities().needs_touch);
     assert!(mixed.capabilities().takes_keys);
     add_key_contract(&mixed);
-    // A backend that holds no key yet takes one too.
+    // A backend that holds no key yet takes one too, and gives it back (the contract removes
+    // what it added).
     let empty = SoftwareSigner::empty();
     add_key_contract(&empty);
-    assert_eq!(empty.list_keys().unwrap().len(), 1);
+    assert!(empty.list_keys().unwrap().is_empty());
 }
 
 #[test]

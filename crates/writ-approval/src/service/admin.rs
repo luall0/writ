@@ -17,7 +17,7 @@ use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::signed::Admin;
 use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::authority::HeadEntry;
-use writ_proto::{AdminApplied, AdminRequest, AdminShown, CreatedKey};
+use writ_proto::{AdminApplied, AdminRequest, AdminShown, CreatedKey, RemovedKey};
 use writ_store::{AuditEvent, AuthorityHead, AuthorityHow, AuthorityVersion, EventKind, Outcome};
 
 use super::{KeyUses, Service, internal, signing_keys_exist};
@@ -188,11 +188,14 @@ impl Service {
     /// can't take it, nothing changes), the new version and head under the keystore's MAC,
     /// and the swap. `parsed` is the daemon's reading of the new text; `created`, the keys it
     /// made for a new policy (named in the `admin` line and the reply).
+    // The change, what the daemon made and takes out for it, and who asked: each its own.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_admin(
         &self,
         checked: &CheckedAdmin,
         parsed: AdminParsed,
         created: Vec<CreatedKey>,
+        removed: Vec<RemovedKey>,
         openpgp_created: std::collections::BTreeMap<writ_core::names::KeyId, u32>,
         caller: &CallerFacts,
     ) -> Result<AdminApplied, ServiceError> {
@@ -333,6 +336,15 @@ impl Service {
                         key.id,
                         key.public_key
                     ))
+                    .chain(removed.iter().map(|key| {
+                        match (&key.public_key, &key.fingerprint) {
+                            (Some(public), Some(fingerprint)) => format!(
+                                "; removed {} {} ({fingerprint}): {public}",
+                                key.description, key.id
+                            ),
+                            _ => format!("; removed {} {}", key.description, key.id),
+                        }
+                    }))
                     .collect::<String>()
             ));
         Self::log(&mut inner, &event)?;
@@ -400,6 +412,7 @@ impl Service {
             signed_by: checked.approver.clone(),
             created,
             revoked,
+            removed,
         })
     }
 

@@ -82,8 +82,9 @@ fn the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says() {
         assert!(line.ends_with(&format!(" (repos: {repo})")), "{line}");
         assert_eq!(stack.forgejo.deploy_keys(repo).len(), 1, "{repo}");
     }
-    // One signing key per template key id, with the templates that name it.
-    assert_eq!(report.signing_keys.len(), 3, "{:?}", report.signing_keys);
+    // Every declared signing key, with the templates that name it (scenario 23's named by
+    // none).
+    assert_eq!(report.signing_keys.len(), 4, "{:?}", report.signing_keys);
     assert!(report.signing_keys[0].starts_with("agent-e2e ssh-ed25519 "));
     assert!(
         report.signing_keys[0].ends_with(" (templates: feature, pr-backend, pr-frontend)"),
@@ -95,6 +96,8 @@ fn the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says() {
     assert!(report.signing_keys[1].ends_with(" (ed25519) (templates: openpgp)"));
     assert!(report.signing_keys[2].starts_with("agent-e2e-verify ssh-ed25519 "));
     assert!(report.signing_keys[2].ends_with(" (templates: verified)"));
+    assert!(report.signing_keys[3].starts_with("managed-signing ssh-ed25519 "));
+    assert!(report.signing_keys[3].ends_with(" (templates: )"));
     assert!(
         report.host_key.starts_with("ssh-ed25519 "),
         "{}",

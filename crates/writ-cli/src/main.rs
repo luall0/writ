@@ -420,6 +420,34 @@ enum EntryCommand {
         #[command(flatten)]
         url: ApprovalUrl,
     },
+    /// Change only the fields named: field=value replaces, field+=value and field-=value add
+    /// to and take from a list, field! unsets an optional field, field= empties a list. Shown
+    /// as a diff, then one signature with your approval key.
+    Set {
+        name: String,
+        /// field=value, field+=value, field-=value or field!.
+        #[arg(value_name = "FIELD=VALUE")]
+        edits: Vec<String>,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+    /// Remove it: what it affects shown first, then confirmed and signed. Refused while
+    /// something uses it.
+    Remove {
+        name: String,
+        /// Answer the questions (without a terminal too); the signature is still asked for.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
 }
 
 /// `writ admin key <verb>`.
@@ -439,6 +467,34 @@ enum KeyCommand {
         public: bool,
         #[command(flatten)]
         url: ApprovalUrl,
+    },
+    /// Change only the fields named: field=value replaces, field+=value and field-=value add
+    /// to and take from a list, field! unsets an optional field, field= empties a list. Shown
+    /// as a diff, then one signature with your approval key.
+    Set {
+        name: String,
+        /// field=value, field+=value, field-=value or field!.
+        #[arg(value_name = "FIELD=VALUE")]
+        edits: Vec<String>,
+        /// Sign without asking (the diff is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+    /// Remove it: deleted from the keystore for good once the change applies, after its id is
+    /// typed again. Refused while a repo or a template uses it.
+    Remove {
+        name: String,
+        /// Answer the questions (without a terminal too); the signature is still asked for.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
     },
 }
 
@@ -633,14 +689,15 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 | AdminCommand::Template { command }
                 | AdminCommand::Host { command },
         } => {
+            use writ_core::config::Section;
             let section = match &cli.command {
                 Commands::Admin {
                     command: AdminCommand::Repo { .. },
-                } => writ_core::config::Section::Repos,
+                } => Section::Repos,
                 Commands::Admin {
                     command: AdminCommand::Template { .. },
-                } => writ_core::config::Section::Templates,
-                _ => writ_core::config::Section::UpstreamHosts,
+                } => Section::Templates,
+                _ => Section::UpstreamHosts,
             };
             match command {
                 EntryCommand::List { url } => {
@@ -649,25 +706,70 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 EntryCommand::Show { name, url } => {
                     approver::manage_show(&paths, &url.url, section, name, false).await
                 }
+                EntryCommand::Set {
+                    name,
+                    edits,
+                    yes,
+                    url,
+                    signer: args,
+                } => {
+                    let signer = signer(&paths, args);
+                    approver::manage_set(&paths, &url.url, &signer, section, name, edits, *yes)
+                        .await
+                }
+                EntryCommand::Remove {
+                    name,
+                    yes,
+                    url,
+                    signer: args,
+                } => {
+                    let signer = signer(&paths, args);
+                    approver::manage_remove(&paths, &url.url, &signer, section, name, *yes).await
+                }
             }
         }
         Commands::Admin {
             command: AdminCommand::Key { command },
-        } => match command {
-            KeyCommand::List { url } => {
-                approver::manage_list(&paths, &url.url, writ_core::config::Section::Keys).await
+        } => {
+            use writ_core::config::Section;
+            match command {
+                KeyCommand::List { url } => {
+                    approver::manage_list(&paths, &url.url, Section::Keys).await
+                }
+                KeyCommand::Show { id, public, url } => {
+                    approver::manage_show(&paths, &url.url, Section::Keys, id, *public).await
+                }
+                KeyCommand::Set {
+                    name,
+                    edits,
+                    yes,
+                    url,
+                    signer: args,
+                } => {
+                    let signer = signer(&paths, args);
+                    approver::manage_set(
+                        &paths,
+                        &url.url,
+                        &signer,
+                        Section::Keys,
+                        name,
+                        edits,
+                        *yes,
+                    )
+                    .await
+                }
+                KeyCommand::Remove {
+                    name,
+                    yes,
+                    url,
+                    signer: args,
+                } => {
+                    let signer = signer(&paths, args);
+                    approver::manage_remove(&paths, &url.url, &signer, Section::Keys, name, *yes)
+                        .await
+                }
             }
-            KeyCommand::Show { id, public, url } => {
-                approver::manage_show(
-                    &paths,
-                    &url.url,
-                    writ_core::config::Section::Keys,
-                    id,
-                    *public,
-                )
-                .await
-            }
-        },
+        }
         Commands::Admin {
             command:
                 AdminCommand::Apply {

@@ -17,6 +17,8 @@ keys:
     use: signing
     format: ssh
     algorithm: ed25519
+  # Scenario 23's own entries, used by nothing else: changed field by field, then removed.
+  managed-signing: { use: signing, format: ssh, algorithm: ed25519 }
   upstream-setup: { use: upstream, kind: ssh, algorithm: ed25519 }
   upstream-lifecycle: { use: upstream, kind: ssh, algorithm: ed25519 }
   upstream-narrowing: { use: upstream, kind: ssh, algorithm: ed25519 }
@@ -45,6 +47,7 @@ upstream_hosts:
   # Forgejo's host key: the setup scans it, compares it with the one Forgejo publishes, and
   # puts it here before `writd init` (docs/operators/setup.md, step 3).
   forgejo: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]
+  managed.invalid: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJON0F+SC7vTbwXqnI857uLvAWDJtDsl1W7eeWrS7GMg"]
 repos:
   setup:      { upstream: "ssh://git@forgejo/writ/setup.git",      upstream_credential: upstream-setup, templates: [feature],      protected_refs: ["refs/heads/main", "refs/tags/*"] }
   lifecycle:  { upstream: "ssh://git@forgejo/writ/lifecycle.git",  upstream_credential: upstream-lifecycle, templates: [feature],  protected_refs: ["refs/heads/main", "refs/tags/*"] }
@@ -141,3 +144,11 @@ templates:
     max_pushes: 50
     max_ops_per_minute: 200
     max_push_size: 50MB
+  # Scenario 23's: named by no repo (a profile not used yet).
+  managed:
+    operations: [fetch]
+    max_ttl: 1h
+    max_signatures: 0
+    max_pushes: 0
+    max_ops_per_minute: 10
+    max_push_size: 0

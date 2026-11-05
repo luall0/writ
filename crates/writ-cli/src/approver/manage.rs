@@ -10,7 +10,14 @@ use writ_core::config::{PolicyConfig, Section};
 use writ_core::upstream::Upstream;
 use writ_proto::{AdminShown, Command, KeyShown, KeysShown};
 
-use super::connect;
+use std::io::Write as _;
+
+use writ_core::authority::AdminText;
+use writ_core::config::edit::FieldEdit;
+use writ_proto::Listing;
+
+use super::admin::sign_change;
+use super::{Signer, connect};
 use crate::client::Approvals;
 use crate::display::clean;
 use crate::{Exit, Paths};
@@ -311,6 +318,197 @@ fn details(policy: &PolicyConfig, section: Section, name: &str, key: Option<&Key
         }
     }
     out
+}
+
+/// What a change starting from `shown` says before its diff: a policy in force that isn't in
+/// the canonical layout is written in it by this change (its comments go).
+fn layout_note(shown: &AdminShown, policy: &PolicyConfig) {
+    if shown.text != policy.to_yaml() {
+        println!(
+            "The policy in force isn't in Writ's layout: this change writes it so (comments \
+             dropped, fields in the reference's order), as the diff shows."
+        );
+    }
+}
+
+/// The edits as typed, for the change's line.
+fn typed(edits: &[FieldEdit]) -> String {
+    edits
+        .iter()
+        .map(|e| clean(&e.to_string()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `writ admin <noun> set <name> <field>=<value>…`: only the fields named, applied to the
+/// policy in force, read back whole (what the daemon would refuse is refused here first,
+/// naming the field), shown as a diff, signed.
+pub async fn set(
+    paths: &Paths,
+    url: &str,
+    signer: &Signer,
+    section: Section,
+    name: &str,
+    edits: &[String],
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    if edits.is_empty() {
+        bail!(
+            "nothing to set: name each field, as field=value, field+=value, field-=value or \
+             field! (writ admin {} show {} shows them)",
+            section.noun(),
+            clean(name)
+        );
+    }
+    let edits: Vec<FieldEdit> = edits
+        .iter()
+        .map(|e| FieldEdit::parse(e).map_err(|why| anyhow::anyhow!(why)))
+        .collect::<anyhow::Result<_>>()?;
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let (shown, policy) = policy_in_force(session).await?;
+            let next = writ_core::config::edit::edit(
+                &policy,
+                section,
+                name,
+                &edits,
+                writ_core::fit::MIN_TTL_FLOOR,
+            )
+            .map_err(|e| anyhow::anyhow!("not changed: {}", clean(&e.to_string())))?;
+            let text = AdminText::try_from(next.to_yaml())?;
+            layout_note(&shown, &policy);
+            let what = format!(
+                "with {} {} set: {}",
+                section.noun(),
+                clean(name),
+                typed(&edits)
+            );
+            sign_change(session, signer, &shown, &text, &what, yes).await
+        })
+        .await
+}
+
+/// `writ admin <noun> remove <name>`: what it affects shown first (refused while something
+/// uses it, naming what), confirmed, then signed. A key's id is typed again first: its removal
+/// deletes it for good. Without a terminal, only `--yes` answers these questions (never the
+/// signature).
+pub async fn remove(
+    paths: &Paths,
+    url: &str,
+    signer: &Signer,
+    section: Section,
+    name: &str,
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    use std::io::IsTerminal as _;
+    if !yes && !std::io::stdin().is_terminal() {
+        bail!(
+            "removing {} {} asks to confirm: without a terminal, give --yes",
+            section.noun(),
+            clean(name)
+        );
+    }
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let (shown, policy) = policy_in_force(session).await?;
+            if policy.entry_yaml(section, name).is_none() {
+                bail!(
+                    "no {} {} in the policy in force (writ admin {} list)",
+                    section.noun(),
+                    clean(name),
+                    section.noun()
+                );
+            }
+            if let Some(users) = users(&policy, section, name) {
+                bail!(
+                    "{} {} is in use by {users}: take it off them first",
+                    section.noun(),
+                    clean(name)
+                );
+            }
+            match section {
+                Section::Repos => {
+                    let listing: Listing =
+                        session.call(&Command::List { all: false }, b"").await??;
+                    let ending: Vec<String> = listing
+                        .tickets
+                        .iter()
+                        .filter(|t| t.state == writ_core::lease::State::Active)
+                        .filter(|t| t.repos.iter().any(|r| r.as_str() == name))
+                        .map(|t| t.lease.to_string())
+                        .collect();
+                    if !ending.is_empty() {
+                        println!(
+                            "These active leases reach repo {} and can no longer use it once it \
+                             is removed: {}",
+                            clean(name),
+                            ending.join(", ")
+                        );
+                    }
+                }
+                Section::Keys => {
+                    let key = policy
+                        .keys()
+                        .iter()
+                        .find(|(id, _)| id.as_str() == name)
+                        .map(|(_, key)| key.describe())
+                        .unwrap_or_default();
+                    println!(
+                        "Removing key {} ({}) deletes it from the keystore for good once the \
+                         change applies; its public half stays in the audit log, and declaring \
+                         the id again makes a new key.",
+                        clean(name),
+                        clean(&key)
+                    );
+                    if !yes {
+                        print!("Type the key's id again to go on: ");
+                        std::io::stdout().flush()?;
+                        let again = super::read_line()?;
+                        if again != name {
+                            println!("Not signed: that is not {}.", clean(name));
+                            return Ok(Exit::NotSigned);
+                        }
+                    }
+                }
+                Section::Templates | Section::UpstreamHosts => {}
+            }
+            let next = writ_core::config::edit::remove(
+                &policy,
+                section,
+                name,
+                writ_core::fit::MIN_TTL_FLOOR,
+            )
+            .map_err(|e| anyhow::anyhow!("not removed: {}", clean(&e.to_string())))?;
+            let text = AdminText::try_from(next.to_yaml())?;
+            layout_note(&shown, &policy);
+            let what = format!("without {} {}", section.noun(), clean(name));
+            sign_change(session, signer, &shown, &text, &what, yes).await
+        })
+        .await
+}
+
+/// What uses the entry `name` of `section`, said, or none.
+fn users(policy: &PolicyConfig, section: Section, name: &str) -> Option<String> {
+    match section {
+        Section::Repos => None,
+        Section::Templates => {
+            let template = name.parse().ok()?;
+            let repos = policy.template_users(&template);
+            (!repos.is_empty()).then(|| format!("repos {}", names(&repos)))
+        }
+        Section::Keys => {
+            let id = name.parse().ok()?;
+            let users = policy.key_users(&id);
+            (!users.is_empty()).then(|| clean(&users.to_string()))
+        }
+        Section::UpstreamHosts => {
+            let host = name.to_owned().try_into().ok()?;
+            let repos = policy.host_users(&host);
+            (!repos.is_empty()).then(|| format!("repos {}", names(&repos)))
+        }
+    }
 }
 
 #[cfg(test)]

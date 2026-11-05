@@ -107,6 +107,13 @@ pub trait Signer: Send + Sync {
         drop(key);
         Err(SignerError::CannotTakeKeys(id))
     }
+    /// Drops the key `id` (wiped, a software key), no longer listed nor signed with: a key
+    /// the policy no longer declares, deleted for good (M6.2). An id it doesn't hold is
+    /// [`SignerError::UnknownKey`]. A backend that takes no key from outside keeps this
+    /// default, [`SignerError::CannotTakeKeys`] (a device's own key verb comes with M7.5).
+    fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
+        Err(SignerError::CannotTakeKeys(id.clone()))
+    }
 }
 
 /// A shared signer is a signer (a decorator can hold one the daemon or a test holds too).
@@ -125,6 +132,10 @@ impl<S: Signer + ?Sized> Signer for std::sync::Arc<S> {
 
     fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         (**self).add_key(id, key)
+    }
+
+    fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
+        (**self).remove_key(id)
     }
 }
 

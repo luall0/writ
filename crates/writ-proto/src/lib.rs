@@ -34,9 +34,9 @@ pub use messages::{
     Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, ChainLink, Checked, CloseRequest,
     Count, CreatedKey, Decision, Decisions, DenialCount, Info, KeyRole, KeyShown, KeysShown,
     Listing, OpenpgpShown, OtherLease, Others, PassphraseText, Phases, Previous, ProveRequest,
-    Proved, RefuseRequest, Relation, Renewal, RepoPolicy, Report, ReportCommit, ReportPush,
-    RevokeRequest, SealedBoot, Shown, Submitted, Summary, TemplateView, TokenApplied, TokenRequest,
-    TokenShown, UnsealRequest, Unsealed,
+    Proved, RefuseRequest, Relation, RemovedKey, Renewal, RepoPolicy, Report, ReportCommit,
+    ReportPush, RevokeRequest, SealedBoot, Shown, Submitted, Summary, TemplateView, TokenApplied,
+    TokenRequest, TokenShown, UnsealRequest, Unsealed,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).

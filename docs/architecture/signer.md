@@ -25,6 +25,10 @@ pub trait Signer: Send + Sync {
     /// once. A backend that can't take one (a device makes its own keys) answers
     /// `CannotTakeKeys`, the default; an id it holds already is `DuplicateKey`.
     fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError>;
+    /// Drops the key `id` (wiped), no longer listed nor signed with: a key the policy no
+    /// longer declares (M6.2). `UnknownKey` for an id it doesn't hold; `CannotTakeKeys`, the
+    /// default, for a backend that takes no key from outside.
+    fn remove_key(&self, id: &KeyId) -> Result<(), SignerError>;
 }
 ```
 
@@ -59,14 +63,24 @@ algorithm, the signer hash, and the signature in one fixed encoding (Ed25519's 6
 ECDSA's `r ‖ s`, RSA's `s`), which adapters turn into an SSH signature (`to_ssh`), TLS's
 DER, or OpenPGP's MPIs; `writ_crypto::keypair::verify` checks one against a public key.
 
-**Adding a key live** (M5): a signed policy change that names an agent signing key or an
-`ssh://` upstream credential the keystore lacks makes the daemon create it (a signing key as
-`writd.yaml` declares it, an upstream credential Ed25519), seal it to the keystore's
-recipient with its public half, and hand it to the running signer through `add_key`. The software backend holds its keys behind a lock and takes the key by
+**Adding a key live** (M5, declared in the policy since M6.2): a signed policy change that
+declares a signing key or an `ssh` upstream credential the keystore lacks makes the daemon
+create it as `keys.<id>` declares it, seal it to the keystore's recipient with its public
+half, and hand it to the running signer through `add_key`. The software backend holds its keys behind a lock and takes the key by
 move. `QueuedSigner` sends it through its worker, so it lands in order with the signatures
 queued before it, then refreshes the key list it answers `list_keys` from. The contract
 suite checks a key added is listed and signs, an id held already is refused by name, and a
 backend without the verb answers `Unsupported` and lists nothing new.
+
+**Removing a key** (M6.2): a signed policy change that no longer declares a key (or declares
+its id for another use) deletes it once the change is in force: `remove_key` on the signer
+that held it (through `QueuedSigner`'s worker, in order: a signature queued before it still
+signs, none after it does), then its sealed file, public half and certificate. The `admin`
+line keeps its public half and fingerprint, so what it signed stays verifiable, and declaring
+the id again makes a new key. A deletion cut short (the daemon stopped) is finished at the
+next unseal: the keys the keystore holds that the policy in force doesn't declare are deleted,
+each said in the audit log. The contract suite checks a removed key is no longer listed nor
+signed with, removing it again is refused by name, and the id then takes a new key.
 
 `add_key` is the verb for a key made outside the backend, which only a software backend can
 take. A device that makes its own keys (the Secure Enclave, a YubiKey) gets its own verb

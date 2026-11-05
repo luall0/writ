@@ -145,6 +145,26 @@ alone (an OpenPGP key's certificate), for a pipe. A sealed daemon refuses these 
 refuses every other; like `writ admin show`, they write no audit line (they grant nothing and
 reveal only public halves). Everything the daemon sends is shown escaped.
 
+## Changing the policy field by field
+
+`writ admin <noun> set <name> <field>=<value>…` and `remove <name>` (M6.2) build the new
+policy text from the version in force, in Writ's canonical layout (`writ_core::config::edit`:
+the entry's fields edited on a tree of the policy, read back whole with the daemon's checks,
+then written by `PolicyConfig::to_yaml`), and sign it as `writ admin apply` does (the diff on
+the trusted display, one `writ-admin/2` naming the version it replaces, so a change made in
+between is refused). `field=value` replaces (a list by its comma-separated values; `field=`
+empties it), `field+=value` and `field-=value` add one value to a list and take one from it
+(one already listed, or not listed, is refused), `field!` unsets an optional field. What a
+key is (`use`, `kind`, `format`, `algorithm`, `backend`) never changes: refused, naming `key
+rotate`. The first such change of a hand-written policy writes it in the canonical layout
+(its comments go), and says so. `remove` is refused while something uses the entry (a
+template a repo names, a key a repo or a template uses, a host a repo needs), naming what; a
+repo's removal lists the active leases that reach it; a key's asks for its id to be typed
+again (a mistyped one sends nothing), since the change deletes it for good
+([removing a key](signer.md#formats-algorithms-and-hashes)). Without a terminal, `remove`
+refuses unless `--yes` answers its questions; the signature is asked for all the same. What
+`writ` refuses here is a convenience: the daemon checks the text as it checks any change.
+
 ## `writ admin token`
 
 The `https://` upstreams' tokens and the notifiers' sealed tokens (`token.sealed`) reach the

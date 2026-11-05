@@ -17,6 +17,7 @@ use writ_core::config::{
 };
 use writ_core::ticket::Operation;
 use writ_core::ticket::TicketRequest;
+use writ_core::units::Duration;
 
 const UPSTREAM: &str = "ssh://git@github.com/user/omega-code.git";
 
@@ -977,4 +978,286 @@ fn one_entry_is_written_alone_as_the_whole_policy_writes_it() {
             assert!(whole.contains(&indented), "{section}.{name}");
         }
     }
+}
+
+fn edits(args: &[&str]) -> Vec<writ_core::config::edit::FieldEdit> {
+    args.iter()
+        .map(|a| writ_core::config::edit::FieldEdit::parse(a).unwrap())
+        .collect()
+}
+
+fn edited(
+    section: writ_core::config::Section,
+    name: &str,
+    args: &[&str],
+) -> Result<PolicyConfig, String> {
+    writ_core::config::edit::edit(
+        &config(),
+        section,
+        name,
+        &edits(args),
+        writ_core::fit::DEFAULT_MIN_TTL,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn set_changes_exactly_the_fields_named_in_every_syntax() {
+    use writ_core::config::Section;
+    let before = config();
+    let template = |p: &PolicyConfig| {
+        p.template(&"feature-branch".parse().unwrap())
+            .unwrap()
+            .clone()
+    };
+    // `=` replaces a value; `+=`, `-=` add to and take from a list; `!` unsets; `=` alone
+    // empties a list.
+    let after = edited(
+        Section::Templates,
+        "feature-branch",
+        &[
+            "max_ttl=2h",
+            "branches+=agent/hotfix-*",
+            "committer_emails-=user+agent@example.org",
+            "committer_emails+=bot@example.org",
+            "force_push=true",
+            "max_signatures=7",
+            "max_renewals=2",
+        ],
+    )
+    .unwrap();
+    let (old, new) = (template(&before), template(&after));
+    assert_eq!(new.max_ttl, Duration::from_seconds(7200));
+    assert_eq!(new.branches.len(), 2);
+    assert_eq!(
+        new.committer_emails
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>(),
+        ["bot@example.org"]
+    );
+    assert!(new.force_push && new.max_signatures == 7 && new.max_renewals == Some(2));
+    // Nothing else moved: the other fields, the other templates, the other sections.
+    assert_eq!(new.operations, old.operations);
+    assert_eq!(new.max_pushes, old.max_pushes);
+    assert_eq!(new.paths_check, old.paths_check);
+    assert_eq!(after.repos(), before.repos());
+    assert_eq!(after.keys(), before.keys());
+    for other in ["quick-fix", "read-only"] {
+        let name = other.parse().unwrap();
+        assert_eq!(after.template(&name), before.template(&name));
+    }
+    // `!` back to the default, `=` alone empties a list (and a repo with none is closed).
+    let unset = writ_core::config::edit::edit(
+        &after,
+        Section::Templates,
+        "feature-branch",
+        &edits(&["max_renewals!", "force_push!"]),
+        writ_core::fit::DEFAULT_MIN_TTL,
+    )
+    .unwrap();
+    assert_eq!(template(&unset).max_renewals, None);
+    assert!(!template(&unset).force_push);
+    let closed = edited(Section::Repos, "homelab-scripts", &["templates="]).unwrap();
+    assert!(
+        closed
+            .repo(&repo("homelab-scripts"))
+            .unwrap()
+            .templates
+            .is_empty()
+    );
+    // A comma-separated list replaces one; nested fields; a host's keys.
+    let repo_edit = edited(
+        Section::Repos,
+        "dotfiles",
+        &[
+            "templates=quick-fix,feature-branch",
+            "direct_ssh.hosts+=gitlab.com",
+            "direct_ssh.allow_account_wide=true",
+        ],
+    )
+    .unwrap();
+    let dotfiles = repo_edit.repo(&repo("dotfiles")).unwrap();
+    assert_eq!(dotfiles.templates.len(), 2);
+    let direct = dotfiles.direct_ssh.as_ref().unwrap();
+    assert_eq!(direct.hosts, ["github.com", "gitlab.com"]);
+    assert!(direct.allow_account_wide);
+    let key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC=";
+    let host = edited(
+        Section::UpstreamHosts,
+        "github.com",
+        &[&format!("keys+={key}")],
+    )
+    .unwrap();
+    let github = "github.com".to_owned().try_into().unwrap();
+    assert_eq!(host.upstream_hosts()[&github].len(), 2);
+    // A key's changeable fields: its hash (a token's host and a key's user ids likewise).
+    let uids = edited(Section::Keys, "agent-ed25519-01", &["hash=sha256"]).unwrap();
+    assert!(matches!(
+        uids.key(&"agent-ed25519-01".parse().unwrap()),
+        Some(Key::Signing(k)) if k.hash.map(|h| h.as_str()) == Some("sha256")
+    ));
+}
+
+#[test]
+fn a_set_the_policy_refuses_or_a_field_that_cant_change_is_refused_with_its_reason() {
+    use writ_core::config::Section;
+    for (section, name, args, expected) in [
+        (
+            Section::Keys,
+            "agent-ed25519-01",
+            &["algorithm=rsa4096"][..],
+            "keys.agent-ed25519-01.algorithm: can't change: it is what the key is (writ admin key rotate agent-ed25519-01 makes a new key, declared otherwise)",
+        ),
+        (
+            Section::Keys,
+            "upstream-github-01",
+            &["use=signing"][..],
+            "keys.upstream-github-01.use: can't change",
+        ),
+        (
+            Section::Keys,
+            "upstream-github-01",
+            &["backend=yubikey"][..],
+            "keys.upstream-github-01.backend: can't change",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["max_ttl!"][..],
+            "templates.feature-branch.max_ttl: required: it can't be unset",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["max_ttl="][..],
+            "templates.feature-branch.max_ttl: empty: field= empties a list",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["max_signatures=many"][..],
+            "templates.feature-branch.max_signatures: \"many\" is not a count",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["force_push=yes"][..],
+            "templates.feature-branch.force_push: \"yes\": true or false",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["max_ttl+=1h"][..],
+            "templates.feature-branch.max_ttl: += and -= are for a list",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["branches+=agent/*"][..],
+            "templates.feature-branch.branches: \"agent/*\" is listed already",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["branches-=main"][..],
+            "templates.feature-branch.branches: \"main\" is not listed",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["max_tll=1h"][..],
+            "templates.feature-branch.max_tll: template has no field \"max_tll\": it takes operations, branches",
+        ),
+        (
+            Section::Templates,
+            "nowhere",
+            &["max_ttl=1h"][..],
+            "templates.nowhere: no template nowhere in the policy",
+        ),
+        // What the policy itself refuses, read back whole.
+        (
+            Section::Templates,
+            "feature-branch",
+            &["max_ttl=1m"][..],
+            "templates.feature-branch.max_ttl: must be at least 5m",
+        ),
+        (
+            Section::Templates,
+            "feature-branch",
+            &["signing_key=upstream-github-01"][..],
+            "templates.feature-branch.signing_key: keys.upstream-github-01 is an upstream credential",
+        ),
+        (
+            Section::Repos,
+            "omega-code",
+            &["templates+=nope"][..],
+            "repos.omega-code.templates: nope is not a template",
+        ),
+        (
+            Section::Repos,
+            "omega-code",
+            &["upstream=ssh://git@gitlab.com/x.git"][..],
+            "repos.omega-code.upstream: its host gitlab.com has no pin in upstream_hosts",
+        ),
+        (
+            Section::UpstreamHosts,
+            "github.com",
+            &["keys="][..],
+            "upstream_hosts.github.com: must pin 1 to 16 keys",
+        ),
+    ] {
+        let error = edited(section, name, args).unwrap_err();
+        assert!(error.starts_with(expected), "{args:?}: {error}");
+    }
+}
+
+#[test]
+fn an_entry_something_uses_is_never_removed_and_one_nothing_uses_is() {
+    use writ_core::config::Section;
+    use writ_core::config::edit::remove;
+    let min = writ_core::fit::DEFAULT_MIN_TTL;
+    let policy = config();
+    for (section, name, expected) in [
+        (
+            Section::Templates,
+            "quick-fix",
+            "repos.dotfiles.templates: quick-fix is not a template",
+        ),
+        (
+            Section::Keys,
+            "upstream-forgejo-01",
+            "repos.homelab-scripts.upstream_credential: upstream-forgejo-01 is not declared in keys",
+        ),
+        (
+            Section::Keys,
+            "agent-ed25519-01",
+            "templates.feature-branch.signing_key: agent-ed25519-01 is not declared in keys",
+        ),
+        (
+            Section::UpstreamHosts,
+            "forgejo.home",
+            "repos.homelab-scripts.upstream: its host forgejo.home has no pin",
+        ),
+        (
+            Section::Repos,
+            "nowhere",
+            "repos.nowhere: no repo nowhere in the policy",
+        ),
+    ] {
+        let error = remove(&policy, section, name, min).unwrap_err().to_string();
+        assert!(error.starts_with(expected), "{section}.{name}: {error}");
+    }
+    // A repo (nothing names repos), then what it alone used.
+    let without = remove(&policy, Section::Repos, "homelab-scripts", min).unwrap();
+    assert!(without.repo(&repo("homelab-scripts")).is_none());
+    let without = remove(&without, Section::Keys, "upstream-forgejo-01", min).unwrap();
+    let without = remove(&without, Section::UpstreamHosts, "forgejo.home", min).unwrap();
+    assert!(
+        without
+            .upstream_hosts()
+            .keys()
+            .all(|h| h.as_str() != "forgejo.home")
+    );
+    assert_eq!(without.templates(), policy.templates());
 }

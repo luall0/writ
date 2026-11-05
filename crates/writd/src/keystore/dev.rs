@@ -67,6 +67,35 @@ fn role_dir(dir: &Path, role: KeyRole) -> std::path::PathBuf {
     })
 }
 
+/// Where the key `id` of `role` is in the development keystore `dir`.
+pub fn key_path(dir: &Path, role: KeyRole, id: &KeyId) -> std::path::PathBuf {
+    role_dir(dir, role).join(id.as_str())
+}
+
+/// The ids of the keys of `role` the development keystore holds (its file names that are
+/// key ids; a certificate or anything else left out).
+pub fn held(dir: &Path, role: KeyRole) -> anyhow::Result<Vec<KeyId>> {
+    let dir = role_dir(dir, role);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", dir.display())),
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("cannot read {}", dir.display()))?;
+        if let Some(id) = entry
+            .file_name()
+            .to_str()
+            .filter(|name| !name.starts_with('.') && !name.ends_with(".asc"))
+            .and_then(|name| name.parse::<KeyId>().ok())
+        {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
 /// The declared key `id`, from `<dir>/signing/<id>` or `<dir>/upstream/<id>` (a `writ-key/1`
 /// file, or an OpenSSH key), checked against its declaration; made there now, as declared,
 /// when it is missing. Whether it was made is the second value.

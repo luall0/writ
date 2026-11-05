@@ -7,8 +7,10 @@
 //!
 //! - [`keys`]: `keys.<id>`, every key the policy names, declared with its use.
 //! - [`hosts`]: `upstream_hosts`, the pinned upstream host keys.
+//! - [`edit`]: one entry's fields edited, as `writ admin <noun> set` and `remove` do.
 //! - `write`: the canonical layout.
 
+pub mod edit;
 pub mod hosts;
 pub mod keys;
 mod write;

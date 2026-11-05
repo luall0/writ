@@ -32,7 +32,7 @@ use writ_mirror::{MirrorConfig, Mirrors};
 use writ_platform::{BoxFuture, KeystoreUnlock, Passphrase, UnsealRequest};
 use writ_proto::PassphraseText;
 use writ_proto::{
-    AdminApplied, CreatedKey, KeyRole, KeyShown, KeysShown, TokenApplied, TokenShown,
+    AdminApplied, CreatedKey, KeyRole, KeyShown, KeysShown, RemovedKey, TokenApplied, TokenShown,
 };
 use writ_signer::Signer;
 
@@ -60,6 +60,16 @@ impl Open {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+}
+
+/// How a key a change took out is deleted once it is in force.
+#[derive(Debug, Clone, Copy)]
+enum Forget {
+    /// A key, from its signer and the keystore.
+    Key(KeyRole),
+    /// An upstream token, from the mirrors' tokens and, unless a sealed notifier uses the same
+    /// id, the keystore.
+    Token { keep_file: bool },
 }
 
 /// What a token id is for: an `https://` upstream's credential, a sealed notifier's token, or
@@ -169,6 +179,7 @@ impl Opener {
             upstream,
             tokens: RwLock::new(tokens),
         });
+        self.sweep_keys().await;
         self.sync_files();
         self.write_certificates();
         // Open: the notifiers whose token was sealed join the others; one whose token isn't
@@ -191,6 +202,36 @@ impl Opener {
             Duration::from_secs(inner.config.mirrors.sync_every.seconds()),
         );
         Ok(())
+    }
+
+    /// Deletes the keys the keystore holds that the policy in force no longer declares: left
+    /// by a change that took them out, the daemon stopping before it deleted them. Each is said
+    /// in the log and the audit log; a failure is logged and tried again at the next unseal.
+    async fn sweep_keys(&self) {
+        let inner = &self.0;
+        let Some(open) = inner.open.get() else {
+            return;
+        };
+        let (live, policy) = (open.live.clone(), inner.service.policy());
+        let swept = tokio::task::spawn_blocking(move || {
+            let declared = crate::declared::declarations(&policy)?;
+            keystore::sweep(&live, &declared)
+        })
+        .await;
+        match swept {
+            Ok(Ok(swept)) => {
+                for key in swept {
+                    let reason = format!(
+                        "{key}: deleted from the keystore at unseal (the policy in force no \
+                         longer declares it)"
+                    );
+                    tracing::warn!("{reason}");
+                    inner.service.admin_note(&reason);
+                }
+            }
+            Ok(Err(e)) => tracing::error!(error = %format!("{e:#}"), "cannot sweep the keystore"),
+            Err(_) => tracing::error!("cannot sweep the keystore"),
+        }
     }
 
     /// Starts (or restarts, with a new token) the notifier whose sealed token is `id`.
@@ -258,6 +299,7 @@ impl Opener {
             Approvers,
         }
         let (mut created, mut openpgp_created) = (Vec::new(), Created::new());
+        let mut removed: Vec<(RemovedKey, Forget)> = Vec::new();
         let (parsed, ready) = match target {
             AdminTarget::Policy => {
                 let (policy, declared) =
@@ -289,6 +331,7 @@ impl Opener {
                     .await
                     .map_err(|e| refuse(e.to_string()))?;
                 let key_uses = crate::declared::key_uses(&declared);
+                removed = self.removed_keys(&policy);
                 (
                     AdminParsed::Policy(policy, key_uses),
                     Ready::Policy(mirrors),
@@ -317,11 +360,13 @@ impl Opener {
         };
         let (service, checked_owned, caller_owned) =
             (inner.service.clone(), checked.clone(), caller.clone());
+        let shown: Vec<RemovedKey> = removed.iter().map(|(key, _)| key.clone()).collect();
         let applied = tokio::task::spawn_blocking(move || {
             service.commit_admin(
                 &checked_owned,
                 parsed,
                 created,
+                shown,
                 openpgp_created,
                 &caller_owned,
             )
@@ -332,6 +377,7 @@ impl Opener {
         match ready {
             Ready::Policy(mirrors) => {
                 gateway.set_mirrors(mirrors);
+                self.forget(&removed).await;
                 self.write_certificates();
             }
             Ready::Readers(readers) => gateway.readers().replace(readers),
@@ -393,6 +439,114 @@ impl Opener {
         })
         .await
         .context("the change stopped")?
+    }
+
+    /// The keys the policy in force declares that `next` doesn't (or declares for another
+    /// use: the old one goes, the new one is made), each with its public half from the signer
+    /// that holds it, for the `admin` line and the reply; and how to delete it once `next` is
+    /// in force. A token a sealed notifier uses keeps its file.
+    fn removed_keys(&self, next: &PolicyConfig) -> Vec<(RemovedKey, Forget)> {
+        let inner = &self.0;
+        let Some(open) = inner.open.get() else {
+            return Vec::new();
+        };
+        let current = inner.service.policy();
+        let notifier = |id: &KeyId| {
+            inner.config.notifiers.iter().any(|n| {
+                let NotifierConfig::Telegram(telegram) = n;
+                matches!(&telegram.token, TokenConfig::Sealed(sealed) if sealed == id)
+            })
+        };
+        let mut removed = Vec::new();
+        for (id, key) in current.keys() {
+            let kept = next.key(id).is_some_and(|other| {
+                role_of(other) == role_of(key) && other.is_made() == key.is_made()
+            });
+            if kept {
+                continue;
+            }
+            let (forget, public) = match role_of(key) {
+                Some(role) => {
+                    let signer = match role {
+                        KeyRole::Signing => &open.signing,
+                        KeyRole::Upstream => &open.upstream,
+                    };
+                    (
+                        Forget::Key(role),
+                        writ_signer::public_key(&**signer, id).ok(),
+                    )
+                }
+                None => (
+                    Forget::Token {
+                        keep_file: notifier(id),
+                    },
+                    None,
+                ),
+            };
+            removed.push((
+                RemovedKey {
+                    id: id.clone(),
+                    description: key.describe(),
+                    public_key: public.as_ref().and_then(|p| p.to_openssh().ok()),
+                    fingerprint: public.as_ref().map(|p| {
+                        p.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
+                            .to_string()
+                    }),
+                },
+                forget,
+            ));
+        }
+        removed
+    }
+
+    /// Deletes the keys a change took out, now that it is in force: out of the signer that
+    /// held each (never signed with again), then out of the keystore, for good. A failure is
+    /// logged: the next unseal's sweep deletes what is left.
+    async fn forget(&self, removed: &[(RemovedKey, Forget)]) {
+        let Some(open) = self.0.open.get() else {
+            return;
+        };
+        for (key, forget) in removed {
+            let id = key.id.clone();
+            match forget {
+                Forget::Key(role) => {
+                    let signer = match role {
+                        KeyRole::Signing => open.signing.clone(),
+                        KeyRole::Upstream => open.upstream.clone(),
+                    };
+                    let (live, role) = (open.live.clone(), *role);
+                    let done = tokio::task::spawn_blocking(move || {
+                        match signer.remove_key(&id) {
+                            Ok(()) | Err(writ_signer::SignerError::UnknownKey(_)) => {}
+                            Err(e) => return Err(anyhow::anyhow!("{e}")),
+                        }
+                        live.forget(&id, role)
+                    })
+                    .await;
+                    match done {
+                        Ok(Ok(())) => tracing::info!(id = %key.id, "key deleted from the keystore"),
+                        Ok(Err(e)) => tracing::error!(
+                            id = %key.id,
+                            error = %format!("{e:#}"),
+                            "cannot delete the key: the next unseal does"
+                        ),
+                        Err(_) => tracing::error!(
+                            id = %key.id,
+                            "cannot delete the key: the next unseal does"
+                        ),
+                    }
+                }
+                Forget::Token { keep_file } => {
+                    open.tokens
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(&id);
+                    if !keep_file && let Err(e) = open.live.forget_token(&id) {
+                        tracing::error!(id = %key.id, error = %format!("{e:#}"), "cannot delete the token");
+                    }
+                }
+            }
+        }
     }
 
     /// What the token `id` is for, from the policy in force and `writd.yaml`'s notifiers: an
@@ -681,5 +835,17 @@ impl AdminApplier for Opener {
                 .await
                 .map_err(|_| "the read stopped".to_owned())?
         })
+    }
+}
+
+/// What signs with a declared key: the agent keys' signer, the upstream one, or none (a
+/// token).
+fn role_of(key: &writ_core::config::Key) -> Option<KeyRole> {
+    match key {
+        writ_core::config::Key::Signing(_) => Some(KeyRole::Signing),
+        writ_core::config::Key::Upstream(writ_core::config::UpstreamKey::Ssh { .. }) => {
+            Some(KeyRole::Upstream)
+        }
+        writ_core::config::Key::Upstream(writ_core::config::UpstreamKey::Token { .. }) => None,
     }
 }

@@ -199,6 +199,28 @@ pub fn add_key_contract(signer: &dyn Signer) {
         Err(SignerError::DuplicateKey(refused)) if refused == id
     ));
     assert_eq!(public_key(signer, &id).unwrap(), public);
+    // Removed: no longer listed nor signed with, the others untouched; removed again, or
+    // signed with after, refused by name; then the same id takes a new key, never the old one.
+    signer.remove_key(&id).unwrap();
+    assert_eq!(
+        signer.list_keys().unwrap(),
+        before,
+        "removed: only the others listed"
+    );
+    assert!(matches!(
+        sshsig(signer, &id, "git", SSHSIG_HASH, msg),
+        Err(SignerError::UnknownKey(refused)) if refused == id
+    ));
+    assert!(matches!(
+        signer.remove_key(&id),
+        Err(SignerError::UnknownKey(refused)) if refused == id
+    ));
+    let fresh = new_key();
+    let fresh_public = fresh.public_key();
+    signer.add_key(id.clone(), fresh).unwrap();
+    assert_eq!(public_key(signer, &id).unwrap(), fresh_public);
+    assert_ne!(fresh_public, public, "a new key under the old id");
+    signer.remove_key(&id).unwrap();
 }
 
 /// The decorator section: `backend` behind a [`QueuedSigner`] (with a [`GatedSigner`] between

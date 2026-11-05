@@ -309,6 +309,40 @@ impl Live {
         }
     }
 
+    /// Deletes the key `id` of `role` from the keystore: a key a policy change took out
+    /// (its sealed file, its public half, an OpenPGP key's certificate). What isn't there is
+    /// fine; what can't be removed is an error, naming the file.
+    pub fn forget(&self, id: &KeyId, role: KeyRole) -> anyhow::Result<()> {
+        let files = match self {
+            Self::Dev(dir) => vec![dev::key_path(dir, role, id)],
+            Self::Sealed { sealed, .. } => {
+                let layout = sealed::Layout(sealed);
+                let mut files = vec![layout.key(role, id), layout.key_public(role, id)];
+                if role == KeyRole::Signing {
+                    files.push(layout.signing_dir().join(format!("{id}.asc")));
+                }
+                files
+            }
+        };
+        if let Self::Dev(dir) = self
+            && role == KeyRole::Signing
+        {
+            remove_if_there(&dir.join("signing").join(format!("{id}.asc")))?;
+        }
+        for file in files {
+            remove_if_there(&file)?;
+        }
+        Ok(())
+    }
+
+    /// Deletes the token `id` from the keystore: one a policy change took out.
+    pub fn forget_token(&self, id: &KeyId) -> anyhow::Result<()> {
+        match self {
+            Self::Dev(dir) => remove_if_there(&dir.join("tokens").join(id.as_str())),
+            Self::Sealed { sealed, .. } => remove_if_there(&sealed::Layout(sealed).token(id)),
+        }
+    }
+
     /// The sealed keystore's parts, or why the development keystore takes no token this way.
     fn sealed(&self) -> anyhow::Result<(&SealedConfig, &sealed::SecretFiles)> {
         match self {
@@ -339,6 +373,37 @@ impl Live {
         let (sealed, _) = self.sealed()?;
         sealed::write_token(sealed, id, file)
     }
+}
+
+/// Removes `path` if it is there (never following a link: the entry itself goes).
+fn remove_if_there(path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("cannot remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The keys the keystore holds that `declared` doesn't name in their role (left by a change
+/// that took them out, the daemon stopping before it deleted them): deleted, each said.
+/// The CA, the authority key and the tokens are never touched.
+pub fn sweep(live: &Live, declared: &Declarations) -> anyhow::Result<Vec<String>> {
+    let mut swept = Vec::new();
+    for role in [KeyRole::Signing, KeyRole::Upstream] {
+        let held = match live {
+            Live::Dev(dir) => dev::held(dir, role)?,
+            Live::Sealed { sealed, .. } => sealed::held(&sealed::Layout(sealed), role)?,
+        };
+        for id in held {
+            if declared.get(&id).is_some_and(|key| key.role == role) {
+                continue;
+            }
+            live.forget(&id, role)?;
+            swept.push(crate::declared::named(role, &id));
+        }
+    }
+    Ok(swept)
 }
 
 /// The sealed keystore's public recipient, as `writ info` serves it; none with the development

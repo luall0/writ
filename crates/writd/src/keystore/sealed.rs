@@ -395,6 +395,29 @@ fn stored_public(
         .with_context(|| format!("{}: not a key's public half", path.display()))
 }
 
+/// The ids of the keys of `role` the sealed keystore holds (`<id>.age` files).
+pub fn held(layout: &Layout<'_>, role: KeyRole) -> anyhow::Result<Vec<KeyId>> {
+    let dir = layout.key_dir(role);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", dir.display())),
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("cannot read {}", dir.display()))?;
+        if let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_suffix(".age"))
+            .and_then(|name| name.parse::<KeyId>().ok())
+        {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
 /// Checks the public half of the held key `id` against its declaration.
 pub fn check_public(layout: &Layout<'_>, id: &KeyId, declared: &Declared) -> anyhow::Result<()> {
     let (public, meta) = stored_public(layout, declared.role, id)?;

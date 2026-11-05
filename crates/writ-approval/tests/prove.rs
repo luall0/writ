@@ -536,6 +536,7 @@ fn a_proof_follows_the_policy_in_force_not_the_one_at_start() {
                 (*h.service.key_uses()).clone(),
             ),
             vec![],
+            vec![],
             Default::default(),
             &facts(),
         )

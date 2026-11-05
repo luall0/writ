@@ -87,6 +87,10 @@ impl<S: Signer> Signer for FailingSigner<S> {
     fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         self.inner.add_key(id, key)
     }
+
+    fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
+        self.inner.remove_key(id)
+    }
 }
 
 /// How long a test waits for a signature to reach a [`GatedSigner`] before failing: a bound
@@ -229,5 +233,9 @@ impl<S: Signer> Signer for GatedSigner<S> {
 
     fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         self.inner.add_key(id, key)
+    }
+
+    fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
+        self.inner.remove_key(id)
     }
 }

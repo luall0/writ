@@ -249,6 +249,7 @@ fn git_takes_in_no_more_than_the_template_in_force_allows() {
                 (*gateway.service.key_uses()).clone(),
             ),
             vec![],
+            vec![],
             Default::default(),
             &facts,
         )

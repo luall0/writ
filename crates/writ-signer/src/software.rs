@@ -126,4 +126,12 @@ impl Signer for SoftwareSigner {
         let mut held = self.keys.write().unwrap_or_else(PoisonError::into_inner);
         insert(&mut held, id, key)
     }
+
+    fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
+        let mut held = self.keys.write().unwrap_or_else(PoisonError::into_inner);
+        // Dropped here: the key pair wipes itself.
+        held.remove(id)
+            .map(drop)
+            .ok_or_else(|| SignerError::UnknownKey(id.clone()))
+    }
 }
