@@ -6,7 +6,7 @@
 //! and the mirror unchanged, with the allowed push beside them.
 
 use writ_e2e::Stack;
-use writ_e2e::agent::{expect, ticket};
+use writ_e2e::agent::{expect, ticket, ticket_with};
 use writ_e2e::stderr;
 
 use crate::assert_push_refused;
@@ -18,7 +18,13 @@ fn every_push_denial_leaves_forgejo_and_the_mirror_unchanged() {
     let agent = stack.agent("denials");
     let lease = agent.lease(
         &stack,
-        &ticket(&["denials"], &["agent/*"], "1h", "  max_push_size: 1MB\n"),
+        &ticket_with(
+            &["denials"],
+            &["agent/*"],
+            "1h",
+            "    limits:\n      max_push_size: 1MB\n",
+            "",
+        ),
     );
     agent.clone_from_forgejo(&stack, "denials", "work");
     agent.ok_in("work", "writ init denials --agents none");

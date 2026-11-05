@@ -44,8 +44,18 @@ templates:
 /// A ticket for `branch`, `more` lines in its `ticket:` section.
 fn ticket(branch: &str, more: &str) -> String {
     format!(
-        "scope:\n  repos: [demo]\n  operations: [fetch, commit_sign, push]\n  branches: [\"{branch}\"]\n\
+        "repos:\n  demo:\n    operations: [fetch, commit_sign, push]\n    branches: [\"{branch}\"]\n\
          ticket:\n  title: \"Add OAuth login\"\n  task: Add GitHub OAuth login\n{more}limits:\n  ttl: 1h\n"
+    )
+}
+
+/// `yaml` (a ticket for repo demo) with its repository's template named.
+fn with_template(template: &str, yaml: &str) -> String {
+    assert!(yaml.contains("  demo:\n"), "a ticket for demo");
+    yaml.replacen(
+        "  demo:\n",
+        &format!("  demo:\n    template: {template}\n"),
+        1,
     )
 }
 
@@ -478,7 +488,7 @@ fn a_whole_repo_clone_follows_its_lease_s_format_and_undo_is_exact() {
     let (ssh_lease, _, _) = granted(
         &daemon,
         "ssh",
-        &format!("template: feature\n{}", ticket("agent/a", "")),
+        &with_template("feature", &ticket("agent/a", "")),
         &[],
     );
     let repo = clone(&daemon, "follow");
@@ -508,7 +518,7 @@ fn a_whole_repo_clone_follows_its_lease_s_format_and_undo_is_exact() {
     let (pgp_lease, _, _) = granted(
         &daemon,
         "pgp",
-        &format!("template: pgp\n{}", ticket("agent/b", "")),
+        &with_template("pgp", &ticket("agent/b", "")),
         &[],
     );
     let body = commit_plain("p1");
@@ -581,7 +591,10 @@ fn writ_policy_and_a_dry_run_tell_the_agent_what_fits_before_it_asks() {
         &[],
     );
     assert!(
-        out.contains("The daemon would accept this ticket (template feature): fetch, commit_sign, push on demo, branches agent/oauth"),
+        out.contains("The daemon would accept this ticket, until ")
+            && out.contains(
+                " if submitted now: demo (template feature): fetch, commit_sign, push on agent/oauth."
+            ),
         "{out}"
     );
     // Nothing submitted, no session on this host; the lines in the audit log.

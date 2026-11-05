@@ -38,9 +38,9 @@ fn a_submitted_ticket_is_complete() {
     assert_eq!(ticket.subject.session_key, fp('S'));
     assert_eq!(ticket.text.revision, 1);
     // Filled from the template: committer emails, signing key.
-    assert_eq!(ticket.scope.committer_emails.len(), 1);
+    assert_eq!(ticket.common.committer_emails.len(), 1);
     assert_eq!(
-        ticket.scope.signing_key.as_ref().unwrap().as_str(),
+        ticket.common.signing_key.as_ref().unwrap().as_str(),
         "agent-ed25519-01"
     );
 }
@@ -50,21 +50,21 @@ fn omitted_limits_take_the_template_maximum() {
     let ticket = submitted(
         &REQUEST
             .replace("  ttl: 2h\n", "")
-            .replace("  max_signatures: 3\n", "")
-            .replace("  max_push_size: 1MB\n", ""),
+            .replace("      max_signatures: 3\n", "")
+            .replace("      max_push_size: 1MB\n", ""),
     );
     assert_eq!(ticket.limits.expires_at, later(4 * 3600));
-    assert_eq!(ticket.limits.max_signatures, 50);
+    assert_eq!(om(&ticket).limits.max_signatures, 50);
     assert_eq!(
-        ticket.limits.max_push_size,
+        om(&ticket).limits.max_push_size,
         ByteSize::from_bytes(50_000_000)
     );
 }
 
 #[test]
 fn the_only_fitting_template_is_chosen() {
-    let unnamed = REQUEST.replace("template: feature-branch\n", "");
-    assert_eq!(submitted(&unnamed).template.as_str(), "feature-branch");
+    let unnamed = REQUEST.replace("    template: feature-branch\n", "");
+    assert_eq!(om(&submitted(&unnamed)).template.as_str(), "feature-branch");
     // agent/fix-* fits feature-branch and quick-fix: the agent must name one.
     let ambiguous = unnamed
         .replace("agent/oauth-*", "agent/fix-*")
@@ -74,37 +74,148 @@ fn the_only_fitting_template_is_chosen() {
         error.contains("fits several templates (feature-branch, quick-fix)"),
         "{error}"
     );
-    let named = format!("template: quick-fix\n{ambiguous}");
-    assert_eq!(submitted(&named).template.as_str(), "quick-fix");
+    let named = ambiguous.replace(
+        "  omega-code:\n",
+        "  omega-code:\n    template: quick-fix\n",
+    );
+    assert_eq!(om(&submitted(&named)).template.as_str(), "quick-fix");
+}
+
+/// Without commit_sign the committer emails are unused, yet the approver reads them: each one
+/// must still be an email one of the lease's templates allows.
+#[test]
+fn committer_emails_without_signing_stay_within_the_templates() {
+    let fetch_only = REQUEST.replace("[fetch, commit_sign, push]", "[fetch]");
+    let with = |email: &str| format!("common:\n  committer_emails: [\"{email}\"]\n{fetch_only}");
+    let ticket = submitted(&with("user+agent@example.org"));
+    assert_eq!(
+        ticket.common.committer_emails,
+        ["user+agent@example.org".parse().unwrap()].into()
+    );
+    let error = rejection(&with("user@example.org"));
+    assert!(
+        error.contains(
+            "common.committer_emails: user@example.org is not allowed by any of the templates"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
 fn tickets_outside_every_template_are_rejected_with_reasons() {
     let cases = [
-        (REQUEST.replace("agent/oauth-*", "main"), "branch main is not within the template's branches (agent/*)"),
-        (REQUEST.replace("[omega-code]", "[dotfiles]"), "repo dotfiles is not allowed by the template"),
-        (REQUEST.replace("[omega-code]", "[nope]"), "repo nope is not in the registry"),
-        (REQUEST.replace("ttl: 2h", "ttl: 5h"), "over the template's max_ttl (4h)"),
-        (REQUEST.replace("max_signatures: 3", "max_signatures: 51"), "limits.max_signatures is 51, over the template's 50"),
-        (REQUEST.replace("max_push_size: 1MB", "max_push_size: 51MB"), "limits.max_push_size is 51000000"),
-        (REQUEST.replace("max_ops_per_minute: 5", "max_ops_per_minute: 0"), "max_ops_per_minute must be at least 1"),
-        (REQUEST.replace("max_push_size: 1MB", "max_push_size: 0"), "limits.max_push_size must be at least 1 byte"),
-        (REQUEST.replace("  branches: [\"agent/oauth-*\"]\n", "  branches: [\"agent/oauth-*\"]\n  force_push: true\n"), "force_push is not allowed"),
-        (REQUEST.replace("  branches: [\"agent/oauth-*\"]\n", "  branches: [\"agent/oauth-*\"]\n  committer_emails: [\"user@example.org\"]\n"), "committer email user@example.org is not allowed"),
-        (REQUEST.replace("  branches: [\"agent/oauth-*\"]\n", ""), "commit_sign and push need at least one branch"),
-        (REQUEST.replace("template: feature-branch", "template: nope"), "template nope does not exist"),
-        (REQUEST.replace("title: Add OAuth login", "title: \"  \""), "ticket.title is empty"),
-        (REQUEST.replace("title: Add OAuth login", &format!("title: {}", "x".repeat(201))), "ticket.title is too long"),
-        (REQUEST.replace("title: Add OAuth login", "title: \"Add\\nScope (enforced)\""), "ticket.title must be one line"),
-        (REQUEST.replace("title: Add OAuth login", "title: \"Add\\rlogin\""), "ticket.title must be one line"),
-        (REQUEST.replace("task: ", &format!("task: \"{}", "l\\n".repeat(100))).replacen("\n  plan", "\"\n  plan", 1), "ticket.task has 101 lines, at most 100"),
-        (REQUEST.replace("- Feature flag and tests", "- \"Feature flag\\nScope (enforced)\""), "a plan step must be one line"),
-        (REQUEST.replace("ttl: 2h", "ttl: 0s"), "limits.ttl is 0s, under the minimum of 5m"),
-        (REQUEST.replace("ttl: 2h", "ttl: 299s"), "limits.ttl is 299s, under the minimum of 5m"),
-        (REQUEST.replace("ttl: 2h", "ttl: 99999999d"), "limits.ttl is too long"),
-        (REQUEST.replace("template: feature-branch\n", "").replace("agent/oauth-*", "main"), "the ticket fits no template"),
         (
-            REQUEST.replace("template: feature-branch", "template: quick-fix\ncaller:\n  descends_from:\n    executable: omega\n    pid: 1\n    generation: 1\n    code_identity: null").replace("agent/oauth-*", "agent/fix-*").replace("ttl: 2h", "ttl: 1h"),
+            REQUEST.replace("agent/oauth-*", "main"),
+            "branch main is not within the template's branches (agent/*)",
+        ),
+        (
+            REQUEST.replace("  omega-code:\n", "  dotfiles:\n"),
+            "repo dotfiles is not allowed by the template",
+        ),
+        (
+            REQUEST.replace("  omega-code:\n", "  nope:\n"),
+            "repo nope is not in the registry",
+        ),
+        (
+            REQUEST.replace("ttl: 2h", "ttl: 5h"),
+            "over the template feature-branch's max_ttl (4h)",
+        ),
+        (
+            REQUEST.replace("max_signatures: 3", "max_signatures: 51"),
+            "repos.omega-code.limits.max_signatures is 51, over the template's 50",
+        ),
+        (
+            REQUEST.replace("max_push_size: 1MB", "max_push_size: 51MB"),
+            "limits.max_push_size is 51000000",
+        ),
+        (
+            REQUEST.replace("max_ops_per_minute: 5", "max_ops_per_minute: 0"),
+            "max_ops_per_minute must be at least 1",
+        ),
+        (
+            REQUEST.replace("max_push_size: 1MB", "max_push_size: 0"),
+            "repos.omega-code.limits.max_push_size must be at least 1 byte",
+        ),
+        (
+            REQUEST.replace(
+                "    branches: [\"agent/oauth-*\"]\n",
+                "    branches: [\"agent/oauth-*\"]\n    force_push: true\n",
+            ),
+            "force_push is not allowed",
+        ),
+        (
+            format!("common:\n  committer_emails: [\"user@example.org\"]\n{REQUEST}"),
+            "committer email user@example.org is not allowed",
+        ),
+        (
+            REQUEST.replace("    branches: [\"agent/oauth-*\"]\n", ""),
+            "repos.omega-code: commit_sign and push need at least one branch",
+        ),
+        (
+            REQUEST.replace("template: feature-branch", "template: nope"),
+            "template nope does not exist",
+        ),
+        (
+            REQUEST.replace("title: Add OAuth login", "title: \"  \""),
+            "ticket.title is empty",
+        ),
+        (
+            REQUEST.replace(
+                "title: Add OAuth login",
+                &format!("title: {}", "x".repeat(201)),
+            ),
+            "ticket.title is too long",
+        ),
+        (
+            REQUEST.replace(
+                "title: Add OAuth login",
+                "title: \"Add\\nScope (enforced)\"",
+            ),
+            "ticket.title must be one line",
+        ),
+        (
+            REQUEST.replace("title: Add OAuth login", "title: \"Add\\rlogin\""),
+            "ticket.title must be one line",
+        ),
+        (
+            REQUEST
+                .replace("task: ", &format!("task: \"{}", "l\\n".repeat(100)))
+                .replacen("\n  plan", "\"\n  plan", 1),
+            "ticket.task has 101 lines, at most 100",
+        ),
+        (
+            REQUEST.replace(
+                "- Feature flag and tests",
+                "- \"Feature flag\\nScope (enforced)\"",
+            ),
+            "a plan step must be one line",
+        ),
+        (
+            REQUEST.replace("ttl: 2h", "ttl: 0s"),
+            "limits.ttl is 0s, under the minimum of 5m",
+        ),
+        (
+            REQUEST.replace("ttl: 2h", "ttl: 299s"),
+            "limits.ttl is 299s, under the minimum of 5m",
+        ),
+        (
+            REQUEST.replace("ttl: 2h", "ttl: 99999999d"),
+            "limits.ttl is too long",
+        ),
+        (
+            REQUEST
+                .replace("    template: feature-branch\n", "")
+                .replace("agent/oauth-*", "main"),
+            "repos.omega-code fits no template",
+        ),
+        (
+            format!(
+                "caller:\n  descends_from:\n    executable: omega\n    pid: 1\n    generation: 1\n    code_identity: null\n{}",
+                REQUEST
+                    .replace("template: feature-branch", "template: quick-fix")
+                    .replace("agent/oauth-*", "agent/fix-*")
+                    .replace("ttl: 2h", "ttl: 1h")
+            ),
             "subject.caller: invalid caller constraint: the executable must be an absolute path",
         ),
     ];
@@ -153,7 +264,7 @@ fn expected_paths_and_branches_are_bounded_on_both_sides() {
     let error = rejection(&over);
     assert!(
         error.contains(&format!(
-            "ticket.expected_paths (bytes in all) is too long ({}, at most {MAX_EXPECTED_PATHS_BYTES})",
+            "expected_paths (bytes in all, every repository) is too long ({}, at most {MAX_EXPECTED_PATHS_BYTES})",
             MAX_EXPECTED_PATHS_BYTES + 1
         )),
         "{error}"
@@ -173,7 +284,7 @@ fn expected_paths_and_branches_are_bounded_on_both_sides() {
     let error = rejection(&branches(MAX_BRANCHES + 1));
     assert!(
         error.contains(&format!(
-            "scope.branches is too long ({}, at most {MAX_BRANCHES})",
+            "repos.omega-code.branches is too long ({}, at most {MAX_BRANCHES})",
             MAX_BRANCHES + 1
         )),
         "{error}"
@@ -185,7 +296,7 @@ fn push_needs_a_push_mode_allowed_by_both() {
     // dotfiles only allows direct_ssh; quick-fix only gateway.
     let yaml = REQUEST
         .replace("template: feature-branch", "template: quick-fix")
-        .replace("[omega-code]", "[dotfiles]")
+        .replace("  omega-code:\n", "  dotfiles:\n")
         .replace("agent/oauth-*", "agent/fix-*")
         .replace("ttl: 2h", "ttl: 1h");
     assert!(rejection(&yaml).contains("repo dotfiles has no push mode allowed"));
@@ -202,12 +313,12 @@ fn templates_can_require_expected_paths() {
     );
     let config = writ_core::config::PolicyConfig::from_yaml(&policy).unwrap();
     let without = REQUEST.replace(
-        "  expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
+        "    expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
         "",
     );
     let error = fit::submit(&config, &request(&without), &submission(1)).unwrap_err();
     assert!(
-        error.to_string().contains("requires ticket.expected_paths"),
+        error.to_string().contains("requires expected_paths"),
         "{error}"
     );
     assert!(fit::submit(&config, &request(REQUEST), &submission(1)).is_ok());
@@ -222,10 +333,7 @@ fn revisions_carry_the_feedback() {
         Some(fp('A')),
     )
     .unwrap();
-    let revision = REQUEST.replace(
-        "  expected_paths:",
-        &format!("  revises: {}\n  expected_paths:", first.id),
-    );
+    let revision = REQUEST.replace("ticket:\n", &format!("ticket:\n  revises: {}\n", first.id));
     let with_previous = Submission {
         revises: Some(&refused),
         ..submission(2)
@@ -282,10 +390,7 @@ fn revisions_carry_the_feedback() {
 #[test]
 fn feedback_nobody_signed_is_labeled_in_the_revision() {
     let first = submitted(REQUEST);
-    let revision = REQUEST.replace(
-        "  expected_paths:",
-        &format!("  revises: {}\n  expected_paths:", first.id),
-    );
+    let revision = REQUEST.replace("ticket:\n", &format!("ticket:\n  revises: {}\n", first.id));
     let feedback_in = |by| {
         let refused = lease::refuse(
             &TicketRecord::pending(first.clone()),
@@ -316,10 +421,7 @@ fn feedback_nobody_signed_is_labeled_in_the_revision() {
 #[test]
 fn amendments_need_an_active_lease_from_the_same_session() {
     let lease = lease();
-    let amendment = REQUEST.replace(
-        "  expected_paths:",
-        &format!("  amends: {}\n  expected_paths:", lease.id),
-    );
+    let amendment = REQUEST.replace("ticket:\n", &format!("ticket:\n  amends: {}\n", lease.id));
     let ok = Submission {
         amends: Some(&lease),
         now: later(60),
@@ -496,11 +598,7 @@ fn expiry_and_exhaustion_are_due_transitions() {
         lease::due_transition(&lease, &fresh, later(2 * 3600)),
         Some(State::Expired)
     );
-    let used = Usage {
-        signatures: 3,
-        pushes: 2,
-        ops_last_minute: 0,
-    };
+    let used = usage_in(3, 2, 0);
     // It allows fetch, which has no count: never exhausted.
     assert_eq!(lease::due_transition(&lease, &used, later(60)), None);
     let no_fetch = lease_of(submitted(
@@ -510,10 +608,7 @@ fn expiry_and_exhaustion_are_due_transitions() {
         lease::due_transition(&no_fetch, &used, later(60)),
         Some(State::Exhausted)
     );
-    let signatures_only = Usage {
-        signatures: 3,
-        ..fresh
-    };
+    let signatures_only = usage_in(3, 0, 0);
     assert_eq!(
         lease::due_transition(&no_fetch, &signatures_only, later(60)),
         None
@@ -545,29 +640,29 @@ fn narrowing_accepts_only_narrower_tickets() {
         ("unchanged", |_| {}),
         ("shorter ttl", |t| t.limits.expires_at = later(3600)),
         ("fewer operations", |t| {
-            t.scope.operations.remove(&Operation::Push);
+            omega(t).operations.remove(&Operation::Push);
         }),
         ("no commit_sign", |t| {
-            t.scope.operations.remove(&Operation::CommitSign);
+            omega(t).operations.remove(&Operation::CommitSign);
         }),
         ("exact branch within the pattern", |t| {
-            t.scope.branches = BTreeSet::from(["agent/oauth-login".parse().unwrap()]);
+            omega(t).branches = BTreeSet::from(["agent/oauth-login".parse().unwrap()]);
         }),
         ("lower limits", |t| {
-            t.limits.max_signatures = 1;
-            t.limits.max_pushes = 0;
+            omega(t).limits.max_signatures = 1;
+            omega(t).limits.max_pushes = 0;
             t.limits.max_ops_per_minute = 1;
-            t.limits.max_push_size = ByteSize::from_bytes(1);
+            omega(t).limits.max_push_size = ByteSize::from_bytes(1);
         }),
         ("fewer expected paths", |t| {
-            t.text
+            omega(t)
                 .expected_paths
                 .remove(&"tests/auth/**".parse().unwrap());
         }),
         ("stricter on_violation", |t| {
             t.on_violation = OnViolation::RevokeLease
         }),
-        ("no committer emails", |t| t.scope.committer_emails.clear()),
+        ("no committer emails", |t| t.common.committer_emails.clear()),
     ];
     let submitted = submitted(REQUEST);
     for (name, change) in narrower {
@@ -582,41 +677,44 @@ fn narrowing_accepts_only_narrower_tickets() {
     let wider: Vec<(&str, Change)> = vec![
         ("longer ttl", |t| t.limits.expires_at = later(3 * 3600)),
         ("another repo", |t| {
-            t.scope.repos.insert(repo("homelab-scripts"));
+            let terms = om(t).clone();
+            t.repos.insert(repo("homelab-scripts"), terms);
         }),
         ("wider branch pattern", |t| {
-            t.scope.branches = BTreeSet::from(["agent/*".parse().unwrap()]);
+            omega(t).branches = BTreeSet::from(["agent/*".parse().unwrap()]);
         }),
         ("another branch", |t| {
-            t.scope.branches.insert("agent/other".parse().unwrap());
+            omega(t).branches.insert("agent/other".parse().unwrap());
         }),
-        ("force push", |t| t.scope.force_push = true),
+        ("force push", |t| omega(t).force_push = true),
         ("another email", |t| {
-            t.scope
+            t.common
                 .committer_emails
                 .insert("user+fix@example.org".parse().unwrap());
         }),
-        ("more signatures", |t| t.limits.max_signatures += 1),
-        ("more pushes", |t| t.limits.max_pushes += 1),
+        ("more signatures", |t| omega(t).limits.max_signatures += 1),
+        ("more pushes", |t| omega(t).limits.max_pushes += 1),
         ("faster rate", |t| t.limits.max_ops_per_minute += 1),
         ("bigger pushes", |t| {
-            t.limits.max_push_size = ByteSize::from_bytes(2_000_000)
+            omega(t).limits.max_push_size = ByteSize::from_bytes(2_000_000)
         }),
-        ("expected paths emptied", |t| t.text.expected_paths.clear()),
+        ("expected paths emptied", |t| {
+            omega(t).expected_paths.clear()
+        }),
         ("expected path added", |t| {
-            t.text.expected_paths.insert("src/**".parse().unwrap());
+            omega(t).expected_paths.insert("src/**".parse().unwrap());
         }),
         ("another session key", |t| t.subject.session_key = fp('Q')),
         ("origin hint changed", |t| {
             t.subject.origin_hint = Some("x".to_owned())
         }),
         ("other template", |t| {
-            t.template = "quick-fix".parse().unwrap()
+            omega(t).template = "quick-fix".parse().unwrap()
         }),
         ("other id", |t| t.id = ticket_id(2)),
         ("other text", |t| t.text.title = "Something else".to_owned()),
         ("other plan", |t| t.text.plan.push("And billing".to_owned())),
-        ("other signing key", |t| t.scope.signing_key = None),
+        ("other signing key", |t| t.common.signing_key = None),
         ("now amends", |t| t.text.amends = Some(ticket_id(3))),
         ("earlier creation", |t| t.created_at = later(-60)),
     ];
@@ -627,23 +725,25 @@ fn narrowing_accepts_only_narrower_tickets() {
         let reasons = narrow::check(&submitted, &signed).unwrap_err().reasons;
         let expected = match name {
             "longer ttl" => "limits.expires_at raised",
-            "another repo" => "scope.repos adds homelab-scripts",
-            "wider branch pattern" => "scope.branches adds agent/*",
-            "another branch" => "scope.branches adds agent/other",
-            "force push" => "scope.force_push turned on",
-            "another email" => "scope.committer_emails adds user+fix@example.org",
-            "more signatures" => "limits.max_signatures raised",
-            "more pushes" => "limits.max_pushes raised",
+            "another repo" => "repos adds homelab-scripts",
+            "wider branch pattern" => "repos.omega-code.branches adds agent/*",
+            "another branch" => "repos.omega-code.branches adds agent/other",
+            "force push" => "repos.omega-code.force_push turned on",
+            "another email" => "common.committer_emails adds user+fix@example.org",
+            "more signatures" => "repos.omega-code.limits.max_signatures raised",
+            "more pushes" => "repos.omega-code.limits.max_pushes raised",
             "faster rate" => "limits.max_ops_per_minute raised",
-            "bigger pushes" => "limits.max_push_size raised",
-            "expected paths emptied" => "ticket.expected_paths emptied (turns the path check off)",
-            "expected path added" => "ticket.expected_paths adds src/**",
+            "bigger pushes" => "repos.omega-code.limits.max_push_size raised",
+            "expected paths emptied" => {
+                "repos.omega-code.expected_paths emptied (turns the path check off)"
+            }
+            "expected path added" => "repos.omega-code.expected_paths adds src/**",
             "another session key" | "origin hint changed" => "subject changed",
-            "other template" => "template changed",
+            "other template" => "repos.omega-code.template changed",
             "other id" => "id changed",
             "other text" => "ticket.title changed",
             "other plan" => "ticket.plan changed",
-            "other signing key" => "scope.signing_key changed",
+            "other signing key" => "common.signing_key changed",
             "now amends" => "ticket.amends changed",
             "earlier creation" => "created_at changed",
             other => panic!("no reason written for {other}"),
@@ -655,11 +755,13 @@ fn narrowing_accepts_only_narrower_tickets() {
 #[test]
 fn narrowing_from_no_expected_paths_may_add_some() {
     let without = submitted(&REQUEST.replace(
-        "  expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
+        "    expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
         "",
     ));
     let mut signed = without.clone();
-    signed.text.expected_paths.insert("src/**".parse().unwrap());
+    omega(&mut signed)
+        .expected_paths
+        .insert("src/**".parse().unwrap());
     assert!(narrow::check(&without, &signed).is_ok());
 }
 
@@ -668,14 +770,14 @@ fn a_narrowed_ticket_becomes_the_lease() {
     let submitted = submitted(REQUEST);
     let mut signed = submitted.clone();
     signed.limits.expires_at = later(1800);
-    signed.scope.operations.remove(&Operation::Push);
+    omega(&mut signed).operations.remove(&Operation::Push);
     let record = TicketRecord::pending(submitted);
     let lease =
         lease::activate(&config(), &record, signed.clone(), approval(), 1, later(5)).unwrap();
     assert_eq!(lease.ticket, signed);
 
     let mut widened = signed.clone();
-    widened.limits.max_signatures = 40;
+    omega(&mut widened).limits.max_signatures = 40;
     assert!(matches!(
         lease::activate(&config(), &record, widened, approval(), 1, later(5)),
         Err(LifecycleError::Narrowing(_))
@@ -687,12 +789,8 @@ fn a_narrowed_ticket_becomes_the_lease() {
 #[test]
 fn an_applied_amendment_replaces_the_scope() {
     let lease = lease();
-    let amendment_yaml = REQUEST
-        .replace("[omega-code]", "[omega-code, homelab-scripts]")
-        .replace(
-            "  expected_paths:",
-            &format!("  amends: {}\n  expected_paths:", lease.id),
-        );
+    let amendment_yaml = with_repos(REQUEST, &["omega-code", "homelab-scripts"])
+        .replace("ticket:\n", &format!("ticket:\n  amends: {}\n", lease.id));
     let with_lease = Submission {
         amends: Some(&lease),
         now: later(600),
@@ -713,13 +811,7 @@ fn an_applied_amendment_replaces_the_scope() {
     assert_eq!(updated.id, lease.id, "the lease keeps its id");
     assert_eq!(updated.cert_serial, lease.cert_serial);
     assert_eq!(updated.ticket, amendment);
-    assert!(
-        updated
-            .ticket
-            .scope
-            .repos
-            .contains(&repo("homelab-scripts"))
-    );
+    assert!(updated.ticket.repos.contains_key(&repo("homelab-scripts")));
     assert_eq!(applied.state, State::Applied);
 
     // Not for another lease, nor an ended one, nor with another session key.
@@ -945,24 +1037,26 @@ fn a_template_the_request_cannot_be_built_against_does_not_hide_one_it_fits() {
     let policy = POLICY.replacen("    max_ttl: 4h\n", "    max_ttl: 99999999d\n", 1);
     assert_ne!(policy, POLICY, "the fixture changed");
     let config = writ_core::config::PolicyConfig::from_yaml(&policy).unwrap();
-    // No template named, no TTL: feature-branch's default overflows; quick-fix fits.
+    // No TTL: feature-branch's default overflows. The lease's TTL comes from the templates
+    // each repository fits (the strictest), so named, it is said; quick-fix named, it fits.
     let yaml = REQUEST
-        .replace("template: feature-branch\n", "")
         .replace("agent/oauth-*", "agent/fix-*")
         .replace("  ttl: 2h\n", "");
-    let ticket = fit::submit(&config, &request(&yaml), &submission(1)).unwrap();
-    assert_eq!(ticket.template.as_str(), "quick-fix");
-    // When none fits, the one that can't be built is one reason among the others.
-    let none = yaml.replace("agent/fix-*", "main");
-    let error = fit::submit(&config, &request(&none), &submission(1)).unwrap_err();
-    assert!(
-        error
-            .reasons
-            .contains(&"feature-branch: limits.ttl is too long".to_owned()),
-        "{:?}",
-        error.reasons
+    let error = fit::submit(&config, &request(&yaml), &submission(1)).unwrap_err();
+    assert_eq!(error.reasons, ["limits.ttl is too long"], "{error}");
+    let quick = yaml.replace("template: feature-branch", "template: quick-fix");
+    let ticket = fit::submit(&config, &request(&quick), &submission(1)).unwrap();
+    assert_eq!(om(&ticket).template.as_str(), "quick-fix");
+    // Unnamed, both allow the repository and fit its terms: the agent must name one.
+    let unnamed = yaml.replace("    template: feature-branch\n", "");
+    let error = fit::submit(&config, &request(&unnamed), &submission(1)).unwrap_err();
+    assert_eq!(
+        error.reasons,
+        [
+            "repos.omega-code fits several templates (feature-branch, quick-fix): name one in \
+          repos.omega-code.template"
+        ]
     );
-    assert_eq!(error.reasons[0], "the ticket fits no template");
 }
 
 /// The review after M5.5 (S7): the gateway handed git the lease's `max_push_size`, though the
@@ -972,21 +1066,21 @@ fn a_template_the_request_cannot_be_built_against_does_not_hide_one_it_fits() {
 fn the_push_size_git_gets_is_the_smaller_of_the_lease_s_and_the_template_s() {
     let ticket = submitted(REQUEST);
     let config = config();
-    let template = config.template(&ticket.template).unwrap();
+    let template = config.template(&om(&ticket).template).unwrap();
     // The lease asks 1MB, the template allows 50MB: the lease's.
     assert_eq!(
-        writ_core::policy::max_push_size(&ticket, template),
+        writ_core::policy::max_push_size(om(&ticket), template),
         1_000_000
     );
     // The template lowered to 1 byte under it: the template's.
     let lowered = POLICY.replacen("max_push_size: 50MB", "max_push_size: 1", 1);
     let config = writ_core::config::PolicyConfig::from_yaml(&lowered).unwrap();
-    let template = config.template(&ticket.template).unwrap();
-    assert_eq!(writ_core::policy::max_push_size(&ticket, template), 1);
+    let template = config.template(&om(&ticket).template).unwrap();
+    assert_eq!(writ_core::policy::max_push_size(om(&ticket), template), 1);
     // A byte, the least a limit can be: taken (never 0).
     let one = REQUEST.replace("max_push_size: 1MB", "max_push_size: 1");
     let t = fit::submit(&self::config(), &request(&one), &submission(1)).unwrap();
-    assert_eq!(t.limits.max_push_size.bytes(), 1);
+    assert_eq!(om(&t).limits.max_push_size.bytes(), 1);
 }
 
 // Renewals.
@@ -995,12 +1089,13 @@ fn the_push_size_git_gets_is_the_smaller_of_the_lease_s_and_the_template_s() {
 /// left out (the lease's).
 fn renewal_yaml(lease: &writ_core::lease::Lease) -> String {
     REQUEST
-        .replace("template: feature-branch\n", "")
+        .replace("    template: feature-branch\n", "")
         .replace("  ttl: 2h\n", "  ttl: 1h\n")
         .replace(
-            "  expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
-            &format!("  renews: {}\n", lease.id),
+            "    expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
+            "",
         )
+        .replace("ticket:\n", &format!("ticket:\n  renews: {}\n", lease.id))
 }
 
 fn renewing<'a>(
@@ -1037,14 +1132,14 @@ fn a_renewal_continues_its_lease_under_a_new_one() {
     )
     .unwrap();
     // The lease's template, emails and paths; its own time and id.
-    assert_eq!(renewal.template, lease.ticket.template);
+    assert_eq!(om(&renewal).template, om(&lease.ticket).template);
     assert_eq!(
-        renewal.scope.committer_emails,
-        lease.ticket.scope.committer_emails
+        renewal.common.committer_emails,
+        lease.ticket.common.committer_emails
     );
     assert_eq!(
-        renewal.text.expected_paths,
-        lease.ticket.text.expected_paths
+        om(&renewal).expected_paths,
+        om(&lease.ticket).expected_paths
     );
     assert_eq!(renewal.text.renews.as_ref(), Some(&lease.id));
     assert_eq!(renewal.limits.expires_at, later(7_260 + 3_600));
@@ -1157,14 +1252,17 @@ fn only_an_active_expired_or_used_up_lease_of_the_same_session_is_renewed() {
         "a ticket can't both amend and renew a lease",
     );
     // Another template.
-    let other = format!("template: quick-fix\n{}", renewal_yaml(&lease));
+    let other = renewal_yaml(&lease).replace(
+        "  omega-code:\n",
+        "  omega-code:\n    template: quick-fix\n",
+    );
     assert_rejected(
         fit::submit(
             &config(),
             &request(&other),
             &renewing(&lease, 0, 86_400, 600),
         ),
-        "a renewal keeps its lease's template (feature-branch), not quick-fix",
+        "repos.omega-code: a renewal keeps its lease's template (feature-branch), not quick-fix",
     );
 }
 
@@ -1174,19 +1272,19 @@ fn a_renewal_stays_within_its_lease() {
     let yaml = renewal_yaml(&lease);
     let wider = [
         (
-            yaml.replace("[omega-code]", "[omega-code, homelab-scripts]"),
-            "scope.repos adds homelab-scripts",
+            with_repos(&yaml, &["omega-code", "homelab-scripts"]),
+            "repos adds homelab-scripts",
         ),
         (
             yaml.replace("agent/oauth-*", "agent/*"),
-            "scope.branches adds agent/*",
+            "repos.omega-code.branches adds agent/*",
         ),
         (
             yaml.replace(
-                "  renews:",
-                "  expected_paths: [\"src/auth/**\", \"docs/**\"]\n  renews:",
+                "    branches: [\"agent/oauth-*\"]\n",
+                "    branches: [\"agent/oauth-*\"]\n    expected_paths: [\"src/auth/**\", \"docs/**\"]\n",
             ),
-            "ticket.expected_paths adds docs/**",
+            "repos.omega-code.expected_paths adds docs/**",
         ),
     ];
     for (yaml, expected) in wider {
@@ -1202,27 +1300,35 @@ fn a_renewal_stays_within_its_lease() {
     }
     // An email the template allows and the lease doesn't have.
     let mut fewer = lease.clone();
-    fewer.ticket.scope.committer_emails.clear();
+    fewer.ticket.common.committer_emails.clear();
     fewer
         .ticket
-        .scope
+        .common
         .committer_emails
         .insert("user+other@example.org".parse().unwrap());
     assert_rejected(
-        fit::submit(&config(), &request(&yaml.replace("  branches: [\"agent/oauth-*\"]\n", "  branches: [\"agent/oauth-*\"]\n  committer_emails: [\"user+agent@example.org\"]\n")), &renewing(&fewer, 0, 86_400, 600)),
-        "scope.committer_emails adds user+agent@example.org",
+        fit::submit(
+            &config(),
+            &request(&format!(
+                "common:\n  committer_emails: [\"user+agent@example.org\"]\n{yaml}"
+            )),
+            &renewing(&fewer, 0, 86_400, 600),
+        ),
+        "common.committer_emails adds user+agent@example.org",
     );
     // Less strict on violations, and an operation the lease didn't have.
     let mut strict = lease.clone();
     strict.ticket.on_violation = OnViolation::RevokeLease;
-    strict.ticket.scope.operations.remove(&Operation::Fetch);
+    omega(&mut strict.ticket)
+        .operations
+        .remove(&Operation::Fetch);
     let result = fit::submit(
         &config(),
         &request(&yaml),
         &renewing(&strict, 0, 86_400, 600),
     );
     assert_rejected(result.clone(), "on_violation made less strict");
-    assert_rejected(result, "scope.operations adds fetch");
+    assert_rejected(result, "repos.omega-code.operations adds fetch");
     // Narrower is fine.
     let narrower = yaml.replace("agent/oauth-*", "agent/oauth-login");
     assert!(
@@ -1303,9 +1409,9 @@ fn a_renewal_is_checked_again_when_it_is_signed() {
     );
     // The lease's terms narrowed meanwhile (an amendment): the renewal is now wider.
     let mut amended = lease.clone();
-    amended.ticket.scope.branches = BTreeSet::from(["agent/oauth-login".parse().unwrap()]);
+    omega(&mut amended.ticket).branches = BTreeSet::from(["agent/oauth-login".parse().unwrap()]);
     assert!(
-        matches!(at(&amended, 7_300), Err(LifecycleError::Renewal(reasons)) if reasons.iter().any(|r| r.contains("scope.branches adds agent/oauth-*")))
+        matches!(at(&amended, 7_300), Err(LifecycleError::Renewal(reasons)) if reasons.iter().any(|r| r.contains("repos.omega-code.branches adds agent/oauth-*")))
     );
     // Another lease.
     let other = lease_of(fit::submit(&config(), &request(REQUEST), &submission(3)).unwrap());
@@ -1319,10 +1425,9 @@ fn a_renewal_is_checked_again_when_it_is_signed() {
 fn an_amendment_ends_with_its_lease() {
     let lease = lease();
     // Asked for 4h, ten minutes in: capped at the lease's end.
-    let yaml = REQUEST.replace("ttl: 2h", "ttl: 4h").replace(
-        "  expected_paths:",
-        &format!("  amends: {}\n  expected_paths:", lease.id),
-    );
+    let yaml = REQUEST
+        .replace("ttl: 2h", "ttl: 4h")
+        .replace("ticket:\n", &format!("ticket:\n  amends: {}\n", lease.id));
     let with_lease = Submission {
         amends: Some(&lease),
         now: later(600),
@@ -1360,8 +1465,8 @@ fn an_amendment_ends_with_its_lease() {
 fn the_estimate_is_shown_never_checked_and_bounded() {
     let with = |coding: &str| {
         REQUEST.replace(
-            "  expected_paths:",
-            &format!("  estimate:\n    coding: {coding}\n    ci: 20m\n  expected_paths:"),
+            "ticket:\n",
+            &format!("ticket:\n  estimate:\n    coding: {coding}\n    ci: 20m\n"),
         )
     };
     let ticket = fit::submit(&config(), &request(&with("30d")), &submission(1)).unwrap();
@@ -1386,16 +1491,16 @@ fn a_ticket_file_is_checked_without_the_daemon_as_the_daemon_would() {
     let cases = [
         (REQUEST.replace("title: Add OAuth login", "title: \"  \""), "ticket.title is empty"),
         (REQUEST.replace("title: Add OAuth login", &format!("title: {}", "x".repeat(201))), "ticket.title is too long (201, at most 200)"),
-        (REQUEST.replace("  branches: [\"agent/oauth-*\"]\n", ""), "commit_sign and push need at least one branch"),
+        (REQUEST.replace("    branches: [\"agent/oauth-*\"]\n", ""), "repos.omega-code: commit_sign and push need at least one branch"),
         (REQUEST.replace("ttl: 2h", "ttl: 9s"), "limits.ttl is 9s, under 10s, the least any daemon takes"),
         (REQUEST.replace("max_ops_per_minute: 5", "max_ops_per_minute: 0"), "limits.max_ops_per_minute must be at least 1"),
-        (REQUEST.replace("max_push_size: 1MB", "max_push_size: 0"), "limits.max_push_size must be at least 1 byte"),
+        (REQUEST.replace("max_push_size: 1MB", "max_push_size: 0"), "repos.omega-code.limits.max_push_size must be at least 1 byte"),
         (
-            REQUEST.replace("  expected_paths:", "  estimate: { ci: 31d }\n  expected_paths:"),
+            REQUEST.replace("ticket:\n", "ticket:\n  estimate: { ci: 31d }\n"),
             "ticket.estimate.ci is over 30d",
         ),
         (
-            REQUEST.replace("  expected_paths:", "  amends: wrt_01JD8X0000000000000000000A\n  renews: wrt_01JD8X0000000000000000000A\n  expected_paths:"),
+            REQUEST.replace("ticket:\n", "ticket:\n  amends: wrt_01JD8X0000000000000000000A\n  renews: wrt_01JD8X0000000000000000000A\n"),
             "a ticket can't both amend and renew a lease",
         ),
     ];

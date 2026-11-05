@@ -277,10 +277,10 @@ fn mktree(gateway: &GitGateway, work: &Path, listing: &str) -> String {
 
 /// A lease that may push and sign, not fetch.
 const NO_FETCH: &str = r#"
-scope:
-  repos: [demo]
-  operations: [commit_sign, push]
-  branches: ["agent/*"]
+repos:
+  demo:
+    operations: [commit_sign, push]
+    branches: ["agent/*"]
 ticket:
   title: No fetch
   task: Push without fetching
@@ -288,10 +288,10 @@ ticket:
 
 /// A lease of two operations a minute.
 const TWO_A_MINUTE: &str = r#"
-scope:
-  repos: [demo]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/*"]
+repos:
+  demo:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
 ticket:
   title: Slow
   task: Fetch slowly

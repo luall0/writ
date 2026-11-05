@@ -161,9 +161,10 @@ fn run(max_signatures: u32, rate: u32, fetch: bool, schedule: &[Step]) -> Outcom
         "[commit_sign]"
     };
     let yaml = format!(
-        "template: feature-branch\nscope:\n  repos: [homelab-scripts]\n  operations: {operations}\n  \
-         branches: [\"agent/x\"]\nticket:\n  title: T\n  task: T\n  expected_paths: [\"src/**\"]\n\
-         limits:\n  max_signatures: {max_signatures}\n  max_ops_per_minute: {rate}\n"
+        "repos:\n  homelab-scripts:\n    template: feature-branch\n    operations: {operations}\n    \
+         branches: [\"agent/x\"]\n    expected_paths: [\"src/**\"]\n    limits:\n      \
+         max_signatures: {max_signatures}\nticket:\n  title: T\n  task: T\n\
+         limits:\n  max_ops_per_minute: {rate}\n"
     );
     let (lease_id, cert) = lease(&test, &yaml);
 

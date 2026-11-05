@@ -625,7 +625,7 @@ mod tests {
             lease: id.clone(),
             state: writ_core::lease::State::Closed,
             title: "t".to_owned(),
-            template: "feature".parse().unwrap(),
+            templates: vec!["feature".parse().unwrap()],
             repos: vec!["demo".parse().unwrap()],
             expected_paths: Vec::new(),
             summary: None,

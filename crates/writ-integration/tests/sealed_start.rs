@@ -39,7 +39,7 @@ templates:
     max_push_size: 10MB
 "#;
 
-const TICKET: &str = "scope:\n  repos: [demo]\n  operations: [fetch, commit_sign, push]\n  \
+const TICKET: &str = "repos:\n  demo:\n    operations: [fetch, commit_sign, push]\n    \
                       branches: [\"agent/oauth\"]\nticket:\n  title: \"Add OAuth login\"\n  \
                       task: Add GitHub OAuth login\nlimits:\n  ttl: 1h\n";
 

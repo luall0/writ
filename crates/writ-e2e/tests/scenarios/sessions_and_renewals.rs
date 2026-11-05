@@ -19,9 +19,9 @@ const REPO: &str = "sessions";
 /// section.
 fn ticket(branch: &str, more: &str) -> String {
     format!(
-        "template: feature\n\
-         scope:\n  repos: [{REPO}]\n  operations: [fetch, commit_sign, push]\n  branches: [\"{branch}\"]\n  \
-         committer_emails: [\"agent@writ.invalid\"]\n\
+        "common:\n  committer_emails: [\"agent@writ.invalid\"]\n\
+         repos:\n  {REPO}:\n    template: feature\n    operations: [fetch, commit_sign, push]\n    \
+         branches: [\"{branch}\"]\n\
          ticket:\n  title: \"e2e: renew and close\"\n  task: \"An end-to-end scenario's work\"\n  \
          estimate: {{ coding: 20m, checks: 5m, ci: 10m }}\n{more}\
          limits:\n  ttl: 1h\n"
@@ -95,7 +95,9 @@ fn a_lease_is_renewed_closed_and_learned_from() {
         "a dry run",
     );
     assert!(
-        out.contains("The daemon would accept this ticket (template feature)"),
+        out.contains(
+            "if submitted now: sessions (template feature): fetch, commit_sign, push on agent/s."
+        ),
         "{out}"
     );
     assert!(out.contains("Nothing was submitted"), "{out}");

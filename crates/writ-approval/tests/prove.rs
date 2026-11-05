@@ -35,11 +35,11 @@ const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 const KEY: &str = "agent-ed25519-01";
 
 const REQUEST: &str = r#"
-template: feature-branch
-scope:
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth-*"]
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-*"]
 ticket:
   title: Add OAuth login
   task: Add GitHub OAuth login behind a feature flag

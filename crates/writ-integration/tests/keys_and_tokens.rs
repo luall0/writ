@@ -170,7 +170,7 @@ fn a_policy_naming_new_keys_creates_them_and_uses_them_at_once() {
     );
 
     // Used at once: a lease of the new template gets agent-02 for its commits.
-    let ticket = "template: other\nscope:\n  repos: [demo]\n  operations: [fetch, commit_sign]\n  \
+    let ticket = "repos:\n  demo:\n    template: other\n    operations: [fetch, commit_sign]\n    \
                   branches: [\"agent/x\"]\nticket:\n  title: \"Other\"\n  task: Other\n\
                   limits:\n  ttl: 30m\n";
     let lease = daemon.lease("other", ticket);
@@ -278,8 +278,8 @@ fn a_token_added_from_the_mac_is_used_at_once_and_never_in_clear_on_disk() {
     let out = daemon.unseal();
     assert!(out.status.success(), "{}", stderr(&out));
     daemon.wait_for_log("no token yet", writ_integration::WAIT_LIMIT);
-    let ticket = "scope:\n  repos: [demo, web]\n  operations: [fetch]\n  \
-                  branches: [\"agent/x\"]\nticket:\n  title: \"Web\"\n  task: Web\n\
+    let ticket = "repos:\n  demo:\n    operations: [fetch]\n    branches: [\"agent/x\"]\n  \
+                  web:\n    operations: [fetch]\n    branches: [\"agent/x\"]\nticket:\n  title: \"Web\"\n  task: Web\n\
                   limits:\n  ttl: 30m\n";
     let lease = daemon.lease("web", ticket);
     let out = ls_remote(&daemon, &lease, "web");
@@ -379,7 +379,7 @@ fn a_sealed_notifier_token_starts_its_notifier_when_added() {
     // Started: the next ticket is notified, with the token added (the fake checks it).
     let request = daemon.request(
         "notified",
-        "scope:\n  repos: [demo]\n  operations: [fetch]\n  branches: [\"agent/x\"]\n\
+        "repos:\n  demo:\n    operations: [fetch]\n    branches: [\"agent/x\"]\n\
          ticket:\n  title: \"N\"\n  task: N\n",
     );
     let id = request.id.clone();

@@ -47,7 +47,7 @@ templates:
 /// A ticket that fits `feature`, with `extra` lines under `ticket:`.
 fn ticket(extra: &str) -> String {
     format!(
-        "scope:\n  repos: [demo]\n  operations: [fetch, commit_sign, push]\n  \
+        "repos:\n  demo:\n    operations: [fetch, commit_sign, push]\n    \
          branches: [\"agent/config\"]\nticket:\n  title: Configuration\n  \
          task: Exercise the daemon's configuration\n{extra}limits:\n  ttl: 1h\n"
     )

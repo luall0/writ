@@ -44,14 +44,14 @@ templates:
 "#;
 
 const OAUTH: &str = r#"
-scope:
-  repos: [demo]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth"]
+repos:
+  demo:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth"]
+    expected_paths: ["src/**"]
 ticket:
   title: "Add OAuth login"
   task: Add GitHub OAuth login behind a feature flag
-  expected_paths: ["src/**"]
 limits:
   ttl: 1h
 "#;

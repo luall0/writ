@@ -111,19 +111,22 @@ fn a_name_is_one_git_writes_as_it_is() {
 fn the_template_s_name_goes_into_a_lease_that_signs_and_only_there() {
     let config = named_config();
     let ticket = submitted_under(&config, REQUEST);
-    assert_eq!(ticket.scope.committer_name.as_ref().unwrap().as_str(), NAME);
+    assert_eq!(
+        ticket.common.committer_name.as_ref().unwrap().as_str(),
+        NAME
+    );
     // A ticket that doesn't sign carries no name.
     let fetch = submitted_under(
         &config,
         &REQUEST.replace("[fetch, commit_sign, push]", "[fetch]"),
     );
-    assert_eq!(fetch.scope.committer_name, None);
+    assert_eq!(fetch.common.committer_name, None);
     // Without the key, no name.
-    assert_eq!(submitted(REQUEST).scope.committer_name, None);
+    assert_eq!(submitted(REQUEST).common.committer_name, None);
     // A ticket can't ask for one: there is no such field in the request.
     let asked = REQUEST.replace(
-        "  branches: [\"agent/oauth-*\"]\n",
-        "  branches: [\"agent/oauth-*\"]\n  committer_name: Someone\n",
+        "    branches: [\"agent/oauth-*\"]\n",
+        "    branches: [\"agent/oauth-*\"]\n    committer_name: Someone\n",
     );
     let error = writ_core::ticket::TicketRequest::from_yaml(&asked).unwrap_err();
     assert!(
@@ -137,10 +140,10 @@ fn a_lease_fits_only_with_the_template_s_name() {
     let config = named_config();
     let ticket = submitted_under(&config, REQUEST);
     assert!(fit::fits(&config, &ticket).is_ok());
-    let reason = "scope.committer_name must be the template's committer_name";
+    let reason = "common.committer_name must be the template's committer_name";
     for (what, name) in [("another name", Some("Someone")), ("no name", None)] {
         let mut changed = ticket.clone();
-        changed.scope.committer_name = name.map(|n| n.parse().unwrap());
+        changed.common.committer_name = name.map(|n| n.parse().unwrap());
         let error = fit::fits(&config, &changed).unwrap_err();
         assert!(error.reasons.iter().any(|r| r == reason), "{what}: {error}");
     }
@@ -164,14 +167,14 @@ fn a_narrowing_or_a_renewal_never_changes_the_name() {
     let config = named_config();
     let ticket = submitted_under(&config, REQUEST);
     let mut renamed = ticket.clone();
-    renamed.scope.committer_name = Some("Someone".parse().unwrap());
+    renamed.common.committer_name = Some("Someone".parse().unwrap());
     let mut dropped = ticket.clone();
-    dropped.scope.committer_name = None;
+    dropped.common.committer_name = None;
     for changed in [&renamed, &dropped] {
         assert!(
             narrow::widenings(&ticket, changed)
                 .iter()
-                .any(|r| r == "scope.committer_name changed"),
+                .any(|r| r == "common.committer_name changed"),
             "{changed:?}"
         );
         let error = narrow::check(&ticket, changed).unwrap_err();
@@ -179,7 +182,7 @@ fn a_narrowing_or_a_renewal_never_changes_the_name() {
             error
                 .reasons
                 .iter()
-                .any(|r| r == "scope.committer_name changed"),
+                .any(|r| r == "common.committer_name changed"),
             "{error:?}"
         );
     }

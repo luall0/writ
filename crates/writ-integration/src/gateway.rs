@@ -62,10 +62,10 @@ templates:
 
 /// The ticket every session is a lease for.
 pub const TICKET: &str = r#"
-scope:
-  repos: [demo]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/*"]
+repos:
+  demo:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
 ticket:
   title: Spike
   task: Exercise the gateway

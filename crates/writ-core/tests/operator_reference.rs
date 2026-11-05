@@ -78,9 +78,9 @@ fn policy_keys() -> BTreeSet<String> {
     keys
 }
 
-/// Every key of the ticket file (`scope.repos`).
+/// Every key of the ticket file (`repos.<repo>.operations`).
 fn ticket_keys() -> BTreeSet<String> {
-    let sections = ["caller", "scope", "ticket", "limits"];
+    let sections = ["caller", "common", "repos", "ticket", "limits"];
     let mut keys: BTreeSet<String> = keys_of(&ticket_error("__probe__: 0"), "", &sections)
         .into_iter()
         .collect();
@@ -100,13 +100,23 @@ fn ticket_keys() -> BTreeSet<String> {
         "caller.descends_from.code_identity.",
         &[],
     ));
-    for section in ["scope", "ticket", "limits"] {
+    for section in ["common", "ticket", "limits"] {
         keys.extend(keys_of(
             &ticket_error(&format!("{section}:\n  __probe__: 0")),
             &format!("{section}."),
             &[],
         ));
     }
+    keys.extend(keys_of(
+        &ticket_error("repos:\n  r:\n    __probe__: 0"),
+        "repos.<repo>.",
+        &["limits"],
+    ));
+    keys.extend(keys_of(
+        &ticket_error("repos:\n  r:\n    operations: [fetch]\n    limits:\n      __probe__: 0"),
+        "repos.<repo>.limits.",
+        &[],
+    ));
     keys
 }
 
@@ -224,7 +234,10 @@ fn every_ticket_key_is_in_the_operator_reference() {
         &registry("ticket"),
     );
     for (key, doc) in [
-        ("scope.operations", "scope:\n  operations: [__probe__]"),
+        (
+            "repos.<repo>.operations",
+            "repos:\n  r:\n    operations: [__probe__]",
+        ),
         ("on_violation", "on_violation: __probe__"),
     ] {
         assert_values_listed(&page, key, &ticket_error(doc));

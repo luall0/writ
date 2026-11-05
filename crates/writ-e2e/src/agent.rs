@@ -31,6 +31,17 @@ impl std::ops::Deref for Agent {
 /// A ticket for `repos` and `branches` from the `feature` template, one committer email,
 /// `ttl`, and `extra` lines (YAML, at the top level) appended.
 pub fn ticket(repos: &[&str], branches: &[&str], ttl: &str, extra: &str) -> String {
+    ticket_with(repos, branches, ttl, "", extra)
+}
+
+/// [`ticket`], with `in_each` lines (YAML, indented four spaces) in each repository's block.
+pub fn ticket_with(
+    repos: &[&str],
+    branches: &[&str],
+    ttl: &str,
+    in_each: &str,
+    extra: &str,
+) -> String {
     let quoted = |items: &[&str]| {
         items
             .iter()
@@ -38,14 +49,21 @@ pub fn ticket(repos: &[&str], branches: &[&str], ttl: &str, extra: &str) -> Stri
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let blocks: String = repos
+        .iter()
+        .map(|repo| {
+            format!(
+                "  {repo}:\n    template: feature\n    operations: [fetch, commit_sign, push]\n    \
+                 branches: [{}]\n{in_each}",
+                quoted(branches)
+            )
+        })
+        .collect();
     format!(
-        "template: feature\n\
-         scope:\n  repos: [{}]\n  operations: [fetch, commit_sign, push]\n  branches: [{}]\n  \
-         committer_emails: [\"agent@writ.invalid\"]\n\
+        "common:\n  committer_emails: [\"agent@writ.invalid\"]\n\
+         repos:\n{blocks}\
          ticket:\n  title: \"e2e: {}\"\n  task: \"An end-to-end scenario's work\"\n\
          limits:\n  ttl: {ttl}\n{extra}",
-        quoted(repos),
-        quoted(branches),
         repos.join(", ")
     )
 }

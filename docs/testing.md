@@ -266,31 +266,30 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: templates.<name>.committer_name` | `a_template_s_committer_name_is_set_on_commits_and_any_other_refused`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
 | `policy.yaml: templates.<name>.max_renewals` | `a_renewal_pushes_what_its_lease_signed_and_holds_to_every_bound`, `a_lease_is_renewed_closed_and_learned_from` |
 | `policy.yaml: signing_keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
-| `ticket: template` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
 | `ticket: origin_hint` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
 | `ticket: caller.descends_from.executable` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
 | `ticket: caller.descends_from.pid` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
 | `ticket: caller.descends_from.generation` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
 | `ticket: caller.descends_from.code_identity.signing_id` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
 | `ticket: caller.descends_from.code_identity.team_id` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
-| `ticket: scope.repos` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
-| `ticket: scope.operations` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `a_fetch_goes_through_the_policy_and_counts_against_the_rate` |
-| `ticket: scope.branches` | `a_branch_outside_the_lease_is_refused`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
-| `ticket: scope.force_push` | `a_force_push_or_a_deletion_is_refused_without_force_push`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
-| `ticket: scope.committer_emails` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `ticket: common.committer_emails` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `ticket: repos.<repo>.template` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
+| `ticket: repos.<repo>.operations` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `a_fetch_goes_through_the_policy_and_counts_against_the_rate` |
+| `ticket: repos.<repo>.branches` | `a_branch_outside_the_lease_is_refused`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `ticket: repos.<repo>.force_push` | `a_force_push_or_a_deletion_is_refused_without_force_push`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `ticket: repos.<repo>.expected_paths` | `paths_outside_the_ticket_are_refused_with_paths_check_deny`, `require_expected_paths_rejects_a_ticket_without_them` |
+| `ticket: repos.<repo>.limits.max_signatures` | `signatures_stop_at_the_lease_s_count_and_rate`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
+| `ticket: repos.<repo>.limits.max_pushes` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `ticket: repos.<repo>.limits.max_push_size` | `a_pack_over_max_push_size_is_refused`, `a_ticket_past_its_template_is_rejected_with_each_reason`, `git_takes_in_no_more_than_the_template_in_force_allows` |
 | `ticket: ticket.title` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
 | `ticket: ticket.task` | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
 | `ticket: ticket.plan` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
-| `ticket: ticket.expected_paths` | `paths_outside_the_ticket_are_refused_with_paths_check_deny`, `require_expected_paths_rejects_a_ticket_without_them` |
 | `ticket: ticket.amends` | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
 | `ticket: ticket.estimate` | `a_lease_is_renewed_closed_and_learned_from` |
 | `ticket: ticket.renews` | `a_renewal_pushes_what_its_lease_signed_and_holds_to_every_bound`, `a_lease_is_renewed_closed_and_learned_from` |
 | `ticket: ticket.revises` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `decisions_open_takes_unsigned_refusals_and_signed_does_not` |
 | `ticket: limits.ttl` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `a_ticket_left_unsigned_expires` |
-| `ticket: limits.max_signatures` | `signatures_stop_at_the_lease_s_count_and_rate`, `a_ticket_past_its_template_is_rejected_with_each_reason` |
-| `ticket: limits.max_pushes` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
 | `ticket: limits.max_ops_per_minute` | `signatures_stop_at_the_lease_s_count_and_rate`, `a_fetch_goes_through_the_policy_and_counts_against_the_rate` |
-| `ticket: limits.max_push_size` | `a_pack_over_max_push_size_is_refused`, `a_ticket_past_its_template_is_rejected_with_each_reason`, `git_takes_in_no_more_than_the_template_in_force_allows` |
 | `ticket: on_violation` | `a_violation_revokes_a_lease_that_asks_for_it`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
 | `env: WRIT_HOME` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
 | `env: WRIT_KNOWN_HOSTS` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |

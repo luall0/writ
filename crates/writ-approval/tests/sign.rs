@@ -37,29 +37,52 @@ const EMAIL: &str = "user+agent@example.org";
 /// A feature-branch lease on omega-code (`ticket_link: trailer`, `paths_check: warn`) and
 /// homelab-scripts (`ledger_only`).
 const FEATURE: &str = r#"
-template: feature-branch
-scope:
-  repos: [omega-code, homelab-scripts]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth-*"]
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-*"]
+    expected_paths: ["src/**"]
+  homelab-scripts:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-*"]
+    expected_paths: ["src/**"]
 ticket:
   title: Add OAuth login
   task: Add GitHub OAuth login behind a feature flag
-  expected_paths: ["src/**"]
 "#;
 
 /// A quick-fix lease (`paths_check: deny`, 10 signatures, 10 a minute).
 const QUICK_FIX: &str = r#"
-template: quick-fix
-scope:
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/fix-*"]
+repos:
+  omega-code:
+    template: quick-fix
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/fix-*"]
+    expected_paths: ["src/**"]
 ticket:
   title: Fix the login
   task: Fix it
-  expected_paths: ["src/**"]
 "#;
+
+/// `yaml` (in the layout of [`FEATURE`]) with each repository's `max_signatures` set to `n`.
+fn max_signatures(yaml: &str, n: u32) -> String {
+    let paths = "    expected_paths: [\"src/**\"]\n";
+    assert!(yaml.contains(paths));
+    yaml.replace(
+        paths,
+        &format!("{paths}    limits:\n      max_signatures: {n}\n"),
+    )
+}
+
+/// `yaml` (in the layout of [`FEATURE`]) without its homelab-scripts block.
+fn only_omega(yaml: &str) -> String {
+    let start = yaml.find("  homelab-scripts:\n").unwrap();
+    let end = yaml.find("ticket:\n").unwrap();
+    assert!(start < end);
+    yaml.replacen(yaml.get(start..end).unwrap(), "", 1)
+}
 
 struct Harness {
     _dir: tempfile::TempDir,
@@ -153,6 +176,7 @@ impl Harness {
             .unwrap()
             .usage(lease, now)
             .unwrap()
+            .total()
             .signatures
     }
 }
@@ -415,7 +439,7 @@ fn paths_outside_the_ticket_warn_or_deny() {
 #[test]
 fn signatures_stop_at_the_count_and_the_rate() {
     let h = Harness::new();
-    let few = FEATURE.to_owned() + "limits:\n  max_signatures: 2\n";
+    let few = max_signatures(FEATURE, 2);
     let (lease, cert) = h.lease(&few);
     let commit = build("src/a.rs", EMAIL, &trailer(&lease));
     for _ in 0..2 {
@@ -547,7 +571,7 @@ fn a_violation_revokes_only_a_lease_that_asks_for_it() {
     .unwrap();
 
     // revoke_lease: running out isn't a violation; a wrong committer is.
-    let strict = FEATURE.to_owned() + "limits:\n  max_signatures: 1\non_violation: revoke_lease\n";
+    let strict = max_signatures(FEATURE, 1) + "on_violation: revoke_lease\n";
     let (lease, cert) = h.lease(&strict);
     let good = build("src/a.rs", EMAIL, &trailer(&lease));
     h.sign(&cert, &good, "omega-code").unwrap();
@@ -1069,13 +1093,46 @@ fn a_violation_while_a_signature_is_in_flight_discards_it() {
     assert_eq!(h.events("revoke", "done").len(), lines);
 }
 
+/// Each repository has its own count: one used up refuses its signatures alone (`limit`,
+/// the lease still active); the lease is used up when every repository is.
+#[test]
+fn a_repository_used_up_leaves_the_others_their_signatures() {
+    let h = Harness::new();
+    let only_sign = max_signatures(
+        &FEATURE.replace("[fetch, commit_sign, push]", "[commit_sign]"),
+        1,
+    );
+    let (lease, cert) = h.lease(&only_sign);
+    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
+    h.sign(&cert, &commit, "omega-code").unwrap();
+    denied(
+        h.sign(&cert, &commit, "omega-code"),
+        DenyCode::Limit,
+        &format!("lease {lease}: all 1 signatures used in repo omega-code"),
+    );
+    h.service.sweep();
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Active);
+    h.sign(
+        &cert,
+        &build("src/a.rs", EMAIL, "Change\n"),
+        "homelab-scripts",
+    )
+    .unwrap();
+    assert_eq!(h.signatures(&lease), 2);
+    h.service.sweep();
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Exhausted);
+    assert!(h.service.is_revoked(cert.serial));
+}
+
 #[test]
 fn the_last_signature_in_flight_is_not_refused_as_used_up() {
     // Its slot makes the lease used up as soon as it is taken: the sweep waits until the
     // signature is settled, so the signature's own last check doesn't refuse it.
     let h = Harness::new();
-    let only_sign = FEATURE.replace("[fetch, commit_sign, push]", "[commit_sign]")
-        + "limits:\n  max_signatures: 1\n";
+    let only_sign = max_signatures(
+        &only_omega(FEATURE).replace("[fetch, commit_sign, push]", "[commit_sign]"),
+        1,
+    );
     let (lease, cert) = h.lease(&only_sign);
     let commit = build("src/a.rs", EMAIL, &trailer(&lease));
     let closed = h.signer.close();
@@ -1156,8 +1213,7 @@ fn a_lease_amended_while_signing_discards_the_signature() {
     std::thread::scope(|scope| {
         let in_flight = scope.spawn(|| h.sign(&cert, &commit, "omega-code"));
         h.signer.wait_entered();
-        let amendment =
-            FEATURE.to_owned() + &format!("  amends: {lease}\nlimits:\n  max_signatures: 5\n");
+        let amendment = max_signatures(FEATURE, 5) + &format!("  amends: {lease}\n");
         let submitted = h
             .service
             .submit(
@@ -1429,7 +1485,12 @@ fn a_template_tightened_while_signing_discards_the_signature() {
         denied(
             in_flight.join().unwrap(),
             DenyCode::Config,
-            &format!("lease {lease} no longer fits template feature-branch: "),
+            &format!(
+                "lease {lease} no longer fits its templates: repos.homelab-scripts.limits.\
+                 max_signatures is 50, over the template's 1; repos.omega-code.limits.\
+                 max_signatures is 50, over the template's 1 (changed while the commit was \
+                 being signed)"
+            ),
         );
     });
     assert!(h.ledger(&lease).is_empty(), "nothing recorded");

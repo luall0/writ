@@ -283,6 +283,18 @@ fn check_common(ticket: &Ticket, named: &[Named<'_>], reasons: &mut Vec<String>)
         if !name_ok {
             reasons.push("common.committer_name must be a template's committer_name".to_owned());
         }
+        // Unused without commit_sign, still never one no template allows: the approver reads
+        // them.
+        for email in &common.committer_emails {
+            if !named
+                .iter()
+                .any(|(_, _, t)| t.committer_emails.contains(email))
+            {
+                reasons.push(format!(
+                    "common.committer_emails: {email} is not allowed by any of the templates"
+                ));
+            }
+        }
         return;
     }
     if common.committer_emails.is_empty() {
@@ -309,7 +321,7 @@ fn check_common(ticket: &Ticket, named: &[Named<'_>], reasons: &mut Vec<String>)
             each.join(", ")
         ));
     } else if keys.first().copied().flatten() != common.signing_key.as_ref() {
-        reasons.push("common.signing_key must be the templates' signing key".to_owned());
+        reasons.push("common.signing_key must be the template's signing key".to_owned());
     }
     let names: BTreeSet<Option<&CommitterName>> = signing
         .iter()
@@ -332,7 +344,7 @@ fn check_common(ticket: &Ticket, named: &[Named<'_>], reasons: &mut Vec<String>)
             each.join(", ")
         ));
     } else if names.first().copied().flatten() != common.committer_name.as_ref() {
-        reasons.push("common.committer_name must be the templates' committer_name".to_owned());
+        reasons.push("common.committer_name must be the template's committer_name".to_owned());
     }
 }
 

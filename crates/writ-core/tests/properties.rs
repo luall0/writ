@@ -36,7 +36,8 @@ use writ_core::policy::{
 };
 use writ_core::ticket::Operation;
 use writ_core::ticket::{
-    Limits, OnViolation, RequestLimits, RequestScope, RequestText, Ticket, TicketRequest,
+    Limits, OnViolation, RepoLimits, RepoTerms, RequestCommon, RequestLimits, RequestRepo,
+    RequestRepoLimits, RequestText, Ticket, TicketRequest,
 };
 use writ_core::units::{ByteSize, Duration, Timestamp};
 
@@ -146,6 +147,31 @@ fn up_to(cap: u64, beyond: u64) -> impl Strategy<Value = Option<u64>> {
     ]
 }
 
+/// The first repository's terms of a ticket (property tickets may not name omega-code).
+fn first(t: &Ticket) -> &RepoTerms {
+    t.repos.values().next().unwrap()
+}
+
+fn first_mut(t: &mut Ticket) -> &mut RepoTerms {
+    t.repos.values_mut().next().unwrap()
+}
+
+/// The same counts used in every repository.
+fn usage_everywhere(signatures: u32, pushes: u32, ops: u32) -> Usage {
+    Usage {
+        repos: REPOS
+            .iter()
+            .map(|r| {
+                (
+                    r.parse().unwrap(),
+                    writ_core::lease::RepoUsage { signatures, pushes },
+                )
+            })
+            .collect(),
+        ops_last_minute: ops,
+    }
+}
+
 /// A ticket request, biased toward one template's values so that many fit.
 fn arb_request() -> impl Strategy<Value = TicketRequest> {
     let config = wide_config();
@@ -184,35 +210,41 @@ fn arb_request() -> impl Strategy<Value = TicketRequest> {
             any::<bool>(),
         )
     })
-    .prop_map(|(template, scope, limits, paths, bound, strict)| TicketRequest {
-        template: template.map(|t| t.parse().unwrap()),
-        origin_hint: None,
-        caller: bound.then(omega_constraint),
-        scope: RequestScope {
-            repos: scope.0.iter().map(|r| r.parse().unwrap()).collect(),
+    .prop_map(|(template, scope, limits, paths, bound, strict)| {
+        let block = RequestRepo {
+            template: template.map(|t| t.parse().unwrap()),
             operations: if scope.1.is_empty() { vec![Operation::Fetch] } else { scope.1 },
             branches: parse_all(scope.2),
             force_push: scope.3,
-            committer_emails: scope.4.iter().map(|e| e.parse().unwrap()).collect(),
-        },
-        ticket: RequestText {
-            title: "A task".to_owned(),
-            task: "Do it".to_owned(),
-            plan: vec!["Step".to_owned()],
             expected_paths: parse_all(paths),
-            estimate: None,
-            amends: None,
-            renews: None,
-            revises: None,
-        },
-        limits: RequestLimits {
-            ttl: limits.0.map(Duration::from_seconds),
-            max_signatures: limits.1.map(|v| v as u32),
-            max_pushes: limits.2.map(|v| v as u32),
-            max_ops_per_minute: limits.3.map(|v| v as u32),
-            max_push_size: limits.4.map(ByteSize::from_bytes),
-        },
-        on_violation: if strict { OnViolation::RevokeLease } else { OnViolation::DenyAndNotify },
+            limits: RequestRepoLimits {
+                max_signatures: limits.1.map(|v| v as u32),
+                max_pushes: limits.2.map(|v| v as u32),
+                max_push_size: limits.4.map(ByteSize::from_bytes),
+            },
+        };
+        TicketRequest {
+            origin_hint: None,
+            caller: bound.then(omega_constraint),
+            common: RequestCommon {
+                committer_emails: scope.4.iter().map(|e| e.parse().unwrap()).collect(),
+            },
+            repos: scope.0.iter().map(|r| (r.parse().unwrap(), block.clone())).collect(),
+            ticket: RequestText {
+                title: "A task".to_owned(),
+                task: "Do it".to_owned(),
+                plan: vec!["Step".to_owned()],
+                estimate: None,
+                amends: None,
+                renews: None,
+                revises: None,
+            },
+            limits: RequestLimits {
+                ttl: limits.0.map(Duration::from_seconds),
+                max_ops_per_minute: limits.3.map(|v| v as u32),
+            },
+            on_violation: if strict { OnViolation::RevokeLease } else { OnViolation::DenyAndNotify },
+        }
     })
 }
 
@@ -227,7 +259,10 @@ fn arb_ticket() -> impl Strategy<Value = Ticket> {
 /// template's range. Many are wider than submitted; the narrowing check must refuse those.
 fn arb_signed(submitted: Ticket) -> impl Strategy<Value = Ticket> {
     let config = wide_config();
-    let template = config.template(&submitted.template).unwrap().clone();
+    let template = config
+        .template(&first(&submitted).template)
+        .unwrap()
+        .clone();
     let repos: Vec<String> = template.repos.iter().map(|r| r.to_string()).collect();
     let emails: Vec<String> = template
         .committer_emails
@@ -252,20 +287,29 @@ fn arb_signed(submitted: Ticket) -> impl Strategy<Value = Ticket> {
         let mut t = submitted.clone();
         for field in fields {
             match field {
-                0 => t.scope.repos = v.0.iter().map(|r| r.parse().unwrap()).collect(),
-                1 => t.scope.operations = v.1.iter().copied().collect(),
-                2 => t.scope.branches = parse_all(v.2.clone()).into_iter().collect(),
-                3 => t.scope.force_push = !t.scope.force_push,
-                4 => t.scope.committer_emails = v.3.iter().map(|e| e.parse().unwrap()).collect(),
-                5 => t.text.expected_paths = parse_all(v.4.clone()).into_iter().collect(),
+                0 if !v.0.is_empty() => {
+                    let terms = first(&t).clone();
+                    t.repos =
+                        v.0.iter()
+                            .map(|r| (r.parse().unwrap(), terms.clone()))
+                            .collect();
+                }
+                0 => {}
+                1 => first_mut(&mut t).operations = v.1.iter().copied().collect(),
+                2 => first_mut(&mut t).branches = parse_all(v.2.clone()).into_iter().collect(),
+                3 => first_mut(&mut t).force_push = !first(&t).force_push,
+                4 => t.common.committer_emails = v.3.iter().map(|e| e.parse().unwrap()).collect(),
+                5 => {
+                    first_mut(&mut t).expected_paths = parse_all(v.4.clone()).into_iter().collect()
+                }
                 6 => {
                     t.limits.expires_at =
                         Timestamp::from_unix(t.limits.expires_at.unix() + v.5).unwrap()
                 }
-                7 => t.limits.max_signatures = v.6.0,
-                8 => t.limits.max_pushes = v.6.1,
+                7 => first_mut(&mut t).limits.max_signatures = v.6.0,
+                8 => first_mut(&mut t).limits.max_pushes = v.6.1,
                 9 => t.limits.max_ops_per_minute = v.6.2,
-                10 => t.limits.max_push_size = ByteSize::from_bytes(v.7),
+                10 => first_mut(&mut t).limits.max_push_size = ByteSize::from_bytes(v.7),
                 11 => {
                     t.subject.caller = match t.subject.caller {
                         Some(_) => None,
@@ -407,11 +451,7 @@ fn arb_facts() -> impl Strategy<Value = Facts> {
     )
         .prop_map(|(op, (signatures, pushes, ops), offset, chain)| Facts {
             op,
-            usage: Usage {
-                signatures,
-                pushes,
-                ops_last_minute: ops,
-            },
+            usage: usage_everywhere(signatures, pushes, ops),
             now: later(offset),
             caller: CallerFacts {
                 source_addr: None,
@@ -424,18 +464,17 @@ fn arb_facts() -> impl Strategy<Value = Facts> {
 /// emails, paths and limits, so most pass every check but the one that differs.
 fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
     let mut repos: Vec<String> = a
-        .scope
         .repos
-        .iter()
-        .chain(&b.scope.repos)
+        .keys()
+        .chain(b.repos.keys())
         .map(|r| r.to_string())
         .collect();
     repos.push("nope".to_owned());
     let mut refs: Vec<String> = a
-        .scope
-        .branches
-        .iter()
-        .chain(&b.scope.branches)
+        .repos
+        .values()
+        .chain(b.repos.values())
+        .flat_map(|t| t.branches.iter())
         .map(|p| {
             let text = p.to_string();
             match text.strip_suffix('*') {
@@ -446,20 +485,19 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
         .collect();
     refs.push("refs/heads/main".to_owned());
     let mut emails: Vec<String> = a
-        .scope
+        .common
         .committer_emails
         .iter()
-        .chain(&b.scope.committer_emails)
-        .chain(&b.scope.committer_emails)
+        .chain(&b.common.committer_emails)
         .map(|e| e.to_string())
         .collect();
     emails.push("user@example.org".to_owned());
     // A file inside each expected path of either ticket, and one outside them all.
     let mut touched: Vec<String> = a
-        .text
-        .expected_paths
-        .iter()
-        .chain(&b.text.expected_paths)
+        .repos
+        .values()
+        .chain(b.repos.values())
+        .flat_map(|t| t.expected_paths.iter())
         .map(|p| p.as_str().replace("**", "deep/x.rs").replace('*', "x"))
         .collect();
     let max_inside = touched.len().min(2);
@@ -472,14 +510,17 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
         2 => subsequence(touched, 0..=max_touched).prop_map(Some),
     ];
     let id = a.id.clone();
-    let max_sig = a.limits.max_signatures.max(b.limits.max_signatures);
-    let max_push = a.limits.max_pushes.max(b.limits.max_pushes);
+    let max_sig = first(a)
+        .limits
+        .max_signatures
+        .max(first(b).limits.max_signatures);
+    let max_push = first(a).limits.max_pushes.max(first(b).limits.max_pushes);
     let max_rate = a.limits.max_ops_per_minute.max(b.limits.max_ops_per_minute);
     let sizes = vec![
-        a.limits.max_push_size.bytes(),
-        b.limits.max_push_size.bytes(),
-        a.limits.max_push_size.bytes() + 1,
-        b.limits.max_push_size.bytes() + 1,
+        first(a).limits.max_push_size.bytes(),
+        first(b).limits.max_push_size.bytes(),
+        first(a).limits.max_push_size.bytes() + 1,
+        first(b).limits.max_push_size.bytes() + 1,
         0,
     ];
     let span = a
@@ -562,11 +603,7 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
                 };
                 Facts {
                     op,
-                    usage: Usage {
-                        signatures: usage.0,
-                        pushes: usage.1,
-                        ops_last_minute: usage.2,
-                    },
+                    usage: usage_in(usage.0, usage.1, usage.2),
                     now: Timestamp::from_unix(created.unix() + offset).unwrap(),
                     caller: CallerFacts {
                         source_addr: None,
@@ -708,31 +745,34 @@ proptest! {
             return Ok(());
         };
         prop_assert!(fit::fits(&config, &ticket).is_ok());
-        if let Some(named) = &request.template {
-            prop_assert_eq!(&ticket.template, named);
+        if let Some(named) = request.repos.values().next().and_then(|r| r.template.clone()) {
+            prop_assert_eq!(&first(&ticket).template, &named);
         }
         // The largest ticket the template accepts with the same identity, text and operations
         // (operations beyond the template are the next property's job). With push, only the
         // repos the template can push to.
-        let template = config.template(&ticket.template).unwrap();
+        let template = config.template(&first(&ticket).template).unwrap();
         let mut largest = ticket.clone();
-        let pushes = ticket.allows(Operation::Push);
-        largest.scope.repos = template
+        let pushes = ticket.allows_anywhere(Operation::Push);
+        let mut terms = first(&ticket).clone();
+        terms.branches = template.branches.clone();
+        terms.force_push = template.force_push;
+        terms.limits = RepoLimits {
+            max_signatures: template.max_signatures,
+            max_pushes: template.max_pushes,
+            max_push_size: template.max_push_size,
+        };
+        largest.repos = template
             .repos
             .iter()
             .filter(|r| !pushes || !fit::push_modes(&config.repo(r).unwrap().push_modes, template).is_empty())
-            .cloned()
+            .map(|r| (r.clone(), terms.clone()))
             .collect();
-        largest.scope.branches = template.branches.clone();
-        largest.scope.force_push = template.force_push;
-        largest.scope.committer_emails = template.committer_emails.clone();
-        largest.scope.signing_key = template.signing_key.clone();
+        largest.common.committer_emails = template.committer_emails.clone();
+        largest.common.signing_key = template.signing_key.clone();
         largest.limits = Limits {
             expires_at: ticket.created_at.checked_add(template.max_ttl).unwrap(),
-            max_signatures: template.max_signatures,
-            max_pushes: template.max_pushes,
             max_ops_per_minute: template.max_ops_per_minute,
-            max_push_size: template.max_push_size,
         };
         prop_assert!(fit::fits(&config, &largest).is_ok(), "{:?}", fit::fits(&config, &largest));
         let mut runner = proptest::test_runner::TestRunner::deterministic();
@@ -756,20 +796,23 @@ proptest! {
         widen in 0usize..8,
     ) {
         let config = wide_config();
-        let template = config.template(&ticket.template).unwrap().clone();
+        let template = config.template(&first(&ticket).template).unwrap().clone();
         let mut wide = ticket.clone();
         match widen {
-            0 => { wide.scope.repos.insert(repo("nope")); }
-            1 => { wide.scope.operations = OPS.into_iter().collect(); }
-            2 => { wide.scope.branches.insert("main".parse().unwrap()); }
-            3 => wide.scope.force_push = true,
-            4 => { wide.scope.committer_emails.insert("user@example.org".parse().unwrap()); }
-            5 => wide.limits.max_signatures = template.max_signatures + 1,
+            0 => {
+                let terms = first(&wide).clone();
+                wide.repos.insert(repo("nope"), terms);
+            }
+            1 => { first_mut(&mut wide).operations = OPS.into_iter().collect(); }
+            2 => { first_mut(&mut wide).branches.insert("main".parse().unwrap()); }
+            3 => first_mut(&mut wide).force_push = true,
+            4 => { wide.common.committer_emails.insert("user@example.org".parse().unwrap()); }
+            5 => first_mut(&mut wide).limits.max_signatures = template.max_signatures + 1,
             6 => wide.limits.expires_at = wide.created_at.checked_add(Duration::from_seconds(template.max_ttl.seconds() + 1)).unwrap(),
-            _ => wide.limits.max_push_size = ByteSize::from_bytes(template.max_push_size.bytes() + 1),
+            _ => first_mut(&mut wide).limits.max_push_size = ByteSize::from_bytes(template.max_push_size.bytes() + 1),
         }
         let beyond = match widen {
-            1 => !template.operations.is_superset(&wide.scope.operations),
+            1 => !template.operations.is_superset(&first(&wide).operations),
             2 => !template.branches.iter().any(|b| b.covers(&"main".parse().unwrap())),
             3 => !template.force_push,
             _ => true,
@@ -834,8 +877,8 @@ proptest! {
     ) {
         let config = wide_config();
         let mut ticket = wide_submitted(REQUEST);
-        ticket.limits.max_signatures = limits.0;
-        ticket.limits.max_pushes = limits.1;
+        first_mut(&mut ticket).limits.max_signatures = limits.0;
+        first_mut(&mut ticket).limits.max_pushes = limits.1;
         ticket.limits.max_ops_per_minute = limits.2;
         let lease = as_lease(ticket);
         let mut usage = Usage::default();
@@ -855,14 +898,14 @@ proptest! {
             if allowed {
                 prop_assert!(now < lease.ticket.limits.expires_at);
                 match kind {
-                    0 => usage.signatures += 1,
-                    1 => usage.pushes += 1,
+                    0 => used(&mut usage).signatures += 1,
+                    1 => used(&mut usage).pushes += 1,
                     _ => {}
                 }
                 history.push(now);
             }
-            prop_assert!(usage.signatures <= limits.0);
-            prop_assert!(usage.pushes <= limits.1);
+            prop_assert!(usage.of(&repo("omega-code")).signatures <= limits.0);
+            prop_assert!(usage.of(&repo("omega-code")).pushes <= limits.1);
             let in_window = history.iter().filter(|t| t.unix() > window_start).count() as u32;
             prop_assert!(in_window <= limits.2);
         }

@@ -1,28 +1,33 @@
 //! Scenario 2b, narrowing at signature: the approver narrows every term of a ticket with
-//! `writ sign`'s flags, the agent is told what changed, and the lease holds to the narrowed
-//! terms (a second push past `--max-pushes 1`, a fetch after `--drop-op fetch`, which revokes
+//! `writ sign`'s flags, for one repository (`<repo>:<value>`) or every one (the value alone),
+//! the agent is told what changed, and the lease holds to the narrowed terms (a second push
+//! past `--max-pushes narrowing:1`, a fetch after `--drop-op narrowing:fetch`, which revokes
 //! the lease under `--revoke-on-violation`).
 
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
 use writ_e2e::stderr;
 
-const TICKET: &str = "template: feature
-scope:
-  repos: [narrowing, lifecycle]
-  operations: [fetch, commit_sign, push]
-  branches: [\"agent/*\"]
-  force_push: true
+const TICKET: &str = "common:
   committer_emails: [\"agent@writ.invalid\", \"second@writ.invalid\"]
+repos:
+  narrowing:
+    template: feature
+    operations: [fetch, commit_sign, push]
+    branches: [\"agent/*\"]
+    force_push: true
+    limits: { max_signatures: 10, max_pushes: 5, max_push_size: 10MB }
+  lifecycle:
+    template: feature
+    operations: [fetch, commit_sign, push]
+    branches: [\"agent/*\"]
+    limits: { max_signatures: 10, max_pushes: 5, max_push_size: 10MB }
 ticket:
   title: \"Narrow me\"
   task: \"A ticket the approver narrows\"
 limits:
   ttl: 2h
-  max_signatures: 10
-  max_pushes: 5
   max_ops_per_minute: 100
-  max_push_size: 10MB
 ";
 
 #[test]
@@ -32,9 +37,9 @@ fn the_approver_narrows_every_term_and_the_lease_holds_to_them() {
     let agent = stack.agent("narrowing");
     let id = agent.submit("ticket", TICKET);
     let out = stack.approver.run(&format!(
-        "writ sign {id} --yes --ttl 30m --drop-repo lifecycle --drop-op fetch \
-         --branch agent/narrow --drop-email second@writ.invalid --max-signatures 3 \
-         --max-pushes 1 --max-ops-per-minute 50 --max-push-size 1MB --no-force-push \
+        "writ sign {id} --yes --ttl 30m --drop-repo lifecycle --drop-op narrowing:fetch \
+         --branch narrowing:agent/narrow --drop-email second@writ.invalid --max-signatures 3 \
+         --max-pushes narrowing:1 --max-ops-per-minute 50 --max-push-size 1MB --no-force-push \
          --revoke-on-violation"
     ));
     let (out, _) = expect(&out, 0, "writ sign with every narrowing flag");
@@ -49,29 +54,37 @@ fn the_approver_narrows_every_term_and_the_lease_holds_to_them() {
     // The lease's terms, as the agent received them.
     let lease: serde_json::Value =
         serde_json::from_str(&agent.session_file(&id, "lease.json")).unwrap();
-    let scope = &lease["scope"];
-    assert_eq!(scope["repos"], serde_json::json!(["narrowing"]), "{lease}");
     assert_eq!(
-        scope["operations"],
+        lease["repos"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["narrowing"],
+        "{lease}"
+    );
+    let terms = &lease["repos"]["narrowing"];
+    assert_eq!(
+        terms["operations"],
         serde_json::json!(["commit_sign", "push"]),
         "{lease}"
     );
     assert_eq!(
-        scope["branches"],
+        terms["branches"],
         serde_json::json!(["agent/narrow"]),
         "{lease}"
     );
     assert_eq!(
-        scope["committer_emails"],
+        lease["common"]["committer_emails"],
         serde_json::json!(["agent@writ.invalid"]),
         "{lease}"
     );
-    assert_eq!(scope["force_push"], false, "{lease}");
+    assert_eq!(terms["force_push"], false, "{lease}");
+    assert_eq!(terms["limits"]["max_signatures"], 3, "{lease}");
+    assert_eq!(terms["limits"]["max_pushes"], 1, "{lease}");
+    assert_eq!(terms["limits"]["max_push_size"], 1_000_000, "{lease}");
     let limits = &lease["limits"];
-    assert_eq!(limits["max_signatures"], 3, "{lease}");
-    assert_eq!(limits["max_pushes"], 1, "{lease}");
     assert_eq!(limits["max_ops_per_minute"], 50, "{lease}");
-    assert_eq!(limits["max_push_size"], 1_000_000, "{lease}");
     assert_eq!(lease["on_violation"], "revoke_lease", "{lease}");
     let created = lease["created_at"].as_str().unwrap();
     let expires = limits["expires_at"].as_str().unwrap();
@@ -100,7 +113,7 @@ fn the_approver_narrows_every_term_and_the_lease_holds_to_them() {
     );
     agent.commit("work", &id, "b.txt", "two");
     let out = agent.in_dir("work", "writ git push origin HEAD");
-    expect(&out, 1, "a push past --max-pushes");
+    expect(&out, 1, "a push past --max-pushes narrowing:1");
     assert!(stderr(&out).contains("push"), "{}", stderr(&out));
     assert_eq!(
         stack.forgejo.branch("narrowing", "agent/narrow").as_deref(),

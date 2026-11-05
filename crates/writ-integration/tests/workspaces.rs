@@ -50,10 +50,13 @@ templates:
 
 /// One ticket for both repositories.
 const BOTH: &str = r#"
-scope:
-  repos: [demo, web]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/*"]
+repos:
+  demo:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+  web:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
 ticket:
   title: "Login across the API and the web app"
   task: Add the login route to the API and its button to the web app

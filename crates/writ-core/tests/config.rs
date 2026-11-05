@@ -362,24 +362,21 @@ fn ticket_request_errors_name_the_field() {
         (REQUEST.replace("ttl: 2h", "ttl: two hours"), "limits.ttl: "),
         (
             REQUEST.replace("max_pushes: 2", "max_pushes: lots"),
-            "limits.max_pushes: ",
+            "repos.omega-code.limits.max_pushes: ",
         ),
         (
             REQUEST.replace("[\"agent/oauth-*\"]", "[\"agent/**\"]"),
-            "scope.branches[0]: ",
+            "repos.omega-code.branches[0]: ",
         ),
         (
             REQUEST.replace("[\"src/auth/**\", \"tests/auth/**\"]", "[\"/etc/passwd\"]"),
-            "ticket.expected_paths[0]: ",
+            "repos.omega-code.expected_paths[0]: ",
         ),
         (
             REQUEST.replace("  title: Add OAuth login\n", ""),
             "ticket: ",
         ),
-        (
-            REQUEST.replace("template: feature-branch", "template: x\nstate: active"),
-            "state: ",
-        ),
+        (format!("state: active\n{REQUEST}"), "state: "),
         (format!("{REQUEST}\napproval: yes\n"), "approval: "),
     ];
     for (yaml, expected) in cases {

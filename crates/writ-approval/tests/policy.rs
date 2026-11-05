@@ -23,16 +23,21 @@ use writ_platform::testing::{FakeClock, RecordingNotifier};
 
 const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 
+/// The terms of `omega-code` in a ticket.
+fn om(ticket: &Ticket) -> &writ_core::ticket::RepoTerms {
+    ticket.repos.get(&"omega-code".parse().unwrap()).unwrap()
+}
+
 fn ticket(branch: &str, more: &str) -> String {
     format!(
         r#"
-template: feature-branch
 limits:
   ttl: 2h
-scope:
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["{branch}"]
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["{branch}"]
 ticket:
   title: Add OAuth login
   task: Add GitHub OAuth login behind a feature flag
@@ -107,6 +112,15 @@ fn writ_policy_shows_one_repo_and_nothing_else_of_the_policy() {
     );
     assert_eq!(feature.paths_check, PathsCheck::Warn);
     assert_eq!(omega.templates[1].paths_check, PathsCheck::Deny);
+    // The signing key's id, to tell whether one lease can cover several repos.
+    assert_eq!(
+        feature.signing_key.as_ref().map(|k| k.as_str()),
+        Some("agent-ed25519-01")
+    );
+    assert_eq!(
+        omega.templates[2].signing_key, None,
+        "read-only signs nothing"
+    );
 
     // Another repo: only the templates that allow it.
     let dotfiles = h
@@ -117,7 +131,8 @@ fn writ_policy_shows_one_repo_and_nothing_else_of_the_policy() {
     assert_eq!(names, ["quick-fix"]);
     assert!(dotfiles.protected_refs.is_empty());
 
-    // Nothing of the upstream, the credential, the signing key or the other repos.
+    // Nothing of the upstream, the credential or the other repos; of the signing key, its id
+    // alone (agents get its public key with each grant).
     let reply = String::from_utf8(writ_proto::encode_reply(&Ok::<_, writ_proto::ApiError>(
         omega,
     )))
@@ -125,13 +140,16 @@ fn writ_policy_shows_one_repo_and_nothing_else_of_the_policy() {
     for hidden in [
         "github.com",
         "upstream-github-01",
-        "agent-ed25519-01",
         "homelab-scripts",
         "dotfiles",
         "gateway",
     ] {
         assert!(!reply.contains(hidden), "{hidden:?} in {reply}");
     }
+    assert!(
+        reply.contains(r#""signing_key":"agent-ed25519-01""#) && !reply.contains("ssh-ed25519"),
+        "the key's id, never the key: {reply}"
+    );
 
     // A repo not in the registry: refused, logged.
     refused(
@@ -196,7 +214,7 @@ fn a_dry_run_checks_like_a_submission_and_stores_nothing() {
         .dry_run(key.public_key(), ticket("agent/a", "").as_bytes(), &here)
         .unwrap();
     let would = Ticket::from_canonical(checked.canonical.as_bytes()).unwrap();
-    assert_eq!(would.template.as_str(), "feature-branch");
+    assert_eq!(om(&would).template.as_str(), "feature-branch");
     assert_eq!(would.limits.expires_at.unix(), START as i64 + 7200);
     assert!(h.service.list(true).unwrap().tickets.is_empty());
     let line = h.events("dry_run", "allowed");
@@ -231,8 +249,8 @@ fn a_dry_run_checks_like_a_submission_and_stores_nothing() {
     assert_eq!(dry.reason_text(), real.reason_text());
     assert_eq!(
         dry.reason_text(),
-        "the ticket fits no template; feature-branch: branch main is not within the \
-         template's branches (agent/*)"
+        "repos.omega-code fits no template: feature-branch: repos.omega-code: branch main is \
+         not within the template's branches (agent/*)"
     );
     let denied = h.events("dry_run", "denied");
     assert_eq!(denied.len(), 1);

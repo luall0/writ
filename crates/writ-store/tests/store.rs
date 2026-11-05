@@ -17,9 +17,9 @@ use std::thread;
 use writ_core::config::PolicyConfig;
 use writ_core::fit::{self, Submission};
 use writ_core::lease::{
-    self, APPROVAL_NAMESPACE, Approval, Lease, LifecycleError, State, TicketRecord,
+    self, APPROVAL_NAMESPACE, Approval, Lease, LifecycleError, RepoUsage, State, TicketRecord,
 };
-use writ_core::names::{CommitId, KeyFingerprint, KeyId, TicketId};
+use writ_core::names::{CommitId, KeyFingerprint, KeyId, RepoName, TicketId};
 use writ_core::net::Source;
 use writ_core::policy::RATE_WINDOW_SECONDS;
 use writ_core::ticket::{Ticket, TicketRequest};
@@ -37,20 +37,26 @@ const SOURCE: Source = Source::Local;
 const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 
 const REQUEST: &str = r#"
-template: feature-branch
-scope:
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth-*"]
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-*"]
+    limits:
+      max_signatures: 3
+      max_pushes: 2
 ticket:
   title: Add OAuth login
   task: Add GitHub OAuth login behind a feature flag
 limits:
   ttl: 2h
-  max_signatures: 3
-  max_pushes: 2
   max_ops_per_minute: 5
 "#;
+
+/// The repository [`REQUEST`] names.
+fn omega() -> RepoName {
+    "omega-code".parse().unwrap()
+}
 
 fn config() -> PolicyConfig {
     PolicyConfig::from_yaml(POLICY).unwrap()
@@ -132,10 +138,14 @@ fn leases_and_ledger_survive_a_reopen() {
         let lease = active_lease(&store, 1);
         assert!(
             store
-                .consume(&lease.id, Counter::Signature, 3, t(30))
+                .consume(&lease.id, &omega(), Counter::Signature, 3, t(30))
                 .unwrap()
         );
-        assert!(store.consume(&lease.id, Counter::Push, 2, t(31)).unwrap());
+        assert!(
+            store
+                .consume(&lease.id, &omega(), Counter::Push, 2, t(31))
+                .unwrap()
+        );
         store
             .ledger_append(&entry(1, &lease.id, "omega-code"))
             .unwrap();
@@ -159,7 +169,11 @@ fn leases_and_ledger_survive_a_reopen() {
     assert_eq!(store.leases(State::Active).unwrap(), vec![lease.clone()]);
     let usage = store.usage(&lease.id, t(40)).unwrap();
     assert_eq!(
-        (usage.signatures, usage.pushes, usage.ops_last_minute),
+        (
+            usage.of(&omega()).signatures,
+            usage.of(&omega()).pushes,
+            usage.ops_last_minute
+        ),
         (1, 1, 2)
     );
     let entries = store.ledger_for_lease(&lease.id).unwrap();
@@ -202,7 +216,12 @@ fn a_narrowed_lease_is_stored_as_signed() {
     let submitted = ticket(1, REQUEST, None);
     store.insert_pending(&submitted, KEY, SOURCE, t(0)).unwrap();
     let mut signed = submitted.clone();
-    signed.limits.max_signatures = 1;
+    signed
+        .repos
+        .get_mut(&omega())
+        .unwrap()
+        .limits
+        .max_signatures = 1;
     let record = store.ticket(&submitted.id).unwrap().unwrap();
     let lease = lease::activate(&config(), &record, signed.clone(), approval(), 1, t(5)).unwrap();
     store.activate(&lease, CERT, t(5)).unwrap();
@@ -277,23 +296,38 @@ fn counters_never_go_over_the_limit() {
     for i in 0..3 {
         assert!(
             store
-                .consume(&lease.id, Counter::Signature, 3, t(30 + i))
+                .consume(&lease.id, &omega(), Counter::Signature, 3, t(30 + i))
                 .unwrap()
         );
     }
     assert!(
         !store
-            .consume(&lease.id, Counter::Signature, 3, t(40))
+            .consume(&lease.id, &omega(), Counter::Signature, 3, t(40))
             .unwrap()
     );
-    assert_eq!(store.usage(&lease.id, t(40)).unwrap().signatures, 3);
+    assert_eq!(
+        store
+            .usage(&lease.id, t(40))
+            .unwrap()
+            .of(&omega())
+            .signatures,
+        3
+    );
     // A refused take records no operation.
     assert_eq!(store.usage(&lease.id, t(40)).unwrap().ops_last_minute, 3);
     // Fetches only count for the rate.
-    assert!(store.consume(&lease.id, Counter::Fetch, 0, t(41)).unwrap());
+    assert!(
+        store
+            .consume(&lease.id, &omega(), Counter::Fetch, 0, t(41))
+            .unwrap()
+    );
     let usage = store.usage(&lease.id, t(41)).unwrap();
     assert_eq!(
-        (usage.signatures, usage.pushes, usage.ops_last_minute),
+        (
+            usage.of(&omega()).signatures,
+            usage.of(&omega()).pushes,
+            usage.ops_last_minute
+        ),
         (3, 0, 4)
     );
     // The rate window slides.
@@ -310,16 +344,86 @@ fn counters_never_go_over_the_limit() {
     store
         .transition(&lease.id, State::Active, State::Expired, t(50))
         .unwrap();
-    assert!(!store.consume(&lease.id, Counter::Push, 2, t(51)).unwrap());
-    assert!(!store.consume(&lease.id, Counter::Fetch, 0, t(51)).unwrap());
+    assert!(
+        !store
+            .consume(&lease.id, &omega(), Counter::Push, 2, t(51))
+            .unwrap()
+    );
+    assert!(
+        !store
+            .consume(&lease.id, &omega(), Counter::Fetch, 0, t(51))
+            .unwrap()
+    );
     // Nor from a pending ticket.
     let pending = ticket(2, REQUEST, None);
     store.insert_pending(&pending, KEY, SOURCE, t(0)).unwrap();
     assert!(
         !store
-            .consume(&pending.id, Counter::Fetch, 0, t(52))
+            .consume(&pending.id, &omega(), Counter::Fetch, 0, t(52))
             .unwrap()
     );
+}
+
+/// Signatures and pushes are counted per repository (each against its own limit); the rate
+/// counts every repository together. Each limit on both sides.
+#[test]
+fn counters_are_per_repository() {
+    let store = Store::open_in_memory().unwrap();
+    let lease = active_lease(&store, 1);
+    let homelab: RepoName = "homelab-scripts".parse().unwrap();
+    for i in 0..2 {
+        assert!(
+            store
+                .consume(&lease.id, &omega(), Counter::Push, 2, t(30 + i))
+                .unwrap()
+        );
+    }
+    // omega-code's pushes used up: one more there is refused, homelab-scripts' still counts
+    // from zero up to its own limit.
+    assert!(
+        !store
+            .consume(&lease.id, &omega(), Counter::Push, 2, t(32))
+            .unwrap()
+    );
+    assert!(
+        store
+            .consume(&lease.id, &homelab, Counter::Push, 1, t(33))
+            .unwrap()
+    );
+    assert!(
+        !store
+            .consume(&lease.id, &homelab, Counter::Push, 1, t(34))
+            .unwrap()
+    );
+    assert!(
+        store
+            .consume(&lease.id, &homelab, Counter::Signature, 1, t(35))
+            .unwrap()
+    );
+    let usage = store.usage(&lease.id, t(40)).unwrap();
+    assert_eq!(
+        usage.repos,
+        [
+            (
+                homelab.clone(),
+                RepoUsage {
+                    signatures: 1,
+                    pushes: 1
+                }
+            ),
+            (
+                omega(),
+                RepoUsage {
+                    signatures: 0,
+                    pushes: 2
+                }
+            ),
+        ]
+        .into()
+    );
+    // One rate for the lease: the four operations allowed, in both repositories (the two
+    // refused ones not counted).
+    assert_eq!(usage.ops_last_minute, 4);
 }
 
 #[test]
@@ -329,7 +433,7 @@ fn old_operations_are_pruned_and_the_window_still_counts() {
     for offset in [30, 31, 90] {
         assert!(
             store
-                .consume(&lease.id, Counter::Fetch, 0, t(offset))
+                .consume(&lease.id, &omega(), Counter::Fetch, 0, t(offset))
                 .unwrap()
         );
     }
@@ -360,7 +464,7 @@ fn concurrent_takes_never_overshoot() {
                 let mut taken = 0;
                 for i in 0..20 {
                     loop {
-                        match store.consume(&id, Counter::Push, 25, t(100 + i)) {
+                        match store.consume(&id, &omega(), Counter::Push, 25, t(100 + i)) {
                             Ok(true) => {
                                 taken += 1;
                                 break;
@@ -382,6 +486,7 @@ fn concurrent_takes_never_overshoot() {
             .unwrap()
             .usage(&lease.id, t(200))
             .unwrap()
+            .of(&omega())
             .pushes,
         25
     );
@@ -401,11 +506,14 @@ fn an_amendment_replaces_the_terms_in_force() {
     let lease = active_lease(&store, 1);
     assert!(
         store
-            .consume(&lease.id, Counter::Signature, 3, t(30))
+            .consume(&lease.id, &omega(), Counter::Signature, 3, t(30))
             .unwrap()
     );
     let amended_yaml = REQUEST
-        .replace("[omega-code]", "[omega-code, homelab-scripts]")
+        .replace(
+            "repos:\n",
+            "repos:\n  homelab-scripts:\n    template: feature-branch\n    operations: [fetch]\n",
+        )
         .replace("  task:", &format!("  amends: {}\n  task:", lease.id));
     let amendment = ticket(2, &amended_yaml, Some(&lease));
     store
@@ -431,7 +539,14 @@ fn an_amendment_replaces_the_terms_in_force() {
         State::Applied
     );
     // Usage carries over.
-    assert_eq!(store.usage(&lease.id, t(51)).unwrap().signatures, 1);
+    assert_eq!(
+        store
+            .usage(&lease.id, t(51))
+            .unwrap()
+            .of(&omega())
+            .signatures,
+        1
+    );
     // The amendment's id is not a lease of its own.
     assert!(store.lease(&amendment.id).unwrap().is_none());
     // Applying again: the amendment is no longer pending, nothing changes.
@@ -749,11 +864,11 @@ fn a_state_of_another_version_is_refused_and_never_written_over() {
     // A state that holds tickets of another format is refused too.
     rusqlite::Connection::open(&path)
         .unwrap()
-        .execute("UPDATE formats SET ticket_kind = 'writ-ticket/1'", [])
+        .execute("UPDATE formats SET ticket_kind = 'writ-ticket/2'", [])
         .unwrap();
     assert!(matches!(
         Store::open(&path),
-        Err(StoreError::OtherTicketFormat { found, expected: "writ-ticket/2" }) if found == "writ-ticket/1"
+        Err(StoreError::OtherTicketFormat { found, expected: "writ-ticket/3" }) if found == "writ-ticket/2"
     ));
 }
 

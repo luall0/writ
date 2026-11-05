@@ -6,7 +6,7 @@
 //!    revoked or expired while the pack was coming in moves no ref, and nothing is read for it;
 //! 2. the repo's mirror held (until `receive-pack` exits), and the push read from the objects
 //!    git verified ([`writ_mirror::quarantine`]): each new tip a commit, the commits the mirror
-//!    doesn't have (at most the lease's `max_signatures`), fast-forwards, refs that differ only
+//!    doesn't have (at most the repository's `max_signatures` in the lease), fast-forwards, refs that differ only
 //!    in case, the size, and the paths each commit touches, computed again;
 //! 3. [`Service::push`](writ_approval::Service::push): every commit in the ledger for this
 //!    lease and repo with the same paths, the refs, force pushes, size, count and rate, under
@@ -505,10 +505,10 @@ templates:
 "#;
 
         const TICKET: &str = r#"
-scope:
-  repos: [demo]
-  operations: [fetch, push]
-  branches: ["agent/x"]
+repos:
+  demo:
+    operations: [fetch, push]
+    branches: ["agent/x"]
 ticket:
   title: Revoked mid-push
   task: The hook's decision

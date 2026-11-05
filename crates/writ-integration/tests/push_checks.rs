@@ -152,15 +152,15 @@ fn a_commit_not_signed_under_this_lease_is_refused() {
 
 /// A lease whose pushes are at most 2 KB.
 const SMALL_PUSHES: &str = r#"
-scope:
-  repos: [demo]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/*"]
+repos:
+  demo:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    limits:
+      max_push_size: 2KB
 ticket:
   title: Small pushes
   task: Push little
-limits:
-  max_push_size: 2KB
 "#;
 
 /// The review after M5.5 (S7): git was handed the lease's `max_push_size`, not the smaller of
@@ -193,9 +193,9 @@ fn git_takes_in_no_more_than_the_template_in_force_allows() {
                 code: writ_approval::RefusalCode::Rejected,
                 reasons,
                 ..
-            } if reasons
-                .iter()
-                .any(|r| r.contains("limits.max_push_size must be at least 1 byte"))
+            } if reasons.as_slice() == [
+                "repos.demo fits no template: spike: limits.max_push_size must be at least 1 byte"
+            ]
         ),
         "{error:?}"
     );

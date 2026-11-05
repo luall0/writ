@@ -56,10 +56,10 @@ templates:
 "#;
 
 const TICKET: &str = r#"
-scope:
-  repos: [demo]
-  operations: [fetch, commit_sign]
-  branches: ["agent/x"]
+repos:
+  demo:
+    operations: [fetch, commit_sign]
+    branches: ["agent/x"]
 ticket:
   title: Gateway test
   task: Over the fakes

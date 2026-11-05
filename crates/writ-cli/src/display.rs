@@ -1018,6 +1018,14 @@ mod tests {
         assert!(shown.contains("\\u{1b}[2J"), "escaped, still visible");
     }
 
+    fn om(t: &Ticket) -> &writ_core::ticket::RepoTerms {
+        t.terms(&"omega-code".parse().unwrap()).unwrap()
+    }
+
+    fn omega(t: &mut Ticket) -> &mut writ_core::ticket::RepoTerms {
+        t.repos.get_mut(&"omega-code".parse().unwrap()).unwrap()
+    }
+
     fn full_ticket() -> Ticket {
         use writ_core::canonical::Canonical;
         const FULL: &[u8] = include_bytes!("../../writ-core/tests/fixtures/ticket-full.json");
@@ -1069,7 +1077,7 @@ mod tests {
             id: id.clone(),
             lease,
             state: State::Pending,
-            template: "feature".parse().unwrap(),
+            templates: vec!["feature".parse().unwrap()],
             revision: 2,
             repos,
             created_at: now,
@@ -1127,29 +1135,30 @@ mod tests {
         let mut t = full_ticket();
         let forged = format!("{}  repos              docs-site", " ".repeat(57));
         let long = forged.repeat(14);
-        t.text.expected_paths = (0..100)
+        let terms = omega(&mut t);
+        terms.expected_paths = (0..100)
             .map(|i| {
                 format!("p{i:02}/{}", long.chars().take(1019).collect::<String>())
                     .parse()
                     .unwrap()
             })
             .collect();
-        t.text.expected_paths.insert("**".parse().unwrap());
+        terms.expected_paths.insert("**".parse().unwrap());
+        terms.branches = (0..50)
+            .map(|i| format!("agent/{}{i}", "x".repeat(200)).parse().unwrap())
+            .collect();
+        terms.template = "t".repeat(64).parse().unwrap();
+        // The largest limits a ticket can hold (the e2e pipeline found the limits row 80
+        // columns wide with ordinary ones).
+        terms.limits.max_signatures = u32::MAX;
+        terms.limits.max_pushes = u32::MAX;
+        terms.limits.max_push_size = writ_core::units::ByteSize::from_bytes(u64::MAX);
         t.text.task = forged.repeat(60);
         t.text.plan = vec![forged.repeat(8); 50];
         t.text.title = "日本".repeat(50);
-        t.scope.branches = (0..50)
-            .map(|i| format!("agent/{}{i}", "x".repeat(200)).parse().unwrap())
-            .collect();
-        t.template = "t".repeat(64).parse().unwrap();
         // The longest committer name, one word wide and full-width characters.
-        t.scope.committer_name = Some("名".repeat(100).parse().unwrap());
-        // The largest limits a ticket can hold (the e2e pipeline found the limits row 80
-        // columns wide with ordinary ones).
-        t.limits.max_signatures = u32::MAX;
-        t.limits.max_pushes = u32::MAX;
+        t.common.committer_name = Some("名".repeat(100).parse().unwrap());
         t.limits.max_ops_per_minute = u32::MAX;
-        t.limits.max_push_size = writ_core::units::ByteSize::from_bytes(u64::MAX);
         // The sections M6 added, at their widest: the renewal's chain, the source's other
         // leases (each flagged), the activity report (the e2e pipeline found an OVERLAP row
         // 92 columns wide).
@@ -1171,9 +1180,9 @@ mod tests {
             shown: (0..10)
                 .map(|_| writ_proto::OtherLease {
                     id: id.clone(),
-                    repos: t.scope.repos.iter().cloned().collect(),
-                    branches: t.scope.branches.iter().map(ToString::to_string).collect(),
-                    operations: t.scope.operations.iter().copied().collect(),
+                    repos: t.repos.keys().cloned().collect(),
+                    branches: om(&t).branches.iter().map(ToString::to_string).collect(),
+                    operations: om(&t).operations.iter().copied().collect(),
                     expires_at: far,
                     overlap: true,
                 })
@@ -1184,10 +1193,9 @@ mod tests {
             lease: id.clone(),
             state: State::Exhausted,
             title: t.text.title.clone(),
-            template: t.template.clone(),
-            repos: t.scope.repos.iter().cloned().collect(),
-            expected_paths: t
-                .text
+            templates: vec![om(&t).template.clone()],
+            repos: t.repos.keys().cloned().collect(),
+            expected_paths: om(&t)
                 .expected_paths
                 .iter()
                 .map(ToString::to_string)
@@ -1218,15 +1226,14 @@ mod tests {
             commits: vec![
                 writ_proto::ReportCommit {
                     id: "f".repeat(64).parse().unwrap(),
-                    repo: t.scope.repos.iter().next().unwrap().clone(),
+                    repo: t.repos.keys().next().unwrap().clone(),
                     lease: id.clone(),
                     signed_at: far,
                 };
                 3
             ],
             pushed: Vec::new(),
-            branches: t
-                .scope
+            branches: om(&t)
                 .branches
                 .iter()
                 .map(|b| format!("refs/heads/{b}"))
@@ -1396,9 +1403,9 @@ mod tests {
     #[test]
     fn expected_paths_are_shown_as_enforced_scope() {
         let t = full_ticket();
-        assert!(!t.text.expected_paths.is_empty(), "the fixture has paths");
+        assert!(!om(&t).expected_paths.is_empty(), "the fixture has paths");
         let shown = ticket(&t, State::Pending, t.created_at, false);
-        let scope = shown.find("Scope (enforced)").unwrap();
+        let scope = shown.find("Repository omega-code (enforced)").unwrap();
         let agent = shown.find("Written by the agent").unwrap();
         let paths = shown.find("  expected paths").unwrap();
         assert!(scope < paths && paths < agent, "{shown}");

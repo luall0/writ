@@ -36,19 +36,33 @@ use writ_store::looks_secret;
 
 const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 
+/// The terms of `omega-code` in a ticket.
+fn om(ticket: &Ticket) -> &writ_core::ticket::RepoTerms {
+    ticket.repos.get(&"omega-code".parse().unwrap()).unwrap()
+}
+
+/// The terms of `omega-code` in a ticket (mutable, for a test to change them).
+fn omega(ticket: &mut Ticket) -> &mut writ_core::ticket::RepoTerms {
+    ticket
+        .repos
+        .get_mut(&"omega-code".parse().unwrap())
+        .unwrap()
+}
+
 const REQUEST: &str = r#"
-template: feature-branch
-scope:
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth-*"]
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-*"]
+    limits:
+      max_signatures: 30
 ticket:
   title: Add OAuth login
   task: Add GitHub OAuth login behind a feature flag
   plan: [Add the callback route, Tests]
 limits:
   ttl: 2h
-  max_signatures: 30
 "#;
 
 struct Harness {
@@ -302,9 +316,9 @@ fn approvals_by_other_keys_namespaces_or_bytes_and_widenings_are_refused() {
     let (ticket, _key) = h.submit(REQUEST);
     let stranger = generate(KeyKind::Ed25519).unwrap();
     let mut narrowed = ticket.clone();
-    narrowed.limits.max_signatures = 5;
+    omega(&mut narrowed).limits.max_signatures = 5;
     let mut widened = ticket.clone();
-    widened.limits.max_signatures = 40;
+    omega(&mut widened).limits.max_signatures = 40;
     let mut other_bytes = h.signed(&ticket);
     other_bytes.signed = String::from_utf8(narrowed.canonical_bytes().unwrap()).unwrap();
     let mut not_canonical = h.signed(&ticket);
@@ -368,10 +382,10 @@ fn a_narrowed_approval_is_the_lease_and_bounds_the_certificate() {
     let h = Harness::new(Decisions::Signed);
     let (ticket, key) = h.submit(REQUEST);
     let mut narrowed = ticket.clone();
-    narrowed.scope.operations.remove(&Operation::Push);
+    omega(&mut narrowed).operations.remove(&Operation::Push);
     narrowed.limits.expires_at =
         Timestamp::from_unix(i64::try_from(START).unwrap() + 1800).unwrap();
-    narrowed.limits.max_signatures = 5;
+    omega(&mut narrowed).limits.max_signatures = 5;
     h.service
         .approve(&ticket.id, &h.signed(&narrowed), &facts())
         .unwrap();
@@ -636,12 +650,12 @@ fn waiting_returns_when_the_approver_decides() {
 }
 
 const BOUND: &str = r#"
-template: feature-branch
 caller:
   descends_from: { executable: /usr/local/bin/harness, pid: 4242, generation: 7 }
-scope:
-  repos: [omega-code]
-  operations: [fetch]
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch]
 ticket:
   title: Bound to a session
   task: Read only
@@ -1279,7 +1293,8 @@ fn nothing_is_granted_without_its_audit_line() {
     };
     let terms = Ticket::from_canonical(lease.as_bytes()).unwrap();
     assert_eq!(
-        terms.limits.max_signatures, 30,
+        om(&terms).limits.max_signatures,
+        30,
         "the amendment was not applied"
     );
 

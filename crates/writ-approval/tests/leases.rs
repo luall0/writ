@@ -33,13 +33,13 @@ const POLICY: &str = include_str!("../../writ-core/tests/fixtures/policy.yaml");
 fn ticket(branch: &str, more: &str) -> String {
     format!(
         r#"
-template: feature-branch
 limits:
   ttl: 2h
-scope:
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["{branch}"]
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["{branch}"]
 ticket:
   title: Add OAuth login
   task: Add GitHub OAuth login behind a feature flag

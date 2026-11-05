@@ -66,72 +66,96 @@ pub async fn policy(paths: &Paths, url: &str, repos: &[RepoName]) -> anyhow::Res
     Ok(Exit::Ok)
 }
 
-/// Whether one ticket can cover every repository of `policies`: some template of each
-/// repository, all naming one signing key (or none, for repositories that don't sign), and
-/// the lease's terms the strictest of them. Otherwise, one lease per repository.
+/// Whether one ticket can cover every repository of `policies`, as the daemon fits it: a lease
+/// signs with one key, so for each signing key some template names, the repositories with a
+/// template of that key may sign, the others only without commit_sign (any of their
+/// templates); the lease's terms the strictest of the templates chosen.
 pub fn together(policies: &[RepoPolicy]) -> String {
+    use std::collections::BTreeSet;
+    use writ_core::names::KeyId;
+
     let mut out = String::from("Together:\n");
-    let keys: Vec<std::collections::BTreeSet<Option<&writ_core::names::KeyId>>> = policies
-        .iter()
-        .map(|p| p.templates.iter().map(|t| t.signing_key.as_ref()).collect())
-        .collect();
-    let shared: Vec<Option<&writ_core::names::KeyId>> = match keys.split_first() {
-        Some((first, rest)) => first
+    let names = |p: &RepoPolicy, keep: &dyn Fn(&TemplateView) -> bool| -> String {
+        p.templates
             .iter()
-            .filter(|k| rest.iter().all(|set| set.contains(*k)))
-            .copied()
-            .collect(),
-        None => Vec::new(),
+            .filter(|t| keep(t))
+            .map(|t| display::clean(t.name.as_str()))
+            .collect::<Vec<_>>()
+            .join(" or ")
     };
-    if shared.is_empty() {
-        out.push_str(
-            "  No signing key is shared by a template of every repository: one ticket can't \
-             cover them. Ask one lease per repository (each with its own WRIT_SESSION).\n",
+    if let Some(empty) = policies.iter().find(|p| p.templates.is_empty()) {
+        let _ = writeln!(
+            out,
+            "  No template allows repo {}: no ticket can name it.",
+            display::clean(empty.repo.as_str())
         );
         return out;
     }
-    for key in shared {
-        let shown = key.map_or("no signing key".to_owned(), |k| {
-            format!("signing key {}", display::clean(k.as_str()))
-        });
+    let keys: BTreeSet<&KeyId> = policies
+        .iter()
+        .flat_map(|p| p.templates.iter().filter_map(|t| t.signing_key.as_ref()))
+        .collect();
+    if keys.is_empty() {
         let picks: Vec<String> = policies
             .iter()
             .map(|p| {
-                let names: Vec<String> = p
-                    .templates
-                    .iter()
-                    .filter(|t| t.signing_key.as_ref() == key)
-                    .map(|t| display::clean(t.name.as_str()))
-                    .collect();
                 format!(
                     "{}: {}",
                     display::clean(p.repo.as_str()),
-                    names.join(" or ")
+                    names(p, &|_| true)
                 )
             })
             .collect();
-        let chosen: Vec<&TemplateView> = policies
-            .iter()
-            .flat_map(|p| p.templates.iter().filter(|t| t.signing_key.as_ref() == key))
-            .collect();
-        let ttl = chosen.iter().map(|t| t.max_ttl).min();
-        let rate = chosen.iter().map(|t| t.max_ops_per_minute).min();
         let _ = writeln!(
             out,
-            "  One ticket can cover them with {shown}: {}.",
+            "  One ticket can cover them, without commit_sign (no template signs): {}.",
             picks.join("; ")
         );
+    }
+    for key in keys {
+        let with_key = |t: &TemplateView| t.signing_key.as_ref() == Some(key);
+        let mut signers = Vec::new();
+        let mut picks = Vec::new();
+        let mut chosen: Vec<&TemplateView> = Vec::new();
+        for p in policies {
+            let repo = display::clean(p.repo.as_str());
+            if p.templates.iter().any(with_key) {
+                picks.push(format!("{repo}: {}", names(p, &with_key)));
+                chosen.extend(p.templates.iter().filter(|t| with_key(t)));
+                signers.push(repo);
+            } else {
+                picks.push(format!(
+                    "{repo}: {} (without commit_sign)",
+                    names(p, &|_| true)
+                ));
+                chosen.extend(&p.templates);
+            }
+        }
+        let signing = if signers.len() == policies.len() {
+            "commit_sign in every repository".to_owned()
+        } else {
+            format!("commit_sign in {} only", signers.join(", "))
+        };
+        let _ = writeln!(
+            out,
+            "  With signing key {}, {signing}: {}.",
+            display::clean(key.as_str()),
+            picks.join("; ")
+        );
+        let ttl = chosen.iter().map(|t| t.max_ttl).min();
+        let rate = chosen.iter().map(|t| t.max_ops_per_minute).min();
         if let (Some(ttl), Some(rate)) = (ttl, rate) {
             let _ = writeln!(
                 out,
-                "  Its ttl at most {ttl} and its rate at most {rate}/min (the strictest of \
+                "    Its ttl at most {ttl} and its rate at most {rate}/min (the strictest of \
                  these templates; the one each repository fits decides)."
             );
         }
     }
     out.push_str(
         "  Name each repository's template in its block (`repos.<repo>.template`) when several \
-         could; if these terms are too tight for the task, ask one lease per repository.\n",
+         could; a repository that must sign with another key, or terms too tight for the \
+         task: one lease per repository (each with its own WRIT_SESSION).\n",
     );
     out
 }
@@ -225,6 +249,19 @@ fn template_rows(template: &TemplateView) -> String {
     );
     row(
         &mut out,
+        "signing key",
+        template.signing_key.as_ref().map_or_else(
+            || "none (signs nothing)".to_owned(),
+            |key| {
+                format!(
+                    "{} (one per lease: the repos of one ticket that sign share it)",
+                    display::clean(key.as_str())
+                )
+            },
+        ),
+    );
+    row(
+        &mut out,
         "force push",
         if template.force_push {
             "may be asked for"
@@ -291,6 +328,7 @@ mod tests {
             paths_check: PathsCheck::Deny,
             require_expected_paths: true,
             max_renewals: Some(2),
+            signing_key: Some("agent-01".parse().unwrap()),
         }
     }
 
@@ -326,7 +364,8 @@ mod tests {
             "max push size       50000000 bytes",
             "expected_paths      required; files outside them are refused",
             "renewals            at most 2 per lease",
-            "A ticket must fit this template",
+            "signing key         agent-01 (one per lease",
+            "The repo's block must fit this template",
         ] {
             assert!(shown.contains(words), "{words:?} not in:\n{shown}");
         }
@@ -335,12 +374,17 @@ mod tests {
             two.contains("Template a:") && two.contains("Template b:"),
             "{two}"
         );
-        assert!(two.contains("name it (`template: <name>`)"), "{two}");
+        assert!(
+            two.contains("name it (`repos.<repo>.template: <name>`)"),
+            "{two}"
+        );
         let mut unnamed = template("c");
         unnamed.committer_name = None;
+        unnamed.signing_key = None;
         let unnamed = render(&policy(vec![unnamed]));
         assert!(
-            unnamed.contains("committer name      not checked"),
+            unnamed.contains("committer name      not checked")
+                && unnamed.contains("signing key         none (signs nothing)"),
             "{unnamed}"
         );
         let none = render(&policy(Vec::new()));
@@ -348,6 +392,97 @@ mod tests {
             none.contains("No template allows tickets for this repo"),
             "{none}"
         );
+    }
+
+    fn repo_policy(repo: &str, templates: Vec<TemplateView>) -> RepoPolicy {
+        RepoPolicy {
+            repo: repo.parse().unwrap(),
+            ..policy(templates)
+        }
+    }
+
+    fn keyed(name: &str, key: Option<&str>, ttl_hours: u64, rate: u32) -> TemplateView {
+        TemplateView {
+            signing_key: key.map(|k| k.parse().unwrap()),
+            max_ttl: Duration::from_seconds(ttl_hours * 3600),
+            max_ops_per_minute: rate,
+            ..template(name)
+        }
+    }
+
+    #[test]
+    fn together_says_which_repositories_one_lease_can_sign_in() {
+        // One key everywhere: every repository signs, the strictest ttl and rate.
+        let shared = together(&[
+            repo_policy("api", vec![keyed("backend", Some("k1"), 4, 20)]),
+            repo_policy("web", vec![keyed("frontend", Some("k1"), 2, 30)]),
+        ]);
+        assert!(
+            shared.contains(
+                "With signing key k1, commit_sign in every repository: api: backend; web: \
+                 frontend."
+            ),
+            "{shared}"
+        );
+        assert!(
+            shared.contains("ttl at most 2h and its rate at most 20/min"),
+            "{shared}"
+        );
+        // A read-only repository (its template has no key) joins a signing one: one ticket,
+        // commit_sign where the key is (as the daemon fits it: only signing repositories must
+        // agree on the key).
+        let mixed = together(&[
+            repo_policy("api", vec![keyed("backend", Some("k1"), 4, 20)]),
+            repo_policy("docs", vec![keyed("read-only", None, 8, 30)]),
+        ]);
+        assert!(
+            mixed.contains(
+                "With signing key k1, commit_sign in api only: api: backend; docs: read-only \
+                 (without commit_sign)."
+            ),
+            "{mixed}"
+        );
+        // Two keys: each line says where that lease could sign; one lease per repository
+        // when both must sign.
+        let two = together(&[
+            repo_policy("api", vec![keyed("backend", Some("k1"), 4, 20)]),
+            repo_policy("web", vec![keyed("frontend", Some("k2"), 4, 20)]),
+        ]);
+        assert!(
+            two.contains("With signing key k1, commit_sign in api only"),
+            "{two}"
+        );
+        assert!(
+            two.contains("With signing key k2, commit_sign in web only"),
+            "{two}"
+        );
+        assert!(two.contains("one lease per repository"), "{two}");
+        // No key at all, and a repository no template allows.
+        let none = together(&[
+            repo_policy("api", vec![keyed("read-only", None, 8, 30)]),
+            repo_policy("web", vec![keyed("read-only", None, 8, 30)]),
+        ]);
+        assert!(
+            none.contains("without commit_sign (no template signs)"),
+            "{none}"
+        );
+        let closed = together(&[
+            repo_policy("api", vec![keyed("backend", Some("k1"), 4, 20)]),
+            repo_policy("web", Vec::new()),
+        ]);
+        assert!(closed.contains("No template allows repo web"), "{closed}");
+        // The daemon's words, escaped.
+        let hostile = together(&[
+            repo_policy("api", vec![keyed("backend", Some("k1"), 4, 20)]),
+            RepoPolicy {
+                templates: vec![TemplateView {
+                    name: "web".parse().unwrap(),
+                    ..keyed("x", Some("k1"), 4, 20)
+                }],
+                ..repo_policy("web", Vec::new())
+            },
+        ]);
+        assert!(!hostile.contains('\u{1b}'), "{hostile:?}");
     }
 
     #[test]

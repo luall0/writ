@@ -55,6 +55,13 @@ fn ticket(extra: &str) -> String {
     format!("{TICKET}{extra}")
 }
 
+/// [`TICKET`] with `extra` lines in its repository's block (indented four spaces).
+fn in_repo(extra: &str) -> String {
+    let branches = "    branches: [\"agent/*\"]\n";
+    assert!(TICKET.contains(branches), "the fixture changed");
+    TICKET.replacen(branches, &format!("{branches}{extra}"), 1)
+}
+
 /// `git commit -S` with a `Writ:` trailer for `lease`, as the session `key`.
 fn commit(gw: &GitGateway, key: &str, work: &Path, lease: &str, extra: &[&str]) -> Output {
     let trailer = format!("Writ: {lease}");
@@ -257,7 +264,7 @@ fn paths_outside_the_ticket_are_refused_with_paths_check_deny() {
     gw.seed_repo();
     let work = gw.clone("work");
     gw.wire_signing(&work);
-    let lease = gw.session_with("paths", &ticket("  expected_paths: [\"src/**\"]\n"));
+    let lease = gw.session_with("paths", &in_repo("    expected_paths: [\"src/**\"]\n"));
     let id = lease.as_str();
 
     fs::create_dir_all(work.join("src/auth")).unwrap();
@@ -317,7 +324,7 @@ fn a_directory_with_a_non_standard_mode_cannot_hide_its_files() {
         gw.seed_repo();
         let work = gw.clone("work");
         gw.wire_signing(&work);
-        let lease = gw.session_with("paths", &ticket("  expected_paths: [\"*\"]\n"));
+        let lease = gw.session_with("paths", &in_repo("    expected_paths: [\"*\"]\n"));
         let id = lease.as_str();
         let blob = gw.git_ok(&work, &["hash-object", "-w", "README"]);
         let inner = mktree(
@@ -400,7 +407,7 @@ fn signatures_stop_at_the_lease_s_count_and_rate() {
     let work = gw.clone("work");
     gw.wire_signing(&work);
 
-    let few = gw.session_with("few", &ticket("limits:\n  max_signatures: 2\n"));
+    let few = gw.session_with("few", &in_repo("    limits:\n      max_signatures: 2\n"));
     for _ in 0..2 {
         let out = commit(&gw, "few", &work, few.as_str(), &[]);
         assert!(out.status.success(), "under the limit: {}", stderr(&out));
@@ -675,7 +682,7 @@ fn ticket_link_trailer_is_required_only_when_the_repo_asks() {
 
 #[test]
 fn paths_check_off_signs_any_path_without_a_warning() {
-    let paths = ticket("  expected_paths: [\"src/**\"]\n");
+    let paths = in_repo("    expected_paths: [\"src/**\"]\n");
     // The same commit, outside expected_paths, under `warn` then `off`.
     let mut warnings = Vec::new();
     for check in ["warn", "off"] {

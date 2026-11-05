@@ -1,18 +1,23 @@
 # A ticket, as an agent writes it for `writ request` (docs/operators/ticket.md has every key).
 # Required keys are set; every optional key is commented out at its default value.
-# Everything here is checked against a template, and shown to the approver as written.
+# Everything here is checked against the templates, and shown to the approver as written.
+# The lease's terms come first, then each repository's: each term has one place.
 
-scope:
-  repos: [my-repo]
-  operations: [fetch, commit_sign, push]   # fetch | commit_sign | push
-  branches: ["agent/oauth-login"]  # needed for commit_sign and push
-  # force_push: false
-  # committer_emails: []           # empty: the template's
+repos:                             # one block per repository, at least one (16 at most)
+  my-repo:
+    operations: [fetch, commit_sign, push]   # fetch | commit_sign | push
+    branches: ["agent/oauth-login"]  # needed for commit_sign and push
+    # template: null               # null: the only template that allows the repo and fits
+    # force_push: false
+    # expected_paths: []           # globs, e.g. ["src/auth/**", "tests/auth/**"]
+    # limits:                      # each omitted: the template's maximum
+    #   max_signatures: 50
+    #   max_pushes: 30
+    #   max_push_size: 50MB
 ticket:
   title: "Add OAuth login"         # one line, 200 characters at most
   task: "Add GitHub OAuth login to the web app, behind a feature flag"
   # plan: []                       # one-line steps, in order, e.g. ["Callback route", "Tests"]
-  # expected_paths: []             # globs, e.g. ["src/auth/**", "tests/auth/**"]
   # estimate:                      # how long the agent thinks it takes; shown, never checked
   #   coding: 45m                  # writing the change
   #   checks: 15m                  # the checks it runs before committing
@@ -21,14 +26,12 @@ ticket:
   # renews: null                   # the lease (of this session) this ticket renews: more time
   # revises: null                  # the refused ticket (of this session) this one revises
 
-# template: null                   # null: the only template the ticket fits
+# common:                          # the lease's terms, for every repository
+#   committer_emails: []           # empty: those every signing repository's template allows
 # origin_hint: null                # where the agent runs, shown to the approver
-# limits:                          # each omitted: the template's maximum
+# limits:                          # the lease's; each omitted: the strictest of the templates'
 #   ttl: 4h                        # at least the daemon's min_ttl (5m by default), counted from submission
-#   max_signatures: 50
-#   max_pushes: 30
 #   max_ops_per_minute: 20
-#   max_push_size: 50MB
 # on_violation: deny_and_notify    # deny_and_notify | revoke_lease
 # caller:                          # none by default; local mode, set by a harness
 #   descends_from:                 # the process the lease's callers must descend from

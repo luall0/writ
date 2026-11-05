@@ -40,7 +40,7 @@ fn full() -> Ticket {
         },
     });
     ticket.text.title = "Add OAuth login \"v2\" — é\u{1b}[2J".to_owned();
-    ticket.scope.committer_name = Some("Writ agent — Zoë".parse().unwrap());
+    ticket.common.committer_name = Some("Writ agent — Zoë".parse().unwrap());
     ticket.text.estimate = Some(Estimate {
         coding: Some(Duration::from_seconds(45 * 60)),
         checks: None,
@@ -59,17 +59,17 @@ fn full() -> Ticket {
 fn minimal() -> Ticket {
     submitted(
         r#"
-template: read-only
-scope:
-  repos: [omega-code]
-  operations: [fetch]
+repos:
+  omega-code:
+    template: read-only
+    operations: [fetch]
+    limits:
+      max_signatures: 0
+      max_pushes: 0
+      max_push_size: 0
 ticket:
   title: Read the code
   task: Look around
-limits:
-  max_signatures: 0
-  max_pushes: 0
-  max_push_size: 0
 "#,
     )
 }
@@ -103,10 +103,10 @@ fn fixtures_are_stable() {
 
 #[test]
 fn the_format_starts_with_its_kind() {
-    assert!(FULL.starts_with(br#"{"kind":"writ-ticket/2","id":"wrt_"#));
+    assert!(FULL.starts_with(br#"{"kind":"writ-ticket/3","id":"wrt_"#));
     assert_eq!(
         Ticket::KIND,
-        "writ-ticket/2",
+        "writ-ticket/3",
         "KIND is the serde name of the marker"
     );
 }
@@ -117,7 +117,9 @@ fn every_field_change_changes_the_bytes() {
     let changes: Vec<(&str, Change)> = vec![
         ("id", |t| t.id = ticket_id(50)),
         ("created_at", |t| t.created_at = later(1)),
-        ("template", |t| t.template = "quick-fix".parse().unwrap()),
+        ("template", |t| {
+            omega(t).template = "quick-fix".parse().unwrap()
+        }),
         ("subject.session_key", |t| t.subject.session_key = fp('T')),
         ("subject.origin_hint", |t| {
             t.subject.origin_hint = Some("macbook-userz".to_owned())
@@ -165,36 +167,37 @@ fn every_field_change_changes_the_bytes() {
                 i.team_id = None;
             }
         }),
-        ("scope.repos", |t| {
-            t.scope.repos.insert(repo("homelab-scripts"));
+        ("repos", |t| {
+            let terms = om(t).clone();
+            t.repos.insert(repo("homelab-scripts"), terms);
         }),
         ("scope.operations", |t| {
-            t.scope.operations.remove(&Operation::Push);
+            omega(t).operations.remove(&Operation::Push);
         }),
         ("scope.branches", |t| {
-            t.scope.branches = BTreeSet::from(["agent/oauth-x".parse().unwrap()]);
+            omega(t).branches = BTreeSet::from(["agent/oauth-x".parse().unwrap()]);
         }),
-        ("scope.force_push", |t| t.scope.force_push = true),
+        ("scope.force_push", |t| omega(t).force_push = true),
         ("scope.committer_emails", |t| {
-            t.scope
+            t.common
                 .committer_emails
                 .insert("x@example.org".parse().unwrap());
         }),
-        ("scope.committer_name", |t| {
-            t.scope.committer_name = Some("Writ agent — Zoe".parse().unwrap())
+        ("common.committer_name", |t| {
+            t.common.committer_name = Some("Writ agent — Zoe".parse().unwrap())
         }),
-        ("scope.committer_name removed", |t| {
-            t.scope.committer_name = None
+        ("common.committer_name removed", |t| {
+            t.common.committer_name = None
         }),
-        ("scope.signing_key", |t| {
-            t.scope.signing_key = Some("agent-ed25519-02".parse().unwrap())
+        ("common.signing_key", |t| {
+            t.common.signing_key = Some("agent-ed25519-02".parse().unwrap())
         }),
         ("ticket.title", |t| t.text.title.push(' ')),
         ("ticket.task", |t| t.text.task.push('.')),
         ("ticket.plan step", |t| t.text.plan[0].push('!')),
         ("ticket.plan order", |t| t.text.plan.swap(0, 1)),
         ("ticket.expected_paths", |t| {
-            t.text.expected_paths.insert("docs/**".parse().unwrap());
+            omega(t).expected_paths.insert("docs/**".parse().unwrap());
         }),
         ("ticket.estimate", |t| t.text.estimate = None),
         ("ticket.estimate.checks", |t| {
@@ -210,13 +213,15 @@ fn every_field_change_changes_the_bytes() {
             t.text.previous_feedback = None
         }),
         ("limits.expires_at", |t| t.limits.expires_at = later(100)),
-        ("limits.max_signatures", |t| t.limits.max_signatures += 1),
-        ("limits.max_pushes", |t| t.limits.max_pushes += 1),
+        ("limits.max_signatures", |t| {
+            omega(t).limits.max_signatures += 1
+        }),
+        ("limits.max_pushes", |t| omega(t).limits.max_pushes += 1),
         ("limits.max_ops_per_minute", |t| {
             t.limits.max_ops_per_minute += 1
         }),
         ("limits.max_push_size", |t| {
-            t.limits.max_push_size = ByteSize::from_bytes(1)
+            omega(t).limits.max_push_size = ByteSize::from_bytes(1)
         }),
         ("on_violation", |t| {
             t.on_violation = OnViolation::DenyAndNotify
@@ -256,10 +261,10 @@ fn only_canonical_bytes_decode() {
         ),
         (
             "keys reordered",
-            text.replacen(r#"{"kind":"writ-ticket/2","#, "{", 1)
+            text.replacen(r#"{"kind":"writ-ticket/3","#, "{", 1)
                 .replacen(
                     r#""on_violation""#,
-                    r#""kind":"writ-ticket/2","on_violation""#,
+                    r#""kind":"writ-ticket/3","on_violation""#,
                     1,
                 ),
         ),
@@ -289,7 +294,7 @@ fn only_canonical_bytes_decode() {
         ),
         (
             "other kind",
-            text.replacen("writ-ticket/2", "writ-ticket/3", 1),
+            text.replacen("writ-ticket/3", "writ-ticket/2", 1),
         ),
         (
             "size as text",
@@ -313,9 +318,9 @@ fn only_canonical_bytes_decode() {
             matches!(
                 Ticket::from_canonical(bytes.as_bytes()),
                 Err(writ_core::canonical::CanonicalError::NotCanonical {
-                    kind: "writ-ticket/2"
+                    kind: "writ-ticket/3"
                 } | writ_core::canonical::CanonicalError::Decode {
-                    kind: "writ-ticket/2",
+                    kind: "writ-ticket/3",
                     ..
                 })
             ),
@@ -329,14 +334,15 @@ fn only_canonical_bytes_decode() {
 #[test]
 fn the_documented_orders_and_escapes_are_the_encoded_ones() {
     let mut t = full();
-    t.scope.operations = [Operation::Push, Operation::Fetch, Operation::CommitSign].into();
-    t.scope.branches = ["agent/*", "main", "a/*", "zeta"]
+    omega(&mut t).operations = [Operation::Push, Operation::Fetch, Operation::CommitSign].into();
+    omega(&mut t).branches = ["agent/*", "main", "a/*", "zeta"]
         .iter()
         .map(|b| b.parse().unwrap())
         .collect();
-    t.scope.repos = ["omega-code", "Omega", "alpha"]
+    let terms = om(&t).clone();
+    t.repos = ["omega-code", "Omega", "alpha"]
         .iter()
-        .map(|r| r.parse().unwrap())
+        .map(|r| (r.parse().unwrap(), terms.clone()))
         .collect();
     t.text.title = "q\"b\\s\u{8}\t\n\u{c}\r\u{1}\u{1f} \u{7f}\u{85}é".to_owned();
     let text = String::from_utf8(t.canonical_bytes().unwrap()).unwrap();
@@ -349,7 +355,9 @@ fn the_documented_orders_and_escapes_are_the_encoded_ones() {
         "{text}"
     );
     assert!(
-        text.contains(r#""repos":["Omega","alpha","omega-code"]"#),
+        text.contains(r#""repos":{"Omega":{"#)
+            && text.contains(r#"},"alpha":{"#)
+            && text.contains(r#"},"omega-code":{"#),
         "{text}"
     );
     assert!(

@@ -47,9 +47,25 @@ templates:
 
 fn ticket(extra_text: &str, ttl: &str) -> String {
     format!(
-        "scope:\n  repos: [demo]\n  operations: [fetch, commit_sign, push]\n  branches: [\"agent/oauth\"]\n\
+        "repos:\n  demo:\n    operations: [fetch, commit_sign, push]\n    branches: [\"agent/oauth\"]\n\
          ticket:\n  title: \"Add OAuth login\"\n  task: Add GitHub OAuth login behind a feature flag\n\
          {extra_text}limits:\n  ttl: {ttl}\n"
+    )
+}
+
+/// [`ticket`] with `extra` lines in its repository's block (indented four spaces).
+fn in_repo(extra: &str) -> String {
+    let branches = "    branches: [\"agent/oauth\"]\n";
+    ticket("", "1h").replacen(branches, &format!("{branches}{extra}"), 1)
+}
+
+/// `yaml` (a ticket for repo demo) with its repository's template named.
+fn with_template(template: &str, yaml: &str) -> String {
+    assert!(yaml.contains("  demo:\n"), "a ticket for demo");
+    yaml.replacen(
+        "  demo:\n",
+        &format!("  demo:\n    template: {template}\n"),
+        1,
     )
 }
 
@@ -465,14 +481,14 @@ fn require_expected_paths_rejects_a_ticket_without_them() {
     assert_rejected(
         &out,
         &[
-            "the ticket fits no template",
-            "feature: the template requires ticket.expected_paths",
+            "repos.demo fits no template: feature: the template feature requires \
+           expected_paths",
         ],
     );
     let out = submit(
         &daemon,
         "with",
-        &ticket("  expected_paths: [\"src/**\"]\n", "1h"),
+        &in_repo("    expected_paths: [\"src/**\"]\n"),
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(daemon.audited("submit", "denied"), 1, "{}", daemon.audit());
@@ -505,21 +521,27 @@ templates:
 #[test]
 fn a_ticket_past_its_template_is_rejected_with_each_reason() {
     let daemon = Daemon::start_with(CAPPED, Approvals::Https, more_submissions);
-    let capped = |scope: &str, limits: &str| {
+    // `terms`: the lease's limits then the repository's block, last (`scope` lines go into
+    // that block).
+    let capped = |scope: &str, terms: &str| {
         format!(
-            "scope:\n  repos: [demo]\n  operations: [fetch, commit_sign]\n  \
-             branches: [\"agent/x\"]\n  committer_emails: [agent@writ]\n{scope}\
+            "common:\n  committer_emails: [agent@writ]\n\
              ticket:\n  title: Capped\n  task: Ask for as much as the template allows\n\
-             limits:\n{limits}"
+             {terms}{scope}"
         )
     };
+    let demo = "repos:\n  demo:\n    operations: [fetch, commit_sign]\n    \
+                branches: [\"agent/x\"]\n";
     // Everything at the template's maximum: taken.
-    let at = "  ttl: 2h\n  max_signatures: 40\n  max_pushes: 20\n  max_ops_per_minute: 100\n  \
-              max_push_size: 10MB\n";
+    let at = format!(
+        "limits:\n  ttl: 2h\n  max_ops_per_minute: 100\n{demo}    limits:\n      \
+         max_signatures: 40\n      max_pushes: 20\n      max_push_size: 10MB\n"
+    );
+    let at = at.as_str();
     let out = submit(&daemon, "at", &capped("", at));
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     // Nothing asked: the template's maxima, as the lease's limits.
-    let out = submit(&daemon, "defaults", &capped("", "  {}\n"));
+    let out = submit(&daemon, "defaults", &capped("", demo));
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let id = stdout(&out)
         .strip_prefix("Ticket ")
@@ -529,12 +551,12 @@ fn a_ticket_past_its_template_is_rejected_with_each_reason() {
     let terms: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(daemon.session(&id).join("ticket.json")).unwrap())
             .unwrap();
-    let limits = &terms["limits"];
+    let limits = &terms["repos"]["demo"]["limits"];
     assert_eq!(
         (
             &limits["max_signatures"],
             &limits["max_pushes"],
-            &limits["max_ops_per_minute"],
+            &terms["limits"]["max_ops_per_minute"],
             &limits["max_push_size"]
         ),
         (
@@ -552,84 +574,84 @@ fn a_ticket_past_its_template_is_rejected_with_each_reason() {
             "ttl",
             "",
             at.replace("ttl: 2h", "ttl: 7201s"),
-            "the lease would last 7201s, over the template's max_ttl (2h)",
+            "the lease would last 7201s, over the template feature's max_ttl (2h)",
         ),
         (
             "signatures",
             "",
             at.replace("max_signatures: 40", "max_signatures: 41"),
-            "limits.max_signatures is 41, over the template's 40",
+            "repos.demo fits no template: feature: limits.max_signatures is 41, over \
+             the template's 40",
         ),
         (
             "pushes",
             "",
             at.replace("max_pushes: 20", "max_pushes: 21"),
-            "limits.max_pushes is 21, over the template's 20",
+            "repos.demo fits no template: feature: limits.max_pushes is 21, over the \
+             template's 20",
         ),
         (
             "rate",
             "",
             at.replace("max_ops_per_minute: 100", "max_ops_per_minute: 101"),
-            "limits.max_ops_per_minute is 101, over the template's 100",
+            "limits.max_ops_per_minute is 101, over the template feature's 100",
         ),
         (
             "size",
             "",
             at.replace("max_push_size: 10MB", "max_push_size: 10000001"),
-            "limits.max_push_size is 10000001, over the template's 10000000",
+            "repos.demo fits no template: feature: limits.max_push_size is 10000001, \
+             over the template's 10000000",
         ),
         (
             "force",
-            "  force_push: true\n",
+            "    force_push: true\n",
             at.to_owned(),
-            "force_push is not allowed by the template",
+            "repos.demo fits no template: feature: force_push is not allowed by the \
+             template",
         ),
     ] {
         assert_ne!(limits, at.to_owned() + scope, "{name}: the fixture changed");
         let out = submit(&daemon, name, &capped(scope, &limits));
-        assert_rejected(
-            &out,
-            &["the ticket fits no template", &format!("feature: {reason}")],
-        );
+        assert_rejected(&out, &[reason]);
     }
     for (name, from, to, reason) in [
         (
             "repo",
-            "repos: [demo]",
-            "repos: [demo, other]",
-            "repo other is not allowed by the template",
+            "repos:\n  demo:\n",
+            "repos:\n  other:\n    template: feature\n    operations: [fetch]\n  demo:\n",
+            "repos.other: repo other is not allowed by the template feature",
         ),
         (
             "operation",
             "operations: [fetch, commit_sign]",
             "operations: [fetch, commit_sign, push]",
-            "operation push is not allowed by the template",
+            "repos.demo fits no template: feature: operation push is not allowed by \
+             the template",
         ),
         (
             "branch",
             "branches: [\"agent/x\"]",
             "branches: [main]",
-            "branch main is not within the template's branches (agent/*)",
+            "repos.demo fits no template: feature: branch main is not within the \
+             template's branches (agent/*)",
         ),
         (
             "email",
             "committer_emails: [agent@writ]",
             "committer_emails: [agent@writ, me@personal.example]",
-            "committer email me@personal.example is not allowed by the template",
+            "repos.demo fits no template: feature: committer email \
+             me@personal.example is not allowed by the template feature",
         ),
     ] {
         let text = capped("", at);
         let past = text.replace(from, to);
         assert_ne!(past, text, "{name}: the fixture changed");
         let out = submit(&daemon, name, &past);
-        assert_rejected(
-            &out,
-            &["the ticket fits no template", &format!("feature: {reason}")],
-        );
+        assert_rejected(&out, &[reason]);
     }
     // The review after M5.5's bounds (S8, L20): 50 branches and 16 KiB of expected_paths
     // taken, one more of either rejected with its reason.
-    let task = "  task: Ask for as much as the template allows\n";
     let branches = |n: usize| {
         let list: Vec<String> = (0..n).map(|i| format!("\"agent/x{i}\"")).collect();
         capped("", at).replace(
@@ -645,8 +667,11 @@ fn a_ticket_past_its_template_is_rejected_with_each_reason() {
             list.push("\"z\"".to_owned());
         }
         capped("", at).replace(
-            task,
-            &format!("{task}  expected_paths: [{}]\n", list.join(", ")),
+            "    branches: [\"agent/x\"]\n",
+            &format!(
+                "    branches: [\"agent/x\"]\n    expected_paths: [{}]\n",
+                list.join(", ")
+            ),
         )
     };
     for (name, text) in [
@@ -660,19 +685,17 @@ fn a_ticket_past_its_template_is_rejected_with_each_reason() {
         (
             "51 branches",
             branches(51),
-            "scope.branches is too long (51, at most 50)",
+            "repos.demo fits no template: feature: branches is too long (51, at most \
+             50)",
         ),
         (
             "16 KiB and a byte of paths",
             paths(true),
-            "ticket.expected_paths (bytes in all) is too long (16385, at most 16384)",
+            "expected_paths (bytes in all, every repository) is too long (16385, at most 16384)",
         ),
     ] {
         let out = submit(&daemon, name, &text);
-        assert_rejected(
-            &out,
-            &["the ticket fits no template", &format!("feature: {reason}")],
-        );
+        assert_rejected(&out, &[reason]);
     }
     assert_eq!(daemon.audited("submit", "allowed"), 4, "{}", daemon.audit());
     assert_eq!(daemon.audited("submit", "denied"), 12, "{}", daemon.audit());
@@ -724,37 +747,37 @@ fn the_origin_hint_is_shown_and_a_caller_constraint_is_checked() {
     let out = submit(&daemon, "both", &ticket("", "1h"));
     assert_rejected(
         &out,
-        &["the ticket fits several templates (feature, wide): name one with `template:`"],
+        &["repos.demo fits several templates (feature, wide): name one in repos.demo.template"],
     );
-    let named = format!("template: wide\n{}", ticket("", "1h"));
+    let named = with_template("wide", &ticket("", "1h"));
     assert_eq!(template_of(&submit(&daemon, "named", &named)), "wide");
     let only = ticket("", "1h").replace("agent/oauth", "main");
     assert_eq!(template_of(&submit(&daemon, "only", &only)), "wide");
-    let unknown = format!("template: nope\n{}", ticket("", "1h"));
+    let unknown = with_template("nope", &ticket("", "1h"));
     assert_rejected(
         &submit(&daemon, "unknown", &unknown),
-        &["template nope does not exist"],
+        &["repos.demo: template nope does not exist"],
     );
     // A template the ticket doesn't fit, named: only its reasons.
-    let misfit = format!("template: feature\n{only}");
+    let misfit = with_template("feature", &only);
     assert_rejected(
         &submit(&daemon, "misfit", &misfit),
-        &[
-            "the ticket fits no template",
-            "feature: branch main is not within the template's branches (agent/*)",
-        ],
+        &["repos.demo: branch main is not within the template's branches (agent/*)"],
     );
 
     // `origin_hint` is shown to the approver, as the agent's claim; `caller` as the process
     // the lease is bound to.
     let bound = format!(
-        "template: feature\norigin_hint: \"build-host-7 / claude session 42\"\n\
+        "origin_hint: \"build-host-7 / claude session 42\"\n\
          caller:\n  descends_from:\n    executable: /usr/local/bin/agent-harness\n    \
          pid: 4242\n    generation: 7\n    code_identity: {{ signing_id: com.example.harness, \
          team_id: ABCDE12345 }}\n{}",
-        ticket(
-            "  plan: [\"Read the OAuth spec\", \"Add the login route\"]\n",
-            "1h"
+        with_template(
+            "feature",
+            &ticket(
+                "  plan: [\"Read the OAuth spec\", \"Add the login route\"]\n",
+                "1h"
+            )
         )
     );
     let request = daemon.request("bound", &bound);
@@ -803,7 +826,7 @@ fn the_origin_hint_is_shown_and_a_caller_constraint_is_checked() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(request.finish().0.code(), Some(5));
     // The same lease without the constraint fetches.
-    let free = daemon.lease("free", &format!("template: feature\n{}", ticket("", "1h")));
+    let free = daemon.lease("free", &with_template("feature", &ticket("", "1h")));
     let out = daemon.ls_remote(&daemon.session(&free));
     assert!(out.status.success(), "{}", stderr(&out));
 }

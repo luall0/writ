@@ -21,11 +21,16 @@ pub const AGENT_NAME: &str = "Writ agent";
 
 /// The ticket most tests start from: feature-branch, omega-code, agent/oauth-*, 2h.
 pub const REQUEST: &str = r#"
-template: feature-branch
-scope:
-  repos: [omega-code]
-  operations: [fetch, commit_sign, push]
-  branches: ["agent/oauth-*"]
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/oauth-*"]
+    expected_paths: ["src/auth/**", "tests/auth/**"]
+    limits:
+      max_signatures: 3
+      max_pushes: 2
+      max_push_size: 1MB
 ticket:
   title: Add OAuth login
   task: Add GitHub OAuth login to the web app, behind a feature flag
@@ -33,14 +38,62 @@ ticket:
     - Add OAuth client config and callback route
     - Store tokens in the existing session store
     - Feature flag and tests
-  expected_paths: ["src/auth/**", "tests/auth/**"]
 limits:
   ttl: 2h
-  max_signatures: 3
-  max_pushes: 2
   max_ops_per_minute: 5
-  max_push_size: 1MB
 "#;
+
+/// A usage of `signatures` and `pushes` in `omega-code`, and `ops` in the rate window.
+pub fn usage_in(signatures: u32, pushes: u32, ops: u32) -> Usage {
+    let mut usage = Usage {
+        ops_last_minute: ops,
+        ..Usage::default()
+    };
+    *used(&mut usage) = writ_core::lease::RepoUsage { signatures, pushes };
+    usage
+}
+
+/// What a lease used in `omega-code` (mutable, for a test to set it).
+pub fn used(usage: &mut Usage) -> &mut writ_core::lease::RepoUsage {
+    usage.repos.entry(repo("omega-code")).or_default()
+}
+
+/// The terms of `omega-code` in a ticket.
+pub fn om(ticket: &Ticket) -> &writ_core::ticket::RepoTerms {
+    ticket.repos.get(&repo("omega-code")).unwrap()
+}
+
+/// The terms of `omega-code` in a ticket (mutable, for a test to change them).
+pub fn omega(ticket: &mut Ticket) -> &mut writ_core::ticket::RepoTerms {
+    ticket.repos.get_mut(&repo("omega-code")).unwrap()
+}
+
+/// `yaml` (a request in the layout of [`REQUEST`]) with the `omega-code` block's terms given
+/// to each of `repos` instead, in order.
+pub fn with_repos(yaml: &str, repos: &[&str]) -> String {
+    // Lines before the block, the block's own lines (indented four spaces), then the rest.
+    let mut before = String::new();
+    let mut body = String::new();
+    let mut after = String::new();
+    let mut seen = false;
+    for line in yaml.split_inclusive('\n') {
+        if !seen && line == "  omega-code:\n" {
+            seen = true;
+        } else if !seen {
+            before.push_str(line);
+        } else if after.is_empty() && line.starts_with("    ") {
+            body.push_str(line);
+        } else {
+            after.push_str(line);
+        }
+    }
+    assert!(seen, "an omega-code block");
+    let blocks: String = repos
+        .iter()
+        .map(|repo| format!("  {repo}:\n{body}"))
+        .collect();
+    format!("{before}{blocks}{after}")
+}
 
 pub fn config() -> PolicyConfig {
     PolicyConfig::from_yaml(POLICY).unwrap()

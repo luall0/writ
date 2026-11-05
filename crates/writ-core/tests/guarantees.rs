@@ -257,19 +257,16 @@ fn leases_bounded_in_time_count_and_rate() {
     );
     world.now = later(60);
 
-    let limits = &world.lease.ticket.limits;
+    let terms = om(&world.lease.ticket);
     let (signatures, pushes, rate) = (
-        limits.max_signatures,
-        limits.max_pushes,
-        limits.max_ops_per_minute,
+        terms.limits.max_signatures,
+        terms.limits.max_pushes,
+        world.lease.ticket.limits.max_ops_per_minute,
     );
     let below = |used: u32| used.checked_sub(1).unwrap();
-    world.usage = Usage {
-        signatures: below(signatures),
-        ..Usage::default()
-    };
+    world.usage = usage_in(below(signatures), 0, 0);
     assert!(policy::decide_sign(&world.ctx(), &sign_request(&world.lease)).is_ok());
-    world.usage.signatures = signatures;
+    used(&mut world.usage).signatures = signatures;
     assert_eq!(
         code(policy::decide_sign(
             &world.ctx(),
@@ -278,12 +275,9 @@ fn leases_bounded_in_time_count_and_rate() {
         DenyCode::Limit,
         "at max_signatures"
     );
-    world.usage = Usage {
-        pushes: below(pushes),
-        ..Usage::default()
-    };
+    world.usage = usage_in(0, below(pushes), 0);
     assert!(policy::decide_push(&world.ctx(), &push_request(&world.lease)).is_ok());
-    world.usage.pushes = pushes;
+    used(&mut world.usage).pushes = pushes;
     assert_eq!(
         code(policy::decide_push(
             &world.ctx(),

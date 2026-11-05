@@ -14,10 +14,20 @@ use writ_e2e::setup::{AGENTS_URL, APPROVALS_HTTPS, APPROVALS_SSH};
 
 /// A ticket for the `lifecycle` repo with this title, `ticket:` lines and TTL.
 fn lifecycle(title: &str, ticket_lines: &str, ttl: &str) -> String {
+    lifecycle_paths(title, "", ticket_lines, ttl)
+}
+
+/// [`lifecycle`], the repository's `expected_paths` set to `paths` (a YAML list) unless empty.
+fn lifecycle_paths(title: &str, paths: &str, ticket_lines: &str, ttl: &str) -> String {
+    let paths = if paths.is_empty() {
+        String::new()
+    } else {
+        format!("    expected_paths: {paths}\n")
+    };
     format!(
-        "template: feature\n\
-         scope:\n  repos: [lifecycle]\n  operations: [fetch, commit_sign, push]\n  \
-         branches: [\"agent/lifecycle\"]\n  committer_emails: [\"agent@writ.invalid\"]\n\
+        "common:\n  committer_emails: [\"agent@writ.invalid\"]\n\
+         repos:\n  lifecycle:\n    template: feature\n    operations: [fetch, commit_sign, push]\n    \
+         branches: [\"agent/lifecycle\"]\n{paths}\
          ticket:\n  title: \"{title}\"\n{ticket_lines}\
          limits:\n  ttl: {ttl}\n"
     )
@@ -106,9 +116,10 @@ fn tickets_are_requested_signed_refused_revised_amended_and_revoked() {
     // signs at the prompt (over HTTPS).
     let revision = agent.submit(
         "third",
-        &lifecycle(
+        &lifecycle_paths(
             "Third",
-            &format!("{TASK}  expected_paths: [\"notes/**\"]\n  revises: {second}\n"),
+            "[\"notes/**\"]",
+            &format!("{TASK}  revises: {second}\n"),
             "1h",
         ),
     );
@@ -207,9 +218,10 @@ fn tickets_are_requested_signed_refused_revised_amended_and_revoked() {
     // with --lease (its session is the lease's).
     let amendment = agent.submit(
         "amend",
-        &lifecycle(
+        &lifecycle_paths(
             "Amend",
-            &format!("{TASK}  expected_paths: [\"notes/**\", \"docs/**\"]\n  amends: {revision}\n"),
+            "[\"notes/**\", \"docs/**\"]",
+            &format!("{TASK}  amends: {revision}\n"),
             "30m",
         ),
     );

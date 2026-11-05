@@ -112,17 +112,21 @@ fn ttl_counts_and_rate() {
             |w, _| w.lease.state = State::Pending,
             Some(DenyCode::NotActive),
         ),
-        ("last signature", |w, _| w.usage.signatures = 2, None),
+        (
+            "last signature",
+            |w, _| used(&mut w.usage).signatures = 2,
+            None,
+        ),
         (
             "signatures used up",
-            |w, _| w.usage.signatures = 3,
+            |w, _| used(&mut w.usage).signatures = 3,
             Some(DenyCode::Limit),
         ),
         (
             "both counts used up (fetch keeps it alive)",
             |w, _| {
-                w.usage.signatures = 3;
-                w.usage.pushes = 2;
+                used(&mut w.usage).signatures = 3;
+                used(&mut w.usage).pushes = 2;
             },
             Some(DenyCode::Limit),
         ),
@@ -134,15 +138,15 @@ fn ttl_counts_and_rate() {
         ),
     ]);
     check_push(&[
-        ("last push", |w, _| w.usage.pushes = 1, None),
+        ("last push", |w, _| used(&mut w.usage).pushes = 1, None),
         (
             "pushes used up",
-            |w, _| w.usage.pushes = 2,
+            |w, _| used(&mut w.usage).pushes = 2,
             Some(DenyCode::Limit),
         ),
         (
             "signatures used up, pushes left",
-            |w, _| w.usage.signatures = 3,
+            |w, _| used(&mut w.usage).signatures = 3,
             None,
         ),
         (
@@ -161,8 +165,8 @@ fn ttl_counts_and_rate() {
         (
             "signatures and pushes used up",
             |w, _| {
-                w.usage.signatures = 3;
-                w.usage.pushes = 2;
+                used(&mut w.usage).signatures = 3;
+                used(&mut w.usage).pushes = 2;
             },
             None,
         ),
@@ -190,10 +194,10 @@ fn a_lease_without_fetch_is_exhausted_when_its_counts_are_used() {
         &REQUEST.replace("[fetch, commit_sign, push]", "[commit_sign, push]"),
     ));
     let mut world = World::new(lease);
-    world.usage.signatures = 3;
+    used(&mut world.usage).signatures = 3;
     let mut push = push_request(&world.lease);
     assert!(policy::decide_push(&world.ctx(), &push).is_ok());
-    world.usage.pushes = 2;
+    used(&mut world.usage).pushes = 2;
     push = push_request(&world.lease);
     assert_eq!(
         policy::decide_push(&world.ctx(), &push).unwrap_err().code,
@@ -397,8 +401,8 @@ fn force_push_when_the_lease_allows_it() {
     );
     let config = writ_core::config::PolicyConfig::from_yaml(&policy).unwrap();
     let request = request(&REQUEST.replace(
-        "  branches: [\"agent/oauth-*\"]\n",
-        "  branches: [\"agent/oauth-*\"]\n  force_push: true\n",
+        "    branches: [\"agent/oauth-*\"]\n",
+        "    branches: [\"agent/oauth-*\"]\n    force_push: true\n",
     ));
     // Without the template allowing it, the ticket doesn't fit.
     let rejection =
@@ -747,7 +751,7 @@ fn ticket_link_trailer() {
     ]);
     // homelab-scripts is ledger_only: no trailer needed.
     let lease = lease_of(submitted(
-        &REQUEST.replace("[omega-code]", "[homelab-scripts]"),
+        &REQUEST.replace("  omega-code:\n", "  homelab-scripts:\n"),
     ));
     let world = World::new(lease);
     let mut request = sign_request(&world.lease);
@@ -1008,7 +1012,7 @@ fn files_vs_expected_paths() {
 
     // No expected_paths: the check is skipped, even with deny.
     let no_paths = quick.replace(
-        "  expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
+        "    expected_paths: [\"src/auth/**\", \"tests/auth/**\"]\n",
         "",
     );
     let world = World::new(lease_of(submitted(&no_paths)));
@@ -1027,12 +1031,12 @@ fn operations() {
             "operations: [fetch, commit_sign, push]",
             "operations: [fetch]",
         )
-        .replace("  branches: [\"agent/oauth-*\"]\n", "")
+        .replace("    branches: [\"agent/oauth-*\"]\n", "")
         .replace(
-            "  max_signatures: 3\n  max_pushes: 2\n",
-            "  max_signatures: 0\n  max_pushes: 0\n",
+            "      max_signatures: 3\n      max_pushes: 2\n",
+            "      max_signatures: 0\n      max_pushes: 0\n",
         )
-        .replace("  max_push_size: 1MB\n", "  max_push_size: 0\n");
+        .replace("      max_push_size: 1MB\n", "      max_push_size: 0\n");
     let world = World::new(lease_of(submitted(&fetch_only)));
     assert!(policy::decide_fetch(&world.ctx(), &fetch_request()).is_ok());
     let sign = policy::decide_sign(&world.ctx(), &sign_request(&world.lease)).unwrap_err();
@@ -1101,7 +1105,7 @@ fn a_lease_that_no_longer_fits_its_template_is_refused() {
 #[test]
 fn proxy_mode_where_allowed() {
     let lease = lease_of(submitted(
-        &REQUEST.replace("[omega-code]", "[homelab-scripts]"),
+        &REQUEST.replace("  omega-code:\n", "  homelab-scripts:\n"),
     ));
     let world = World::new(lease);
     let mut push = push_request(&world.lease);

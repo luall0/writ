@@ -58,10 +58,11 @@ fn ticket_text() -> String {
         .map(|i| format!("    - \"Step {i}: change the module, add its tests, run them\"\n"))
         .collect();
     format!(
-        "scope:\n  repos: [demo]\n  operations: [fetch, commit_sign, push]\n  \
-         branches: [\"agent/oauth\", \"agent/oauth-*\"]\nticket:\n  title: \"Add OAuth login\"\n  \
-         task: {}\n  plan:\n{plan}  expected_paths: [\"src/**\", \"tests/**\", \"docs/*.md\"]\n\
-         limits:\n  ttl: 1h\n  max_signatures: 30\n",
+        "repos:\n  demo:\n    operations: [fetch, commit_sign, push]\n    \
+         branches: [\"agent/oauth\", \"agent/oauth-*\"]\n    \
+         expected_paths: [\"src/**\", \"tests/**\", \"docs/*.md\"]\n    limits:\n      \
+         max_signatures: 30\nticket:\n  title: \"Add OAuth login\"\n  \
+         task: {}\n  plan:\n{plan}limits:\n  ttl: 1h\n",
         "Add GitHub OAuth login behind a feature flag. ".repeat(20)
     )
 }
@@ -289,7 +290,7 @@ const EXTRA_TEMPLATE: &str = "  docs:\n    repos: [demo]\n    operations: [fetch
 
 fn ticket(branch: &str) -> String {
     format!(
-        "scope:\n  repos: [demo]\n  operations: [fetch, commit_sign, push]\n  \
+        "repos:\n  demo:\n    operations: [fetch, commit_sign, push]\n    \
          branches: [\"{branch}\"]\nticket:\n  title: \"Benchmark work on {branch}\"\n  \
          task: Change files on {branch} and push them\nlimits:\n  ttl: 1h\n"
     )
