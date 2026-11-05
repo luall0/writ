@@ -110,7 +110,7 @@ fn tickets_outside_every_template_are_rejected_with_reasons() {
         ),
         (
             REQUEST.replace("  omega-code:\n", "  dotfiles:\n"),
-            "repo dotfiles is not allowed by the template",
+            "repo dotfiles does not allow the template",
         ),
         (
             REQUEST.replace("  omega-code:\n", "  nope:\n"),

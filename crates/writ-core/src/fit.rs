@@ -134,6 +134,14 @@ pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
     }
 }
 
+/// Why a ticket can't reach a repo whose `templates` is empty.
+fn closed(repo: &RepoName) -> String {
+    format!(
+        "repos.{repo}: repo {repo} is closed: it allows no template (repos.{repo}.templates is \
+         empty)"
+    )
+}
+
 /// Checks one repository's terms against its template and the registry (`emails`: the
 /// lease's committer emails, checked against the template when the repository signs; `None`
 /// while they are still to be chosen). Every reason, prefixed `repos.<repo>`.
@@ -146,14 +154,14 @@ fn check_repo(
     reasons: &mut Vec<String>,
 ) {
     let at = format!("repos.{repo}");
-    let registry = config.repo(repo);
-    if registry.is_none() {
-        reasons.push(format!("{at}: repo {repo} is not in the registry"));
-    } else if !template.repos.contains(repo) {
-        reasons.push(format!(
-            "{at}: repo {repo} is not allowed by the template {}",
+    match config.repo(repo) {
+        None => reasons.push(format!("{at}: repo {repo} is not in the registry")),
+        Some(entry) if entry.templates.is_empty() => reasons.push(closed(repo)),
+        Some(entry) if !entry.templates.contains(&terms.template) => reasons.push(format!(
+            "{at}: repo {repo} does not allow the template {} (repos.{repo}.templates)",
             terms.template
-        ));
+        )),
+        Some(_) => {}
     }
     if terms.operations.is_empty() {
         reasons.push(format!("{at}.operations is empty"));
@@ -200,7 +208,7 @@ fn check_repo(
         }
     }
     if pushes
-        && let Some(entry) = registry
+        && let Some(entry) = config.repo(repo)
         && push_modes(&entry.push_modes, template).is_empty()
     {
         reasons.push(format!(
@@ -615,11 +623,9 @@ pub fn submit(
             (_, Some(kept)) => vec![kept],
             (Some(name), None) => vec![name],
             (None, None) => config
-                .templates()
-                .iter()
-                .filter(|(_, t)| t.repos.contains(repo))
-                .map(|(name, _)| name)
-                .collect(),
+                .repo(repo)
+                .map(|entry| entry.templates.iter().collect())
+                .unwrap_or_default(),
         };
         // Named by the ticket, or kept by a renewal: that template's own reasons, nothing to
         // choose.
@@ -665,9 +671,10 @@ pub fn submit(
                 }
             }
             0 if chosen => {}
-            0 if candidates.is_empty() => reasons.push(format!(
-                "repos.{repo} fits no template: no template allows repo {repo}"
-            )),
+            0 if candidates.is_empty() => reasons.push(match config.repo(repo) {
+                None => format!("repos.{repo}: repo {repo} is not in the registry"),
+                Some(_) => closed(repo),
+            }),
             0 => reasons.push(format!("repos.{repo} fits no template: {}", why.join("; "))),
             _ => {
                 let names: Vec<String> = fitting.iter().map(|t| t.template.to_string()).collect();

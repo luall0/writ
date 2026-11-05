@@ -1,12 +1,13 @@
 # `policy.yaml`
 
-Three sections:
+Four sections:
 
-- **`repos`**, the repo registry: each repo agents may use, and hard limits no lease can go
-  past.
-- **`templates`**: the most a ticket may ask in a repo. Each repo of a ticket must fit a
-  template.
-- **`signing_keys`**: the user ids of each OpenPGP signing key. Optional.
+- **`keys`**: every key the policy names, each declared with what it is for. Signing keys sign
+  commits under a template; upstream credentials reach a repo's upstream.
+- **`upstream_hosts`**: the host keys the daemon accepts from each `ssh://` upstream.
+- **`repos`**, the repo registry: each repo agents may use, its hard limits, and the
+  templates its tickets may use.
+- **`templates`**: the most a ticket may ask in a repo that names the template.
 
 How they combine with tickets: [lease model](../lease-model.md). Start from the
 [template](templates/policy.yaml). Examples: the [development policy](../../dev/policy.yaml)
@@ -16,20 +17,53 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
   [`writ admin apply policy`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
   (or [`writd recover`](recovery.md) on the host). Editing the file on the host does nothing.
 - **Effect of a change:** immediate. A lease is used only while it still fits its templates:
-  tighten a template, and its active leases are denied (`config`) until amended. A repo whose
-  entry changes gets its mirror reopened.
+  tighten a template, or take it off a repo, and its active leases are denied (`config`)
+  until amended. A repo whose entry changes gets its mirror reopened. A key the change
+  declares is made at once.
 - **Unknown keys are refused**, and every error names its key:
-  `templates.quick-fix.max_ttl: invalid duration "1 hour"`.
-- **Names** are the map keys (`repos.<name>`, `templates.<name>`, `signing_keys.<id>`). Repo
-  names must be unique ignoring case.
+  `templates.quick-fix.max_ttl: invalid duration "1 hour"`. The fields that moved in M6.2
+  (`templates.<name>.repos`, a top-level `signing_keys`) are refused naming their new place.
+- **Names** are the map keys (`keys.<id>`, `repos.<name>`, `templates.<name>`). Repo names
+  must be unique ignoring case.
 - **Patterns, durations, sizes:** [patterns and units](../lease-model.md#patterns-and-units).
+
+## Keys: `keys.<id>`
+
+Every key a template's `signing_key` or a repo's `upstream_credential` names is declared here.
+Nothing about a key is guessed: a name that isn't declared, or is declared for another use,
+refuses the policy. The change that declares a key makes it in the keystore (sealed like the
+others) and its answer prints the public half; a token is never made, `writ admin token
+<id>` adds it. What a key is (its use, kind, format, algorithm, backend) can't change: declare
+a new key under another id.
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `keys.<id>.use` | `signing` or `upstream` | **required** | What the key is for: signing commits under a template, or reaching a repo's upstream |
+| `keys.<id>.kind` | `ssh` or `token` | **required** for `upstream`, refused for `signing` | An upstream credential's kind: an SSH key for `ssh://` upstreams, a token for `https://` ones |
+| `keys.<id>.format` | `ssh` or `openpgp` | **required** for `signing`, refused otherwise | The format a signing key signs commits in (git's `gpg.format`) |
+| `keys.<id>.algorithm` | `ed25519`, `p256`, `p384`, `rsa3072`, `rsa4096` | **required** for a signing key and an `ssh` credential, refused for a token | The key's algorithm. RSA keys are 3072 or 4096 bits (some remotes take only RSA upstream keys). Which combinations a backend signs: [signer](../architecture/signer.md#formats-algorithms-and-hashes) |
+| `keys.<id>.hash` | `sha256`, `sha384`, `sha512` | the strongest allowed | A signing key's hash. A combination the format, algorithm and backend don't take is refused, never adjusted. Refused for an upstream credential |
+| `keys.<id>.uids` | 1 to 16 user ids, `Name <local@domain>` or `<local@domain>`, printable ASCII | none | An OpenPGP signing key's identities: its certificate carries them. Each is unique. Every committer email a template signing with the key allows needs one, as `<committer_name> <email>` when the template sets a name. Refused for any other key |
+| `keys.<id>.host` | A host name or address | **required** for a `token`, refused otherwise | The only host the token is sent to: a repo using it must have its `https://` upstream there (compared ignoring case) |
+| `keys.<id>.backend` | A backend name | `software` | Where the key lives: `software` (the daemon's memory, from its sealed keystore) is the only one today. A backend this daemon doesn't have refuses the policy |
+
+## Upstream host keys: `upstream_hosts.<host>`
+
+The daemon's ssh accepts an `ssh://` upstream only with a key pinned here: nothing is learned
+on first use. `writ admin host add` scans a host (with your signature) and shows its keys to
+compare with the ones the remote publishes; pinning them is a second signed change.
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `upstream_hosts.<host>` | 1 to 16 host keys, `<type> <base64>` as OpenSSH writes them (no comment) | — | The keys `<host>` may present. `<host>` is as ssh looks it up: `github.com`, or `"[forgejo.home]:2222"` off port 22. Plain names and addresses only: no wildcard, negation, hashed name or `@cert-authority`. Types: `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, `ecdsa-sha2-nistp521`, `ssh-rsa`; never DSA. At most 256 hosts. Every `ssh://` repo's host must be here; a host no repo uses yet is fine |
 
 ## The repo registry: `repos.<name>`
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
 | `repos.<name>.upstream` | URL | **required** | Where the daemon fetches and pushes: `ssh://[user@]host[:port]/path` or `https://[user@]host[:port]/path`. Printable ASCII. Never `http://`, never a password in the URL, no user or host starting with `-` ([gateway](../architecture/gateway.md#upstream)) |
-| `repos.<name>.upstream_credential` | Key id | **required** | The SSH key (`writd upstream-keys` prints it) or, for `https://`, the token ([how](setup.md#https-upstreams-and-tokens)) the daemon uses for `upstream`. An id is a key or a token, never both. Declared with its kind and algorithm in [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) |
+| `repos.<name>.upstream_credential` | Key id | **required** | The key the daemon reaches `upstream` with: declared in [`keys`](#keys-keysid) with `use: upstream`, `kind: ssh` for an `ssh://` upstream (`writd upstream-keys` prints its public half) or `kind: token` for an `https://` one, on the URL's host ([how](setup.md#https-upstreams-and-tokens)) |
+| `repos.<name>.templates` | Template names | **required** | The templates whose tickets may reach the repo: each must exist. `[]` closes the repo (registered, with its mirror and credential, while every ticket for it is refused, and `writ policy` says so). A template no repo names is valid, unused |
 | `repos.<name>.protected_refs` | Ref patterns | `[]` | Refs no lease may push, whatever its branches: full refs (`refs/heads/main`, `refs/tags/*`), ignoring case |
 | `repos.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | How pushes may reach upstream. [Push modes](#push-modes) |
 | `repos.<name>.ticket_link` | `ledger_only`, `trailer` or `notes` | `ledger_only` | How a commit shows its lease on the remote. [Linking commits](#linking-commits-to-leases-ticket_link) |
@@ -66,8 +100,9 @@ visible link on the remote ([Q25](../decisions.md)):
 
 ## Templates: `templates.<name>`
 
-Every limit is required, so a template never caps anything by accident. Each repo of a
-ticket is checked against a template that allows it: the ticket names it in that repo's
+Every limit is required, so a template never caps anything by accident. A template doesn't
+list repos: each repo names the templates it allows (`repos.<name>.templates`). Each repo of a
+ticket is checked against a template that repo allows: the ticket names it in that repo's
 block, or the repo's terms fit exactly one. A repo that fits none rejects the ticket before
 it reaches you, and the agent gets every reason.
 
@@ -84,14 +119,13 @@ One ticket may use several templates, one per repo. Then:
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
-| `templates.<name>.repos` | Repo names, at least one | **required** | The repos a ticket may ask for. Each must be in the registry. In [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) each repo names its templates instead |
 | `templates.<name>.operations` | `fetch`, `commit_sign`, `push`, at least one | **required** | The operations a ticket may ask for in a repo |
 | `templates.<name>.branches` | Branch patterns | `[]` | The branches a ticket may ask for: short names, at most one trailing `*` (`agent/*`, `agent/fix-*`). Required with `commit_sign` or `push` |
 | `templates.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | The [push modes](#push-modes) its leases may use, within each repo's |
 | `templates.<name>.force_push` | Boolean | `false` | Whether a ticket may ask for force pushes and branch deletions |
 | `templates.<name>.committer_emails` | Emails | `[]` | The emails a ticket may use as a commit's committer and author (printable ASCII). Required with `commit_sign` |
 | `templates.<name>.committer_name` | A name, 1 to 100 characters | none | The name every commit signed under the template must carry, as author and committer, exactly. The agent's git is set to it from the lease (`writ git`, a whole-repo clone), and a commit with another name is refused (`committer_name`, `author_name`). No control, newline or invisible character, no `<` or `>`, and no space or `. , : ; " ' \` at either end (git strips them). Not set: the name isn't checked. A name doesn't decide whether a remote shows a commit as verified (the email and the key do); it keeps an agent from signing as someone else by name. With an OpenPGP key, each of its user ids for the template's emails must carry this name |
-| `templates.<name>.signing_key` | Key id | — | The key that signs commits under this template (`writd signing-keys` prints it). Required with `commit_sign` |
+| `templates.<name>.signing_key` | Key id | — | The key that signs commits under this template: declared in [`keys`](#keys-keysid) with `use: signing` (`writd signing-keys` prints it). Required with `commit_sign` |
 | `templates.<name>.max_ttl` | Duration, at least `writd.yaml`'s `min_ttl` | **required** | The longest lease, counted from submission: time waiting for you counts |
 | `templates.<name>.max_signatures` | Count | **required** | The most commits one lease may sign in each repo under this template |
 | `templates.<name>.max_pushes` | Count | **required** | The most pushes one lease may make in each repo under this template |
@@ -109,20 +143,3 @@ compared. Each repo's commits are compared with that repo's paths.
 - **off**: no comparison.
 - **warn** (default): the commit is signed, and the `sign` audit line records a warning.
 - **deny**: the commit isn't signed (`paths`). Also when the touched paths can't be computed.
-
-## OpenPGP user ids: `signing_keys.<id>`
-
-A key's format, algorithm and backend are declared in
-[`writd.yaml`'s `signing_keys`](writd-yaml.md#signing-keys-signing_keysid). The identities
-an OpenPGP key carries are here, because binding an email to a key is an admin change.
-
-| Key | Accepts | Default | What it does |
-|---|---|---|---|
-| `signing_keys.<id>.uids` | 1 to 16 user ids, `Name <local@domain>` or `<local@domain>`, printable ASCII | **required** | The user ids the key's certificate carries. Each must be unique |
-
-The daemon refuses the policy, naming the field, when:
-
-- a template's `signing_key` isn't declared in `writd.yaml`;
-- a template allows a committer email that no user id of its OpenPGP key carries (remotes would
-  show those commits as unverified);
-- `<id>` isn't declared in `writd.yaml`, or is declared `format: ssh`.

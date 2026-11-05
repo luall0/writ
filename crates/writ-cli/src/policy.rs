@@ -86,7 +86,7 @@ pub fn together(policies: &[RepoPolicy]) -> String {
     if let Some(empty) = policies.iter().find(|p| p.templates.is_empty()) {
         let _ = writeln!(
             out,
-            "  No template allows repo {}: no ticket can name it.",
+            "  Repo {} is closed: it allows no template, so no ticket can name it.",
             display::clean(empty.repo.as_str())
         );
         return out;
@@ -201,7 +201,10 @@ pub fn render(policy: &RepoPolicy) -> String {
         );
     }
     if policy.templates.is_empty() {
-        out.push_str("\nNo template allows tickets for this repo: ask the operator.\n");
+        out.push_str(
+            "\nThis repo is closed: it allows no template, so every ticket for it is refused \
+             (ask the operator).\n",
+        );
         return out;
     }
     for template in &policy.templates {
@@ -389,7 +392,7 @@ mod tests {
         );
         let none = render(&policy(Vec::new()));
         assert!(
-            none.contains("No template allows tickets for this repo"),
+            none.contains("This repo is closed: it allows no template"),
             "{none}"
         );
     }
@@ -470,7 +473,10 @@ mod tests {
             repo_policy("api", vec![keyed("backend", Some("k1"), 4, 20)]),
             repo_policy("web", Vec::new()),
         ]);
-        assert!(closed.contains("No template allows repo web"), "{closed}");
+        assert!(
+            closed.contains("Repo web is closed: it allows no template"),
+            "{closed}"
+        );
         // The daemon's words, escaped.
         let hostile = together(&[
             repo_policy("api", vec![keyed("backend", Some("k1"), 4, 20)]),

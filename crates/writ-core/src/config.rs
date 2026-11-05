@@ -1,17 +1,34 @@
-//! The repo registry and the templates: the admin-approved policy configuration.
+//! The policy: the keys, the upstream host pins, the repo registry and the templates, as an
+//! approver signed them.
 //!
-//! Parsed from YAML text (reading the file is the daemon's job). Every error names the field
-//! it is about, e.g. `templates.quick-fix.max_ttl: invalid duration "1 hour"`.
+//! Parsed from YAML text (reading the file is the daemon's job), and written back in Writ's
+//! canonical layout ([`PolicyConfig::to_yaml`]). Every error names the field it is about,
+//! e.g. `templates.quick-fix.max_ttl: invalid duration "1 hour"`.
+//!
+//! - [`keys`]: `keys.<id>`, every key the policy names, declared with its use.
+//! - [`hosts`]: `upstream_hosts`, the pinned upstream host keys.
+//! - `write`: the canonical layout.
+
+pub mod hosts;
+pub mod keys;
+mod write;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub use hosts::{HostKey, UpstreamHost};
+pub use keys::{
+    BackendName, HashName, Key, KeyAlgorithm, KeyFormat, KeyUse, MAX_UIDS, SigningKey, TokenHost,
+    UpstreamKey, UpstreamKind,
+};
+
 use crate::names::{CommitterName, Email, KeyId, RepoName, TemplateName, Uid};
 use crate::pattern::{BranchPattern, RefPattern};
 use crate::ticket::Operation;
 use crate::units::{ByteSize, Duration};
+use crate::upstream::Upstream;
 use crate::yaml::{FieldError, parse_yaml};
 
 /// How pushes to a repo reach upstream (`docs/architecture/gateway.md`).
@@ -115,6 +132,46 @@ pub enum PathsCheck {
     Deny,
 }
 
+impl PathsCheck {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PathsCheck::Off => "off",
+            PathsCheck::Warn => "warn",
+            PathsCheck::Deny => "deny",
+        }
+    }
+}
+
+impl TicketLink {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TicketLink::Trailer => "trailer",
+            TicketLink::Notes => "notes",
+            TicketLink::LedgerOnly => "ledger_only",
+        }
+    }
+}
+
+impl NotesRef {
+    /// Its name in the policy (`commits`, `writ`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotesRef::Commits => "commits",
+            NotesRef::Writ => "writ",
+        }
+    }
+}
+
+/// A field that moved in M6.2: read so its refusal can name its new place, never kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Moved;
+
+impl<'de> Deserialize<'de> for Moved {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(d).map(|_| Moved)
+    }
+}
+
 /// Settings for `direct_ssh` pushes (checked from M10).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,7 +186,11 @@ pub struct DirectSsh {
 #[serde(deny_unknown_fields)]
 pub struct RepoEntry {
     pub upstream: String,
+    /// The declared upstream credential (`keys.<id>`, `use: upstream`) that reaches it.
     pub upstream_credential: KeyId,
+    /// The templates whose tickets may reach the repo; empty: the repo is paused (registered,
+    /// with its mirror and credential, while no ticket fits it).
+    pub templates: BTreeSet<TemplateName>,
     #[serde(default)]
     pub protected_refs: BTreeSet<RefPattern>,
     #[serde(default = "default_push_modes")]
@@ -154,11 +215,14 @@ impl RepoEntry {
     }
 }
 
-/// A template: the largest ticket it accepts. Every limit is required.
+/// A template: the largest ticket it accepts in a repo that names it. Every limit is
+/// required.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Template {
-    pub repos: BTreeSet<RepoName>,
+    /// Before M6.2, the repos a template allowed: refused, naming `repos.<name>.templates`.
+    #[serde(default)]
+    repos: Option<Moved>,
     pub operations: BTreeSet<Operation>,
     #[serde(default)]
     pub branches: BTreeSet<BranchPattern>,
@@ -200,48 +264,70 @@ fn default_paths_check() -> PathsCheck {
     PathsCheck::Warn
 }
 
-/// What the policy says about an agent signing key: the OpenPGP user ids it is certified
-/// with. Binding an identity to a key is an admin change, so it lives here, never in
-/// `writd.yaml` (which declares the key's format, algorithm and backend).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningKeyPolicy {
-    pub uids: Vec<Uid>,
-}
-
-/// The most user ids one key carries.
-pub const MAX_UIDS: usize = 16;
-
-/// The registry and the templates, as written by the admin, before cross-checks.
+/// The policy as written, before cross-checks.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPolicyConfig {
-    pub repos: BTreeMap<RepoName, RepoEntry>,
-    pub templates: BTreeMap<TemplateName, Template>,
+    keys: BTreeMap<KeyId, keys::RawKey>,
     #[serde(default)]
-    pub signing_keys: BTreeMap<KeyId, SigningKeyPolicy>,
-}
-
-/// The registry and the templates, cross-checked: every template only names registered
-/// repos and carries what its operations need.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PolicyConfig {
+    upstream_hosts: BTreeMap<UpstreamHost, Vec<HostKey>>,
     repos: BTreeMap<RepoName, RepoEntry>,
     templates: BTreeMap<TemplateName, Template>,
-    signing_keys: BTreeMap<KeyId, SigningKeyPolicy>,
+    /// Before M6.2, the OpenPGP user ids: refused, naming `keys.<id>.uids`.
+    #[serde(default)]
+    signing_keys: Option<Moved>,
 }
 
-/// The format a key is declared with in `writd.yaml`, as far as the policy cares: an
-/// OpenPGP key needs a user id for each committer email its templates allow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeclaredFormat {
-    Ssh,
-    Openpgp,
+/// The policy, cross-checked: every key named is declared for its use, every `ssh://`
+/// upstream's host pinned, every template a repo names defined, and each template carrying
+/// what its operations need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyConfig {
+    keys: BTreeMap<KeyId, Key>,
+    upstream_hosts: BTreeMap<UpstreamHost, Vec<HostKey>>,
+    repos: BTreeMap<RepoName, RepoEntry>,
+    templates: BTreeMap<TemplateName, Template>,
+}
+
+/// What uses a key: the repos it reaches upstream for, the templates that sign with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyUsers {
+    pub repos: Vec<RepoName>,
+    pub templates: Vec<TemplateName>,
+}
+
+impl KeyUsers {
+    pub fn is_empty(&self) -> bool {
+        self.repos.is_empty() && self.templates.is_empty()
+    }
+}
+
+impl fmt::Display for KeyUsers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let join = |names: Vec<&str>| names.join(", ");
+        let mut parts = Vec::new();
+        if !self.repos.is_empty() {
+            parts.push(format!(
+                "repos {}",
+                join(self.repos.iter().map(RepoName::as_str).collect())
+            ));
+        }
+        if !self.templates.is_empty() {
+            parts.push(format!(
+                "templates {}",
+                join(self.templates.iter().map(TemplateName::as_str).collect())
+            ));
+        }
+        match parts.is_empty() {
+            true => f.write_str("nothing"),
+            false => f.write_str(&parts.join("; ")),
+        }
+    }
 }
 
 impl PolicyConfig {
-    /// Parses and checks a policy document (`repos:` and `templates:`), with the default
-    /// minimum TTL ([`DEFAULT_MIN_TTL`](crate::fit::DEFAULT_MIN_TTL)).
+    /// Parses and checks a policy document, with the default minimum TTL
+    /// ([`DEFAULT_MIN_TTL`](crate::fit::DEFAULT_MIN_TTL)).
     pub fn from_yaml(text: &str) -> Result<Self, FieldError> {
         Self::from_yaml_with_min_ttl(text, crate::fit::DEFAULT_MIN_TTL)
     }
@@ -252,13 +338,55 @@ impl PolicyConfig {
         Self::validate(parse_yaml::<RawPolicyConfig>(text)?, min_ttl)
     }
 
-    /// Cross-checks a parsed document.
+    /// Cross-checks a parsed document. The first problem is the error, naming its field.
     fn validate(raw: RawPolicyConfig, min_ttl: Duration) -> Result<Self, FieldError> {
+        if raw.signing_keys.is_some() {
+            return Err(FieldError::at(
+                "signing_keys",
+                "moved in M6.2: declare each signing key under keys.<id> (use: signing, its \
+                 format and algorithm, and its uids there)",
+            ));
+        }
+        if let Some(name) = raw
+            .templates
+            .iter()
+            .find_map(|(name, t)| t.repos.map(|_| name))
+        {
+            return Err(FieldError::at(
+                format!("templates.{name}.repos"),
+                "moved in M6.2: templates no longer list repos; name the template in each \
+                 repo's repos.<name>.templates",
+            ));
+        }
+        let mut keys = BTreeMap::new();
+        for (id, raw_key) in raw.keys {
+            let key = raw_key.check(&format!("keys.{id}"))?;
+            keys.insert(id, key);
+        }
+        if raw.upstream_hosts.len() > hosts::MAX_HOSTS {
+            return Err(FieldError::at(
+                "upstream_hosts",
+                format!("at most {} hosts are pinned", hosts::MAX_HOSTS),
+            ));
+        }
+        for (host, pinned) in &raw.upstream_hosts {
+            let at = format!("upstream_hosts.{host}");
+            if pinned.is_empty() || pinned.len() > hosts::MAX_HOST_KEYS {
+                return Err(FieldError::at(
+                    at,
+                    format!("must pin 1 to {} keys", hosts::MAX_HOST_KEYS),
+                ));
+            }
+            let distinct: BTreeSet<&HostKey> = pinned.iter().collect();
+            if distinct.len() != pinned.len() {
+                return Err(FieldError::at(at, "a key is pinned twice"));
+            }
+        }
         // A repo's mirror is `<name>.git`: on a case-insensitive file system (APFS, local
         // mode's mirrors) `Demo` and `demo` would be one directory under two entries, each
         // with its own protected refs and upstream. Names are unique ignoring ASCII case
         // (repo names are ASCII).
-        let mut folded = std::collections::BTreeSet::new();
+        let mut folded = BTreeSet::new();
         for name in raw.repos.keys() {
             if !folded.insert(name.as_str().to_ascii_lowercase()) {
                 return Err(FieldError::at(
@@ -269,111 +397,108 @@ impl PolicyConfig {
             }
         }
         for (name, repo) in &raw.repos {
-            validate_repo(name, repo)?;
+            validate_repo(name, repo, &keys, &raw.upstream_hosts, &raw.templates)?;
         }
         for (name, template) in &raw.templates {
-            validate_template(name, template, &raw.repos, min_ttl)?;
-        }
-        for (id, key) in &raw.signing_keys {
-            let at = format!("signing_keys.{id}.uids");
-            if key.uids.is_empty() || key.uids.len() > MAX_UIDS {
-                return Err(FieldError::at(
-                    at,
-                    format!("must list 1 to {MAX_UIDS} user ids"),
-                ));
-            }
-            let distinct: BTreeSet<&Uid> = key.uids.iter().collect();
-            if distinct.len() != key.uids.len() {
-                return Err(FieldError::at(at, "a user id is listed twice"));
-            }
+            validate_template(name, template, &keys, min_ttl)?;
         }
         Ok(Self {
+            keys,
+            upstream_hosts: raw.upstream_hosts,
             repos: raw.repos,
             templates: raw.templates,
-            signing_keys: raw.signing_keys,
         })
     }
 
-    /// The OpenPGP user ids of the key `id`, none when the policy names none.
+    /// The policy in Writ's canonical layout: what `writ admin` signs once it changed a
+    /// field. Read back, it is this policy.
+    pub fn to_yaml(&self) -> String {
+        write::policy(self)
+    }
+
+    /// Every declared key.
+    pub fn keys(&self) -> &BTreeMap<KeyId, Key> {
+        &self.keys
+    }
+
+    pub fn key(&self, id: &KeyId) -> Option<&Key> {
+        self.keys.get(id)
+    }
+
+    /// The declared signing keys.
+    pub fn signing_keys(&self) -> impl Iterator<Item = (&KeyId, &SigningKey)> {
+        self.keys.iter().filter_map(|(id, key)| match key {
+            Key::Signing(k) => Some((id, k)),
+            Key::Upstream(_) => None,
+        })
+    }
+
+    /// The declared upstream credentials.
+    pub fn upstream_keys(&self) -> impl Iterator<Item = (&KeyId, &UpstreamKey)> {
+        self.keys.iter().filter_map(|(id, key)| match key {
+            Key::Upstream(k) => Some((id, k)),
+            Key::Signing(_) => None,
+        })
+    }
+
+    /// The OpenPGP user ids of the signing key `id`, none when it has none.
     pub fn uids(&self, id: &KeyId) -> &[Uid] {
-        self.signing_keys
-            .get(id)
-            .map_or(&[], |key| key.uids.as_slice())
+        match self.keys.get(id) {
+            Some(Key::Signing(k)) => k.uids.as_slice(),
+            _ => &[],
+        }
     }
 
-    /// The keys the policy gives user ids to.
-    pub fn signing_keys(&self) -> &BTreeMap<KeyId, SigningKeyPolicy> {
-        &self.signing_keys
+    /// What uses the key `id`.
+    pub fn key_users(&self, id: &KeyId) -> KeyUsers {
+        KeyUsers {
+            repos: self
+                .repos
+                .iter()
+                .filter(|(_, r)| r.upstream_credential == *id)
+                .map(|(name, _)| name.clone())
+                .collect(),
+            templates: self
+                .templates
+                .iter()
+                .filter(|(_, t)| t.signing_key.as_ref() == Some(id))
+                .map(|(name, _)| name.clone())
+                .collect(),
+        }
     }
 
-    /// Checks the policy against the keys `writd.yaml` declares (by id, with their format):
-    /// every template's `signing_key` is declared; user ids are given only to declared
-    /// OpenPGP keys; and every committer email a template allows has a user id on the
-    /// OpenPGP key it signs with (a remote shows a commit whose committer the key doesn't
-    /// carry as unverified), as `<committer_name> <email>` when the template sets a name.
-    /// The first problem is the error, naming its field.
-    pub fn check_signing_keys(
-        &self,
-        declared: &BTreeMap<KeyId, DeclaredFormat>,
-    ) -> Result<(), FieldError> {
-        for (name, template) in &self.templates {
-            let Some(id) = &template.signing_key else {
-                continue;
-            };
-            let Some(format) = declared.get(id) else {
-                return Err(FieldError::at(
-                    format!("templates.{name}.signing_key"),
-                    format!("{id} is not declared in writd.yaml's signing_keys"),
-                ));
-            };
-            if *format != DeclaredFormat::Openpgp {
-                continue;
-            }
-            let uids = self.uids(id);
-            for email in &template.committer_emails {
-                if !uids.iter().any(|uid| &uid.email() == email) {
-                    return Err(FieldError::at(
-                        format!("templates.{name}.committer_emails"),
-                        format!(
-                            "{email} has no user id in signing_keys.{id}.uids (the OpenPGP key \
-                             would sign commits a remote shows as unverified)"
-                        ),
-                    ));
-                }
-                // The commits carry the template's name: the key's user id for each email
-                // must be that identity, so the certificate and the commits agree.
-                if let Some(committer) = &template.committer_name {
-                    let wanted = format!("{committer} <{email}>");
-                    if !uids.iter().any(|uid| uid.as_str() == wanted) {
-                        return Err(FieldError::at(
-                            format!("templates.{name}.committer_name"),
-                            format!(
-                                "signing_keys.{id}.uids has no user id {wanted:?}: the OpenPGP \
-                                 key must carry the name the commits do"
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-        for id in self.signing_keys.keys() {
-            match declared.get(id) {
-                Some(DeclaredFormat::Openpgp) => {}
-                Some(DeclaredFormat::Ssh) => {
-                    return Err(FieldError::at(
-                        format!("signing_keys.{id}"),
-                        "user ids are for OpenPGP keys; writd.yaml declares this one ssh",
-                    ));
-                }
-                None => {
-                    return Err(FieldError::at(
-                        format!("signing_keys.{id}"),
-                        "not declared in writd.yaml's signing_keys",
-                    ));
-                }
-            }
-        }
-        Ok(())
+    /// The pinned upstream host keys.
+    pub fn upstream_hosts(&self) -> &BTreeMap<UpstreamHost, Vec<HostKey>> {
+        &self.upstream_hosts
+    }
+
+    /// The repos whose `ssh://` upstream is reached through the pin `host`.
+    pub fn host_users(&self, host: &UpstreamHost) -> Vec<RepoName> {
+        self.repos
+            .iter()
+            .filter(|(_, r)| match Upstream::parse(&r.upstream) {
+                Ok(Upstream::Ssh(url)) => url.known_hosts_name() == host.as_str(),
+                _ => false,
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// The repos that name the template `name`.
+    pub fn template_users(&self, name: &TemplateName) -> Vec<RepoName> {
+        self.repos
+            .iter()
+            .filter(|(_, r)| r.templates.contains(name))
+            .map(|(repo, _)| repo.clone())
+            .collect()
+    }
+
+    /// Whether a ticket under the template `template` may reach `repo`: the repo is
+    /// registered and names the template.
+    pub fn allows(&self, repo: &RepoName, template: &TemplateName) -> bool {
+        self.repos
+            .get(repo)
+            .is_some_and(|entry| entry.templates.contains(template))
     }
 
     pub fn repo(&self, name: &RepoName) -> Option<&RepoEntry> {
@@ -393,43 +518,77 @@ impl PolicyConfig {
     }
 }
 
-/// Checks an upstream URL: `ssh://` or `https://`, printable ASCII, a host, no password in
-/// it (credentials live in the keystore, never in a URL that ends up in logs), and no user or
-/// host starting with `-` (which `ssh` would read as an option).
-fn check_upstream(upstream: &str) -> Result<(), &'static str> {
-    let rest = upstream
-        .strip_prefix("ssh://")
-        .or_else(|| upstream.strip_prefix("https://"))
-        .ok_or("must be an ssh:// or https:// URL")?;
-    if !upstream.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err("printable ASCII only, no spaces");
-    }
-    let authority = rest.split('/').next().unwrap_or_default();
-    let (userinfo, host) = match authority.rsplit_once('@') {
-        Some((userinfo, host)) => (Some(userinfo), host),
-        None => (None, authority),
-    };
-    if let Some(userinfo) = userinfo {
-        if userinfo.contains(':') {
-            return Err("must not hold a password (credentials go in the keystore)");
-        }
-        if userinfo.is_empty() || userinfo.starts_with('-') {
-            return Err("the user must not be empty or start with '-'");
-        }
-    }
-    let hostname = match host.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or_default(),
-        None => host.split(':').next().unwrap_or_default(),
-    };
-    if hostname.is_empty() || hostname.starts_with('-') {
-        return Err("the host must not be empty or start with '-'");
-    }
-    Ok(())
-}
-
-fn validate_repo(name: &RepoName, repo: &RepoEntry) -> Result<(), FieldError> {
+fn validate_repo(
+    name: &RepoName,
+    repo: &RepoEntry,
+    keys: &BTreeMap<KeyId, Key>,
+    pins: &BTreeMap<UpstreamHost, Vec<HostKey>>,
+    templates: &BTreeMap<TemplateName, Template>,
+) -> Result<(), FieldError> {
     let at = |field: &str| format!("repos.{name}.{field}");
-    check_upstream(repo.upstream.as_str()).map_err(|why| FieldError::at(at("upstream"), why))?;
+    let upstream = Upstream::parse(repo.upstream.as_str())
+        .map_err(|why| FieldError::at(at("upstream"), why))?;
+    let id = &repo.upstream_credential;
+    let credential = match keys.get(id) {
+        None => {
+            return Err(FieldError::at(
+                at("upstream_credential"),
+                format!("{id} is not declared in keys"),
+            ));
+        }
+        Some(Key::Signing(_)) => {
+            return Err(FieldError::at(
+                at("upstream_credential"),
+                format!("keys.{id} is a signing key (use: signing), not an upstream credential"),
+            ));
+        }
+        Some(Key::Upstream(credential)) => credential,
+    };
+    match (&upstream, credential) {
+        (Upstream::Ssh(url), UpstreamKey::Ssh { .. }) => {
+            let host = url.known_hosts_name();
+            if !pins.keys().any(|pin| pin.as_str() == host) {
+                return Err(FieldError::at(
+                    at("upstream"),
+                    format!(
+                        "its host {host} has no pin in upstream_hosts (writ admin host add scans \
+                         it, and pins its keys once you compared them)"
+                    ),
+                ));
+            }
+        }
+        (Upstream::Https(url), UpstreamKey::Token { host, .. }) => {
+            if !host.is(url.host()) {
+                return Err(FieldError::at(
+                    at("upstream_credential"),
+                    format!(
+                        "keys.{id} is a token for {host}, not for this upstream's host {}",
+                        url.host()
+                    ),
+                ));
+            }
+        }
+        (Upstream::Ssh(_), UpstreamKey::Token { .. }) => {
+            return Err(FieldError::at(
+                at("upstream_credential"),
+                format!("keys.{id} is a token (kind: token): an ssh:// upstream needs kind: ssh"),
+            ));
+        }
+        (Upstream::Https(_), UpstreamKey::Ssh { .. }) => {
+            return Err(FieldError::at(
+                at("upstream_credential"),
+                format!(
+                    "keys.{id} is an SSH key (kind: ssh): an https:// upstream needs kind: token"
+                ),
+            ));
+        }
+    }
+    if let Some(unknown) = repo.templates.iter().find(|t| !templates.contains_key(*t)) {
+        return Err(FieldError::at(
+            at("templates"),
+            format!("{unknown} is not a template"),
+        ));
+    }
     if repo.push_modes.is_empty() {
         return Err(FieldError::at(
             at("push_modes"),
@@ -473,19 +632,10 @@ fn validate_repo(name: &RepoName, repo: &RepoEntry) -> Result<(), FieldError> {
 fn validate_template(
     name: &TemplateName,
     template: &Template,
-    repos: &BTreeMap<RepoName, RepoEntry>,
+    keys: &BTreeMap<KeyId, Key>,
     min_ttl: Duration,
 ) -> Result<(), FieldError> {
     let at = |field: &str| format!("templates.{name}.{field}");
-    if template.repos.is_empty() {
-        return Err(FieldError::at(at("repos"), "must list at least one repo"));
-    }
-    if let Some(unknown) = template.repos.iter().find(|r| !repos.contains_key(*r)) {
-        return Err(FieldError::at(
-            at("repos"),
-            format!("{unknown} is not in the repo registry"),
-        ));
-    }
     if template.operations.is_empty() {
         return Err(FieldError::at(
             at("operations"),
@@ -537,31 +687,63 @@ fn validate_template(
             "must be at least 1 byte",
         ));
     }
+    if let Some(id) = &template.signing_key {
+        validate_signing_key(name, template, id, keys)?;
+    }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::check_upstream;
-
-    #[test]
-    fn upstream_urls_with_and_without_a_user_and_port() {
-        for good in [
-            "ssh://git@github.com/user/repo.git",
-            "ssh://git@[2001:db8::1]:2222/repo.git",
-            "ssh://remote.lan:2222/repo.git",
-            "https://github.com/user/repo.git",
-            "https://bot@codeberg.org/user/repo.git",
-        ] {
-            assert_eq!(check_upstream(good), Ok(()), "{good}");
+/// A template's `signing_key` is a declared signing key, and an OpenPGP one carries a user id
+/// for every committer email the template allows (a remote shows a commit whose committer
+/// the key doesn't carry as unverified), as `<committer_name> <email>` when the template sets
+/// a name.
+fn validate_signing_key(
+    name: &TemplateName,
+    template: &Template,
+    id: &KeyId,
+    keys: &BTreeMap<KeyId, Key>,
+) -> Result<(), FieldError> {
+    let key = match keys.get(id) {
+        None => {
+            return Err(FieldError::at(
+                format!("templates.{name}.signing_key"),
+                format!("{id} is not declared in keys"),
+            ));
         }
-        assert_eq!(
-            check_upstream("ssh://[-x]/repo.git"),
-            Err("the host must not be empty or start with '-'")
-        );
-        assert_eq!(
-            check_upstream("https://@github.com/x.git"),
-            Err("the user must not be empty or start with '-'")
-        );
+        Some(Key::Upstream(_)) => {
+            return Err(FieldError::at(
+                format!("templates.{name}.signing_key"),
+                format!("keys.{id} is an upstream credential (use: upstream), not a signing key"),
+            ));
+        }
+        Some(Key::Signing(key)) => key,
+    };
+    if key.format != KeyFormat::Openpgp {
+        return Ok(());
     }
+    for email in &template.committer_emails {
+        if !key.uids.iter().any(|uid| &uid.email() == email) {
+            return Err(FieldError::at(
+                format!("templates.{name}.committer_emails"),
+                format!(
+                    "{email} has no user id in keys.{id}.uids (the OpenPGP key would sign \
+                     commits a remote shows as unverified)"
+                ),
+            ));
+        }
+        // The commits carry the template's name: the key's user id for each email must be
+        // that identity, so the certificate and the commits agree.
+        if let Some(committer) = &template.committer_name {
+            let wanted = format!("{committer} <{email}>");
+            if !key.uids.iter().any(|uid| uid.as_str() == wanted) {
+                return Err(FieldError::at(
+                    format!("templates.{name}.committer_name"),
+                    format!(
+                        "keys.{id}.uids has no user id {wanted:?}: the OpenPGP key must carry \
+                         the name the commits do"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }

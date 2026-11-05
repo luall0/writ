@@ -1,11 +1,39 @@
-# policy.yaml: the repo registry and the templates (docs/operators/policy-yaml.md has every
-# key). Required keys are set; every optional key is commented out at its default value.
+# policy.yaml: the keys, the upstream host keys, the repo registry and the templates
+# (docs/operators/policy-yaml.md has every key). Required keys are set; every optional key is
+# commented out at its default value. `writd init` puts it in force and makes its keys; after
+# that, `writ admin` changes it, one signed change at a time.
 # Mode 0644 or stricter, owned by the daemon's user.
+
+keys:                              # every key the policy names, made by the change that declares it
+  agent-ed25519-01:                # a template's signing_key
+    use: signing                   # signing | upstream
+    format: ssh                    # ssh | openpgp
+    algorithm: ed25519             # ed25519 | p256 | p384 | rsa3072 | rsa4096
+    # hash: sha512                 # left out: the strongest the format and algorithm allow
+    # backend: software            # where the key lives: software (the daemon's memory)
+  upstream-my-repo-01:             # a repo's upstream_credential: `writ admin key show` prints it
+    use: upstream
+    kind: ssh                      # ssh (an ssh:// upstream) | token (an https:// one)
+    algorithm: ed25519             # some remotes take RSA only: rsa3072 or rsa4096
+  # agent_pgp:                     # an OpenPGP signing key, with the identities it is certified with
+  #   use: signing
+  #   format: openpgp
+  #   algorithm: p256
+  #   uids: ["Your Name <me+agent@example.org>"]
+  # github_token:                  # a token: added with `writ admin token github_token`, never made
+  #   use: upstream
+  #   kind: token
+  #   host: github.com             # the only host it is sent to
+
+upstream_hosts:                    # each ssh:// upstream's host keys: `writ admin host add` scans them
+  github.com:                      # host, or "[host]:port" off port 22
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 repos:
   my-repo:                         # the name agents use; unique ignoring case
     upstream: ssh://git@github.com/me/my-repo.git   # or https://host/path, with a token
-    upstream_credential: upstream-my-repo-01   # `writd upstream-keys` prints it (a deploy key)
+    upstream_credential: upstream-my-repo-01   # a key declared with use: upstream
+    templates: [feature-branch]    # the templates its tickets may use; []: the repo is closed
     # protected_refs: []           # full refs no lease may push, e.g. ["refs/heads/main", "refs/tags/*"]
     # push_modes: [gateway]        # gateway | proxy (M9) | direct_ssh (M10)
     # ticket_link: ledger_only     # ledger_only | trailer (a `Writ: <lease>` line) | notes (a git note)
@@ -17,11 +45,10 @@ repos:
 
 templates:
   feature-branch:                  # a repo's block names it, or fits it alone
-    repos: [my-repo]               # each in the registry
     operations: [fetch, commit_sign, push]   # fetch | commit_sign | push
     branches: ["agent/*"]          # required with commit_sign or push
     committer_emails: ["me+agent@example.org"]   # required with commit_sign
-    signing_key: agent-ed25519-01  # required with commit_sign: `writd signing-keys` prints it
+    signing_key: agent-ed25519-01  # required with commit_sign: a key declared with use: signing
     max_ttl: 4h                    # at least writd.yaml's min_ttl (5m by default)
     max_signatures: 50
     max_pushes: 30
@@ -33,7 +60,3 @@ templates:
     # require_expected_paths: false
     # max_renewals: null           # null: no limit on a lease's renewals (each one is signed)
     # committer_name: null         # e.g. "Writ agent": the name every commit must carry; null: not checked
-
-# signing_keys:                    # the user ids of each OpenPGP signing key (writd.yaml declares it)
-#   openpgp_agent:
-#     uids: ["Your Name <me+agent@example.org>"]

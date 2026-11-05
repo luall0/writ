@@ -240,8 +240,18 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: notifiers[].telegram.token.sealed` | `a_sealed_notifier_token_starts_its_notifier_when_added` |
 | `writd.yaml: notifiers[].telegram.chat_id` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
 | `writd.yaml: notifiers[].telegram.api_base` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
+| `policy.yaml: keys.<id>.use` | planned: M6.2 |
+| `policy.yaml: keys.<id>.kind` | planned: M6.2 |
+| `policy.yaml: keys.<id>.format` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
+| `policy.yaml: keys.<id>.algorithm` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one`, `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
+| `policy.yaml: keys.<id>.hash` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
+| `policy.yaml: keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
+| `policy.yaml: keys.<id>.host` | planned: M6.2 |
+| `policy.yaml: keys.<id>.backend` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
+| `policy.yaml: upstream_hosts.<host>` | `another_host_key_or_an_unpinned_host_is_refused`, `a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons` |
 | `policy.yaml: repos.<name>.upstream` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees` |
 | `policy.yaml: repos.<name>.upstream_credential` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_credential_the_remote_does_not_take_is_refused`, `an_https_upstream_syncs_with_the_token_which_nothing_else_holds` |
+| `policy.yaml: repos.<name>.templates` | planned: M6.2 |
 | `policy.yaml: repos.<name>.protected_refs` | `fetch_and_push_through_the_gateway`, `every_push_denial_leaves_forgejo_and_the_mirror_unchanged` |
 | `policy.yaml: repos.<name>.push_modes` | `push_modes_without_gateway_refuse_a_gateway_push`; the value proxy planned: M9, the value direct_ssh planned: M10 |
 | `policy.yaml: repos.<name>.notes_ref` | `a_push_leaves_a_note_per_commit_upstream_the_commits_untouched`, `notes_go_under_refs_notes_writ_when_the_repo_says_so` |
@@ -249,7 +259,6 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: repos.<name>.object_format` | `an_upstream_in_another_object_format_is_refused`, `a_sync_mirrors_branches_and_tags_only_and_follows_upstream` |
 | `policy.yaml: repos.<name>.direct_ssh.hosts` | planned: M10 |
 | `policy.yaml: repos.<name>.direct_ssh.allow_account_wide` | planned: M10 |
-| `policy.yaml: templates.<name>.repos` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
 | `policy.yaml: templates.<name>.operations` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
 | `policy.yaml: templates.<name>.branches` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
 | `policy.yaml: templates.<name>.push_modes` | `push_modes_without_gateway_refuse_a_gateway_push` |
@@ -265,7 +274,6 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: templates.<name>.require_expected_paths` | `require_expected_paths_rejects_a_ticket_without_them` |
 | `policy.yaml: templates.<name>.committer_name` | `a_template_s_committer_name_is_set_on_commits_and_any_other_refused`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
 | `policy.yaml: templates.<name>.max_renewals` | `a_renewal_pushes_what_its_lease_signed_and_holds_to_every_bound`, `a_lease_is_renewed_closed_and_learned_from` |
-| `policy.yaml: signing_keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
 | `ticket: origin_hint` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
 | `ticket: caller.descends_from.executable` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
 | `ticket: caller.descends_from.pid` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |

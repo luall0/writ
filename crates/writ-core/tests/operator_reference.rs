@@ -46,35 +46,47 @@ fn ticket_error(doc: &str) -> String {
     TicketRequest::from_yaml(doc).unwrap_err().to_string()
 }
 
+/// The fields the parser reads only to refuse them, naming where they moved (M6.2): not keys.
+const MOVED: &[&str] = &["signing_keys", "templates.<name>.repos"];
+
 /// Every key of `policy.yaml`, as the reference writes it (`repos.<name>.upstream`).
 fn policy_keys() -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     let top = expected(&policy_error("__probe__: 0"));
     assert_eq!(
         top,
-        ["repos", "templates", "signing_keys"],
+        [
+            "keys",
+            "upstream_hosts",
+            "repos",
+            "templates",
+            "signing_keys"
+        ],
         "a new top-level section: probe it"
     );
     keys.extend(keys_of(
-        &policy_error("repos:\n  r:\n    __probe__: 0\ntemplates: {}"),
+        &policy_error("keys:\n  k:\n    __probe__: 0\nrepos: {}\ntemplates: {}"),
+        "keys.<id>.",
+        &[],
+    ));
+    // A map of hosts, each to a list of keys: one row.
+    keys.insert("upstream_hosts.<host>".to_owned());
+    keys.extend(keys_of(
+        &policy_error("keys: {}\nrepos:\n  r:\n    __probe__: 0\ntemplates: {}"),
         "repos.<name>.",
         &["direct_ssh"],
     ));
     keys.extend(keys_of(
-        &policy_error("repos:\n  r:\n    direct_ssh:\n      __probe__: 0\ntemplates: {}"),
+        &policy_error("keys: {}\nrepos:\n  r:\n    direct_ssh:\n      __probe__: 0\ntemplates: {}"),
         "repos.<name>.direct_ssh.",
         &[],
     ));
     keys.extend(keys_of(
-        &policy_error("repos: {}\ntemplates:\n  t:\n    __probe__: 0"),
+        &policy_error("keys: {}\nrepos: {}\ntemplates:\n  t:\n    __probe__: 0"),
         "templates.<name>.",
         &[],
     ));
-    keys.extend(keys_of(
-        &policy_error("repos: {}\ntemplates: {}\nsigning_keys:\n  k:\n    __probe__: 0"),
-        "signing_keys.<id>.",
-        &[],
-    ));
+    keys.retain(|key| !MOVED.contains(&key.as_str()));
     keys
 }
 
@@ -188,35 +200,41 @@ fn every_policy_key_is_in_the_operator_reference() {
         &code,
         &registry("policy.yaml"),
     );
-    let repo = "repos:\n  r:\n    {}: __probe__\ntemplates: {{}}";
-    for (key, doc) in [
+    let repo = "keys: {}\nrepos:\n  r:\n    FIELD: __probe__\ntemplates: {}";
+    let key = "keys:\n  k:\n    FIELD: __probe__\nrepos: {}\ntemplates: {}";
+    for (name, doc) in [
+        ("keys.<id>.use", key.replace("FIELD", "use")),
+        ("keys.<id>.kind", key.replace("FIELD", "kind")),
+        ("keys.<id>.format", key.replace("FIELD", "format")),
+        ("keys.<id>.algorithm", key.replace("FIELD", "algorithm")),
+        ("keys.<id>.hash", key.replace("FIELD", "hash")),
         (
             "repos.<name>.push_modes",
-            repo.replace("{}: __probe__", "push_modes: [__probe__]"),
+            repo.replace("FIELD: __probe__", "push_modes: [__probe__]"),
         ),
         (
             "repos.<name>.ticket_link",
-            repo.replace("{}", "ticket_link"),
+            repo.replace("FIELD", "ticket_link"),
         ),
         (
             "repos.<name>.object_format",
-            repo.replace("{}", "object_format"),
+            repo.replace("FIELD", "object_format"),
         ),
         (
             "templates.<name>.push_modes",
-            "repos: {}\ntemplates:\n  t:\n    push_modes: [__probe__]".to_owned(),
+            "keys: {}\nrepos: {}\ntemplates:\n  t:\n    push_modes: [__probe__]".to_owned(),
         ),
         (
             "templates.<name>.operations",
-            "repos: {}\ntemplates:\n  t:\n    operations: [__probe__]".to_owned(),
+            "keys: {}\nrepos: {}\ntemplates:\n  t:\n    operations: [__probe__]".to_owned(),
         ),
         (
             "templates.<name>.paths_check",
-            "repos: {}\ntemplates:\n  t:\n    paths_check: __probe__".to_owned(),
+            "keys: {}\nrepos: {}\ntemplates:\n  t:\n    paths_check: __probe__".to_owned(),
         ),
     ] {
         assert!(doc.contains("__probe__"), "{doc}");
-        assert_values_listed(&page, key, &policy_error(&doc));
+        assert_values_listed(&page, name, &policy_error(&doc));
     }
 }
 
@@ -257,7 +275,13 @@ fn the_probe_reads_every_list_the_parser_writes() {
     );
     assert_eq!(
         expected(&policy_error("__probe__: 0")),
-        ["repos", "templates", "signing_keys"]
+        [
+            "keys",
+            "upstream_hosts",
+            "repos",
+            "templates",
+            "signing_keys"
+        ]
     );
 }
 
@@ -293,7 +317,8 @@ fn uncommented(template: &str, skip: &dyn Fn(&str) -> bool) -> String {
 /// Every key appears in the template, set or commented out (by its last name).
 fn assert_template_names(template: &str, keys: &BTreeSet<String>) {
     for key in keys {
-        let name = key.rsplit('.').next().unwrap();
+        // A map's entry (`upstream_hosts.<host>`) is named by its map.
+        let name = key.rsplit('.').find(|part| !part.starts_with('<')).unwrap();
         assert!(
             template.contains(&format!("{name}:")),
             "{key}: not in the template"
@@ -312,10 +337,12 @@ fn the_policy_template_parses_as_is_and_with_every_default_taken_in() {
             || line.contains("allow_account_wide:")
             // Only with `ticket_link: notes`, not the default.
             || line.contains("notes_ref:")
-            // An example for an OpenPGP key, not a default.
-            || line.contains("signing_keys:")
-            || line.contains("openpgp_agent:")
-            || line.contains("uids:")
+            // Examples of other keys (`  # <id>:` and their `  #   <field>:` lines), and a
+            // hash, which left out is the strongest rather than this one.
+            || line.contains("agent_pgp:")
+            || line.contains("github_token:")
+            || line.starts_with("  #   ")
+            || line.contains("hash:")
     });
     assert_ne!(taken, POLICY_TEMPLATE);
     let config = PolicyConfig::from_yaml(&taken).unwrap();

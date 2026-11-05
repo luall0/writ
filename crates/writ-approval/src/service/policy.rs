@@ -44,11 +44,10 @@ impl Service {
     /// What a ticket for `repo` may ask under `policy`, or none when the repo isn't there.
     fn view(&self, policy: &PolicyConfig, repo: &RepoName) -> Option<RepoPolicy> {
         let entry: &RepoEntry = policy.repo(repo)?;
-        let templates = policy
-            .templates()
+        let templates = entry
+            .templates
             .iter()
-            .filter(|(_, template)| template.repos.contains(repo))
-            .map(|(name, template)| template_view(name, template))
+            .filter_map(|name| Some(template_view(name, policy.template(name)?)))
             .collect();
         Some(RepoPolicy {
             repo: repo.clone(),
@@ -66,7 +65,7 @@ impl Service {
     }
 }
 
-/// A template, without the repos it names (only the one asked about is shown); its signing
+/// A template the repo names (what other repos it serves is not shown); its signing
 /// key by id only (one ticket's repositories must share one).
 fn template_view(name: &TemplateName, template: &Template) -> TemplateView {
     TemplateView {

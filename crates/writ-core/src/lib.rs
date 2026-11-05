@@ -12,6 +12,7 @@
 //! - [`signed`]: the other documents an approver signs: refusal, revocation, proof, unseal,
 //!   admin change.
 //! - [`names`], [`pattern`], [`units`]: validated names, patterns and units.
+//! - [`upstream`]: an upstream's URL, read strictly.
 //! - [`text`]: agent-written text made safe to show.
 //! - [`yaml`]: YAML documents, with errors that name the field.
 //!
@@ -36,4 +37,5 @@ pub mod signed;
 pub mod text;
 pub mod ticket;
 pub mod units;
+pub mod upstream;
 pub mod yaml;

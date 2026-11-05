@@ -25,20 +25,28 @@ use writ_core::units::Duration;
 /// minute, 3 renewals), `frontend` for web (commit_sign on review/*, key k1, 2h, 30 a minute,
 /// 1 renewal), `docs-own-key` for docs (key k2), `read-only` for api and docs (no key).
 const POLICY: &str = r#"
+keys:
+  k1: { use: signing, format: ssh, algorithm: ed25519 }
+  k2: { use: signing, format: ssh, algorithm: ed25519 }
+  upstream-01: { use: upstream, kind: ssh, algorithm: ed25519 }
+upstream_hosts:
+  remote.invalid: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]
 repos:
   api:
     upstream: ssh://git@remote.invalid/api.git
     upstream_credential: upstream-01
+    templates: [backend, read-only]
     protected_refs: ["refs/heads/main"]
   web:
     upstream: ssh://git@remote.invalid/web.git
     upstream_credential: upstream-01
+    templates: [frontend]
   docs:
     upstream: ssh://git@remote.invalid/docs.git
     upstream_credential: upstream-01
+    templates: [docs-own-key, read-only]
 templates:
   backend:
-    repos: [api]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["api@example.org", "both@example.org"]
@@ -51,7 +59,6 @@ templates:
     paths_check: deny
     max_renewals: 3
   frontend:
-    repos: [web]
     operations: [fetch, commit_sign]
     branches: ["review/*"]
     committer_emails: ["both@example.org", "web@example.org"]
@@ -64,7 +71,6 @@ templates:
     paths_check: deny
     max_renewals: 1
   docs-own-key:
-    repos: [docs]
     operations: [fetch, commit_sign, push]
     branches: ["docs/*"]
     committer_emails: ["both@example.org"]
@@ -75,7 +81,6 @@ templates:
     max_ops_per_minute: 30
     max_push_size: 10MB
   read-only:
-    repos: [api, docs]
     operations: [fetch]
     max_ttl: 8h
     max_signatures: 0
@@ -357,7 +362,7 @@ fn a_repository_is_held_to_a_template_that_allows_it() {
     // A template named that doesn't allow the repository.
     rejected(
         &TWO.replace("  web:\n", "  web:\n    template: backend\n"),
-        "repos.web: repo web is not allowed by the template backend",
+        "repos.web: repo web does not allow the template backend (repos.web.templates)",
     );
     // Terms no template of the repository allows: the whole ticket, naming the repository.
     rejected(

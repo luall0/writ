@@ -8,9 +8,11 @@ use writ_core::ticket::Ticket;
 
 use crate::{Result, StoreError};
 
-/// The version of the state's format: the schema below and the ticket format it stores
-/// ([`Ticket::KIND`]). Kept in `PRAGMA user_version`, and the ticket format in `formats`.
-pub const STATE_VERSION: i64 = 9;
+/// The version of the state's format: the schema below, the ticket format it stores
+/// ([`Ticket::KIND`]) and the policy shape its authority versions hold (10: M6.2's, keys
+/// declared in the policy and repos naming their templates). Kept in `PRAGMA user_version`,
+/// and the ticket format in `formats`.
+pub const STATE_VERSION: i64 = 10;
 
 /// How long a write waits for another connection's transaction before failing.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

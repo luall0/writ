@@ -183,7 +183,7 @@ fn arb_request() -> impl Strategy<Value = TicketRequest> {
             .copied()
             .filter(|b| template.branches.iter().any(|t| t.covers(&b.parse().unwrap())))
             .collect();
-        let repos_inside: Vec<String> = template.repos.iter().map(|r| r.to_string()).collect();
+        let repos_inside: Vec<String> = config.template_users(&name.parse().unwrap()).iter().map(|r| r.to_string()).collect();
         let emails_inside: Vec<String> =
             template.committer_emails.iter().map(|e| e.to_string()).collect();
         let scope = (
@@ -263,7 +263,11 @@ fn arb_signed(submitted: Ticket) -> impl Strategy<Value = Ticket> {
         .template(&first(&submitted).template)
         .unwrap()
         .clone();
-    let repos: Vec<String> = template.repos.iter().map(|r| r.to_string()).collect();
+    let repos: Vec<String> = config
+        .template_users(&first(&submitted).template)
+        .iter()
+        .map(|r| r.to_string())
+        .collect();
     let emails: Vec<String> = template
         .committer_emails
         .iter()
@@ -699,6 +703,48 @@ fn proptest_config() -> ProptestConfig {
 proptest! {
     #![proptest_config(proptest_config())]
 
+    /// The canonical writer quotes whatever needs it: a policy with names and values YAML
+    /// could read as something else (`true`, `1e5`, `0x1f`, a name with quotes or `#`) is
+    /// read back as itself, and written the same way twice.
+    #[test]
+    fn a_written_policy_reads_back_as_itself(
+        template in "[A-Za-z0-9_][A-Za-z0-9._-]{0,6}|true|null|no|1e5|0x1f|0o7|12|1_000|5d",
+        committer in "[ -~]{1,16}|[^\\x00-\\x1f]{1,8}",
+        email_local in "[a-z0-9.+_-]{1,8}",
+        uid_name in "[ -~]{0,12}",
+    ) {
+        let quoted = |text: &str| serde_json::to_string(text).unwrap();
+        let text = POLICY
+            .replace("read-only", &template)
+            .replacen(
+                "    committer_emails: [\"user+agent@example.org\"]\n",
+                &format!(
+                    "    committer_emails: [{}]\n    committer_name: {}\n",
+                    quoted(&format!("{email_local}@example.org")),
+                    quoted(&committer)
+                ),
+                1,
+            )
+            .replacen(
+                "  agent-ed25519-01: { use: signing, format: ssh, algorithm: ed25519 }\n",
+                &format!(
+                    "  agent-ed25519-01: {{ use: signing, format: ssh, algorithm: ed25519 }}\n  \
+                     pgp: {{ use: signing, format: openpgp, algorithm: ed25519, uids: [{}] }}\n",
+                    quoted(&format!("{uid_name} <{email_local}@example.org>"))
+                ),
+                1,
+            );
+        // Values the policy itself refuses (a name git would strip, a user id that isn't one)
+        // test nothing here.
+        let Ok(policy) = PolicyConfig::from_yaml(&text) else {
+            return Ok(());
+        };
+        let written = policy.to_yaml();
+        let read = PolicyConfig::from_yaml(&written);
+        prop_assert_eq!(read.as_ref(), Ok(&policy), "{}", written);
+        prop_assert_eq!(read.map(|p| p.to_yaml()).ok(), Some(written));
+    }
+
     #[test]
     fn a_narrowed_ticket_never_grants_more(
         (submitted, signed, probes) in arb_ticket()
@@ -762,8 +808,8 @@ proptest! {
             max_pushes: template.max_pushes,
             max_push_size: template.max_push_size,
         };
-        largest.repos = template
-            .repos
+        largest.repos = config
+            .template_users(&first(&ticket).template)
             .iter()
             .filter(|r| !pushes || !fit::push_modes(&config.repo(r).unwrap().push_modes, template).is_empty())
             .map(|r| (r.clone(), terms.clone()))

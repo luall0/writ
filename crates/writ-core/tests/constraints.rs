@@ -1090,16 +1090,39 @@ fn a_lease_that_no_longer_fits_its_template_is_refused() {
     .unwrap();
     let denial = policy::decide_fetch(&world.ctx(), &fetch_request()).unwrap_err();
     assert_eq!(denial.code, DenyCode::Config);
-    // A removed template too.
-    world.config =
-        writ_core::config::PolicyConfig::from_yaml(&POLICY.replace("feature-branch:", "renamed:"))
-            .unwrap();
-    assert_eq!(
-        policy::decide_fetch(&world.ctx(), &fetch_request())
-            .unwrap_err()
-            .code,
-        DenyCode::Config
-    );
+    // The template taken off the repo's list, or the repo closed (no template at all), or
+    // the template removed.
+    for policy in [
+        POLICY.replacen(
+            "templates: [feature-branch, quick-fix, read-only]",
+            "templates: [quick-fix, read-only]",
+            1,
+        ),
+        POLICY.replacen(
+            "templates: [feature-branch, quick-fix, read-only]",
+            "templates: []",
+            1,
+        ),
+        POLICY
+            .replace(
+                "templates: [feature-branch, quick-fix, read-only]",
+                "templates: [quick-fix]",
+            )
+            .replace(
+                "templates: [feature-branch, quick-fix]",
+                "templates: [quick-fix]",
+            )
+            .replace("feature-branch:", "renamed:"),
+    ] {
+        world.config = writ_core::config::PolicyConfig::from_yaml(&policy).unwrap();
+        assert_eq!(
+            policy::decide_fetch(&world.ctx(), &fetch_request())
+                .unwrap_err()
+                .code,
+            DenyCode::Config,
+            "{policy}"
+        );
+    }
 }
 
 #[test]

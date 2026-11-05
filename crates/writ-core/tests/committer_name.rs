@@ -13,10 +13,8 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-
 use common::*;
-use writ_core::config::{DeclaredFormat, PolicyConfig};
+use writ_core::config::PolicyConfig;
 use writ_core::fit;
 use writ_core::lease::{self, TicketRecord, Usage};
 use writ_core::names::{CommitterName, KeyId};
@@ -291,34 +289,31 @@ fn without_a_name_in_the_template_any_name_is_signed() {
 
 #[test]
 fn an_openpgp_key_must_carry_the_name_in_its_user_ids() {
-    let declared = BTreeMap::from([(
-        "agent-ed25519-01".parse::<KeyId>().unwrap(),
-        DeclaredFormat::Openpgp,
-    )]);
     let with_uids = |uid: &str| {
-        format!(
-            "{}signing_keys:\n  agent-ed25519-01:\n    uids: [\"{uid}\", \"Fix <user+fix@example.org>\"]\n",
-            named_policy(NAME)
+        named_policy(NAME).replacen(
+            "  agent-ed25519-01: { use: signing, format: ssh, algorithm: ed25519 }\n",
+            &format!(
+                "  agent-ed25519-01:\n    use: signing\n    format: openpgp\n    algorithm: \
+                 ed25519\n    uids: [\"{uid}\", \"Fix <user+fix@example.org>\"]\n"
+            ),
+            1,
         )
     };
-    let good = PolicyConfig::from_yaml(&with_uids("Writ agent <user+agent@example.org>")).unwrap();
-    assert_eq!(good.check_signing_keys(&declared), Ok(()));
+    let good = PolicyConfig::from_yaml(&with_uids("Writ agent <user+agent@example.org>"));
+    assert!(good.is_ok(), "{good:?}");
     // The email alone isn't enough: the key would carry another name than the commits.
-    let other = PolicyConfig::from_yaml(&with_uids("Someone <user+agent@example.org>")).unwrap();
-    let error = other.check_signing_keys(&declared).unwrap_err();
+    let error = PolicyConfig::from_yaml(&with_uids("Someone <user+agent@example.org>"))
+        .unwrap_err()
+        .to_string();
     assert!(
-        error
-            .to_string()
-            .contains("templates.feature-branch.committer_name")
-            && error
-                .to_string()
-                .contains("no user id \"Writ agent <user+agent@example.org>\""),
+        error.contains("templates.feature-branch.committer_name")
+            && error.contains("no user id \"Writ agent <user+agent@example.org>\""),
         "{error}"
     );
     // An SSH key has no user ids: nothing to check.
-    let ssh = BTreeMap::from([(
-        "agent-ed25519-01".parse::<KeyId>().unwrap(),
-        DeclaredFormat::Ssh,
-    )]);
-    assert_eq!(named_config().check_signing_keys(&ssh), Ok(()));
+    assert!(
+        named_config()
+            .key(&"agent-ed25519-01".parse::<KeyId>().unwrap())
+            .is_some()
+    );
 }

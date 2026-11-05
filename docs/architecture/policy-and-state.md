@@ -93,8 +93,8 @@ them never pays for the path match. That match is bounded by the ticket: at most
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
 Tables (`writ_store::Store`). The state carries its version: `PRAGMA user_version` (the
-state version, `STATE_VERSION`, now 9) and `formats.ticket_kind` (the ticket format it stores,
-`writ-ticket/3`). A new database gets the whole schema at once; a database of any other version
+state version, `STATE_VERSION`, now 10: M6.2's policy shape, which the authority versions
+hold) and `formats.ticket_kind` (the ticket format it stores, `writ-ticket/3`). A new database gets the whole schema at once; a database of any other version
 or ticket format is refused at open, both versions named (`StoreError::OtherVersion`,
 `OtherTicketFormat`): no migration chain, never a silent mix. A format change bumps the version
 and the operator starts that version from a new state directory ([decisions](../decisions.md)).
