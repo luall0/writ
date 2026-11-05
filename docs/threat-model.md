@@ -21,7 +21,7 @@ guarantee below must be covered by at least one test that tries to break it
 | Asset | Where | Notes |
 |---|---|---|
 | My personal keys | Secretive (Secure Enclave) | **Never touched by Writ** |
-| Agent signing keys | Signer backend | Software (v1), YubiKey / SE / TPM later. Each declared in the signed policy's `keys` with its format (SSH or OpenPGP), algorithm, hash and backend, checked against its backend wherever a policy is read ([M5.5](history/m5.5-signature-formats-and-key-algorithms.md), [M6.2](roadmap.md#m62--managing-the-daemon-from-the-cli)) |
+| Agent signing keys | Signer backend | Software (v1), YubiKey / SE / TPM later. Each declared in the signed policy's `keys` with its format (SSH or OpenPGP), algorithm, hash and backend, checked against its backend wherever a policy is read ([M5.5](history/m5.5-signature-formats-and-key-algorithms.md), [M6.2](history/m6.2-managing-the-daemon-from-the-cli.md)) |
 | OpenPGP certificates | Daemon: made from the key, its creation time and the policy's user ids; beside the key (`signing/<id>.asc`), with each grant | Bind an email to an agent key, which remotes then trust as the account's. A user id only through a signed policy change; the certificate is public |
 | Upstream remote credentials | Daemon: SSH keys behind the signer interface; HTTPS tokens sealed in the keystore (`tokens/<id>.age`), added from the approver's machine (`writ admin token`) | SSH keys on my remote accounts: **account-wide access**, not per repo; tokens as narrow as the remote allows (GitHub: one repository). Agents never see them; a token reaches only the daemon's own git, for one operation |
 | Repo mirrors | Daemon host | Personal projects only for now |

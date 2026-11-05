@@ -461,3 +461,77 @@ fn a_recipient_file_that_isn_t_the_keystore_s_stops_the_unseal() {
     );
     assert!(stderr(&daemon.run(&["ls"], "")).contains("daemon sealed"));
 }
+
+#[test]
+fn the_old_policy_fields_are_refused_everywhere_naming_their_new_place() {
+    // Writ isn't deployed: the shape from before M6.2 is never converted, only refused, at
+    // start, by an admin change, by `writd init` and by `writd recover`, each naming where
+    // the field went.
+    let listing = POLICY.replacen(
+        "  feature:\n    operations:",
+        "  feature:\n    repos: [demo]\n    operations:",
+        1,
+    );
+    let uids = format!("{POLICY}signing_keys:\n  agent-01:\n    uids: [\"Agent <agent@writ>\"]\n");
+    let cases = [
+        (
+            listing,
+            "templates.feature.repos: moved in M6.2: templates no longer list repos; name the \
+             template in each repo's repos.<name>.templates",
+        ),
+        (
+            uids,
+            "signing_keys: moved in M6.2: declare each signing key under keys.<id> (use: \
+             signing, its format and algorithm, and its uids there)",
+        ),
+    ];
+    for (old, expected) in &cases {
+        // At start.
+        let error = Daemon::refused_policy(POLICY, old);
+        assert!(error.contains(expected), "start: {expected}: {error}");
+    }
+    let daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    let unsealed = daemon.unseal();
+    assert!(unsealed.status.success(), "{}", stderr(&unsealed));
+    let in_force = stdout(&daemon.run(&["admin", "show", "policy"], ""));
+    for (i, (old, expected)) in cases.iter().enumerate() {
+        // An admin change: refused, nothing in force changed.
+        let out = apply(&daemon, "policy", old, &[]);
+        assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+        assert!(stderr(&out).contains(expected), "apply: {}", stderr(&out));
+        // writd recover, on the host, with the passphrase.
+        let file = daemon.root().join(format!("old-policy-{i}.yaml"));
+        fs::write(&file, old).unwrap();
+        let out = daemon.writd_with(
+            &["recover", "writd.yaml", "policy", file.to_str().unwrap()],
+            &format!("{PASSPHRASE}\n"),
+        );
+        assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+        assert!(stderr(&out).contains(expected), "recover: {}", stderr(&out));
+        // writd init, a new keystore on this old policy.
+        let config = fs::read_to_string(daemon.root().join("writd.yaml"))
+            .unwrap()
+            .replace("state_dir: s\n", &format!("state_dir: init-{i}\n"))
+            .replace(
+                "policy: policy.yaml",
+                &format!("policy: old-policy-{i}.yaml"),
+            )
+            .replace(
+                "dir: s/keys, boot: s/boot",
+                &format!("dir: init-{i}/keys, boot: init-{i}/boot"),
+            );
+        assert!(config.contains(&format!("init-{i}/keys")), "{config}");
+        fs::write(daemon.root().join(format!("init-{i}.yaml")), config).unwrap();
+        let out = daemon.writd_with(
+            &["init", &format!("init-{i}.yaml")],
+            &format!("{PASSPHRASE}\n"),
+        );
+        assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+        assert!(stderr(&out).contains(expected), "init: {}", stderr(&out));
+        assert!(!daemon.root().join(format!("init-{i}/keys")).exists());
+    }
+    assert_eq!(
+        stdout(&daemon.run(&["admin", "show", "policy"], "")),
+        in_force
+    );
+}

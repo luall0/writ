@@ -221,8 +221,8 @@ what the host offers.
 /v1/repos/<repo>/check`, with a reader key) reaches only a repo the policy in force names,
 with its credential, through the daemon's own git and the mirror's bounds, the mirror held
 throughout: read access (`ls-remote`), the mirror synced (its object format the policy's), and
-write access (`push --dry-run` of the mirror's branches onto upstream's: receive-pack answers,
-nothing is sent). It stops at the first step that fails; what upstream says comes back
+write access (a `push --dry-run` deleting a ref no remote holds: receive-pack answers, nothing
+is sent, an empty repository passing too). It stops at the first step that fails; what upstream says comes back
 cleaned and bounded. A guided `repo add` runs it once Enter says the new credential is
 registered on the remote; without a terminal it says the command to run.
 

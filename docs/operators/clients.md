@@ -12,7 +12,7 @@ lists them.
 | Flag | Variable | Default | What it is |
 |---|---|---|---|
 | `--home` | `WRIT_HOME` | `~/.writ` | Writ's directory on this host: sessions, pins, the reader key |
-| `--known-hosts` | `WRIT_KNOWN_HOSTS` | `<home>/known_hosts` | The daemon's pinned SSH host key ([setup, step 7](setup.md#steps)) |
+| `--known-hosts` | `WRIT_KNOWN_HOSTS` | `<home>/known_hosts` | The daemon's pinned SSH host key ([setup, step 7](setup.md#on-the-daemon-host)) |
 | `--tls-pins` | `WRIT_TLS_PINS` | `<home>/tls_pins` | The daemon's pinned TLS certificate, for an `https://` approval URL |
 | `--reader` | `WRIT_READER` | `<home>/reader` | Your reader key. `writ reader <name>` creates it and prints the line for the daemon's `readers` |
 | `--url` | `WRIT_URL` | none | The agents' listener, `ssh://host:port`. Used by `request`, `wait`, `close`, `policy`, `init` |

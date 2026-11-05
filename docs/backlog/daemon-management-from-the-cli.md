@@ -1,6 +1,6 @@
 # Managing the daemon from the CLI
 
-**Status:** specified; picked as [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli).
+**Status:** done in [M6.2](../history/m6.2-managing-the-daemon-from-the-cli.md).
 **Area:** Administration, Signers, Upstream, Clients. **Kind:** improvement. **Size:** L.
 
 ## Problem
@@ -294,7 +294,7 @@ None is open; new ones go here.
 
 ## Acceptance
 
-[M6.2's checklist](../roadmap.md#m62--managing-the-daemon-from-the-cli).
+[M6.2's checklist](../history/m6.2-managing-the-daemon-from-the-cli.md#acceptance).
 
 ## Plan
 

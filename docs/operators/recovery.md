@@ -68,7 +68,7 @@ Without the passphrase, the keystore is lost:
 
 1. Run `writd init` in empty directories, with a new `state_dir`.
 2. Register the new keys on the remotes: `writd upstream-keys`, `writd signing-keys`.
-3. Pin the daemon's new identity on every client ([setup, step 7](setup.md#steps)).
+3. Pin the daemon's new identity on every client ([setup, step 7](setup.md#on-the-daemon-host)).
 
 The leases are gone. From M7.6, an offline recovery identity will open the keystore instead.
 

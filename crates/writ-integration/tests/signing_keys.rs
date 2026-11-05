@@ -116,6 +116,34 @@ fn each_refused_key_declaration_stops_the_start_with_its_reason() {
             POLICY.replace("    kind: ssh\n    algorithm: ed25519\n", "    kind: ssh\n"),
             "keys.upstream-01.algorithm: required for an ssh credential",
         ),
+        // A key used against its use: an upstream key signing, a signing key upstream.
+        (
+            POLICY.replace("signing_key: agent-01", "signing_key: upstream-01"),
+            "templates.feature.signing_key: keys.upstream-01 is an upstream credential (use: \
+             upstream), not a signing key",
+        ),
+        (
+            POLICY.replace(
+                "upstream_credential: upstream-01",
+                "upstream_credential: agent-01",
+            ),
+            "repos.demo.upstream_credential: keys.agent-01 is a signing key (use: signing), not \
+             an upstream credential",
+        ),
+        // A token for another host than its upstream's.
+        (
+            POLICY
+                .replace(
+                    "ssh://git@remote.invalid/demo.git",
+                    "https://other.invalid/demo.git",
+                )
+                .replace(
+                    "    kind: ssh\n    algorithm: ed25519\n",
+                    "    kind: token\n    host: remote.invalid\n",
+                ),
+            "repos.demo.upstream_credential: keys.upstream-01 is a token for remote.invalid, not \
+             for this upstream's host other.invalid",
+        ),
     ] {
         let error = Daemon::refused_policy(POLICY, &policy);
         assert!(

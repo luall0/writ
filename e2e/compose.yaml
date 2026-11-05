@@ -11,11 +11,12 @@ services:
       FORGEJO__server__SSH_DOMAIN: forgejo
       FORGEJO__server__ROOT_URL: http://forgejo:3000/
       FORGEJO__service__DISABLE_REGISTRATION: "true"
-    # Two more names for the same Forgejo, pinned by no one at the start: the host key scan
-    # (`writ admin host add`) and a guided `repo add` on a host with no pin (scenario 23).
+    # More names for the same Forgejo, pinned by no one at the start: the repo the setup adds
+    # from the approver's machine, the host key scan and a guided `repo add` on a host with no
+    # pin (scenario 23).
     networks:
       default:
-        aliases: [forgejo-scan, forgejo-new]
+        aliases: [forgejo-scan, forgejo-new, forgejo-added]
   # Forgejo over HTTPS, for the daemon's HTTPS upstream (the `https` repo).
   forgejo-https:
     build: { context: .., dockerfile: e2e/Dockerfile, target: tls-front }

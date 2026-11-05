@@ -5,8 +5,10 @@
 //! front's certificate trusted), Forgejo's host key pinned and checked against the one it
 //! publishes, the signing keys listed, the daemon's host key and TLS fingerprint pinned on the
 //! clients, `writd run writd.yaml` started from the daemon's directory on a relative path,
-//! `writ unseal` from the approver's machine, and the HTTPS repo's token added from there with
-//! `writ admin token`.
+//! `writ unseal` from the approver's machine; then from there, with `writ admin` only, a repo
+//! on a new host (Forgejo under another name, scanned by the daemon on a terminal), with a new
+//! template and a new upstream key (registered on Forgejo as the change printed it), checked
+//! once registered; and the HTTPS repo's token added with `writ admin token`.
 //!
 //! Every command the guide shows runs through [`doc_step`], with its text exactly as the
 //! guide writes it (placeholders such as `<host>` filled in): `tool/check-e2e.py` checks that
@@ -80,7 +82,18 @@ pub struct Report {
     /// The `https` repo's Forgejo token, as the approver pasted it into `writ admin token`
     /// (the scenarios check it is in clear nowhere on the daemon's host).
     pub https_token: String,
+    /// What `writ admin host add` showed for the new host (the daemon's scan), and what
+    /// `writ admin repo check` said of the repo added on it.
+    pub added_host: String,
+    pub added_check: String,
 }
+
+/// The repo the setup adds from the approver's machine, on Forgejo under another name, with
+/// its own template and upstream key.
+pub const ADDED_REPO: &str = "added";
+pub const ADDED_HOST: &str = "forgejo-added";
+pub const ADDED_TEMPLATE: &str = "added";
+pub const ADDED_CREDENTIAL: &str = "upstream-added";
 
 /// Runs a command the operator guide shows, exactly as written there (`command` is checked
 /// against the guide by `tool/check-e2e.py`), with its placeholders filled in. It must exit
@@ -118,6 +131,25 @@ pub fn doc_step_fails(
         stderr(&out)
     );
     out
+}
+
+/// The same, on a terminal (`script`), `answers` typed one per line: what it showed (the
+/// streams merged, rows ending in `\r\n`). It must exit 0.
+pub fn doc_step_on_terminal(
+    host: &Host,
+    command: &'static str,
+    fill: &[(&str, &str)],
+    answers: &[&str],
+) -> String {
+    let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
+    let filled = filled(command, fill);
+    assert!(!filled.contains('\''), "{filled}");
+    let out = host.run_with(
+        &format!("script -qec '{filled}' /dev/null"),
+        typed.as_bytes(),
+    );
+    assert_eq!(out.status.code(), Some(0), "{command}: {}", stdout(&out));
+    stdout(&out)
 }
 
 /// The same, started in the background (the daemon), its stderr appended to `log`.
@@ -338,7 +370,73 @@ pub fn run() -> Stack {
     // 9. Unsealed from the approver's machine.
     unseal(&approver);
 
-    // 10. The HTTPS upstream's token, added from the approver's machine (pasted, then the
+    // 10. A new host, scanned by the daemon on the approver's signature, its key compared with
+    // the one Forgejo publishes, then pinned (the second signature).
+    let added_host = doc_step_on_terminal(
+        &approver,
+        "writ admin host add <host>",
+        &[("<host>", ADDED_HOST)],
+        &["y", "y"],
+    );
+    assert!(
+        added_host.contains(&format!(
+            "  ssh-ed25519 {}\r\n",
+            upstream_fingerprint.split(' ').nth(1).unwrap_or_default()
+        )),
+        "{added_host}"
+    );
+    // 11. Its template, each field asked (fetch only: the fields of signing and pushing not
+    // asked).
+    let said = doc_step_on_terminal(
+        &approver,
+        "writ admin template add <template>",
+        &[("<template>", ADDED_TEMPLATE)],
+        &["fetch", "1h", "0", "0", "10", "0", "", "y"],
+    );
+    assert!(said.contains("Applied: policy is version "), "{said}");
+    // 12. Its upstream key, made by the change that declares it, registered on Forgejo as a
+    // deploy key with write access from the public half it printed.
+    let said = doc_step_with(
+        &approver,
+        "writ admin key add <id> use=upstream kind=ssh algorithm=ed25519",
+        &[("<id>", ADDED_CREDENTIAL)],
+        b"y\n",
+    );
+    let public = said
+        .lines()
+        .find_map(|l| {
+            l.split_once("(register it on the remote): ")
+                .map(|(_, key)| key)
+        })
+        .unwrap_or_else(|| panic!("no public half printed: {said}"));
+    let public: Vec<&str> = public.split(' ').take(2).collect();
+    forgejo.create_repo(ADDED_REPO);
+    forgejo.add_deploy_key(ADDED_REPO, &public.join(" "));
+    // 13. The repo, every field given.
+    let said = doc_step_with(
+        &approver,
+        "writ admin repo add <repo> upstream=ssh://git@<host>/<path>.git upstream_credential=<id> templates=<template>",
+        &[
+            ("<repo>", ADDED_REPO),
+            ("<host>", ADDED_HOST),
+            ("<path>", &format!("writ/{ADDED_REPO}")),
+            ("<id>", ADDED_CREDENTIAL),
+            ("<template>", ADDED_TEMPLATE),
+        ],
+        b"y\n",
+    );
+    assert!(
+        said.contains(&format!("with repo {ADDED_REPO} added")),
+        "{said}"
+    );
+    // 14. Checked: read, synced, written with nothing pushed.
+    let added_check = doc_step(
+        &approver,
+        "writ admin repo check <repo>",
+        &[("<repo>", ADDED_REPO)],
+    );
+
+    // 15. The HTTPS upstream's token, added from the approver's machine (pasted, then the
     // change signed): encrypted there, sealed on the daemon's host.
     let said = doc_step_with(
         &approver,
@@ -379,6 +477,8 @@ pub fn run() -> Stack {
             upstream_fingerprint,
             reader_line,
             https_token,
+            added_host,
+            added_check,
         },
     }
 }

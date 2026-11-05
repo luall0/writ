@@ -629,6 +629,34 @@ fn writ_policy_and_a_dry_run_tell_the_agent_what_fits_before_it_asks() {
     assert_eq!(audit_events(&daemon.audit(), "policy", "allowed").len(), 1);
     assert_eq!(audit_events(&daemon.audit(), "policy", "denied").len(), 1);
     assert!(audit_events(&daemon.audit(), "submit", "allowed").is_empty());
+
+    // The repo closed (`templates: []`, by a signed change): writ policy says so, and every
+    // ticket for it is refused with the reason, a dry run and a submission alike.
+    let out = daemon.run(&["admin", "repo", "set", "demo", "templates=", "--yes"], "");
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let out = writ_ok(&daemon, &repo, &["policy"], &[]);
+    assert!(
+        out.contains(
+            "This repo is closed: it allows no template, so every ticket for it is refused \
+             (ask the operator)."
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("Template feature:"), "{out}");
+    let closed = "repos.demo: repo demo is closed: it allows no template (repos.demo.templates \
+                  is empty)";
+    let out = writ(
+        &daemon,
+        &repo,
+        &["request", "--dry-run", good.to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(stderr(&out).contains(closed), "{}", stderr(&out));
+    let out = writ(&daemon, &repo, &["request", good.to_str().unwrap()], &[]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(stderr(&out).contains(closed), "{}", stderr(&out));
+    assert!(audit_events(&daemon.audit(), "submit", "allowed").is_empty());
 }
 
 #[test]

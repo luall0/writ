@@ -39,7 +39,32 @@ After `writd init`, the daemon keeps its own copy of `policy.yaml`, `approvers` 
 `readers`. **Editing the files on the host does nothing**: at the next start, an edited file
 is moved aside (`<file>.unapplied-<time>`) and the daemon's copy is written back.
 
-To change one, from your machine:
+**The policy, entry by entry**, from your machine. The same verbs for each of its four
+nouns, `repo`, `template`, `key` and `host`:
+
+```sh
+writ admin repo list                       # one line per entry (a reader key is enough)
+writ admin repo show <repo>                # the entry as the policy writes it, and what uses it
+writ admin repo add <repo>                 # each field asked, then one signature
+writ admin repo edit <repo>                # each field asked, Enter keeping it
+writ admin template set <template> max_ttl=2h branches+=fix/*   # only the fields named
+writ admin key remove <id>                 # refused while something uses it
+```
+
+- `set` takes the policy's own field names: `field=value` replaces, `field+=value` and
+  `field-=value` add to or take from a list, `field!` leaves an optional field out, `field=`
+  empties a list.
+- Each change is shown as a diff, then signed once. If the policy changed in between
+  (someone else applied a change), yours is refused: run the command again.
+- `writ admin key rotate <id>`: a new key like the old one, its public half printed; once
+  you registered it, every repo and template switches to it; then the old key can go.
+- `writ admin host add <host>` and `writ admin host rescan <host>`: the daemon scans the
+  host, you compare its keys with the ones the remote publishes, then a second signature
+  pins them.
+- `writ admin repo check <repo>`: the repo's upstream reached with its key, read and write
+  access proven, nothing pushed.
+
+**A whole file**: the approvers, the readers, or the policy in one go:
 
 ```sh
 writ admin show approvers > approvers     # the version in force
@@ -47,16 +72,18 @@ $EDITOR approvers
 writ admin apply approvers approvers      # shows what changes, then one signature
 ```
 
-The change applies at once, and the daemon writes it back to its file on the host. If the file
-changed in between (someone else applied a change), yours is refused: start again from
-`writ admin show`.
+Every change applies at once, and the daemon writes the file back on the host (the policy
+in Writ's own layout, comments dropped, once `writ admin <noun>` changed it).
 
 What a policy change does:
 
-- **A new signing key or `ssh://` credential** named in the policy: the daemon creates it, and
-  `writ` prints its public key to register on the remote.
+- **A key it declares**: the daemon makes it, and `writ` prints its public half to register
+  on the remote (a token: add it with `writ admin token`).
+- **A key it no longer declares**: deleted for good once the change applies (its public half
+  kept in the audit log). `key remove` asks you to type its id first.
 - **A tighter template**: its active leases are denied until amended.
-- **A changed repo**: its mirror is reopened. Other repos keep theirs.
+- **A changed repo**: its mirror is reopened. Other repos keep theirs. `templates: []`
+  closes a repo: every ticket for it is refused.
 
 Lost every approval or reader key? See [recovery](recovery.md).
 

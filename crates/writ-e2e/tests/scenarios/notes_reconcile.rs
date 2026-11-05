@@ -22,21 +22,32 @@ use crate::wired;
 
 const REPO: &str = "backfill";
 /// The registry's line for the repo, as the operator setup wrote it, and with notes.
-const WITHOUT: &str = "upstream_credential: upstream-backfill, templates";
-const WITH: &str = "upstream_credential: upstream-backfill, ticket_link: notes, templates";
-
-/// The policy in force with `from` replaced by `to`, applied by the approver (a signed admin
-/// change, at once), then written back to the daemon's `policy.yaml`.
-fn change_policy(stack: &Stack, from: &str, to: &str) {
-    let approver = &stack.approver;
-    approver.ok("writ admin show policy > notes-policy.yaml");
-    approver.ok(&format!("sed -i 's/{from}/{to}/' notes-policy.yaml"));
+/// The repo's `ticket_link` changed by the approver (`edit`: `ticket_link=notes`, or
+/// `ticket_link!` back to the default; a signed change, at once), then written back to the
+/// daemon's `policy.yaml`.
+fn change_policy(stack: &Stack, edit: &str) {
     expect(
-        &approver.run("writ admin apply policy notes-policy.yaml --yes"),
+        &stack
+            .approver
+            .run(&format!("writ admin repo set {REPO} {edit} --yes")),
         0,
-        "writ admin apply policy",
+        "writ admin repo set",
     );
-    assert!(stack.operator.read("policy.yaml").contains(to));
+    assert_eq!(notes_linked(stack), edit == "ticket_link=notes");
+}
+
+/// Whether the policy in force links the repo's commits by notes, the daemon's `policy.yaml`
+/// written back with it.
+fn notes_linked(stack: &Stack) -> bool {
+    assert_eq!(
+        stack.operator.read("policy.yaml").trim_end(),
+        stack.approver.ok("writ admin show policy").trim_end(),
+        "the daemon's policy.yaml is the policy in force"
+    );
+    stack
+        .approver
+        .ok(&format!("writ admin repo show {REPO}"))
+        .contains("\n  ticket_link: notes\n")
 }
 
 /// Restarts the `writd` container (the `n`th start since the stack came up) and waits for it.
@@ -74,9 +85,8 @@ fn switching_a_repo_to_notes_and_restarting_notes_what_was_pushed_before() {
     assert!(stack.audited(&lease, "notes", "allowed").is_empty());
 
     // The approver asks for notes, and the operator restarts the daemon.
-    let policy = stack.operator.read("policy.yaml");
-    assert!(policy.contains(WITHOUT), "{policy}");
-    change_policy(&stack, WITHOUT, WITH);
+    assert!(!notes_linked(&stack));
+    change_policy(&stack, "ticket_link=notes");
     restart(&stack);
 
     // At start, after the mirror's first sync: the notes of what upstream has.
@@ -123,7 +133,7 @@ fn switching_a_repo_to_notes_and_restarting_notes_what_was_pushed_before() {
     assert!(stack.audited(&lease, "notes", "denied").is_empty());
 
     // As it was: the repo without notes, the daemon restarted.
-    change_policy(&stack, WITH, WITHOUT);
+    change_policy(&stack, "ticket_link!");
     restart(&stack);
-    assert!(stack.operator.read("policy.yaml").contains(WITHOUT));
+    assert!(!notes_linked(&stack));
 }

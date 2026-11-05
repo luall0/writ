@@ -39,7 +39,7 @@ picked.
 | M6 | [Agent skill, amendments, renewals, close](history/m6-agent-skill-amendments-renewals-and-close.md) ✅ | The Writ skill installed by `writ init` for each agent, adaptive timings, amendments, renewals, the estimate, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M6.1 | [Multi-repo workspaces](history/m6.1-multi-repo-workspaces.md) ✅ | One agent at the root of a folder of repositories: `writ init` at the root, the `writ-workspace` skill, `writ git` reading git's global options, `writ exec -C` |
 | M6.1.5 | [Per-repository tickets](history/m6.1.5-per-repository-tickets.md) ✅ | A ticket given repository by repository (the lease's terms, then each repository's block under its own template), one approval, one lease, one signing key, the strictest template's time and rate, counts per repository; `writ sign` narrowing per repository; `writ policy` for several repositories |
-| M6.2 | [Managing the daemon from the CLI](#m62--managing-the-daemon-from-the-cli) | Every key declared in the signed policy, upstream host keys pinned by signed changes, repos naming their templates; `writ admin repo\|template\|key\|host` to read, add step by step and edit one field at a time, with no host access |
+| M6.2 | [Managing the daemon from the CLI](history/m6.2-managing-the-daemon-from-the-cli.md) ✅ | Every key declared in the signed policy, upstream host keys pinned by signed changes, repos naming their templates; `writ admin repo\|template\|key\|host` to read, add step by step and edit one field at a time, with no host access |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
 | M7.1 | [Local mode on Linux](#m71--local-mode-on-linux) | Linux implementations plugged in the same way: `SO_PEERCRED` and `/proc` process chain, pidfd watcher, a systemd service under its own user, the installer's Linux local setup, local mode in `make e2e` |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
@@ -211,63 +211,6 @@ answering, the folder's own repository only when named, the workspace recorded i
 at the folder, `writ git` reading git's global options and letting git resolve the
 repository, `writ exec -C`, timings per set of repositories. `make ci` and `make e2e` passed.
 
-## M6.2 — Managing the daemon from the CLI
-
-[The backlog page](backlog/daemon-management-from-the-cli.md) holds the design and the plan.
-Today keys are declared in two files (signing keys) or not at all (upstream credentials),
-upstream host keys are a host file, templates list their repos, and the public keys come only
-from host commands: setting up a repo means host access, a restart and a new unseal, which in
-local mode (M7) goes through `sudo -u _writd`. After M6.2 the operator does it all from
-`writ`, with one signature per change.
-
-- **Every key declared in the signed policy** (`keys:`, signing keys and upstream credentials
-  with their use, kind, algorithm, hash, backend, and the OpenPGP user ids), made by the
-  change that declares it; `writd.yaml` keeps only the host's settings; `writd keys create`
-  goes.
-- **Upstream host keys in the policy** (`upstream_hosts`), pinned by a signed change after a
-  scan the daemon makes on an approver's signature and the operator compares;
-  `mirrors.known_hosts` goes.
-- **Repos name their templates** (`repos.<name>.templates`, `[]` pauses a repo); templates
-  no longer list repos.
-- **No move from the old shape** (Writ isn't deployed): the old fields refused wherever they
-  appear, each naming its new place; the state version moves to 10.
-- **`writ admin repo|template|key|host`**: `list`, `show` (`key show --public`), `add` and
-  `edit` step by step, `set <name> <field>=<value>…` for one field at a time (`+=`, `-=`, `!`),
-  `remove` (`--yes` without a terminal; a removed key deleted after its id is typed again),
-  `key rotate`, `host rescan` (a pinned host scanned again when its keys changed), `repo check`
-  (read and write access proven with nothing pushed). Each
-  command one signed change, shown as a diff.
-
-Acceptance:
-- [ ] A repo on a new host, with a new upstream key and a new template, set up from the
-      approver's machine with `writ admin` only (no host file, no restart, no unseal): one
-      signature per change, the key's public half printed, `repo check` passing once it is
-      registered.
-- [ ] Every refusal of the new shape (an undeclared or wrongly used key, a kind that doesn't
-      match the URL, a token for another host, a host with no pin, a backend the daemon
-      lacks) stops the change, or the start, with its field named; none is adjusted.
-- [ ] Every old field (`templates.<name>.repos`, the policy's `signing_keys`, `writd.yaml`'s
-      `signing_keys` and `mirrors.known_hosts`) is refused, in `writd init`, `writd recover`,
-      an admin change and at start, naming its new place.
-- [ ] `set` changes exactly the fields named (each syntax tested, a field that can't change
-      refused with its reason); a change made in between makes it refused; `add` with no
-      terminal refuses naming each missing field.
-- [ ] A host key scan runs only on an approver's `writ-scan/1` signature: a reader key
-      alone, a replayed nonce or a document naming another daemon is refused with its code.
-      A host key is never pinned by a scan alone; a scan and a check bounded in time and
-      size, logged, and their answers escaped (hostile host keys and upstream messages
-      tested).
-- [ ] `key remove` deletes the key's sealed file once the change applies, only after its id
-      is typed again (a mistyped id sends nothing) or `--yes`; a key still in use is refused,
-      naming its users; the audit line keeps its public half.
-- [ ] `repos.<name>.templates: []` refuses every ticket for the repo with its reason, and
-      `writ policy` says the repo is closed.
-- [ ] Every new command and syntax used for real by an end-to-end scenario, with its rows in
-      the registries (rules 18 and 19); the threat model and the security inventory updated.
-- [ ] The operator pages and guides rewritten for the new commands and the new configuration
-      layout: `writd.yaml` the host's settings only, the policy everything else, `writ admin`
-      the way to change it, every command they show the one the pipeline runs.
-
 ## M7 — Local mode on the Mac
 
 [Deployment modes](architecture/overview.md#deployment-modes),
@@ -297,7 +240,7 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
   spike's `plan-b/` install script: the `_writd` role user; `writd`, `writ` and `writ-sign`
   root-owned in one prefix on my `PATH`; the daemon's `0700` directory with a `writd.yaml`
   from the local preset and a starting policy with no repo (repos, keys and templates are then
-  added with [`writ admin`](#m62--managing-the-daemon-from-the-cli)); the agents' socket directory; the LaunchDaemon's plist, root-owned,
+  added with [`writ admin`](history/m6.2-managing-the-daemon-from-the-cli.md)); the agents' socket directory; the LaunchDaemon's plist, root-owned,
   loaded; `writd init` run as `_writd` (the keystore's passphrase asked on the terminal, never
   stored or passed as an argument); my approval public key (`APPROVER=<.pub>`) in
   `approvers`; for my user, `~/.writ/` with the daemon's host key pinned and the endpoints

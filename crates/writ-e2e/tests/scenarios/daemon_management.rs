@@ -195,7 +195,9 @@ fn the_policy_is_changed_field_by_field_and_entries_removed_from_the_approver_s_
     let said = approver.ok(&format!(
         "writ admin template set managed max_ttl=2h max_renewals=2 {FLAGS}"
     ));
-    assert!(said.contains("isn't in Writ's layout"), "{said}");
+    // The setup's own `writ admin` changes wrote the policy in Writ's layout already (the
+    // first change's note is field_edits' integration test).
+    assert!(!said.contains("isn't in Writ's layout"), "{said}");
     assert!(said.contains("\n+     max_ttl: 2h\n"), "{said}");
     let shown = approver.ok("writ admin template show managed");
     assert!(
@@ -639,7 +641,13 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
     let scans: Vec<_> = stack
         .audit()
         .into_iter()
-        .filter(|e| e["event"] == "scan" && e["result"] == "allowed")
+        .filter(|e| {
+            e["event"] == "scan"
+                && e["result"] == "allowed"
+                && e["reason"]
+                    .as_str()
+                    .is_some_and(|r| r.starts_with("forgejo-scan:22: "))
+        })
         .collect();
     assert_eq!(scans.len(), 3, "{scans:?}");
     assert!(

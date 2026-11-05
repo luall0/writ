@@ -1355,3 +1355,19 @@ fn add_makes_an_entry_from_its_fields_and_says_which_required_ones_are_missing()
 fn repo_name(name: &str) -> writ_core::names::RepoName {
     name.parse().unwrap()
 }
+
+#[test]
+fn a_policy_with_no_entry_is_one_to_start_from() {
+    // What the setup guide starts from: entries added later by signed changes.
+    let empty = "keys: {}\nrepos: {}\ntemplates: {}\n";
+    let config = PolicyConfig::from_yaml(empty).unwrap();
+    assert!(config.keys().is_empty());
+    assert!(config.upstream_hosts().is_empty());
+    // Written back in Writ's layout, it reads the same.
+    let written = config.to_yaml();
+    assert_eq!(
+        PolicyConfig::from_yaml(&written).unwrap().to_yaml(),
+        written,
+        "{written}"
+    );
+}

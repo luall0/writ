@@ -292,11 +292,11 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
     let printed = stdout(&out);
     assert!(
-        printed.contains("  read: ok: upstream answers with its credential, 1 refs\n"),
+        printed.contains("  read: ok: upstream answers with its credential, 1 ref\n"),
         "{printed}"
     );
     assert!(
-        printed.contains("  sync: ok: the mirror synced, 1 refs moved"),
+        printed.contains("  sync: ok: the mirror synced, 1 ref moved"),
         "{printed}"
     );
     assert!(

@@ -13,9 +13,11 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
 [template](templates/policy.yaml). Examples: the [development policy](../../dev/policy.yaml)
 (`make run`) and the [end-to-end one](../../e2e/config/policy.yaml).
 
-- **Changing it:** after `writd init`, only through
-  [`writ admin apply policy`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
-  (or [`writd recover`](recovery.md) on the host). Editing the file on the host does nothing.
+- **Changing it:** after `writd init`, only by a signed change from your machine:
+  [`writ admin repo|template|key|host`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
+  entry by entry (`add`, `edit`, `set <name> <field>=<value>`, `remove`), or `writ admin
+  apply policy` for the whole file ([`writd recover`](recovery.md) on the host, as a last
+  resort). Editing the file on the host does nothing.
 - **Effect of a change:** immediate. A lease is used only while it still fits its templates:
   tighten a template, or take it off a repo, and its active leases are denied (`config`)
   until amended. A repo whose entry changes gets its mirror reopened. A key the change

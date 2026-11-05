@@ -181,4 +181,47 @@ fn the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says() {
         Some(commit.as_str())
     );
     assert_eq!(stack.audited(&lease, "push", "allowed").len(), 1);
+
+    // The repo the setup added from the approver's machine with `writ admin` only (no host
+    // file, no restart, no unseal): its host scanned by the daemon (the key Forgejo
+    // publishes), its own template and upstream key, its check passing once the key was
+    // registered on Forgejo.
+    let compared = report.upstream_fingerprint.split(' ').nth(1).unwrap();
+    assert!(
+        report
+            .added_host
+            .contains(&format!("  ssh-ed25519 {compared}\r\n")),
+        "{}",
+        report.added_host
+    );
+    for step in [
+        "  read: ok: upstream answers with its credential, 1 ref\n",
+        "  sync: ok: the mirror synced, 1 ref moved, in its object format (sha1)\n",
+        "  write: ok: upstream takes pushes with its credential (nothing pushed)\n",
+        "added is ready: read and write access proven, its mirror synced.\n",
+    ] {
+        assert!(
+            report.added_check.contains(step),
+            "{step:?}: {}",
+            report.added_check
+        );
+    }
+    stack.operator.ok("test -d data/repos/added.git");
+    // Its template, key and host are what the changes said, and nothing else names them.
+    let shown = stack.approver.ok("writ admin repo show added");
+    assert!(
+        shown.starts_with(
+            "added:\n  upstream: \"ssh://git@forgejo-added/writ/added.git\"\n  \
+             upstream_credential: upstream-added\n  templates: [added]\n"
+        ),
+        "{shown}"
+    );
+    assert!(shown.contains("\nhost pin: forgejo-added\n"), "{shown}");
+    let audit = stack.audit();
+    assert!(
+        audit
+            .iter()
+            .any(|e| e["event"] == "check" && e["result"] == "allowed" && e["repo"] == "added"),
+        "no allowed check of added"
+    );
 }
