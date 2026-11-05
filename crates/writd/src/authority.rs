@@ -40,9 +40,13 @@ pub fn path(config: &Config, target: AdminTarget) -> &Path {
 }
 
 /// The policy's text, read as the daemon reads it: every template's `max_ttl` at least the
-/// daemon's `min_ttl`.
+/// daemon's `min_ttl`, and every key it declares one its backend takes (so no path records a
+/// policy the daemon would then refuse to start with).
 pub fn parse_policy(text: &str, min_ttl: Duration) -> anyhow::Result<PolicyConfig> {
-    PolicyConfig::from_yaml_with_min_ttl(text, min_ttl).map_err(|e| anyhow::anyhow!("{e}"))
+    let policy =
+        PolicyConfig::from_yaml_with_min_ttl(text, min_ttl).map_err(|e| anyhow::anyhow!("{e}"))?;
+    crate::declared::declarations(&policy)?;
+    Ok(policy)
 }
 
 /// The approvers: none at all is refused (nothing could ever be signed).

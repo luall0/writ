@@ -20,7 +20,7 @@ use writ_crypto::authority::HeadEntry;
 use writ_proto::{AdminApplied, AdminRequest, AdminShown, CreatedKey};
 use writ_store::{AuditEvent, AuthorityHead, AuthorityHow, AuthorityVersion, EventKind, Outcome};
 
-use super::{Service, internal, signing_keys_exist};
+use super::{KeyUses, Service, internal, signing_keys_exist};
 use crate::{RefusalCode, ServiceError};
 
 /// The version of each authority file the daemon runs with, and the head's MAC as the store
@@ -70,9 +70,9 @@ impl CheckedAdmin {
 }
 
 /// The new text, as the daemon parsed and checked it: what the service puts in force itself
-/// (the policy, the approvers); the readers are the gateway's.
+/// (the policy with how its signing keys sign, the approvers); the readers are the gateway's.
 pub enum AdminParsed {
-    Policy(PolicyConfig),
+    Policy(PolicyConfig, KeyUses),
     Approvers(Vec<AllowedSigner>),
     Readers,
 }
@@ -80,7 +80,7 @@ pub enum AdminParsed {
 impl AdminParsed {
     fn target(&self) -> AdminTarget {
         match self {
-            Self::Policy(_) => AdminTarget::Policy,
+            Self::Policy(..) => AdminTarget::Policy,
             Self::Approvers(_) => AdminTarget::Approvers,
             Self::Readers => AdminTarget::Readers,
         }
@@ -217,9 +217,9 @@ impl Service {
                     .map(|a| super::fingerprint(&a.key))
                     .collect::<Result<BTreeSet<_>, _>>()?,
             ),
-            AdminParsed::Policy(_) | AdminParsed::Readers => None,
+            AdminParsed::Policy(..) | AdminParsed::Readers => None,
         };
-        if let AdminParsed::Policy(policy) = &parsed
+        if let AdminParsed::Policy(policy, _) = &parsed
             && let Err(e) = signing_keys_exist(policy, &*opened.signer)
         {
             let error = refused(e.to_string());
@@ -234,15 +234,10 @@ impl Service {
         // A new policy's OpenPGP certificates, its user ids certified (refused if they can't
         // be): the keys the signer held, and those this change added.
         let openpgp = match &parsed {
-            AdminParsed::Policy(policy) => {
+            AdminParsed::Policy(policy, key_uses) => {
                 let mut created = self.openpgp().created.clone();
                 created.extend(openpgp_created);
-                match super::openpgp::certify(
-                    policy,
-                    &self.config.signing_keys,
-                    &*opened.signer,
-                    &created,
-                ) {
+                match super::openpgp::certify(policy, key_uses, &*opened.signer, &created) {
                     Ok(certified) => Some(super::openpgp::OpenpgpKeys { created, certified }),
                     Err(e) => {
                         let error = refused(e.to_string());
@@ -373,11 +368,15 @@ impl Service {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = in_force;
         match parsed {
-            AdminParsed::Policy(policy) => {
+            AdminParsed::Policy(policy, key_uses) => {
                 *self
                     .policy
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(policy);
+                *self
+                    .key_uses
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(key_uses);
                 if let Some(keys) = openpgp {
                     self.set_openpgp(keys);
                 }

@@ -147,12 +147,13 @@ README, so it has a `main`.
 
 ```sh
 sed -i '' 's|ssh://git@remote.invalid/demo.git|ssh://git@github.com/<you>/writ-throwaway.git|' dev/policy.yaml
-echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> dev/upstream_known_hosts
+sed -i '' 's|  remote.invalid: \[.*\]|  github.com: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]|' dev/policy.yaml
 ```
 
-Check that key against GitHub's published fingerprints (Settings docs, "GitHub's SSH key
-fingerprints": `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` for Ed25519) with
-`ssh-keygen -lf dev/upstream_known_hosts`.
+It pins GitHub's host key in the policy's `upstream_hosts`. Check that key against GitHub's
+published fingerprints (Settings docs, "GitHub's SSH key fingerprints":
+`SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` for Ed25519) with
+`echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' | ssh-keygen -lf -`.
 
 **3. The daemon's credential, as a deploy key.**
 
@@ -231,7 +232,7 @@ writ git push origin HEAD:refs/heads/agent/manual-check    # refused: not signed
 **9. Clean up.** Stop `make run`, delete the deploy key and the repository on GitHub, then:
 
 ```sh
-git checkout dev/policy.yaml dev/upstream_known_hosts
+git checkout dev/policy.yaml
 rm -rf dev/data dev/approvers
 ```
 

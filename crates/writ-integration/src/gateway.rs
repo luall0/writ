@@ -34,21 +34,33 @@ use writ_signer::testing::{FailingSigner, GatedSigner};
 
 use crate::binaries::bin;
 use crate::https_remote::HttpsRemote;
-use crate::remote::{PLACEHOLDER_UPSTREAM, TestRemote};
+use crate::remote::{SSH_CREDENTIAL, TestRemote};
 
 /// The token of the HTTPS upstream ([`GitGateway::start_https`]).
 pub const HTTPS_TOKEN: &str = "writ-test-gateway-https-token-0123456789";
 
 /// The policy: one repo, `main` and tags protected, one wide template.
 pub const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [spike]
     protected_refs: ["refs/heads/main", "refs/tags/*"]
 templates:
   spike:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["*"]
     committer_emails: ["agent@writ"]
@@ -196,8 +208,12 @@ impl GitGateway {
             Some(https) => https.url("demo"),
             None => remote.url("demo"),
         };
-        let pinned = format!("{}\n", remote.known_hosts_line());
-        let policy = policy.replace(PLACEHOLDER_UPSTREAM, &upstream_url);
+        let policy = remote.placed(policy, &upstream_url);
+        // Behind HTTPS, the credential is a token for the test remote's host.
+        let policy = match &https {
+            Some(_) => policy.replace(SSH_CREDENTIAL, "    kind: token\n    host: 127.0.0.1"),
+            None => policy,
+        };
         let policy = policy.as_str();
         let credentials: std::collections::BTreeSet<_> =
             writ_core::config::PolicyConfig::from_yaml(policy)
@@ -231,7 +247,10 @@ impl GitGateway {
                     relay: bin("writd"),
                     git: writ_mirror::testing::git(),
                     ssh: PathBuf::from("/usr/bin/ssh"),
-                    pinned: writ_mirror::known_hosts::PinnedHosts::parse(&pinned).unwrap(),
+                    pinned: writ_mirror::known_hosts::PinnedHosts::from_policy(
+                        registry.upstream_hosts(),
+                    )
+                    .unwrap(),
                     ca_certs: https.as_ref().map(|h| h.ca_pem.clone()),
                     // Every fetch and push syncs first: what upstream has, always.
                     fresh_for: std::time::Duration::ZERO,

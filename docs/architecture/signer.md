@@ -126,16 +126,19 @@ backend held stuck (by `testing::GatedSigner`, released on a signal) answers `Ti
 are still listed, and an abandoned job is never signed. Every backend runs it.
 
 The daemon signs commits with `sshsig`, in git's namespace `git`, with the key the lease's
-template names (`signing_key`) and the hash its declaration gives. Each agent signing key is
-**declared** in `writd.yaml`'s `signing_keys` (format, algorithm, optional hash, backend;
-[operator reference](../operators/writd-yaml.md#signing-keys-signing_keysid)), and the
-daemon refuses to start, naming the key and the reason, on a combination its backend can't
-sign (`writ_crypto::algorithm::check` against the backend's `pairs`), a template naming an
-undeclared key, a key a template uses that the keystore lacks, or one it holds with another
-algorithm or format (`writd`'s `signing` module). A declared key nobody uses yet may be
-missing: `writd keys create <writd.yaml> <id>` makes it (sealed to the keystore's recipient,
-so with no unseal; logged as a `key` line; refused when the keystore holds it already), or
-the signed policy change that first names it does.
+template names (`signing_key`) and the hash its declaration gives. Every key is
+**declared** in the signed policy's `keys` (M6.2): a signing key with its format, algorithm,
+optional hash and backend, an `ssh` upstream credential with its algorithm and backend
+([operator reference](../operators/policy-yaml.md#keys-keysid)). A policy is refused, naming
+the key and the reason, wherever the daemon reads one (at start, `writd init`, `writd
+recover`, an admin change), on a combination its backend can't sign
+(`writ_crypto::algorithm::check` against the backend's `pairs`), a backend the daemon lacks,
+a template naming an undeclared key, or a key the keystore holds with another algorithm or
+format (`writd`'s `declared` module). Every declared key is in the keystore: the change that
+declares it makes it (`writd init` for the first policy, `writd recover`, or a signed admin
+change, sealed to the keystore's recipient; its public half printed, logged), so a key
+missing at start stops it. Upstream credentials are made the same way, of any algorithm (some
+remotes take only RSA keys), and served to ssh by the upstream signer.
 
 **The key file** (`writ_crypto::keyfile`): an SSH key's sealed plaintext is an OpenSSH
 private key (PKCS#8 for RSA), its public half an OpenSSH line, as before M5.5; a key made for
@@ -191,7 +194,7 @@ which they hash to the same digest), and wrapped (`ToSign::packet`: the MPIs, th
 id unhashed); `writ_signer::openpgp_signature` does the three. Armor with its CRC-24.
 
 **The certificate** (`writ_signer::openpgp_certificate`): the public key packet, then each
-user id the policy gives the key (`policy.yaml`'s `signing_keys.<id>.uids`, a signed admin
+user id the policy gives the key (the policy's `keys.<id>.uids`, a signed admin
 change) with its positive self-certification: key flags certify and sign, SHA-512, SHA-384,
 SHA-256 preferred, made **at the key's creation time**. Ed25519, RSA PKCS#1 v1.5 and the
 software backend's ECDSA (RFC 6979) are deterministic, so the same key, time and user ids
@@ -199,8 +202,8 @@ give the same certificate. The service makes the certificates at unseal and on e
 change (`service/openpgp.rs`; the change's `admin` line names each key whose user ids
 changed, `certified OpenPGP key <id> (<fingerprint>): <uids>`), hands a lease its key's
 certificate with the grant, and the daemon writes it beside the key
-(`signing/<id>.asc`) for `writd signing-keys` to print; `writd init` and `writd keys create`
-make it from the key itself.
+(`signing/<id>.asc`) for `writd signing-keys` to print; `writd init` makes it from the key
+itself.
 
 The sign request says the format git asked for (`writ-sign git <repo>` for SSH, `writ-sign
 openpgp <repo>`); one that isn't the lease's key's is denied with `signature_format`

@@ -9,7 +9,6 @@ use std::time::Duration;
 use anyhow::bail;
 use writ_core::names::KeyId;
 use writ_core::net::Sources;
-use writ_crypto::ssh_key::PrivateKey;
 use writ_crypto::tls::TlsIdentity;
 use writ_platform::attest::network::NetworkAttestor;
 use writ_platform::notify::Notifiers;
@@ -54,7 +53,7 @@ const AGENT_KEYS_DEADLINE: Duration = Duration::from_secs(10);
 /// the TLS key and the upstream credential get theirs). This build has the software
 /// backend only, so the configuration doesn't name one yet: the `signer:` key comes with the
 /// sealed keystore (M5), and hardware backends with their milestones (M7.5).
-pub fn signer(keys: Vec<crate::keystore::SigningKey>) -> anyhow::Result<Arc<dyn Signer>> {
+pub fn signer(keys: Vec<crate::keystore::StoredKey>) -> anyhow::Result<Arc<dyn Signer>> {
     let backend = SoftwareSigner::new(keys.into_iter().map(|k| (k.id, k.key)))?;
     let queued = QueuedSigner::new(
         backend,
@@ -75,8 +74,8 @@ const UPSTREAM_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The `Signer` holding the upstream credentials, behind its own queue: a device stuck on
 /// commit signing never holds up a sync or a push, nor the other way round.
-pub fn upstream_signer(keys: Vec<(KeyId, PrivateKey)>) -> anyhow::Result<Arc<dyn Signer>> {
-    let backend = SoftwareSigner::new(keys)?;
+pub fn upstream_signer(keys: Vec<crate::keystore::StoredKey>) -> anyhow::Result<Arc<dyn Signer>> {
+    let backend = SoftwareSigner::new(keys.into_iter().map(|k| (k.id, k.key)))?;
     let queued = QueuedSigner::new(
         backend,
         QueueConfig {

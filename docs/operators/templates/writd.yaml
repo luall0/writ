@@ -4,7 +4,7 @@
 # daemon's user.
 
 state_dir: data                    # leases.db, audit.jsonl, repos/ (the mirrors), run/
-policy: policy.yaml                # the repo registry and the templates
+policy: policy.yaml                # the keys, upstream host keys, repo registry and templates
 approvers: approvers               # `<name> <public key>` per line: who may sign
 readers: readers                   # one line per reader key, as `writ reader <name>` prints it
 keystore:                          # made once by `writd init writd.yaml`
@@ -13,13 +13,6 @@ keystore:                          # made once by `writd init writd.yaml`
     boot: data/boot                # the host and TLS keys, read at a sealed start (0700)
   # Or, for tests and development only, the plain development keystore: `dev: data/keys`
   # (debug builds with the dev-keystore feature; refused by release builds).
-
-signing_keys:                      # every key a template's signing_key names
-  agent-ed25519-01:
-    format: ssh                    # ssh | openpgp (one format per key)
-    algorithm: ed25519             # ed25519 | p256 | p384 | rsa3072 | rsa4096
-    # hash: sha512                 # sha256 | sha384 | sha512 (default: the strongest allowed)
-    # backend: software            # software
 
 # Approvals and tickets
 # decisions: signed                # signed | open: refusals and revocations signed too
@@ -33,8 +26,7 @@ signing_keys:                      # every key a template's signing_key names
 # sign_requests:
 #   per_lease: 4                   # commit sign requests held at once per lease, 1 to 16
 
-mirrors:
-  known_hosts: upstream_known_hosts   # the remotes' SSH host keys, pinned by hand
+# mirrors:                         # the upstream host keys are the policy's upstream_hosts
   # ca_certs: upstream_ca.pem      # https:// upstreams: these CAs only (default: the system's)
   # git: /usr/bin/git              # absolute path; 2.45, or 2.47 for https:// upstreams
   # ssh: /usr/bin/ssh              # absolute path

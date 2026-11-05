@@ -131,10 +131,8 @@ fn a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons() {
     expect(&out, 0, "a new host key for Forgejo");
     stack.forgejo.container.lifecycle("restart");
     wait_forgejo(&stack);
-    assert_ne!(
-        stack.forgejo.published_host_key(),
-        stack.report.published_upstream
-    );
+    let new_key = stack.forgejo.published_host_key();
+    assert_ne!(new_key, stack.report.published_upstream);
     let out = agent.in_dir(&w, "writ git fetch origin");
     expect(&out, 128, "a fetch from a host with another key");
     assert!(
@@ -142,9 +140,10 @@ fn a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons() {
         "{}",
         stderr(&out)
     );
-    assert_eq!(
-        writ_e2e::setup::pinned_line(&stack.operator.read("upstream_known_hosts")),
-        stack.report.pinned_upstream,
+    // The policy in force (written back to the daemon's file) still pins the old key alone.
+    let policy = stack.operator.read("policy.yaml");
+    assert!(
+        policy.contains(&stack.report.published_upstream) && !policy.contains(&new_key),
         "the daemon learned the new key"
     );
     let out = stack.forgejo.container.run_as(

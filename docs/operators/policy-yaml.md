@@ -41,11 +41,22 @@ a new key under another id.
 | `keys.<id>.use` | `signing` or `upstream` | **required** | What the key is for: signing commits under a template, or reaching a repo's upstream |
 | `keys.<id>.kind` | `ssh` or `token` | **required** for `upstream`, refused for `signing` | An upstream credential's kind: an SSH key for `ssh://` upstreams, a token for `https://` ones |
 | `keys.<id>.format` | `ssh` or `openpgp` | **required** for `signing`, refused otherwise | The format a signing key signs commits in (git's `gpg.format`) |
-| `keys.<id>.algorithm` | `ed25519`, `p256`, `p384`, `rsa3072`, `rsa4096` | **required** for a signing key and an `ssh` credential, refused for a token | The key's algorithm. RSA keys are 3072 or 4096 bits (some remotes take only RSA upstream keys). Which combinations a backend signs: [signer](../architecture/signer.md#formats-algorithms-and-hashes) |
+| `keys.<id>.algorithm` | `ed25519`, `p256`, `p384`, `rsa3072`, `rsa4096` | **required** for a signing key and an `ssh` credential, refused for a token | The key's algorithm. RSA keys are 3072 or 4096 bits (some remotes take only RSA upstream keys). Which combinations a backend signs: [hashes](#hashes) |
 | `keys.<id>.hash` | `sha256`, `sha384`, `sha512` | the strongest allowed | A signing key's hash. A combination the format, algorithm and backend don't take is refused, never adjusted. Refused for an upstream credential |
 | `keys.<id>.uids` | 1 to 16 user ids, `Name <local@domain>` or `<local@domain>`, printable ASCII | none | An OpenPGP signing key's identities: its certificate carries them. Each is unique. Every committer email a template signing with the key allows needs one, as `<committer_name> <email>` when the template sets a name. Refused for any other key |
 | `keys.<id>.host` | A host name or address | **required** for a `token`, refused otherwise | The only host the token is sent to: a repo using it must have its `https://` upstream there (compared ignoring case) |
 | `keys.<id>.backend` | A backend name | `software` | Where the key lives: `software` (the daemon's memory, from its sealed keystore) is the only one today. A backend this daemon doesn't have refuses the policy |
+
+The policy, or the start, is refused, naming the key and the reason, when the format,
+algorithm, hash and backend don't go together, or when the keystore holds the key with
+another algorithm or format.
+
+### Hashes
+
+- **`ssh`:** `sha256` or `sha512` for every algorithm (the SSHSIG's hash). An RSA key signs
+  as `rsa-sha2-256` or `rsa-sha2-512` to match.
+- **`openpgp`:** `sha256`, `sha384` or `sha512` for `ed25519` and RSA. `p256` signs with
+  `sha256` only, `p384` with `sha384` only.
 
 ## Upstream host keys: `upstream_hosts.<host>`
 

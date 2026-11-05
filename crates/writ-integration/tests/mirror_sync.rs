@@ -597,18 +597,40 @@ fn an_upstream_the_daemon_cannot_reach_as_configured_is_refused_at_start_and_one
     let http = PolicyConfig::from_yaml(&policy_yaml("http://example.org/demo.git", "u-1", "sha1"));
     assert_eq!(
         http.unwrap_err().to_string(),
-        "repos.demo.upstream: must be an ssh:// or https:// URL"
+        "repos.demo.upstream: http:// would send the token in clear: use https://"
     );
     // As configured: opened.
     assert!(open(&f.remote.url("demo"), "upstream-01").is_ok());
 }
 
-/// A registry with one repo, `demo`, and a template for it.
+/// A registry with one repo, `demo`, and a template for it: its credential declared for its
+/// URL (an SSH key for `ssh://`, a token for `https://`), its host pinned (to a key that
+/// doesn't matter: the mirrors here take their pins from the fixture's configuration).
 fn policy_yaml(upstream: &str, credential: &str, format: &str) -> String {
+    use writ_core::upstream::Upstream;
+    let (declaration, pins) = match Upstream::parse(upstream) {
+        Ok(Upstream::Https(url)) => (
+            format!("{{ use: upstream, kind: token, host: \"{}\" }}", url.host()),
+            String::new(),
+        ),
+        Ok(Upstream::Ssh(url)) => (
+            "{ use: upstream, kind: ssh, algorithm: ed25519 }".to_owned(),
+            format!(
+                "upstream_hosts:\n  \"{}\": [\"ssh-ed25519 \
+                 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\"]\n",
+                url.known_hosts_name()
+            ),
+        ),
+        Err(_) => (
+            "{ use: upstream, kind: ssh, algorithm: ed25519 }".to_owned(),
+            String::new(),
+        ),
+    };
     format!(
-        "repos:\n  demo:\n    upstream: {upstream}\n    upstream_credential: {credential}\n    \
-         object_format: {format}\n\
-         templates:\n  t:\n    repos: [demo]\n    operations: [fetch]\n    branches: [\"*\"]\n    \
+        "keys:\n  {credential}: {declaration}\n{pins}\
+         repos:\n  demo:\n    upstream: {upstream}\n    upstream_credential: {credential}\n    \
+         templates: [t]\n    object_format: {format}\n\
+         templates:\n  t:\n    operations: [fetch]\n    branches: [\"*\"]\n    \
          committer_emails: [\"a@b\"]\n    max_ttl: 1h\n    max_signatures: 1\n    \
          max_pushes: 1\n    max_ops_per_minute: 10\n    max_push_size: 1MB\n"
     )
@@ -1143,7 +1165,12 @@ fn a_registry_change_keeps_one_lock_per_mirror() {
     let held = f.runtime.block_on(mirrors.lock(&demo())).unwrap();
     let after = f
         .runtime
-        .block_on(mirrors.with_registry(changed.repos(), f.signer(), &BTreeMap::new()))
+        .block_on(mirrors.with_registry(
+            changed.repos(),
+            f.config().pinned,
+            f.signer(),
+            &BTreeMap::new(),
+        ))
         .unwrap();
     assert!(mirrors.shares_lock_with(&after, &demo()));
     drop(held);

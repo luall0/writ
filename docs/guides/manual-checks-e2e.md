@@ -42,7 +42,7 @@ yours nor your git's. Every commit the agent signs must carry it.
 ```sh
 sed -i '' 's|ssh://git@remote.invalid/demo.git|ssh://git@github.com/<you>/writ-throwaway.git|' dev/policy.yaml
 grep -A1 committer_emails dev/policy.yaml   # committer_name: "Writ agent 1", right under the email
-echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> dev/upstream_known_hosts
+sed -i '' 's|  remote.invalid: \[.*\]|  github.com: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]|' dev/policy.yaml
 cargo run -q -p writd --features dev-keystore -- upstream-keys dev/writd.yaml
 ```
 
@@ -261,7 +261,7 @@ rm -r .opencode
 Stop `make run`, then delete the branches and the deploy key on GitHub. At this repo's root:
 
 ```sh
-git checkout dev/policy.yaml dev/upstream_known_hosts
+git checkout dev/policy.yaml
 rm -rf dev/data dev/approvers dev/readers
 ```
 

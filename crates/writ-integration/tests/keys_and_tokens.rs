@@ -26,14 +26,26 @@ use writ_integration::telegram::TOKEN as BOT_TOKEN;
 use writ_integration::{audit_events, stderr, stdout};
 
 const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
     protected_refs: ["refs/heads/main"]
 templates:
   feature:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -47,7 +59,6 @@ templates:
 
 /// The template a new policy adds, signing with a key the keystore lacks.
 const OTHER: &str = r#"  other:
-    repos: [demo]
     operations: [fetch, commit_sign]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -121,14 +132,25 @@ fn a_policy_naming_new_keys_creates_them_and_uses_them_at_once() {
         .unwrap()
         .to_owned();
     assert_ne!(demo_url, PLACEHOLDER_UPSTREAM);
-    // A template signing with agent-02, a repo reached with upstream-02: neither exists.
-    let next = before.replace(
-        "templates:\n",
-        &format!(
-            "  second:\n    upstream: {demo_url}\n    upstream_credential: upstream-02\n\
-             templates:\n{OTHER}"
-        ),
-    );
+    // Two keys declared, neither in the keystore: a template signing with agent-02 (demo
+    // allows it), a repo reached with upstream-02.
+    let next = before
+        .replace(
+            "keys:\n",
+            "keys:\n  agent-02:\n    use: signing\n    format: ssh\n    algorithm: ed25519\n  \
+             upstream-02:\n    use: upstream\n    kind: ssh\n    algorithm: ed25519\n",
+        )
+        .replace(
+            "    templates: [feature]\n",
+            "    templates: [feature, other]\n",
+        )
+        .replace(
+            "templates:\n",
+            &format!(
+                "  second:\n    upstream: {demo_url}\n    upstream_credential: upstream-02\n    \
+                 templates: []\ntemplates:\n{OTHER}"
+            ),
+        );
     let out = apply_policy(&daemon, &next);
     assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
     let said = stdout(&out);
@@ -136,7 +158,7 @@ fn a_policy_naming_new_keys_creates_them_and_uses_them_at_once() {
     let upstream = printed_key(&said, "upstream credential", "upstream-02");
     assert!(signing.starts_with("ssh-ed25519 "), "{signing}");
     assert!(
-        !said.contains("agent-01"),
+        !said.contains("New signing key agent-01") && !said.contains("upstream-01 (register"),
         "only the new keys are printed: {said}"
     );
 
@@ -255,23 +277,23 @@ fn a_token_added_from_the_mac_is_used_at_once_and_never_in_clear_on_disk() {
     let (remote, main) = web_remote(&runtime, remote_dir.path());
     let policy = POLICY
         .replace(
-            "templates:\n",
+            "keys:\n",
+            "keys:\n  token-01:\n    use: upstream\n    kind: token\n    host: 127.0.0.1\n",
+        )
+        .replace(
+            "templates:\n  feature:",
             &format!(
-                "  web:\n    upstream: {}\n    upstream_credential: token-01\n\
-                 templates:\n",
+                "  web:\n    upstream: {}\n    upstream_credential: token-01\n    \
+                 templates: [feature]\ntemplates:\n  feature:",
                 remote.url("web")
             ),
-        )
-        .replace("repos: [demo]", "repos: [demo, web]");
+        );
     let ca = remote_dir.path().join("web-ca.pem");
     fs::write(&ca, &remote.ca_pem).unwrap();
     let mut daemon = Daemon::start_sealed_with(&policy, Approvals::Https, |yaml| {
         yaml.replace(
-            "mirrors: { known_hosts: upstream_known_hosts, fresh_for: 0s }",
-            &format!(
-                "mirrors: {{ known_hosts: upstream_known_hosts, fresh_for: 0s, ca_certs: {} }}",
-                ca.display()
-            ),
+            "mirrors: { fresh_for: 0s }",
+            &format!("mirrors: {{ fresh_for: 0s, ca_certs: {} }}", ca.display()),
         )
     });
     // No token yet: the unseal opens the daemon all the same.
@@ -335,13 +357,14 @@ fn a_token_added_from_the_mac_is_used_at_once_and_never_in_clear_on_disk() {
     let out = add_token(&daemon, "token-01", HTTPS_TOKEN);
     assert!(out.status.success(), "{}", stderr(&out));
 
-    // An id no repo or notifier uses: refused, said, nothing written.
+    // An id the policy doesn't declare as a token, nor a notifier uses: refused, said,
+    // nothing written.
     let out = add_token(&daemon, "token-02", HTTPS_TOKEN);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
         stderr(&out).contains(
-            "token token-02: no https:// repo of the policy in force names it as its \
-             upstream_credential, and no notifier keeps it sealed"
+            "token token-02: the policy in force declares no token token-02 (keys.token-02, \
+             kind: token), and no notifier keeps it sealed"
         ),
         "{}",
         stderr(&out)

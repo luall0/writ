@@ -3,44 +3,85 @@
 # only), but `https`, reached with a token. A new scenario adds its repo here, and to the `feature` template. The wrapper-mode
 # scenario's repo is `demo`, like the development policy's, so it runs the manual check's
 # commands as they are written.
+keys:
+  agent-e2e:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  agent-e2e-pgp:
+    use: signing
+    format: openpgp
+    algorithm: ed25519
+    uids: ["Writ agent <agent@writ.invalid>"]
+  agent-e2e-verify:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-setup: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-lifecycle: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-narrowing: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-demo: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-whole: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-denials: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-moved: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-protection: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-verified: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-openpgp: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-protocols: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-inflight: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-restart: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-hostile: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-busy: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-notes: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-backfill: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-sessions: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-ws-api: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-ws-web: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-pr-api: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-pr-web: { use: upstream, kind: ssh, algorithm: ed25519 }
+  token-https: { use: upstream, kind: token, host: forgejo-https }
+  token-https-system: { use: upstream, kind: token, host: forgejo-https-system }
+upstream_hosts:
+  # Forgejo's host key: the setup scans it, compares it with the one Forgejo publishes, and
+  # puts it here before `writd init` (docs/operators/setup.md, step 3).
+  forgejo: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]
 repos:
-  setup:      { upstream: "ssh://git@forgejo/writ/setup.git",      upstream_credential: upstream-setup,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  lifecycle:  { upstream: "ssh://git@forgejo/writ/lifecycle.git",  upstream_credential: upstream-lifecycle,  protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  narrowing:  { upstream: "ssh://git@forgejo/writ/narrowing.git",  upstream_credential: upstream-narrowing,  protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  demo:       { upstream: "ssh://git@forgejo/writ/demo.git",       upstream_credential: upstream-demo,          protected_refs: ["refs/heads/main", "refs/tags/*"], ticket_link: trailer }
-  whole:      { upstream: "ssh://git@forgejo/writ/whole.git",      upstream_credential: upstream-whole,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  denials:    { upstream: "ssh://git@forgejo/writ/denials.git",    upstream_credential: upstream-denials,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  moved:      { upstream: "ssh://git@forgejo/writ/moved.git",      upstream_credential: upstream-moved,      protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  protection: { upstream: "ssh://git@forgejo/writ/protection.git", upstream_credential: upstream-protection, protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  verified:   { upstream: "ssh://git@forgejo/writ/verified.git",   upstream_credential: upstream-verified,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  setup:      { upstream: "ssh://git@forgejo/writ/setup.git",      upstream_credential: upstream-setup, templates: [feature],      protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  lifecycle:  { upstream: "ssh://git@forgejo/writ/lifecycle.git",  upstream_credential: upstream-lifecycle, templates: [feature],  protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  narrowing:  { upstream: "ssh://git@forgejo/writ/narrowing.git",  upstream_credential: upstream-narrowing, templates: [feature],  protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  demo:       { upstream: "ssh://git@forgejo/writ/demo.git",       upstream_credential: upstream-demo, templates: [feature],          protected_refs: ["refs/heads/main", "refs/tags/*"], ticket_link: trailer }
+  whole:      { upstream: "ssh://git@forgejo/writ/whole.git",      upstream_credential: upstream-whole, templates: [feature],      protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  denials:    { upstream: "ssh://git@forgejo/writ/denials.git",    upstream_credential: upstream-denials, templates: [feature],    protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  moved:      { upstream: "ssh://git@forgejo/writ/moved.git",      upstream_credential: upstream-moved, templates: [feature],      protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  protection: { upstream: "ssh://git@forgejo/writ/protection.git", upstream_credential: upstream-protection, templates: [feature], protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  verified:   { upstream: "ssh://git@forgejo/writ/verified.git",   upstream_credential: upstream-verified, templates: [verified],   protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Signed in OpenPGP, the key proven on the account through Forgejo's GPG check (scenario 18).
-  openpgp:    { upstream: "ssh://git@forgejo/writ/openpgp.git",    upstream_credential: upstream-openpgp,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  openpgp:    { upstream: "ssh://git@forgejo/writ/openpgp.git",    upstream_credential: upstream-openpgp, templates: [openpgp],    protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Fetched with every protocol version a client asks for, served in v0 (scenario 19).
-  protocols:  { upstream: "ssh://git@forgejo/writ/protocols.git",  upstream_credential: upstream-protocols,  protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  inflight:   { upstream: "ssh://git@forgejo/writ/inflight.git",   upstream_credential: upstream-inflight,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  restart:    { upstream: "ssh://git@forgejo/writ/restart.git",    upstream_credential: upstream-restart,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  hostile:    { upstream: "ssh://git@forgejo/writ/hostile.git",    upstream_credential: upstream-hostile,    protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  busy:       { upstream: "ssh://git@forgejo/writ/busy.git",       upstream_credential: upstream-busy,       protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  protocols:  { upstream: "ssh://git@forgejo/writ/protocols.git",  upstream_credential: upstream-protocols, templates: [feature],  protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  inflight:   { upstream: "ssh://git@forgejo/writ/inflight.git",   upstream_credential: upstream-inflight, templates: [feature],   protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  restart:    { upstream: "ssh://git@forgejo/writ/restart.git",    upstream_credential: upstream-restart, templates: [feature],    protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  hostile:    { upstream: "ssh://git@forgejo/writ/hostile.git",    upstream_credential: upstream-hostile, templates: [feature],    protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  busy:       { upstream: "ssh://git@forgejo/writ/busy.git",       upstream_credential: upstream-busy, templates: [feature],       protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Notes under git's own ref (`notes_ref` at its default): Forgejo shows them (scenario 14).
-  notes:      { upstream: "ssh://git@forgejo/writ/notes.git",      upstream_credential: upstream-notes,      protected_refs: ["refs/heads/main", "refs/tags/*"], ticket_link: notes }
+  notes:      { upstream: "ssh://git@forgejo/writ/notes.git",      upstream_credential: upstream-notes, templates: [feature],      protected_refs: ["refs/heads/main", "refs/tags/*"], ticket_link: notes }
   # Without notes until scenario 15 switches it (and back).
-  backfill:   { upstream: "ssh://git@forgejo/writ/backfill.git", upstream_credential: upstream-backfill, protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  backfill:   { upstream: "ssh://git@forgejo/writ/backfill.git", upstream_credential: upstream-backfill, templates: [feature], protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Renewed, closed and learned from (scenario 20).
-  sessions:   { upstream: "ssh://git@forgejo/writ/sessions.git",   upstream_credential: upstream-sessions,   protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  sessions:   { upstream: "ssh://git@forgejo/writ/sessions.git",   upstream_credential: upstream-sessions, templates: [feature],   protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Two repositories of one workspace, one agent at their folder (scenario 21).
-  ws-api:     { upstream: "ssh://git@forgejo/writ/ws-api.git",     upstream_credential: upstream-ws-api,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  ws-web:     { upstream: "ssh://git@forgejo/writ/ws-web.git",     upstream_credential: upstream-ws-web,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  ws-api:     { upstream: "ssh://git@forgejo/writ/ws-api.git",     upstream_credential: upstream-ws-api, templates: [feature],     protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  ws-web:     { upstream: "ssh://git@forgejo/writ/ws-web.git",     upstream_credential: upstream-ws-web, templates: [feature],     protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # One ticket across two templates, and one lease per repository (scenario 22).
-  pr-api:     { upstream: "ssh://git@forgejo/writ/pr-api.git",     upstream_credential: upstream-pr-api,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
-  pr-web:     { upstream: "ssh://git@forgejo/writ/pr-web.git",     upstream_credential: upstream-pr-web,     protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  pr-api:     { upstream: "ssh://git@forgejo/writ/pr-api.git",     upstream_credential: upstream-pr-api, templates: [feature, pr-backend],     protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  pr-web:     { upstream: "ssh://git@forgejo/writ/pr-web.git",     upstream_credential: upstream-pr-web, templates: [pr-frontend],     protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Over HTTPS, with a Forgejo token the operator puts in the keystore (no deploy key).
-  https:      { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  https:      { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-https, templates: [feature], protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # The same Forgejo repository behind a front whose certificate only the system trusts, not
   # `mirrors.ca_certs`: every sync refused (scenario 13).
-  https-system: { upstream: "https://forgejo-https-system:3443/writ/https.git", upstream_credential: token-https, protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  https-system: { upstream: "https://forgejo-https-system:3443/writ/https.git", upstream_credential: token-https-system, templates: [feature], protected_refs: ["refs/heads/main", "refs/tags/*"] }
 templates:
   feature:
-    repos: [setup, lifecycle, narrowing, demo, whole, denials, moved, protection, protocols, inflight, restart, hostile, busy, notes, backfill, sessions, ws-api, ws-web, https, https-system, pr-api]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     force_push: true                 # a ticket may ask for it (none does unless it says so)
@@ -55,7 +96,6 @@ templates:
   # Per-repository tickets (scenario 22): pr-api fits `feature` too (a ticket must name
   # one), pr-web only this one's review branches, its paths checked, a shorter lease.
   pr-backend:
-    repos: [pr-api]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ.invalid"]
@@ -66,7 +106,6 @@ templates:
     max_ops_per_minute: 200
     max_push_size: 50MB
   pr-frontend:
-    repos: [pr-web]
     operations: [fetch, commit_sign, push]
     branches: ["review/*"]
     committer_emails: ["agent@writ.invalid"]
@@ -80,7 +119,6 @@ templates:
   # Its own signing key: the one scenario that registers and proves a key on the Forgejo
   # account (verified_commits) leaves every other scenario's commits unverified.
   verified:
-    repos: [verified]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ.invalid"]
@@ -93,7 +131,6 @@ templates:
   # An OpenPGP key (writd.yaml declares it), certified for the account's email below, with
   # the name every commit carries (scenario 18).
   openpgp:
-    repos: [openpgp]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ.invalid"]
@@ -104,6 +141,3 @@ templates:
     max_pushes: 50
     max_ops_per_minute: 200
     max_push_size: 50MB
-signing_keys:
-  agent-e2e-pgp:
-    uids: ["Writ agent <agent@writ.invalid>"]

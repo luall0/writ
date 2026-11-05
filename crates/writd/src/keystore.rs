@@ -20,12 +20,11 @@ use writ_crypto::keyfile::KeyMeta;
 use writ_crypto::keypair::KeyPair;
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
 use writ_mirror::credential::UpstreamToken;
-use writ_mirror::upstream::Upstream;
 use writ_proto::KeyRole;
 use zeroize::Zeroizing;
 
 use crate::config::{Config, KeystoreConfig, SealedConfig};
-use crate::signing::{Declarations, Declared};
+use crate::declared::{Declarations, Declared};
 
 /// Creates a directory (and its parents) only the daemon can enter (0700).
 pub fn private_dir(path: &Path) -> anyhow::Result<()> {
@@ -63,9 +62,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     written
 }
 
-/// An agent signing key, opened: its key and what its file says it is (format, creation
-/// time), checked against its declaration.
-pub struct SigningKey {
+/// A key the policy declares (a signing key or an `ssh` upstream credential), opened: its key
+/// and what its file says it is (format, creation time), checked against its declaration.
+pub struct StoredKey {
     pub id: KeyId,
     pub key: KeyPair,
     pub meta: KeyMeta,
@@ -74,11 +73,12 @@ pub struct SigningKey {
 /// The daemon's keys an unseal opens (private halves).
 pub struct Keys {
     pub ca: PrivateKey,
-    /// The keys commits are signed with: every key `writd.yaml` declares, for the `Signer`.
-    pub signing: Vec<SigningKey>,
-    /// The keys the daemon reaches `ssh://` upstreams with, by id (their repos'
-    /// `upstream_credential`), for the upstream `Signer`.
-    pub upstream: Vec<(KeyId, PrivateKey)>,
+    /// The keys commits are signed with: every signing key the policy declares, for the
+    /// `Signer`.
+    pub signing: Vec<StoredKey>,
+    /// The keys the daemon reaches `ssh://` upstreams with: every `ssh` upstream credential
+    /// the policy declares, for the upstream `Signer`.
+    pub upstream: Vec<StoredKey>,
 }
 
 /// The HTTPS approval API's key id in its `Signer`.
@@ -139,70 +139,36 @@ impl PublicKeys {
             upstream: keys
                 .upstream
                 .iter()
-                .map(|(id, key)| (id.clone(), key.public_key().clone()))
+                .map(|k| (k.id.clone(), k.key.public_key()))
                 .collect(),
         })
     }
 }
 
-/// The signing keys the policy's templates use, each once, with its declaration: the keys the
-/// keystore must hold. A declared key no template uses yet may be missing (`writd keys
-/// create`, or the signed policy change that names it, makes it). An undeclared one is
-/// refused (the policy's cross-check says so first).
-pub fn used<'a>(
-    declared: &'a Declarations,
-    policy: &PolicyConfig,
-) -> anyhow::Result<Vec<(&'a KeyId, &'a Declared)>> {
-    let ids: BTreeSet<&KeyId> = policy
-        .templates()
-        .values()
-        .filter_map(|t| t.signing_key.as_ref())
-        .collect();
-    ids.into_iter()
-        .map(|id| {
-            declared.get_key_value(id).ok_or_else(|| {
-                anyhow::anyhow!("signing key {id} is not declared in writd.yaml's signing_keys")
-            })
-        })
+/// The upstream tokens the policy declares (`kind: token`): added with `writ admin token`,
+/// never made.
+pub fn tokens_declared(policy: &PolicyConfig) -> BTreeSet<&KeyId> {
+    policy
+        .upstream_keys()
+        .filter(|(_, key)| matches!(key, writ_core::config::UpstreamKey::Token { .. }))
+        .map(|(id, _)| id)
         .collect()
 }
 
-/// The upstream credentials the registry names, split by what reaches each: the ids of
-/// `ssh://` repos (keys) and of `https://` repos (tokens). One id for both is refused: a
-/// credential is a key or a token. A URL that doesn't parse is left out (the mirrors refuse it
-/// at startup, with the reason).
-pub fn upstream_credentials(
-    policy: &PolicyConfig,
-) -> anyhow::Result<(BTreeSet<&KeyId>, BTreeSet<&KeyId>)> {
-    let (mut keys, mut tokens) = (BTreeSet::new(), BTreeSet::new());
-    for entry in policy.repos().values() {
-        match Upstream::parse(&entry.upstream) {
-            Ok(Upstream::Ssh(_)) => keys.insert(&entry.upstream_credential),
-            Ok(Upstream::Https(_)) => tokens.insert(&entry.upstream_credential),
-            Err(_) => false,
-        };
-    }
-    if let Some(both) = keys.intersection(&tokens).next() {
-        bail!(
-            "upstream credential {both} is named by an ssh:// repo (a key) and an https:// repo \
-             (a token): give each its own id"
-        );
-    }
-    Ok((keys, tokens))
+/// The declared keys of `role`, each with its declaration.
+pub fn of_role(
+    declared: &Declarations,
+    role: KeyRole,
+) -> impl Iterator<Item = (&KeyId, &Declared)> {
+    declared.iter().filter(move |(_, key)| key.role == role)
 }
 
 /// The public halves of the daemon's keys, from the configured keystore: no unseal needed.
-/// Each declared signing key must be there, as declared.
-pub fn public(
-    config: &Config,
-    declared: &Declarations,
-    policy: &PolicyConfig,
-) -> anyhow::Result<PublicKeys> {
+/// Each declared key must be there, as declared.
+pub fn public(config: &Config, declared: &Declarations) -> anyhow::Result<PublicKeys> {
     match &config.keystore {
-        KeystoreConfig::Dev(dir) => {
-            PublicKeys::of(&dev::boot(dir)?, &dev::keys(dir, declared, policy)?)
-        }
-        KeystoreConfig::Sealed(sealed) => sealed::public(sealed, declared, policy),
+        KeystoreConfig::Dev(dir) => PublicKeys::of(&dev::boot(dir)?, &dev::keys(dir, declared)?),
+        KeystoreConfig::Sealed(sealed) => sealed::public(sealed, declared),
     }
 }
 
@@ -250,18 +216,33 @@ pub fn read_certificate(config: &Config, id: &KeyId) -> anyhow::Result<Option<St
     )?))
 }
 
-/// Makes the declared signing key `id` in the keystore, which must not hold it yet: what
-/// `writd keys create` does. Needs no unseal (a sealed key is encrypted to the keystore's
-/// public recipient). Answers its public half and what it is.
-pub fn create(config: &Config, declared: &Declarations, id: &KeyId) -> anyhow::Result<SigningKey> {
-    let key = crate::signing::declared(declared, id)?;
-    match &config.keystore {
-        KeystoreConfig::Dev(dir) => dev::create_signing_key(dir, id, key),
-        KeystoreConfig::Sealed(sealed) => {
-            let recipient = sealed::recipient(sealed)?;
-            sealed::make_signing_key(&sealed::Layout(sealed), &recipient, id, key)
+/// Makes every key `declared` names that the keystore lacks (`writd recover`, on the host:
+/// a sealed key is encrypted to the keystore's public recipient, with no unseal), and checks
+/// each one it holds against its declaration. The keys made, with their public halves.
+pub fn make_missing(
+    config: &Config,
+    declared: &Declarations,
+) -> anyhow::Result<Vec<(KeyId, KeyRole, PublicKey, KeyMeta)>> {
+    let mut made = Vec::new();
+    for (id, key) in declared {
+        let (stored, new) = match &config.keystore {
+            KeystoreConfig::Dev(dir) => dev::key_or_make(dir, id, key)?,
+            KeystoreConfig::Sealed(sealed) => {
+                let layout = sealed::Layout(sealed);
+                if layout.key(key.role, id).exists() {
+                    // Held: as declared, or the policy is refused (it would never start).
+                    sealed::check_public(&layout, id, key)?;
+                    continue;
+                }
+                let recipient = sealed::recipient(sealed)?;
+                (sealed::make_key(&layout, &recipient, id, key)?, true)
+            }
+        };
+        if new {
+            made.push((id.clone(), key.role, stored.key.public_key(), stored.meta));
         }
     }
+    Ok(made)
 }
 
 /// What the daemon starts with: the boot tier alone (sealed), or every key (the development
@@ -305,56 +286,25 @@ pub enum Live {
 }
 
 impl Live {
-    /// The upstream credential `id`, from the keystore, or made there now if it lacks it
-    /// (Ed25519); whether it was made is the second value.
-    pub fn upstream_key_or_make(&self, id: &KeyId) -> anyhow::Result<(PrivateKey, bool)> {
-        match self {
-            Self::Dev(dir) => {
-                let dir = dir.join("upstream");
-                private_dir(&dir)?;
-                let made = !dir.join(id.as_str()).exists();
-                Ok((dev::key(&dir, id.as_str())?, made))
-            }
-            Self::Sealed {
-                sealed,
-                files,
-                recipient,
-            } => {
-                let layout = sealed::Layout(sealed);
-                let what = format!("{} {id}", KeyRole::Upstream.as_str());
-                sealed::key_or_make(
-                    files,
-                    recipient,
-                    &layout.upstream(id),
-                    &layout.upstream_public(id),
-                    &what,
-                )
-            }
-        }
-    }
-
-    /// The signing key `id`, from the keystore (checked against `declared`), or made there
+    /// The declared key `id`, from the keystore (checked against `declared`), or made there
     /// now as `declared` describes it; whether it was made is the second value.
-    pub fn signing_key_or_make(
+    pub fn key_or_make(
         &self,
         id: &KeyId,
         declared: &Declared,
-    ) -> anyhow::Result<(SigningKey, bool)> {
+    ) -> anyhow::Result<(StoredKey, bool)> {
         match self {
-            Self::Dev(dir) => dev::signing_key(dir, id, declared),
+            Self::Dev(dir) => dev::key_or_make(dir, id, declared),
             Self::Sealed {
                 sealed,
                 files,
                 recipient,
             } => {
                 let layout = sealed::Layout(sealed);
-                if layout.signing(id).exists() {
-                    return Ok((sealed::signing_key(files, &layout, id, declared)?, false));
+                if layout.key(declared.role, id).exists() {
+                    return Ok((sealed::stored_key(files, &layout, id, declared)?, false));
                 }
-                Ok((
-                    sealed::make_signing_key(&layout, recipient, id, declared)?,
-                    true,
-                ))
+                Ok((sealed::make_key(&layout, recipient, id, declared)?, true))
             }
         }
     }
@@ -436,8 +386,8 @@ pub fn dev_authority_key(dir: &Path) -> anyhow::Result<writ_crypto::authority::A
 }
 
 /// What the daemon starts with, from the configured keystore. A sealed start reads the boot
-/// tier, and checks every declared signing key's public half: a key missing or held as
-/// something else than declared stops the start before anything is served.
+/// tier, and checks every declared key's public half: a key missing or held as something
+/// else than declared stops the start before anything is served.
 pub fn start(
     config: &Config,
     declared: &Declarations,
@@ -445,13 +395,13 @@ pub fn start(
 ) -> anyhow::Result<Start> {
     match &config.keystore {
         KeystoreConfig::Sealed(sealed) => {
-            sealed::public(sealed, declared, policy)?;
+            sealed::public(sealed, declared)?;
             Ok(Start::Sealed(sealed::boot(sealed)?))
         }
         KeystoreConfig::Dev(dir) => Ok(Start::Open(
             dev::boot(dir)?,
             Box::new(Opened {
-                keys: dev::keys(dir, declared, policy)?,
+                keys: dev::keys(dir, declared)?,
                 live: Live::Dev(dir.clone()),
                 authority: dev::authority_key(dir)?,
                 tokens: dev::tokens(dir, policy)?,
@@ -485,7 +435,7 @@ pub fn open(
     }
     let files = sealed::SecretFiles::new(vec![Box::new(identity)]);
     Ok(Opened {
-        keys: sealed::keys(sealed, declared, policy, &files)?,
+        keys: sealed::keys(sealed, declared, &files)?,
         authority: sealed::authority_key(sealed, &files)?,
         tokens: sealed::tokens(sealed, policy, &files)?,
         bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &files)?,

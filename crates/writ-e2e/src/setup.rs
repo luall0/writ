@@ -24,6 +24,10 @@ use crate::stack::Stack;
 pub const WRITD_YAML: &str = include_str!("../../../e2e/config/writd.yaml");
 pub const POLICY_YAML: &str = include_str!("../../../e2e/config/policy.yaml");
 
+/// The key `POLICY_YAML` pins Forgejo's host to until the setup puts the scanned one there.
+pub const PLACEHOLDER_HOST_KEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+
 /// The daemon's name on the project's network, and its listeners.
 pub const DAEMON: &str = "writd";
 pub const AGENTS_URL: &str = "ssh://writd:2222";
@@ -39,6 +43,9 @@ pub const HTTPS_CREDENTIAL: &str = "token-https";
 /// sync of it refused.
 pub const SYSTEM_FRONT: &str = "forgejo-https-system";
 pub const SYSTEM_REPO: &str = "https-system";
+/// Its token's id: the same Forgejo token, declared for that front's host (a token is sent to
+/// its declared host only), so what refuses the sync is the certificate, not a missing token.
+pub const SYSTEM_CREDENTIAL: &str = "token-https-system";
 
 /// The reader's name in the daemon's `readers` file.
 pub const READER: &str = "e2e-approver";
@@ -63,10 +70,10 @@ pub struct Report {
     pub signing_keys: Vec<String>,
     pub host_key: String,
     pub tls_fingerprint: String,
-    /// The line pinning Forgejo in `upstream_known_hosts`, and what Forgejo publishes.
+    /// The key line the scan of Forgejo gave (pinned in the policy), and what Forgejo publishes.
     pub pinned_upstream: String,
     pub published_upstream: String,
-    /// What `ssh-keygen -lf upstream_known_hosts` printed (the fingerprint to compare).
+    /// What `ssh-keygen -lf forgejo.keys` printed (the fingerprint to compare).
     pub upstream_fingerprint: String,
     /// The line `writ reader` printed.
     pub reader_line: String,
@@ -208,7 +215,35 @@ pub fn run() -> Stack {
         "0644",
     );
 
-    // 3. The sealed keystore, the passphrase typed once (on stdin, one line).
+    // 3. Forgejo's host key, scanned, checked against the one it publishes, and pinned in the
+    // policy (the line's last two fields, under `upstream_hosts`).
+    doc_step(
+        &operator,
+        "ssh-keyscan -t ed25519 <host> > <host>.keys",
+        &[("<host>", "forgejo")],
+    );
+    let upstream_fingerprint = doc_step(
+        &operator,
+        "ssh-keygen -lf <host>.keys",
+        &[("<host>", "forgejo")],
+    );
+    // The key line (ssh-keyscan also writes a `# host:port SSH-2.0-…` comment).
+    let pinned_upstream = pinned_line(&operator.read("forgejo.keys"));
+    let published_upstream = forgejo.published_host_key();
+    assert_eq!(
+        pinned_upstream,
+        format!("forgejo {published_upstream}"),
+        "the scan is not the key Forgejo publishes"
+    );
+    let pinned_policy = POLICY_YAML.replace(PLACEHOLDER_HOST_KEY, &published_upstream);
+    assert_ne!(
+        pinned_policy, POLICY_YAML,
+        "the policy pins no placeholder key"
+    );
+    operator.ok("rm policy.yaml");
+    operator.write("policy.yaml", &pinned_policy, "0644");
+
+    // 4. The sealed keystore, the passphrase typed once (on stdin, one line).
     let init_printed = doc_step_with(
         &operator,
         "writd init writd.yaml",
@@ -217,7 +252,7 @@ pub fn run() -> Stack {
     );
     let mut printed = Vec::new();
 
-    // 4. The upstream credentials, each added on its repository as a deploy key.
+    // 5. The upstream credentials, each added on its repository as a deploy key.
     let upstream = doc_step(&operator, "writd upstream-keys writd.yaml", &[]);
     printed.push((
         "writd upstream-keys writd.yaml".to_owned(),
@@ -252,23 +287,6 @@ pub fn run() -> Stack {
         ),
     );
     assert_eq!(installed.status.code(), Some(0), "{}", stderr(&installed));
-
-    // 5. Forgejo's host key, pinned, and checked against the one it publishes.
-    doc_step(
-        &operator,
-        "ssh-keyscan -t ed25519 <host> >> upstream_known_hosts",
-        &[("<host>", "forgejo")],
-    );
-    let upstream_fingerprint = doc_step(&operator, "ssh-keygen -lf upstream_known_hosts", &[]);
-    // The key line (ssh-keyscan also writes a `# host:port SSH-2.0-…` comment, which the
-    // daemon drops).
-    let pinned_upstream = pinned_line(&operator.read("upstream_known_hosts"));
-    let published_upstream = forgejo.published_host_key();
-    assert_eq!(
-        pinned_upstream,
-        format!("forgejo {published_upstream}"),
-        "the scan is not the key Forgejo publishes"
-    );
 
     // 6. The agent signing keys (to register on an account, for verified commits).
     let signing = doc_step(&operator, "writd signing-keys writd.yaml", &[]);
@@ -330,6 +348,16 @@ pub fn run() -> Stack {
     );
     assert!(
         said.contains(&format!("Token {HTTPS_CREDENTIAL} in force (file sha256 ")),
+        "{said}"
+    );
+    let said = doc_step_with(
+        &approver,
+        "writ admin token <id>",
+        &[("<id>", SYSTEM_CREDENTIAL)],
+        format!("{https_token}\ny\n").as_bytes(),
+    );
+    assert!(
+        said.contains(&format!("Token {SYSTEM_CREDENTIAL} in force (file sha256 ")),
         "{said}"
     );
 

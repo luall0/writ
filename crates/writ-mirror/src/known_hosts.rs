@@ -1,15 +1,18 @@
-//! The upstream host keys the operator pinned (`mirrors.known_hosts` in `writd.yaml`): the
-//! only host keys the daemon's ssh accepts. Nothing is learned on first use.
+//! The upstream host keys an approver pinned (the policy's `upstream_hosts`): the only host
+//! keys the daemon's ssh accepts. Nothing is learned on first use.
 //!
-//! The file is the operator's (an authority file, read with its owner and mode checked); it is
-//! parsed strictly and written back for ssh in a normal form the daemon made, so ssh never reads
-//! a line the daemon didn't understand: plain host names or `[host]:port` only (no wildcard, no
-//! negation, no hashed name, no `@cert-authority` or `@revoked` marker), and no DSA key.
+//! The policy checked each entry's form (`writ_core::config::hosts`); here each key is decoded
+//! whole, and the file ssh reads is written in a normal form the daemon made, so ssh never
+//! reads a line the daemon didn't understand: plain host names or `[host]:port` only (no
+//! wildcard, no negation, no hashed name, no `@cert-authority` or `@revoked` marker), and no
+//! DSA key.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(any(test, feature = "testing"))]
 use ssh_key::known_hosts::{HostPatterns, KnownHosts};
 use ssh_key::{Algorithm, PublicKey};
+use writ_core::config::{HostKey, UpstreamHost};
 
 use crate::{MirrorError, Result};
 
@@ -23,8 +26,30 @@ pub struct PinnedHosts {
 }
 
 impl PinnedHosts {
-    /// Parses the operator's file. Any line the daemon doesn't take as a plain pin refuses the
-    /// whole file.
+    /// The pins of a policy in force: each key decoded (one that doesn't decode, or a DSA key,
+    /// refuses them all, naming its host). None at all is valid: a registry with no `ssh://`
+    /// repo reaches no host.
+    pub fn from_policy(pins: &BTreeMap<UpstreamHost, Vec<HostKey>>) -> Result<Self> {
+        let mut entries = Vec::new();
+        for (host, keys) in pins {
+            for (index, key) in keys.iter().enumerate() {
+                let refuse = |why: &str| {
+                    MirrorError::Config(format!("upstream_hosts.{host}[{index}]: {why}"))
+                };
+                let key = PublicKey::from_openssh(key.as_str())
+                    .map_err(|_| refuse("not an OpenSSH public key"))?;
+                if matches!(key.algorithm(), Algorithm::Dsa) {
+                    return Err(refuse("DSA keys are not taken"));
+                }
+                entries.push((vec![host.as_str().to_owned()], key));
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    /// Parses a file in OpenSSH's `known_hosts` format, for tests (the daemon's pins come from
+    /// the policy). Any line the daemon doesn't take as a plain pin refuses the whole file.
+    #[cfg(any(test, feature = "testing"))]
     pub fn parse(text: &str) -> Result<Self> {
         let invalid = |line: usize, why: &str| {
             MirrorError::Config(format!("upstream known_hosts, entry {line}: {why}"))
@@ -97,6 +122,7 @@ impl PinnedHosts {
 
 /// A plain host name or address, or `[host]:port`: no wildcard, negation or anything ssh
 /// would read as more than one host.
+#[cfg(any(test, feature = "testing"))]
 fn check_pattern(pattern: &str) -> std::result::Result<(), &'static str> {
     let host = match pattern.strip_prefix('[') {
         Some(rest) => {
@@ -124,6 +150,36 @@ mod tests {
 
     const KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+
+    #[test]
+    fn a_policy_s_pins_are_decoded_whole_and_written_for_ssh() {
+        let host = |name: &str| UpstreamHost::try_from(name.to_owned()).unwrap();
+        let key = |line: &str| HostKey::try_from(line.to_owned()).unwrap();
+        let pins = BTreeMap::from([
+            (host("github.com"), vec![key(KEY)]),
+            (host("[forgejo.home]:2222"), vec![key(KEY)]),
+        ]);
+        let pinned = PinnedHosts::from_policy(&pins).unwrap();
+        assert!(pinned.covers("github.com") && pinned.covers("[forgejo.home]:2222"));
+        assert!(
+            !pinned.covers("forgejo.home"),
+            "another port is another host"
+        );
+        assert_eq!(
+            pinned.to_file().unwrap(),
+            format!("[forgejo.home]:2222 {KEY}\ngithub.com {KEY}\n")
+        );
+        // None: valid, and ssh reads an empty file (no host is reached).
+        let none = PinnedHosts::from_policy(&BTreeMap::new()).unwrap();
+        assert_eq!(none.to_file().unwrap(), "");
+        // A key of the right form that doesn't decode refuses them all, naming its place.
+        let broken =
+            BTreeMap::from([(host("github.com"), vec![key(KEY), key("ssh-ed25519 AAAA")])]);
+        assert!(matches!(
+            PinnedHosts::from_policy(&broken),
+            Err(MirrorError::Config(m)) if m == "upstream_hosts.github.com[1]: not an OpenSSH public key"
+        ));
+    }
 
     #[test]
     fn plain_pins_are_taken_and_written_back_without_comments() {

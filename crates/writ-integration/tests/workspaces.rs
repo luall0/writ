@@ -23,19 +23,32 @@ use writ_integration::{stderr, stdout};
 /// Two registry repos on the same test upstream (the placeholder is rewritten to it): `demo`
 /// as it is, `web` needing the `Writ:` trailer.
 const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
     protected_refs: ["refs/heads/main"]
   web:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
     protected_refs: ["refs/heads/main"]
     ticket_link: trailer
 templates:
   feature:
-    repos: [demo, web]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]

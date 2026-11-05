@@ -8,8 +8,8 @@
 //!   `known_hosts`.
 //! - `writd tls-fingerprint <writd.yaml>`: prints the fingerprint of the HTTPS approval API's
 //!   certificate, to pin in clients' `tls_pins`.
-//! - `writd upstream-keys <writd.yaml>`: prints the upstream credentials' public keys, to add
-//!   on each remote.
+//! - `writd upstream-keys <writd.yaml>`: prints the upstream credentials' public keys (the
+//!   policy in force declares them), to add on each remote.
 //! - `writd signing-keys <writd.yaml>`: prints the agent signing keys' public keys, to register
 //!   on the accounts that show commits as verified.
 //! - `writd hook pre-receive`: the program git's pre-receive hook runs.
@@ -24,11 +24,11 @@
 mod authority;
 mod config;
 mod daemon;
+mod declared;
 mod hardening;
 mod keystore;
 mod platform;
 mod recover;
-mod signing;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -38,13 +38,15 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use writ_approval::{Service, ServiceConfig, ServicePlatform};
 use writ_core::config::PolicyConfig;
-use writ_core::names::{KeyFingerprint, KeyId};
+use writ_core::names::KeyFingerprint;
 use writ_crypto::allowed_signers::AllowedSigner;
 use writ_crypto::readers::Reader;
 use writ_crypto::tls::TlsIdentity;
 use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{MirrorConfig, SyncReport};
+
+use crate::declared::Declarations;
 use writ_platform::clock::system::SystemClock;
 use writ_store::{AuditLog, Store};
 
@@ -70,7 +72,6 @@ const COMMANDS: &[(&str, &str)] = &[
     ("tls-fingerprint", "<writd.yaml>"),
     ("upstream-keys", "<writd.yaml>"),
     ("signing-keys", "<writd.yaml>"),
-    ("keys create", "<writd.yaml> <id>"),
     ("hook", "pre-receive"),
     ("upstream-ssh", "<max bytes> <ssh> <args…>"),
     ("upstream-credential", "<socket> <get|store|erase>"),
@@ -122,8 +123,6 @@ fn main() -> ExitCode {
         ["host-key", config] => host_key(Path::new(config)),
         ["tls-fingerprint", config] => tls_fingerprint(Path::new(config)),
         ["signing-keys", config] => signing_keys(Path::new(config)),
-        ["keys", "create", config, id] => hardening::harden(hardening::Say::Stderr)
-            .and_then(|()| keys_create(Path::new(config), id)),
         _ => {
             eprintln!("{}", usage());
             return ExitCode::from(2);
@@ -139,54 +138,38 @@ fn main() -> ExitCode {
 }
 
 fn host_key(path: &Path) -> anyhow::Result<()> {
-    let (config, declared, policy) = load_checked(path)?;
+    let (config, _, declared) = load_checked(path)?;
     println!(
         "{}",
-        keystore::public(&config, &declared, &policy)?
-            .host
-            .to_openssh()?
+        keystore::public(&config, &declared)?.host.to_openssh()?
     );
     Ok(())
 }
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
-    let (config, declared, policy) = load_checked(path)?;
-    println!(
-        "{}",
-        keystore::public(&config, &declared, &policy)?.tls_fingerprint
-    );
+    let (config, _, declared) = load_checked(path)?;
+    println!("{}", keystore::public(&config, &declared)?.tls_fingerprint);
     Ok(())
 }
 
-/// The repos whose upstream credential is `id`.
-fn repos_using<'a>(policy: &'a PolicyConfig, id: &KeyId) -> Vec<&'a str> {
-    policy
-        .repos()
+/// Names, joined for a line.
+pub(crate) fn joined<T: AsRef<str>>(names: &[T]) -> String {
+    names
         .iter()
-        .filter(|(_, entry)| entry.upstream_credential == *id)
-        .map(|(name, _)| name.as_str())
-        .collect()
-}
-
-/// The templates that sign with key `id`.
-fn templates_using<'a>(policy: &'a PolicyConfig, id: &KeyId) -> Vec<&'a str> {
-    policy
-        .templates()
-        .iter()
-        .filter(|(_, template)| template.signing_key.as_ref() == Some(id))
-        .map(|(name, _)| name.as_str())
-        .collect()
+        .map(AsRef::as_ref)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Prints each upstream credential's public key and the repos that use it: the key to add on
 /// each remote (as a deploy key, or on the account).
 fn upstream_keys(path: &Path) -> anyhow::Result<()> {
-    let (config, declared, policy) = load_checked(path)?;
-    for (id, key) in keystore::public(&config, &declared, &policy)?.upstream {
+    let (config, policy, declared) = load_checked(path)?;
+    for (id, key) in keystore::public(&config, &declared)?.upstream {
         println!(
             "{id} {} (repos: {})",
             key.to_openssh()?,
-            repos_using(&policy, &id).join(", ")
+            joined(&policy.key_users(&id).repos)
         );
     }
     Ok(())
@@ -196,82 +179,34 @@ fn upstream_keys(path: &Path) -> anyhow::Result<()> {
 /// account so the remote shows its commits as verified. An SSH key's public key; an OpenPGP
 /// key's fingerprint, then its certificate (as the daemon last made it).
 fn signing_keys(path: &Path) -> anyhow::Result<()> {
-    let (config, declared, policy) = load_checked(path)?;
-    for (id, key, meta) in keystore::public(&config, &declared, &policy)?.signing {
+    let (config, policy, declared) = load_checked(path)?;
+    for (id, key, meta) in keystore::public(&config, &declared)?.signing {
         println!(
             "{} (templates: {})",
-            signing::describe(&id, &key, &meta)?,
-            templates_using(&policy, &id).join(", ")
+            declared::describe(&id, &key, &meta)?,
+            joined(&policy.key_users(&id).templates)
         );
         if meta.created.is_some() {
             match keystore::read_certificate(&config, &id)? {
                 Some(certificate) => print!("{certificate}"),
-                None => println!(
-                    "(no certificate yet: give {id} user ids in the policy's signing_keys)"
-                ),
+                None => {
+                    println!(
+                        "(no certificate yet: give {id} user ids in the policy's keys.{id}.uids)"
+                    )
+                }
             }
         }
     }
     Ok(())
 }
 
-/// `writd keys create <writd.yaml> <id>`: makes the declared signing key `id` in the keystore
-/// (refused when it holds it already), logs it, and prints what to register on a remote.
-fn keys_create(path: &Path, id: &str) -> anyhow::Result<()> {
-    let (config, declared, policy) = load_checked(path)?;
-    let id: KeyId = id.parse()?;
-    let made = keystore::create(&config, &declared, &id)?;
-    let declaration = signing::declared(&declared, &id)?;
-    let line = writ_store::AuditEvent::new(
-        now()?,
-        writ_store::EventKind::Key,
-        writ_store::Outcome::Allowed,
-    )
-    .key(&id)
-    .reason(format!(
-        "{} {} key made by writd keys create",
-        declaration.format, declaration.algorithm
-    ));
-    keystore::private_dir(&config.state_dir)?;
-    writ_store::AuditLog::open(&config.state_dir.join("audit.jsonl"))?
-        .append(&line)
-        .context("the audit log can't be written: the key is made all the same")?;
-    println!(
-        "{} (templates: {})",
-        signing::describe(&id, &made.key.public_key(), &made.meta)?,
-        templates_using(&policy, &id).join(", ")
-    );
-    if made.meta.created.is_some() {
-        match signing::certificate(&made, declaration, policy.uids(&id))? {
-            Some(certificate) => {
-                keystore::write_certificate(&config, &id, &certificate)?;
-                print!("{certificate}");
-            }
-            None => println!(
-                "(no certificate yet: give {id} user ids in the policy's signing_keys, with \
-                 `writ admin apply policy`)"
-            ),
-        }
-    }
-    Ok(())
-}
-
-/// The configuration, its signing key declarations (each checked against its backend), and
-/// the policy in force (checked against them).
-fn load_checked(path: &Path) -> anyhow::Result<(Config, signing::Declarations, PolicyConfig)> {
+/// The configuration, the policy in force, and the keys it declares (each checked against
+/// its backend).
+fn load_checked(path: &Path) -> anyhow::Result<(Config, PolicyConfig, Declarations)> {
     let config = Config::load(path)?;
-    let declared = signing::declarations(&config)?;
     let policy = load_registry(&config)?;
-    signing::check_policy(&policy, &declared)?;
-    Ok((config, declared, policy))
-}
-
-/// The upstream host keys the operator pinned (an authority file: whoever writes it decides
-/// which servers the daemon pushes to).
-fn load_pinned_hosts(config: &Config) -> anyhow::Result<PinnedHosts> {
-    let path = &config.mirrors.known_hosts;
-    let text = writ_platform::fs::read_authority(path, "upstream known_hosts")?;
-    PinnedHosts::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+    let declared = declared::declarations(&policy)?;
+    Ok((config, policy, declared))
 }
 
 /// The CA certificates HTTPS upstreams must chain to, when the operator chose some (an
@@ -286,8 +221,8 @@ fn load_ca_certs(config: &Config) -> anyhow::Result<Option<String>> {
     Ok(Some(text))
 }
 
-/// The repo registry and templates in force: what the commands that print a key need (the
-/// keystore holds one key per template signing key and repo credential). The store's version
+/// The policy in force: what the commands that print a key need (the keystore holds every key
+/// it declares). The store's version
 /// once `writd init` recorded one; before, the file (an authority file, checked for owner,
 /// mode and links before it is believed).
 fn load_registry(config: &Config) -> anyhow::Result<PolicyConfig> {
@@ -428,10 +363,9 @@ fn run(path: &Path) -> anyhow::Result<()> {
             config.state_dir.display()
         ),
     };
-    let pinned = load_pinned_hosts(&config)?;
+    let pinned = PinnedHosts::from_policy(loaded.policy.upstream_hosts())?;
     let ca_certs = load_ca_certs(&config)?;
-    let declared = signing::declarations(&config)?;
-    signing::check_policy(&loaded.policy, &declared)?;
+    let declared = declared::declarations(&loaded.policy)?;
     let start = keystore::start(&config, &declared, &loaded.policy)?;
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
@@ -456,6 +390,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
         let service = start_service(
             &config,
             store,
+            &declared,
             loaded.policy.clone(),
             loaded.approvers,
             loaded.in_force,
@@ -520,6 +455,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
 fn start_service(
     config: &Config,
     store: Store,
+    declared: &Declarations,
     policy: PolicyConfig,
     approvers: Vec<AllowedSigner>,
     in_force: writ_approval::InForce,
@@ -542,16 +478,7 @@ fn start_service(
             daemon,
             in_force,
             recipient: keystore::recipient(config)?,
-            signing_keys: signing::declarations(config)?
-                .into_iter()
-                .map(|(id, key)| {
-                    let key_use = writ_approval::KeyUse {
-                        format: key.format,
-                        hash: key.hash,
-                    };
-                    (id, key_use)
-                })
-                .collect(),
+            signing_keys: declared::key_uses(declared),
         },
         writ_crypto::keys::random_array()?,
         store,
@@ -651,7 +578,6 @@ mod tests {
             &yaml,
             "state_dir: data\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
              keystore: { dev: keys }\n\
-             mirrors: { known_hosts: upstream_known_hosts }\n\
              transports: { agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }], \
              approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] } }\n\
              attestor: network\nsession_watcher: none\n",

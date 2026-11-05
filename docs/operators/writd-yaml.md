@@ -4,8 +4,12 @@ The daemon's configuration. Start from the [template](templates/writd.yaml). Exa
 [development configuration](../../dev/writd.yaml) (`make run`) and the
 [end-to-end one](../../e2e/config/writd.yaml), shaped like a real deployment.
 
+- **The host's settings only:** paths, listeners, limits, the mirrors' programs and bounds,
+  notifiers. The keys and the upstream host keys are the [policy's](policy-yaml.md), changed
+  by signed changes. `signing_keys` and `mirrors.known_hosts`, from before M6.2, are refused,
+  naming their new place.
 - **Read at start.** A change takes effect at the next start. The `writd host-key`,
-  `tls-fingerprint`, `upstream-keys`, `signing-keys` and `keys create` commands read it too.
+  `tls-fingerprint`, `upstream-keys` and `signing-keys` commands read it too.
 - **An authority file:** owned by the daemon's user, mode 0644 or stricter.
 - **Unknown keys are refused**, and every error names its key:
   `mirrors.timeout: 61m, must be from 10s to 1h`.
@@ -18,7 +22,7 @@ The daemon's configuration. Start from the [template](templates/writd.yaml). Exa
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
 | `state_dir` | Path | **required** | The daemon's state: `leases.db` (leases, ledger), `audit.jsonl` (the [audit log](../architecture/policy-and-state.md#audit-log)), the mirrors, sockets. Back it up. Keep it on a local disk |
-| `policy` | Path | **required** | The repos and templates: [`policy.yaml`](policy-yaml.md). An authority file, [kept by the daemon after `writd init`](#policy-approvers-and-readers-after-writd-init) |
+| `policy` | Path | **required** | The keys, upstream host keys, repos and templates: [`policy.yaml`](policy-yaml.md). An authority file, [kept by the daemon after `writd init`](#policy-approvers-and-readers-after-writd-init) |
 | `approvers` | Path | **required** | The keys that may sign tickets, refusals, revocations and proofs: one `<name> <public key>` per line. An authority file, [kept by the daemon after `writd init`](#policy-approvers-and-readers-after-writd-init) |
 | `readers` | Path | **required** | The keys that may use the approval API: one line per key, as `writ reader <name>` prints it. A reader still needs an approval key to sign. An authority file, [kept by the daemon after `writd init`](#policy-approvers-and-readers-after-writd-init) |
 | `keystore.sealed.dir` | Path | **required** (sealed keystore) | Every secret, each in its own encrypted file, made by `writd init` (0700). Safe to copy: it reveals nothing without the passphrase |
@@ -32,36 +36,6 @@ After that the daemon keeps its own copy and writes it back to these paths. A ha
 moved aside at the next start, never applied. To change them:
 [`writ admin apply`](sealing.md#changing-the-policy-the-approvers-or-the-readers), or
 [`writd recover`](recovery.md) on the host.
-
-## Signing keys: `signing_keys.<id>`
-
-Each key agents' commits are signed with, declared once. `<id>` is the name a template's
-`signing_key` uses. These declarations move to the signed policy in
-[M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli), with the upstream credentials.
-
-| Key | Accepts | Default | What it does |
-|---|---|---|---|
-| `signing_keys.<id>.format` | `ssh` or `openpgp` | **required** | The signature git writes: `gpg.format`. A key signs in one format only. An `openpgp` key needs [user ids in the policy](policy-yaml.md#openpgp-user-ids-signing_keysid) |
-| `signing_keys.<id>.algorithm` | `ed25519`, `p256`, `p384`, `rsa3072` or `rsa4096` | **required** | The key's algorithm. RSA under 3072 bits is refused |
-| `signing_keys.<id>.hash` | `sha256`, `sha384` or `sha512` | the strongest allowed | The hash the signature uses. [What each format allows](#hashes) |
-| `signing_keys.<id>.backend` | `software` | `software` | Where the key lives. `software`: in the daemon's memory, from the keystore |
-
-The daemon refuses to start, naming the key and the reason, when:
-
-- the format, algorithm, hash and backend don't go together;
-- a template uses a key that isn't declared here;
-- a key a template uses isn't in the keystore, or the keystore holds it with another
-  algorithm or format.
-
-A declared key nobody uses yet may be missing. Make it with `writd keys create`
-([setup](setup.md)), or let the signed policy change that first uses it make it.
-
-### Hashes
-
-- **`ssh`:** `sha256` or `sha512` for every algorithm (the SSHSIG's hash). An RSA key signs
-  as `rsa-sha2-256` or `rsa-sha2-512` to match.
-- **`openpgp`:** `sha256`, `sha384` or `sha512` for `ed25519` and RSA. `p256` signs with
-  `sha256` only, `p384` with `sha384` only.
 
 ## Approvals and tickets
 
@@ -89,7 +63,6 @@ Programs are named by absolute path, never looked up in `PATH`, and checked at s
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
-| `mirrors.known_hosts` | Path | **required** | The remotes' SSH host keys, pinned by hand. An authority file ([how](setup.md#upstream-keys-and-host-keys)). Moves to the signed policy in [M6.2](../roadmap.md#m62--managing-the-daemon-from-the-cli) |
 | `mirrors.ca_certs` | Path | the system's CAs | For `https://` upstreams behind your own CA: a PEM file that **replaces** the system's CAs. An authority file ([how](setup.md#https-upstreams-and-tokens)) |
 | `mirrors.git` | Absolute path | `/usr/bin/git` | The git the daemon runs: 2.45 or newer, 2.47 for `https://` upstreams |
 | `mirrors.ssh` | Absolute path | `/usr/bin/ssh` | The OpenSSH client for `ssh://` upstreams |

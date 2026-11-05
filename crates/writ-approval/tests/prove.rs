@@ -383,9 +383,7 @@ fn a_proof_the_clock_can_t_date_is_refused_and_logged() {
     let doc = document(KEY, "gitea", "0123456789abcdef");
     // OpenPGP: refused, one `prove` line saying so, the signer never asked.
     let dir = tempfile::tempdir().unwrap();
-    let policy = format!(
-        "{POLICY}\nsigning_keys:\n  {KEY}:\n    uids: [\"Agent <user+agent@example.org>\"]\n"
-    );
+    let policy = writ_approval::testing::openpgp_policy(POLICY, &writ_approval::testing::TEST_UIDS);
     let clock = Arc::new(FakeClock::at_unix(START));
     let h = TestServiceBuilder::new(&policy)
         .clock(clock.clone())
@@ -421,9 +419,7 @@ fn a_proof_the_clock_can_t_date_is_refused_and_logged() {
 fn an_openpgp_key_proves_itself_in_openpgp_never_over_a_commit_shaped_message() {
     use writ_crypto::algorithm::{Hash, KeyAlgorithm};
     let dir = tempfile::tempdir().unwrap();
-    let policy = format!(
-        "{POLICY}\nsigning_keys:\n  {KEY}:\n    uids: [\"Agent <user+agent@example.org>\"]\n"
-    );
+    let policy = writ_approval::testing::openpgp_policy(POLICY, &writ_approval::testing::TEST_UIDS);
     let h = TestServiceBuilder::new(&policy)
         .clock(Arc::new(FakeClock::at_unix(START)))
         .openpgp(KeyAlgorithm::Ed25519, Hash::Sha512)
@@ -535,7 +531,10 @@ fn a_proof_follows_the_policy_in_force_not_the_one_at_start() {
     h.service
         .commit_admin(
             &checked,
-            AdminParsed::Policy(PolicyConfig::from_yaml(&text).unwrap()),
+            AdminParsed::Policy(
+                PolicyConfig::from_yaml(&text).unwrap(),
+                (*h.service.key_uses()).clone(),
+            ),
             vec![],
             Default::default(),
             &facts(),

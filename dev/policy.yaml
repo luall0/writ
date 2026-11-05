@@ -1,13 +1,20 @@
 # The development policy: one throwaway repo, one template.
+keys:
+  agent-dev-01: { use: signing, format: ssh, algorithm: ed25519 }
+  upstream-dev-01: { use: upstream, kind: ssh, algorithm: ed25519 }
+upstream_hosts:
+  # remote.invalid (the placeholder upstream) is pinned to a key nobody holds: pin each real
+  # remote's key with `writ admin host add`, compared with the fingerprint it publishes.
+  remote.invalid: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJON0F+SC7vTbwXqnI857uLvAWDJtDsl1W7eeWrS7GMg"]
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-dev-01
+    templates: [feature-branch]
     protected_refs: ["refs/heads/main", "refs/tags/*"]
     ticket_link: trailer             # each commit carries `Writ: <lease id>` (the manual checks)
 templates:
   feature-branch:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ.invalid"]

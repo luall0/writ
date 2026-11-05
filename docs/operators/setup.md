@@ -15,12 +15,11 @@ One directory on the daemon host, owned by the daemon's user:
 | Path | What it is | Made by |
 |---|---|---|
 | `writd.yaml` | The daemon's configuration | You, from the [template](templates/writd.yaml) |
-| `policy.yaml` | The repos agents may use, and the templates that cap tickets | You, from the [template](templates/policy.yaml) |
+| `policy.yaml` | The keys, the remotes' host keys, the repos agents may use, and the templates that cap tickets | You, from the [template](templates/policy.yaml) |
 | `approvers` | The keys that may sign tickets | You (step 2) |
 | `readers` | The keys that may use the approval API | You (step 2) |
-| `upstream_known_hosts` | The remotes' SSH host keys | You (step 5) |
-| `data/keys/` | Every secret, encrypted | `writd init` (step 3) |
-| `data/boot/` | The keys the daemon needs before it is unsealed | `writd init` (step 3) |
+| `data/keys/` | Every secret, encrypted | `writd init` (step 4) |
+| `data/boot/` | The keys the daemon needs before it is unsealed | `writd init` (step 4) |
 | `data/` | Leases, ledger, audit log, mirrors | `writd run` (step 8) |
 
 `data/boot/` may live on another volume ([why](sealing.md#how-the-keystore-works)).
@@ -36,13 +35,12 @@ One directory on the daemon host, owned by the daemon's user:
    approvers: approvers
    readers: readers
    keystore: { sealed: { dir: data/keys, boot: data/boot } }
-   signing_keys:
-     agent-ed25519-01: { format: ssh, algorithm: ed25519 }
-   mirrors: { known_hosts: upstream_known_hosts }
    ```
 
-   Declare each key a template's `signing_key` names under `signing_keys`: its format, its
-   algorithm, and optionally its hash ([choices](writd-yaml.md#signing-keys-signing_keysid)).
+   `writd.yaml` holds the host's settings only. Every key the policy names is declared in
+   its `keys` section: a signing key with its format and algorithm, an upstream credential
+   with its kind (an SSH key, or a token for an `https://` repo)
+   ([choices](policy-yaml.md#keys-keysid)).
 
    Both files mode 0644 or stricter. Every key: [`writd.yaml`](writd-yaml.md),
    [`policy.yaml`](policy-yaml.md). A commented example: the
@@ -60,7 +58,19 @@ One directory on the daemon host, owned by the daemon's user:
    If you can, add a second approval key (a YubiKey) and a second reader on another machine
    now. Losing your only one is painful ([recovery](recovery.md)).
 
-3. **Create the keystore**, on the daemon host, as the daemon's user:
+3. **Pin each remote's host key** in `policy.yaml`, on the daemon host:
+
+   ```sh
+   ssh-keyscan -t ed25519 <host> > <host>.keys
+   ssh-keygen -lf <host>.keys
+   ```
+
+   Compare the fingerprint with the one the remote publishes. Never trust a scan alone. Then
+   put the key (the line's last two fields) under `upstream_hosts`, as
+   `<host>: ["ssh-ed25519 AAAA…"]` (`"[<host>]:<port>"` off port 22). Every `ssh://` repo's
+   host needs its pin.
+
+4. **Create the keystore**, on the daemon host, as the daemon's user:
 
    ```sh
    writd init writd.yaml
@@ -68,13 +78,12 @@ One directory on the daemon host, owned by the daemon's user:
 
    It asks for a passphrase twice (12 characters or more; one line of stdin when it isn't a
    terminal). Keep it in a password manager: you type it at every unseal, and nothing
-   recovers a lost one. It creates the keys the policy names, as `writd.yaml` declares them,
-   and prints what to register. A key you declare later: `writd keys create writd.yaml <id>`
-   makes it, with no passphrase.
+   recovers a lost one. It creates every key the policy declares, and prints what to
+   register. A key declared later is made by the signed change that declares it.
    From now on, `policy.yaml`, `approvers` and `readers` change only with
    [`writ admin apply`](sealing.md#changing-the-policy-the-approvers-or-the-readers).
 
-4. **Register the upstream keys** on the remotes:
+5. **Register the upstream keys** on the remotes:
 
    ```sh
    writd upstream-keys writd.yaml
@@ -83,15 +92,6 @@ One directory on the daemon host, owned by the daemon's user:
    It prints each key and the repos that use it. Add each one as a **deploy key with write
    access** on its repository ([why](#upstream-keys-and-host-keys)). An `https://` repo uses
    a token instead, added at step 10.
-
-5. **Pin each remote's host key**:
-
-   ```sh
-   ssh-keyscan -t ed25519 <host> >> upstream_known_hosts
-   ssh-keygen -lf upstream_known_hosts
-   ```
-
-   Compare the fingerprints with the ones the remote publishes. Never trust a scan alone.
 
 6. **Register the agent signing keys** on your remote account, so agent commits show as
    verified (optional):
@@ -117,7 +117,7 @@ One directory on the daemon host, owned by the daemon's user:
    | Your machine | `~/.writ/known_hosts` | `[<daemon>]:2223 <key>` |
    | Your machine | `~/.writ/tls_pins` | `[<daemon>]:8443 SHA256:…` |
 
-   Steps 4 to 7 only read public keys: no passphrase needed.
+   Steps 5 to 7 only read public keys: no passphrase needed.
 
 8. **Start the daemon**, from its directory:
 
@@ -156,14 +156,16 @@ The daemon fetches from and pushes to each repo's `upstream` with that repo's
 one repository. A key added to your account reaches every repository you can push to, and
 then only the daemon's policy stops an agent from reaching the others.
 
-**Pin host keys by hand.** One line per host in `upstream_known_hosts`:
+**Pin host keys in the policy.** One entry per host in `upstream_hosts`, signed like the rest
+of the policy:
 
-```text
-github.com ssh-ed25519 AAAA…
-[forgejo.home]:2222 ssh-ed25519 AAAA…
+```yaml
+upstream_hosts:
+  github.com: ["ssh-ed25519 AAAA…"]
+  "[forgejo.home]:2222": ["ssh-ed25519 AAAA…"]
 ```
 
-- The daemon refuses to start if a repo's host has no pin.
+- A policy whose `ssh://` repo's host has no pin is refused.
 - It refuses a sync if the host shows a different key.
 - Wildcards, hashed names and `@cert-authority` lines are refused.
 

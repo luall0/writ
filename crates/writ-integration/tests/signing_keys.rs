@@ -1,8 +1,8 @@
-//! Declared signing keys (`writd.yaml`'s `signing_keys`, M5.5), with the real binaries: every
-//! combination the daemon can't sign with stops it at start with its reason, a key held as
-//! something else than declared stops it too, `writd keys create` makes a declared key once
-//! and logs it, and every algorithm and hash signs commits the real `git` (`ssh-keygen`)
-//! verifies.
+//! Declared keys (the policy's `keys`, M6.2; M5.5 for the combinations), with the real
+//! binaries: every combination the daemon can't sign with stops it at start with its reason,
+//! a key held as something else than declared stops it too, the keys `writd.yaml` held before
+//! M6.2 are refused naming the policy, and every algorithm and hash signs commits the real
+//! `git` (`ssh-keygen`) verifies.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,18 +16,30 @@
 use std::fs;
 
 use writ_crypto::algorithm::{Hash, KeyAlgorithm};
-use writ_integration::daemon::{Approvals, Daemon, SIGNING_KEYS};
+use writ_integration::daemon::{Approvals, Daemon};
 use writ_integration::gateway::GitGateway;
-use writ_integration::{audit_events, stderr, stdout};
+use writ_integration::{stderr, stdout};
 
 const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
 templates:
   feature:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -39,8 +51,14 @@ templates:
     max_push_size: 10MB
 "#;
 
-/// The harness's declaration of `agent-01`.
-const AGENT_01: &str = "agent-01: { format: ssh, algorithm: ed25519 }";
+/// `POLICY`'s declaration of `agent-01`.
+const AGENT_01: &str = "  agent-01:\n    use: signing\n    format: ssh\n    algorithm: ed25519\n";
+
+/// `POLICY` with `agent-01` declared as `declaration` (a flow mapping's inside).
+fn declaring(declaration: &str) -> String {
+    assert!(POLICY.contains(AGENT_01));
+    POLICY.replace(AGENT_01, &format!("  agent-01: {{ {declaration} }}\n"))
+}
 
 /// The last line `writd` printed: its error.
 fn last(error: &str) -> &str {
@@ -48,128 +66,139 @@ fn last(error: &str) -> &str {
 }
 
 #[test]
-fn each_refused_signing_key_declaration_stops_the_start_with_its_reason() {
-    assert!(SIGNING_KEYS.contains(AGENT_01), "{SIGNING_KEYS}");
-    // Algorithm × hash: SSH's SSHSIG takes sha256 or sha512.
-    let error = Daemon::refused(POLICY, |yaml| {
-        yaml.replace(
-            AGENT_01,
-            "agent-01: { format: ssh, algorithm: p384, hash: sha384 }",
-        )
-    });
-    assert_eq!(
-        last(&error),
-        "writd: signing_keys.agent-01: ssh signs p384 keys with sha256, sha512, not sha384"
-    );
-    // RSA 2048: no name to declare it with, and the reason said.
-    let error = Daemon::refused(POLICY, |yaml| {
-        yaml.replace(AGENT_01, "agent-01: { format: ssh, algorithm: rsa2048 }")
-    });
-    assert!(
-        last(&error).contains("signing_keys.agent-01.algorithm")
-            && last(&error).contains("RSA keys are 3072 or 4096 bits"),
-        "{error}"
-    );
-    // A backend this build doesn't have.
-    let error = Daemon::refused(POLICY, |yaml| {
-        yaml.replace(
-            AGENT_01,
-            "agent-01: { format: ssh, algorithm: p256, backend: se-cryptokit }",
-        )
-    });
-    assert!(
-        last(&error).contains("signing_keys.agent-01.backend")
-            && last(&error).contains("se-cryptokit"),
-        "{error}"
-    );
-    // OpenPGP P-256 takes SHA-256 only.
-    let error = Daemon::refused(POLICY, |yaml| {
-        yaml.replace(
-            AGENT_01,
-            "agent-01: { format: openpgp, algorithm: p256, hash: sha512 }",
-        )
-    });
-    assert_eq!(
-        last(&error),
-        "writd: signing_keys.agent-01: openpgp signs p256 keys with sha256, not sha512"
-    );
-    // An OpenPGP key whose user ids don't cover a committer email of its templates.
-    let error = Daemon::refused(POLICY, |yaml| {
-        yaml.replace(
-            AGENT_01,
-            "agent-01: { format: openpgp, algorithm: ed25519 }",
-        )
-    });
-    assert_eq!(
-        last(&error),
-        "writd: policy: templates.feature.committer_emails: agent@writ has no user id in \
-         signing_keys.agent-01.uids (the OpenPGP key would sign commits a remote shows as \
-         unverified)"
-    );
-    // A template naming a key nobody declared.
-    let error = Daemon::refused(POLICY, |yaml| yaml.replace(&format!("  {AGENT_01}\n"), ""));
-    assert_eq!(
-        last(&error),
-        "writd: policy: templates.feature.signing_key: agent-01 is not declared in \
-         writd.yaml's signing_keys"
-    );
+fn each_refused_key_declaration_stops_the_start_with_its_reason() {
+    for (policy, expected) in [
+        // Algorithm × hash: SSH's SSHSIG takes sha256 or sha512.
+        (
+            declaring("use: signing, format: ssh, algorithm: p384, hash: sha384"),
+            "keys.agent-01: ssh signs p384 keys with sha256, sha512, not sha384",
+        ),
+        // RSA 2048: no name to declare it with, and the reason said.
+        (
+            declaring("use: signing, format: ssh, algorithm: rsa2048"),
+            "\"rsa2048\" is not a key algorithm (RSA keys are 3072 or 4096 bits)",
+        ),
+        // A backend this build doesn't have.
+        (
+            declaring("use: signing, format: ssh, algorithm: p256, backend: se-cryptokit"),
+            "keys.agent-01.backend: this daemon has no backend se-cryptokit (it has: software)",
+        ),
+        // OpenPGP P-256 takes SHA-256 only.
+        (
+            declaring(
+                "use: signing, format: openpgp, algorithm: p256, hash: sha512, uids: \
+                 [\"<agent@writ>\"]",
+            ),
+            "keys.agent-01: openpgp signs p256 keys with sha256, not sha512",
+        ),
+        // An OpenPGP key whose user ids don't cover a committer email of its templates.
+        (
+            declaring("use: signing, format: openpgp, algorithm: ed25519"),
+            "templates.feature.committer_emails: agent@writ has no user id in \
+             keys.agent-01.uids (the OpenPGP key would sign commits a remote shows as \
+             unverified)",
+        ),
+        // A template naming a key nobody declared.
+        (
+            POLICY.replace(AGENT_01, ""),
+            "templates.feature.signing_key: agent-01 is not declared in keys",
+        ),
+        // An upstream credential of the wrong kind for its URL, and one of no algorithm.
+        (
+            POLICY.replace(
+                "    kind: ssh\n    algorithm: ed25519\n",
+                "    kind: token\n    host: remote.invalid\n",
+            ),
+            "repos.demo.upstream_credential: keys.upstream-01 is a token (kind: token): an \
+             ssh:// upstream needs kind: ssh",
+        ),
+        (
+            POLICY.replace("    kind: ssh\n    algorithm: ed25519\n", "    kind: ssh\n"),
+            "keys.upstream-01.algorithm: required for an ssh credential",
+        ),
+    ] {
+        let error = Daemon::refused_policy(POLICY, &policy);
+        assert!(
+            last(&error).starts_with("writd: the policy in force: ")
+                && last(&error).contains(expected),
+            "{expected}: {error}"
+        );
+    }
 }
 
 #[test]
-fn a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one() {
+fn the_keys_writd_yaml_held_are_refused_naming_the_policy() {
+    for (edit, expected) in [
+        (
+            "signing_keys:\n  agent-01: { format: ssh, algorithm: ed25519 }\n",
+            "signing_keys: moved to the policy in M6.2: declare each key under the policy's \
+             keys.<id>",
+        ),
+        (
+            "mirrors: { known_hosts: upstream_known_hosts }\n",
+            "mirrors.known_hosts: moved to the policy in M6.2: the upstream host keys are its \
+             upstream_hosts",
+        ),
+    ] {
+        let error = Daemon::refused(POLICY, |yaml| {
+            format!("{}{edit}", yaml.replace("mirrors: { fresh_for: 0s }\n", ""))
+        });
+        assert!(last(&error).contains(expected), "{expected}: {error}");
+    }
+}
+
+#[test]
+fn a_key_held_otherwise_than_declared_is_refused_by_recover_and_stops_the_start() {
     let mut daemon = Daemon::start(POLICY, Approvals::Ssh);
     daemon.stop();
-    let yaml_path = daemon.root().join("writd.yaml");
-    let yaml = fs::read_to_string(&yaml_path).unwrap();
-    // agent-01 was made Ed25519 on first start: declared P-256 now, it is refused.
-    fs::write(
-        &yaml_path,
-        yaml.replace(AGENT_01, "agent-01: { format: ssh, algorithm: p256 }"),
-    )
-    .unwrap();
+    // agent-01 and upstream-01 were made Ed25519 at the first start: a policy declaring them
+    // otherwise is refused by `writd recover` (the development keystore needs no passphrase),
+    // nothing put in force.
+    let text = fs::read_to_string(daemon.root().join("policy.yaml")).unwrap();
+    for (from, to, expected) in [
+        (
+            AGENT_01,
+            "  agent-01: { use: signing, format: ssh, algorithm: p256 }\n",
+            "writd: signing key agent-01: declared p256 but the keystore holds a ed25519 key (a \
+             key never changes algorithm: declare it as it is, or give the new one another id)",
+        ),
+        (
+            "    kind: ssh\n    algorithm: ed25519\n",
+            "    kind: ssh\n    algorithm: rsa3072\n",
+            "writd: upstream credential upstream-01: declared rsa3072 but the keystore holds a \
+             ed25519 key (a key never changes algorithm: declare it as it is, or give the new \
+             one another id)",
+        ),
+    ] {
+        assert!(text.contains(from), "{text}");
+        fs::write(
+            daemon.root().join("other-policy.yaml"),
+            text.replace(from, to),
+        )
+        .unwrap();
+        let out = daemon.writd_with(
+            &["recover", "writd.yaml", "policy", "other-policy.yaml"],
+            "",
+        );
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        assert_eq!(last(&stderr(&out)), expected);
+        assert_eq!(
+            fs::read_to_string(daemon.root().join("policy.yaml")).unwrap(),
+            text
+        );
+    }
+    // The key file replaced in the keystore by another algorithm's: the start refuses it.
+    let path = daemon.root().join("s/keys/signing/agent-01");
+    let other = writ_crypto::keypair::KeyPair::generate(KeyAlgorithm::P256).unwrap();
+    let encoded =
+        writ_crypto::keyfile::encode_secret(&other, writ_crypto::keyfile::KeyMeta::SSH).unwrap();
+    fs::write(&path, encoded.as_bytes()).unwrap();
     let out = daemon.writd_with(&["run", "writd.yaml"], "");
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert_eq!(
         last(&stderr(&out)),
-        "writd: signing key agent-01: declared p256 but the keystore holds a ed25519 key (a \
-         key never changes algorithm: declare it as it is, or give the new one another id)"
-    );
-
-    // A new declared key: made once by `writd keys create`, logged, printed to register.
-    let declared = yaml.replace(
-        "signing_keys:\n",
-        "signing_keys:\n  agent-rsa: { format: ssh, algorithm: rsa3072, hash: sha256 }\n",
-    );
-    fs::write(&yaml_path, &declared).unwrap();
-    let out = daemon.writd_with(&["keys", "create", "writd.yaml", "agent-rsa"], "");
-    assert!(out.status.success(), "{}", stderr(&out));
-    let printed = stdout(&out);
-    assert!(
-        printed.starts_with("agent-rsa ssh-rsa AAAA")
-            && printed.trim_end().ends_with("(templates: )"),
-        "{printed}"
-    );
-    let lines = audit_events(&daemon.audit(), "key", "allowed");
-    assert_eq!(lines.len(), 1, "{}", daemon.audit());
-    assert_eq!(lines[0]["key"], "agent-rsa");
-    assert_eq!(
-        lines[0]["reason"],
-        "ssh rsa3072 key made by writd keys create"
-    );
-    let again = daemon.writd_with(&["keys", "create", "writd.yaml", "agent-rsa"], "");
-    assert_eq!(again.status.code(), Some(1));
-    assert!(
-        stderr(&again).contains("signing key agent-rsa is in the keystore already"),
-        "{}",
-        stderr(&again)
-    );
-    assert_eq!(audit_events(&daemon.audit(), "key", "allowed").len(), 1);
-    // An undeclared id: nothing made.
-    let undeclared = daemon.writd_with(&["keys", "create", "writd.yaml", "agent-99"], "");
-    assert_eq!(undeclared.status.code(), Some(1));
-    assert_eq!(
-        last(&stderr(&undeclared)),
-        "writd: signing key agent-99 is not declared in writd.yaml's signing_keys"
+        "writd: signing key agent-01: declared ed25519 but the keystore holds a p256 key (a key \
+         never changes algorithm: declare it as it is, or give the new one another id)"
     );
 }
 
@@ -215,13 +244,26 @@ fn every_algorithm_and_hash_signs_commits_git_verifies() {
 
 /// A policy whose template signs with the harness's OpenPGP key, certified for its committer.
 const OPENPGP_POLICY: &str = r#"
+keys:
+  agent-pgp:
+    use: signing
+    format: openpgp
+    algorithm: ed25519
+    uids: ["Agent <agent@writ>"]
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
 templates:
   feature:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -231,9 +273,6 @@ templates:
     max_pushes: 5
     max_ops_per_minute: 60
     max_push_size: 10MB
-signing_keys:
-  agent-pgp:
-    uids: ["Agent <agent@writ>"]
 "#;
 
 #[test]

@@ -231,7 +231,7 @@ network that can be hostile), so what a sync takes from it is checked and bounde
 
 | What | Bound |
 |---|---|
-| Who it is | `ssh://`: the host key pinned by the operator in `mirrors.known_hosts` (`StrictHostKeyChecking=yes`, nothing learned); `https://`: a certificate for its host from the system's CAs, or from those in `mirrors.ca_certs`, and no redirect |
+| Who it is | `ssh://`: the host key pinned in the signed policy's `upstream_hosts` (`StrictHostKeyChecking=yes`, nothing learned); `https://`: a certificate for its host from the system's CAs, or from those in `mirrors.ca_certs`, and no redirect |
 | What it sends | `mirrors.max_fetch` bytes (1 GiB) per sync, counted by the relay (`ssh://`) or the proxy (`https://`), git having no limit of its own on a fetch; `mirrors.timeout` (5 min) for the whole sync, then git, the relay and ssh are killed as a process group |
 | Its objects | `fsck`, with the checks above at error level; a pack lands whole or not at all |
 | Its refs | branches and tags only; all or none |
@@ -392,7 +392,7 @@ What remotes do with notes: all keep them; Forgejo and Gitea show those under
 
 ## Push modes (per repo)
 
-Each repo in the [registry](../lease-model.md#repo-registry-daemon-config-admin-approved)
+Each repo in the [registry](../lease-model.md#repo-registry-admin-approved)
 chooses which push modes are allowed. Default: `gateway` only.
 
 | Mode | How the agent pushes | What the daemon sees and checks | Needs |

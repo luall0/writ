@@ -213,9 +213,15 @@ fn demo() -> RepoName {
 }
 
 fn policy_yaml(upstream: &str) -> String {
+    let host = match writ_core::upstream::Upstream::parse(upstream) {
+        Ok(writ_core::upstream::Upstream::Https(url)) => url.host().to_owned(),
+        _ => "127.0.0.1".to_owned(),
+    };
     format!(
-        "repos:\n  demo:\n    upstream: {upstream}\n    upstream_credential: token-01\n\
-         templates:\n  t:\n    repos: [demo]\n    operations: [fetch]\n    branches: [\"*\"]\n    \
+        "keys:\n  token-01: {{ use: upstream, kind: token, host: \"{host}\" }}\n\
+         repos:\n  demo:\n    upstream: {upstream}\n    upstream_credential: token-01\n    \
+         templates: [t]\n\
+         templates:\n  t:\n    operations: [fetch]\n    branches: [\"*\"]\n    \
          committer_emails: [\"a@b\"]\n    max_ttl: 1h\n    max_signatures: 1\n    \
          max_pushes: 1\n    max_ops_per_minute: 10\n    max_push_size: 1MB\n"
     )

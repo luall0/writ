@@ -18,7 +18,7 @@ use writ_crypto::ssh_key::{PrivateKey, PublicKey};
 
 use crate::agent::TestAgent;
 use crate::binaries::bin;
-use crate::remote::{PLACEHOLDER_UPSTREAM, TestRemote};
+use crate::remote::TestRemote;
 use crate::telegram::{FakeTelegram, TOKEN};
 use crate::{WAIT_LIMIT, stderr, write_secret};
 
@@ -28,14 +28,6 @@ pub enum Approvals {
     Ssh,
     Https,
 }
-
-/// The signing keys the harness's `writd.yaml` declares: the ones its tests' policies name, in
-/// SSH with Ed25519 (`agent-02` unused until a test's policy change names it), and an OpenPGP
-/// Ed25519 key (`agent-pgp`) for the tests whose policy uses one.
-pub const SIGNING_KEYS: &str = "signing_keys:\n  \
-    agent-01: { format: ssh, algorithm: ed25519 }\n  \
-    agent-02: { format: ssh, algorithm: ed25519 }\n  \
-    agent-pgp: { format: openpgp, algorithm: ed25519 }\n";
 
 /// The passphrase of the sealed keystore [`Daemon::start_sealed`] makes.
 pub const PASSPHRASE: &str = "an integration test passphrase";
@@ -233,6 +225,27 @@ impl Daemon {
     /// returns what it printed (its status is checked: 1).
     pub fn refused(policy: &str, edit: impl Fn(&str) -> String) -> String {
         let setup = setup(policy, Some(&edit), false);
+        let mut child = setup.spawn("info");
+        if !crate::process::ends_within(&mut child, WAIT_LIMIT) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("writd run started, it should have refused to");
+        }
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        stderr(&out)
+    }
+
+    /// The same directory as [`Daemon::start`] with `policy`, but `writd run` finds `refused`
+    /// (on the same test remote) as its policy file at its first start, and must refuse to
+    /// start: returns what it printed (its status is checked: 1).
+    pub fn refused_policy(policy: &str, refused: &str) -> String {
+        let setup = setup(policy, None, false);
+        fs::write(
+            setup.root().join("policy.yaml"),
+            setup.remote.placed(refused, &setup.remote.url("demo")),
+        )
+        .unwrap();
         let mut child = setup.spawn("info");
         if !crate::process::ends_within(&mut child, WAIT_LIMIT) {
             let _ = child.kill();
@@ -550,13 +563,8 @@ fn setup(policy: &str, edit: Option<Edit<'_>>, sealed: bool) -> Setup {
         .unwrap();
     assert!(init.success());
     fs::write(
-        root.join("upstream_known_hosts"),
-        format!("{}\n", remote.known_hosts_line()),
-    )
-    .unwrap();
-    fs::write(
         root.join("policy.yaml"),
-        policy.replace(PLACEHOLDER_UPSTREAM, &remote.url("demo")),
+        remote.placed(policy, &remote.url("demo")),
     )
     .unwrap();
     fs::create_dir_all(root.join("home")).unwrap();
@@ -578,8 +586,7 @@ fn setup(policy: &str, edit: Option<Edit<'_>>, sealed: bool) -> Setup {
     let yaml = format!(
         "state_dir: s\npolicy: policy.yaml\napprovers: approvers\nreaders: readers\n\
          decisions: signed\nkeystore: {{ dev: s/keys }}\n\
-         {SIGNING_KEYS}\
-         mirrors: {{ known_hosts: upstream_known_hosts, fresh_for: 0s }}\n\
+         mirrors: {{ fresh_for: 0s }}\n\
          transports:\n  agents: [{{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }}]\n  \
          approvals:\n    ssh: [{{ tcp: \"127.0.0.1:0\" }}]\n    \
          https: [{{ tcp: \"127.0.0.1:0\" }}]\n\

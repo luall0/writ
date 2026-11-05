@@ -21,14 +21,26 @@ use writ_integration::daemon::{Approvals, Daemon};
 use writ_integration::{audit_events, eventually, stderr, stdout};
 
 const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
     protected_refs: ["refs/heads/main"]
 templates:
   feature:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -482,8 +494,15 @@ fn writ_init_installs_the_skill_where_each_agent_looks_and_undo_removes_it() {
 
 #[test]
 fn a_whole_repo_clone_follows_its_lease_s_format_and_undo_is_exact() {
-    let policy = POLICY.replace("    max_renewals: 1\n", "")
-        + "  pgp:\n    repos: [demo]\n    operations: [fetch, commit_sign, push]\n    branches: [\"agent/*\"]\n    committer_emails: [\"agent@writ\"]\n    signing_key: agent-pgp\n    max_ttl: 2h\n    max_signatures: 40\n    max_pushes: 20\n    max_ops_per_minute: 100\n    max_push_size: 10MB\nsigning_keys:\n  agent-pgp:\n    uids: [\"Agent <agent@writ>\"]\n";
+    let policy = POLICY
+        .replace("    max_renewals: 1\n", "")
+        .replace(
+            "keys:\n",
+            "keys:\n  agent-pgp:\n    use: signing\n    format: openpgp\n    algorithm: ed25519\n    \
+             uids: [\"Agent <agent@writ>\"]\n",
+        )
+        .replace("    templates: [feature]\n", "    templates: [feature, pgp]\n")
+        + "  pgp:\n    operations: [fetch, commit_sign, push]\n    branches: [\"agent/*\"]\n    committer_emails: [\"agent@writ\"]\n    signing_key: agent-pgp\n    max_ttl: 2h\n    max_signatures: 40\n    max_pushes: 20\n    max_ops_per_minute: 100\n    max_push_size: 10MB\n";
     let daemon = Daemon::start(&policy, Approvals::Ssh);
     let (ssh_lease, _, _) = granted(
         &daemon,

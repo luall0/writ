@@ -971,7 +971,10 @@ fn apply_admin(h: &Harness, target: writ_core::authority::AdminTarget, text: &st
     h.service
         .commit_admin(
             &checked,
-            AdminParsed::Policy(PolicyConfig::from_yaml(text).unwrap()),
+            AdminParsed::Policy(
+                PolicyConfig::from_yaml(text).unwrap(),
+                (*h.service.key_uses()).clone(),
+            ),
             vec![],
             Default::default(),
             &CallerFacts::default(),
@@ -1319,9 +1322,8 @@ fn an_openpgp_lease_signs_in_openpgp_only_and_gpg_verifies_its_commits() {
         (KeyAlgorithm::Rsa3072, Hash::Sha384),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let policy = format!(
-            "{POLICY}\nsigning_keys:\n  agent-ed25519-01:\n    uids: [\"Agent <{EMAIL}>\"]\n"
-        );
+        let policy =
+            writ_approval::testing::openpgp_policy(POLICY, &writ_approval::testing::TEST_UIDS);
         let test = TestServiceBuilder::new(&policy)
             .clock(Arc::new(FakeClock::at_unix(START)))
             .openpgp(algorithm, hash)
@@ -1403,8 +1405,7 @@ fn a_policy_change_and_a_revocation_complete_while_an_openpgp_signature_is_in_fl
     use writ_core::authority::AdminTarget;
     use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat};
     let dir = tempfile::tempdir().unwrap();
-    let policy =
-        format!("{POLICY}\nsigning_keys:\n  agent-ed25519-01:\n    uids: [\"Agent <{EMAIL}>\"]\n");
+    let policy = writ_approval::testing::openpgp_policy(POLICY, &writ_approval::testing::TEST_UIDS);
     let test = TestServiceBuilder::new(&policy)
         .clock(Arc::new(FakeClock::at_unix(START)))
         .openpgp(KeyAlgorithm::Ed25519, Hash::Sha512)

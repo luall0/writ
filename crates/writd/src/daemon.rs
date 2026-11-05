@@ -4,9 +4,9 @@
 //! keys, the mirror sync), then writes the authority files in force back to their files. The
 //! sealed keystore is opened by an approver's `writ unseal` ([`Unsealer`]); the development
 //! keystore, at start. Once open, it puts admin changes in force ([`AdminApplier`]): a policy
-//! naming a key the keystore lacks makes it and hands it to the running signer
-//! (`Signer::add_key`), and a token an approver sealed on their machine is opened with the
-//! identity kept open, written, and used at once.
+//! declaring a key the keystore lacks makes it and hands it to the running signer
+//! (`Signer::add_key`), its host pins go to the mirrors, and a token an approver sealed on
+//! their machine is opened with the identity kept open, written, and used at once.
 
 /// The creation time of each OpenPGP key a change added to the signer.
 type Created = std::collections::BTreeMap<KeyId, u32>;
@@ -27,6 +27,7 @@ use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::names::KeyId;
 use writ_gateway::{AdminApplier, Gateway, Unsealer};
 use writ_mirror::credential::UpstreamToken;
+use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{MirrorConfig, Mirrors};
 use writ_platform::{BoxFuture, KeystoreUnlock, Passphrase, UnsealRequest};
 use writ_proto::PassphraseText;
@@ -34,6 +35,7 @@ use writ_proto::{AdminApplied, CreatedKey, KeyRole, TokenApplied, TokenShown};
 use writ_signer::Signer;
 
 use crate::config::{Config, KeystoreConfig, NotifierConfig, TelegramConfig, TokenConfig};
+use crate::declared::Declarations;
 use crate::keystore::{self, Live, Opened as Keystore};
 use crate::platform::{self, LateNotifiers};
 
@@ -256,28 +258,39 @@ impl Opener {
         let (mut created, mut openpgp_created) = (Vec::new(), Created::new());
         let (parsed, ready) = match target {
             AdminTarget::Policy => {
-                let policy = crate::authority::parse_policy(&text, inner.config.min_ttl)
-                    .and_then(|policy| {
-                        let declared = crate::signing::declarations(&inner.config)?;
-                        crate::signing::check_policy(&policy, &declared)?;
-                        Ok(policy)
-                    })
-                    .map_err(|e| refuse(format!("{e:#}")))?;
+                let (policy, declared) =
+                    crate::authority::parse_policy(&text, inner.config.min_ttl)
+                        .and_then(|policy| {
+                            let declared = crate::declared::declarations(&policy)?;
+                            Ok((policy, declared))
+                        })
+                        .map_err(|e| refuse(format!("{e:#}")))?;
+                let pinned = PinnedHosts::from_policy(policy.upstream_hosts())
+                    .map_err(|e| refuse(e.to_string()))?;
                 let open = inner
                     .open
                     .get()
                     .ok_or_else(|| refuse("the daemon is not open".to_owned()))?;
                 (created, openpgp_created) = self
-                    .keys_for(&policy)
+                    .keys_for(&declared)
                     .await
                     .map_err(|e| refuse(format!("{e:#}")))?;
                 let mirrors = gateway
                     .mirrors()
                     .map_err(refuse)?
-                    .with_registry(policy.repos(), open.upstream.clone(), &open.tokens())
+                    .with_registry(
+                        policy.repos(),
+                        pinned,
+                        open.upstream.clone(),
+                        &open.tokens(),
+                    )
                     .await
                     .map_err(|e| refuse(e.to_string()))?;
-                (AdminParsed::Policy(policy), Ready::Policy(mirrors))
+                let key_uses = crate::declared::key_uses(&declared);
+                (
+                    AdminParsed::Policy(policy, key_uses),
+                    Ready::Policy(mirrors),
+                )
             }
             AdminTarget::Approvers => {
                 let approvers = crate::authority::parse_approvers(&text)
@@ -333,29 +346,14 @@ impl Opener {
         Ok(applied)
     }
 
-    /// Hands the signers every key `policy` names that they don't hold yet: from the
-    /// keystore, or made there now (a signing key as `writd.yaml` declares it, an upstream
-    /// credential Ed25519). The keys new to the signers, to register.
-    async fn keys_for(&self, policy: &PolicyConfig) -> anyhow::Result<(Vec<CreatedKey>, Created)> {
+    /// Hands the signers every key `declared` names that they don't hold yet: from the
+    /// keystore, or made there now as declared. The keys new to the signers, to register.
+    async fn keys_for(
+        &self,
+        declared: &Declarations,
+    ) -> anyhow::Result<(Vec<CreatedKey>, Created)> {
         let open = self.0.open.get().context("the daemon is not open")?;
-        let declared = crate::signing::declarations(&self.0.config)?;
-        let (upstream_ids, _) = keystore::upstream_credentials(policy)?;
-        let mut signing_ids: Vec<KeyId> = policy
-            .templates()
-            .values()
-            .filter_map(|t| t.signing_key.clone())
-            .collect();
-        signing_ids.sort();
-        signing_ids.dedup();
-        let wanted: Vec<(KeyRole, KeyId)> = signing_ids
-            .into_iter()
-            .map(|id| (KeyRole::Signing, id))
-            .chain(
-                upstream_ids
-                    .into_iter()
-                    .map(|id| (KeyRole::Upstream, id.clone())),
-            )
-            .collect();
+        let declared = declared.clone();
         let (live, signing, upstream) = (
             open.live.clone(),
             open.signing.clone(),
@@ -365,37 +363,27 @@ impl Opener {
         tokio::task::spawn_blocking(move || {
             let mut added = Vec::new();
             let mut openpgp = Created::new();
-            for (role, id) in wanted {
-                let signer = match role {
+            for (id, key) in &declared {
+                let signer = match key.role {
                     KeyRole::Signing => &signing,
                     KeyRole::Upstream => &upstream,
                 };
-                if writ_signer::public_key(&**signer, &id).is_ok() {
+                if writ_signer::public_key(&**signer, id).is_ok() {
                     continue;
                 }
-                let (key, made) = match role {
-                    KeyRole::Signing => {
-                        let declared = crate::signing::declared(&declared, &id)?;
-                        let (key, made) = live.signing_key_or_make(&id, declared)?;
-                        if let Some(created) = key.meta.created {
-                            openpgp.insert(id.clone(), created);
-                        }
-                        (key.key, made)
-                    }
-                    KeyRole::Upstream => {
-                        let (key, made) = live.upstream_key_or_make(&id)?;
-                        (writ_crypto::keypair::KeyPair::from_ssh(key)?, made)
-                    }
-                };
+                let (stored, made) = live.key_or_make(id, key)?;
+                if let Some(created) = stored.meta.created {
+                    openpgp.insert(id.clone(), created);
+                }
                 let info = signer
-                    .add_key(id.clone(), key)
-                    .with_context(|| format!("{} {id}", role.as_str()))?;
+                    .add_key(id.clone(), stored.key)
+                    .with_context(|| crate::declared::named(key.role, id))?;
                 if made {
-                    tracing::info!(%id, role = role.as_str(), "key made in the keystore");
+                    tracing::info!(%id, role = key.role.as_str(), "key made in the keystore");
                 }
                 added.push(CreatedKey {
-                    id,
-                    role,
+                    id: id.clone(),
+                    role: key.role,
                     public_key: info.public_key.to_openssh()?,
                 });
             }
@@ -410,17 +398,17 @@ impl Opener {
     fn token_use(&self, id: &KeyId) -> Result<TokenUse<'_>, String> {
         let inner = &self.0;
         let policy = inner.service.policy();
-        let (_, https) = keystore::upstream_credentials(&policy).map_err(|e| e.to_string())?;
+        let declared = keystore::tokens_declared(&policy);
         let notifier = inner.config.notifiers.iter().find_map(|n| {
             let NotifierConfig::Telegram(telegram) = n;
             matches!(&telegram.token, TokenConfig::Sealed(sealed) if sealed == id)
                 .then_some(telegram)
         });
-        let upstream = https.contains(id);
+        let upstream = declared.contains(id);
         if !upstream && notifier.is_none() {
             return Err(format!(
-                "token {id}: no https:// repo of the policy in force names it as its \
-                 upstream_credential, and no notifier keeps it sealed"
+                "token {id}: the policy in force declares no token {id} (keys.{id}, kind: \
+                 token), and no notifier keeps it sealed"
             ));
         }
         Ok(TokenUse { upstream, notifier })
@@ -511,12 +499,21 @@ impl Opener {
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(id.clone(), token);
             let policy = inner.service.policy();
-            let reopened = match gateway.mirrors() {
-                Ok(mirrors) => mirrors
-                    .with_registry(policy.repos(), open.upstream.clone(), &open.tokens())
+            let reopened = match (
+                gateway.mirrors(),
+                PinnedHosts::from_policy(policy.upstream_hosts()),
+            ) {
+                (Ok(mirrors), Ok(pinned)) => mirrors
+                    .with_registry(
+                        policy.repos(),
+                        pinned,
+                        open.upstream.clone(),
+                        &open.tokens(),
+                    )
                     .await
                     .map_err(|e| e.to_string()),
-                Err(e) => Err(e),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e.to_string()),
             };
             match reopened {
                 Ok(mirrors) => gateway.set_mirrors(mirrors),
@@ -536,10 +533,11 @@ impl Opener {
     /// a lease gets comes from the service, never from this file.
     fn write_certificates(&self) {
         let inner = &self.0;
-        let Ok(declared) = crate::signing::declarations(&inner.config) else {
-            return;
-        };
-        for id in declared.keys() {
+        let policy = inner.service.policy();
+        for (id, _) in policy
+            .signing_keys()
+            .filter(|(_, key)| key.format == writ_core::config::KeyFormat::Openpgp)
+        {
             if let Some(certificate) = inner.service.openpgp_certificate(id)
                 && let Err(e) = keystore::write_certificate(&inner.config, id, &certificate)
             {
@@ -562,7 +560,7 @@ impl Opener {
             drop(passphrase);
             let key = unlock.unlock(&request)?;
             drop(request);
-            let declared = crate::signing::declarations(&inner.config)?;
+            let declared = crate::declared::declarations(&inner.policy)?;
             keystore::open(&inner.config, &declared, &inner.policy, key.identity()?)
         })
         .await

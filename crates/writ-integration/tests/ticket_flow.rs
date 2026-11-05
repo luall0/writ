@@ -26,14 +26,26 @@ use writ_integration::{stderr, stdout};
 use writ_store::looks_secret;
 
 const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
     protected_refs: ["refs/heads/main"]
 templates:
   feature:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -497,16 +509,29 @@ fn require_expected_paths_rejects_a_ticket_without_them() {
 
 /// A registry of two repos, a template for one of them and without `push`.
 const CAPPED: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
   other:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: []
 templates:
   feature:
-    repos: [demo]
     operations: [fetch, commit_sign]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -620,7 +645,8 @@ fn a_ticket_past_its_template_is_rejected_with_each_reason() {
             "repo",
             "repos:\n  demo:\n",
             "repos:\n  other:\n    template: feature\n    operations: [fetch]\n  demo:\n",
-            "repos.other: repo other is not allowed by the template feature",
+            "repos.other: repo other is closed: it allows no template (repos.other.templates \
+             is empty)",
         ),
         (
             "operation",
@@ -703,13 +729,25 @@ fn a_ticket_past_its_template_is_rejected_with_each_reason() {
 
 /// Two templates a plain ticket fits, one of them for any branch.
 const TWO_TEMPLATES: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature, wide]
 templates:
   feature:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -720,7 +758,6 @@ templates:
     max_ops_per_minute: 100
     max_push_size: 10MB
   wide:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["*"]
     committer_emails: ["agent@writ"]

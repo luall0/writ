@@ -315,7 +315,7 @@ impl Service {
         };
         // Declared: the daemon refuses to start otherwise (fail closed all the same, before a
         // slot is taken).
-        let Some(key_use) = self.config.signing_keys.get(key).copied() else {
+        let Some(key_use) = self.key_uses().get(key).copied() else {
             tracing::error!(%key, "a signing key without a declaration");
             let denial = Denial::internal();
             return Err(deny(&mut inner, &event, denial));

@@ -113,7 +113,7 @@ impl Service {
         // The OpenPGP keys' certificates, with the user ids in force.
         let certified = super::openpgp::certify(
             &self.policy(),
-            &self.config.signing_keys,
+            &self.key_uses(),
             &*opened.signer,
             &opened.openpgp,
         )

@@ -137,8 +137,8 @@ ended by its renewal's grant), `dry_run` (a ticket checked as a submission, noth
 its lease, or added its summary to one that had ended: `reason` says `already <state>`), `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `prove` (an agent
 signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `notes`
 (a lease's [notes](gateway.md#notes) pushed upstream, or not, one line per lease and push of
-the notes ref), `admin`, `seal`, `unseal`, `key` (an agent signing key made on the host by
-`writd keys create`, with its format and algorithm)), `result` (`allowed`, `denied`, `done`), `lease`,
+the notes ref), `admin`, `seal`, `unseal`, `key` (a key made on the host by `writd recover`,
+with its public half)), `result` (`allowed`, `denied`, `done`), `lease`,
 `ticket`, `cert`, `approver`, `repo`, `commit`, `refs`, `committer`, `key` (a proof's key, the
 credential that pushed notes, a key made), `namespace`, `message_sha256` (a proof's namespace and the
 digest of its message, never the message), `count` (how many notes a `notes` line is about, or

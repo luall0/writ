@@ -14,6 +14,7 @@
     clippy::cast_possible_truncation
 )]
 
+use writ_approval::testing::TEST_UIDS;
 use writ_approval::testing::{TestService, TestServiceBuilder};
 use writ_approval::{AdminParsed, CheckedAdmin, Opened, RefusalCode, ServiceError};
 use writ_core::authority::{AdminTarget, AdminText, TextDigest};
@@ -590,7 +591,10 @@ fn a_tightened_template_denies_its_leases_and_a_key_the_signer_lacks_is_refused(
     assert_ne!(unknown, POLICY);
     let request = change(&h.approver, AdminTarget::Policy, previous.clone(), &unknown);
     let checked = h.service.check_admin(&request, &facts()).unwrap();
-    let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&unknown).unwrap());
+    let parsed = AdminParsed::Policy(
+        PolicyConfig::from_yaml(&unknown).unwrap(),
+        (*h.service.key_uses()).clone(),
+    );
     let message = refused(
         h.service
             .commit_admin(&checked, parsed, vec![], Default::default(), &facts()),
@@ -607,7 +611,10 @@ fn a_tightened_template_denies_its_leases_and_a_key_the_signer_lacks_is_refused(
     assert_ne!(tight, POLICY, "the fixture changed");
     let request = change(&h.approver, AdminTarget::Policy, previous, &tight);
     let checked = h.service.check_admin(&request, &facts()).unwrap();
-    let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&tight).unwrap());
+    let parsed = AdminParsed::Policy(
+        PolicyConfig::from_yaml(&tight).unwrap(),
+        (*h.service.key_uses()).clone(),
+    );
     h.service
         .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
         .unwrap();
@@ -683,8 +690,7 @@ fn versions_whose_mac_is_not_the_keystore_s_keep_the_daemon_sealed() {
 #[test]
 fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_logged() {
     use writ_crypto::algorithm::{Hash, KeyAlgorithm};
-    let one = "uids: [\"Agent <user+agent@example.org>\"]";
-    let policy = format!("{POLICY}\nsigning_keys:\n  agent-ed25519-01:\n    {one}\n");
+    let policy = writ_approval::testing::openpgp_policy(POLICY, &writ_approval::testing::TEST_UIDS);
     let dir = tempfile::tempdir().unwrap();
     let h = TestServiceBuilder::new(&policy)
         .openpgp(KeyAlgorithm::Ed25519, Hash::Sha512)
@@ -692,9 +698,14 @@ fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_log
     let id = "agent-ed25519-01".parse().unwrap();
     let before = h.service.openpgp_certificate(&id).unwrap();
     let previous = current(&h, AdminTarget::Policy);
-    let two = policy.replace(
-        one,
-        "uids: [\"Agent <user+agent@example.org>\", \"Fix <user+fix@example.org>\"]",
+    // One more user id for an email the key carries already.
+    let two = writ_approval::testing::openpgp_policy(
+        POLICY,
+        &[
+            TEST_UIDS[0],
+            TEST_UIDS[1],
+            "Agent Two <user+agent@example.org>",
+        ],
     );
 
     // Signed by a key that isn't an approver's: refused, logged, the certificate unchanged.
@@ -713,7 +724,10 @@ fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_log
     // Signed by the approver: the new user id certified at once, in the change's line.
     let request = change(&h.approver, AdminTarget::Policy, previous, &two);
     let checked = h.service.check_admin(&request, &facts()).unwrap();
-    let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&two).unwrap());
+    let parsed = AdminParsed::Policy(
+        PolicyConfig::from_yaml(&two).unwrap(),
+        (*h.service.key_uses()).clone(),
+    );
     h.service
         .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
         .unwrap();
@@ -727,7 +741,10 @@ fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_log
         .unwrap();
     assert!(
         line.contains("; certified OpenPGP key agent-ed25519-01 (")
-            && line.contains("): Agent <user+agent@example.org>, Fix <user+fix@example.org>"),
+            && line.contains(
+                "): Agent <user+agent@example.org>, Fix <user+fix@example.org>, Agent Two \
+                 <user+agent@example.org>"
+            ),
         "{line}"
     );
     // The same user ids again: the same certificate, and nothing certified in the line.
@@ -735,7 +752,10 @@ fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_log
     let same = format!("{two}\n# a comment\n");
     let request = change(&h.approver, AdminTarget::Policy, previous, &same);
     let checked = h.service.check_admin(&request, &facts()).unwrap();
-    let parsed = AdminParsed::Policy(PolicyConfig::from_yaml(&same).unwrap());
+    let parsed = AdminParsed::Policy(
+        PolicyConfig::from_yaml(&same).unwrap(),
+        (*h.service.key_uses()).clone(),
+    );
     h.service
         .commit_admin(&checked, parsed, vec![], Default::default(), &facts())
         .unwrap();

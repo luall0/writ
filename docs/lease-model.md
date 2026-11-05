@@ -8,8 +8,9 @@ Three layers, from fixed to per-task:
 
 | Layer | Written by | Changes |
 |---|---|---|
-| **Repo registry** | Me (admin approval) | Rarely. Hard limits per repo: protected refs, push modes, upstream |
-| **Templates** | Me (admin approval) | Rarely. The maximum shape a ticket can take |
+| **Keys and host pins** | Me (admin approval) | Rarely. Every key the policy names, declared with its use; each `ssh://` upstream's host keys |
+| **Repo registry** | Me (admin approval) | Rarely. Hard limits per repo: protected refs, push modes, upstream, the templates it allows |
+| **Templates** | Me (admin approval) | Rarely. The maximum shape a ticket can take in a repo that names it |
 | **Ticket** | The agent | Per task. Each repository's terms fit a template that allows it; I sign or refuse it |
 
 The code for this page lives in `crates/writ-core` (types, template fit, narrowing, state
@@ -18,13 +19,34 @@ Every key of the registry, the templates and the ticket file, with its default, 
 status: the operator reference ([`policy.yaml`](operators/policy-yaml.md),
 [the ticket file](operators/ticket.md)).
 
-## Repo registry (daemon config, admin-approved)
+## Keys and host pins (admin-approved)
+
+```yaml
+keys:
+  agent-ed25519-01: { use: signing, format: ssh, algorithm: ed25519 }
+  upstream-github-01: { use: upstream, kind: ssh, algorithm: ed25519 }
+  upstream-forgejo-01: { use: upstream, kind: ssh, algorithm: rsa4096 }   # some remotes take RSA only
+  token-example-01: { use: upstream, kind: token, host: git.example.org }  # sent to that host only
+  deploy-dotfiles-01: { use: upstream, kind: ssh, algorithm: ed25519 }
+upstream_hosts:
+  github.com: ["ssh-ed25519 AAAA…"]
+  forgejo.home: ["ssh-ed25519 AAAA…"]
+```
+
+Every key a template or a repo names is declared here, for that use: a template signs only
+with a `signing` key, a repo reaches upstream only with an `upstream` one of the kind its URL
+takes (`ssh` for `ssh://`, a `token` declared for the URL's host for `https://`). The change
+that declares a key makes it; nothing about a key is guessed. Each `ssh://` upstream's host
+has its keys pinned in `upstream_hosts`: nothing is learned on first use.
+
+## Repo registry (admin-approved)
 
 ```yaml
 repos:
   omega-code:
     upstream: ssh://git@github.com/user/omega-code.git
-    upstream_credential: upstream-github-01   # SSH key on my GitHub account (account-wide access), id in the signer
+    upstream_credential: upstream-github-01   # SSH key on my GitHub account (account-wide access)
+    templates: [feature-branch, quick-fix]    # the templates its tickets may use; []: closed
     protected_refs: ["refs/heads/main", "refs/tags/*"]   # never pushable by any lease
     push_modes: [gateway]                     # default
     ticket_link: trailer                      # ledger_only (default) | trailer | notes
@@ -32,15 +54,18 @@ repos:
   homelab-scripts:
     upstream: ssh://git@forgejo.home/user/homelab-scripts.git
     upstream_credential: upstream-forgejo-01
+    templates: [feature-branch, quick-fix]
     protected_refs: ["refs/heads/main"]
     push_modes: [gateway, proxy]              # proxy: no mirror, refs and commits still checked
   some-https-only-repo:
     upstream: https://git.example.org/user/some-repo.git   # https://[user@]host[:port]/path
     upstream_credential: token-example-01     # a token in the keystore (`writ admin token token-example-01`)
+    templates: [quick-fix]
     push_modes: [gateway]
   dotfiles:
     upstream: ssh://git@github.com/user/dotfiles.git
     upstream_credential: deploy-dotfiles-01   # deploy key: the remote limits it to this repo
+    templates: [quick-fix]
     push_modes: [direct_ssh]                  # agent pushes to GitHub itself
     direct_ssh:
       hosts: [github.com]
@@ -53,9 +78,10 @@ projects' commit conventions don't allow an extra trailer),
 signed only in its repo's format, so a SHA-256 repository never gets SHA-1 objects signed). The
 `direct_ssh` section is required with the `direct_ssh` push mode and refused without it.
 The `upstream` URL picks how the daemon reaches it: `ssh://` with a key in its signer,
-`https://` with a token from its keystore (never `http://`, never a password in the URL); an
-`upstream_credential` id is a key or a token, never both
-([gateway](architecture/gateway.md#upstream)).
+`https://` with a token from its keystore (never `http://`, never a password in the URL)
+([gateway](architecture/gateway.md#upstream)). `templates` names the templates whose
+tickets may reach the repo; `[]` keeps it registered, with its mirror and credential, while
+every ticket for it is refused as closed.
 Repo names are unique ignoring case: a repo's mirror is `<name>.git`, and on a
 case-insensitive file system (local mode's APFS) `Demo` and `demo` would be one directory.
 
@@ -65,12 +91,11 @@ approval prompt. Push modes are described in [Gateway](architecture/gateway.md#p
 
 Changing the registry is an admin change and needs a signed approval.
 
-## Templates (daemon config, admin-approved)
+## Templates (admin-approved)
 
 ```yaml
 templates:
-  feature-branch:
-    repos: [omega-code, homelab-scripts]   # a ticket picks from this set
+  feature-branch:                          # no repos here: each repo names its templates
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     push_modes: [gateway, proxy]           # default [gateway]; never direct_ssh here
@@ -86,7 +111,6 @@ templates:
     paths_check: warn                      # off | warn | deny (default warn)
     require_expected_paths: false
   quick-fix:
-    repos: [omega-code, homelab-scripts, dotfiles]
     operations: [fetch, commit_sign, push]
     branches: ["agent/fix-*"]
     committer_emails: ["user+agent@example.org"]
@@ -105,7 +129,7 @@ each limit. Its `committer_name`, when set, is not something a ticket asks for: 
 copies it into every lease that signs, and every commit's author and committer must carry
 exactly that name (git's `user.name`, which `writ git` and a whole-repo clone set from the
 lease). Unset, the name isn't checked. It doesn't make a remote show a commit as verified
-(the email and the key do); it keeps an agent from signing as someone else by name. `quick-fix` lists `dotfiles`, but `dotfiles` only allows `direct_ssh` and the
+(the email and the key do); it keeps an agent from signing as someone else by name. `dotfiles` allows `quick-fix`, but `dotfiles` only allows `direct_ssh` and the
 template only `gateway` (the default), so a quick-fix ticket can sign for `dotfiles` but not
 push to it.
 

@@ -23,14 +23,26 @@ use writ_integration::daemon::{Approvals, Daemon};
 use writ_integration::{audit_events, stderr, stdout, write_secret};
 
 const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [feature]
     protected_refs: ["refs/heads/main"]
 templates:
   feature:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -553,10 +565,13 @@ fn gnupg_home(dir: &Path) -> std::path::PathBuf {
 
 #[test]
 fn an_openpgp_lease_signs_through_writ_sign_as_gpg_with_no_gnupg_home_of_its_own() {
-    let policy = format!(
-        "{}signing_keys:\n  agent-pgp:\n    uids: [\"Agent <agent@writ>\"]\n",
-        POLICY.replace("signing_key: agent-01", "signing_key: agent-pgp")
-    );
+    let policy = POLICY
+        .replace("signing_key: agent-01", "signing_key: agent-pgp")
+        .replace(
+            "keys:\n",
+            "keys:\n  agent-pgp:\n    use: signing\n    format: openpgp\n    algorithm: ed25519\n    \
+             uids: [\"Agent <agent@writ>\"]\n",
+        );
     let daemon = Daemon::start(&policy, Approvals::Ssh);
     let request = daemon.request("oauth", OAUTH);
     let id = request.id.clone();
@@ -569,7 +584,13 @@ fn an_openpgp_lease_signs_through_writ_sign_as_gpg_with_no_gnupg_home_of_its_own
     // The operator's printed certificate is the lease's.
     let printed = daemon.print("signing-keys");
     assert!(printed.contains(certificate.trim()), "{printed}");
-    let fingerprint = printed.split(' ').nth(2).unwrap().to_owned();
+    // Every declared key is printed (agent-01 too, unused here): agent-pgp's line.
+    let fingerprint = printed
+        .lines()
+        .find(|line| line.starts_with("agent-pgp openpgp "))
+        .and_then(|line| line.split(' ').nth(2))
+        .unwrap()
+        .to_owned();
 
     let root = daemon.root().to_owned();
     fs::write(

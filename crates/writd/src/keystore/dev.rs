@@ -12,11 +12,13 @@ use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey};
 use writ_mirror::credential::{MAX_TOKEN_FILE, UpstreamToken};
 use writ_platform::notify::telegram::BotToken;
+use writ_proto::KeyRole;
 
 use super::{
-    Boot, Keys, SigningKey, TlsKeyPair, make_tls, private_dir, upstream_credentials, write_private,
+    Boot, Keys, StoredKey, TlsKeyPair, make_tls, of_role, private_dir, tokens_declared,
+    write_private,
 };
-use crate::signing::{Declarations, Declared};
+use crate::declared::{Declarations, Declared};
 
 /// The TLS key and certificate of the dev keystore, made on first start.
 fn dev_tls(dir: &Path) -> anyhow::Result<TlsKeyPair> {
@@ -44,13 +46,6 @@ fn dev_tls(dir: &Path) -> anyhow::Result<TlsKeyPair> {
     })
 }
 
-/// The dev keystore's key `name` in `dir`, generated if it lacks it (on first start, or for a
-/// signed policy change).
-pub fn key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
-    allowed()?;
-    dev_key(dir, name)
-}
-
 /// The dev keystore's key `name`, generated on first start.
 fn dev_key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
     let path = dir.join(name);
@@ -64,36 +59,54 @@ fn dev_key(dir: &Path, name: &str) -> anyhow::Result<PrivateKey> {
     Ok(key)
 }
 
-/// The declared signing key `id`, from `<dir>/signing/<id>` (a `writ-key/1` file, or an
-/// OpenSSH key made before M5.5), checked against its declaration; made there now, as
-/// declared, when it is missing. Whether it was made is the second value.
-pub fn signing_key(
-    dir: &Path,
-    id: &KeyId,
-    declared: &Declared,
-) -> anyhow::Result<(SigningKey, bool)> {
-    allowed()?;
-    dev_signing_key(dir, id, declared)
+/// The directory of the keys of `role` in the development keystore `dir`.
+fn role_dir(dir: &Path, role: KeyRole) -> std::path::PathBuf {
+    dir.join(match role {
+        KeyRole::Signing => "signing",
+        KeyRole::Upstream => "upstream",
+    })
 }
 
-/// [`signing_key`], once the build is known to take the development keystore.
-fn dev_signing_key(
+/// The declared key `id`, from `<dir>/signing/<id>` or `<dir>/upstream/<id>` (a `writ-key/1`
+/// file, or an OpenSSH key), checked against its declaration; made there now, as declared,
+/// when it is missing. Whether it was made is the second value.
+pub fn key_or_make(
     dir: &Path,
     id: &KeyId,
     declared: &Declared,
-) -> anyhow::Result<(SigningKey, bool)> {
-    let dir = dir.join("signing");
+) -> anyhow::Result<(StoredKey, bool)> {
+    allowed()?;
+    dev_key_or_make(dir, id, declared)
+}
+
+/// [`key_or_make`], once the build is known to take the development keystore.
+fn dev_key_or_make(
+    dir: &Path,
+    id: &KeyId,
+    declared: &Declared,
+) -> anyhow::Result<(StoredKey, bool)> {
+    let dir = role_dir(dir, declared.role);
     private_dir(&dir)?;
     let path = dir.join(id.as_str());
     if !path.exists() {
-        return Ok((make_signing_key(&path, id, declared)?, true));
+        let (key, meta) = crate::declared::make(declared)?;
+        write_private(
+            &path,
+            writ_crypto::keyfile::encode_secret(&key, meta)?.as_bytes(),
+        )?;
+        let made = StoredKey {
+            id: id.clone(),
+            key,
+            meta,
+        };
+        return Ok((made, true));
     }
-    let text = writ_platform::fs::read_secret(&path, "the signing key", 1 << 16)?;
+    let text = writ_platform::fs::read_secret(&path, "the key", 1 << 16)?;
     let (key, meta) = writ_crypto::keyfile::decode_secret(&text)
-        .with_context(|| format!("{}: not a signing key", path.display()))?;
-    crate::signing::check_key(id, declared, &key.public_key(), &meta)?;
+        .with_context(|| format!("{}: not a key", path.display()))?;
+    crate::declared::check_key(id, declared, &key.public_key(), &meta)?;
     Ok((
-        SigningKey {
+        StoredKey {
             id: id.clone(),
             key,
             meta,
@@ -102,59 +115,15 @@ fn dev_signing_key(
     ))
 }
 
-/// Makes the signing key `id` at `path` as `declared` describes it.
-fn make_signing_key(path: &Path, id: &KeyId, declared: &Declared) -> anyhow::Result<SigningKey> {
-    let (key, meta) = crate::signing::make(declared)?;
-    write_private(
-        path,
-        writ_crypto::keyfile::encode_secret(&key, meta)?.as_bytes(),
-    )?;
-    Ok(SigningKey {
-        id: id.clone(),
-        key,
-        meta,
-    })
-}
-
-/// `writd keys create` on the development keystore: refuses a key already there.
-pub fn create_signing_key(
-    dir: &Path,
-    id: &KeyId,
-    declared: &Declared,
-) -> anyhow::Result<SigningKey> {
-    allowed()?;
-    let dir = dir.join("signing");
-    private_dir(&dir)?;
-    let path = dir.join(id.as_str());
-    if path.exists() {
-        anyhow::bail!(
-            "signing key {id} is in the keystore already ({}): a key is made once",
-            path.display()
-        );
-    }
-    make_signing_key(&path, id, declared)
-}
-
-/// Every signing key the templates use, each made on first start as declared.
-fn dev_signing_keys(
+/// Every declared key of `role`, each made on first start as declared.
+fn dev_keys_of(
     dir: &Path,
     declared: &Declarations,
-    policy: &PolicyConfig,
-) -> anyhow::Result<Vec<SigningKey>> {
-    super::used(declared, policy)?
-        .into_iter()
-        .map(|(id, key)| Ok(dev_signing_key(dir, id, key)?.0))
+    role: KeyRole,
+) -> anyhow::Result<Vec<StoredKey>> {
+    of_role(declared, role)
+        .map(|(id, key)| Ok(dev_key_or_make(dir, id, key)?.0))
         .collect()
-}
-
-/// The credentials of `ssh://` repos, from `<dir>/upstream/<id>`, each generated on first
-/// start; `writd upstream-keys` prints their public keys, to add on each remote.
-fn dev_upstream_keys(
-    dir: &Path,
-    policy: &PolicyConfig,
-) -> anyhow::Result<Vec<(KeyId, PrivateKey)>> {
-    let (keys, _) = upstream_credentials(policy)?;
-    dev_keys(&dir.join("upstream"), keys.into_iter())
 }
 
 /// The tokens of `https://` repos, from `<dir>/tokens/<id>`: written by the operator (the
@@ -163,7 +132,7 @@ fn dev_tokens(
     dir: &Path,
     policy: &PolicyConfig,
 ) -> anyhow::Result<std::collections::BTreeMap<KeyId, Arc<UpstreamToken>>> {
-    let (_, ids) = upstream_credentials(policy)?;
+    let ids = tokens_declared(policy);
     let dir = dir.join("tokens");
     private_dir(&dir)?;
     ids.into_iter()
@@ -171,8 +140,7 @@ fn dev_tokens(
             let path = dir.join(id.as_str());
             let missing = || {
                 format!(
-                    "upstream credential {id} (an https:// repo's) is a token: write it alone to \
-                     {} (mode 0600)",
+                    "upstream token {id} is declared: write it alone to {} (mode 0600)",
                     path.display()
                 )
             };
@@ -229,18 +197,6 @@ pub fn bot_tokens(
         .collect()
 }
 
-/// One key per distinct id, in the private directory `dir`.
-fn dev_keys<'a>(
-    dir: &Path,
-    ids: impl Iterator<Item = &'a KeyId>,
-) -> anyhow::Result<Vec<(KeyId, PrivateKey)>> {
-    let ids: std::collections::BTreeSet<&KeyId> = ids.collect();
-    private_dir(dir)?;
-    ids.into_iter()
-        .map(|id| Ok((id.clone(), dev_key(dir, id.as_str())?)))
-        .collect()
-}
-
 /// Refuses unless this build takes the development keystore: an explicit build feature, and a
 /// debug build. A release build, or one without the feature, refuses plaintext keys whatever
 /// its profile says.
@@ -254,14 +210,15 @@ fn allowed() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The daemon's keys, from the development keystore in `dir`.
-pub fn keys(dir: &Path, declared: &Declarations, policy: &PolicyConfig) -> anyhow::Result<Keys> {
+/// The daemon's keys, from the development keystore in `dir`: every declared key, made on
+/// first start.
+pub fn keys(dir: &Path, declared: &Declarations) -> anyhow::Result<Keys> {
     allowed()?;
     private_dir(dir)?;
     Ok(Keys {
         ca: dev_key(dir, "ca")?,
-        signing: dev_signing_keys(dir, declared, policy)?,
-        upstream: dev_upstream_keys(dir, policy)?,
+        signing: dev_keys_of(dir, declared, KeyRole::Signing)?,
+        upstream: dev_keys_of(dir, declared, KeyRole::Upstream)?,
     })
 }
 
@@ -292,49 +249,98 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn one_signing_key_per_used_key_kept_across_starts() {
-        let dir = tempfile::tempdir().unwrap();
-        let policy = PolicyConfig::from_yaml(include_str!(
-            "../../../writ-core/tests/fixtures/policy.yaml"
-        ))
-        .unwrap();
-        // Two templates name agent-ed25519-01, one names none; one more key is declared but
-        // unused: one key made.
-        let declared = crate::signing::ssh_ed25519(&["agent-ed25519-01", "agent-unused"]);
-        let first = dev_signing_keys(dir.path(), &declared, &policy).unwrap();
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].id.as_str(), "agent-ed25519-01");
-        let again = dev_signing_keys(dir.path(), &declared, &policy).unwrap();
-        assert_eq!(again[0].key.public_key(), first[0].key.public_key(), "kept");
-        let path = dir.path().join("signing/agent-ed25519-01");
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-        let dir_mode = std::fs::metadata(dir.path().join("signing"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(dir_mode & 0o777, 0o700);
-    }
+    const PIN: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
 
-    const HTTPS_POLICY: &str = "\
+    /// Two signing keys (one used, one not), an RSA upstream key, a token.
+    fn policy() -> PolicyConfig {
+        PolicyConfig::from_yaml(&format!(
+            "keys:
+  agent-01: {{ use: signing, format: ssh, algorithm: ed25519 }}
+  agent-unused: {{ use: signing, format: openpgp, algorithm: p256 }}
+  key-01: {{ use: upstream, kind: ssh, algorithm: rsa3072 }}
+  token-01: {{ use: upstream, kind: token, host: example.org }}
+upstream_hosts:
+  example.org: [\"{PIN}\"]
 repos:
   plain:
     upstream: ssh://git@example.org/u/plain.git
     upstream_credential: key-01
+    templates: []
   web:
     upstream: https://example.org/u/web.git
     upstream_credential: token-01
+    templates: []
   web2:
-    upstream: https://x-token-auth@example.com/u/web2.git
+    upstream: https://x-token-auth@example.org/u/web2.git
     upstream_credential: token-01
-templates: {}
-";
+    templates: []
+templates: {{}}
+"
+        ))
+        .unwrap()
+    }
 
     #[test]
-    fn https_repos_take_the_operator_s_token_and_ssh_repos_a_generated_key() {
+    fn every_declared_key_is_made_once_as_declared_and_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let policy = PolicyConfig::from_yaml(HTTPS_POLICY).unwrap();
+        let declared = crate::declared::declarations(&policy()).unwrap();
+        // The build's dev-keystore gate aside (`keys` checks it first): what it reads.
+        let keys = |dir: &Path, declared: &Declarations| -> anyhow::Result<Keys> {
+            Ok(Keys {
+                ca: dev_key(dir, "ca")?,
+                signing: dev_keys_of(dir, declared, KeyRole::Signing)?,
+                upstream: dev_keys_of(dir, declared, KeyRole::Upstream)?,
+            })
+        };
+        let first = keys(dir.path(), &declared).unwrap();
+        let ids = |keys: &[StoredKey]| keys.iter().map(|k| k.id.to_string()).collect::<Vec<_>>();
+        // Every key the policy declares, a template naming it or not; never a token.
+        assert_eq!(ids(&first.signing), ["agent-01", "agent-unused"]);
+        assert_eq!(ids(&first.upstream), ["key-01"]);
+        assert_eq!(
+            writ_crypto::algorithm::KeyAlgorithm::of_public(
+                first.upstream[0].key.public_key().key_data()
+            ),
+            Some(writ_crypto::algorithm::KeyAlgorithm::Rsa3072),
+            "an upstream key of the declared algorithm"
+        );
+        assert!(first.signing[1].meta.created.is_some(), "an OpenPGP key");
+        assert!(!dir.path().join("upstream/token-01").exists());
+        let again = keys(dir.path(), &declared).unwrap();
+        assert_eq!(
+            again.upstream[0].key.public_key(),
+            first.upstream[0].key.public_key(),
+            "kept"
+        );
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.path().join("signing/agent-01")), 0o600);
+        assert_eq!(mode(&dir.path().join("upstream")), 0o700);
+        // Declared otherwise than the keystore holds it: refused, by name.
+        let other = PolicyConfig::from_yaml(
+            &policy()
+                .to_yaml()
+                .replace("algorithm: rsa3072", "algorithm: rsa4096"),
+        )
+        .unwrap();
+        let error = format!(
+            "{:#}",
+            keys(dir.path(), &crate::declared::declarations(&other).unwrap())
+                .err()
+                .unwrap()
+        );
+        assert!(
+            error.starts_with(
+                "upstream credential key-01: declared rsa4096 but the keystore holds a rsa3072 key"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_declared_token_is_the_operator_s_never_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy();
         // Missing: the daemon stops, saying where the token goes.
         let error = format!("{:#}", dev_tokens(dir.path(), &policy).unwrap_err());
         assert!(error.contains("token-01"), "{error}");
@@ -365,31 +371,6 @@ templates: {}
             "{error}"
         );
         assert!(!error.contains(token), "{error}");
-        // Only the ssh repo's credential gets a key.
-        let keys = dev_upstream_keys(dir.path(), &policy).unwrap();
-        let ids: Vec<&str> = keys.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["key-01"]);
-        assert!(!dir.path().join("upstream/token-01").exists());
-    }
-
-    #[test]
-    fn one_credential_id_for_a_key_and_a_token_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let both = HTTPS_POLICY.replace(
-            "upstream_credential: key-01",
-            "upstream_credential: token-01",
-        );
-        let policy = PolicyConfig::from_yaml(&both).unwrap();
-        for error in [
-            format!("{:#}", dev_tokens(dir.path(), &policy).unwrap_err()),
-            format!("{:#}", dev_upstream_keys(dir.path(), &policy).unwrap_err()),
-        ] {
-            assert_eq!(
-                error,
-                "upstream credential token-01 is named by an ssh:// repo (a key) and an https:// \
-                 repo (a token): give each its own id"
-            );
-        }
     }
 
     #[test]

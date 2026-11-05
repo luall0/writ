@@ -485,14 +485,26 @@ mod tests {
         use writ_proto::Decision;
 
         const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [work]
     protected_refs: [refs/heads/main]
 templates:
   work:
-    repos: [demo]
     operations: [fetch, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
@@ -685,13 +697,21 @@ ticket:
         use writ_platform::clock::system::SystemClock;
 
         const POLICY: &str = r#"
+keys:
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [read]
 templates:
   read:
-    repos: [demo]
     operations: [fetch]
     max_ttl: 1h
     max_signatures: 0

@@ -1,5 +1,0 @@
-# The upstream host keys the development daemon accepts (mirrors.known_hosts): pin each
-# remote's real key here, checked against the fingerprint the remote publishes, e.g.
-#   ssh-keyscan -t ed25519 github.com   (then compare with GitHub's published fingerprints)
-# remote.invalid (dev/policy.yaml's placeholder upstream) is pinned to a key nobody holds.
-remote.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJON0F+SC7vTbwXqnI857uLvAWDJtDsl1W7eeWrS7GMg

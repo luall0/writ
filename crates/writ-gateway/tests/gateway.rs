@@ -34,16 +34,29 @@ use writ_platform::testing::{FakeAttestor, FakeConnector, FakeTransport, eventua
 use writ_proto::{Ack, ApiError, Command, Decision, Decisions, Info, Listing, Submitted};
 
 const POLICY: &str = r#"
+keys:
+  agent-01:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
+    templates: [work]
   other:
     upstream: ssh://git@remote.invalid/other.git
     upstream_credential: upstream-01
+    templates: []
 templates:
   work:
-    repos: [demo]
     operations: [fetch, commit_sign]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]

@@ -13,12 +13,7 @@ submissions: { per_source: 300, in_all: 600 }
 # minutes (docs/end-to-end.md).
 min_ttl: 30s
 keystore: { sealed: { dir: data/keys, boot: data/boot } }   # made by `writd init`, opened by `writ unseal`
-signing_keys:                      # every key a template's signing_key names
-  agent-e2e: { format: ssh, algorithm: ed25519 }
-  agent-e2e-verify: { format: ssh, algorithm: ed25519 }
-  agent-e2e-pgp: { format: openpgp, algorithm: ed25519 }   # scenario 18
-mirrors:
-  known_hosts: upstream_known_hosts
+mirrors:                           # the keys and Forgejo's host key are policy.yaml's
   ca_certs: upstream_ca.pem        # the HTTPS front's certificate (the `https` repo)
   fresh_for: 0s                    # every fetch and push asks Forgejo first
 transports:

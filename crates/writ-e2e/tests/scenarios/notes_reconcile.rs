@@ -22,8 +22,8 @@ use crate::wired;
 
 const REPO: &str = "backfill";
 /// The registry's line for the repo, as the operator setup wrote it, and with notes.
-const WITHOUT: &str = "upstream_credential: upstream-backfill, protected_refs";
-const WITH: &str = "upstream_credential: upstream-backfill, ticket_link: notes, protected_refs";
+const WITHOUT: &str = "upstream_credential: upstream-backfill, templates";
+const WITH: &str = "upstream_credential: upstream-backfill, ticket_link: notes, templates";
 
 /// The policy in force with `from` replaced by `to`, applied by the approver (a signed admin
 /// change, at once), then written back to the daemon's `policy.yaml`.

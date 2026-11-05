@@ -101,13 +101,17 @@ pub struct ServiceConfig {
     /// The sealed keystore's public recipient, served by `writ info` (what `writ admin
     /// token` encrypts to); `None` with the development keystore.
     pub recipient: Option<String>,
-    /// How each agent signing key signs, as `writd.yaml` declares it. A key without its
-    /// entry signs nothing.
-    pub signing_keys: BTreeMap<writ_core::names::KeyId, KeyUse>,
+    /// How each signing key of `policy` signs, as its declaration resolves on its backend
+    /// (`keys.<id>`). A key without its entry signs nothing; a policy change brings its own
+    /// ([`AdminParsed::Policy`]).
+    pub signing_keys: KeyUses,
 }
 
+/// How each signing key signs, by id.
+pub type KeyUses = BTreeMap<writ_core::names::KeyId, KeyUse>;
+
 /// How an agent signing key signs: the format it is declared with, and the format's hash
-/// (checked against its backend at start).
+/// (checked against its backend whenever a policy declaring it is read).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyUse {
     pub format: writ_crypto::algorithm::SignatureFormat,
@@ -151,6 +155,8 @@ pub struct Service {
     config: ServiceConfig,
     /// The policy in force: replaced whole by an admin change, read as a snapshot.
     policy: RwLock<Arc<PolicyConfig>>,
+    /// How its signing keys sign: replaced with it.
+    key_uses: RwLock<Arc<KeyUses>>,
     /// The approver keys in force: replaced whole by an admin change.
     approver_keys: RwLock<Arc<Vec<PublicKey>>>,
     /// The version of each authority file in force, and the head's MAC.
@@ -355,6 +361,7 @@ impl Service {
         let approver_keys: Vec<PublicKey> =
             config.approvers.iter().map(|a| a.key.clone()).collect();
         let policy = RwLock::new(Arc::new(config.policy.clone()));
+        let key_uses = RwLock::new(Arc::new(config.signing_keys.clone()));
         let in_force = RwLock::new(config.in_force.clone());
         let (revocations, _) = broadcast::channel(256);
         let boot = SealedBoot {
@@ -364,6 +371,7 @@ impl Service {
         let service = Arc::new_cyclic(|me| Self {
             config,
             policy,
+            key_uses,
             approver_keys: RwLock::new(Arc::new(approver_keys)),
             in_force,
             opened: OnceLock::new(),
@@ -418,6 +426,15 @@ impl Service {
     pub fn policy(&self) -> Arc<PolicyConfig> {
         // poisoned: the last policy written stands (it was written whole).
         self.policy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// How the signing keys of the policy in force sign: a snapshot.
+    pub fn key_uses(&self) -> Arc<KeyUses> {
+        // poisoned: the last map written stands (it was written whole).
+        self.key_uses
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()

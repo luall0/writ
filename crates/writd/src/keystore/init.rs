@@ -2,9 +2,9 @@
 //! daemon's user; asks for the passphrase twice (one line of stdin when it isn't a terminal).
 //!
 //! It makes the keystore's identity (wrapped with the passphrase), the boot tier (the host
-//! key, the TLS key and its certificate), the CA key, every agent signing key a template
-//! uses (as `writd.yaml` declares it) and every `ssh://` upstream credential the policy names,
-//! each its own age file to the identity's recipient;
+//! key, the TLS key and its certificate), the CA key, and every key the policy declares (its
+//! signing keys and `ssh` upstream credentials, as `keys.<id>` describes each), each its own
+//! age file to the identity's recipient;
 //! then prints what the operator pins and registers. It refuses a keystore already there, and
 //! leaves nothing behind when it fails.
 
@@ -12,15 +12,16 @@ use std::path::Path;
 
 use anyhow::{Context, bail};
 use writ_core::config::PolicyConfig;
-use writ_core::names::KeyId;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey};
 use writ_platform::{DataKey, Passphrase};
 
 use super::sealed::{Layout, seal, write_public};
-use super::{PublicKeys, make_tls, private_dir, upstream_credentials, write_private};
+use writ_proto::KeyRole;
+
+use super::{PublicKeys, make_tls, of_role, private_dir, write_private};
 use crate::config::{Config, KeystoreConfig, SealedConfig};
-use crate::signing::Declarations;
+use crate::declared::Declarations;
 
 /// Wraps the identity with the passphrase: the platform's choice (`platform::enroll`), or a
 /// cheap work factor in tests.
@@ -45,8 +46,8 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
         config.min_ttl,
     )
     .with_context(|| config.policy.display().to_string())?;
-    let declared = crate::signing::declarations(&config)?;
-    crate::signing::check_policy(&policy, &declared)?;
+    let declared = crate::declared::declarations(&policy)
+        .with_context(|| config.policy.display().to_string())?;
     crate::authority::check(&texts, config.min_ttl)?;
     refuse_existing(sealed)?;
     let db = config.state_dir.join("leases.db");
@@ -165,8 +166,6 @@ pub fn make(
     enroll: Enroll<'_>,
 ) -> anyhow::Result<Made> {
     refuse_existing(sealed)?;
-    // Before any file: a policy naming one id as a key and a token is refused here.
-    let (upstream_ids, _tokens) = upstream_credentials(policy)?;
     private_dir(&sealed.dir)?;
     private_dir(&sealed.boot)?;
     let mut undo = Undo {
@@ -203,34 +202,23 @@ pub fn make(
     seal(&layout.authority(), authority.as_bytes(), &to)?;
     private_dir(&layout.signing_dir())?;
     private_dir(&layout.upstream_dir())?;
-    let keys = |ids: std::collections::BTreeSet<&KeyId>,
-                secret: &dyn Fn(&KeyId) -> std::path::PathBuf,
-                public: &dyn Fn(&KeyId) -> std::path::PathBuf|
-     -> anyhow::Result<Vec<_>> {
-        ids.into_iter()
-            .map(|id| {
-                let key = sealed_key(&secret(id), &public(id))?;
-                Ok((id.clone(), key.public_key().clone()))
-            })
-            .collect()
-    };
-    let signing = super::used(declared, policy)?
-        .into_iter()
-        .map(|(id, key)| {
-            let made = super::sealed::make_signing_key(&layout, &recipient, id, key)?;
-            // An OpenPGP key's certificate, with the user ids the policy gives it.
-            if let Some(certificate) = crate::signing::certificate(&made, key, policy.uids(id))? {
-                write_public(
-                    &layout.signing_dir().join(format!("{id}.asc")),
-                    &certificate,
-                )?;
-            }
-            Ok((made.id, made.key.public_key(), made.meta))
-        })
-        .collect::<anyhow::Result<_>>()?;
-    let upstream = keys(upstream_ids, &|id| layout.upstream(id), &|id| {
-        layout.upstream_public(id)
-    })?;
+    let mut signing = Vec::new();
+    for (id, key) in of_role(declared, KeyRole::Signing) {
+        let made = super::sealed::make_key(&layout, &recipient, id, key)?;
+        // An OpenPGP key's certificate, with the user ids the policy gives it.
+        if let Some(certificate) = crate::declared::certificate(&made, key, policy.uids(id))? {
+            write_public(
+                &layout.signing_dir().join(format!("{id}.asc")),
+                &certificate,
+            )?;
+        }
+        signing.push((made.id, made.key.public_key(), made.meta));
+    }
+    let mut upstream = Vec::new();
+    for (id, key) in of_role(declared, KeyRole::Upstream) {
+        let made = super::sealed::make_key(&layout, &recipient, id, key)?;
+        upstream.push((made.id, made.key.public_key()));
+    }
     undo.done = true;
     Ok(Made {
         authority,
@@ -260,18 +248,18 @@ fn print(sealed: &SealedConfig, policy: &PolicyConfig, made: &Made) {
         println!(
             "upstream key {id}: {} (repos: {})",
             openssh(key),
-            crate::repos_using(policy, id).join(", ")
+            crate::joined(&policy.key_users(id).repos)
         );
     }
     for (id, key, meta) in &made.keys.signing {
-        let described = crate::signing::describe(id, key, meta).unwrap_or_default();
+        let described = crate::declared::describe(id, key, meta).unwrap_or_default();
         println!(
             "signing key {}: {} (templates: {})",
             id,
             described
                 .strip_prefix(&format!("{id} "))
                 .unwrap_or(&described),
-            crate::templates_using(policy, id).join(", ")
+            crate::joined(&policy.key_users(id).templates)
         );
     }
 }

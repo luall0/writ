@@ -16,15 +16,11 @@
 //! renew_grace: 24h                   # renewing an expired or used-up lease (0s to 7d)
 //! sign_requests:                     # held at once (16 in all, daemon-wide)
 //!   per_lease: 4                     # per lease, 1 to 16
-//! signing_keys:                      # every key a template's signing_key names (M5.5)
-//!   agent-01: { format: ssh, algorithm: ed25519 }      # hash: the strongest allowed
-//!   agent-pgp: { format: openpgp, algorithm: p256, hash: sha256 }
 //! keystore:
 //!   sealed:                          # M5: one age file per secret, sealed at start
 //!     dir: data/keys                 # every secret but the boot tier's (0700)
 //!     boot: data/boot                # the host and TLS keys, readable at a sealed start (0700)
-//! mirrors:
-//!   known_hosts: upstream_known_hosts  # required: the remotes' host keys, pinned by hand
+//! mirrors:                           # the keys and the upstream host keys are the policy's
 //!   ca_certs: upstream_ca.pem        # HTTPS upstreams: the CAs trusted (default: the system's)
 //!   git: /usr/bin/git                # git, by absolute path (2.45, or 2.47 for https://)
 //!   ssh: /usr/bin/ssh                # the OpenSSH client, by absolute path
@@ -44,14 +40,11 @@
 //!   - telegram: { token: { boot: data/boot/telegram }, chat_id: "123456789" }
 //! ```
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use writ_core::names::KeyId;
 use writ_core::net::{IpRange, Sources};
 use writ_core::units::{ByteSize, Duration};
-use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat};
 use writ_proto::Decisions;
 
 #[derive(Debug, Deserialize)]
@@ -83,11 +76,11 @@ pub struct Config {
     #[serde(default)]
     pub sign_requests: SignRequestsConfig,
     pub keystore: KeystoreConfig,
-    /// The agent signing keys, each declared with its format, algorithm, hash and backend:
-    /// checked against the backend and the keystore at start.
+    /// Before M6.2, the signing keys' declarations: refused, naming the policy's `keys`.
     #[serde(default)]
-    pub signing_keys: BTreeMap<KeyId, SigningKeyConfig>,
+    signing_keys: Option<Moved>,
     /// The mirrors and how they reach upstream.
+    #[serde(default)]
     pub mirrors: MirrorsConfig,
     pub transports: Transports,
     pub attestor: AttestorConfig,
@@ -108,59 +101,14 @@ fn default_renew_grace() -> Duration {
     writ_core::fit::DEFAULT_RENEW_GRACE
 }
 
-/// `signing_keys.<id>`: an agent signing key, declared. Refused at start, never adjusted, on a
-/// combination the backend can't sign (`writ_crypto::algorithm::check`).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigningKeyConfig {
-    #[serde(deserialize_with = "parsed")]
-    pub format: SignatureFormat,
-    #[serde(deserialize_with = "parsed")]
-    pub algorithm: KeyAlgorithm,
-    /// Left out: the strongest the format, algorithm and backend allow.
-    #[serde(default, deserialize_with = "parsed_some")]
-    pub hash: Option<Hash>,
-    #[serde(default)]
-    pub backend: BackendConfig,
-}
+/// A key that moved to the policy in M6.2: read so its refusal can name its new place.
+#[derive(Debug, Clone, Copy)]
+struct Moved;
 
-/// Where a signing key lives.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackendConfig {
-    /// In the daemon's memory, from its keystore.
-    #[default]
-    Software,
-}
-
-impl BackendConfig {
-    pub fn name(self) -> &'static str {
-        match self {
-            BackendConfig::Software => "software",
-        }
+impl<'de> Deserialize<'de> for Moved {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(d).map(|_| Moved)
     }
-}
-
-/// A value read by its own parser, whose error says what it accepts (and why `rsa2048`
-/// isn't one).
-fn parsed<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: std::str::FromStr,
-    T::Err: std::fmt::Display,
-{
-    let text = String::deserialize(deserializer)?;
-    text.parse().map_err(serde::de::Error::custom)
-}
-
-/// [`parsed`], for an optional key.
-fn parsed_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: std::str::FromStr,
-    T::Err: std::fmt::Display,
-{
-    parsed(deserializer).map(Some)
 }
 
 /// `submissions`: how many tickets may be submitted a minute, per source and in all.
@@ -220,12 +168,15 @@ fn default_in_all() -> usize {
     writ_approval::DEFAULT_SUBMISSIONS_IN_ALL
 }
 
-/// `mirrors`: the upstream host keys and the bounds of a sync.
+/// `mirrors`: the programs the mirrors run and the bounds of a sync. The upstream host keys
+/// are the policy's (`upstream_hosts`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MirrorsConfig {
-    /// The upstream host keys, pinned by the operator (an authority file).
-    pub known_hosts: PathBuf,
+    /// Before M6.2, the file of upstream host keys: refused, naming the policy's
+    /// `upstream_hosts`.
+    #[serde(default)]
+    known_hosts: Option<Moved>,
     /// The CA certificates (PEM) an HTTPS upstream's certificate must chain to, chosen by the
     /// operator (an authority file); without it, the system's.
     #[serde(default)]
@@ -246,6 +197,21 @@ pub struct MirrorsConfig {
     pub timeout: Duration,
     #[serde(default = "default_max_fetch")]
     pub max_fetch: ByteSize,
+}
+
+impl Default for MirrorsConfig {
+    fn default() -> Self {
+        Self {
+            known_hosts: None,
+            ca_certs: None,
+            git: default_git(),
+            ssh: default_ssh(),
+            fresh_for: default_fresh_for(),
+            sync_every: default_sync_every(),
+            timeout: default_timeout(),
+            max_fetch: default_max_fetch(),
+        }
+    }
 }
 
 fn default_git() -> PathBuf {
@@ -470,7 +436,6 @@ impl Config {
         resolve(&mut config.policy);
         resolve(&mut config.approvers);
         resolve(&mut config.readers);
-        resolve(&mut config.mirrors.known_hosts);
         if let Some(ca_certs) = &mut config.mirrors.ca_certs {
             resolve(ca_certs);
         }
@@ -502,6 +467,22 @@ impl Config {
             }
         }
         let fail = |why: String| anyhow::anyhow!("{}: {why}", path.display());
+        if config.signing_keys.is_some() {
+            return Err(fail(
+                "signing_keys: moved to the policy in M6.2: declare each key under the policy's \
+                 keys.<id> (use: signing, with its format, algorithm, hash and backend), and \
+                 remove it here"
+                    .to_owned(),
+            ));
+        }
+        if config.mirrors.known_hosts.is_some() {
+            return Err(fail(
+                "mirrors.known_hosts: moved to the policy in M6.2: the upstream host keys are \
+                 its upstream_hosts (writ admin host add pins one), and the file is no longer \
+                 read: remove the key here"
+                    .to_owned(),
+            ));
+        }
         // Each notifier's settings checked now, as the notifier will read them; a sealed token
         // belongs to one notifier (two sharing one: the second would never get it).
         let mut sealed_tokens = std::collections::BTreeSet::new();
@@ -610,7 +591,7 @@ mod tests {
     }
 
     const MINIMAL: &str = "state_dir: data\npolicy: policy.yaml\napprovers: approvers\n\
-        readers: readers\nkeystore: { dev: keys }\nmirrors: { known_hosts: upstream_known_hosts }\n\
+        readers: readers\nkeystore: { dev: keys }\n\
         transports: { agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }], approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] } }\n\
         attestor: network\nsession_watcher: none\n";
 
@@ -698,10 +679,7 @@ mod tests {
         // be absolute (a relative hooks path would be looked up inside the repository).
         let dir = tempfile::tempdir_in(".").unwrap();
         let name = dir.path().file_name().unwrap().to_owned();
-        let with_ca = MINIMAL.replace(
-            "mirrors: { known_hosts: upstream_known_hosts }",
-            "mirrors: { known_hosts: upstream_known_hosts, ca_certs: upstream_ca.pem }",
-        );
+        let with_ca = format!("{MINIMAL}mirrors: {{ ca_certs: upstream_ca.pem }}\n");
         assert_ne!(with_ca, MINIMAL);
         std::fs::write(dir.path().join("writd.yaml"), with_ca).unwrap();
         let relative = Path::new(&name).join("writd.yaml");
@@ -712,7 +690,6 @@ mod tests {
             &config.policy,
             &config.approvers,
             &config.readers,
-            &config.mirrors.known_hosts,
             config.mirrors.ca_certs.as_ref().unwrap(),
         ] {
             assert!(path.is_absolute(), "{}", path.display());
@@ -728,19 +705,14 @@ mod tests {
     fn mirror_bounds_have_defaults_and_are_bounded_on_both_sides() {
         let config = load(MINIMAL).unwrap();
         let mirrors = &config.mirrors;
-        assert!(mirrors.known_hosts.is_absolute());
+        assert!(mirrors.ca_certs.is_none());
         assert_eq!(mirrors.git, PathBuf::from("/usr/bin/git"));
         assert_eq!(mirrors.ssh, PathBuf::from("/usr/bin/ssh"));
         assert_eq!(mirrors.fresh_for.seconds(), 10);
         assert_eq!(mirrors.sync_every.seconds(), 300);
         assert_eq!(mirrors.timeout.seconds(), 300);
         assert_eq!(mirrors.max_fetch.bytes(), 1 << 30);
-        let with = |yaml: &str| {
-            load(&MINIMAL.replace(
-                "mirrors: { known_hosts: upstream_known_hosts }",
-                &format!("mirrors: {{ known_hosts: upstream_known_hosts, {yaml} }}"),
-            ))
-        };
+        let with = |yaml: &str| load(&format!("{MINIMAL}mirrors: {{ {yaml} }}\n"));
         for good in [
             "fresh_for: 0s",
             "fresh_for: 1h",
@@ -793,9 +765,29 @@ mod tests {
             let error = format!("{:#}", with(bad).unwrap_err());
             assert!(error.contains(expected), "{bad}: {error}");
         }
-        let without = MINIMAL.replace("mirrors: { known_hosts: upstream_known_hosts }\n", "");
-        let error = format!("{:#}", load(&without).unwrap_err());
-        assert!(error.contains("mirrors"), "{error}");
+    }
+
+    #[test]
+    fn the_keys_that_moved_to_the_policy_are_refused_naming_their_new_place() {
+        for (yaml, expected) in [
+            (
+                "signing_keys: { agent-01: { format: ssh, algorithm: ed25519 } }",
+                "signing_keys: moved to the policy in M6.2: declare each key under the policy's \
+                 keys.<id>",
+            ),
+            (
+                "signing_keys: {}",
+                "signing_keys: moved to the policy in M6.2",
+            ),
+            (
+                "mirrors: { known_hosts: upstream_known_hosts }",
+                "mirrors.known_hosts: moved to the policy in M6.2: the upstream host keys are its \
+                 upstream_hosts",
+            ),
+        ] {
+            let error = format!("{:#}", load(&format!("{MINIMAL}{yaml}\n")).unwrap_err());
+            assert!(error.contains(expected), "{yaml}: {error}");
+        }
     }
 
     #[test]
@@ -968,26 +960,26 @@ mod tests {
         for (bad, why) in [
             (
                 "{ chat_id: \"7\" }",
-                "notifiers[0].telegram: line 10 column 27: missing field `token`",
+                "notifiers[0].telegram: line 9 column 27: missing field `token`",
             ),
             (
                 "{ token_file: tg, chat_id: \"7\" }",
-                "notifiers[0].telegram.token_file: line 10 column 27: unknown field `token_file`, \
+                "notifiers[0].telegram.token_file: line 9 column 27: unknown field `token_file`, \
                  expected one of token, chat_id, api_base",
             ),
             (
                 "{ token: {}, chat_id: \"7\" }",
-                "notifiers[0].telegram.token: line 10 column 35: expected string key for \
+                "notifiers[0].telegram.token: line 9 column 35: expected string key for \
                  externally tagged enum",
             ),
             (
                 "{ token: { boot: a, sealed: b }, chat_id: \"7\" }",
-                "notifiers[0].telegram.token.boot: line 10 column 45: expected end of mapping \
+                "notifiers[0].telegram.token.boot: line 9 column 45: expected end of mapping \
                  after enum variant value",
             ),
             (
                 "{ token: { sealed: ../escape }, chat_id: \"7\" }",
-                "notifiers[0].telegram.token.sealed: line 10 column 44: invalid key id \
+                "notifiers[0].telegram.token.sealed: line 9 column 44: invalid key id \
                  \"../escape\": only letters, digits, '.', '_' and '-' are allowed",
             ),
         ] {
@@ -1071,16 +1063,10 @@ mod tests {
                 "submissions",
                 "sign_requests",
                 "keystore",
-                "signing_keys",
                 "mirrors",
                 "transports",
                 "notifiers",
             ],
-        );
-        section(
-            "signing_keys: { k: { __probe__: 0 } }",
-            "signing_keys.<id>.",
-            &[],
         );
         section("submissions: { __probe__: 0 }", "submissions.", &[]);
         section("sign_requests: { __probe__: 0 }", "sign_requests.", &[]);
@@ -1122,6 +1108,9 @@ mod tests {
             "notifiers[].telegram.token.",
             &[],
         );
+        // Read only to be refused, naming where they moved (M6.2): not keys.
+        code.remove("signing_keys");
+        code.remove("mirrors.known_hosts");
         assert!(code.len() > 25, "{code:?}");
         code
     }
@@ -1173,26 +1162,11 @@ mod tests {
             ("decisions", "decisions: __probe__"),
             ("attestor", "attestor: __probe__"),
             ("session_watcher", "session_watcher: __probe__"),
-            (
-                "signing_keys.<id>.backend",
-                "signing_keys: { k: { format: ssh, algorithm: ed25519, backend: __probe__ } }",
-            ),
         ] {
             let (_, row) = rows.iter().find(|(k, _)| *k == key).expect("its row");
             for value in expected(doc) {
                 assert!(row.contains(&format!("`{value}`")), "{key}: `{value}`");
             }
-        }
-        // The values read by their own parsers (format, algorithm, hash).
-        let row = |key: &str| rows.iter().find(|(k, _)| *k == key).expect("its row").1;
-        for format in writ_crypto::algorithm::SignatureFormat::ALL {
-            assert!(row("signing_keys.<id>.format").contains(&format!("`{format}`")));
-        }
-        for algorithm in writ_crypto::algorithm::KeyAlgorithm::ALL {
-            assert!(row("signing_keys.<id>.algorithm").contains(&format!("`{algorithm}`")));
-        }
-        for hash in ["sha256", "sha384", "sha512"] {
-            assert!(row("signing_keys.<id>.hash").contains(&format!("`{hash}`")));
         }
     }
 

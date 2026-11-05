@@ -52,6 +52,29 @@ pub const OPENPGP_CREATED: u32 = 1_799_913_600;
 /// The time a [`TestService`] starts at by default: 2027-01-15T08:00:00Z.
 pub const START: u64 = 1_800_000_000;
 
+/// The writ-core test policy (`policy`) with its signing key `agent-ed25519-01` declared
+/// OpenPGP and certified with `uids` (each committer email its templates allow needs one).
+pub fn openpgp_policy(policy: &str, uids: &[&str]) -> String {
+    let ssh = "  agent-ed25519-01: { use: signing, format: ssh, algorithm: ed25519 }\n";
+    assert!(policy.contains(ssh), "not the writ-core test policy");
+    let uids: Vec<String> = uids.iter().map(|u| format!("{u:?}")).collect();
+    policy.replace(
+        ssh,
+        &format!(
+            "  agent-ed25519-01:\n    use: signing\n    format: openpgp\n    algorithm: \
+             ed25519\n    uids: [{}]\n",
+            uids.join(", ")
+        ),
+    )
+}
+
+/// The two user ids the writ-core test policy's emails need, as the OpenPGP tests certify
+/// them.
+pub const TEST_UIDS: [&str; 2] = [
+    "Agent <user+agent@example.org>",
+    "Fix <user+fix@example.org>",
+];
+
 /// How to build a [`TestService`]. Defaults: `decisions: signed`, 20 pending tickets at most,
 /// a fake watcher, a recording notifier, a fake clock at [`START`], and a software signer
 /// with an Ed25519 key for each template's `signing_key` (that can be held at a gate or made

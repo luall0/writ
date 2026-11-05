@@ -52,8 +52,7 @@ impl Service {
         // declared (checked at start and at each policy change). Fail closed all the same.
         // Either failure is logged as the proof's outcome, under the lock (below).
         let prepared = self
-            .config
-            .signing_keys
+            .key_uses()
             .get(&proof.key)
             .copied()
             .ok_or_else(|| super::internal(format!("{} is not declared", proof.key)))
@@ -146,8 +145,7 @@ impl Service {
         // In OpenPGP nothing tells a proof from a commit signature: a message shaped like a git
         // commit or tag is never signed as one.
         let openpgp = self
-            .config
-            .signing_keys
+            .key_uses()
             .get(&proof.key)
             .is_some_and(|k| k.format == writ_crypto::algorithm::SignatureFormat::Openpgp);
         let text = proof.message.as_str();

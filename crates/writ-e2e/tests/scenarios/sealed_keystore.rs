@@ -24,19 +24,11 @@ fn sealed_yaml() -> String {
     WRITD_YAML.replace(dev, "keystore: { sealed: { dir: keys, boot: boot } }")
 }
 
-/// `yaml` with one more signing key declared, `declaration` (`<id>: { … }`), right under its
-/// `signing_keys:` line (which may carry a comment). Refuses a `yaml` it doesn't change.
-fn declare(yaml: &str, declaration: &str) -> String {
-    let line = yaml
-        .lines()
-        .find(|l| l.starts_with("signing_keys:"))
-        .expect("the end-to-end config declares its signing keys");
-    let declared = yaml.replacen(
-        &format!("{line}\n"),
-        &format!("{line}\n  {declaration}\n"),
-        1,
-    );
-    assert_ne!(declared, yaml, "{declaration} not declared");
+/// `policy` with one more key declared, `declaration` (`<id>: { … }`), at the top of its
+/// `keys:` section. Refuses a `policy` it doesn't change.
+fn declare(policy: &str, declaration: &str) -> String {
+    let declared = policy.replacen("\nkeys:\n", &format!("\nkeys:\n  {declaration}\n"), 1);
+    assert_ne!(declared, policy, "{declaration} not declared");
     declared
 }
 
@@ -140,20 +132,24 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
         );
     }
 
-    // A key declared after `writd init`, made by `writd keys create` with no passphrase:
-    // sealed to the recipient, its public half printed, logged; made once.
+    // A key declared after `writd init`, in a policy `writd recover` puts in force on the
+    // host (with the passphrase): made, sealed to the recipient, its public half printed,
+    // logged; made once.
     let declared = declare(
-        &sealed_yaml(),
-        "agent-e2e-rsa: { format: ssh, algorithm: rsa3072 }",
+        POLICY_YAML,
+        "agent-e2e-rsa: { use: signing, format: ssh, algorithm: rsa3072 }",
     );
-    dir.ok("rm writd.yaml");
-    dir.write("writd.yaml", &declared, "0644");
-    let created = dir.ok("writd keys create writd.yaml agent-e2e-rsa");
-    assert!(
-        created.starts_with("agent-e2e-rsa ssh-rsa AAAA")
-            && created.trim_end().ends_with("(templates: )"),
-        "{created}"
+    dir.write("declared.yaml", &declared, "0644");
+    let recovered = dir.run_with(
+        "writd recover writd.yaml policy declared.yaml",
+        b"an end-to-end passphrase\n",
     );
+    let (created, _) = expect(&recovered, 0, "a policy recovered on the host");
+    let rsa = printed(
+        &created,
+        "New signing key agent-e2e-rsa (register it on the remote): ",
+    );
+    assert!(rsa.starts_with("ssh-rsa AAAA"), "{created}");
     assert_eq!(
         dir.ok("head -c 22 keys/signing/agent-e2e-rsa.age"),
         "age-encryption.org/v1\n"
@@ -169,38 +165,44 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
         dir.ok("grep -c '\"event\":\"key\"' data/audit.jsonl"),
         "1\n"
     );
-    let again = dir.run_with("writd keys create writd.yaml agent-e2e-rsa", b"");
-    let (_, why) = expect(&again, 1, "a key made twice");
-    assert!(why.contains("is in the keystore already"), "{why}");
+    let again = dir.run_with(
+        "writd recover writd.yaml policy declared.yaml",
+        b"an end-to-end passphrase\n",
+    );
+    let (again, _) = expect(&again, 0, "the same policy recovered again");
+    assert!(!again.contains("New "), "made twice: {again}");
+    assert_eq!(
+        dir.ok("grep -c '\"event\":\"key\"' data/audit.jsonl"),
+        "1\n"
+    );
 
-    // A declaration its backend can't sign with, or one the format doesn't take: the
-    // commands refuse it with the reason, never adjusting it.
+    // A declaration its backend can't sign with, or one the format doesn't take: refused with
+    // the reason, never adjusted, nothing put in force.
     for (declaration, reason) in [
         (
-            "agent-e2e-pgp: { format: openpgp, algorithm: p256, hash: sha512 }",
-            "signing_keys.agent-e2e-pgp: openpgp signs p256 keys with sha256, not sha512",
+            "    format: openpgp\n    algorithm: p256\n    hash: sha512\n",
+            "keys.agent-e2e-pgp: openpgp signs p256 keys with sha256, not sha512",
         ),
         (
-            "agent-e2e-pgp: { format: openpgp, algorithm: rsa2048 }",
+            "    format: openpgp\n    algorithm: rsa2048\n",
             "RSA keys are 3072 or 4096 bits",
         ),
     ] {
-        let refused = declared.replace(
-            "agent-e2e-pgp: { format: openpgp, algorithm: ed25519 }",
-            declaration,
-        );
+        let refused =
+            declared.replace("    format: openpgp\n    algorithm: ed25519\n", declaration);
         assert_ne!(refused, declared);
-        dir.ok("rm writd.yaml");
-        dir.write("writd.yaml", &refused, "0644");
+        dir.ok("rm -f refused.yaml");
+        dir.write("refused.yaml", &refused, "0644");
         let (_, why) = expect(
-            &dir.run("writd signing-keys writd.yaml"),
+            &dir.run_with(
+                "writd recover writd.yaml policy refused.yaml",
+                b"an end-to-end passphrase\n",
+            ),
             1,
             "a declaration refused",
         );
         assert!(why.contains(reason), "{why}");
     }
-    dir.ok("rm writd.yaml");
-    dir.write("writd.yaml", &declared, "0644");
 
     // Made once: a second `writd init` is refused, the keystore untouched.
     let before = dir.ok("sha256sum keys/identity.age boot/host");
@@ -231,12 +233,17 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
 
 /// The second daemon's policy: an `ssh://` repo, and an `https://` one whose token only an
 /// approver adds (`writ admin token`); one template.
-const SEALED_POLICY: &str = r#"repos:
-  setup: { upstream: "ssh://git@forgejo/writ/setup.git", upstream_credential: upstream-sealed }
-  https: { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-sealed }
+const SEALED_POLICY: &str = r#"keys:
+  agent-sealed: { use: signing, format: ssh, algorithm: ed25519 }
+  upstream-sealed: { use: upstream, kind: ssh, algorithm: ed25519 }
+  token-sealed: { use: upstream, kind: token, host: forgejo-https }
+upstream_hosts:
+  forgejo: ["FORGEJO"]
+repos:
+  setup: { upstream: "ssh://git@forgejo/writ/setup.git", upstream_credential: upstream-sealed, templates: [feature] }
+  https: { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-sealed, templates: [] }
 templates:
   feature:
-    repos: [setup]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ.invalid"]
@@ -253,18 +260,17 @@ templates:
 fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     let stack = Stack::shared();
     let home = &stack.operator;
-    home.ok("mkdir -p sealed-run && cp approvers readers upstream_known_hosts upstream_ca.pem sealed-run/");
+    home.ok("mkdir -p sealed-run && cp approvers readers upstream_ca.pem sealed-run/");
     let dir = home.with(&format!("{}/sealed-run", home.dir), None);
     // Its own ports, beside the stack's daemon.
-    let yaml = declare(
-        &sealed_yaml(),
-        "agent-sealed: { format: ssh, algorithm: ed25519 }",
-    )
-    .replace("0.0.0.0:2222", "0.0.0.0:3222")
-    .replace("0.0.0.0:2223", "0.0.0.0:3223")
-    .replace("0.0.0.0:8443", "0.0.0.0:9443");
+    let yaml = sealed_yaml()
+        .replace("0.0.0.0:2222", "0.0.0.0:3222")
+        .replace("0.0.0.0:2223", "0.0.0.0:3223")
+        .replace("0.0.0.0:8443", "0.0.0.0:9443");
     dir.write("writd.yaml", &yaml, "0644");
-    dir.write("policy.yaml", SEALED_POLICY, "0644");
+    // Forgejo's host key, as the setup pinned it (compared with the one it publishes).
+    let policy = SEALED_POLICY.replace("FORGEJO", &stack.report.published_upstream);
+    dir.write("policy.yaml", &policy, "0644");
     let passphrase = "the sealed run's passphrase";
     let (_, warned) = expect(
         &dir.run_with(
@@ -391,7 +397,7 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     );
     let (_, why) = expect(&out, 1, "writ admin token for an unused id");
     assert!(
-        why.contains("no https:// repo of the policy in force names it"),
+        why.contains("the policy in force declares no token token-other"),
         "{why}"
     );
 

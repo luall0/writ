@@ -4,7 +4,8 @@
 //! keystore's passphrase: with the host, that opens every secret already, so recovery gives
 //! nobody anything new. The file is checked like an admin change (with the two others in
 //! force), recorded as a new version under the keystore's MAC, logged (`admin`, no approver),
-//! and written to the file `writd.yaml` names.
+//! and written to the file `writd.yaml` names. A policy's keys the keystore lacks are made
+//! first, as an admin change would make them (each logged, its public half printed).
 
 use std::path::Path;
 
@@ -38,6 +39,19 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
         }
         KeystoreConfig::Dev(dir) => crate::keystore::dev_authority_key(dir)?,
     };
+    // A policy: its keys checked against their backends, and those the keystore lacks made,
+    // before the version is recorded (a version naming keys the keystore lacks would never
+    // start).
+    let made = match target {
+        AdminTarget::Policy => {
+            let policy = crate::authority::parse_policy(&text, config.min_ttl)
+                .with_context(|| file.display().to_string())?;
+            let declared = crate::declared::declarations(&policy)
+                .with_context(|| file.display().to_string())?;
+            crate::keystore::make_missing(&config, &declared)?
+        }
+        AdminTarget::Approvers | AdminTarget::Readers => Vec::new(),
+    };
     let store = Store::open(&db)?;
     let (old, version, digest) = crate::authority::recover(
         &store,
@@ -49,6 +63,24 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
         |others| trust_others(target, others),
     )?;
     let mut audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
+    for (id, role, public, _) in &made {
+        audit
+            .append(
+                &AuditEvent::new(crate::now()?, EventKind::Key, Outcome::Allowed)
+                    .key(id)
+                    .reason(format!(
+                        "{} made by writd recover: {}",
+                        role.as_str(),
+                        public.to_openssh()?
+                    )),
+            )
+            .context("the audit log can't be written: the key is made all the same")?;
+        println!(
+            "New {} {id} (register it on the remote): {}",
+            role.as_str(),
+            public.to_openssh()?
+        );
+    }
     audit
         .append(
             &AuditEvent::new(crate::now()?, EventKind::Admin, Outcome::Allowed).reason(format!(

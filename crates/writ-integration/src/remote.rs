@@ -17,6 +17,14 @@ use writ_crypto::ssh_key::{PrivateKey, PublicKey};
 /// The upstream every scenario's policy names; the harnesses rewrite it to their test remote.
 pub const PLACEHOLDER_UPSTREAM: &str = "ssh://git@remote.invalid/demo.git";
 
+/// The pin of [`PLACEHOLDER_UPSTREAM`]'s host every scenario's policy holds (a key nobody
+/// has); the harnesses rewrite it to their test remote's ([`TestRemote::placed`]).
+pub const PLACEHOLDER_PIN: &str = "  remote.invalid:\n    - \"ssh-ed25519 \
+     AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\"";
+
+/// An `ssh` upstream credential's declaration, as the scenarios' policies write it.
+pub const SSH_CREDENTIAL: &str = "    kind: ssh\n    algorithm: ed25519";
+
 /// How the remote answers a git command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -102,6 +110,19 @@ impl TestRemote {
     /// The `ssh://` URL of the repository `name`.
     pub fn url(&self, name: &str) -> String {
         format!("ssh://git@127.0.0.1:{}/{name}.git", self.port)
+    }
+
+    /// `policy` (a scenario's, on the placeholder upstream) on this remote: the upstream
+    /// replaced by `url`, the placeholder pin by this remote's host key.
+    pub fn placed(&self, policy: &str, url: &str) -> String {
+        let pin = format!(
+            "  \"[127.0.0.1]:{}\":\n    - \"{}\"",
+            self.port,
+            self.host_key.public_key().to_openssh().unwrap()
+        );
+        policy
+            .replace(PLACEHOLDER_UPSTREAM, url)
+            .replace(PLACEHOLDER_PIN, &pin)
     }
 
     /// The line pinning this remote's host key in a `known_hosts` file.

@@ -191,10 +191,6 @@ approvers: approvers
 readers: readers
 decisions: signed
 keystore: { dev: data/keys }
-signing_keys:
-  agent-github-check: { format: ssh, algorithm: ed25519 }
-mirrors:
-  known_hosts: upstream_known_hosts
 transports:
   agents: [{ tcp: "127.0.0.1:2222", allow: [127.0.0.1] }]
   approvals:
@@ -205,14 +201,26 @@ session_watcher: none
 notifiers: []
 EOF
 cat > "$DIR/daemon/policy.yaml" <<EOF
+keys:
+  agent-github-check:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  upstream-github-check:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  github.com:
+    - "${GITHUB_KEY#github.com }"
 repos:
   demo:
     upstream: ssh://git@github.com/$REPO.git
     upstream_credential: upstream-github-check
+    templates: [feature-branch]
     protected_refs: ["refs/heads/main", "refs/tags/*"]
 templates:
   feature-branch:
-    repos: [demo]
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["$COMMITTER"]
@@ -224,7 +232,6 @@ templates:
     max_push_size: 50MB
 EOF
 cp "$ROOT/dev/ticket.yaml" "$DIR/ticket.yaml"
-printf '%s\n' "$GITHUB_KEY" > "$DIR/daemon/upstream_known_hosts"
 printf 'me %s\n' "$(cat "$APPROVER_KEY")" > "$DIR/daemon/approvers"
 chmod 644 "$DIR/daemon/"*
 export WRIT_HOME="$DIR/client"

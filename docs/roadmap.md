@@ -325,8 +325,8 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
   why. No: they stay wired and are named, and the question says so before: once `writ` is
   gone, only a new install takes them back. With no terminal it asks nothing and refuses
   unless `REPOS=undo` or `REPOS=keep` answers.
-- **`writd recover` checks the daemon is stopped** (left open by M5; `writd keys create`, found
-  by the [M5.6 review](#m56--review-after-m55), L17, leaves with M6.2): today it assumes it,
+- **`writd recover` checks the daemon is stopped** (left open by M5, found by the
+  [M5.6 review](#m56--review-after-m55), L17): today it assumes it,
   and two writers would only refuse each other's versions. For example, `writd run` holds an
   advisory lock on a file in its state directory (released by the kernel when the process
   ends, so a crash leaves none stale) and `writd recover` refuses while it is held, naming it.

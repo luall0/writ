@@ -19,7 +19,6 @@ never asks you to.
 | `writd run` | Every secret, once unsealed | In its log, at start |
 | `writd init` | The passphrase, every key it makes | On stderr |
 | `writd recover` | The passphrase, the key protecting the authority files | On stderr |
-| `writd keys create` | The passphrase, the key it makes | On stderr |
 | `writd upstream-credential` (git's credential helper, one per HTTPS operation) | One token, for one operation | Only when it refuses (git's operation then fails), so the warning doesn't repeat at every operation |
 
 ## How, on each OS

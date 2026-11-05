@@ -15,6 +15,7 @@ use writ_signer::Signer;
 use super::{CaCerts, MAX_SYNCS, MirrorConfig, Mirrors, Reach, Repo, Shared, SyncState};
 use crate::credential::UpstreamToken;
 use crate::git::{self, Hooks};
+use crate::known_hosts::PinnedHosts;
 use crate::upstream::{SshUrl, Upstream};
 use crate::{MIN_GIT, MIN_GIT_HTTPS, MirrorError, Result, shown};
 
@@ -59,16 +60,21 @@ impl Mirrors {
     /// The mirrors of `repos`, a registry replacing this one's (an admin change): a repo whose
     /// entry didn't change keeps its mirror and its lock (an operation in flight on it goes
     /// on), a new or changed one is opened and checked as at start, a removed one is no longer
-    /// served. `signer` and `tokens` are the upstream credentials in force: an `https://` repo
-    /// whose token changed (added or replaced: `writ admin token`) is opened again with it.
+    /// served. `pinned` are the host keys in force (the file ssh reads is written again with
+    /// them, for every operation from now on); `signer` and `tokens` the upstream credentials
+    /// in force: an `https://` repo whose token changed (added or replaced: `writ admin
+    /// token`) is opened again with it.
     pub async fn with_registry(
         &self,
         repos: &BTreeMap<RepoName, RepoEntry>,
+        pinned: PinnedHosts,
         signer: Arc<dyn Signer>,
         tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
     ) -> Result<Self> {
         let shared = &self.shared;
-        check_config(&shared.config, repos).await?;
+        let mut config = shared.config.clone();
+        config.pinned = pinned;
+        check_config(&config, repos).await?;
         let keys_dir = shared.config.run_dir.join("keys");
         let mut opened = BTreeMap::new();
         for (name, entry) in repos {
@@ -81,7 +87,7 @@ impl Mirrors {
                 Some(repo) => repo,
                 None => {
                     let mut repo =
-                        open_repo(&shared.config, &keys_dir, &*signer, tokens, name, entry).await?;
+                        open_repo(&config, &keys_dir, &*signer, tokens, name, entry).await?;
                     // The same mirror on disk keeps its one lock: an operation holding it
                     // from before the change still excludes every one after (the review
                     // after M5.5, S10).
@@ -93,9 +99,11 @@ impl Mirrors {
             };
             opened.insert(name.clone(), repo);
         }
+        // Every repo opened: the pins ssh reads from now on.
+        replace_file(&shared.known_hosts, config.pinned.to_file()?.as_bytes())?;
         Ok(Self {
             shared: Arc::new(Shared {
-                config: shared.config.clone(),
+                config,
                 signer,
                 repos: opened,
                 socket_dir: shared.socket_dir.clone(),
@@ -487,22 +495,37 @@ pub(super) fn remove_leftovers(dir: &Path, matches: impl Fn(&str) -> bool) -> Re
     Ok(())
 }
 
-/// Writes `bytes` to a new private file at `path`, replacing what was there (never through a
-/// link: the old entry is removed first, then the file is created anew).
+/// Writes `bytes` to a new private file at `path`, replacing what was there at once: written
+/// whole beside it, then renamed over it (a rename replaces the entry, never follows a link
+/// there), so an ssh starting meanwhile reads the old file or the new one, never none.
 fn replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    let io = |what: &'static str| {
+    let io = |what: &'static str, at: &Path| {
+        let at = at.to_owned();
         move |source| MirrorError::Io {
             what,
-            path: path.to_owned(),
+            path: at,
             source,
         }
     };
-    match std::fs::remove_file(path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io("cannot replace")(e)),
-        _ => {}
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let suffix = writ_crypto::keys::random_hex(8).map_err(|source| MirrorError::NoRandomness {
+        what: "a temporary file's name",
+        source,
+    })?;
+    let temporary = path.with_file_name(format!(".{name}.new-{suffix}"));
+    let written = writ_platform::fs::create_new_private_file(&temporary)
+        .map_err(io("cannot create", &temporary))
+        .and_then(|mut file| {
+            std::io::Write::write_all(&mut file, bytes).map_err(io("cannot write", &temporary))
+        })
+        .and_then(|()| std::fs::rename(&temporary, path).map_err(io("cannot replace", path)));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
-    let mut file = writ_platform::fs::create_new_private_file(path).map_err(io("cannot create"))?;
-    std::io::Write::write_all(&mut file, bytes).map_err(io("cannot write"))
+    written
 }
 
 #[cfg(test)]

@@ -244,7 +244,10 @@ fn git_takes_in_no_more_than_the_template_in_force_allows() {
         .service
         .commit_admin(
             &checked,
-            AdminParsed::Policy(PolicyConfig::from_yaml(&lowered).unwrap()),
+            AdminParsed::Policy(
+                PolicyConfig::from_yaml(&lowered).unwrap(),
+                (*gateway.service.key_uses()).clone(),
+            ),
             vec![],
             Default::default(),
             &facts,

@@ -2,15 +2,12 @@
 # Before the first run, put your approval public key in dev/approvers (gitignored):
 #   echo "me $(cat ~/path/to/approval-key.pub)" > dev/approvers
 state_dir: data                  # dev/data, gitignored: leases, audit log, repos, keys
-policy: policy.yaml
+policy: policy.yaml              # keys, upstream host keys, repos, templates
 approvers: approvers
 readers: readers                 # dev/readers, gitignored: written by `make dev-client`
 decisions: signed                # signed | open (refusals and revocations)
 keystore: { dev: data/keys }     # unencrypted, refused by release builds (sealed keystore: M5)
-signing_keys:                    # every key a template's signing_key names
-  agent-dev-01: { format: ssh, algorithm: ed25519 }
-mirrors:
-  known_hosts: upstream_known_hosts   # the remotes' host keys, pinned by hand
+mirrors:                         # the keys and the upstream host keys are policy.yaml's
   # ca_certs: upstream_ca.pem     # https:// upstreams: the CAs trusted (default: the system's);
   #                               # their tokens alone in data/keys/tokens/<id>, mode 0600
   # git: /usr/bin/git             # git (absolute path; 2.45, or 2.47 for https://)

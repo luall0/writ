@@ -213,14 +213,9 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: max_active_per_source` | `max_active_per_source_holds_at_submission_and_at_signing`, `two_agents_in_one_home_each_keep_their_own_lease` |
 | `writd.yaml: renew_grace` | `a_renewal_pushes_what_its_lease_signed_and_holds_to_every_bound` |
 | `writd.yaml: sign_requests.per_lease` | `sign_requests_per_lease_bounds_the_requests_held_at_once` |
-| `writd.yaml: signing_keys.<id>.format` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
-| `writd.yaml: signing_keys.<id>.algorithm` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one`, `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
-| `writd.yaml: signing_keys.<id>.hash` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
-| `writd.yaml: signing_keys.<id>.backend` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
 | `writd.yaml: keystore.dev` | `writd_signing_keys_prints_the_key_a_lease_signs_with`, `the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says`, `a_repo_behind_https_is_fetched_and_pushed_with_a_token_nobody_else_sees` |
 | `writd.yaml: keystore.sealed.dir` | `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
 | `writd.yaml: keystore.sealed.boot` | `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
-| `writd.yaml: mirrors.known_hosts` | `another_host_key_or_an_unpinned_host_is_refused`, `a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons` |
 | `writd.yaml: mirrors.ca_certs` | `a_certificate_from_a_ca_the_daemon_does_not_trust_is_refused_before_any_token`, `the_operator_s_cas_are_the_only_ones_git_is_given`, `a_certificate_the_system_trusts_is_refused_when_the_operator_named_their_cas` |
 | `writd.yaml: mirrors.git` | `mirrors_git_and_ssh_are_the_programs_named` |
 | `writd.yaml: mirrors.ssh` | `mirrors_git_and_ssh_are_the_programs_named` |
@@ -242,12 +237,12 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: notifiers[].telegram.api_base` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
 | `policy.yaml: keys.<id>.use` | planned: M6.2 |
 | `policy.yaml: keys.<id>.kind` | planned: M6.2 |
-| `policy.yaml: keys.<id>.format` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
-| `policy.yaml: keys.<id>.algorithm` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one`, `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
-| `policy.yaml: keys.<id>.hash` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_stops_the_start_and_keys_create_makes_a_declared_one` |
-| `policy.yaml: keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified`, `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
+| `policy.yaml: keys.<id>.format` | `each_refused_key_declaration_stops_the_start_with_its_reason`, `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `a_key_held_otherwise_than_declared_is_refused_by_recover_and_stops_the_start` |
+| `policy.yaml: keys.<id>.algorithm` | `each_refused_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_is_refused_by_recover_and_stops_the_start`, `writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest` |
+| `policy.yaml: keys.<id>.hash` | `each_refused_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_is_refused_by_recover_and_stops_the_start` |
+| `policy.yaml: keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified`, `each_refused_key_declaration_stops_the_start_with_its_reason` |
 | `policy.yaml: keys.<id>.host` | planned: M6.2 |
-| `policy.yaml: keys.<id>.backend` | `each_refused_signing_key_declaration_stops_the_start_with_its_reason` |
+| `policy.yaml: keys.<id>.backend` | `each_refused_key_declaration_stops_the_start_with_its_reason` |
 | `policy.yaml: upstream_hosts.<host>` | `another_host_key_or_an_unpinned_host_is_refused`, `a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons` |
 | `policy.yaml: repos.<name>.upstream` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees` |
 | `policy.yaml: repos.<name>.upstream_credential` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_credential_the_remote_does_not_take_is_refused`, `an_https_upstream_syncs_with_the_token_which_nothing_else_holds` |
