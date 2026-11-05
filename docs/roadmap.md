@@ -229,8 +229,8 @@ local mode (M7) goes through `sudo -u _writd`. After M6.2 the operator does it a
   `mirrors.known_hosts` goes.
 - **Repos name their templates** (`repos.<name>.templates`, `[]` pauses a repo); templates
   no longer list repos.
-- **The move from the old shape**: read for the version in force only, printed converted by
-  `writ admin show policy`, signed by the next change; the old fields refused in any new one.
+- **No move from the old shape** (Writ isn't deployed): the old fields refused wherever they
+  appear, each naming its new place; the state version moves to 10.
 - **`writ admin repo|template|key|host`**: `list`, `show` (`key show --public`), `add` and
   `edit` step by step, `set <name> <field>=<value>…` for one field at a time (`+=`, `-=`, `!`),
   `remove` (`--yes` without a terminal; a removed key deleted after its id is typed again),
@@ -245,9 +245,9 @@ Acceptance:
 - [ ] Every refusal of the new shape (an undeclared or wrongly used key, a kind that doesn't
       match the URL, a token for another host, a host with no pin, a backend the daemon
       lacks) stops the change, or the start, with its field named; none is adjusted.
-- [ ] A daemon on the old shape starts and serves its leases unchanged; `writ admin show
-      policy` prints the converted policy, its signature moves the daemon, and an old-shape
-      change is then refused naming each field's new place.
+- [ ] Every old field (`templates.<name>.repos`, the policy's `signing_keys`, `writd.yaml`'s
+      `signing_keys` and `mirrors.known_hosts`) is refused, in `writd init`, `writd recover`,
+      an admin change and at start, naming its new place.
 - [ ] `set` changes exactly the fields named (each syntax tested, a field that can't change
       refused with its reason); a change made in between makes it refused; `add` with no
       terminal refuses naming each missing field.
@@ -263,6 +263,9 @@ Acceptance:
       `writ policy` says the repo is closed.
 - [ ] Every new command and syntax used for real by an end-to-end scenario, with its rows in
       the registries (rules 18 and 19); the threat model and the security inventory updated.
+- [ ] The operator pages and guides rewritten for the new commands and the new configuration
+      layout: `writd.yaml` the host's settings only, the policy everything else, `writ admin`
+      the way to change it, every command they show the one the pipeline runs.
 
 ## M7 — Local mode on the Mac
 

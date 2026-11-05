@@ -58,8 +58,8 @@ writ admin host add forgejo.home:2222              # pin an upstream host key
 
 ## Scope and non-goals
 
-- In: the policy's new shape (keys, upstream hosts, repos naming templates) and the move from
-  the old one; the daemon's new reads and checks on the approval API; the `writ admin`
+- In: the policy's new shape (keys, upstream hosts, repos naming templates), replacing the old
+  one; the daemon's new reads and checks on the approval API; the `writ admin`
   nouns and verbs; the guided flows; the docs and the end-to-end scenarios.
 - Not a repo tightening a template for itself (`feature-branch`, but only `agent/omega-*` on
   this repo): a template used by one repo only does that already.
@@ -135,21 +135,14 @@ templates:
   `known_hosts`), notifiers, and later the hardware backends this host has and how to reach
   them.
 
-### Moving from the old shape
+### No move from the old shape
 
-The version in force was signed over the old text, so the daemon never rewrites it on its
-own:
-
-- The daemon reads the old shape for the version in force only: `templates.<name>.repos`,
-  `writd.yaml`'s `signing_keys` and `mirrors.known_hosts`, the upstream credentials implied
-  as today (Ed25519, a token for `https://`).
-- `writ admin show policy` prints it converted: `keys:` from those declarations,
-  `upstream_hosts` from the file, each repo's `templates` from the templates' lists. The next
-  `writ admin apply` (or any `writ admin <noun>` change) signs the new shape.
-- Every new change in the old shape is refused, naming the field and its new place. Once the
-  policy in force has the new shape, a `writd.yaml` that still holds `signing_keys` or
-  `mirrors.known_hosts` stops the start, naming them (the apply's answer says to remove them).
-- Leases go on through the move: each one's repos still allow its template.
+Writ isn't deployed anywhere yet, so the new shape replaces the old one outright, as
+M6.1.5's tickets did: no conversion, no old field read. `templates.<name>.repos`, the
+policy's `signing_keys`, `writd.yaml`'s `signing_keys` and `mirrors.known_hosts` are refused
+wherever they appear (the policy files `writd init` and `writd recover` read, every admin
+change, `writd.yaml` at start), each naming its new place. The state version moves to 10: a
+state directory written before M6.2 is refused and started again.
 
 ### The daemon's new operations
 
@@ -166,7 +159,9 @@ On the approval API, counted against the approval API's rates and each logged (h
   in `approvers` (hard rule 5); in M11, only an admin's key. A reader key alone can't make
   the daemon reach a host, so the scan can't be used to probe the daemon's network. The
   daemon opens an SSH connection to that host and port, reads the host keys it offers and
-  closes, bounded in time and size. The keys are shown with their fingerprints, never pinned
+  closes, bounded in time and size: one handshake per host key algorithm (Ed25519, ECDSA
+  P-256, P-384 and P-521, RSA with SHA-2), with the daemon's own SSH library (russh, in
+  `writ-mirror`), each dropped before any authentication. The keys are shown with their fingerprints, never pinned
   by the scan: a second signed change pins them, once the operator has compared them with
   the remote's published ones. Two Touch IDs for a new host, which is rare.
 - **An upstream check** (`writ admin repo check <repo>`, run by `repo add` once the key is
@@ -195,7 +190,9 @@ On the approval API, counted against the approval API's rates and each logged (h
   `field!` unsets an optional field, `field=` empties a list. One syntax for every noun, so no
   flag per field.
 - **Every command is one signed change**: `writ` builds the new policy text from the version
-  in force, shows the diff on the trusted display, signs a `writ-admin/2` naming that version
+  in force, in Writ's canonical layout (one writer in `writ-core`, the fields in the operator
+  reference's order; a hand-written policy's comments are dropped by the first field command,
+  whose diff shows the reformat), shows the diff on the trusted display, signs a `writ-admin/2` naming that version
   (one Touch ID), and the daemon applies it or refuses it with every reason. A change made in
   between makes it refused (the version it names is no longer in force): run it again.
 - **No terminal**: `add` and `edit` ask nothing; `add` refuses unless every required field is
@@ -252,8 +249,8 @@ checks whole, like any other change.
   bounds and a hostile-input test): the host keys a scan reads from the network (shown,
   escaped, never pinned by the scan), what upstream answers to a check (escaped, bounded),
   the operator's `field=value` input (parsed by the daemon as policy text; the client's
-  parsing is only for the prompts), the `writ-scan/1` document (verified like any approval:
-  its daemon, its nonce used once), and the old-shape files read once for the move.
+  parsing is only for the prompts), and the `writ-scan/1` document (verified like any
+  approval: its daemon, its nonce used once).
 - **New reads on the approval API:** the public halves (not secret; readers already see the
   policy with `writ admin show`), and two operations that make the daemon open outbound
   connections, each bounded in time, size and rate, and logged: a scan, only with an
@@ -278,7 +275,17 @@ Settled with the user before writing the plan:
 - **The field names** are `use` (`signing`, `upstream`) and `kind` (`ssh`, `token`).
 - **`--yes`** answers `remove`'s questions without a terminal, never the signature.
 - **`writ admin show` and `apply`** stay for the whole policy beside the field commands: large
-  edits, a policy copied between daemons, a review in an editor, the move to the new shape.
+  edits, a policy copied between daemons, a review in an editor.
+
+Settled with the user on 2026-11-05, starting M6.2:
+
+- **The policy text `writ` builds** is in Writ's canonical layout, from one writer in
+  `writ-core`: a hand-written policy's comments go with the first field command, and `show`
+  and `apply` still take any text.
+- **No backward compatibility**: Writ isn't deployed, so the old shape is refused, not
+  converted, and the state version moves to 10.
+- **The scan** uses russh in the daemon (`writ-mirror`), one handshake per host key
+  algorithm, rather than `ssh-keyscan`.
 
 None is open; new ones go here.
 
@@ -291,18 +298,19 @@ None is open; new ones go here.
 Each step leaves Writ working, `make ci` and `make e2e` passing.
 
 1. **The policy's new shape in `writ-core`**: `keys`, `upstream_hosts`, `repos.<name>.templates`,
-   the fit rule read from the repos, every check and its refusal; the old shape read for the
-   version in force only, and its conversion. The state version bumps.
-2. **The daemon on the new shape**: keys made by the change that declares them, `writd init`
-   from the policy, the host pins from it, `writd.yaml`'s moved keys refused once the policy
-   has moved, `writd keys create` removed, `writd signing-keys` and `upstream-keys` reading
-   the policy in force.
+   the fit rule read from the repos, every check and its refusal, the old fields refused by
+   name; the canonical writer, read back to the same policy. The state version moves to 10.
+2. **The daemon on the new shape**: keys made by the change that declares them (upstream
+   keys of every algorithm), `writd init` from the policy, the host pins from it,
+   `writd.yaml`'s `signing_keys` and `mirrors.known_hosts` gone, `writd keys create` removed,
+   `writd signing-keys` and `upstream-keys` reading the policy in force.
 3. **The reads**: the approval API's reads, `writ admin <noun> list|show`, `key show --public`.
 4. **Field edits**: `set` and `remove` for every noun, the `field=value` syntax, the diff and
    the signature, the refusals.
 5. **The guided flows**: `add` and `edit` for every noun, `template add --from`, `key rotate`.
 6. **The daemon's checks**: the signed host key scan (`writ-scan/1`, its nonce, `host add`),
    the upstream check (`repo check`, the end of `repo add`).
-7. **Docs and the pipeline**: the operator reference and guides on the new shape, the
-   scenarios for every new command and syntax with their registry rows, the end-to-end
-   pipeline's own policy moved to the new shape through the commands.
+7. **Docs and the pipeline**: the operator reference and guides rewritten for the new
+   commands and the new configuration layout (`writd.yaml` the host's, the policy everything
+   else, `writ admin` the way to change it), the scenarios for every new command and syntax
+   with their registry rows, the end-to-end pipeline's own setup done through the commands.
