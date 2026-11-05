@@ -38,7 +38,7 @@ picked.
 | M5.7 | [Memory wiped on free](history/m5.7-memory-wiped-on-free.md) ✅ | Writ's own zero-on-free allocator in `writd`, `writ` and `writ-sign`, on in every build: no library's freed copy of a secret stays in memory, at no measurable cost under heavy load |
 | M6 | [Agent skill, amendments, renewals, close](history/m6-agent-skill-amendments-renewals-and-close.md) ✅ | The Writ skill installed by `writ init` for each agent, adaptive timings, amendments, renewals, the estimate, activity report, each agent on its own lease, the host's other leases on the approver's screen: first real task end to end |
 | M6.1 | [Multi-repo workspaces](history/m6.1-multi-repo-workspaces.md) ✅ | One agent at the root of a folder of repositories: `writ init` at the root, the `writ-workspace` skill, `writ git` reading git's global options, `writ exec -C` |
-| M6.1.5 | [Per-repository tickets](#m615--per-repository-tickets) | A ticket whose scope is given repository by repository (the lease's terms, then each repository's: template, operations, branches, expected paths, counts; no override), each part checked against its own template; one lease, one approval, one signing key, the strictest template's lease-wide terms; otherwise one lease per repository |
+| M6.1.5 | [Per-repository tickets](history/m6.1.5-per-repository-tickets.md) ✅ | A ticket given repository by repository (the lease's terms, then each repository's block under its own template), one approval, one lease, one signing key, the strictest template's time and rate, counts per repository; `writ sign` narrowing per repository; `writ policy` for several repositories |
 | M6.2 | [Managing the daemon from the CLI](#m62--managing-the-daemon-from-the-cli) | Every key declared in the signed policy, upstream host keys pinned by signed changes, repos naming their templates; `writ admin repo\|template\|key\|host` to read, add step by step and edit one field at a time, with no host access |
 | M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
 | M7.1 | [Local mode on Linux](#m71--local-mode-on-linux) | Linux implementations plugged in the same way: `SO_PEERCRED` and `/proc` process chain, pidfd watcher, a systemd service under its own user, the installer's Linux local setup, local mode in `make e2e` |
@@ -210,134 +210,6 @@ answering, the folder's own repository only when named, the workspace recorded i
 `.writ-workspace` so `--undo` there takes every repository back), the `writ-workspace` skill
 at the folder, `writ git` reading git's global options and letting git resolve the
 repository, `writ exec -C`, timings per set of repositories. `make ci` and `make e2e` passed.
-
-## M6.1.5 — Per-repository tickets
-
-A workspace task (M6.1) touches several repositories, and they rarely share one policy: the
-API's template allows `push` on `agent/*` with a trailer, the web app's a review branch only,
-the docs repository `commit_sign` alone. Today a ticket has one scope for all its repos and
-must fit one template that allows every one of them, so a multi-repo ticket asks for the
-union and is rejected, or for the intersection and is too narrow. After M6.1.5 a ticket gives
-its scope repository by repository, each part fitting a template that allows that repository,
-and stays one ticket: one approval, one lease, one session, one TTL. The design below was
-settled with the user (the decision log's M6.1.5 rows).
-
-[The design page](backlog/per-repository-tickets.md) holds the layout, where each key lives,
-and how a template is chosen.
-
-- **The layout: the lease's terms, then each repository's, no override.** `common:` (it
-  replaces `scope:`) holds the committer emails, `repos:` one block per repository (its
-  `template`, `operations`, `branches`, `force_push`, `expected_paths`, and its counts in
-  `limits`); `ticket` and `limits` (time and rate) stay the lease's. Each term has one fixed
-  place, and a key elsewhere is refused, naming where it goes.
-
-  ```yaml
-  common:
-    committer_emails: ["agent@example.org"]
-  repos:
-    api:
-      template: backend
-      operations: [fetch, commit_sign, push]
-      branches: ["agent/login"]
-      expected_paths: ["src/auth/**"]
-      limits: { max_signatures: 10, max_pushes: 4 }
-    web:
-      template: frontend
-      operations: [fetch, commit_sign, push]
-      branches: ["review/login"]
-      expected_paths: ["app/login/**"]
-      limits: { max_signatures: 6, max_pushes: 2 }
-  ticket: { title: "Login across the API and the web app", task: "…" }
-  limits: { ttl: 3h }
-  ```
-
-- **A new ticket version, the old layout refused.** `writ-ticket/3`, the only kind read; a
-  ticket in today's layout is refused, naming each key's new place, and the state's version
-  moves (an older state refused at start). Writ isn't deployed anywhere yet: nothing to
-  convert.
-- **The committer email is common** to the lease (one signing key, one identity); it moves to
-  each repository's block with [a signing key per repository in one
-  lease](backlog/README.md#a-signing-key-per-repository-in-one-lease).
-- **`template` optional in a repository's block**, needed only when several templates fit
-  that repository (the daemon never guesses; the rejection names the repository and the
-  templates that fit), as today ([choosing a
-  template](backlog/per-repository-tickets.md#choosing-a-template)).
-- **Counts per repository only.** Each part's `max_signatures`, `max_pushes` and
-  `max_push_size` within its own template's; the daemon counts signatures and pushes per
-  repository. No lease-wide cap; the approver sees each part's counts and their sum.
-- **Lease-wide terms, the strictest template wins.** The TTL is at most the smallest
-  `max_ttl` among the parts' templates, `max_ops_per_minute` at most the smallest (one rate
-  on the session), `max_renewals` the smallest, and `on_violation` the strictest (a
-  violation in any repository applies it to the lease). No template's bound is exceeded by
-  pairing it with a laxer one.
-- **One signing key per lease.** Every part's template must name the same signing key; a
-  ticket whose parts name different keys is rejected, naming each template and its key. The
-  session, `writ-sign` and the wiring keep their one key. One key per repository goes to the
-  backlog.
-- **When one ticket doesn't fit, one lease per repository.** The `writ-workspace` skill says
-  so: when the templates of the repositories a task touches name different signing keys, or
-  their lease-wide terms (time, rate, renewals, `on_violation`) are too strict for what the
-  task needs, the agent asks one lease per repository, each with its own `WRIT_SESSION` for
-  that repository's commands (`writ policy` shows each template's key and terms, so the agent
-  can tell before it asks).
-- **The lease model** (`writ-core`): the fit, narrowing and the renewal and amendment checks
-  run per part against that part's template, and a ticket fits only when every part does and
-  the lease-wide terms and the signing key agree; every sign and push request is checked
-  against its repository's part only.
-- **What the approver sees**: `writ sign`'s trusted display one block per repository (its
-  template, operations, branches, emails, paths, counts), the lease-wide terms once, still
-  within 78 columns; narrowing per repository (`--branch api:agent/x`, `--drop-op web:push`,
-  `--max-pushes api:2`…), the existing flags without a repository applying to every part;
-  the agent told what changed, per repository.
-- **The clients**: `writ policy` for several repos at once (`writ policy api web`: each
-  template with its signing key and lease-wide terms, whether one ticket can cover them, and
-  `repos.<repo>.template` to name when several templates allow a repository),
-  `writ check` and `writ request --dry-run` naming the repository of each problem (`writ
-  check` naming the place a misplaced key goes), the activity report per
-  repository.
-- **Both skills follow the new layout.** The `writ` skill (one repository) and the
-  `writ-workspace` skill teach the ticket as it now reads: the lease's terms, each
-  repository's block (its template, operations, branches, files, counts), the lease-wide `limits` (time and rate) held to the strictest
-  template, how to read `writ policy` for it (a template's signing key and lease-wide terms),
-  and the per-repository denials and narrowing the agent may be told about; and how to pick
-  each repository's template from `writ policy` (none written when one fits, the one the
-  task needs named in the block when several do; [the steps](backlog/per-repository-tickets.md#choosing-a-template)). The workspace
-  skill also gives the one-lease-per-repository rule and how to work with several sessions
-  (`WRIT_SESSION` per repository's commands). Their examples are checked by `writ check`
-  in a test, so a skill never shows a ticket the daemon would refuse to read. The texts
-  `writ init` and `writ policy` print follow the same words.
-- **Docs and registries**: the ticket file's keys in the [operator reference](operators/ticket.md)
-  and its template, each key set by a test (rule 19), the security inventory's ticket row
-  (its bounds: repositories per ticket, bytes in all), the threat model if a guarantee moves.
-
-Acceptance:
-- [ ] One ticket for two repositories under two templates (different operations, branches,
-      emails and paths) is granted with one signature, and each repository's requests are
-      held to its own part: an operation, a branch or a path allowed in one and not in the
-      other is denied there, with its code, and allowed in the first.
-- [ ] A repository whose terms fit no template allowing it rejects the whole ticket, naming
-      the repository and why; so do repositories whose templates name different signing
-      keys (each template and key named).
-- [ ] Each part's counts hold, each tested on both sides; the lease's TTL, rate, renewals
-      and `on_violation` are the strictest of its templates', each tested on both sides
-      (a ticket asking more than the strictest rejected, naming the template).
-- [ ] Every key is read in its one place (a key elsewhere refused, naming where it goes),
-      a ticket in the old layout refused naming each key's new place, the canonical bytes
-      round-trip (property tests), and an older state refused at start.
-- [ ] Narrowing per repository is a strict subset of what was submitted (a widening refused),
-      shown to the approver and the agent per repository; amendments and renewals checked
-      per repository.
-- [ ] A workspace task whose templates can't share a lease is done with one lease per
-      repository, as the skill says (each repository's commands under its own session).
-- [ ] A repository two templates fit is rejected without a `template` in its block (the
-      repository and both templates named) and accepted naming either; one with a single
-      template needs none; a template that doesn't allow the repository is refused.
-- [ ] Both skills' ticket examples (single repository and workspace) read and pass
-      `writ check` in a test; a real agent writes a per-repository ticket from the
-      workspace skill alone, and a single-repository ticket from the `writ` skill alone
-      (the [manual checks with a real agent](guides/manual-checks-e2e.md), extended).
-- [ ] The new keys and flags used for real by end-to-end scenarios, with their rows in the
-      registries (rules 18 and 19).
 
 ## M6.2 — Managing the daemon from the CLI
 

@@ -1,7 +1,7 @@
 # Per-repository tickets
 
-**Status:** specified; picked as
-[M6.1.5](../roadmap.md#m615--per-repository-tickets). **Area:** Lease model, Approvals,
+**Status:** done in
+[M6.1.5](../history/m6.1.5-per-repository-tickets.md). **Area:** Lease model, Approvals,
 Clients. **Kind:** feature. **Size:** L.
 
 ## Problem
@@ -188,4 +188,4 @@ loosens the strict one.
 
 ## Acceptance
 
-In the [roadmap](../roadmap.md#m615--per-repository-tickets).
+In the [roadmap](../history/m6.1.5-per-repository-tickets.md).
