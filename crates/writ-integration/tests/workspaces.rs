@@ -720,3 +720,155 @@ fn a_meta_repository_at_the_root_is_wired_whole_only_when_named_and_undone_exact
     expected.sort();
     assert_eq!(after.0, expected);
 }
+
+/// M7: the list of what `writ init` wired on this host (`<home>/repos`). It is the user's
+/// file, so an agent can write it: whatever it holds, `writ init --list`, `writ skill update
+/// --all` and `writ init --undo --all` act only on what `writ init` wired, each line they
+/// skip named, escaped; an oversized file is refused whole.
+#[test]
+fn the_list_of_wired_repositories_is_read_as_untrusted_and_undoes_only_what_writ_init_wired() {
+    let (daemon, _lease, root) = workspace();
+    let upstream = daemon.remote.repo("demo");
+    let place = fs::canonicalize(daemon.root()).unwrap();
+    git_ok(
+        &daemon,
+        &place,
+        &["clone", "-q", upstream.to_str().unwrap(), "solo"],
+    );
+    git_ok(
+        &daemon,
+        &place,
+        &["clone", "-q", upstream.to_str().unwrap(), "other"],
+    );
+    let (solo, other) = (place.join("solo"), place.join("other"));
+    let before_ws = state(&daemon, &root, &["api", "web"]);
+    let before_solo = state(&daemon, &solo, &["."]);
+    let before_other = state(&daemon, &other, &["."]);
+
+    writ_ok(
+        &daemon,
+        &root,
+        &[
+            "init", "--agents", "claude", "--repo", "api=demo", "--repo", "web=web",
+        ],
+    );
+    writ_ok(&daemon, &solo, &["init", "demo", "--agents", "claude"]);
+    let list = daemon.root().join("writ/repos");
+    let written = fs::read_to_string(&list).unwrap();
+    assert_eq!(
+        written,
+        format!("workspace {}\nrepo {}\n", root.display(), solo.display())
+    );
+
+    // Hostile lines beside them: a relative path, a link to a repository, a workspace's
+    // repository named on its own, a clone writ init never wired, a path through `..`, a
+    // terminal escape, a path that isn't there.
+    let hostile = [
+        "repo relative/path".to_owned(),
+        format!("repo {}", root.join("link").display()),
+        format!("repo {}", root.join("api").display()),
+        format!("repo {}", other.display()),
+        format!("repo {}/../solo", solo.display()),
+        format!("repo {}\u{1b}[31m", solo.display()),
+        "workspace /nowhere/at/all".to_owned(),
+    ];
+    fs::write(&list, format!("{written}{}\n", hostile.join("\n"))).unwrap();
+    let kept = fs::read_to_string(&list).unwrap();
+
+    // Oversized: refused whole, nothing taken back.
+    fs::write(&list, format!("{kept}{}", "#".repeat(256 * 1024))).unwrap();
+    let out = writ(&daemon, &place, &["init", "--undo", "--all"]);
+    refused(
+        &out,
+        "is larger than 262144 bytes: not read (nothing is done from it)",
+    );
+    assert!(solo.join(".git/writ/config").exists());
+    fs::write(&list, &kept).unwrap();
+
+    let listed = writ_ok(&daemon, &place, &["init", "--list"]);
+    let skipped = [
+        "skipped: repo relative/path: not an absolute path".to_owned(),
+        format!("skipped: repo {}: a link", root.join("link").display()),
+        format!(
+            "skipped: repo {}: holds no writ init record of a repo",
+            root.join("api").display()
+        ),
+        format!(
+            "skipped: repo {}: holds no writ init record of a repo",
+            other.display()
+        ),
+        format!(
+            "skipped: repo {}/../solo: not a normalized path (., .., // or a trailing /)",
+            solo.display()
+        ),
+        format!(
+            "skipped: repo {}\\u{{1b}}[31m: a path with control or hidden characters",
+            solo.display()
+        ),
+        "skipped: workspace /nowhere/at/all: not there any more".to_owned(),
+    ];
+    let expected = format!(
+        "workspace {} (2 repositories)\nrepo {} (wrapper mode)\n{}\n",
+        root.display(),
+        solo.display(),
+        skipped.join("\n")
+    );
+    assert_eq!(listed, expected);
+
+    // The skill rewritten where writ init installed it, nowhere else.
+    let updated = writ_ok(&daemon, &place, &["skill", "update", "--all"]);
+    assert!(
+        updated.contains(&format!(
+            "workspace {}:\nThe writ-workspace skill, from this writ:\n  \
+             .claude/skills/writ-workspace/SKILL.md: up to date\n",
+            root.display()
+        )) && updated.contains(&format!(
+            "repo {}:\nThe writ skill, from this writ:\n  .claude/skills/writ/SKILL.md: up to date\n",
+            solo.display()
+        ))
+            && updated.ends_with(&format!("{}\n", skipped.join("\n"))),
+        "{updated}"
+    );
+    assert_eq!(state(&daemon, &other, &["."]), before_other);
+
+    // Everything writ init wired taken back exactly; nothing else touched.
+    let undone = writ_ok(&daemon, &place, &["init", "--undo", "--all"]);
+    assert!(
+        undone.ends_with(&format!("{}\n", skipped.join("\n"))),
+        "{undone}"
+    );
+    // As `writ init --undo` leaves them: the configs back, the timings files kept.
+    let after_ws = state(&daemon, &root, &["api", "web"]);
+    assert_eq!(
+        after_ws.1, before_ws.1,
+        "every repository's config and exclude"
+    );
+    let mut expected: Vec<String> = before_ws.0.clone();
+    expected.extend(
+        [
+            ".claude",
+            ".claude/skills",
+            ".claude/skills/writ-workspace",
+            ".claude/skills/writ-workspace/timings.md",
+        ]
+        .map(str::to_owned),
+    );
+    expected.sort();
+    assert_eq!(after_ws.0, expected);
+    let after_solo = state(&daemon, &solo, &["."]);
+    assert_eq!(after_solo.1, before_solo.1);
+    assert!(!root.join("api/.git/writ").exists() && !solo.join(".git/writ").exists());
+    assert_eq!(state(&daemon, &other, &["."]), before_other);
+    let left = fs::read_to_string(&list).unwrap();
+    assert!(
+        !left.contains(&format!("workspace {}\n", root.display()))
+            && !left.contains(&format!("repo {}\n", solo.display())),
+        "{left}"
+    );
+    // Nothing left to take back.
+    let again = writ_ok(&daemon, &place, &["init", "--undo", "--all"]);
+    assert!(
+        again.contains("Nothing wired by writ init on this host's list."),
+        "{again}"
+    );
+}

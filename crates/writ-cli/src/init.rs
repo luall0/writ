@@ -31,7 +31,7 @@ use crate::client::Endpoint;
 use crate::skill::{self, Agent, Kind};
 use crate::wiring::{self, Mode, SessionRef, Setting, Wiring};
 use crate::workspace::{self, Member, Workspace};
-use crate::{Exit, Paths, display};
+use crate::{Exit, Paths, display, repos};
 
 /// Where the skill goes.
 pub struct SkillChoice {
@@ -402,6 +402,7 @@ pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
         &pointed,
         request.skill.agents_md,
     );
+    repos::add(&paths.home, repos::Kind::Repo, &root)?;
     Ok(Exit::Ok)
 }
 
@@ -799,6 +800,7 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
         "Recorded in {}: `writ init --undo` here takes every repository back.",
         record_path.display()
     );
+    repos::add(&paths.home, repos::Kind::Workspace, &root)?;
     Ok(Exit::Ok)
 }
 
@@ -1070,6 +1072,31 @@ fn undo_repo(dir: &Path, wired: &Wiring) -> anyhow::Result<Undone> {
 /// isn't at a skill's path, left as it is and said.
 pub fn update_skills() -> anyhow::Result<Exit> {
     let dir = std::env::current_dir().context("cannot read the current directory")?;
+    update_skills_in(&dir)
+}
+
+/// `writ skill update --all`: the skill rewritten in each repository and workspace on the
+/// list, as `writ skill update` there would; one that can't be is named with why.
+pub fn update_skills_all(paths: &Paths) -> anyhow::Result<Exit> {
+    let listing = repos::read(&paths.home)?;
+    let mut exit = Exit::Ok;
+    for entry in &listing.entries {
+        let shown = display::clean(&entry.path.display().to_string());
+        println!("{} {shown}:", entry.kind.as_str());
+        if let Err(e) = update_skills_in(&entry.path) {
+            println!("  not updated: {}", display::clean_lines(&format!("{e:#}")));
+            exit = Exit::Error;
+        }
+    }
+    print_skipped(&listing);
+    if listing.entries.is_empty() {
+        println!("Nothing wired by writ init on this host's list.");
+    }
+    Ok(exit)
+}
+
+fn update_skills_in(dir: &Path) -> anyhow::Result<Exit> {
+    let dir = dir.to_path_buf();
     let (root, entries, kind, repos) = if let Some(workspace) = workspace::load(&dir)? {
         let repos = skill_repos(&workspace.members);
         (workspace.root, workspace.entries, Kind::Workspace, repos)
@@ -1146,28 +1173,93 @@ fn from_workspace(wired: &Wiring, root: &Path) -> bool {
 
 /// `writ init --undo`: the workspace recorded here (every repository, then the root), or the
 /// repository here.
-pub fn undo() -> anyhow::Result<Exit> {
+pub fn undo(paths: &Paths) -> anyhow::Result<Exit> {
     let dir = std::env::current_dir().context("cannot read the current directory")?;
-    if let Some(workspace) = workspace::load(&dir)? {
-        return undo_workspace(&workspace);
+    undo_in(paths, &dir)
+}
+
+/// `writ init --undo` in `dir`: its line taken off the list of wired repositories once done.
+fn undo_in(paths: &Paths, dir: &Path) -> anyhow::Result<Exit> {
+    if let Some(workspace) = workspace::load(dir)? {
+        let exit = undo_workspace(&workspace)?;
+        repos::remove(&paths.home, &workspace.root)?;
+        return Ok(exit);
     }
-    let Some(wired) = wiring::load(&dir)? else {
+    let dir = &top_level(dir)?;
+    let Some(wired) = wiring::load(dir)? else {
         bail!("this repo isn't wired for Writ: nothing to undo");
     };
-    if let Some(found) = workspace::find(&dir) {
+    if let Some(found) = workspace::find(dir) {
         bail!(
             "this repository was wired with the workspace at {}: run `writ init --undo` there (it \
              takes every repository back)",
             found.root.display()
         );
     }
-    let undone = undo_repo(&dir, &wired)?;
+    let undone = undo_repo(dir, &wired)?;
     println!(
         "Writ wiring removed ({} mode): the repo's git config is as it was before writ init.",
         wired.mode.as_str()
     );
     print_kept(&undone);
+    repos::remove(&paths.home, dir)?;
     Ok(Exit::Ok)
+}
+
+/// `writ init --list`: the repositories and workspaces `writ init` wired on this host, each
+/// checked, and the lines skipped with why.
+pub fn list(paths: &Paths) -> anyhow::Result<Exit> {
+    let listing = repos::read(&paths.home)?;
+    for entry in &listing.entries {
+        let shown = display::clean(&entry.path.display().to_string());
+        let what = match entry.kind {
+            repos::Kind::Repo => wiring::load(&entry.path)
+                .ok()
+                .flatten()
+                .map(|w| format!("{} mode", w.mode.as_str())),
+            repos::Kind::Workspace => workspace::load(&entry.path)
+                .ok()
+                .flatten()
+                .map(|w| format!("{} repositories", w.members.len())),
+        };
+        println!(
+            "{} {shown} ({})",
+            entry.kind.as_str(),
+            what.unwrap_or_default()
+        );
+    }
+    print_skipped(&listing);
+    Ok(Exit::Ok)
+}
+
+fn print_skipped(listing: &repos::Listing) {
+    for (line, why) in &listing.skipped {
+        println!("skipped: {line}: {why}");
+    }
+}
+
+/// `writ init --undo --all`: each repository and workspace on the list taken back, as
+/// `writ init --undo` there would; one that can't be is named with why, and the others
+/// still done (exit 1 then).
+pub fn undo_all(paths: &Paths) -> anyhow::Result<Exit> {
+    let listing = repos::read(&paths.home)?;
+    let mut exit = Exit::Ok;
+    for entry in &listing.entries {
+        let shown = display::clean(&entry.path.display().to_string());
+        println!("{} {shown}:", entry.kind.as_str());
+        if let Err(e) = undo_in(paths, &entry.path) {
+            println!(
+                "  not taken back: {}",
+                display::clean_lines(&format!("{e:#}"))
+            );
+            exit = Exit::Error;
+        }
+    }
+    print_skipped(&listing);
+    if listing.entries.is_empty() {
+        println!("Nothing wired by writ init on this host's list.");
+    }
+    Ok(exit)
 }
 
 /// Takes a workspace back: each repository it lists that was wired from it, then what was

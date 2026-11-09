@@ -42,6 +42,7 @@ wrapped row loses the `│` mark that shows text the agent wrote.
 | `<home>/sessions/<lease>/` | Agent host | One per ticket: its session key, its certificate once signed, the lease's terms, and the agent signing key's public half (`signing_key.pub`, for `git verify-commit`), and for an OpenPGP key its certificate (`signing_key.asc`: import it into a GnuPG home to verify). `ended` once it was closed or renewed; `marks`, the agent's `writ mark` lines |
 | `<home>/sessions/current` | Agent host | A link to the latest granted session: what wired repos use when neither `WRIT_SESSION` nor a pinned lease says otherwise |
 | `<skills folder>/writ/SKILL.md`, `timings.md` | Agent host | The agent skill `writ init` installs, and beside the first one what the agent learns about sizing tickets. [The skill](#the-agent-skill) |
+| `<home>/repos` | Agent host | The repositories and folders `writ init` wired on this host, one a line. `writ init --list` shows them, `writ init --undo --all` takes them all back, `writ skill update --all` updates the skill in each. An agent can write this file too, so each line is checked before anything is done with it. [Every wired repository at once](#every-wired-repository-at-once) |
 | `<folder>/.writ-workspace`, `<skills folder>/writ-workspace/SKILL.md` | Agent host | A folder of repositories wired at once: what `writ init` did there, and the skill for an agent at that folder. [A folder of repositories](#a-folder-of-repositories) |
 
 ## `writ init` and `writ-sign`
@@ -101,6 +102,22 @@ repositories one level down and wires each one, as `writ init <repo>` would in i
   the folder to take every repository back, and the folder too. In one of the repositories,
   `--undo` refuses and names the folder. The timings file stays.
 - `--whole-repo`, `--email`, `--lease` and the skill's flags apply to every repository.
+
+## Every wired repository at once
+
+`writ init` adds each repository or folder it wires to `<home>/repos`, and `writ init --undo`
+takes it off. Three commands use that list:
+
+```sh
+writ init --list              # what writ init wired here
+writ skill update --all       # after upgrading writ: the skill rewritten in each
+writ init --undo --all        # each one taken back, as writ init --undo there would
+```
+
+Each line is checked first. It must be a full path to a repository or folder that still
+holds `writ init`'s own record of it, with no link, no `..` and no odd character. A line that
+isn't is skipped and shown. A file larger than 256 KiB is refused whole. A repository wired
+before M7 isn't on the list: run `writ init` in it again to add it.
 
 ## Several agents on one host
 

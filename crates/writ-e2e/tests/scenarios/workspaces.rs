@@ -3,7 +3,8 @@
 //! without a terminal), the `writ-workspace` skill at the folder only; one agent at the folder
 //! working on both under one lease through `writ git -C` and `writ exec -C` (the folder
 //! itself listing them), both branches on Forgejo and in the mirrors; the run closed at the
-//! folder, recorded under both repositories; and `writ init --undo` at the folder taking every
+//! folder, recorded under both repositories; the host's list of what writ init wired (`writ init
+//! --list`, `writ skill update --all`), and `writ init --undo --all` taking every
 //! repository and the folder back (the timings kept).
 
 use std::collections::BTreeSet;
@@ -156,11 +157,24 @@ fn one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease() {
     let out = agent.in_dir("ws/api", "writ init --undo");
     let (_, err) = expect(&out, 1, "writ init --undo in a workspace repository");
     assert!(err.contains("run `writ init --undo` there"), "{err}");
-    let (out, _) = expect(
-        &agent.in_dir("ws", "writ init --undo"),
-        0,
-        "writ init --undo",
+    // What writ init wired on this host (M7's list): the workspace, its two repositories.
+    let listed = agent.ok("writ init --list");
+    assert!(
+        listed.starts_with("workspace /") && listed.ends_with("/ws (2 repositories)\n"),
+        "{listed}"
     );
+    let updated = agent.ok("writ skill update --all");
+    assert!(
+        updated.contains("The writ-workspace skill, from this writ:"),
+        "{updated}"
+    );
+    // Taken back from anywhere with --all, as `writ init --undo` at the folder would.
+    let (out, _) = expect(
+        &agent.run("writ init --undo --all"),
+        0,
+        "writ init --undo --all",
+    );
+    assert_eq!(agent.ok("writ init --list"), "", "nothing left on the list");
     assert!(
         out.contains("  api: wiring removed (wrapper mode)."),
         "{out}"

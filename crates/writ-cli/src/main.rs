@@ -27,6 +27,7 @@ mod https;
 mod init;
 mod policy;
 mod reader;
+mod repos;
 mod run;
 mod session;
 mod skill;
@@ -181,6 +182,14 @@ enum Commands {
         /// Take the repo back to before `writ init`.
         #[arg(long, conflicts_with = "repo")]
         undo: bool,
+        /// With --undo: every repository and workspace `writ init` wired on this host (its
+        /// list, <home>/repos), each said.
+        #[arg(long, requires = "undo")]
+        all: bool,
+        /// The repositories and workspaces `writ init` wired on this host (<home>/repos), each
+        /// checked: what an uninstall or `--undo --all` would take back.
+        #[arg(long, conflicts_with_all = ["repo", "undo"])]
+        list: bool,
         /// The daemon's agents listener, ssh://host:port.
         #[arg(long, env = "WRIT_URL")]
         url: Option<String>,
@@ -517,7 +526,12 @@ enum SkillCommand {
     /// Rewrite the skills writ init installed in this repository or workspace from the one
     /// built into this writ (after upgrading it). A file that isn't Writ's skill any more is
     /// left as it is.
-    Update,
+    Update {
+        /// In every repository and workspace `writ init` wired on this host (its list,
+        /// <home>/repos), each said.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 /// `writ admin repo <verb>`.
@@ -901,9 +915,18 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         Commands::Wait { id, lease, url } => {
             agent::wait(&paths, &url.url, id, lease.as_ref()).await
         }
-        Commands::Init { undo: true, .. } => init::undo(),
+        Commands::Init { list: true, .. } => init::list(&paths),
+        Commands::Init {
+            undo: true,
+            all: true,
+            ..
+        } => init::undo_all(&paths),
+        Commands::Init { undo: true, .. } => init::undo(&paths),
         Commands::Skill {
-            command: SkillCommand::Update,
+            command: SkillCommand::Update { all: true },
+        } => init::update_skills_all(&paths),
+        Commands::Skill {
+            command: SkillCommand::Update { all: false },
         } => init::update_skills(),
         Commands::Init {
             repo,
