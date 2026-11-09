@@ -600,3 +600,64 @@ fn what_this_build_does_not_have_is_refused_at_start() {
         "writd: session_watcher macos is macOS's: this build is for another OS"
     );
 }
+
+/// M7: `<home>/config`, the client's settings file, gives the endpoints when no flag or
+/// variable does; a flag or a variable still wins; a file that can't be trusted is refused,
+/// naming its line.
+#[test]
+fn the_client_settings_file_gives_the_endpoints_and_flags_still_win() {
+    let daemon = Daemon::start(POLICY, Approvals::Ssh);
+    let config = daemon.root().join("writ/config");
+    std::fs::create_dir_all(daemon.root().join("writ")).unwrap();
+    let unset = |args: &[&str]| {
+        let mut command = daemon.writ(args);
+        command
+            .env_remove("WRIT_URL")
+            .env_remove("WRIT_APPROVAL_URL");
+        command.stdin(std::process::Stdio::null()).output().unwrap()
+    };
+    // No file, nothing set: said where the endpoint can come from.
+    let out = unset(&["ls"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains(
+            "no daemon to reach: set WRIT_APPROVAL_URL (or --approval-url, or approval_url in "
+        ),
+        "{}",
+        stderr(&out)
+    );
+    // The file gives both.
+    std::fs::write(
+        &config,
+        format!(
+            "# Written by the installer.\nurl = ssh://127.0.0.1:{}\napproval_url = {}\n",
+            daemon.agents_port, daemon.approval_url
+        ),
+    )
+    .unwrap();
+    let out = unset(&["ls"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = unset(&["policy", "demo"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // A flag wins over the file (one that points nowhere).
+    std::fs::write(
+        &config,
+        "url = ssh://127.0.0.1:1\napproval_url = ssh://127.0.0.1:1\n",
+    )
+    .unwrap();
+    let out = unset(&["ls", "--approval-url", &daemon.approval_url]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // So does the variable (the fixture's own).
+    let out = daemon.run(&["ls"], "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    // A file that can't be trusted: refused, its line named, escaped.
+    std::fs::write(&config, "url = ssh://127.0.0.1:1\nhome = /tmp\x1b[2J\n").unwrap();
+    let out = unset(&["ls"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out)
+            .contains("writ/config: line 2: a control or hidden character (home = /tmp\\u{1b}[2J)"),
+        "{}",
+        stderr(&out)
+    );
+}

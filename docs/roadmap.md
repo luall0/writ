@@ -332,8 +332,8 @@ Acceptance:
       `writ-approval` or the clients, beyond bug fixes and the changes settled at M7's start
       (`writ init`'s list of wired repos and its `--list` and `--undo --all`, `writ run` and
       the binding it asks for, the daemon completing a caller from the submitter's chain,
-      `require_session`); only new implementations, `writd`'s wiring and config, and the
-      installer.
+      `require_session`, the client's settings file `<home>/config`); only new
+      implementations, `writd`'s wiring and config, and the installer.
 - [ ] The macOS implementations pass the same contract suites as the portable ones.
 - [ ] The same agent workflow as M6 works against the local daemon with no client change
       beyond the endpoint.

@@ -7,7 +7,8 @@
   doesn't show a key's effect;
 - a planned milestone is one the roadmap still lists, not one that is done;
 - every `WRIT_*` environment variable a shipped binary reads has an `env:` row, and every
-  `env:` row is one of them.
+  `env:` row is one of them;
+- `config:` rows are the client's settings file (`<home>/config`, M7).
 
 That every key of writd.yaml, policy.yaml and the ticket file has its row is checked by
 `make test` (writd's `every_writd_yaml_key_is_in_the_operator_reference`, writ-core's
@@ -26,7 +27,7 @@ TEST_DIRS = [ROOT / "crates/writ-integration/tests", ROOT / "crates/writ-e2e/tes
 SOURCES = [ROOT / "crates/writd/src", ROOT / "crates/writ-cli/src", ROOT / "crates/writ-sign/src"]
 # Set by the daemon for the pre-receive hook it starts, never by a person.
 INTERNAL = {"WRIT_HOOK_SOCKET", "WRIT_HOOK_TOKEN"}
-FILES = ("writd.yaml", "policy.yaml", "ticket", "env")
+FILES = ("writd.yaml", "policy.yaml", "ticket", "config", "env")
 
 errors = []
 text = TESTING.read_text()

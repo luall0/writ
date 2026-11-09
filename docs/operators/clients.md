@@ -24,6 +24,27 @@ lists them.
 | none | `WRIT_SSH_KEYGEN` | `/usr/bin/ssh-keygen` | The `ssh-keygen` that signs your approvals: an absolute path, OpenSSH 8.9 or newer. Never looked up in `PATH`, where anything could sit first and change what gets signed |
 | none | `WRIT_GPG` | `/usr/bin/gpg` | `writ-sign`: the `gpg` it hands git's OpenPGP `--verify` calls to, an absolute path. It never runs gpg to sign: the key is the daemon's |
 
+### The settings file
+
+`<home>/config` gives the two endpoints when no flag or variable does. `make install` writes
+it for a daemon on this Mac. A flag or a variable still wins.
+
+```text
+url = unix:/Library/Application Support/Writ/run/agents.sock
+approval_url = unix:/Library/Application Support/Writ/run/approvals.sock
+```
+
+| Setting | What it is |
+|---|---|
+| `url` | The agents' listener, as `--url` takes it |
+| `approval_url` | The approval listener, as `--approval-url` takes it |
+
+One `key = value` a line. Blank lines and lines starting with `#` are skipped. Anything else
+(an unknown key, a key twice, a control character, a file over 16 KiB or a link in its
+place) makes `writ` refuse the file and name the line. An agent can write this file too. It
+can only change where `writ` connects, never which daemon it trusts: that is the host key in
+`known_hosts`.
+
 Every command and its arguments: [clients](../architecture/clients.md). `writ sign`'s
 narrowing flags: [approvals](../architecture/approvals.md).
 
@@ -42,6 +63,7 @@ wrapped row loses the `│` mark that shows text the agent wrote.
 | `<home>/sessions/<lease>/` | Agent host | One per ticket: its session key, its certificate once signed, the lease's terms, and the agent signing key's public half (`signing_key.pub`, for `git verify-commit`), and for an OpenPGP key its certificate (`signing_key.asc`: import it into a GnuPG home to verify). `ended` once it was closed or renewed; `marks`, the agent's `writ mark` lines |
 | `<home>/sessions/current` | Agent host | A link to the latest granted session: what wired repos use when neither `WRIT_SESSION` nor a pinned lease says otherwise |
 | `<skills folder>/writ/SKILL.md`, `timings.md` | Agent host | The agent skill `writ init` installs, and beside the first one what the agent learns about sizing tickets. [The skill](#the-agent-skill) |
+| `<home>/config` | Both | The daemon's endpoints, when no flag or variable gives them. [The settings file](#the-settings-file) |
 | `<home>/repos` | Agent host | The repositories and folders `writ init` wired on this host, one a line. `writ init --list` shows them, `writ init --undo --all` takes them all back, `writ skill update --all` updates the skill in each. An agent can write this file too, so each line is checked before anything is done with it. [Every wired repository at once](#every-wired-repository-at-once) |
 | `<folder>/.writ-workspace`, `<skills folder>/writ-workspace/SKILL.md` | Agent host | A folder of repositories wired at once: what `writ init` did there, and the skill for an agent at that folder. [A folder of repositories](#a-folder-of-repositories) |
 

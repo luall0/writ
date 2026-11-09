@@ -30,6 +30,7 @@ mod reader;
 mod repos;
 mod run;
 mod session;
+mod settings;
 mod skill;
 mod timings;
 mod wiring;
@@ -100,16 +101,61 @@ struct Cli {
 
 #[derive(clap::Args)]
 struct AgentUrl {
-    /// The daemon's agents listener, ssh://host:port or unix:<path>.
+    /// The daemon's agents listener, ssh://host:port or unix:<path> (default: `url` in
+    /// <home>/config).
     #[arg(long, env = "WRIT_URL")]
-    url: String,
+    url: Option<String>,
+}
+
+impl AgentUrl {
+    /// The flag's or the variable's, or the settings file's.
+    fn get(&self, paths: &Paths) -> anyhow::Result<String> {
+        resolve(
+            self.url.as_ref(),
+            paths,
+            |s| s.url,
+            "WRIT_URL (or --url, or url",
+        )
+    }
 }
 
 #[derive(clap::Args, Clone)]
 struct ApprovalUrl {
-    /// The daemon's approval listener: https://host:port, ssh://host:port or unix:<path>.
+    /// The daemon's approval listener: https://host:port, ssh://host:port or unix:<path>
+    /// (default: `approval_url` in <home>/config).
     #[arg(long = "approval-url", env = "WRIT_APPROVAL_URL")]
-    url: String,
+    url: Option<String>,
+}
+
+impl ApprovalUrl {
+    /// The flag's or the variable's, or the settings file's.
+    fn get(&self, paths: &Paths) -> anyhow::Result<String> {
+        resolve(
+            self.url.as_ref(),
+            paths,
+            |s| s.approval_url,
+            "WRIT_APPROVAL_URL (or --approval-url, or approval_url",
+        )
+    }
+}
+
+/// `given` (a flag or its variable), or what `<home>/config` sets (`pick`), or an error
+/// naming where it can come from.
+fn resolve(
+    given: Option<&String>,
+    paths: &Paths,
+    pick: fn(settings::Settings) -> Option<String>,
+    from: &str,
+) -> anyhow::Result<String> {
+    if let Some(given) = given {
+        return Ok(given.clone());
+    }
+    pick(settings::load(&paths.home)?).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no daemon to reach: set {from} in {})",
+            paths.home.join(settings::FILE).display()
+        )
+    })
 }
 
 #[derive(clap::Args, Clone)]
@@ -190,7 +236,8 @@ enum Commands {
         /// checked: what an uninstall or `--undo --all` would take back.
         #[arg(long, conflicts_with_all = ["repo", "undo"])]
         list: bool,
-        /// The daemon's agents listener, ssh://host:port.
+        /// The daemon's agents listener, ssh://host:port or unix:<path> (default: `url` in
+        /// <home>/config).
         #[arg(long, env = "WRIT_URL")]
         url: Option<String>,
         /// Pin the repo to this lease: its session, never `current` (WRIT_SESSION still
@@ -801,9 +848,9 @@ async fn entry_command(
     from: Option<&str>,
 ) -> anyhow::Result<Exit> {
     match command {
-        EntryCommand::List { url } => approver::manage_list(paths, &url.url, section).await,
+        EntryCommand::List { url } => approver::manage_list(paths, &url.get(paths)?, section).await,
         EntryCommand::Show { name, url } => {
-            approver::manage_show(paths, &url.url, section, name, false).await
+            approver::manage_show(paths, &url.get(paths)?, section, name, false).await
         }
         EntryCommand::Add {
             name,
@@ -813,7 +860,17 @@ async fn entry_command(
             signer: args,
         } => {
             let signer = signer(paths, args);
-            approver::guided_add(paths, &url.url, &signer, section, name, given, from, *yes).await
+            approver::guided_add(
+                paths,
+                &url.get(paths)?,
+                &signer,
+                section,
+                name,
+                given,
+                from,
+                *yes,
+            )
+            .await
         }
         EntryCommand::Edit {
             name,
@@ -822,7 +879,7 @@ async fn entry_command(
             signer: args,
         } => {
             let signer = signer(paths, args);
-            approver::guided_edit(paths, &url.url, &signer, section, name, *yes).await
+            approver::guided_edit(paths, &url.get(paths)?, &signer, section, name, *yes).await
         }
         EntryCommand::Set {
             name,
@@ -832,7 +889,7 @@ async fn entry_command(
             signer: args,
         } => {
             let signer = signer(paths, args);
-            approver::manage_set(paths, &url.url, &signer, section, name, edits, *yes).await
+            approver::manage_set(paths, &url.get(paths)?, &signer, section, name, edits, *yes).await
         }
         EntryCommand::Remove {
             name,
@@ -841,7 +898,7 @@ async fn entry_command(
             signer: args,
         } => {
             let signer = signer(paths, args);
-            approver::manage_remove(paths, &url.url, &signer, section, name, *yes).await
+            approver::manage_remove(paths, &url.get(paths)?, &signer, section, name, *yes).await
         }
     }
 }
@@ -909,11 +966,11 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             } else {
                 agent::Mode::Wait
             };
-            agent::request(&paths, &url.url, file, mode).await
+            agent::request(&paths, &url.get(&paths)?, file, mode).await
         }
-        Commands::Policy { repos, url } => policy::policy(&paths, &url.url, repos).await,
+        Commands::Policy { repos, url } => policy::policy(&paths, &url.get(&paths)?, repos).await,
         Commands::Wait { id, lease, url } => {
-            agent::wait(&paths, &url.url, id, lease.as_ref()).await
+            agent::wait(&paths, &url.get(&paths)?, id, lease.as_ref()).await
         }
         Commands::Init { list: true, .. } => init::list(&paths),
         Commands::Init {
@@ -941,9 +998,12 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             agents_md,
             ..
         } => {
-            let url = url
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("writ init needs WRIT_URL (or --url)"))?;
+            let url = &resolve(
+                url.as_ref(),
+                &paths,
+                |s| s.url,
+                "WRIT_URL (or --url, or url",
+            )?;
             let mode = if *whole_repo {
                 wiring::Mode::WholeRepo
             } else {
@@ -984,7 +1044,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             lease,
             summary,
             url,
-        } => close::close(&paths, &url.url, lease.as_ref(), summary).await,
+        } => close::close(&paths, &url.get(&paths)?, lease.as_ref(), summary).await,
         Commands::Mark { phase } => close::mark(&paths, *phase),
         Commands::Check { file } => close::check(file),
         Commands::Timings {
@@ -998,7 +1058,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             ("keep_runs", *keep_runs),
             ("max_notes", *max_notes),
         ]),
-        Commands::Report { id, url } => approver::report(&paths, &url.url, id).await,
+        Commands::Report { id, url } => approver::report(&paths, &url.get(&paths)?, id).await,
         Commands::Git { args } => wrap::git(&paths, args),
         Commands::Exec { dir, command } => wrap::exec(&paths, dir.as_deref(), command),
         // Handled by `main` before any runtime starts.
@@ -1008,7 +1068,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             println!("{}", reader::ensure(&paths.reader, name)?);
             Ok(Exit::Ok)
         }
-        Commands::Ls { all, url } => approver::list(&paths, &url.url, *all).await,
+        Commands::Ls { all, url } => approver::list(&paths, &url.get(&paths)?, *all).await,
         Commands::Sign {
             id,
             narrowing,
@@ -1023,7 +1083,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             };
             approver::sign(
                 &paths,
-                &url.url,
+                &url.get(&paths)?,
                 &signer(&paths, args),
                 id.clone(),
                 narrowing,
@@ -1036,15 +1096,24 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             message,
             url,
             signer: args,
-        } => approver::refuse(&paths, &url.url, &signer(&paths, args), id, message.clone()).await,
+        } => {
+            approver::refuse(
+                &paths,
+                &url.get(&paths)?,
+                &signer(&paths, args),
+                id,
+                message.clone(),
+            )
+            .await
+        }
         Commands::Revoke {
             id,
             url,
             signer: args,
-        } => approver::revoke(&paths, &url.url, &signer(&paths, args), id).await,
+        } => approver::revoke(&paths, &url.get(&paths)?, &signer(&paths, args), id).await,
         Commands::Admin {
             command: AdminCommand::Show { target, url },
-        } => approver::admin_show(&paths, &url.url, approver::admin_target(target)?).await,
+        } => approver::admin_show(&paths, &url.get(&paths)?, approver::admin_target(target)?).await,
         Commands::Admin {
             command: AdminCommand::Repo { command },
         } => match command {
@@ -1052,7 +1121,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 entry_command(&paths, writ_core::config::Section::Repos, command, None).await
             }
             RepoCommand::Check { repo, url } => {
-                approver::guided_check(&paths, &url.url, repo).await
+                approver::guided_check(&paths, &url.get(&paths)?, repo).await
             }
         },
         Commands::Admin {
@@ -1074,7 +1143,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 signer: args,
             } => {
                 let signer = signer(&paths, args);
-                approver::guided_rescan(&paths, &url.url, &signer, host, *yes).await
+                approver::guided_rescan(&paths, &url.get(&paths)?, &signer, host, *yes).await
             }
         },
         Commands::Admin {
@@ -1090,10 +1159,11 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             use writ_core::config::Section;
             match command {
                 KeyCommand::List { url } => {
-                    approver::manage_list(&paths, &url.url, Section::Keys).await
+                    approver::manage_list(&paths, &url.get(&paths)?, Section::Keys).await
                 }
                 KeyCommand::Show { id, public, url } => {
-                    approver::manage_show(&paths, &url.url, Section::Keys, id, *public).await
+                    approver::manage_show(&paths, &url.get(&paths)?, Section::Keys, id, *public)
+                        .await
                 }
                 KeyCommand::Add {
                     name,
@@ -1105,7 +1175,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                     let signer = signer(&paths, args);
                     approver::guided_add(
                         &paths,
-                        &url.url,
+                        &url.get(&paths)?,
                         &signer,
                         Section::Keys,
                         name,
@@ -1122,8 +1192,15 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                     signer: args,
                 } => {
                     let signer = signer(&paths, args);
-                    approver::guided_edit(&paths, &url.url, &signer, Section::Keys, name, *yes)
-                        .await
+                    approver::guided_edit(
+                        &paths,
+                        &url.get(&paths)?,
+                        &signer,
+                        Section::Keys,
+                        name,
+                        *yes,
+                    )
+                    .await
                 }
                 KeyCommand::Set {
                     name,
@@ -1135,7 +1212,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                     let signer = signer(&paths, args);
                     approver::manage_set(
                         &paths,
-                        &url.url,
+                        &url.get(&paths)?,
                         &signer,
                         Section::Keys,
                         name,
@@ -1151,8 +1228,15 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                     signer: args,
                 } => {
                     let signer = signer(&paths, args);
-                    approver::manage_remove(&paths, &url.url, &signer, Section::Keys, name, *yes)
-                        .await
+                    approver::manage_remove(
+                        &paths,
+                        &url.get(&paths)?,
+                        &signer,
+                        Section::Keys,
+                        name,
+                        *yes,
+                    )
+                    .await
                 }
                 KeyCommand::Rotate {
                     id,
@@ -1162,8 +1246,15 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                     signer: args,
                 } => {
                     let signer = signer(&paths, args);
-                    approver::guided_rotate(&paths, &url.url, &signer, id, name.as_deref(), *yes)
-                        .await
+                    approver::guided_rotate(
+                        &paths,
+                        &url.get(&paths)?,
+                        &signer,
+                        id,
+                        name.as_deref(),
+                        *yes,
+                    )
+                    .await
                 }
             }
         }
@@ -1179,7 +1270,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         } => {
             approver::admin_apply(
                 &paths,
-                &url.url,
+                &url.get(&paths)?,
                 &signer(&paths, args),
                 approver::admin_target(target)?,
                 file,
@@ -1199,10 +1290,10 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             let id: writ_core::names::KeyId = id
                 .parse()
                 .map_err(|e| anyhow::anyhow!("token id {id:?}: {e}"))?;
-            approver::admin_token(&paths, &url.url, &signer(&paths, args), &id, *yes).await
+            approver::admin_token(&paths, &url.get(&paths)?, &signer(&paths, args), &id, *yes).await
         }
         Commands::Unseal { url, signer: args } => {
-            approver::unseal(&paths, &url.url, &signer(&paths, args)).await
+            approver::unseal(&paths, &url.get(&paths)?, &signer(&paths, args)).await
         }
         Commands::ProveKey {
             key_id,
@@ -1216,7 +1307,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 namespace: namespace.clone(),
                 yes: *yes,
             };
-            approver::prove_key(&paths, &url.url, &signer(&paths, args), asked).await
+            approver::prove_key(&paths, &url.get(&paths)?, &signer(&paths, args), asked).await
         }
     }
 }

@@ -17,7 +17,9 @@ clients make the workflow pleasant, the daemon makes it safe.
 Code: `crates/writ-cli` (`writ`), `crates/writ-sign` (`writ-sign`), `skill/writ/` and
 `skill/writ-workspace/` (the skills). The approver side of the CLI is described in [Approvals](approvals.md).
 
-`writ` reads its settings from flags or environment variables: `WRIT_URL` (agents' listener,
+`writ` reads its settings from flags or environment variables, and the two endpoints also from
+`<home>/config` when neither gives them (`writ_cli::settings`: `url`, `approval_url`; read strictly,
+an agent can write it): `WRIT_URL` (agents' listener,
 `ssh://host:port` or `unix:<path>`), `WRIT_APPROVAL_URL` (approval listener: `https://host:port`, `ssh://host:port` or `unix:<path>`),
 `WRIT_APPROVAL_KEY` (the approval key's public half, default `~/.writ/approver.pub`),
 `WRIT_APPROVAL_AGENT` (its agent socket, default `SSH_AUTH_SOCK`), `WRIT_HOME` (default
