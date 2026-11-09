@@ -161,8 +161,15 @@ attach refused).
 | `writ-platform-linux` | Linux-only implementations: process hardening (M5, through `rustix`, no `unsafe`); from M7.1 the `SO_PEERCRED` + `/proc` attestor and the pidfd watcher; later TPM |
 | `writd` | `platform.rs`: builds the set of implementations from the configuration and the target OS. The **only** place outside the platform crates with `#[cfg(target_os = …)]` |
 
-The Unix socket transport itself is portable (Unix), so it lives in `writ-platform`; what is
-read from its peer is the attestor's job. A transport only carries bytes: the gateway speaks
+The Unix socket transport itself is portable (Unix), so it lives in `writ-platform`
+(`transport::unix::UnixTransport`); what is read from its peer is the attestor's job. Its
+directory decides who connects: the transport refuses one that group or others can write (they
+could put their own socket in the daemon's place), makes the socket `0660`, and replaces only a
+stale socket at its path. What the kernel says about the peer is read at accept by a
+`PeerReader` `writd` picks per OS: user, group and pid everywhere (`PeerInfo::Unix`), and on
+macOS the audit token's pid generation too, so a pid reused after the connect can't be taken
+for the caller. A peer the kernel can't describe is dropped. Under the `network` attestor a
+Unix listener is refused at start: none of its callers could be attested. A transport only carries bytes: the gateway speaks
 SSH on it, or TLS and HTTP for the HTTPS approval API, and attests the caller either way.
 
 ## Rules
@@ -198,9 +205,9 @@ notifiers: [{ telegram: { token: { boot: /run/secrets/writ-boot/telegram }, chat
 ```yaml
 # local (native on the Mac)
 transports:
-  agents: [{ unix: ~/Library/Application Support/Writ/writd.sock }]
+  agents: [{ unix: /Library/Application Support/Writ/run/agents.sock }]       # _writd:_writ 0750
   approvals:
-    ssh: [{ unix: ~/Library/Application Support/Writ/approvals.sock }]
+    ssh: [{ unix: /Library/Application Support/Writ/run/approvals.sock }]
 attestor: macos_process_chain
 session_watcher: macos
 keystore: { sealed: { dir: /var/db/writ/keys, boot: /var/db/writ/boot } }   # se-cryptokit keys from M7.5 (_writd only)

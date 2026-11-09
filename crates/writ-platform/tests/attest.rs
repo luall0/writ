@@ -35,6 +35,7 @@ fn unix() -> PeerInfo {
         uid: 501,
         gid: 20,
         pid: Some(4242),
+        generation: Some(118),
     }
 }
 

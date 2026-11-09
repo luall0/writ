@@ -1,11 +1,12 @@
 //! How clients reach the daemon: the [`Transport`] interface. Every transport carries the
 //! same SSH protocol: only the byte stream and what is known about its peer differ.
 //!
-//! Portable implementation: [`tcp::TcpTransport`]. [`accept_retrying`] is the accept loop's
+//! Portable implementations: [`tcp::TcpTransport`], [`unix::UnixTransport`]. [`accept_retrying`] is the accept loop's
 //! rule for every listener the daemon runs, a transport's or its own (the hook socket).
 
 mod retry;
 pub mod tcp;
+pub mod unix;
 
 pub use retry::accept_retrying;
 
@@ -46,11 +47,14 @@ impl std::fmt::Debug for Connection {
 pub enum PeerInfo {
     /// A TCP peer: its address as seen by the socket.
     Tcp { remote: SocketAddr },
-    /// A Unix socket peer: the kernel's peer credentials (local mode, M7).
+    /// A Unix socket peer: the kernel's peer credentials (local mode).
     Unix {
         uid: u32,
         gid: u32,
         pid: Option<u32>,
+        /// The pid's generation when the kernel gives it with the credentials (macOS: the
+        /// audit token's pidversion), so a pid reused since the connect is another process.
+        generation: Option<u64>,
     },
     /// An in-memory connection made by a test fake. No real transport ever produces it.
     Memory { label: String },

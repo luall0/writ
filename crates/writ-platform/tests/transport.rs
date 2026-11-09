@@ -16,6 +16,7 @@ use tokio::net::TcpStream;
 use writ_platform::contract::{self, Connected};
 use writ_platform::testing::FakeTransport;
 use writ_platform::transport::tcp::TcpTransport;
+use writ_platform::transport::unix::{UnixTransport, portable_peer};
 use writ_platform::{AsyncStream, BoxFuture, PeerInfo, Transport};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -31,6 +32,36 @@ async fn tcp_transport_passes_the_contract() {
                 Box::new(stream) as Box<dyn AsyncStream>,
                 Some(PeerInfo::Tcp { remote: local }),
             ))
+        })
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unix_transport_passes_the_contract() {
+    let dir = tempfile::Builder::new()
+        .prefix("wt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o750),
+    )
+    .unwrap();
+    let path = dir.path().join("t.sock");
+    let transport = UnixTransport::bind(&path, portable_peer).unwrap();
+    // The kernel's credentials of this process, which connects.
+    let expected = PeerInfo::Unix {
+        uid: rustix::process::geteuid().as_raw(),
+        gid: rustix::process::getegid().as_raw(),
+        pid: Some(std::process::id()),
+        generation: None,
+    };
+    contract::transport(transport, move || -> BoxFuture<'static, Connected> {
+        let (path, expected) = (path.clone(), expected.clone());
+        Box::pin(async move {
+            let stream = tokio::net::UnixStream::connect(&path).await?;
+            Ok((Box::new(stream) as Box<dyn AsyncStream>, Some(expected)))
         })
     })
     .await;

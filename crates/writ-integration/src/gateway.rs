@@ -26,8 +26,8 @@ use writ_gateway::{Gateway, GatewayConfig, Role};
 use writ_platform::clock::system::SystemClock;
 use writ_platform::testing::FakeAttestor;
 use writ_platform::transport::tcp::TcpTransport;
+use writ_platform::transport::unix::{UnixTransport, portable_peer};
 use writ_platform::watch::none::NoSessionWatcher;
-use writ_platform::{BoxFuture, Connection, PeerInfo, Transport};
 use writ_proto::Decision;
 use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, GatedSigner};
@@ -86,27 +86,6 @@ ticket:
 pub enum Listen {
     Tcp,
     Unix,
-}
-
-/// A Unix socket transport for this test (the real one comes with local mode, M7).
-struct UnixTransport(tokio::net::UnixListener);
-
-impl Transport for UnixTransport {
-    fn accept(&self) -> BoxFuture<'_, writ_platform::Result<Connection>> {
-        Box::pin(async move {
-            let (stream, _) = self.0.accept().await?;
-            Ok(Connection {
-                stream: Box::new(stream),
-                peer: PeerInfo::Memory {
-                    label: "unix (test)".into(),
-                },
-            })
-        })
-    }
-
-    fn describe(&self) -> String {
-        "unix (test)".into()
-    }
 }
 
 /// A gateway on a temporary state directory, and a client environment to talk to it.
@@ -311,11 +290,11 @@ impl GitGateway {
             }
             Listen::Unix => {
                 let socket = root.join("writd.sock");
-                let listener = {
+                let transport = {
                     let _guard = runtime.enter();
-                    tokio::net::UnixListener::bind(&socket).unwrap()
+                    UnixTransport::bind(&socket, portable_peer).unwrap()
                 };
-                let transport = Arc::new(UnixTransport(listener));
+                let transport = Arc::new(transport);
                 let attestor = Arc::new(FakeAttestor::fixed(CallerFacts::default()));
                 let g = gateway.clone();
                 runtime.spawn(async move {

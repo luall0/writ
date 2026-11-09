@@ -14,6 +14,7 @@ use writ_platform::attest::network::NetworkAttestor;
 use writ_platform::notify::Notifiers;
 use writ_platform::notify::telegram::{BotToken, TelegramNotifier};
 use writ_platform::transport::tcp::TcpTransport;
+use writ_platform::transport::unix::{PeerReader, UnixTransport};
 use writ_platform::unlock::passphrase::PassphraseUnlock;
 use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{CallerAttestor, Notifier, SessionWatcher, Transport};
@@ -172,14 +173,17 @@ pub fn enroll(
 async fn listener(config: &TransportConfig) -> anyhow::Result<Listener> {
     let transport: Arc<dyn Transport> = match (&config.tcp, &config.unix) {
         (Some(addr), None) => Arc::new(TcpTransport::bind(addr).await?),
-        (None, Some(socket)) => bail!(
-            "transport unix ({}): Unix sockets come with local mode (M7) and are not in this build",
-            socket.display()
-        ),
+        (None, Some(socket)) => Arc::new(UnixTransport::bind(socket, unix_peer())?),
         // Refused when the configuration is loaded; refused here too.
         _ => bail!("a transport needs exactly one of tcp and unix"),
     };
     Ok((transport, config.sources()))
+}
+
+/// What the kernel says about a Unix socket's peer, on this OS: its user, group and pid
+/// everywhere (macOS adds the audit token's pid generation from step 3 of M7).
+fn unix_peer() -> PeerReader {
+    writ_platform::transport::unix::portable_peer
 }
 
 async fn listeners(configs: &[TransportConfig]) -> anyhow::Result<Vec<Listener>> {

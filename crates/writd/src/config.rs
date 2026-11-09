@@ -524,6 +524,13 @@ impl Config {
         for (name, list) in listeners {
             for (i, transport) in list.iter().enumerate() {
                 transport.check(&format!("{name}[{i}]")).map_err(fail)?;
+                // Every caller of it would be turned away: said at start instead.
+                if transport.unix.is_some() && matches!(config.attestor, AttestorConfig::Network) {
+                    return Err(fail(format!(
+                        "{name}[{i}].unix: the network attestor can't attest a Unix socket's \
+                         callers; local mode's attestor does (attestor: macos_process_chain)"
+                    )));
+                }
             }
         }
         for (i, agents) in config.transports.agents.iter().enumerate() {
@@ -950,8 +957,11 @@ mod tests {
                 .sources()
                 .allows(Some("203.0.113.9".parse().unwrap()))
         );
-        // A Unix socket needs no list.
-        let local = load(&MINIMAL.replace(agents, "agents: [{ unix: run/agents.sock }]")).unwrap();
+        // A Unix socket needs no list, and local mode's attestor.
+        let local = MINIMAL
+            .replace(agents, "agents: [{ unix: run/agents.sock }]")
+            .replace("attestor: network", "attestor: macos_process_chain");
+        let local = load(&local).unwrap();
         assert!(
             local.transports.agents[0]
                 .unix
@@ -959,6 +969,30 @@ mod tests {
                 .unwrap()
                 .is_absolute()
         );
+        // Under the network attestor, every caller would be turned away: refused.
+        for (from, to, at) in [
+            (
+                agents,
+                "agents: [{ unix: run/agents.sock }]",
+                "transports.agents[0]",
+            ),
+            (
+                "approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] }",
+                "approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }, { unix: run/a.sock }] }",
+                "transports.approvals.ssh[1]",
+            ),
+        ] {
+            let text = MINIMAL.replace(from, to);
+            assert_ne!(text, MINIMAL);
+            let error = format!("{:#}", load(&text).unwrap_err());
+            assert!(
+                error.ends_with(&format!(
+                    "{at}.unix: the network attestor can't attest a Unix socket's callers; \
+                     local mode's attestor does (attestor: macos_process_chain)"
+                )),
+                "{error}"
+            );
+        }
     }
 
     #[test]

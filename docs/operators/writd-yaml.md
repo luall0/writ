@@ -84,7 +84,7 @@ allow: [...] }`.
 | `transports.approvals.ssh` | Listeners | `[]` (off) | The approval API over SSH (`ssh://host:port`). Port `2223` |
 | `transports.approvals.https` | Listeners | `[]` (off) | The approval API over HTTPS, with the daemon's own pinned certificate. Port `8443`. `ssh` and `https` can't both be off: nothing could be approved |
 | `<listener>.tcp` | `host:port` | — | A TCP listener. Exactly one of `tcp` and `unix` |
-| `<listener>.unix` | Path | — | A Unix socket. **Refused by this build** until local mode ([M7](../roadmap.md#m7--local-mode-on-the-mac)) |
+| `<listener>.unix` | Path | — | A Unix socket (local mode), at most 103 bytes; relative to `writd.yaml`'s directory. Its directory must already exist, owned by the daemon's user or root, and nobody but its owner may write it: it decides who can connect (on the Mac, `_writd:_writ` `0750`). The daemon makes the socket `0660` and replaces an old socket left there, never anything else. Needs `attestor: macos_process_chain`: the `network` attestor can't attest its callers, so it is refused at start |
 | `<listener>.allow` | Addresses or CIDR ranges | — | Who may connect. [Rules](#allow) |
 
 ### `allow`

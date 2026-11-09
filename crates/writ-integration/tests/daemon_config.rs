@@ -562,19 +562,23 @@ fn listeners_take_only_the_sources_they_allow() {
 }
 
 #[test]
-fn what_this_build_does_not_have_is_refused_at_start() {
+fn a_unix_listener_under_the_network_attestor_is_refused_at_start() {
     let agents = "agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }]";
     let error = Daemon::refused(POLICY, |yaml| {
         yaml.replace(agents, "agents: [{ unix: run/agents.sock }]")
     });
     let last = error.lines().last().unwrap();
-    assert!(last.starts_with("writd: transport unix (/"), "{error}");
     assert!(
-        format!("{last}\n").ends_with(
-            "/run/agents.sock): Unix sockets come with local mode (M7) and are not in this build\n"
+        last.ends_with(
+            "writd.yaml: transports.agents[0].unix: the network attestor can't attest a Unix \
+             socket's callers; local mode's attestor does (attestor: macos_process_chain)"
         ),
         "{error}"
     );
+}
+
+#[test]
+fn what_this_build_does_not_have_is_refused_at_start() {
     let error = Daemon::refused(POLICY, |yaml| {
         yaml.replace("attestor: network", "attestor: macos_process_chain")
     });
