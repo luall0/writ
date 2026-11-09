@@ -391,7 +391,7 @@ pub fn run() -> Stack {
         &approver,
         "writ admin template add <template>",
         &[("<template>", ADDED_TEMPLATE)],
-        &["fetch", "1h", "0", "0", "10", "0", "", "y"],
+        &["fetch", "1h", "0", "0", "10", "0", "", "", "y"],
     );
     assert!(said.contains("Applied: policy is version "), "{said}");
     // 12. Its upstream key, made by the change that declares it, registered on Forgejo as a

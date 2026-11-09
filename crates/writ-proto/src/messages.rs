@@ -71,6 +71,8 @@ pub struct TemplateView {
     pub max_push_size: ByteSize,
     pub paths_check: PathsCheck,
     pub require_expected_paths: bool,
+    /// Whether a ticket must be bound to a session (`writ run`, local mode).
+    pub require_session: bool,
     /// How many renewals one lease's chain may have (none: no limit).
     pub max_renewals: Option<u32>,
     /// The id of the key its commits are signed with (none without `commit_sign`): a name,

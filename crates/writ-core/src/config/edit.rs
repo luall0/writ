@@ -230,6 +230,14 @@ const TEMPLATE_FIELDS: &[Field] = &[
         "false",
     ),
     or(
+        field(
+            "require_session",
+            Flag,
+            "whether a ticket must be bound to a session (writ run, local mode)",
+        ),
+        "false",
+    ),
+    or(
         field("max_renewals", Count, "renewals one lease's chain may have"),
         "no limit",
     ),

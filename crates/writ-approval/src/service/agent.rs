@@ -217,10 +217,19 @@ impl Service {
             }),
             revises: revises.as_ref(),
             min_ttl: self.config.min_ttl,
+            chain: caller.process_chain.as_deref(),
         };
         let policy = self.policy();
         match fit::submit(&policy, &request, &submission) {
             Ok(ticket) => Ok((ticket, source)),
+            Err(rejection) if rejection.session => reject(
+                inner,
+                ServiceError::Refused {
+                    code: RefusalCode::Session,
+                    message: "ticket rejected".to_owned(),
+                    reasons: rejection.reasons,
+                },
+            ),
             Err(rejection) => reject(
                 inner,
                 ServiceError::rejected("ticket rejected", rejection.reasons),

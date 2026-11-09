@@ -366,7 +366,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     let shown = on_terminal(
         approver,
         &format!("writ admin template add guided --from managed {url}"),
-        &["", "3h", "", "", "", "", "", "y"],
+        &["", "3h", "", "", "", "", "", "", "y"],
     );
     assert!(shown.contains("max_ttl (the longest lease"), "{shown}");
     assert!(
@@ -458,7 +458,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     let shown = on_terminal(
         approver,
         &format!("writ admin template edit guided {url}"),
-        &["", "", "", "", "7", "", "", "y"],
+        &["", "", "", "", "7", "", "", "", "y"],
     );
     assert!(shown.contains("max_ops_per_minute=7"), "{shown}");
     // A host: given whole without a terminal (scanning one is `host add` with no keys), and

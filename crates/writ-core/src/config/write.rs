@@ -240,6 +240,9 @@ fn write_template(out: &mut String, t: &Template) {
     if t.require_expected_paths {
         field(out, "require_expected_paths", "true");
     }
+    if t.require_session {
+        field(out, "require_session", "true");
+    }
     if let Some(renewals) = t.max_renewals {
         field(out, "max_renewals", &renewals.to_string());
     }

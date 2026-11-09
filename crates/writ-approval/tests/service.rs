@@ -89,16 +89,45 @@ fn facts() -> CallerFacts {
     }
 }
 
+/// A submitter (`writ`, pid 9000) under two nested harness sessions, 4243 then 4242 (each
+/// generation 7), as the kernel resolves the chain on local mode's socket.
+fn in_sessions() -> CallerFacts {
+    let process = |pid, executable: &str| ProcessRef {
+        pid,
+        generation: 7,
+        executable: PathBuf::from(executable),
+        code_identity: None,
+    };
+    CallerFacts {
+        source_addr: None,
+        process_chain: Some(vec![
+            process(9000, "/opt/writ/bin/writ"),
+            process(4243, "/usr/local/bin/harness"),
+            process(4242, "/usr/local/bin/harness"),
+            process(1, "/sbin/launchd"),
+        ]),
+    }
+}
+
 impl Harness {
     fn new(decisions: Decisions) -> Self {
         Self::with(decisions, FakeWatcher::new(), 20)
     }
 
     fn with(decisions: Decisions, watcher: FakeWatcher, max_pending: usize) -> Self {
+        Self::with_policy(POLICY, decisions, watcher, max_pending)
+    }
+
+    fn with_policy(
+        policy: &str,
+        decisions: Decisions,
+        watcher: FakeWatcher,
+        max_pending: usize,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(FakeClock::at_unix(START));
         let notifier = RecordingNotifier::new();
-        let test = TestServiceBuilder::new(POLICY)
+        let test = TestServiceBuilder::new(policy)
             .decisions(decisions)
             .max_pending(max_pending)
             .watcher(Arc::new(watcher.clone()))
@@ -120,10 +149,20 @@ impl Harness {
 
     /// Submits a request with a fresh session key.
     fn submit(&self, yaml: &str) -> (Ticket, PrivateKey) {
+        self.submit_from(yaml, &facts())
+    }
+
+    /// Submits from inside the harness sessions 4242 and 4243 ([`in_sessions`]), over local
+    /// mode's socket: what a `caller` binding is completed from.
+    fn submit_bound(&self, yaml: &str) -> (Ticket, PrivateKey) {
+        self.submit_from(yaml, &in_sessions())
+    }
+
+    fn submit_from(&self, yaml: &str, caller: &CallerFacts) -> (Ticket, PrivateKey) {
         let key = generate(KeyKind::Ed25519).unwrap();
         let submitted = self
             .service
-            .submit(key.public_key(), yaml.as_bytes(), &facts())
+            .submit(key.public_key(), yaml.as_bytes(), caller)
             .unwrap();
         (
             Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap(),
@@ -651,7 +690,7 @@ fn waiting_returns_when_the_approver_decides() {
 
 const BOUND: &str = r#"
 caller:
-  descends_from: { executable: /usr/local/bin/harness, pid: 4242, generation: 7 }
+  descends_from: { pid: 4242 }
 repos:
   omega-code:
     template: feature-branch
@@ -664,7 +703,7 @@ ticket:
 #[test]
 fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
     let unwatched = Harness::with(Decisions::Signed, FakeWatcher::unsupported(), 20);
-    let (ticket, _) = unwatched.submit(BOUND);
+    let (ticket, _) = unwatched.submit_bound(BOUND);
     let error = unwatched.approve(&ticket).unwrap_err();
     assert!(
         matches!(&error, ServiceError::Refused { code: RefusalCode::Session, message, .. } if message.contains("can't watch")),
@@ -672,7 +711,7 @@ fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
     );
 
     let h = Harness::new(Decisions::Signed);
-    let (ticket, key) = h.submit(BOUND);
+    let (ticket, key) = h.submit_bound(BOUND);
     h.approve(&ticket).unwrap();
     assert_eq!(h.watcher.active_watches(), 1);
     let Decision::Active { certificate, .. } = h.wait(&ticket.id, &key) else {
@@ -721,9 +760,134 @@ fn next_revocation(revocations: &mut tokio::sync::broadcast::Receiver<u64>) -> u
         .unwrap()
 }
 
+#[test]
+fn a_binding_is_completed_from_the_kernel_s_chain_and_nothing_else() {
+    let h = Harness::new(Decisions::Signed);
+    // The outer session, by pid: its executable and generation are the chain's.
+    let (ticket, _) = h.submit_bound(&BOUND.replace("pid: 4242", "pid: 4243"));
+    let bound = ticket.subject.caller.unwrap().descends_from;
+    assert_eq!(
+        (
+            bound.executable.as_str(),
+            bound.pid,
+            bound.generation,
+            bound.code_identity
+        ),
+        ("/usr/local/bin/harness", 4243, 7, None)
+    );
+    // The old shape, the kernel's facts written by the agent: refused by name.
+    let old = BOUND.replace(
+        "{ pid: 4242 }",
+        "{ executable: /usr/local/bin/harness, pid: 4242, generation: 7 }",
+    );
+    let error = h
+        .service
+        .submit(
+            generate(KeyKind::Ed25519).unwrap().public_key(),
+            old.as_bytes(),
+            &in_sessions(),
+        )
+        .unwrap_err();
+    let ServiceError::Refused { code, reasons, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(code, &RefusalCode::Rejected);
+    assert!(
+        matches!(reasons.as_slice(), [one] if one.starts_with("caller.descends_from.executable: ")
+            && one.ends_with("unknown field `executable`, expected one of pid")),
+        "{reasons:?}"
+    );
+    // A pid the submission doesn't descend from, and a submission with no chain (TCP).
+    for (pid, caller, expected) in [
+        (
+            4244,
+            in_sessions(),
+            "caller.descends_from.pid: 4244 is not a process this submission descends from",
+        ),
+        (
+            4242,
+            facts(),
+            "caller.descends_from.pid: a session binding needs local mode: the submission must \
+             come over the daemon's Unix socket, where the kernel names the processes it \
+             descends from",
+        ),
+    ] {
+        let yaml = BOUND.replace("pid: 4242", &format!("pid: {pid}"));
+        let error = h
+            .service
+            .submit(
+                generate(KeyKind::Ed25519).unwrap().public_key(),
+                yaml.as_bytes(),
+                &caller,
+            )
+            .unwrap_err();
+        let ServiceError::Refused { code, reasons, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            (code, reasons.as_slice()),
+            (&RefusalCode::Session, &[expected.to_owned()][..])
+        );
+    }
+    assert_eq!(h.events("submit", "denied"), 3);
+}
+
+#[test]
+fn a_template_requiring_a_session_takes_only_a_bound_ticket() {
+    let policy = POLICY.replacen(
+        "    paths_check: warn\n  quick-fix:",
+        "    paths_check: warn\n    require_session: true\n  quick-fix:",
+        1,
+    );
+    assert_ne!(policy, POLICY);
+    let h = Harness::with_policy(&policy, Decisions::Signed, FakeWatcher::new(), 20);
+    let unbound = BOUND.replace("caller:\n  descends_from: { pid: 4242 }\n", "");
+    assert_ne!(unbound, BOUND);
+    for caller in [facts(), in_sessions()] {
+        let error = h
+            .service
+            .submit(
+                generate(KeyKind::Ed25519).unwrap().public_key(),
+                unbound.as_bytes(),
+                &caller,
+            )
+            .unwrap_err();
+        let ServiceError::Refused { code, reasons, .. } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(code, &RefusalCode::Session);
+        assert_eq!(
+            reasons,
+            &[
+                "repos.omega-code: the template feature-branch requires a session binding \
+               (caller): start the agent under `writ run`"
+                    .to_owned()
+            ]
+        );
+    }
+    // Bound: taken, and granted.
+    let (ticket, _) = h.submit_bound(BOUND);
+    assert_eq!(h.approve(&ticket).unwrap(), State::Active);
+    // Without the key (the fixture's policy), the same unbound ticket is taken.
+    let plain = Harness::new(Decisions::Signed);
+    let (ticket, _) = plain.submit(&unbound);
+    assert_eq!(ticket.subject.caller, None);
+}
+
+#[test]
+fn a_narrowing_can_t_drop_the_binding() {
+    let h = Harness::new(Decisions::Signed);
+    let (ticket, _) = h.submit_bound(BOUND);
+    let mut unbound = ticket.clone();
+    unbound.subject.caller = None;
+    let error = h.service.approve(&ticket.id, &h.signed(&unbound), &facts());
+    refused_as(error, RefusalCode::Lifecycle, "subject");
+    assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Pending);
+}
+
 /// A lease bound to the session process 4242 (generation 7), and its certificate's serial.
 fn bound_lease(h: &Harness) -> (Ticket, u64) {
-    let (ticket, key) = h.submit(BOUND);
+    let (ticket, key) = h.submit_bound(BOUND);
     h.approve(&ticket).unwrap();
     let Decision::Active { certificate, .. } = h.wait(&ticket.id, &key) else {
         panic!("expected an active lease");
@@ -739,7 +903,7 @@ fn bound_lease(h: &Harness) -> (Ticket, u64) {
 fn revocations_left_unrecorded_survive_a_retry_that_fails_part_way() {
     let h = Harness::new(Decisions::Signed);
     let bound = |pid: u32| {
-        let (ticket, key) = h.submit(&BOUND.replace("pid: 4242", &format!("pid: {pid}")));
+        let (ticket, key) = h.submit_bound(&BOUND.replace("pid: 4242", &format!("pid: {pid}")));
         h.approve(&ticket).unwrap();
         let Decision::Active { certificate, .. } = h.wait(&ticket.id, &key) else {
             panic!("expected an active lease");

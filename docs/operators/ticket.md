@@ -62,11 +62,7 @@ its lifecycle: [lease model](../lease-model.md#the-ticket-the-agent-writes).
 | `limits.ttl` | Duration | the smallest `max_ttl` of the templates | How long the lease lasts, counted from submission. At least the daemon's `min_ttl` (`5m` by default), at most every template's `max_ttl` |
 | `limits.max_ops_per_minute` | Count | the smallest of the templates' | The lease's rate, every repository together. At most every template's |
 | `on_violation` | `deny_and_notify` or `revoke_lease` | `deny_and_notify` | What happens when the agent tries something out of scope, in any repository, besides the denial. `revoke_lease`: the lease is revoked at the first violation. You may make it stricter when signing, never looser |
-| `caller.descends_from.executable` | Absolute path | — | The process every caller of the lease must descend from. [Caller](#caller-local-mode) |
-| `caller.descends_from.pid` | Number | — | That process's id |
-| `caller.descends_from.generation` | Number | — | Its pid generation (`pidversion`), so a reused pid doesn't match |
-| `caller.descends_from.code_identity.signing_id` | Text | — | Its code-signing identifier must match too |
-| `caller.descends_from.code_identity.team_id` | Text | — | And its team id |
+| `caller.descends_from.pid` | Number | — | The process every caller of the lease must descend from, by its id. `writ run` writes it. [Caller](#caller-local-mode) |
 
 ## Renewals
 
@@ -89,9 +85,16 @@ A renewal asks for more time for the same work. You sign it like any ticket.
 
 ## `caller` (local mode)
 
-Set by a harness, not by hand: it binds the lease to the processes the harness started.
+Written by `writ run`, not by hand: it binds the lease to the agent session `writ run`
+started, so the lease is refused to anything outside it and revoked when it ends.
 
-- Only local mode can check it ([M7](../roadmap.md#m7--local-mode-on-the-mac)). Under the
-  `network` attestor there are no process facts, so a lease with a `caller` is denied
-  everything (`caller`).
-- `executable` is a normalized path of at most 1024 bytes, compared byte for byte.
+- The ticket names the process by its id only. The daemon fills in the rest from what the
+  kernel says about the submission: that process's executable, its pid generation (a reused
+  pid is another process) and its code signature. The approver sees all of it in `writ sign`.
+- The submission must come from inside that process (the process itself or one it started),
+  over local mode's Unix socket. Any other pid, or a submission over TCP, is refused
+  (`session`).
+- A template can require a binding (`require_session` in the policy): a ticket without one is
+  refused (`session`), and the approver can't remove the binding when signing.
+- Only local mode can check it. Under the `network` attestor there are no process facts, so a
+  lease with a `caller` is denied everything (`caller`).

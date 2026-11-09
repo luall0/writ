@@ -297,6 +297,13 @@ fn template_rows(template: &TemplateView) -> String {
         "optional"
     };
     row(&mut out, "expected_paths", format!("{required}; {paths}"));
+    if template.require_session {
+        row(
+            &mut out,
+            "session",
+            "required: the agent runs under `writ run`".to_owned(),
+        );
+    }
     row(
         &mut out,
         "renewals",
@@ -330,6 +337,7 @@ mod tests {
             max_push_size: ByteSize::from_bytes(50_000_000),
             paths_check: PathsCheck::Deny,
             require_expected_paths: true,
+            require_session: true,
             max_renewals: Some(2),
             signing_key: Some("agent-01".parse().unwrap()),
         }
@@ -366,6 +374,7 @@ mod tests {
             "max ttl             4h",
             "max push size       50000000 bytes",
             "expected_paths      required; files outside them are refused",
+            "session             required: the agent runs under `writ run`",
             "renewals            at most 2 per lease",
             "signing key         agent-01 (one per lease",
             "The repo's block must fit this template",

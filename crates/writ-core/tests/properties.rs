@@ -36,8 +36,8 @@ use writ_core::policy::{
 };
 use writ_core::ticket::Operation;
 use writ_core::ticket::{
-    Limits, OnViolation, RepoLimits, RepoTerms, RequestCommon, RequestLimits, RequestRepo,
-    RequestRepoLimits, RequestText, Ticket, TicketRequest,
+    Limits, OnViolation, RepoLimits, RepoTerms, RequestCaller, RequestCommon, RequestLimits,
+    RequestProcess, RequestRepo, RequestRepoLimits, RequestText, Ticket, TicketRequest,
 };
 use writ_core::units::{ByteSize, Duration, Timestamp};
 
@@ -108,6 +108,33 @@ where
     T::Err: std::fmt::Debug,
 {
     items.into_iter().map(|s| s.parse().unwrap()).collect()
+}
+
+/// The chain the kernel gives a submission from inside the Omega session: what a bound
+/// request (pid 4242) is completed from, into [`omega_constraint`].
+static OMEGA_CHAIN: std::sync::LazyLock<Vec<ProcessRef>> = std::sync::LazyLock::new(|| {
+    vec![
+        ProcessRef {
+            pid: 5000,
+            generation: 7,
+            executable: PathBuf::from("/opt/writ/bin/writ"),
+            code_identity: None,
+        },
+        ProcessRef {
+            pid: 4242,
+            generation: 118,
+            executable: PathBuf::from(OMEGA),
+            code_identity: None,
+        },
+    ]
+});
+
+/// A submission from inside the Omega session.
+fn submission_in_session(n: u64) -> fit::Submission<'static> {
+    fit::Submission {
+        chain: Some(OMEGA_CHAIN.as_slice()),
+        ..submission(n)
+    }
 }
 
 fn omega_constraint() -> CallerConstraint {
@@ -225,7 +252,9 @@ fn arb_request() -> impl Strategy<Value = TicketRequest> {
         };
         TicketRequest {
             origin_hint: None,
-            caller: bound.then(omega_constraint),
+            caller: bound.then_some(RequestCaller {
+                descends_from: RequestProcess { pid: 4242 },
+            }),
             common: RequestCommon {
                 committer_emails: scope.4.iter().map(|e| e.parse().unwrap()).collect(),
             },
@@ -251,7 +280,7 @@ fn arb_request() -> impl Strategy<Value = TicketRequest> {
 /// A request that fits a template, completed into a ticket.
 fn arb_ticket() -> impl Strategy<Value = Ticket> {
     arb_request().prop_filter_map("fits no template", |request| {
-        fit::submit(&wide_config(), &request, &submission(1)).ok()
+        fit::submit(&wide_config(), &request, &submission_in_session(1)).ok()
     })
 }
 
@@ -787,7 +816,7 @@ proptest! {
         requests in prop::collection::vec(arb_facts(), 16),
     ) {
         let config = wide_config();
-        let Ok(ticket) = fit::submit(&config, &request, &submission(1)) else {
+        let Ok(ticket) = fit::submit(&config, &request, &submission_in_session(1)) else {
             return Ok(());
         };
         prop_assert!(fit::fits(&config, &ticket).is_ok());
@@ -976,7 +1005,7 @@ fn the_generators_reach_both_outcomes() {
     let (mut fit_count, mut rejected) = (0, 0);
     for _ in 0..2000 {
         let request = arb_request().new_tree(&mut runner).unwrap().current();
-        match fit::submit(&config, &request, &submission(1)) {
+        match fit::submit(&config, &request, &submission_in_session(1)) {
             Ok(_) => fit_count += 1,
             Err(_) => rejected += 1,
         }

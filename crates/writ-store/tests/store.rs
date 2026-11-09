@@ -97,6 +97,7 @@ fn ticket(n: u64, yaml: &str, amends: Option<&Lease>) -> Ticket {
         renews: None,
         revises: None,
         min_ttl: fit::DEFAULT_MIN_TTL,
+        chain: None,
     };
     fit::submit(
         &config(),
@@ -925,6 +926,7 @@ fn renew(store: &Store, renewed: &Lease, from: State, n: u64) -> Lease {
         }),
         revises: None,
         min_ttl: fit::DEFAULT_MIN_TTL,
+        chain: None,
     };
     let ticket = fit::submit(
         &config(),
@@ -1025,6 +1027,7 @@ fn a_renewal_that_cannot_end_its_lease_grants_nothing() {
         }),
         revises: None,
         min_ttl: fit::DEFAULT_MIN_TTL,
+        chain: None,
     };
     let ticket = fit::submit(
         &config(),

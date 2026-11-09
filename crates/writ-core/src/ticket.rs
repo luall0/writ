@@ -270,8 +270,10 @@ impl Ticket {
 pub struct TicketRequest {
     #[serde(default)]
     pub origin_hint: Option<String>,
+    /// The session to bind the lease to, by pid only: the daemon completes it from the
+    /// kernel's chain of the submission (`writ run` writes it).
     #[serde(default)]
-    pub caller: Option<CallerConstraint>,
+    pub caller: Option<RequestCaller>,
     /// The lease's terms (`common:` in the ticket file).
     #[serde(default)]
     pub common: RequestCommon,
@@ -282,6 +284,21 @@ pub struct TicketRequest {
     pub limits: RequestLimits,
     #[serde(default)]
     pub on_violation: OnViolation,
+}
+
+/// The session a ticket asks to be bound to (`caller:` in the ticket file).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestCaller {
+    pub descends_from: RequestProcess,
+}
+
+/// A process the submission descends from, named by its pid alone: its executable,
+/// generation and code identity are the kernel's, filled in by the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestProcess {
+    pub pid: u32,
 }
 
 /// What the ticket asks for the whole lease (`common:`).

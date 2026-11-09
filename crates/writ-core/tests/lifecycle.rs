@@ -29,6 +29,53 @@ fn rejection(yaml: &str) -> String {
 
 // Submission and template fit.
 
+/// A submission whose kernel chain is `chain`.
+fn from_chain(chain: &[writ_core::caller::ProcessRef]) -> Result<Ticket, fit::Rejection> {
+    let yaml = format!("caller:\n  descends_from: {{ pid: 42 }}\n{REQUEST}");
+    let submission = fit::Submission {
+        chain: Some(chain),
+        ..submission(1)
+    };
+    fit::submit(&config(), &request(&yaml), &submission)
+}
+
+#[test]
+fn a_binding_takes_the_kernel_s_process_within_the_bounds() {
+    use std::os::unix::ffi::OsStrExt as _;
+    use writ_core::caller::{CodeIdentity, MAX_EXECUTABLE_BYTES, ProcessRef};
+    let process = |executable: std::path::PathBuf| ProcessRef {
+        pid: 42,
+        generation: 9,
+        executable,
+        code_identity: Some(CodeIdentity {
+            signing_id: "dev.writ.writ".to_owned(),
+            team_id: None,
+        }),
+    };
+    let at = format!("/{}", "a".repeat(MAX_EXECUTABLE_BYTES - 1));
+    let ticket = from_chain(&[process(at.clone().into())]).unwrap();
+    let bound = ticket.subject.caller.unwrap().descends_from;
+    assert_eq!((bound.executable, bound.pid, bound.generation), (at, 42, 9));
+    assert_eq!(bound.code_identity.unwrap().signing_id, "dev.writ.writ");
+    let past = format!("/{}", "a".repeat(MAX_EXECUTABLE_BYTES));
+    let not_utf8 = std::ffi::OsStr::from_bytes(b"/opt/\xff/writ");
+    for (executable, expected) in [
+        (
+            past.into(),
+            "caller.descends_from.pid: 42: invalid caller constraint: the executable path is \
+             too long",
+        ),
+        (
+            std::path::PathBuf::from(not_utf8),
+            "caller.descends_from.pid: 42: its executable's path is not UTF-8",
+        ),
+    ] {
+        let rejection = from_chain(&[process(executable)]).unwrap_err();
+        assert!(rejection.session);
+        assert_eq!(rejection.reasons, [expected.to_owned()]);
+    }
+}
+
 #[test]
 fn a_submitted_ticket_is_complete() {
     let ticket = submitted(REQUEST);
@@ -209,14 +256,8 @@ fn tickets_outside_every_template_are_rejected_with_reasons() {
             "repos.omega-code fits no template",
         ),
         (
-            format!(
-                "caller:\n  descends_from:\n    executable: omega\n    pid: 1\n    generation: 1\n    code_identity: null\n{}",
-                REQUEST
-                    .replace("template: feature-branch", "template: quick-fix")
-                    .replace("agent/oauth-*", "agent/fix-*")
-                    .replace("ttl: 2h", "ttl: 1h")
-            ),
-            "subject.caller: invalid caller constraint: the executable must be an absolute path",
+            format!("caller:\n  descends_from: {{ pid: 1 }}\n{REQUEST}"),
+            "caller.descends_from.pid: a session binding needs local mode",
         ),
     ];
     for (yaml, expected) in cases {

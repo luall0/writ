@@ -231,7 +231,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: <listener>.unix` | `a_unix_listener_under_the_network_attestor_is_refused_at_start` (refused under the network attestor), `a_ticket_over_the_unix_socket_carries_the_kernel_s_process_chain` |
 | `writd.yaml: <listener>.allow` | `listeners_take_only_the_sources_they_allow` |
 | `writd.yaml: attestor` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`, `a_ticket_over_the_unix_socket_carries_the_kernel_s_process_chain` (the value macos_process_chain) |
-| `writd.yaml: session_watcher` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; the value macos's revocation on exit planned: M7 |
+| `writd.yaml: session_watcher` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; `a_lease_bound_to_its_session_serves_inside_it_only_and_ends_with_it` (the value macos: revoked on exit) |
 | `writd.yaml: notifiers[].telegram.token.boot` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `while_sealed_every_request_fails_closed_with_daemon_sealed_and_is_logged` |
 | `writd.yaml: notifiers[].telegram.token.sealed` | `a_sealed_notifier_token_starts_its_notifier_when_added` |
 | `writd.yaml: notifiers[].telegram.chat_id` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
@@ -268,14 +268,11 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: templates.<name>.max_push_size` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `git_takes_in_no_more_than_the_template_in_force_allows` |
 | `policy.yaml: templates.<name>.paths_check` | `paths_check_off_signs_any_path_without_a_warning`, `paths_outside_the_ticket_are_refused_with_paths_check_deny` |
 | `policy.yaml: templates.<name>.require_expected_paths` | `require_expected_paths_rejects_a_ticket_without_them` |
+| `policy.yaml: templates.<name>.require_session` | `a_lease_bound_to_its_session_serves_inside_it_only_and_ends_with_it` |
 | `policy.yaml: templates.<name>.committer_name` | `a_template_s_committer_name_is_set_on_commits_and_any_other_refused`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
 | `policy.yaml: templates.<name>.max_renewals` | `a_renewal_pushes_what_its_lease_signed_and_holds_to_every_bound`, `a_lease_is_renewed_closed_and_learned_from` |
 | `ticket: origin_hint` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
-| `ticket: caller.descends_from.executable` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
-| `ticket: caller.descends_from.pid` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
-| `ticket: caller.descends_from.generation` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
-| `ticket: caller.descends_from.code_identity.signing_id` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
-| `ticket: caller.descends_from.code_identity.team_id` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` (shown, and never granted without a session watcher); the operation-time check planned: M7 |
+| `ticket: caller.descends_from.pid` | `a_lease_bound_to_its_session_serves_inside_it_only_and_ends_with_it`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked` |
 | `ticket: common.committer_emails` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
 | `ticket: repos.<repo>.template` | `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |
 | `ticket: repos.<repo>.operations` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `a_fetch_goes_through_the_policy_and_counts_against_the_rate` |

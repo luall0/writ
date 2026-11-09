@@ -33,11 +33,6 @@ ticket:
 #   ttl: 4h                        # at least the daemon's min_ttl (5m by default), counted from submission
 #   max_ops_per_minute: 20
 # on_violation: deny_and_notify    # deny_and_notify | revoke_lease
-# caller:                          # none by default; local mode, set by a harness
+# caller:                          # none by default; local mode, written by `writ run`
 #   descends_from:                 # the process the lease's callers must descend from
-#     executable: /Applications/Harness.app/Contents/MacOS/harness
-#     pid: 4242
-#     generation: 118              # its pidversion: a reused pid doesn't match
-#     code_identity:               # optional: its code signature must match too
-#       signing_id: com.example.harness
-#       team_id: ABCDE12345        # optional
+#     pid: 4242                    # by pid alone: the daemon takes the rest from the kernel

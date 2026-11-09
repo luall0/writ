@@ -110,6 +110,7 @@ templates:
     max_push_size: 50MB
     paths_check: warn                      # off | warn | deny (default warn)
     require_expected_paths: false
+    require_session: false                 # local mode: a ticket must be bound to a session (writ run)
   quick-fix:
     operations: [fetch, commit_sign, push]
     branches: ["agent/fix-*"]
@@ -164,7 +165,7 @@ place and nothing overrides anything.
 
 ```yaml
 origin_hint: macbook-user       # optional, advisory
-caller:                          # optional, set by a harness (see subject.caller below)
+caller:                          # optional: { descends_from: { pid } }, written by `writ run`; the daemon completes it (subject.caller below)
 common:                          # the lease's: one committer identity
   committer_emails: []           # optional: omitted, those every signing repository's template allows
 repos:                           # one block per repository, at least one, at most 16
@@ -251,7 +252,7 @@ subject:                         # WHO
   session_key: SHA256:9fq...      # the certificate is issued for this key
   origin_hint: macbook-user     # advisory, shown in the approval prompt
   caller:                        # optional; checked against CallerFacts, missing facts deny
-    descends_from:               # local mode: a kernel-resolved process ancestor (or the caller itself)
+    descends_from:               # local mode: a kernel-resolved process ancestor (or the caller itself), completed by the daemon from the submission's chain
       executable: /Applications/Omega Code.app/Contents/MacOS/omega
       pid: 4242
       generation: 118            # pidversion: rejects a reused pid

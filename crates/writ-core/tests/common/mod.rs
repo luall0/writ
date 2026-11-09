@@ -143,6 +143,7 @@ pub fn submission(n: u64) -> Submission<'static> {
         renews: None,
         revises: None,
         min_ttl: fit::DEFAULT_MIN_TTL,
+        chain: None,
     }
 }
 

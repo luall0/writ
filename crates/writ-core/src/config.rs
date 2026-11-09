@@ -252,6 +252,9 @@ pub struct Template {
     pub paths_check: PathsCheck,
     #[serde(default)]
     pub require_expected_paths: bool,
+    /// Whether a ticket must be bound to a session (`caller`, local mode: `writ run`).
+    #[serde(default)]
+    pub require_session: bool,
     /// How many renewals one lease's chain may have (none: no limit). Each is signed anyway;
     /// this caps how long one task can run under the template.
     #[serde(default)]

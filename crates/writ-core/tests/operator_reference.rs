@@ -99,7 +99,7 @@ fn ticket_keys() -> BTreeSet<String> {
     keys.extend(keys_of(
         &ticket_error("caller:\n  descends_from:\n    __probe__: 0"),
         "caller.descends_from.",
-        &["code_identity"],
+        &[],
     ));
     let caller = expected(&ticket_error("caller:\n  __probe__: 0"));
     assert_eq!(
@@ -107,11 +107,6 @@ fn ticket_keys() -> BTreeSet<String> {
         ["descends_from"],
         "a new caller constraint: probe it"
     );
-    keys.extend(keys_of(
-        &ticket_error("caller:\n  descends_from:\n    code_identity:\n      __probe__: 0"),
-        "caller.descends_from.code_identity.",
-        &[],
-    ));
     for section in ["common", "ticket", "limits"] {
         keys.extend(keys_of(
             &ticket_error(&format!("{section}:\n  __probe__: 0")),

@@ -544,6 +544,32 @@ impl Daemon {
             .unwrap()
     }
 
+    /// A shell script running `git ls-remote` through the agents' Unix socket with a
+    /// session's certificate (ssh through `nc -U`, as `writ init` wires a local endpoint):
+    /// run by whichever process should be its ancestor (`/bin/sh <script>`).
+    pub fn ls_remote_local_script(&self, session: &Path) -> PathBuf {
+        let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+        let ssh = format!(
+            "ssh {} -o HostKeyAlias={} -o ProxyCommand={}",
+            ssh_options(&self.root().join("known_hosts"), session).join(" "),
+            crate::LOCAL_HOST_ALIAS,
+            quote(&format!(
+                "/usr/bin/nc -U {}",
+                self.agents_socket().display()
+            ))
+        );
+        let script = format!(
+            "export GIT_SSH_COMMAND={}\nexport GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+             HOME={}\nexec git ls-remote ssh://git@{}/demo.git\n",
+            quote(&ssh),
+            quote(&self.root().join("home").display().to_string()),
+            crate::LOCAL_HOST_ALIAS
+        );
+        let path = session.with_extension("ls-remote.sh");
+        fs::write(&path, script).unwrap();
+        path
+    }
+
     /// `writd <command> <writd.yaml>` for a command that prints (`signing-keys`,
     /// `upstream-keys`, `host-key`): its output, trimmed.
     pub fn print(&self, command: &str) -> String {

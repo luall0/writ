@@ -58,5 +58,6 @@ templates:
     # force_push: false            # whether a ticket may ask for force pushes
     # paths_check: warn            # off | warn | deny: commits vs their repo's expected_paths
     # require_expected_paths: false
+    # require_session: false       # local mode: a ticket must be bound to a session (`writ run`)
     # max_renewals: null           # null: no limit on a lease's renewals (each one is signed)
     # committer_name: null         # e.g. "Writ agent": the name every commit must carry; null: not checked

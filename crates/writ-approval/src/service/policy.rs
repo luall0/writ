@@ -82,6 +82,7 @@ fn template_view(name: &TemplateName, template: &Template) -> TemplateView {
         max_push_size: template.max_push_size,
         paths_check: template.paths_check,
         require_expected_paths: template.require_expected_paths,
+        require_session: template.require_session,
         max_renewals: template.max_renewals,
         signing_key: template.signing_key.clone(),
     }

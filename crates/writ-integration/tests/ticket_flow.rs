@@ -802,13 +802,9 @@ fn the_origin_hint_is_shown_and_a_caller_constraint_is_checked() {
         &["repos.demo: branch main is not within the template's branches (agent/*)"],
     );
 
-    // `origin_hint` is shown to the approver, as the agent's claim; `caller` as the process
-    // the lease is bound to.
-    let bound = format!(
-        "origin_hint: \"build-host-7 / claude session 42\"\n\
-         caller:\n  descends_from:\n    executable: /usr/local/bin/agent-harness\n    \
-         pid: 4242\n    generation: 7\n    code_identity: {{ signing_id: com.example.harness, \
-         team_id: ABCDE12345 }}\n{}",
+    // `origin_hint` is shown to the approver, as the agent's claim.
+    let hinted = format!(
+        "origin_hint: \"build-host-7 / claude session 42\"\n{}",
         with_template(
             "feature",
             &ticket(
@@ -817,9 +813,8 @@ fn the_origin_hint_is_shown_and_a_caller_constraint_is_checked() {
             )
         )
     );
-    let request = daemon.request("bound", &bound);
-    let id = request.id.clone();
-    let out = daemon.run(&["sign", &id, "--full", "--yes"], "");
+    let request = daemon.request("hinted", &hinted);
+    let out = daemon.run(&["sign", &request.id, "--full", "--yes"], "");
     let shown = stdout(&out);
     assert!(
         shown.contains(
@@ -827,41 +822,33 @@ fn the_origin_hint_is_shown_and_a_caller_constraint_is_checked() {
         ),
         "{shown}"
     );
-    // Cut between words to fit the terminal, never inside the team id.
-    assert!(
-        shown.contains(
-            "  caller             descends from /usr/local/bin/agent-harness (pid 4242,\n\
-             \x20                    │ generation 7, signed com.example.harness team\n\
-             \x20                    │ ABCDE12345)\n"
-        ),
-        "{shown}"
-    );
     assert!(
         shown.contains("  plan\n    │ 1. Read the OAuth spec\n    │ 2. Add the login route\n"),
         "{shown}"
     );
-    // The constraint is checked as soon as it would bind a lease: this daemon watches no
-    // session (`session_watcher: none`, the only one this build has), so a lease bound to a
-    // process is never granted (fail closed), whatever the approver signs.
-    assert_eq!(out.status.code(), Some(1), "{shown}");
-    assert_eq!(
-        stderr(&out),
-        "writ: approval refused: the lease is bound to a session the daemon can't watch: \
-         session watching is not supported by this implementation\n"
+    assert!(out.status.success(), "{shown}");
+    assert_eq!(request.finish().0.code(), Some(0));
+    // A session binding over TCP: no process chain to complete it from, refused at
+    // submission with the session code (local mode's test binds one for real).
+    let bound = format!(
+        "caller:\n  descends_from: {{ pid: 4242 }}\n{}",
+        with_template("feature", &ticket("", "1h"))
     );
-    let denied = writ_integration::audit_events(&daemon.audit(), "grant", "denied");
-    assert_eq!(denied.len(), 1, "{denied:?}");
-    assert_eq!(
-        denied[0]["reason"],
-        "the lease is bound to a session the daemon can't watch: session watching is not \
-         supported by this implementation",
-        "{}",
-        denied[0]
+    assert_rejected(
+        &submit(&daemon, "bound", &bound),
+        &[
+            "caller.descends_from.pid: a session binding needs local mode: the submission must \
+           come over the daemon's Unix socket, where the kernel names the processes it \
+           descends from",
+        ],
     );
-    assert_eq!(daemon.audited("grant", "allowed"), 0, "{}", daemon.audit());
-    let out = daemon.run(&["revoke", &id], "");
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(request.finish().0.code(), Some(5));
+    let denied = writ_integration::audit_events(&daemon.audit(), "submit", "denied");
+    assert!(
+        denied.iter().any(|e| e["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("a session binding needs local mode"))),
+        "{denied:?}"
+    );
     // The same lease without the constraint fetches.
     let free = daemon.lease("free", &with_template("feature", &ticket("", "1h")));
     let out = daemon.ls_remote(&daemon.session(&free));

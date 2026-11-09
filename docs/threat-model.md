@@ -41,8 +41,13 @@ can use it, but only within the lease (repo, ops, branches, time, count).
 **An agent host's reach is every active lease on it.** The daemon knows a caller by its session
 key, not by which process on the host holds it: an agent (prompt-injected, or malware beside it)
 that can read another agent's session files can act under that lease. In local mode the caller
-constraint ties a lease to one agent session's process tree, so another agent is refused; in
-detached mode only the OS keeps agents apart (one user, container or VM each).
+constraint ties a lease to one agent session's process tree, so another agent is refused. The
+agent's ticket names the session's process by its pid alone (`writ run` writes it); the daemon
+fills in its executable, generation and code identity from the kernel's chain of the
+submission, and refuses a pid the submission doesn't descend from. A template with
+`require_session` refuses an unbound ticket, so an injected agent can't drop the binding to
+escape it, and the approver can't drop it when signing. In detached mode only the OS keeps
+agents apart (one user, container or VM each).
 `max_active_per_source` (`1` for a host meant for one agent) caps the leases one source holds,
 and `writ sign` shows the approver the source's other active leases, an overlap flagged
 ([M6](history/m6-agent-skill-amendments-renewals-and-close.md)). `WRIT_SESSION` keeps agents

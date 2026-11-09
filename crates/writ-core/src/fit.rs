@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::caller::{CallerConstraint, ProcessMatch, ProcessRef};
 use crate::config::{PolicyConfig, PushMode, Template};
 use crate::lease::{Lease, Renewed, State, TicketRecord};
 use crate::names::{CommitterName, Email, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
@@ -60,12 +61,23 @@ pub const MAX_ESTIMATE: Duration = Duration::from_seconds(30 * 86_400);
 #[error("ticket rejected: {}", .reasons.join("; "))]
 pub struct Rejection {
     pub reasons: Vec<String>,
+    /// About the session binding (`caller`): one that can't be made, or one a template
+    /// requires and the ticket lacks. Refused under its own code.
+    pub session: bool,
 }
 
 impl Rejection {
     fn one(reason: impl Into<String>) -> Self {
         Self {
             reasons: vec![reason.into()],
+            session: false,
+        }
+    }
+
+    fn session(reasons: Vec<String>) -> Self {
+        Self {
+            reasons,
+            session: true,
         }
     }
 }
@@ -119,6 +131,11 @@ pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
             }
         }
     }
+    reasons.extend(unbound(
+        config,
+        &ticket.repos,
+        ticket.subject.caller.is_some(),
+    ));
     check_common(ticket, &named, &mut reasons);
     check_lease_limits(ticket, &named, &mut reasons);
     check_text(ticket, &mut reasons);
@@ -558,12 +575,78 @@ pub fn check_request(request: &TicketRequest) -> Vec<String> {
     if request.limits.max_ops_per_minute == Some(0) {
         reasons.push("limits.max_ops_per_minute must be at least 1".to_owned());
     }
-    if let Some(caller) = &request.caller
-        && let Err(e) = caller.validate()
-    {
-        reasons.push(format!("caller: {e}"));
-    }
     reasons
+}
+
+/// The binding a ticket asks for (`caller.descends_from.pid`), completed from the
+/// submitter's chain as the kernel gave it: that process's executable, generation and code
+/// identity. A pid the submission doesn't descend from (itself included), or no chain at all
+/// (a submission over TCP), can't be bound.
+fn bind(
+    request: &TicketRequest,
+    chain: Option<&[ProcessRef]>,
+) -> Result<Option<CallerConstraint>, Rejection> {
+    let Some(asked) = &request.caller else {
+        return Ok(None);
+    };
+    let pid = asked.descends_from.pid;
+    let refused =
+        |why: String| Rejection::session(vec![format!("caller.descends_from.pid: {why}")]);
+    let Some(chain) = chain.filter(|chain| !chain.is_empty()) else {
+        return Err(refused(
+            "a session binding needs local mode: the submission must come over the daemon's \
+             Unix socket, where the kernel names the processes it descends from"
+                .to_owned(),
+        ));
+    };
+    let Some(process) = chain.iter().find(|p| p.pid == pid) else {
+        return Err(refused(format!(
+            "{pid} is not a process this submission descends from"
+        )));
+    };
+    let executable = process
+        .executable
+        .to_str()
+        .ok_or_else(|| refused(format!("{pid}: its executable's path is not UTF-8")))?
+        .to_owned();
+    let constraint = CallerConstraint {
+        descends_from: ProcessMatch {
+            executable,
+            pid,
+            generation: process.generation,
+            code_identity: process.code_identity.clone(),
+        },
+    };
+    constraint
+        .validate()
+        .map_err(|e| refused(format!("{pid}: {e}")))?;
+    Ok(Some(constraint))
+}
+
+/// The templates of `ticket` that require a session binding it lacks: one reason each.
+fn unbound(
+    config: &PolicyConfig,
+    ticket_repos: &BTreeMap<RepoName, RepoTerms>,
+    bound: bool,
+) -> Vec<String> {
+    if bound {
+        return Vec::new();
+    }
+    ticket_repos
+        .iter()
+        .filter(|(_, terms)| {
+            config
+                .template(&terms.template)
+                .is_some_and(|t| t.require_session)
+        })
+        .map(|(repo, terms)| {
+            format!(
+                "repos.{repo}: the template {} requires a session binding (caller): start the \
+                 agent under `writ run`",
+                terms.template
+            )
+        })
+        .collect()
 }
 
 /// What the daemon knows about a submission, besides the request itself.
@@ -583,6 +666,9 @@ pub struct Submission<'a> {
     pub revises: Option<&'a TicketRecord>,
     /// The shortest TTL a ticket may ask for (`writd.yaml`'s `min_ttl`).
     pub min_ttl: Duration,
+    /// The submitter's process chain as the kernel gave it (local mode's attestor), the
+    /// submitter first: what a `caller` binding is completed from. `None` over TCP.
+    pub chain: Option<&'a [ProcessRef]>,
 }
 
 /// Completes a request into a ticket: each repository's terms fitting exactly one template
@@ -686,7 +772,10 @@ pub fn submit(
         }
     }
     if !reasons.is_empty() {
-        return Err(Rejection { reasons });
+        return Err(Rejection {
+            reasons,
+            session: false,
+        });
     }
     let ticket = build(
         config,
@@ -697,10 +786,15 @@ pub fn submit(
         revision,
         previous_feedback,
     )?;
-    fits(config, &ticket).map_err(|e| Rejection { reasons: e.reasons })?;
+    fits(config, &ticket).map_err(|e| Rejection {
+        reasons: e.reasons,
+        session: false,
+    })?;
     if let Some(renewed) = submission.renews {
-        check_renewal(config, &ticket, renewed, submission.now)
-            .map_err(|reasons| Rejection { reasons })?;
+        check_renewal(config, &ticket, renewed, submission.now).map_err(|reasons| Rejection {
+            reasons,
+            session: false,
+        })?;
     }
     Ok(ticket)
 }
@@ -839,6 +933,11 @@ fn build(
     revision: u32,
     previous_feedback: Option<String>,
 ) -> Result<Ticket, Rejection> {
+    let caller = bind(request, submission.chain)?;
+    let missing = unbound(config, &repos, caller.is_some());
+    if !missing.is_empty() {
+        return Err(Rejection::session(missing));
+    }
     let templates: Vec<&Template> = repos
         .values()
         .filter_map(|terms| config.template(&terms.template))
@@ -890,7 +989,7 @@ fn build(
         subject: Subject {
             session_key: submission.session_key.clone(),
             origin_hint: request.origin_hint.clone(),
-            caller: request.caller.clone(),
+            caller,
         },
         common: Common {
             committer_emails,
