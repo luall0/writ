@@ -228,10 +228,10 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: transports.approvals.ssh` | `listeners_take_only_the_sources_they_allow`, `https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled` |
 | `writd.yaml: transports.approvals.https` | `listeners_take_only_the_sources_they_allow`, `https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled`, `revocation_and_expiry_drop_sessions_and_refuse_the_certificate` |
 | `writd.yaml: <listener>.tcp` | `listeners_take_only_the_sources_they_allow`, `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
-| `writd.yaml: <listener>.unix` | `a_unix_listener_under_the_network_attestor_is_refused_at_start` (refused under the network attestor); the daemon serving agents on it planned: M7 |
+| `writd.yaml: <listener>.unix` | `a_unix_listener_under_the_network_attestor_is_refused_at_start` (refused under the network attestor), `a_ticket_over_the_unix_socket_carries_the_kernel_s_process_chain` |
 | `writd.yaml: <listener>.allow` | `listeners_take_only_the_sources_they_allow` |
-| `writd.yaml: attestor` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; the value macos_process_chain planned: M7 |
-| `writd.yaml: session_watcher` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; the value macos planned: M7 |
+| `writd.yaml: attestor` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`, `a_ticket_over_the_unix_socket_carries_the_kernel_s_process_chain` (the value macos_process_chain) |
+| `writd.yaml: session_watcher` | `what_this_build_does_not_have_is_refused_at_start`, `the_origin_hint_is_shown_and_a_caller_constraint_is_checked`; the value macos's revocation on exit planned: M7 |
 | `writd.yaml: notifiers[].telegram.token.boot` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `while_sealed_every_request_fails_closed_with_daemon_sealed_and_is_logged` |
 | `writd.yaml: notifiers[].telegram.token.sealed` | `a_sealed_notifier_token_starts_its_notifier_when_added` |
 | `writd.yaml: notifiers[].telegram.chat_id` | `rejected_signed_narrowed_and_refused_tickets_end_to_end` |

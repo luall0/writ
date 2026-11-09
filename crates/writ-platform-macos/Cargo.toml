@@ -9,6 +9,12 @@ publish.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 writ-platform.workspace = true
+writ-core.workspace = true
+# The Unix socket transport's peer reader (a tokio UnixStream).
+tokio.workspace = true
+tracing.workspace = true
+# Security.framework's code signatures, in the `unsafe` module (`sys::codesign`).
+core-foundation-sys.workspace = true
 # The core limit (`process`).
 rustix = { workspace = true, features = ["process"] }
 # `ptrace(PT_DENY_ATTACH)` and `proc_pidinfo`, in the one `unsafe` module (`sys`).
@@ -16,6 +22,8 @@ libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 writ-platform = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

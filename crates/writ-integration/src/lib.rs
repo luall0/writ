@@ -43,6 +43,9 @@ use std::process::Output;
 
 pub use writ_platform::testing::{WAIT_LIMIT, eventually};
 
+/// The host name a Unix socket endpoint is pinned under in `known_hosts` (`writ`'s own).
+pub const LOCAL_HOST_ALIAS: &str = "writ-local";
+
 /// Writes a file only its owner can read (0600), like a key or a token.
 pub fn write_secret(path: &Path, bytes: &[u8]) {
     use std::os::unix::fs::PermissionsExt;

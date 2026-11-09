@@ -579,18 +579,24 @@ fn a_unix_listener_under_the_network_attestor_is_refused_at_start() {
 
 #[test]
 fn what_this_build_does_not_have_is_refused_at_start() {
+    // Local mode's macOS implementations: in a macOS build only (M7). On the Mac they start
+    // (tests/local_mode.rs); elsewhere each is refused, naming why.
+    if std::env::consts::OS == "macos" {
+        eprintln!("the macOS implementations are this build's: tests/local_mode.rs runs them");
+        return;
+    }
     let error = Daemon::refused(POLICY, |yaml| {
         yaml.replace("attestor: network", "attestor: macos_process_chain")
     });
     assert_eq!(
         error.lines().last().unwrap(),
-        "writd: attestor macos_process_chain is not in this build (local mode, M7)"
+        "writd: attestor macos_process_chain is macOS's: this build is for another OS"
     );
     let error = Daemon::refused(POLICY, |yaml| {
         yaml.replace("session_watcher: none", "session_watcher: macos")
     });
     assert_eq!(
         error.lines().last().unwrap(),
-        "writd: session_watcher macos is not in this build (local mode, M7)"
+        "writd: session_watcher macos is macOS's: this build is for another OS"
     );
 }

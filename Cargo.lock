@@ -4082,8 +4082,13 @@ dependencies = [
 name = "writ-platform-macos"
 version = "0.0.0"
 dependencies = [
+ "core-foundation-sys",
  "libc",
  "rustix",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "writ-core",
  "writ-platform",
 ]
 

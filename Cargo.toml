@@ -78,6 +78,7 @@ proptest = "1.12.0"
 # macOS calls rustix has no wrapper for (`ptrace`, `proc_pidinfo`), in writ-platform-macos's one
 # `unsafe` module. Already in the tree (tokio, rustix's libc backend).
 libc = "0.2.191"
+core-foundation-sys = { version = "0.8.7", default-features = false, features = ["link"] }
 rustix = { version = "1.1.6", default-features = false, features = ["fs", "process", "std", "termios"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

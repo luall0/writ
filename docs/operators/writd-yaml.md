@@ -100,8 +100,8 @@ allow: [...] }`.
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
-| `attestor` | `network` or `macos_process_chain` | **required** | How the daemon identifies a caller beyond its certificate ([platform](../architecture/platform.md)). `network`: its source address (detached mode). `macos_process_chain`: its process chain, checked against a ticket's `caller`. **Refused by this build** ([M7](../roadmap.md#m7--local-mode-on-the-mac)) |
-| `session_watcher` | `none` or `macos` | **required** | Whether a lease is revoked when its agent's session ends. `macos`: **refused by this build** ([M7](../roadmap.md#m7--local-mode-on-the-mac)) |
+| `attestor` | `network` or `macos_process_chain` | **required** | How the daemon identifies a caller beyond its certificate ([platform](../architecture/platform.md)). `network`: its source address (detached mode). `macos_process_chain` (local mode, macOS builds only): for a caller on a Unix socket, the processes it descends from as the kernel knows them, checked against a lease's `caller`; for a TCP caller, its source address only, so a lease with a `caller` refuses it |
+| `session_watcher` | `none` or `macos` | **required** | Whether a lease is revoked when its agent's session ends. `macos` (macOS builds only): a lease with a `caller` is revoked when that process ends. `none`: such a lease is never granted |
 
 ## Notifications
 

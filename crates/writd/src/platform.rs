@@ -180,10 +180,29 @@ async fn listener(config: &TransportConfig) -> anyhow::Result<Listener> {
     Ok((transport, config.sources()))
 }
 
-/// What the kernel says about a Unix socket's peer, on this OS: its user, group and pid
-/// everywhere (macOS adds the audit token's pid generation from step 3 of M7).
+/// What the kernel says about a Unix socket's peer, on this OS: on macOS its audit token
+/// (user, group, pid and the pid's generation); elsewhere its user, group and pid.
 fn unix_peer() -> PeerReader {
-    writ_platform::transport::unix::portable_peer
+    #[cfg(target_os = "macos")]
+    return writ_platform_macos::peer::audit_token_peer;
+    #[cfg(not(target_os = "macos"))]
+    return writ_platform::transport::unix::portable_peer;
+}
+
+/// Local mode's attestor on macOS: the caller's process chain from the kernel.
+fn macos_attestor() -> anyhow::Result<Arc<dyn CallerAttestor>> {
+    #[cfg(target_os = "macos")]
+    return Ok(Arc::new(writ_platform_macos::attest::ProcessChain::new()));
+    #[cfg(not(target_os = "macos"))]
+    bail!("attestor macos_process_chain is macOS's: this build is for another OS")
+}
+
+/// Local mode's session watcher on macOS: kqueue.
+fn macos_watcher() -> anyhow::Result<Arc<dyn SessionWatcher>> {
+    #[cfg(target_os = "macos")]
+    return Ok(Arc::new(writ_platform_macos::watch::KqueueWatcher::new()?));
+    #[cfg(not(target_os = "macos"))]
+    bail!("session_watcher macos is macOS's: this build is for another OS")
 }
 
 async fn listeners(configs: &[TransportConfig]) -> anyhow::Result<Vec<Listener>> {
@@ -200,15 +219,11 @@ pub async fn build(config: &Config) -> anyhow::Result<Platform> {
     let approvals_https = listeners(&config.transports.approvals.https).await?;
     let attestor: Arc<dyn CallerAttestor> = match config.attestor {
         AttestorConfig::Network => Arc::new(NetworkAttestor::new()),
-        AttestorConfig::MacosProcessChain => {
-            bail!("attestor macos_process_chain is not in this build (local mode, M7)")
-        }
+        AttestorConfig::MacosProcessChain => macos_attestor()?,
     };
     let watcher: Arc<dyn SessionWatcher> = match config.session_watcher {
         WatcherConfig::None => Arc::new(NoSessionWatcher::new()),
-        WatcherConfig::Macos => {
-            bail!("session_watcher macos is not in this build (local mode, M7)")
-        }
+        WatcherConfig::Macos => macos_watcher()?,
     };
     let notifiers = Arc::new(LateNotifiers::default());
     for n in &config.notifiers {

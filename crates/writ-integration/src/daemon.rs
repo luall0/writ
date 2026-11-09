@@ -232,6 +232,37 @@ impl Daemon {
         Self::launch(setup(policy, Some(&edit), false), approvals, "info")
     }
 
+    /// Local mode on the Mac: [`Daemon::start`] with a second agents' listener on a Unix
+    /// socket ([`Daemon::agents_socket`]), the macOS process chain attestor and the kqueue
+    /// session watcher. The TCP listeners stay (a TCP caller gets no process chain).
+    pub fn start_local(policy: &str, approvals: Approvals) -> Self {
+        Self::start_with(policy, approvals, |yaml| {
+            yaml.replace(
+                "  agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }]",
+                "  agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }, { unix: run/agents.sock }]",
+            )
+            .replace(
+                "attestor: network\nsession_watcher: none",
+                "attestor: macos_process_chain\nsession_watcher: macos",
+            )
+        })
+    }
+
+    /// The agents' Unix socket of [`Daemon::start_local`].
+    pub fn agents_socket(&self) -> PathBuf {
+        self.root().join("run/agents.sock")
+    }
+
+    /// [`Daemon::writ`] reaching the daemon on its agents' Unix socket.
+    pub fn writ_local(&self, args: &[&str]) -> Command {
+        let mut command = self.writ(args);
+        command.env(
+            "WRIT_URL",
+            format!("unix:{}", self.agents_socket().display()),
+        );
+        command
+    }
+
     /// [`Daemon::start_with`], with `WRIT_LOG` set to `log` (`info` otherwise).
     pub fn start_logging(
         policy: &str,
@@ -439,10 +470,23 @@ impl Daemon {
     /// `writ request` in the background, waiting for the decision. Returns once the ticket
     /// is submitted (the CLI's first line names it), with the process still waiting.
     pub fn request(&self, name: &str, ticket: &str) -> Request {
+        self.request_through(name, ticket, Self::writ)
+    }
+
+    /// [`Daemon::request`] over the agents' Unix socket ([`Daemon::start_local`]).
+    pub fn request_local(&self, name: &str, ticket: &str) -> Request {
+        self.request_through(name, ticket, Self::writ_local)
+    }
+
+    fn request_through(
+        &self,
+        name: &str,
+        ticket: &str,
+        writ: fn(&Self, &[&str]) -> Command,
+    ) -> Request {
         let file = self.root().join(format!("{name}.yaml"));
         fs::write(&file, ticket).unwrap();
-        let mut child = self
-            .writ(&["request", file.to_str().unwrap()])
+        let mut child = writ(self, &["request", file.to_str().unwrap()])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -524,7 +568,11 @@ fn pin(root: &Path, agents: u16, approvals: u16, https: u16) {
     let fingerprint = writd(root, "tls-fingerprint");
     fs::write(
         root.join("known_hosts"),
-        format!("[127.0.0.1]:{agents} {host_key}\n[127.0.0.1]:{approvals} {host_key}\n"),
+        format!(
+            "[127.0.0.1]:{agents} {host_key}\n[127.0.0.1]:{approvals} {host_key}\n\
+             {} {host_key}\n",
+            crate::LOCAL_HOST_ALIAS
+        ),
     )
     .unwrap();
     fs::write(
@@ -589,6 +637,13 @@ fn setup(policy: &str, edit: Option<Edit<'_>>, sealed: bool) -> Setup {
     )
     .unwrap();
     fs::create_dir_all(root.join("home")).unwrap();
+    // A directory for local mode's sockets, as the installer makes it (nobody else writes it).
+    fs::create_dir(root.join("run")).unwrap();
+    fs::set_permissions(
+        root.join("run"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o750),
+    )
+    .unwrap();
     write_secret(&root.join("telegram-token"), TOKEN.as_bytes());
     // The approver's reader key, made by the real `writ reader`, listed in `readers`.
     let reader = Command::new(bin("writ"))

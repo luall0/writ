@@ -15,8 +15,8 @@ a YubiKey) means writing an implementation of an existing interface and register
 |---|---|---|---|
 | `Signer` | Where keys live and how they sign ([signer.md](signer.md)) | Software (age keystore) | YubiKey PIV, TPM, Secure Enclave, ssh-agent |
 | `Transport` | How clients reach the daemon; every transport carries the same SSH protocol | TCP (SSH gateway); Unix socket (local mode) | — |
-| `CallerAttestor` | What the network or the kernel says about the caller, as `CallerFacts` | Network (source address); macOS process chain (local mode); Linux process chain (local mode, M7.1) | — |
-| `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS (local mode); Linux pidfd (local mode, M7.1) | — |
+| `CallerAttestor` | What the network or the kernel says about the caller, as `CallerFacts` | Network (source address); macOS process chain (local mode, M7); Linux process chain (local mode, M7.1) | — |
+| `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS kqueue (local mode, M7); Linux pidfd (local mode, M7.1) | — |
 | `KeystoreUnlock` | How the keystore's data key is recovered at unseal | Passphrase + approver signature | M7.6: generalized into a recipient unwrapping one secret ([hardware-wrapped secrets](../backlog/hardware-wrapped-secrets.md)); the Secure Enclave, a recovery identity; later YubiKey, TPM, cloud KMS |
 | `Notifier` | How I'm told something is waiting or went wrong | Telegram (Bot API) | Native macOS notifications, approver apps, any other sink |
 | `Clock` | What time it is: every expiry, rate window and certificate validity | The system clock | — |
@@ -157,7 +157,7 @@ attach refused).
 | `writ-core` | `CallerFacts`, `ProcessRef` and the caller checks (pure) |
 | `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, Telegram notifier, passphrase unlock, system clock), and, behind a `testing` feature, fakes of each trait and the contract suites (`writ_platform::contract`) every implementation runs |
 | `writ-signer` | The `Signer` trait, the software backend, cross-platform hardware backends behind Cargo features (YubiKey) |
-| `writ-platform-macos` | Everything macOS-only: process hardening (M5: `PT_DENY_ATTACH` in its one `unsafe` module), later Unix socket transport extras, process chain attestor (libproc, code signature), kqueue watcher, the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and `KeystoreUnlock` |
+| `writ-platform-macos` | Everything macOS-only, its system calls in its one `unsafe` module (`sys`): process hardening (M5: `PT_DENY_ATTACH`), the Unix socket peer from its audit token (`peer::audit_token_peer`), the process chain attestor (`attest::ProcessChain`: libproc, code signature), the kqueue watcher (`watch::KqueueWatcher`) (M7), the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and `KeystoreUnlock` |
 | `writ-platform-linux` | Linux-only implementations: process hardening (M5, through `rustix`, no `unsafe`); from M7.1 the `SO_PEERCRED` + `/proc` attestor and the pidfd watcher; later TPM |
 | `writd` | `platform.rs`: builds the set of implementations from the configuration and the target OS. The **only** place outside the platform crates with `#[cfg(target_os = …)]` |
 
@@ -171,6 +171,40 @@ macOS the audit token's pid generation too, so a pid reused after the connect ca
 for the caller. A peer the kernel can't describe is dropped. Under the `network` attestor a
 Unix listener is refused at start: none of its callers could be attested. A transport only carries bytes: the gateway speaks
 SSH on it, or TLS and HTTP for the HTTPS approval API, and attests the caller either way.
+
+### The macOS process chain and session watcher
+
+`attest::ProcessChain` (`attestor: macos_process_chain`) builds a Unix socket caller's chain
+from the kernel alone:
+
+- **The caller** is the pid and pidversion of the audit token taken at connect. It is read
+  again, and refused if it has gone or now runs another generation (a pid reused, or an
+  `exec` since).
+- **Each ancestor** is the process its child records as its parent. The check uses the
+  parent's unique id, which the kernel never reuses while the system runs, not its pid.
+  Where that link breaks (the parent ended, or the pid was reused), the chain ends. An
+  orphan's chain stops at it, or at launchd when the kernel records launchd as the parent
+  that adopted it, so it never runs through the session it left. At most 64 processes.
+- **Each process** is read twice, around its executable (`proc_pidpath`: the kernel's path,
+  never the process's name or arguments) and its code identity. One that changed in between
+  is not vouched for.
+- **Code identity** is the signing identifier and team of a signature Security.framework finds
+  valid, kept per pid and generation (checking it reads the program's file). There is none
+  for unsigned code, an invalid signature, code the daemon can't read, or a value past
+  `writ-core`'s bounds.
+- **A TCP caller** gets its source address and no chain, as under `network`.
+
+`proc_uniqidentifierinfo` (unique ids, pidversion) is private ABI: its layout is declared
+from XNU's header and checked by the crate's tests on every run against the public facts it
+repeats.
+
+`watch::KqueueWatcher` (`session_watcher: macos`) runs one kqueue with one thread and one
+`NOTE_EXIT` watch per pid (several leases bound to one session share it). A process already
+ended, or a pid now running another generation, is reported at once, off the caller's
+thread: the service sets a watch under the state lock that the revocation takes. The
+generation is checked again once the watch is set, so an exit in between is never missed.
+An exit reported late never ends a watch set on the pid reused since. If the kqueue fails,
+every watch fires, so every bound lease is revoked (fail closed).
 
 ## Rules
 
