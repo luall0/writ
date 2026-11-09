@@ -288,6 +288,17 @@ impl russh::server::Handler for Connection {
         let (gateway, facts) = (self.gateway.clone(), self.facts.clone());
         match route(identity, Command::parse(data)) {
             Ok(Route::Lease(cert, command)) => {
+                // The daemon stopping: nothing new starts, what runs is waited for.
+                let Some(running) = gateway.shared.operations.start() else {
+                    let reason = "the daemon is stopping: try again once it is back".to_owned();
+                    let denial = GatewayDenial::new(EventKind::Command, reason.clone()).cert(&cert);
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        gateway.log_denial(denial, facts).await;
+                        refuse(channel, reason).await;
+                    });
+                    return Ok(());
+                };
                 let request = exec::LeaseRequest {
                     cert,
                     facts,
@@ -295,7 +306,7 @@ impl russh::server::Handler for Connection {
                     connection: self.number,
                 };
                 tokio::spawn(async move {
-                    let _permit = permit;
+                    let (_permit, _running) = (permit, running);
                     exec::run(gateway, request, channel).await;
                 });
             }

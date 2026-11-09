@@ -40,9 +40,11 @@ pub mod scan;
 pub mod testing;
 pub mod upstream;
 
+pub use mirror::in_flight;
 pub use mirror::{
     CheckStep, LOCAL_WORK_DEADLINE, MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig,
-    MirrorGuard, Mirrors, NOTES_AUTHOR, Note, NotesPushed, RefMove, SyncReport, UpstreamUpdate,
+    MirrorGuard, Mirrors, NOTES_AUTHOR, Note, NotesPushed, RefMove, STOP_MARGIN, SyncReport,
+    UpstreamUpdate,
 };
 
 use std::path::PathBuf;
@@ -108,6 +110,8 @@ pub enum MirrorError {
     Busy { repo: RepoName, seconds: u64 },
     #[error("repo {repo}: upstream did not answer within {seconds} s")]
     Timeout { repo: RepoName, seconds: u64 },
+    #[error("repo {repo}: the daemon is stopping: nothing more is sent upstream")]
+    Stopping { repo: RepoName },
     #[error("repo {repo}: credential {key} is not the one this mirror reaches upstream with")]
     NotTheCredential { repo: RepoName, key: KeyId },
     #[error("cannot write the notes: {0}")]

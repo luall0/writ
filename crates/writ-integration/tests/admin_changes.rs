@@ -490,15 +490,23 @@ fn the_old_policy_fields_are_refused_everywhere_naming_their_new_place() {
         let error = Daemon::refused_policy(POLICY, old);
         assert!(error.contains(expected), "start: {expected}: {error}");
     }
-    let daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    let mut daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
     let unsealed = daemon.unseal();
     assert!(unsealed.status.success(), "{}", stderr(&unsealed));
     let in_force = stdout(&daemon.run(&["admin", "show", "policy"], ""));
-    for (i, (old, expected)) in cases.iter().enumerate() {
+    for (old, expected) in &cases {
         // An admin change: refused, nothing in force changed.
         let out = apply(&daemon, "policy", old, &[]);
         assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
         assert!(stderr(&out).contains(expected), "apply: {}", stderr(&out));
+    }
+    assert_eq!(
+        stdout(&daemon.run(&["admin", "show", "policy"], "")),
+        in_force
+    );
+    // On the host, the daemon stopped (`writd recover` refuses while it runs).
+    daemon.stop();
+    for (i, (old, expected)) in cases.iter().enumerate() {
         // writd recover, on the host, with the passphrase.
         let file = daemon.root().join(format!("old-policy-{i}.yaml"));
         fs::write(&file, old).unwrap();
@@ -530,8 +538,4 @@ fn the_old_policy_fields_are_refused_everywhere_naming_their_new_place() {
         assert!(stderr(&out).contains(expected), "init: {}", stderr(&out));
         assert!(!daemon.root().join(format!("init-{i}/keys")).exists());
     }
-    assert_eq!(
-        stdout(&daemon.run(&["admin", "show", "policy"], "")),
-        in_force
-    );
 }

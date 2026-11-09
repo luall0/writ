@@ -51,6 +51,7 @@ impl Mirrors {
                 ca_certs: files.ca_certs,
                 home: files.home,
                 syncs: Arc::new(Semaphore::new(MAX_SYNCS)),
+                in_flight: super::in_flight::InFlight::new(),
             }),
         })
     }
@@ -111,6 +112,7 @@ impl Mirrors {
                 ca_certs: shared.ca_certs.clone(),
                 home: shared.home.clone(),
                 syncs: shared.syncs.clone(),
+                in_flight: shared.in_flight.clone(),
             }),
         })
     }

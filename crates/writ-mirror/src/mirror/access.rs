@@ -10,6 +10,7 @@ use std::time::Duration;
 use ssh_key::PublicKey;
 use writ_core::names::KeyId;
 
+use super::in_flight::Running;
 use super::{MirrorGuard, Reach, Shared};
 use crate::agent::AgentSocket;
 use crate::credential::{CredentialSocket, UpstreamToken};
@@ -29,6 +30,8 @@ pub(super) struct Access {
     _agent: Option<AgentSocket>,
     _credential: Option<CredentialSocket>,
     pub(super) proxy: Option<UpstreamProxy>,
+    /// Counted in flight until the operation ends: a daemon stopping waits for it.
+    _running: Running,
 }
 
 impl Access {
@@ -57,18 +60,25 @@ impl MirrorGuard {
     /// settings. Each socket goes when the operation ends. An `https://` repo whose token
     /// isn't in the keystore yet reaches nothing: refused with the command that adds it.
     pub(super) fn reach_upstream(&self) -> Result<Access> {
+        let running = self
+            .shared
+            .in_flight
+            .start()
+            .ok_or_else(|| MirrorError::Stopping {
+                repo: self.repo.name.clone(),
+            })?;
         match &self.repo.reach {
             Reach::Ssh {
                 credential,
                 public,
                 identity,
                 ..
-            } => ssh_access(&self.shared, credential, public, identity),
+            } => ssh_access(&self.shared, credential, public, identity, running),
             Reach::Https {
                 url,
                 token: Some(token),
                 ..
-            } => https_access(&self.shared, url, token),
+            } => https_access(&self.shared, url, token, running),
             Reach::Https {
                 credential,
                 token: None,
@@ -113,6 +123,7 @@ fn ssh_access(
     credential: &KeyId,
     public: &PublicKey,
     identity: &Path,
+    running: Running,
 ) -> Result<Access> {
     let agent = AgentSocket::start(
         &shared.socket_dir,
@@ -139,13 +150,19 @@ fn ssh_access(
         _agent: Some(agent),
         _credential: None,
         proxy: None,
+        _running: running,
     })
 }
 
 /// An `https://` operation: the byte-capping proxy to `url`'s host alone, the credential socket
 /// serving `token` to the daemon's helper, and git's HTTPS settings (the operator's CAs alone
 /// when they gave some, an empty `HOME`).
-fn https_access(shared: &Shared, url: &HttpsUrl, token: &Arc<UpstreamToken>) -> Result<Access> {
+fn https_access(
+    shared: &Shared,
+    url: &HttpsUrl,
+    token: &Arc<UpstreamToken>,
+    running: Running,
+) -> Result<Access> {
     let proxy = UpstreamProxy::start(&shared.socket_dir, url, shared.config.max_fetch_bytes)?;
     let credential = CredentialSocket::start(&shared.socket_dir, url.clone(), token.clone())?;
     let helper = format!(
@@ -174,5 +191,6 @@ fn https_access(shared: &Shared, url: &HttpsUrl, token: &Arc<UpstreamToken>) -> 
         _agent: None,
         _credential: Some(credential),
         proxy: Some(proxy),
+        _running: running,
     })
 }

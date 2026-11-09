@@ -37,6 +37,9 @@ pub enum Mode {
     Flood(usize),
     /// Says this on stderr and fails, as a hostile remote's message would.
     Say(Vec<u8>),
+    /// Takes the command and answers only once [`TestRemote::release`] is called, then as
+    /// [`Mode::Serve`]: an operation held in flight for as long as a test needs.
+    Held,
 }
 
 struct State {
@@ -49,6 +52,8 @@ struct State {
     /// git commands run in the repo before the next pushes are served, one per push, in
     /// order (upstream moving meanwhile).
     before_push: Mutex<std::collections::VecDeque<Vec<String>>>,
+    /// Open once the commands [`Mode::Held`] took may go on.
+    released: tokio::sync::watch::Sender<bool>,
 }
 
 /// A running test remote.
@@ -71,6 +76,7 @@ impl TestRemote {
             upload_packs: AtomicUsize::new(0),
             receive_packs: AtomicUsize::new(0),
             before_push: Mutex::new(std::collections::VecDeque::new()),
+            released: tokio::sync::watch::Sender::new(false),
         });
         let listener = runtime
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
@@ -142,7 +148,16 @@ impl TestRemote {
     }
 
     pub fn set_mode(&self, mode: Mode) {
+        if mode == Mode::Held {
+            self.state.released.send_replace(false);
+        }
         *self.state.mode.lock().unwrap() = mode;
+    }
+
+    /// Lets the commands [`Mode::Held`] took go on, served (and serves from now on).
+    pub fn release(&self) {
+        *self.state.mode.lock().unwrap() = Mode::Serve;
+        self.state.released.send_replace(true);
     }
 
     /// Replaces the authorized key.
@@ -263,9 +278,15 @@ impl russh::server::Handler for Handler {
         }
         let protocol = self.git_protocol.clone();
         let program = program.trim_start_matches("git-").to_owned();
+        let mut released = self.state.released.subscribe();
         tokio::spawn(async move {
             match mode {
                 Mode::Serve => run_git(&program, &repo, protocol, channel).await,
+                Mode::Held => {
+                    if released.wait_for(|open| *open).await.is_ok() {
+                        run_git(&program, &repo, protocol, channel).await;
+                    }
+                }
                 Mode::Hang => {
                     // Holds the channel open and says nothing, until the client gives up.
                     let (mut rx, _tx) = channel.split();

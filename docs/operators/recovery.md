@@ -38,7 +38,8 @@ itself.
 daemon host. It needs access to the host and the passphrase. Together they already open every
 secret, so it gives nobody anything new.
 
-1. **Stop the daemon.**
+1. **Stop the daemon.** `writd recover` refuses to run while it runs, and says so:
+   `writd (pid 812) holds …/writd.lock: stop the daemon first`.
 2. **Write the new file.** Start from the current file on the host: the daemon keeps it up to
    date. For `approvers`, add the new key's line `<name> <public key>`. For `readers`, add the
    line `writ reader <name>` printed on the new machine. Keep the file owned by the daemon's

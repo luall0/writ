@@ -3,7 +3,8 @@
 //!
 //! One lock per mirror ([`MirrorGuard`]) serializes everything that changes it: a sync, and
 //! (from the gateway) a push from its decision until git has moved the refs. At most
-//! [`MAX_SYNCS`] syncs run at once, daemon-wide.
+//! [`MAX_SYNCS`] syncs run at once, daemon-wide. Every upstream operation is counted while it
+//! runs ([`in_flight`]): a daemon stopping waits for them ([`Mirrors::stop`]).
 //!
 //! - [`open`]: opening the mirrors at startup;
 //! - [`access`]: how one operation reaches upstream, and git run through it;
@@ -14,6 +15,7 @@
 mod access;
 mod check;
 mod classify;
+pub mod in_flight;
 mod notes;
 mod open;
 mod push;
@@ -53,6 +55,9 @@ const MAX_HEAD_OUTPUT: usize = 4096;
 /// The longest local work done under a mirror's lock may take: a repack after a sync, or the
 /// gateway reading a push in its quarantine.
 pub const LOCAL_WORK_DEADLINE: Duration = Duration::from_secs(600);
+/// How long a stop waits past an upstream operation's own deadline (`mirrors.timeout`), for
+/// its git and ssh to be killed and reaped and its failure said.
+pub const STOP_MARGIN: Duration = Duration::from_secs(5);
 
 /// What the mirrors need.
 #[derive(Debug, Clone)]
@@ -135,6 +140,8 @@ struct Shared {
     /// The daemon's sync slots: shared by every `Mirrors` a registry change makes, so a
     /// change never adds slots while syncs run.
     syncs: Arc<Semaphore>,
+    /// The upstream operations in flight, shared the same way.
+    in_flight: Arc<in_flight::InFlight>,
 }
 
 struct Repo {
@@ -224,6 +231,24 @@ impl Mirrors {
     /// The registered repos.
     pub fn repos(&self) -> impl Iterator<Item = &RepoName> {
         self.shared.repos.keys()
+    }
+
+    /// Stops reaching upstream, for the daemon's orderly stop: from now on every upstream
+    /// operation is refused ([`MirrorError::Stopping`]), with every `Mirrors` a registry
+    /// change made, and those in flight are waited for, at most their own deadline
+    /// (`mirrors.timeout`) and [`STOP_MARGIN`]. Returns how many still ran then.
+    pub async fn stop(&self) -> usize {
+        self.shared.in_flight.stop(self.stop_wait()).await
+    }
+
+    /// The longest a stop waits for operations in flight: one upstream operation's deadline
+    /// (`mirrors.timeout`) and [`STOP_MARGIN`].
+    pub fn stop_wait(&self) -> Duration {
+        self.shared
+            .config
+            .timeout
+            .checked_add(STOP_MARGIN)
+            .unwrap_or(Duration::MAX)
     }
 
     /// Whether `other` (a registry change's `Mirrors`) holds `repo` under the same lock as

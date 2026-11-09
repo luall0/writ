@@ -278,3 +278,32 @@ spend scrypt's second; one unseal runs at a time. A wrong passphrase, a signatur
 boot or another daemon, a key not in `approvers`: each refused, logged, the daemon still
 sealed. The development keystore opens at start (its `unseal` line names it). Later,
 hardware recipients replace the passphrase (M7.6).
+
+## 8. Daemon stop
+
+```mermaid
+sequenceDiagram
+  participant S as launchd, systemd, docker stop, Ctrl-C
+  participant D as writd run
+  participant A as Agent git
+  participant UP as Upstream
+  S->>D: SIGTERM (or SIGINT)
+  D->>D: log "stopping" (the signal named); the listeners closed
+  D->>D: a lease holder's new git operation or signature refused ("the daemon is stopping"), logged
+  A->>D: a push already in flight goes on
+  D->>UP: its upstream push, within mirrors.timeout
+  D-->>A: its answer
+  D->>D: nothing more sent upstream; the notes in flight waited for
+  D->>D: log "stopped"; the state's lock released as the process ends
+```
+
+Both signals stop the daemon the same way. Each wait (the lease holders' git operations and
+signatures, then the upstream operations left, the notes) lasts at most `mirrors.timeout`
+and a 5 s margin; an operation still running then is cut, and the last line says how many
+(`stopped with operations still running past their deadline`). Idle sessions and requests
+waiting for a decision (`writ request`) are dropped: the ticket stays pending in the store.
+
+`writd run` holds an exclusive lock on `<state_dir>/writd.lock` (its pid written in it) for
+its whole life: a second `writd run` and `writd recover` on the same state are refused while
+it is held, naming the holder. The kernel releases the lock when the process ends, so a
+crashed daemon leaves none behind.

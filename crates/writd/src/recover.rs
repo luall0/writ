@@ -1,6 +1,7 @@
 //! `writd recover <writd.yaml> <policy|approvers|readers> <file>`: puts a file in force from
 //! the daemon host, when no admin change can (every approver or reader key lost), or to apply
-//! a file edited there. Run as the daemon's user, with the daemon stopped. It needs the
+//! a file edited there. Run as the daemon's user, with the daemon stopped (refused while
+//! `writd run` holds the state's lock, [`crate::lock`]). It needs the
 //! keystore's passphrase: with the host, that opens every secret already, so recovery gives
 //! nobody anything new. The file is checked like an admin change (with the two others in
 //! force), recorded as a new version under the keystore's MAC, logged (`admin`, no approver),
@@ -28,6 +29,8 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
             config.state_dir.display()
         );
     }
+    // Before the passphrase is asked: refused while the daemon runs.
+    let _lock = crate::lock::hold(&config.state_dir, crate::lock::Holder::Recovery)?;
     let key = match &config.keystore {
         KeystoreConfig::Sealed(sealed) => {
             let typed = writ_crypto::passphrase::read("Keystore passphrase: ", None, false)?;

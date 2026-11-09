@@ -62,6 +62,41 @@ pub fn create_new_private_file(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
+/// Opens `path` for reading and writing, created private (0600) if missing, never through a
+/// link nor blocking: a regular file of the daemon's user that nobody else can read or write
+/// (a lock file, which the daemon rewrites in place).
+pub fn open_private_file(path: &Path, what: &str) -> Result<File> {
+    let unopenable = |e: std::io::Error| {
+        PlatformError::Config(format!(
+            "cannot open {what} {}: {}",
+            path.display(),
+            e.kind()
+        ))
+    };
+    let flags =
+        OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let fd = rustix::fs::open(path, flags, Mode::from_raw_mode(0o600))
+        .map_err(|e| unopenable(e.into()))?;
+    let file = File::from(fd);
+    let metadata = file.metadata().map_err(unopenable)?;
+    if !metadata.is_file() {
+        return Err(PlatformError::Config(format!(
+            "{what} {} is not a regular file",
+            path.display()
+        )));
+    }
+    if metadata.uid() != my_uid() {
+        return Err(PlatformError::Config(format!(
+            "{what} {} is owned by uid {}, not the daemon's user (uid {})",
+            path.display(),
+            metadata.uid(),
+            my_uid()
+        )));
+    }
+    check_private(path, &metadata)?;
+    Ok(file)
+}
+
 /// Who may own a file the daemon trusts.
 #[derive(Clone, Copy)]
 enum Owner {
@@ -188,6 +223,37 @@ mod tests {
             Err(PlatformError::Config(message)) => message,
             other => panic!("expected a Config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_private_file_opens_created_0600_and_refuses_a_link_or_a_shared_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock");
+        open_private_file(&path, "lock").unwrap();
+        assert_eq!(mode(&path), 0o600);
+        // Opened again: the same file, kept as it is.
+        std::fs::write(&path, "kept").unwrap();
+        open_private_file(&path, "lock").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept");
+
+        set_mode(&path, 0o640);
+        let message = config_error(open_private_file(&path, "lock"));
+        assert!(
+            message.contains("accessible by group or others (mode 640)"),
+            "{message}"
+        );
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let message = config_error(open_private_file(&link, "lock"));
+        assert!(message.starts_with("cannot open lock"), "{message}");
+        assert!(!message.contains("kept"));
+
+        let sub = dir.path().join("sub");
+        create_private_dir(&sub).unwrap();
+        let message = config_error(open_private_file(&sub, "lock"));
+        // A directory can't be opened for writing: refused at the open.
+        assert!(message.starts_with("cannot open lock"), "{message}");
     }
 
     #[test]

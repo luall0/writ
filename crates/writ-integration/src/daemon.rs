@@ -154,6 +154,27 @@ impl Daemon {
         let _ = self.child.wait();
     }
 
+    /// Sends `signal` (`TERM`, `INT`, `KILL`…) to `writd run`.
+    pub fn signal(&self, signal: &str) {
+        let sent = Command::new("kill")
+            .arg(format!("-{signal}"))
+            .arg(self.child.id().to_string())
+            .status()
+            .unwrap();
+        assert!(sent.success(), "kill -{signal}");
+    }
+
+    /// Waits until `writd run` ended (at most [`crate::WAIT_LIMIT`]): how.
+    pub fn exited(&mut self) -> ExitStatus {
+        let mut ended = None;
+        let child = &mut self.child;
+        crate::eventually("writd to end", || {
+            ended = child.try_wait().unwrap();
+            ended.is_some()
+        });
+        ended.unwrap()
+    }
+
     /// `writd <args…>` (the configuration as given in `args`), with `stdin`.
     pub fn writd_with(&self, args: &[&str], stdin: &str) -> Output {
         let mut child = Command::new(bin("writd"))

@@ -27,6 +27,7 @@ mod daemon;
 mod declared;
 mod hardening;
 mod keystore;
+mod lock;
 mod platform;
 mod recover;
 
@@ -346,6 +347,8 @@ fn run(path: &Path) -> anyhow::Result<()> {
     hardening::harden(hardening::Say::Log)?;
     let config = Arc::new(Config::load(path)?);
     keystore::private_dir(&config.state_dir)?;
+    // Held until the daemon ends: `writd recover` refuses meanwhile.
+    let _lock = lock::hold(&config.state_dir, lock::Holder::Daemon)?;
     let store = Store::open(&config.state_dir.join("leases.db"))?;
     let loaded = match (authority::load(&store, config.min_ttl)?, &config.keystore) {
         (Some(loaded), _) => loaded,
@@ -373,6 +376,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
+        let mut signals = StopSignals::take()?;
         let mirror_config = mirror_config(&config, repos, pinned, ca_certs)?;
         let platform = platform::build(&config).await?;
         let (boot, open) = match start {
@@ -444,8 +448,38 @@ fn run(path: &Path) -> anyhow::Result<()> {
         tracing::info!(decisions = ?config.decisions, "decisions");
         let mut servers = spawn_listeners(&gateway, &platform, &tls);
         spawn_sweeper(service);
-        until_stopped(&mut servers).await
+        let stop = until_stopped(&mut signals, &mut servers).await?;
+        tracing::info!(signal = stop, "stopping");
+        // The listeners closed: their tasks ended, then the transports dropped.
+        servers.shutdown().await;
+        drop(platform);
+        match gateway.stop().await {
+            0 => tracing::info!("stopped"),
+            cut => tracing::warn!(
+                cut,
+                "stopped with operations still running past their deadline"
+            ),
+        }
+        Ok(())
     })
+}
+
+/// The signals that stop the daemon in order, the same way for each: SIGINT (Ctrl-C) and
+/// SIGTERM (launchd, systemd, `docker stop`). Taken before anything starts, so neither kills
+/// the daemon half way through its start.
+struct StopSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    fn take() -> anyhow::Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt()).context("cannot take SIGINT")?,
+            terminate: signal(SignalKind::terminate()).context("cannot take SIGTERM")?,
+        })
+    }
 }
 
 /// The approval service, sealed, on the state's store and audit log, with a boot nonce drawn
@@ -531,17 +565,17 @@ fn log_access(approvers: &[AllowedSigner], readers: &[Reader]) {
     }
 }
 
-/// Runs until Ctrl-C, or until a listener ends (an error: the daemon stops with it).
+/// Runs until SIGINT or SIGTERM (the signal's name returned: an orderly stop follows), or
+/// until a listener ends (an error: the daemon stops with it).
 async fn until_stopped(
+    signals: &mut StopSignals,
     servers: &mut tokio::task::JoinSet<writ_gateway::Result<()>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<&'static str> {
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("stopping");
-            Ok(())
-        }
+        _ = signals.interrupt.recv() => Ok("SIGINT"),
+        _ = signals.terminate.recv() => Ok("SIGTERM"),
         Some(result) = servers.join_next() => match result {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => Err(anyhow::anyhow!("a listener ended")),
             Ok(Err(e)) => Err(anyhow::anyhow!("a listener failed: {e}")),
             Err(e) => Err(anyhow::anyhow!("a listener stopped: {e}")),
         },

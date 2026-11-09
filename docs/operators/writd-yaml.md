@@ -21,7 +21,7 @@ The daemon's configuration. Start from the [template](templates/writd.yaml). Exa
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
-| `state_dir` | Path | **required** | The daemon's state: `leases.db` (leases, ledger), `audit.jsonl` (the [audit log](../architecture/policy-and-state.md#audit-log)), the mirrors, sockets. Back it up. Keep it on a local disk |
+| `state_dir` | Path | **required** | The daemon's state: `leases.db` (leases, ledger), `audit.jsonl` (the [audit log](../architecture/policy-and-state.md#audit-log)), the mirrors, sockets, and `writd.lock` (held by the running daemon, so `writd recover` waits for it to stop). Back it up. Keep it on a local disk |
 | `policy` | Path | **required** | The keys, upstream host keys, repos and templates: [`policy.yaml`](policy-yaml.md). An authority file, [kept by the daemon after `writd init`](#policy-approvers-and-readers-after-writd-init) |
 | `approvers` | Path | **required** | The keys that may sign tickets, refusals, revocations and proofs: one `<name> <public key>` per line. An authority file, [kept by the daemon after `writd init`](#policy-approvers-and-readers-after-writd-init) |
 | `readers` | Path | **required** | The keys that may use the approval API: one line per key, as `writ reader <name>` prints it. A reader still needs an approval key to sign. An authority file, [kept by the daemon after `writd init`](#policy-approvers-and-readers-after-writd-init) |

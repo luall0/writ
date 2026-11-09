@@ -200,6 +200,9 @@ struct Shared {
     throttle: limits::DenialThrottle,
     /// Sign requests held at once, all lease holders together.
     sign_slots: limits::SignSlots,
+    /// The lease holders' git operations and signatures in flight: an orderly stop waits
+    /// for them ([`Gateway::stop`]).
+    operations: Arc<writ_mirror::in_flight::InFlight>,
 }
 
 impl Gateway {
@@ -268,6 +271,7 @@ impl Gateway {
                 hook_socket,
                 throttle: limits::DenialThrottle::new(),
                 sign_slots,
+                operations: writ_mirror::in_flight::InFlight::new(),
             }),
         };
         tokio::spawn(hook::serve(gateway.clone(), hook_listener));
@@ -320,6 +324,25 @@ impl Gateway {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .ok_or_else(|| writ_core::policy::SEALED.to_owned())
+    }
+
+    /// The orderly stop's wait, once the listeners are closed: from now on a lease holder's
+    /// git operation or signature is refused, and those in flight are waited for (each git
+    /// operation's answer reaching its client), then nothing more is sent upstream and the
+    /// upstream operations still in flight (the notes) are waited for
+    /// ([`writ_mirror::Mirrors::stop`]). Each wait lasts at most one upstream operation's
+    /// deadline ([`writ_mirror::Mirrors::stop_wait`]). How many still ran then.
+    pub async fn stop(&self) -> usize {
+        let mirrors = self.mirrors().ok();
+        let wait = mirrors
+            .as_ref()
+            .map_or(writ_mirror::STOP_MARGIN, writ_mirror::Mirrors::stop_wait);
+        let operations = self.shared.operations.stop(wait).await;
+        let upstream = match mirrors {
+            Some(mirrors) => mirrors.stop().await,
+            None => 0,
+        };
+        operations.saturating_add(upstream)
     }
 
     /// The readers in force (an admin change replaces them).
