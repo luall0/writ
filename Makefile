@@ -1,4 +1,4 @@
-.PHONY: ci push check test test-props test-agent e2e bench-alloc github-check fmt run dev-client hooks
+.PHONY: ci push check test test-props test-agent e2e bench-alloc github-check fmt run dev-client hooks install uninstall
 
 # Lint, format check, dependency directions, source rules, doc links, the guarantee,
 # end-to-end and configuration registries.
@@ -45,6 +45,7 @@ check:
 	python3 -I tool/check-guarantees.py
 	python3 -I tool/check-e2e.py
 	python3 -I tool/check-config.py
+	sh tool/shellcheck.sh deploy/install.sh deploy/frame.sh deploy/setups/*.sh
 	cargo deny --locked check
 
 # The integration tests run the binaries (writd, writ, writ-sign) as they ship, built first on
@@ -124,3 +125,15 @@ dev-client:
 hooks:
 	@sh tool/install-hooks.sh
 	@echo "pre-push allows only a tree make ci passed on (make push runs both)"
+
+# The installer (deploy/install.sh, docs/operators/install.md): the release binaries built as
+# you, then a setup installed, `local` on the Mac (SETUP=local answers its question; DRY_RUN=1
+# lists every change and makes none; APPROVER=<your approval key's .pub>). Run again, it
+# upgrades. `make uninstall` takes back what it made (PURGE=1 the daemon's data too, confirmed
+# on the terminal; REPOS=undo|keep answers the question about the repositories writ init wired).
+install:
+	cargo build --release --locked $(BINARIES)
+	sh deploy/install.sh install
+
+uninstall:
+	sh deploy/install.sh uninstall

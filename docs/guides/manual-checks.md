@@ -265,3 +265,58 @@ The checks with a real agent (OpenCode, Claude Code…) on a throwaway GitHub re
 prompts never naming Writ: one task from prompt to pushed branch with one Touch ID, a custom
 committer name, then a refusal, an amendment and a renewal handled from the skill alone. Their
 own page: [manual checks with a real agent](manual-checks-e2e.md).
+
+## Local mode on the Mac (M7)
+
+The installer's frame and its `local` setup run in `make test` against a fake root; this is
+the real thing, on your Mac, with `sudo` and Touch ID. It changes your system: run it on a
+Mac where you can reboot. When every step passes, note it under M7's acceptance items.
+
+**1. Before.** Keep what is there now, to compare with after the uninstall:
+
+```sh
+sudo sh -c 'ls -la /opt /etc/paths.d /var/db /Library/LaunchDaemons /Library/Logs "/Library/Application Support"; dscl . -list /Users UniqueID; dscl . -list /Groups PrimaryGroupID' > ~/writ-before.txt
+ls -la ~/.writ >> ~/writ-before.txt 2>&1
+```
+
+**2. Install**, the setup picked at its question, then again with `SETUP=local` (an upgrade):
+
+```sh
+make install DRY_RUN=1 APPROVER=~/.ssh/writ-approval.pub    # lists every change, makes none
+make install APPROVER=~/.ssh/writ-approval.pub               # asks the setup: local
+make install SETUP=local APPROVER=~/.ssh/writ-approval.pub   # an upgrade: the keystore kept
+make install SETUP=detached                                  # refused, the offered setups listed
+```
+
+**3. Unseal and use it.** In a new terminal: `writ unseal` (Touch ID), then add a repo from
+the [GitHub manual check](#a-throwaway-github-repo-m4)'s throwaway repository with
+`writ admin`, `writ init <repo>` in a clone, and run an agent under `writ run -- <agent>`:
+its ticket shows `caller descends from /opt/writ/bin/writ (pid …, signed dev.writ.writ)`; its
+commit and push work. From another terminal (outside the session), `writ git fetch` in the
+same clone is refused (`caller`). Quit the agent: `writ ls` shows the lease revoked.
+
+**4. The daemon is out of your reach:**
+
+```sh
+cat /var/db/writ/keys/identity.age            # Permission denied
+lldb -p "$(pgrep -n writd)" --batch -o detach # attach failed
+```
+
+**5. Stop and recover.** `sudo launchctl kill TERM system/dev.writ.writd`: the log
+(`/Library/Logs/Writ/writd.log`) says `stopping signal="SIGTERM"`, then `stopped`, and the
+daemon stays stopped. While it runs, `writd recover` is refused naming its pid; stopped, the
+[recovery guide's macOS steps](../operators/recovery.md#macos-local-mode-m7) run as written.
+Reboot the Mac: after logging in, the daemon is running again (sealed): `writ unseal`.
+
+**6. Uninstall** and compare:
+
+```sh
+make uninstall                      # lists the wired repos, asks: answer y
+sudo sh -c 'ls -la /opt /etc/paths.d /var/db /Library/LaunchDaemons /Library/Logs "/Library/Application Support"; dscl . -list /Users UniqueID; dscl . -list /Groups PrimaryGroupID' > ~/writ-after.txt
+ls -la ~/.writ >> ~/writ-after.txt 2>&1
+diff ~/writ-before.txt ~/writ-after.txt   # /var/db/writ (kept) and ~/.writ/reader; directory times aside
+make install SETUP=local APPROVER=~/.ssh/writ-approval.pub && make uninstall PURGE=1   # type delete
+```
+
+After the purge, the diff with `~/writ-before.txt` shows only directory times, and the
+repository wired in step 3 is as it was before its `writ init`.

@@ -78,21 +78,26 @@ The leases are gone. From M7.6, an offline recovery identity will open the keyst
 Run `writd recover` (and `writd init`) as the daemon's user, **never as root**. The daemon
 refuses files owned by any user but itself or root, and can't rewrite the files root owns.
 
-Until M7, the daemon runs as your own user: stop your `writd run`, and run `writd recover` as
-yourself.
+With the development daemon (`make run`), it is your own user: stop it, and run
+`writd recover` as yourself.
 
 ### macOS, local mode (M7)
 
 The daemon is a LaunchDaemon running as the dedicated user `_writd`. Your user can't read its
-files, by design. The label and paths are the ones M7's installer sets:
+files, by design. The label and paths are the ones `make install` sets
+([Installing on your Mac](install.md)):
 
 ```sh
-sudo launchctl bootout system/<label>               # 1. stop the daemon
-sudo -u _writd cp approvers.new <its directory>/    # 2. the file, owned by _writd
-sudo -u _writd writd recover <its writd.yaml> approvers <its directory>/approvers.new
-sudo launchctl bootstrap system /Library/LaunchDaemons/<label>.plist   # 4. start it
-writ unseal --key ~/.writ/new-approval.pub          #    and unseal from your user
+sudo launchctl bootout system/dev.writ.writd                         # 1. stop the daemon
+sudo -u _writd cp approvers.new /var/db/writ/approvers.new           # 2. the file, owned by _writd
+sudo -u _writd /opt/writ/bin/writd recover /var/db/writ/writd.yaml approvers /var/db/writ/approvers.new
+sudo launchctl bootstrap system /Library/LaunchDaemons/dev.writ.writd.plist   # 4. start it
+writ unseal --key ~/.writ/new-approval.pub                           #    and unseal from your user
 ```
+
+Step 2 copies from a place `_writd` can read: a file in your home isn't, so put it in `/tmp`
+first (`cp approvers.new /tmp/`, then `sudo -u _writd cp /tmp/approvers.new …`). The daemon's
+log is `/Library/Logs/Writ/writd.log`.
 
 `sudo` asks for your password. That password is what separates you (and any agent running as
 you) from the daemon's keys, so your user must not have passwordless `sudo`

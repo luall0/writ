@@ -9,6 +9,7 @@ thing that talks to the remote.
 
 | I want to… | Read |
 |---|---|
+| Install Writ on my Mac in one command (local mode), upgrade it, or take it all back | [Installing on your Mac](install.md) |
 | Install the daemon and start it for the first time, then add repos from my machine | [Setup](setup.md) |
 | Unseal after a restart; add or change a repo, a template, a key or a host; add a token | [Daily operations](sealing.md) |
 | Get access back after losing a key, a Mac or the passphrase | [Recovery](recovery.md) |
