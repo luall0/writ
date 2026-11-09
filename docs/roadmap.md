@@ -40,7 +40,7 @@ picked.
 | M6.1 | [Multi-repo workspaces](history/m6.1-multi-repo-workspaces.md) ✅ | One agent at the root of a folder of repositories: `writ init` at the root, the `writ-workspace` skill, `writ git` reading git's global options, `writ exec -C` |
 | M6.1.5 | [Per-repository tickets](history/m6.1.5-per-repository-tickets.md) ✅ | A ticket given repository by repository (the lease's terms, then each repository's block under its own template), one approval, one lease, one signing key, the strictest template's time and rate, counts per repository; `writ sign` narrowing per repository; `writ policy` for several repositories |
 | M6.2 | [Managing the daemon from the CLI](history/m6.2-managing-the-daemon-from-the-cli.md) ✅ | Every key declared in the signed policy, upstream host keys pinned by signed changes, repos naming their templates; `writ admin repo\|template\|key\|host` to read, add step by step and edit one field at a time, with no host access |
-| M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
+| M7 | [Local mode on the Mac](#m7--local-mode-on-the-mac) | macOS implementations plugged in: Unix socket, process chain, `writ run` binding a lease to the harness it starts, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
 | M7.1 | [Local mode on Linux](#m71--local-mode-on-linux) | Linux implementations plugged in the same way: `SO_PEERCRED` and `/proc` process chain, pidfd watcher, a systemd service under its own user, the installer's Linux local setup, local mode in `make e2e` |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
 | M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, unsealing with no passphrase |
@@ -215,19 +215,43 @@ repository, `writ exec -C`, timings per set of repositories. `make ci` and `make
 
 [Deployment modes](architecture/overview.md#deployment-modes),
 [process chain checks](architecture/identity.md#local-mode-process-chain-checks). This
-milestone only **adds implementations** of existing interfaces and the local
-[configuration preset](architecture/platform.md#configuration-presets). Signer: the software
-backend; the Secure Enclave comes in M7.5. The daemon runs as a dedicated `_writd` user, as
-the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.md#m0-results)).
+milestone **adds implementations** of existing interfaces and the local
+[configuration preset](architecture/platform.md#configuration-presets), plus the few
+changes settled with the user at its start (the session launcher and what it needs, below).
+Signer: the software backend; the Secure Enclave comes in M7.5. The daemon runs as a
+dedicated `_writd` user, as the M0 spike decided
+([macOS Secure Enclave](architecture/macos-secure-enclave.md#m0-results)).
 
 - Unix socket `Transport` (portable Unix, in `writ-platform`).
 - `writ-platform-macos`: process chain `CallerAttestor` (executable path and code signature,
   pid + pidversion), kqueue `SessionWatcher`; the full chain in the audit log.
 - Leases bound to a session (`caller.descends_from`), revoked when its root process exits.
+- **`writ run -- <harness> [args…]`, the session launcher** (settled with the user): an
+  agent can't read its own process's pidversion, so without it no real lease would be bound.
+  `writ run` starts the harness as its child, exports its own pid (`WRIT_RUN_PID`), passes
+  signals on and exits with the harness's status. Under it, `writ request` writes
+  `caller: { descends_from: { pid } }` in the ticket, and **the daemon completes the
+  binding from the kernel**: the executable, generation and code identity of that pid as the
+  submitter's attested chain has them, refusing a pid that isn't in that chain (or a
+  submission with no chain, over TCP). The harness quits, `writ run` exits, the lease is
+  revoked. Its end-to-end scenario shows a bound lease refused over TCP; the binding itself
+  is proved by the integration tests on the Unix socket (local mode joins `make e2e` in
+  M7.1).
+- **A template can require a bound session** (`require_session: true`, settled with the
+  user): the daemon refuses an unbound ticket at submission with its own code, and a
+  narrowing can't drop the binding. The local preset's starting templates set it; a detached
+  daemon never does (a bound lease is denied everything over TCP). Its rows in the operator
+  reference and the configuration coverage, both sides tested.
 - **A daemon isolated from my user**: a LaunchDaemon running as a dedicated role user
   `_writd` (uid below 500, no shell, hidden), its binary root-owned, its keys and state in a
-  `0700` directory. The agents' socket sits in a directory my user can reach; the daemon's
-  files don't.
+  `0700` directory. **The sockets** (agents' and approvals') live in
+  `/Library/Application Support/Writ/run/`, `_writd:_writ` `0750`, my user added to a `_writ`
+  group: other accounts on the Mac can't connect, and the daemon's files stay out of my
+  user's reach. The directory persists across reboots (`/var/run` is wiped at boot and only
+  root creates directories there), so the daemon replaces a stale socket at start. **The
+  daemon's log** (launchd's `StandardErrorPath`) is `/Library/Logs/Writ/writd.log`,
+  `_writd:_writ` `0640`: readable without sudo (agents already see every lease of my user in
+  `~/.writ/sessions`); the audit log and state stay in the `0700` directory.
 - **One installer, a setup to pick**: `make install` runs the installer (`deploy/install.sh`),
   which asks which setup to install, listing only the ones this build offers on this OS
   (`SETUP=<name>` answers without asking; an unknown or unavailable one is refused with the
@@ -235,12 +259,20 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
   and [M8](#m8--detached-deployment) `detached` and `client`. Every setup shares one frame:
   the dry run, the manifest, the upgrade, the uninstall; each setup is its own steps, and
   adding one changes no other. The installer runs as my user and asks `sudo` only for the
-  steps that need root.
+  steps that need root. **POSIX sh** (settled with the user): the frame in
+  `deploy/install.sh`, one file per setup (`deploy/setups/local-macos.sh`), shellcheck in
+  `make check`; `make test` runs install, upgrade and uninstall against a fake root (a
+  prefix, with `dscl`, `launchctl`, `sudo` and `codesign` stubbed on `PATH`), checking the
+  manifest, the dry run and the tree left behind against a listing taken before. The real
+  install on the Mac is a [manual check](guides/manual-checks.md).
 - **The `local` setup on the Mac, in one command**, from the release builds, starting from the
-  spike's `plan-b/` install script: the `_writd` role user; `writd`, `writ` and `writ-sign`
-  root-owned in one prefix on my `PATH`; the daemon's `0700` directory with a `writd.yaml`
+  spike's `plan-b/` install script: the `_writd` role user and the `_writ` group, my user in
+  it; `writd`, `writ` and `writ-sign` in `/opt/writ/bin` (settled with the user), ad-hoc
+  signed with the hardened runtime, root-owned with every directory on the way (the
+  installer refuses one my user can write: an agent swapping `writd` would run as `_writd`
+  at its next start), on my `PATH` through `/etc/paths.d/writ`; the daemon's `0700` directory with a `writd.yaml`
   from the local preset and a starting policy with no repo (repos, keys and templates are then
-  added with [`writ admin`](history/m6.2-managing-the-daemon-from-the-cli.md)); the agents' socket directory; the LaunchDaemon's plist, root-owned,
+  added with [`writ admin`](history/m6.2-managing-the-daemon-from-the-cli.md)); the sockets' directory and the log; the LaunchDaemon's plist, root-owned,
   loaded; `writd init` run as `_writd` (the keystore's passphrase asked on the terminal, never
   stored or passed as an argument); my approval public key (`APPROVER=<.pub>`) in
   `approvers`; for my user, `~/.writ/` with the daemon's host key pinned and the endpoints
@@ -251,8 +283,11 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
   `make uninstall` takes back.
 - **`writ init` keeps the list of the repos it wires**, in `~/.writ/repos` (each repo's path
   and wiring mode, whole-repo or wrapper, and a workspace root with its children), and
-  `writ init --undo` takes a repo off it: the client changes this milestone allows, for the
-  uninstall and for `writ skill update --all`. A repo wired before M7 isn't on it until
+  `writ init --undo` takes a repo off it, for the uninstall and for `writ skill update --all`.
+  **`writ init --list`** prints the list as checked (a path that isn't a wired repo, a
+  relative path, a link, control characters or an oversized file skipped and named, escaped)
+  and **`writ init --undo --all`** undoes every repo on it: the hostile list is read once, in
+  Rust, never by the installer's shell (settled with the user). A repo wired before M7 isn't on it until
   `writ init` runs in it again. The list is my user's file, so an agent can write it too: an
   untrusted input, with its row in the [security inventory](security.md), its bounds and a
   hostile-input test.
@@ -270,18 +305,19 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
   what it deletes and asks to confirm on the terminal, and a later `make install` picks it up
   again (the role user made with the same uid). `DRY_RUN=1` as for the install.
 - **The uninstall asks whether to take Writ out of the repos already set up too**: it lists
-  the repos on `~/.writ/repos` (each checked to still hold `writ init`'s record; one that
-  doesn't is named and skipped) and asks on the terminal. Yes: `writ init --undo` in each, as
-  my user, never as root, before the binaries go, and a repo it can't take back is named with
+  the repos on `~/.writ/repos` with `writ init --list` (each checked to still hold
+  `writ init`'s record; one that doesn't is named and skipped) and asks on the terminal. Yes:
+  `writ init --undo --all`, as my user, never as root, before the binaries go, and a repo it can't take back is named with
   why. No: they stay wired and are named, and the question says so before: once `writ` is
   gone, only a new install takes them back. With no terminal it asks nothing and refuses
   unless `REPOS=undo` or `REPOS=keep` answers.
 - **`writd recover` checks the daemon is stopped** (left open by M5, found by the
   [M5.6 review](#m56--review-after-m55), L17): today it assumes it,
-  and two writers would only refuse each other's versions. For example, `writd run` holds an
-  advisory lock on a file in its state directory (released by the kernel when the process
-  ends, so a crash leaves none stale) and `writd recover` refuses while it is held, naming it.
-  Settled with the user before building.
+  and two writers would only refuse each other's versions. Settled with the user: `writd run`
+  holds an exclusive `flock` on `<state>/writd.lock` for its whole life, its pid written in
+  it for the message (the kernel releases the lock when the process ends, so a crash leaves
+  none stale), and `writd recover` tries it without waiting and refuses while it is held:
+  `writd (pid N) holds <path>`.
 - **SIGTERM is an orderly stop** (found by the [M5.6 review](#m56--review-after-m55), L16):
   `writd run` stops cleanly on Ctrl-C only (SIGINT); launchd stops a daemon with SIGTERM, which
   kills it at once today (no `stopping` line, an upstream push cut mid-way). `writd run` waits
@@ -293,14 +329,26 @@ the M0 spike decided ([macOS Secure Enclave](architecture/macos-secure-enclave.m
 
 Acceptance:
 - [ ] **The graft test:** no change in `writ-core`, `writ-store`, `writ-git`, `writ-gateway`,
-      `writ-approval` or the clients, beyond bug fixes and `writ init`'s list of wired repos;
-      only new implementations, `writd`'s wiring and config, and the installer.
+      `writ-approval` or the clients, beyond bug fixes and the changes settled at M7's start
+      (`writ init`'s list of wired repos and its `--list` and `--undo --all`, `writ run` and
+      the binding it asks for, the daemon completing a caller from the submitter's chain,
+      `require_session`); only new implementations, `writd`'s wiring and config, and the
+      installer.
 - [ ] The macOS implementations pass the same contract suites as the portable ones.
 - [ ] The same agent workflow as M6 works against the local daemon with no client change
       beyond the endpoint.
 - [ ] A lease bound to a session refuses a caller outside that process tree, whatever its
       process name or arguments, and refuses every TCP caller.
 - [ ] Quitting the session's root process revokes the lease.
+- [ ] Under `writ run`, `writ request` gives a lease bound to the `writ run` process, its
+      executable, generation and code identity filled by the daemon from the kernel; a pid
+      outside the submitter's chain, or a submission with no chain, is refused with its
+      code; quitting the harness revokes the lease.
+- [ ] A template with `require_session: true` refuses an unbound ticket with its code and
+      takes a bound one; a narrowing can't drop the binding; without the key, an unbound
+      ticket is taken.
+- [ ] The installer's fake-root test passes in `make test` (install, dry run, upgrade,
+      uninstall, a failed install taken back), and shellcheck in `make check`.
 - [ ] On a Mac without Writ, `make install` (the `local` setup picked at its question, then
       with `SETUP=local`) then `writ unseal` gives a working local daemon with nothing else
       done by hand; `DRY_RUN=1` lists exactly what the install then makes; a second
