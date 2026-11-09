@@ -325,3 +325,32 @@ fn a_lease_is_renewed_closed_and_learned_from() {
          ! grep -q writ .git/info/exclude",
     );
 }
+
+/// `writ run`, the session launcher (M7): the harness's status passed on, the session's pid
+/// given to it, and a ticket requested under it bound to the session, which this daemon,
+/// reached over TCP, refuses (local mode's Unix socket is where a binding is made: tested
+/// against the real daemon on the Mac in `writ-integration`'s `local_mode`).
+#[test]
+#[ignore = "end to end: make e2e"]
+fn writ_run_binds_its_tickets_to_its_session_and_passes_the_harness_s_status_on() {
+    let stack = Stack::shared();
+    let agent = stack.agent("sessions-run");
+    let (_, _) = expect(
+        &agent.run("writ run -- sh -c 'exit 7'"),
+        7,
+        "writ run with a harness that exits 7",
+    );
+    let out = agent.ok("writ run -- sh -c 'test \"$WRIT_RUN_PID\" = \"$PPID\" && echo session'");
+    assert_eq!(out.trim(), "session", "{out}");
+    agent.write("ticket.yaml", &ticket("agent/run", ""), "0644");
+    let (_, err) = expect(
+        &agent.run("writ run -- writ request ticket.yaml"),
+        3,
+        "a bound ticket over TCP",
+    );
+    assert!(
+        err.contains("writ: bound to this session (writ run, pid ")
+            && err.contains("caller.descends_from.pid: a session binding needs local mode"),
+        "{err}"
+    );
+}

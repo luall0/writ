@@ -27,6 +27,7 @@ mod https;
 mod init;
 mod policy;
 mod reader;
+mod run;
 mod session;
 mod skill;
 mod timings;
@@ -219,6 +220,13 @@ enum Commands {
         /// process).
         #[arg(short = 'C', value_name = "DIR")]
         dir: Option<PathBuf>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<OsString>,
+    },
+    /// Run an agent harness as the root of its session: every `writ request` under it binds
+    /// its lease to the session, refused outside it and revoked when it ends. writ run --
+    /// <program> [args]; its exit status is the harness's.
+    Run {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<OsString>,
     },
@@ -970,6 +978,8 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         Commands::Report { id, url } => approver::report(&paths, &url.url, id).await,
         Commands::Git { args } => wrap::git(&paths, args),
         Commands::Exec { dir, command } => wrap::exec(&paths, dir.as_deref(), command),
+        // Handled by `main` before any runtime starts.
+        Commands::Run { .. } => anyhow::bail!("writ run runs on its own"),
         Commands::Reader { name } => {
             session::create_private_dir(&paths.home)?;
             println!("{}", reader::ensure(&paths.reader, name)?);
@@ -1190,6 +1200,10 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Its own runtime and exit status: the harness's.
+    if let Commands::Run { command } = &cli.command {
+        return run::run(command);
+    }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(e) => {

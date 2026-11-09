@@ -63,8 +63,12 @@ impl Mode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wiring {
     pub mode: Mode,
-    /// The daemon's agents listener as git reaches it (`ssh://git@host:port`).
+    /// The daemon's agents listener as git reaches it (`ssh://git@host:port`, or
+    /// `ssh://git@writ-local` through [`Wiring::socket`]).
     pub base_url: String,
+    /// The daemon's Unix socket, for a local endpoint (`writ.socket`): ssh reaches it through
+    /// `nc -U`.
+    pub socket: Option<PathBuf>,
     pub repo: RepoName,
     /// The committer email asked for (`writ init --email`); otherwise the current lease's.
     pub email: Option<String>,
@@ -161,6 +165,8 @@ fn quote(text: &str) -> String {
 pub struct Target<'a> {
     /// The daemon's agents listener as git reaches it (`ssh://git@host:port`).
     pub base_url: &'a str,
+    /// The daemon's Unix socket, for a local endpoint.
+    pub socket: Option<&'a Path>,
     pub repo: &'a RepoName,
     pub common_dir: &'a Path,
     /// The clone's `origin` URL, rewritten to the daemon.
@@ -179,6 +185,7 @@ pub fn settings(
 ) -> Vec<Setting> {
     let Target {
         base_url,
+        socket,
         repo,
         common_dir,
         origin,
@@ -216,7 +223,10 @@ pub fn settings(
         ("commit.gpgSign", "true".to_owned()),
         // Tags are never signed by the daemon (releases stay a human act).
         ("tag.gpgSign", "false".to_owned()),
-        ("core.sshCommand", ssh_command(&session, known_hosts)),
+        (
+            "core.sshCommand",
+            ssh_command(&session, known_hosts, socket),
+        ),
     ]);
     if let Some(email) = email {
         settings.push(("user.email", email.to_owned()));
@@ -243,11 +253,15 @@ fn openpgp_fingerprint(session: &Path) -> Option<String> {
     writ_crypto::openpgp::certificate_fingerprint(&text).ok()
 }
 
+/// The program that carries ssh to a local daemon's Unix socket (macOS's own netcat).
+pub const NETCAT: &str = "/usr/bin/nc";
+
 /// The SSH command to reach the daemon with the session in `session` (its directory): nothing
 /// from the user's own SSH setup (no config, no agent, no other key, no prompt), only the
-/// daemon's pinned host key.
-pub fn ssh_command(session: &Path, known_hosts: &Path) -> String {
-    format!(
+/// daemon's pinned host key. For a local daemon (`socket`), ssh goes through `nc -U` to its
+/// socket, and checks the key pinned under [`crate::client::UNIX_HOST_ALIAS`].
+pub fn ssh_command(session: &Path, known_hosts: &Path, socket: Option<&Path>) -> String {
+    let mut command = format!(
         "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -i {} \
          -o {} -o {} -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes",
         quote(&session.join("key").display().to_string()),
@@ -256,7 +270,20 @@ pub fn ssh_command(session: &Path, known_hosts: &Path) -> String {
             session.join("key-cert.pub").display()
         )),
         quote(&format!("UserKnownHostsFile={}", known_hosts.display())),
-    )
+    );
+    if let Some(socket) = socket {
+        // ssh runs ProxyCommand through sh: the path quoted for it, the option for git's sh.
+        let proxy = format!(
+            "ProxyCommand={NETCAT} -U {}",
+            quote(&socket.display().to_string())
+        );
+        command.push_str(&format!(
+            " -o HostKeyAlias={} -o {}",
+            crate::client::UNIX_HOST_ALIAS,
+            quote(&proxy)
+        ));
+    }
+    command
 }
 
 /// `writ-sign` next to this `writ`, if it is there; otherwise found in `PATH` by git.
@@ -364,6 +391,7 @@ pub fn load_common(common_dir: &Path) -> anyhow::Result<Option<Wiring>> {
         .and_then(Mode::parse)
         .ok_or_else(invalid)?;
     let base_url = get("writ.url").ok_or_else(invalid)?;
+    let socket = get("writ.socket").map(PathBuf::from);
     let repo = get("writ.repo")
         .and_then(|r| r.parse().ok())
         .ok_or_else(invalid)?;
@@ -374,6 +402,7 @@ pub fn load_common(common_dir: &Path) -> anyhow::Result<Option<Wiring>> {
     Ok(Some(Wiring {
         mode,
         base_url,
+        socket,
         repo,
         email: get("writ.email"),
         common_dir: common_dir.to_path_buf(),
@@ -399,6 +428,7 @@ pub fn settings_with(
     Ok(settings(
         &Target {
             base_url: &wiring.base_url,
+            socket: wiring.socket.as_deref(),
             repo: &wiring.repo,
             common_dir: &wiring.common_dir,
             origin: wiring.origin.as_deref(),
@@ -462,6 +492,7 @@ mod tests {
         let wired = settings(
             &Target {
                 base_url: "ssh://git@writ.home:2222",
+                socket: None,
                 repo: &"omega-code".parse().unwrap(),
                 common_dir: Path::new("/opt/agent/omega/.git"),
                 origin: None,
@@ -487,6 +518,7 @@ mod tests {
         let wired = settings(
             &Target {
                 base_url: "ssh://git@writ.home:2222",
+                socket: None,
                 repo: &"omega-code".parse().unwrap(),
                 common_dir: Path::new("/opt/agent/omega/.git"),
                 origin: None,
@@ -505,6 +537,7 @@ mod tests {
         let settings = settings(
             &Target {
                 base_url: "ssh://git@writ.home:2222",
+                socket: None,
                 repo: &"omega-code".parse().unwrap(),
                 common_dir: Path::new("/opt/agent/omega/.git"),
                 origin: Some("git@github.com:user/omega-code.git"),
@@ -558,6 +591,7 @@ mod tests {
             settings(
                 &Target {
                     base_url: "ssh://git@writ.home:2222",
+                    socket: None,
                     repo: &repo,
                     common_dir: Path::new("/r/.git"),
                     origin,
@@ -585,10 +619,57 @@ mod tests {
     #[test]
     fn paths_are_quoted_for_sh() {
         assert_eq!(quote("/a b/it's"), r"'/a b/it'\''s'");
-        let ssh = ssh_command(Path::new("/x y/$(id)/sessions/current"), Path::new("/k"));
+        let ssh = ssh_command(
+            Path::new("/x y/$(id)/sessions/current"),
+            Path::new("/k"),
+            None,
+        );
         assert!(
             ssh.contains("-i '/x y/$(id)/sessions/current/key'"),
             "{ssh}"
+        );
+    }
+
+    /// What `sh -c "<script> \"$@\""` passes as arguments, one per line.
+    fn sh_args(script: &str) -> Vec<String> {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("for a in {script}; do printf '%s\\n' \"$a\"; done"))
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_local_daemon_s_socket_survives_both_shells() {
+        let socket = Path::new("/Library/App Support/it's $(id)/agents.sock");
+        let ssh = ssh_command(Path::new("/s"), Path::new("/k"), Some(socket));
+        // git's sh hands ssh its options: the alias, and the proxy as one option.
+        let args = sh_args(ssh.strip_prefix("ssh ").unwrap());
+        let alias = args
+            .iter()
+            .position(|a| a == "HostKeyAlias=writ-local")
+            .unwrap();
+        assert_eq!(args[alias - 1], "-o");
+        let proxy = args
+            .iter()
+            .find_map(|a| a.strip_prefix("ProxyCommand="))
+            .unwrap();
+        // ssh's sh runs the proxy: nc, -U, the path whole.
+        assert_eq!(
+            sh_args(proxy),
+            [NETCAT, "-U", "/Library/App Support/it's $(id)/agents.sock"]
+        );
+        // A TCP daemon: no proxy, no alias.
+        let tcp = ssh_command(Path::new("/s"), Path::new("/k"), None);
+        assert!(
+            !tcp.contains("ProxyCommand") && !tcp.contains("HostKeyAlias"),
+            "{tcp}"
         );
     }
 

@@ -7,7 +7,7 @@ clients make the workflow pleasant, the daemon makes it safe.
 
 | Client | Role |
 |---|---|
-| `writ` CLI | `policy` (what a ticket for each repo named may ask, from the daemon: templates, branches, committer emails, signing key id, limits, protected refs, the ticket link; for several, whether one ticket can cover them), `request` (`--dry-run`: the daemon's checks, nothing submitted), `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin repo|template|key|host list` and `show` (the policy in force [entry by entry](approvals.md#reading-the-policy-entry-by-entry), a key's public half with `--public`), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host); with no repo named, a folder of repositories: [workspaces](#workspaces)), `git` and `exec` (git, or a program, with that wiring; `git` finds the repository behind git's global options, `exec -C <dir>` runs in one) |
+| `writ` CLI | `policy` (what a ticket for each repo named may ask, from the daemon: templates, branches, committer emails, signing key id, limits, protected refs, the ticket link; for several, whether one ticket can cover them), `request` (`--dry-run`: the daemon's checks, nothing submitted), `wait`, `sign`, `refuse`, `close` (the lease ended with a summary, its activity report printed and recorded in the timings file), `report` (a lease's report, for the approver), `mark` (the end of a phase, the agent's), `timings` (the timings file's limits), `check` (a ticket file or the timings file, checked as written, nothing sent), `ls`, `revoke`, `prove-key` (an agent signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `unseal`, `admin show` and `admin apply` (the policy, approvers or readers in force, and [signed changes](approvals.md#admin-changes) of them), `admin repo|template|key|host list` and `show` (the policy in force [entry by entry](approvals.md#reading-the-policy-entry-by-entry), a key's public half with `--public`), `admin token` (an upstream's or a notifier's token, [encrypted on the Mac](approvals.md#writ-admin-token)), `reader`, `init` (wires a repo: [repo setup](#repo-setup-on-an-agent-host); with no repo named, a folder of repositories: [workspaces](#workspaces)), `git` and `exec` (git, or a program, with that wiring; `git` finds the repository behind git's global options, `exec -C <dir>` runs in one), `run` (an agent harness as the root of its session: [binding a lease to its session](#binding-a-lease-to-its-session)) |
 | Agent skill (`skill/writ/SKILL.md`, built into `writ`, installed by `writ init`; at a workspace root, `skill/writ-workspace/SKILL.md` instead: [workspaces](#workspaces)) | Teaches the agent the ticket workflow, at the start of any task that changes files and before any edit: read what the repo allows (`writ policy`) and the timings file, think through the scope (a branch of its own within the template's patterns, never the default or a protected one; `push` unless told not to) and estimate it, write a ticket (task, plan, repos, branches, estimate, limits), check it (`writ check`, then `writ request --dry-run`) and submit it with `writ request`, wait for my decision, then work with `WRIT_SESSION` set; on refusal, revise using my feedback; on an out-of-ticket denial, submit an amendment; out of time or counts, a renewal; when done, `writ close` with a summary, then a note in the timings file if something explains the figures. Everything the agent writes in a ticket is shown to me as-is and never trusted by the policy engine. [The skill and its installer](#the-agent-skill) |
 | `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git <repo>` command for the repo in `writ.repo`, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, then `core.sshCommand`, never a plain `ssh`), with the first parent commit and the trees the daemon needs to see which paths the commit touches ([Gateway](gateway.md#signing)); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen`. Also `gpg.openpgp.program` for a lease whose key is OpenPGP: `--status-fd=2 -bsau <key>` → daemon (`writ-sign openpgp <repo>`, the object on stdin, the armored signature on stdout, `[GNUPG:] SIG_CREATED` on stderr; no GnuPG home, keyring or agent used), `--verify` → the real `gpg` (`WRIT_GPG`, an absolute path, `/usr/bin/gpg` by default), anything else refused |
 | Session agent ([M8.5](../roadmap.md#m85--non-exportable-session-keys), on when the host has the hardware) | Holds the session key so it can't be copied: a dedicated ssh-agent backed by the Secure Enclave, a TPM or a YubiKey |
@@ -26,7 +26,8 @@ is pinned; `writd host-key` prints it), `WRIT_TLS_PINS` (default `~/.writ/tls_pi
 `[host]:port SHA256:…` pinning the HTTPS certificate; `writd tls-fingerprint` prints it) and
 `WRIT_READER` (default `~/.writ/reader`: the key the approval API lets in; `writ reader
 [<name>]` makes it on first use and prints the line for the daemon's `readers` file),
-`WRIT_SESSION` (the lease an agent works under: [the session](#which-session-a-command-uses)), and
+`WRIT_SESSION` (the lease an agent works under: [the session](#which-session-a-command-uses)),
+`WRIT_RUN_PID` (set by `writ run`: [the session binding](#binding-a-lease-to-its-session)), and
 `WRIT_SSH_KEYGEN` (the ssh-keygen `writ sign` runs, an absolute path; default
 `/usr/bin/ssh-keygen`, never looked up in `PATH`). It never reads `~/.ssh` or uses the user's ssh-agent
 for connections: it would offer personal keys to the daemon. Exit statuses: 0 done, 1 error,
@@ -122,8 +123,12 @@ one of the lease current at `writ init`); `writ init` computes them once per run
 config it writes and its summary come from the same values) and reads the values it replaces
 with `git config --get-all -z`, so a value over several lines is put back whole. Each commit
 needs a `Writ: <lease>` trailer when the repo's `ticket_link` is `trailer`
-(`git commit --trailer "Writ: wrt_…"`); `writ init` prints the lease's. Only `ssh://`
-endpoints for now (a Unix socket comes with local mode).
+(`git commit --trailer "Writ: wrt_…"`); `writ init` prints the lease's. A local daemon
+(`unix:<path>`, absolute) is reached as `ssh://git@writ-local`: the SSH command adds
+`-o HostKeyAlias=writ-local` (the alias its host key is pinned under) and
+`-o ProxyCommand=/usr/bin/nc -U <path>`, the path quoted for the shell ssh runs it with,
+the whole option for git's; the record keeps the socket (`writ.socket`). `writ-sign` needs
+nothing more: it uses git's SSH command and `writ.url`'s host.
 
 ### Workspaces
 
@@ -175,6 +180,21 @@ still carries Writ's mark, only folders `writ init` made on the way to one (when
 the pointer line only from an `AGENTS.md` or `CLAUDE.md` (a repository's own undo holds to
 the same). A program that runs git across several repositories at once, and submodules, are
 in the [backlog](../backlog/README.md).
+
+### Binding a lease to its session
+
+`writ run -- <program> [args…]` (`writ_cli::run`) starts an agent harness as its child and
+stays as the root of its session. It sets `WRIT_RUN_PID` to its own pid for the harness.
+SIGTERM and SIGHUP are passed on to the harness. SIGINT and SIGQUIT already reach the whole
+foreground group from the terminal, so they are not passed on again. Its exit status is the
+harness's, or 128 and the signal that ended it.
+
+Under it, `writ request` adds `caller: { descends_from: { pid } }` to a ticket that names no
+caller (after a leading `---`). The daemon completes the binding from the kernel's chain of
+the submission ([lease model](../lease-model.md#the-complete-ticket)) and refuses a pid the
+submission doesn't descend from. When the harness quits, `writ run` exits and the session
+watcher revokes the lease. A `WRIT_RUN_PID` that isn't a pid is refused. A ticket that names
+its own caller is sent as written (the daemon still checks it).
 
 ### Which session a command uses
 

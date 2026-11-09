@@ -61,6 +61,14 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, mode: Mode) -> anyho
             return Ok(Exit::Rejected);
         }
     };
+    // Under `writ run`: the lease bound to its session, unless the ticket names one itself.
+    let text = match (crate::run::session()?, &parsed.caller) {
+        (Some(pid), None) => {
+            eprintln!("writ: bound to this session (writ run, pid {pid})");
+            crate::run::bind(&text, pid)
+        }
+        _ => text,
+    };
     // An amendment comes from the lease's own session, a revision from the refused ticket's
     // (same key): the daemon refuses either from another session. A revision is a new ticket,
     // so it gets its own session directory, with that same key.

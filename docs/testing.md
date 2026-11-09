@@ -300,6 +300,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `env: WRIT_APPROVAL_URL` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
 | `env: WRIT_APPROVAL_KEY` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
 | `env: WRIT_APPROVAL_AGENT` | `decisions_open_takes_unsigned_refusals_and_signed_does_not`, `every_client_setting_works_as_a_flag` |
+| `env: WRIT_RUN_PID` | `the_agent_workflow_runs_under_writ_run_against_the_local_daemon` |
 | `env: WRIT_SESSION` | `two_agents_in_one_home_each_keep_their_own_lease`, `a_pinned_repo_uses_its_lease_in_both_wirings` |
 | `env: WRIT_SSH_KEYGEN` | `writ_ssh_keygen_names_the_program_the_approver_signs_with` |
 | `env: WRIT_GPG` | `an_openpgp_lease_signs_through_writ_sign_as_gpg_with_no_gnupg_home_of_its_own`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |

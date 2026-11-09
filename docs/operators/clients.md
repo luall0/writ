@@ -15,11 +15,12 @@ lists them.
 | `--known-hosts` | `WRIT_KNOWN_HOSTS` | `<home>/known_hosts` | The daemon's pinned SSH host key ([setup, step 7](setup.md#on-the-daemon-host)) |
 | `--tls-pins` | `WRIT_TLS_PINS` | `<home>/tls_pins` | The daemon's pinned TLS certificate, for an `https://` approval URL |
 | `--reader` | `WRIT_READER` | `<home>/reader` | Your reader key. `writ reader <name>` creates it and prints the line for the daemon's `readers` |
-| `--url` | `WRIT_URL` | none | The agents' listener, `ssh://host:port`. Used by `request`, `wait`, `close`, `policy`, `init` |
+| `--url` | `WRIT_URL` | none | The agents' listener: `ssh://host:port`, or `unix:<path>` for a daemon on this Mac (local mode). Used by `request`, `wait`, `close`, `policy`, `init` |
 | `--approval-url` | `WRIT_APPROVAL_URL` | none | The approval listener, `https://host:port` or `ssh://host:port`. Used by `ls`, `sign`, `refuse`, `revoke`, `report`, `prove-key` |
 | none | `WRIT_SESSION` | none | The lease an agent works under: `writ git`, `writ exec`, `writ close`, `writ mark` and `writ-sign` use its session, whatever `current` points at. Set it to the line `writ request` prints. A lease this host doesn't have, or that ended, is refused, never replaced by `current`. [Several agents](#several-agents-on-one-host) |
 | `--key` | `WRIT_APPROVAL_KEY` | `<home>/approver.pub` | Your approval key's **public** half (a private key file is refused) |
 | `--agent` | `WRIT_APPROVAL_AGENT` | `$SSH_AUTH_SOCK` | The ssh-agent holding your approval key: Secretive's socket |
+| none | `WRIT_RUN_PID` | none | Set by `writ run` for the agent it starts: `writ request` binds each ticket to that session. Not yours to set. [Binding a lease to its session](#binding-a-lease-to-its-session-local-mode) |
 | none | `WRIT_SSH_KEYGEN` | `/usr/bin/ssh-keygen` | The `ssh-keygen` that signs your approvals: an absolute path, OpenSSH 8.9 or newer. Never looked up in `PATH`, where anything could sit first and change what gets signed |
 | none | `WRIT_GPG` | `/usr/bin/gpg` | `writ-sign`: the `gpg` it hands git's OpenPGP `--verify` calls to, an absolute path. It never runs gpg to sign: the key is the daemon's |
 
@@ -111,6 +112,22 @@ would follow it and swap leases. Give each agent its own lease:
 - Or pin a clone to a lease with `writ init --lease <lease>`.
 - Or give each agent its own home (`WRIT_HOME`), or its own OS user: see
   [good practice](good-practice.md#more-isolation).
+
+## Binding a lease to its session (local mode)
+
+With a daemon on this Mac, start the agent through `writ run`:
+
+```sh
+writ run -- claude
+```
+
+Each ticket the agent then asks for is bound to that session. Its lease is refused to any
+program the session didn't start, and it is revoked when the agent quits. The agent writes
+nothing more in its ticket. `writ request` adds the binding, and `writ sign` shows you which
+process the lease is bound to. A template with `require_session` refuses a ticket asked for
+outside `writ run`.
+
+`writ run` exits with the agent's status. A Ctrl-C reaches the agent as usual.
 
 ## The agent skill
 

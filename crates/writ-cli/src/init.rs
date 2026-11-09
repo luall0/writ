@@ -58,20 +58,31 @@ pub struct Init<'a> {
     pub skill: SkillChoice,
 }
 
-/// `ssh://git@host:port`, the daemon as git reaches it.
-fn base_url(url: &str) -> anyhow::Result<String> {
-    let Endpoint::Tcp { host, port } = Endpoint::parse(url)? else {
-        bail!(
-            "writ init wires an ssh://host:port endpoint, not {url} (a Unix socket comes with \
-             local mode)"
-        );
-    };
-    let host = if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host
-    };
-    Ok(format!("ssh://git@{host}:{port}"))
+/// The daemon as git reaches it: `ssh://git@host:port`, or for a local daemon
+/// `ssh://git@writ-local` and its socket (an absolute path).
+fn base_url(url: &str) -> anyhow::Result<(String, Option<PathBuf>)> {
+    match Endpoint::parse(url)? {
+        Endpoint::Tcp { host, port } => {
+            let host = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host
+            };
+            Ok((format!("ssh://git@{host}:{port}"), None))
+        }
+        Endpoint::Unix { path } => {
+            if !path.is_absolute() {
+                bail!("writ init wires a Unix socket by its absolute path, not {url}");
+            }
+            Ok((
+                format!("ssh://git@{}", crate::client::UNIX_HOST_ALIAS),
+                Some(path),
+            ))
+        }
+        Endpoint::Https { .. } => bail!(
+            "writ init wires the agents' listener (ssh://host:port or unix:<path>), not {url}"
+        ),
+    }
 }
 
 /// `git config -f <record> <key> <value>` (`--add` keeps several values of one key).
@@ -179,6 +190,8 @@ struct RepoWiring<'a> {
     lease: Option<&'a TicketId>,
     /// `ssh://git@host:port`.
     base_url: &'a str,
+    /// The daemon's Unix socket, for a local endpoint.
+    socket: Option<&'a Path>,
     /// The workspace root it is wired from (`writ.workspace`).
     workspace: Option<&'a Path>,
 }
@@ -238,6 +251,7 @@ fn wire(
     let wiring = Wiring {
         mode: plan.mode,
         base_url: plan.base_url.to_owned(),
+        socket: plan.socket.map(Path::to_path_buf),
         repo: plan.repo.clone(),
         email: plan.email.map(|e| e.as_str().to_owned()),
         common_dir: wiring::common_dir(dir)?,
@@ -260,6 +274,14 @@ fn wire(
     }
     record(dir, &record_path, "writ.mode", plan.mode.as_str())?;
     record(dir, &record_path, "writ.url", plan.base_url)?;
+    if let Some(socket) = plan.socket {
+        record(
+            dir,
+            &record_path,
+            "writ.socket",
+            &socket.display().to_string(),
+        )?;
+    }
     record(dir, &record_path, "writ.repo", plan.repo.as_str())?;
     if let Some(email) = &wiring.email {
         record(dir, &record_path, "writ.email", email)?;
@@ -326,7 +348,7 @@ fn record_skill(
 
 pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
     let dir = std::env::current_dir().context("cannot read the current directory")?;
-    let base_url = base_url(request.url)?;
+    let (base_url, socket) = base_url(request.url)?;
     let record_path = wiring::record_path(&dir)?;
     if let Some(wired) = wiring::load(&dir)? {
         bail!(
@@ -351,6 +373,7 @@ pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
             email: request.email,
             lease: request.lease,
             base_url: &base_url,
+            socket: socket.as_deref(),
             workspace: None,
         },
         &session,
@@ -552,7 +575,7 @@ fn ask_name(found: &Found) -> anyhow::Result<Option<RepoName>> {
 pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Result<Exit> {
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
     let root = std::path::absolute(&cwd).context("cannot resolve the current directory")?;
-    let base_url = base_url(request.url)?;
+    let (base_url, socket) = base_url(request.url)?;
     if let Some(existing) = workspace::load(&root)? {
         bail!(
             "this folder is already a Writ workspace ({} repositories): `writ init --undo` first",
@@ -669,6 +692,7 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
                 email: request.email,
                 lease: request.lease,
                 base_url: &base_url,
+                socket: socket.as_deref(),
                 workspace: Some(&root),
             },
             &session,
@@ -1210,15 +1234,31 @@ mod tests {
     fn the_endpoint_becomes_git_s_url() {
         assert_eq!(
             base_url("ssh://writ.home:2222").unwrap(),
-            "ssh://git@writ.home:2222"
+            ("ssh://git@writ.home:2222".to_owned(), None)
         );
         assert_eq!(
             base_url("ssh://[::1]:2222").unwrap(),
-            "ssh://git@[::1]:2222"
+            ("ssh://git@[::1]:2222".to_owned(), None)
         );
-        let error = crate::error_of(base_url("unix:/tmp/writd.sock"));
+        // A local daemon: git reaches it by the alias its host key is pinned under.
+        let socket = "/Library/Application Support/Writ/run/agents.sock";
+        assert_eq!(
+            base_url(&format!("unix:{socket}")).unwrap(),
+            (
+                "ssh://git@writ-local".to_owned(),
+                Some(PathBuf::from(socket))
+            )
+        );
+        let error = crate::error_of(base_url("unix:run/agents.sock"));
+        assert_eq!(
+            error,
+            "writ init wires a Unix socket by its absolute path, not unix:run/agents.sock"
+        );
+        let error = crate::error_of(base_url("https://writ.home:8443"));
         assert!(
-            error.starts_with("writ init wires an ssh://host:port endpoint"),
+            error.starts_with(
+                "writ init wires the agents' listener (ssh://host:port or unix:<path>)"
+            ),
             "{error}"
         );
     }

@@ -11,6 +11,7 @@
     clippy::cast_possible_truncation
 )]
 
+use writ_integration::clone::git_ok;
 use writ_integration::daemon::{Approvals, Daemon};
 use writ_integration::{audit_events, stderr, stdout};
 
@@ -112,17 +113,40 @@ struct SessionRoot {
 impl SessionRoot {
     /// The shell, with the environment `writ` gets from the fixture (the local endpoint).
     fn start(daemon: &Daemon) -> Self {
+        Self::start_as(daemon, &[])
+    }
+
+    /// The shell under `writ run`: `writ run` is the session's root.
+    fn under_writ_run(daemon: &Daemon) -> Self {
+        let writ = writ_integration::binaries::bin("writ");
+        Self::start_as(daemon, &[writ.to_str().unwrap(), "run", "--"])
+    }
+
+    /// The shell, run by `before` (a program and its arguments) when there is one.
+    fn start_as(daemon: &Daemon, before: &[&str]) -> Self {
         let template = daemon.writ_local(&[]);
-        let mut shell = std::process::Command::new("/bin/sh");
+        let line_loop = "while IFS= read -r line; do eval \"$line\"; echo \"done $?\"; done";
+        let mut shell = match before.split_first() {
+            Some((program, args)) => {
+                let mut command = std::process::Command::new(program);
+                command.args(args).args(["/bin/sh", "-c", line_loop]);
+                command
+            }
+            None => {
+                let mut command = std::process::Command::new("/bin/sh");
+                command.args(["-c", line_loop]);
+                command
+            }
+        };
         shell
-            .arg("-c")
-            .arg("while IFS= read -r line; do eval \"$line\"; echo \"done $?\"; done")
             .env_clear()
             .envs(
                 template.get_envs().filter_map(|(key, value)| {
                     value.map(|value| (key.to_owned(), value.to_owned()))
                 }),
             )
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
@@ -168,10 +192,10 @@ impl SessionRoot {
         }
     }
 
-    /// Ends the shell (its stdin closed) and waits for it.
-    fn end(mut self) {
+    /// Ends the shell (its stdin closed) and waits for it: how its root ended.
+    fn end(mut self) -> std::process::ExitStatus {
         drop(self.child.stdin.take());
-        self.child.wait().unwrap();
+        self.child.wait().unwrap()
     }
 }
 
@@ -279,4 +303,100 @@ fn a_lease_bound_to_its_session_serves_inside_it_only_and_ends_with_it() {
         .output()
         .unwrap();
     assert_eq!(after.status.code(), Some(128), "{}", stderr(&after));
+}
+
+const WORK: &str = "repos:\n  demo:\n    operations: [fetch, commit_sign, push]\n    \
+                    branches: [\"agent/*\"]\nticket:\n  title: Local work\n  task: Commit and \
+                    push\nlimits:\n  ttl: 1h\n";
+
+#[test]
+fn the_agent_workflow_runs_under_writ_run_against_the_local_daemon() {
+    if !local_mode_here() {
+        return;
+    }
+    let policy = POLICY.replacen(
+        REQUIRED,
+        "    max_push_size: 10MB\n    require_session: true\n",
+        1,
+    );
+    let daemon = Daemon::start_local(&policy, Approvals::Ssh);
+    let writ = writ_integration::binaries::bin("writ");
+    let repo = writ_integration::clone::clone(&daemon, "work");
+    let ticket = daemon.root().join("work.yaml");
+    std::fs::write(&ticket, WORK).unwrap();
+
+    // The harness: a shell under `writ run`. Its ticket names no caller: `writ request`
+    // binds it to the session, as the skill's workflow asks nothing more of the agent.
+    let mut harness = SessionRoot::under_writ_run(&daemon);
+    harness.send(&format!("cd '{}'", repo.display()));
+    assert_eq!(harness.finish().1, 0);
+    harness.send(&format!(
+        "'{}' request '{}'",
+        writ.display(),
+        ticket.display()
+    ));
+    let first = harness.next();
+    let id = first
+        .strip_prefix("Ticket ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("{first}"))
+        .to_owned();
+    let out = daemon.run(&["sign", &id, "--yes"], "");
+    let shown = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(out.status.success(), "{shown}");
+    // Bound to `writ run` itself (its path wrapped on the approver's screen), by its pid.
+    assert!(
+        shown.contains("caller             descends from")
+            && shown.contains(&format!("writ (pid {}, generation", harness.pid())),
+        "{shown}"
+    );
+    let (said, status) = harness.finish();
+    assert_eq!(status, 0, "{said:?}");
+
+    // The M6 workflow, the endpoint the only difference: wired, a commit signed by the
+    // daemon, pushed through it.
+    for line in [
+        format!("'{}' init demo --agents none", writ.display()),
+        "echo work > f && git add f".to_owned(),
+        format!("'{}' git commit -q -m work", writ.display()),
+        format!(
+            "'{}' git push -q origin HEAD:refs/heads/agent/local",
+            writ.display()
+        ),
+    ] {
+        harness.send(&line);
+        let (said, status) = harness.finish();
+        assert_eq!(status, 0, "{line}: {said:?}");
+    }
+    let head = git_ok(&daemon, &repo, &["rev-parse", "HEAD"]);
+    let upstream = git_ok(
+        &daemon,
+        &daemon.remote.repo("demo"),
+        &["rev-parse", "refs/heads/agent/local"],
+    );
+    assert_eq!(upstream.trim(), head.trim());
+
+    // From outside the session (this test, not under writ run): refused.
+    let outside = daemon
+        .writ_local(&["git", "fetch", "-q", "origin"])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert_eq!(outside.status.code(), Some(128), "{}", stderr(&outside));
+    let denied = audit_events(&daemon.audit(), "connect", "denied");
+    assert!(
+        denied
+            .iter()
+            .any(|e| e["code"] == "caller" && e["lease"] == id.as_str()),
+        "{denied:?}"
+    );
+
+    // The harness quits: writ run exits with its status, and the lease is revoked.
+    assert_eq!(harness.end().code(), Some(0));
+    writ_integration::eventually("the session's lease to be revoked", || {
+        audit_events(&daemon.audit(), "revoke", "done")
+            .iter()
+            .any(|e| e["lease"] == id.as_str())
+    });
 }

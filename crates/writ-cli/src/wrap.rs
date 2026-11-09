@@ -58,7 +58,7 @@ fn run(paths: &Paths, wired: &Wiring, mut command: Command) -> anyhow::Result<Ex
             .context("cannot resolve the known_hosts path")?;
         command.env(
             "GIT_SSH_COMMAND",
-            wiring::ssh_command(&session.dir(&home), &known_hosts),
+            wiring::ssh_command(&session.dir(&home), &known_hosts, wired.socket.as_deref()),
         );
     }
     let error = command.exec();
