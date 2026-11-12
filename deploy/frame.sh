@@ -1,9 +1,15 @@
 # shellcheck shell=sh
+# shellcheck disable=SC2030,SC2031 # planned() sets DRY_RUN in a subshell of its own, by design
 # The installer's frame (sourced by install.sh): what every setup shares.
 #
-# - The setup: `SETUP=<name>`, or asked on a terminal, among the ones this OS has (each
-#   setups/<file>.sh says in its header `# writ-setup: <name> <os> <manifest path>`).
-# - The dry run: `DRY_RUN=1` lists every change and makes none.
+# - Guided (docs/conventions.md#installers-are-guided): on a terminal every choice is asked,
+#   each with what it means and its default; then the answers and every change are shown, and
+#   nothing is done before one confirmation. Without a terminal (scripts, tests), the
+#   variables answer the same questions: SETUP, APPROVER and each setup's own.
+# - The setup: asked among the ones this OS has (each setups/<file>.sh says in its header
+#   `# writ-setup: <name> <os> <manifest path>` and `# writ-setup-about: <one line>`).
+# - The dry run: `DRY_RUN=1` lists every change and makes none (a terminal's summary shows
+#   the same list before its confirmation).
 # - Root only where needed: `as_root` runs one command through sudo, `as_user` as you,
 #   `as_daemon <user>` as the daemon's user.
 # - The manifest: each change is appended once made (root-owned), so a failed install stops
@@ -40,6 +46,96 @@ sys() { printf '%s%s' "$ROOT" "$1"; }
 # Whether questions can be asked.
 terminal() { [ -t 0 ]; }
 
+# ask <label> <default>: one answer from the terminal (the default on Enter), on stdout; the
+# prompt on stderr.
+ask() {
+    if [ -n "$2" ]; then
+        printf '%s [%s]: ' "$1" "$2" >&2
+    else
+        printf '%s: ' "$1" >&2
+    fi
+    read -r answer || answer=
+    printf '%s' "${answer:-$2}"
+}
+
+# confirm <question>: yes on y or yes, asked on the terminal; no otherwise.
+confirm() {
+    printf '%s [y/N] ' "$1" >&2
+    read -r answer || answer=
+    case $answer in
+        y | Y | yes) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# choose_one <variable> <value> <label> <default> <allowed…>: the value of <variable> when it
+# was given, else asked on a terminal (again until it is one of <allowed>), else <default>;
+# one not allowed refused, naming the variable.
+choose_one() {
+    name=$1 value=$2 label=$3 default=$4
+    shift 4
+    if [ -z "$value" ] && terminal; then
+        while :; do
+            value=$(ask "$label" "$default")
+            for one in "$@"; do
+                [ "$value" = "$one" ] && break 2
+            done
+            say "  $value: one of $*" >&2
+        done
+    fi
+    value=${value:-$default}
+    for one in "$@"; do
+        if [ "$value" = "$one" ]; then
+            printf '%s' "$value"
+            return 0
+        fi
+    done
+    fail "$name=$value: one of $*"
+}
+
+# A path with a leading ~/ made your home's.
+expand_home() {
+    # shellcheck disable=SC2088 # a literal ~/ typed at the prompt, made $HOME's here
+    case $1 in
+        "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# What is wrong with <path> as an approval key's public half, or nothing.
+approver_problem() {
+    if [ -z "$1" ]; then
+        printf 'no path given'
+    elif [ ! -r "$1" ]; then
+        printf '%s: not a readable file' "$1"
+    elif grep -q 'PRIVATE KEY' "$1"; then
+        printf '%s is a private key: give its .pub' "$1"
+    else
+        case $(head -n 1 "$1") in
+            ssh-* | ecdsa-* | sk-*) ;;
+            *) printf '%s is not an SSH public key' "$1" ;;
+        esac
+    fi
+}
+
+# APPROVER: asked on a terminal (again until it is an SSH public key), else the variable.
+choose_approver() {
+    if [ -z "${APPROVER:-}" ] && terminal; then
+        say "Your approval key: the key whose signature turns an agent's ticket into a lease (a" >&2
+        say "Secretive key on a Mac, say). Give the path to its public half, the .pub: the" >&2
+        say "installer reads that file alone, and Writ never uses your other keys." >&2
+        while :; do
+            APPROVER=$(expand_home "$(ask "Approval key (.pub)" "")")
+            problem=$(approver_problem "$APPROVER")
+            [ -z "$problem" ] && break
+            say "  $problem" >&2
+        done
+    fi
+    [ -n "${APPROVER:-}" ] || fail "APPROVER=<your approval key's .pub> is needed without a terminal (its public half: who may sign)"
+    problem=$(approver_problem "$APPROVER")
+    [ -z "$problem" ] || fail "APPROVER=$problem"
+}
+
 # One command as root (through sudo), as you, or as the daemon's user.
 as_root() {
     if [ "$DRY_RUN" = 1 ]; then
@@ -69,6 +165,15 @@ as_daemon() {
         return 0
     fi
     if [ -n "$ROOT" ]; then "$@"; else sudo -u "$daemon_user" "$@"; fi
+}
+
+# Runs <command…> as a dry run, in a subshell: the changes listed, none made, and DRY_RUN
+# that subshell's alone.
+planned() {
+    (
+        DRY_RUN=1
+        "$@"
+    )
 }
 
 # A step: said, and named if it fails.
@@ -127,8 +232,19 @@ manifest_of() {
     printf '%s' "$(sys "${rest#* }")"
 }
 
-# Picks the setup: SETUP, or asked on a terminal; one this OS doesn't have is refused with
-# the list.
+# A setup file's name (its header's first word).
+name_of() {
+    header=$(sed -n 's/^# writ-setup: //p' "$1" | head -n 1)
+    printf '%s' "${header%% *}"
+}
+
+# What a setup file says it is, in one line.
+about_of() {
+    sed -n 's/^# writ-setup-about: //p' "$1" | head -n 1
+}
+
+# Picks the setup: SETUP, or asked on a terminal (each offered one said with what it is, the
+# first one on Enter); one this OS doesn't have is refused with the list.
 choose_setup() {
     offered=$(setups_here | cut -d' ' -f1 | tr '\n' ' ')
     [ -n "$offered" ] || fail "no setup for $OS in this build"
@@ -136,8 +252,10 @@ choose_setup() {
         terminal || fail "SETUP=<name> is needed without a terminal (offered on $OS: $offered)"
         # On stderr: what this function prints on stdout is the setup's file.
         say "Which setup? Offered on $OS: $offered" >&2
-        printf 'Setup: ' >&2
-        read -r SETUP || fail "no setup given"
+        setups_here | while read -r name file; do
+            say "  $name: $(about_of "$file")" >&2
+        done
+        SETUP=$(ask "Setup" "${offered%% *}")
     fi
     chosen=$(setups_here | while read -r name file; do
         if [ "$name" = "$SETUP" ]; then printf '%s' "$file"; fi
@@ -176,15 +294,44 @@ do_install() {
         MANIFEST=$(printf '%s' "$found" | sed -n 2p)
         # shellcheck source=/dev/null
         . "$file"
+        if [ "$DRY_RUN" != 1 ] && terminal; then
+            say "Installed already ($MANIFEST): an upgrade replaces the binaries and restarts the"
+            say "daemon, its keys, state and configuration kept. The changes, in order:"
+            planned setup_upgrade
+            confirm "Upgrade?" || {
+                say "Nothing changed."
+                return 0
+            }
+        fi
         say "Upgrading the installed setup ($MANIFEST):"
         setup_upgrade
         return 0
     fi
+    [ "$DRY_RUN" != 1 ] && terminal &&
+        say "Writ's installer: a few questions, then every change it will make, then your go."
     file=$(choose_setup)
     MANIFEST=$(manifest_of "$file")
     # shellcheck source=/dev/null
     . "$file"
-    [ "$DRY_RUN" = 1 ] && say "Dry run: these are the changes; none is made."
+    setup_questions
+    if [ "$DRY_RUN" = 1 ]; then
+        say "Dry run: these are the changes; none is made."
+        setup_install
+        return 0
+    fi
+    if terminal; then
+        say ""
+        say "Your answers:"
+        say "  Setup: $(name_of "$file") ($(about_of "$file"))"
+        say "  Approval key: $APPROVER"
+        setup_answers
+        say "The changes, in order (none is made yet):"
+        planned setup_install
+        confirm "Install?" || {
+            say "Nothing changed."
+            return 0
+        }
+    fi
     setup_install
 }
 
@@ -218,14 +365,27 @@ do_uninstall() {
     # Every question first: nothing changes before they are answered.
     repos_answer=$(repos_question)
     purge_answer=no
-    if [ "$PURGE" = 1 ]; then
-        say "PURGE=1 deletes the daemon's data (keystore, state, ledger, audit log):"
+    if terminal || [ "$PURGE" = 1 ]; then
+        say "The daemon's data (keystore, state, ledger, audit log): kept, a later install uses"
+        say "it again; or deleted for good:"
         grep "^data \|^userdata " "$MANIFEST" | cut -d' ' -f2- | sed 's/^/  /'
+        # Deleting it needs a person: PURGE=1 alone, without a terminal, deletes nothing.
         terminal || fail "PURGE=1 needs a terminal to confirm: nothing done"
-        printf 'Type delete to delete it: '
+        printf 'Type delete to delete it, Enter keeps it: '
         read -r typed || typed=
-        [ "$typed" = delete ] || fail "not confirmed: nothing done"
-        purge_answer=yes
+        case $typed in
+            delete) purge_answer=yes ;;
+            "") [ "$PURGE" != 1 ] || fail "not confirmed: nothing done" ;;
+            *) fail "not confirmed: nothing done" ;;
+        esac
+    fi
+    if [ "$DRY_RUN" != 1 ] && terminal; then
+        say "What the uninstall takes back, newest first (nothing is done yet):"
+        planned undo_all "$purge_answer"
+        confirm "Uninstall?" || {
+            say "Nothing changed."
+            return 0
+        }
     fi
 
     if [ "$repos_answer" = undo ]; then
@@ -238,10 +398,7 @@ do_uninstall() {
         fi
     fi
     step "Taking back what the install made, newest first"
-    lines=$(sed '1!G;h;$!d' "$MANIFEST")
-    printf '%s\n' "$lines" | while IFS= read -r line; do
-        undo_line "$line" "$purge_answer"
-    done
+    undo_all "$purge_answer"
     as_root rm -f "$MANIFEST"
     setup_finish_uninstall
     say "Uninstalled."
@@ -285,6 +442,14 @@ repos_question() {
     esac
 }
 
+# Takes back every manifest line, newest first (<purge>: yes deletes the daemon's data).
+undo_all() {
+    lines=$(sed '1!G;h;$!d' "$MANIFEST")
+    printf '%s\n' "$lines" | while IFS= read -r line; do
+        undo_line "$line" "$1"
+    done
+}
+
 # Takes back one manifest line: its kind, then its path (and for a line in a file, a tab
 # and the line).
 undo_line() {
@@ -315,7 +480,7 @@ undo_line() {
             if [ "$2" = yes ]; then
                 as_root rm -rf "$path"
             else
-                say "  kept (the daemon's data; PURGE=1 deletes it): $path"
+                say "  kept (the daemon's data; the uninstall deletes it once you type delete): $path"
             fi
             ;;
         userfile) as_user rm -f "$path" ;;

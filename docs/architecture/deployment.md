@@ -102,7 +102,9 @@ Built in [M7.1](../history/m7.1-local-mode-on-linux.md).
 ## Installing and uninstalling
 
 One installer for every setup: `make install` asks which setup to install, offering only
-those this build has on this OS (`SETUP=<name>` answers without asking), and
+those this build has on this OS, each said in a line; the installer is guided
+([conventions](../conventions.md#installers-are-guided): every choice asked, the changes
+listed, nothing done before a confirmation; variables answer without a terminal), and
 `make uninstall` takes back whichever was installed.
 
 | Setup | Where | What it installs | Built in |
@@ -115,7 +117,9 @@ those this build has on this OS (`SETUP=<name>` answers without asking), and
 Every setup shares the same frame (`deploy/install.sh`, `deploy/frame.sh`; each setup a file of
 its own in `deploy/setups/`, whose header names it, its OS and its manifest's path):
 
-- `DRY_RUN=1` lists every change and makes none.
+- Guided: the setup and each setup's own questions asked (`setup_questions`), then the
+  answers and every change in order (the dry run's list), then one confirmation; `DRY_RUN=1`
+  lists the changes and makes none.
 - The installer runs as my user and asks `sudo` only for the steps that need root; secrets
   (the keystore's passphrase) are asked on the terminal, never stored or passed as an
   argument.
@@ -126,8 +130,10 @@ its own in `deploy/setups/`, whose header names it, its OS and its manifest's pa
   own (anything else is named and left as it is).
 - Run again, it upgrades: new binaries (or image), the daemon restarted in order, the
   keystore, state, configuration and pins kept.
-- `make uninstall` keeps the daemon's data (keystore, state, ledger, audit log, or the Docker
-  volumes) unless `PURGE=1` is confirmed on the terminal. On a machine where agents work, it
+- `make uninstall` asks whether to delete the daemon's data (keystore, state, ledger, audit
+  log, or the Docker volumes): kept on Enter, deleted once `delete` is typed (`PURGE=1`
+  without a terminal is refused: a deletion needs a person); then lists what it takes back
+  and asks for the go. On a machine where agents work, it
   lists the repos `writ init` wired (`~/.writ/repos`) and asks whether to take Writ out of
   them too: yes runs `writ init --undo` in each, as my user; no leaves them wired and names
   them. With no terminal, `REPOS=undo` or `REPOS=keep` answers, or it refuses.

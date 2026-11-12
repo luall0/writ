@@ -374,7 +374,8 @@ fn the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_
     // On a terminal, the setup is asked.
     let mut asked = fake.command("install", &[("DRY_RUN", "1")]);
     asked.env("APPROVER", &fake.approver);
-    let (status, shown) = on_terminal(asked, &["local", ""]);
+    // The setup, then this setup's two questions (Enter: software).
+    let (status, shown) = on_terminal(asked, &["local", "", ""]);
     assert!(status.success(), "{shown}");
     assert!(
         shown.contains("Which setup? Offered on Darwin: local"),
@@ -549,10 +550,13 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
     );
     let (status, shown) = on_terminal(
         fake.command("uninstall", &[("PURGE", "1"), ("REPOS", "keep")]),
-        &["delete"],
+        &["delete", "y"],
     );
     assert!(status.success(), "{shown}");
-    assert!(shown.contains("Type delete to delete it:"), "{shown}");
+    assert!(
+        shown.contains("Type delete to delete it, Enter keeps it:"),
+        "{shown}"
+    );
     assert_eq!(fake.tree(), before);
     assert_eq!(
         fake.home(),
@@ -826,7 +830,7 @@ fn on_linux_an_install_upgrades_and_uninstalls_leaving_the_machine_as_before() {
     // PURGE=1 on a terminal: everything gone.
     let (status, shown) = on_terminal(
         fake.command("uninstall", &[("PURGE", "1"), ("REPOS", "keep")]),
-        &["delete"],
+        &["delete", "y"],
     );
     assert!(status.success(), "{shown}");
     assert_eq!(fake.tree(), before);
@@ -880,4 +884,148 @@ fn git(repo: &Path, args: &[&str]) {
 
 fn config_of(repo: &Path) -> String {
     fs::read_to_string(repo.join(".git/config")).unwrap()
+}
+
+#[test]
+fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
+    let fake = Fake::new();
+    let before = fake.tree();
+    let approver = fake.approver.display().to_string();
+    // No variable at all: every answer typed. A path that isn't a key and a backend that
+    // isn't one are asked again; then no at the go.
+    let (status, shown) = on_terminal(
+        fake.command("install", &[]),
+        &[
+            "",
+            "/nonexistent/key.pub",
+            &approver,
+            "yubikey",
+            "",
+            "",
+            "n",
+        ],
+    );
+    assert!(status.success(), "{shown}");
+    let shown = fake.shown(&shown);
+    for said in [
+        "Writ's installer: a few questions, then every change it will make, then your go.",
+        "Which setup? Offered on Darwin: local",
+        "  local: the daemon on this Mac, under its own user, out of your reach; your agents run here",
+        "Setup [local]: ",
+        "Give the path to its public half, the .pub",
+        "Approval key (.pub): ",
+        "  /nonexistent/key.pub: not a readable file",
+        "se-cryptokit: in this Mac's Secure Enclave, which makes it and never lets it out",
+        "TLS key [software]: ",
+        "  yubikey: one of software se-cryptokit",
+        "Agent signing key [software]: ",
+        "Your answers:",
+        "  Setup: local (the daemon on this Mac",
+        &format!("  Approval key: {approver}"),
+        "  TLS key: software",
+        "  Agent signing key agent-01: Ed25519, in software",
+        "The changes, in order (none is made yet):",
+        "    (root) dscl . -create /Users/_writd UniqueID 450",
+        "agent-01: { use: signing, format: ssh, algorithm: ed25519 }",
+        "/opt/writ/bin/writd init /var/db/writ/writd.yaml --tls-backend software",
+        "Install? [y/N] ",
+        "Nothing changed.",
+    ] {
+        assert!(shown.contains(said), "{said:?} not in:\n{shown}");
+    }
+    assert_eq!(fake.tree(), before, "nothing made before the go");
+    assert!(!fake.calls().contains("-create"), "{}", fake.calls());
+
+    // The same answers and yes: installed, the passphrase asked by writd init.
+    let (status, shown) = on_terminal(
+        fake.command("install", &[]),
+        &[
+            "",
+            &approver,
+            "",
+            "",
+            "y",
+            "an installer test passphrase",
+            "an installer test passphrase",
+        ],
+    );
+    assert!(status.success(), "{shown}");
+    let shown = fake.shown(&shown);
+    assert!(
+        shown.contains("keystore made: /var/db/writ/keys"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("signing key agent-01: ssh-ed25519 "),
+        "{shown}"
+    );
+    let policy = fs::read_to_string(fake.at("/var/db/writ/policy.yaml")).unwrap();
+    assert!(
+        policy.contains("  agent-01: { use: signing, format: ssh, algorithm: ed25519 }\n"),
+        "{policy}"
+    );
+
+    // The uninstall, guided too: what it takes back shown, no at its go changing nothing,
+    // then yes, the data kept (Enter at the question).
+    let installed = fake.tree();
+    let (status, shown) = on_terminal(fake.command("uninstall", &[]), &["", "n"]);
+    assert!(status.success(), "{shown}");
+    assert!(
+        shown.contains("Type delete to delete it, Enter keeps it: "),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("What the uninstall takes back, newest first (nothing is done yet):"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("Uninstall? [y/N] ") && shown.contains("Nothing changed."),
+        "{shown}"
+    );
+    assert_eq!(fake.tree(), installed);
+    let (status, shown) = on_terminal(fake.command("uninstall", &[]), &["", "y"]);
+    assert!(status.success(), "{shown}");
+    assert!(shown.contains("Uninstalled."), "{shown}");
+    assert!(
+        fake.at("/var/db/writ/keys/identity.age").exists(),
+        "the data kept"
+    );
+}
+
+#[test]
+fn without_a_terminal_each_answer_is_a_variable_checked_like_a_typed_one() {
+    let fake = Fake::new();
+    let before = fake.tree();
+    for (name, value, why) in [
+        (
+            "TLS_BACKEND",
+            "yubikey",
+            "TLS_BACKEND=yubikey: one of software se-cryptokit",
+        ),
+        (
+            "AGENT_BACKEND",
+            "tpm",
+            "AGENT_BACKEND=tpm: one of software se-cryptokit",
+        ),
+    ] {
+        refused(&fake.install(&[(name, value)]), why);
+        assert_eq!(fake.tree(), before, "{name}: nothing made");
+    }
+    refused(
+        &fake.install(&[("APPROVER", "/nonexistent/key.pub")]),
+        "APPROVER=/nonexistent/key.pub: not a readable file",
+    );
+    // The Secure Enclave for both, as a dry run shows it.
+    let said = fake.shown(&ok(&fake.install(&[
+        ("DRY_RUN", "1"),
+        ("TLS_BACKEND", "se-cryptokit"),
+        ("AGENT_BACKEND", "se-cryptokit"),
+    ])));
+    for change in [
+        "agent-01: { use: signing, format: ssh, algorithm: p256, backend: se-cryptokit }",
+        "/opt/writ/bin/writd init /var/db/writ/writd.yaml --tls-backend se-cryptokit",
+    ] {
+        assert!(said.contains(change), "{change:?} not in:\n{said}");
+    }
+    assert_eq!(fake.tree(), before);
 }

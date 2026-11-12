@@ -1,4 +1,5 @@
 # writ-setup: local Darwin /Library/Application Support/Writ/install.manifest
+# writ-setup-about: the daemon on this Mac, under its own user, out of your reach; your agents run here
 # shellcheck shell=sh
 # shellcheck disable=SC2034 # CURRENT is the frame's (the step a failure names)
 #
@@ -87,30 +88,55 @@ check_prefix() {
     done
 }
 
-check_approver() {
-    [ -n "${APPROVER:-}" ] || fail "APPROVER=<your approval key's .pub> is needed (its public half: who may sign)"
-    [ -r "$APPROVER" ] || fail "APPROVER=$APPROVER: not a readable file"
-    grep -q 'PRIVATE KEY' "$APPROVER" && fail "APPROVER=$APPROVER is a private key: give its .pub"
-    case $(head -n 1 "$APPROVER") in
-        ssh-* | ecdsa-* | sk-*) ;;
-        *) fail "APPROVER=$APPROVER is not an SSH public key" ;;
-    esac
+# The setup's own questions, after the frame's (the setup, the approval key): where the TLS
+# key and the first agent signing key live. With the daemon's data kept from before, its
+# keystore and policy are kept: nothing more to ask.
+setup_questions() {
+    choose_approver
+    TLS_BACKEND=${TLS_BACKEND:-}
+    AGENT_BACKEND=${AGENT_BACKEND:-}
+    [ -d "$DATA" ] && return 0
+    if [ -z "$TLS_BACKEND" ] && terminal; then
+        say ""
+        say "The HTTPS approval API's key. This setup approves over a local socket, so HTTPS is"
+        say "off; the key is made anyway and serves it if you turn it on later."
+        say "  software: in the daemon's sealed keystore"
+        say "  se-cryptokit: in this Mac's Secure Enclave, which makes it and never lets it out"
+        say "writ admin tls rotate --backend moves it later either way."
+    fi
+    TLS_BACKEND=$(choose_one TLS_BACKEND "$TLS_BACKEND" "TLS key" software software se-cryptokit)
+    if [ -z "$AGENT_BACKEND" ] && terminal; then
+        say ""
+        say "Your agents' first commit signing key, agent-01: it signs every commit they make"
+        say "(you register its public half on your remote)."
+        say "  software: an Ed25519 key in the daemon's sealed keystore"
+        say "  se-cryptokit: a P-256 key in this Mac's Secure Enclave, never out of it"
+        say "writ admin key rotate --backend moves it later; writ admin key add makes more."
+    fi
+    AGENT_BACKEND=$(choose_one AGENT_BACKEND "$AGENT_BACKEND" "Agent signing key" software software se-cryptokit)
 }
 
-# Where the HTTPS approval API's TLS key is made (M7.5): TLS_BACKEND, or asked on a
-# terminal; software unless you choose this Mac's Secure Enclave. Checked before any change.
-choose_tls_backend() {
-    if [ -z "${TLS_BACKEND:-}" ] && terminal; then
-        say "The HTTPS approval API's TLS key (HTTPS is off in this setup; the key serves it if you"
-        say "turn it on later): software, or se-cryptokit (this Mac's Secure Enclave: the key never"
-        say "leaves it; writ admin tls rotate --backend moves it later either way)."
-        printf '%s' "TLS key backend [software]: "
-        read -r TLS_BACKEND || TLS_BACKEND=
+# The setup's answers, for the summary before the go.
+setup_answers() {
+    if [ -d "$DATA" ]; then
+        say "  The daemon's data kept from before: its keystore and policy are used again"
+        return 0
     fi
-    TLS_BACKEND=${TLS_BACKEND:-software}
-    case $TLS_BACKEND in
-        software | se-cryptokit) ;;
-        *) fail "TLS_BACKEND=$TLS_BACKEND: software or se-cryptokit" ;;
+    say "  TLS key: $TLS_BACKEND"
+    say "  Agent signing key agent-01: $(agent_key_said)"
+}
+
+# agent-01 as the starting policy declares it, and as the summary says it.
+agent_key_yaml() {
+    case $AGENT_BACKEND in
+        se-cryptokit) printf '%s' "{ use: signing, format: ssh, algorithm: p256, backend: se-cryptokit }" ;;
+        *) printf '%s' "{ use: signing, format: ssh, algorithm: ed25519 }" ;;
+    esac
+}
+agent_key_said() {
+    case $AGENT_BACKEND in
+        se-cryptokit) printf '%s' "P-256, in the Secure Enclave" ;;
+        *) printf '%s' "Ed25519, in software" ;;
     esac
 }
 
@@ -163,10 +189,11 @@ EOF
 }
 
 policy_yaml() {
-    cat <<'EOF'
-# The starting policy: no repository yet. Add keys, hosts, repos and templates with
-# `writ admin` (docs/operators/policy-yaml.md).
-keys: {}
+    cat <<EOF
+# The starting policy: your agents' first signing key, no repository yet. Add keys, hosts,
+# repos and templates with \`writ admin\` (docs/operators/policy-yaml.md).
+keys:
+  agent-01: $(agent_key_yaml)
 upstream_hosts: {}
 repos: {}
 templates: {}
@@ -197,9 +224,7 @@ EOF
 }
 
 setup_install() {
-    check_approver
     preflight
-    [ -d "$DATA" ] || choose_tls_backend
 
     step "The installer's own directory and manifest ($MANIFEST)"
     as_root install -d -m 0755 "$APP"

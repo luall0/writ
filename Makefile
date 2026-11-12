@@ -133,12 +133,11 @@ hooks:
 	@sh tool/install-hooks.sh
 	@echo "pre-push allows only a tree make ci passed on (make push runs both)"
 
-# The installer (deploy/install.sh, docs/operators/install.md): the release binaries built as
-# you, then a setup installed, `local` on the Mac (SETUP=local answers its question; DRY_RUN=1
-# lists every change and makes none; APPROVER=<your approval key's .pub>; on the Mac,
-# TLS_BACKEND=software|se-cryptokit answers where the HTTPS key is made). Run again, it
-# upgrades. `make uninstall` takes back what it made (PURGE=1 the daemon's data too, confirmed
-# on the terminal; REPOS=undo|keep answers the question about the repositories writ init wired).
+# The installer (deploy/install.sh, docs/operators/install.md), guided: the release binaries
+# built as you, then every choice asked on the terminal (the setup, your approval key, on the
+# Mac where the HTTPS key and the first agent key are made), the changes listed, nothing done
+# before your go. Run again, it upgrades. `make uninstall` asks the same way. Without a
+# terminal, variables answer (install.md, "Without a terminal").
 install:
 	cargo build --release --locked $(BINARIES)
 	sh tool/build-writ-se.sh target/release

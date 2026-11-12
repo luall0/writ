@@ -330,6 +330,13 @@ user at its start ([decision log](decisions.md), 2026-11-12, M7.5).
     printed or `writd tls-fingerprint` on the host. After a suspected copy of the boot tier,
     the advice is to re-pin from the host, not from the reply (a copy of the old key could
     answer for the daemon): recorded in the [threat model](threat-model.md).
+- **The installer guided** (asked by the user while building it): `make install` asks every
+  choice on the terminal (the setup, the approval key, and on a Mac where the TLS key and a
+  first agent signing key `agent-01` are made), each said in plain words, a wrong answer asked
+  again; then the answers and every change, and nothing done before `Install?`. The upgrade
+  and the uninstall ask the same way (the data's deletion typed out). The variables stay for
+  scripts and tests, listed apart in the guide. A rule of the
+  [conventions](conventions.md#installers-are-guided).
 - `make ci` on the Mac builds `writ-se` and runs the contract suite on the real Secure
   Enclave (a Mac without one fails it, naming why); Linux CI runs the helper signer against
   the fake helper. The local macOS setup of the installer installs `writ-se`.
@@ -351,6 +358,10 @@ Acceptance:
       old pin is refused; `writ admin tls rotate` refused on a replay, on a stale
       `replaces`, by a non-approver; scenario in `make e2e` (software to software, on Linux).
 - [ ] Going back to the software backend is a policy change only.
+- [ ] The guided installer: with no variable, every question asked (a wrong approval key and
+      an unknown backend asked again), the summary listing every change, `n` leaving the
+      machine as it was, `y` installing with the answers; the uninstall asked the same way;
+      without a terminal each variable checked like a typed answer.
 - [ ] From the CLI alone: `writ admin key add … backend=se-cryptokit` (and its guided flow
       offering the daemon's backends), `writ admin key rotate --backend` both ways, the key
       given to a template and a repo; `backend` refused by `set`; a backend the daemon lacks
@@ -436,11 +447,12 @@ for what they add), run on the user's Mac, with `sudo` and Touch ID. What it fin
 here, each fix with its test.
 
 Acceptance:
-- [ ] On a Mac without Writ, `make install` (the `local` setup picked at its question, then
-      with `SETUP=local`) then `writ unseal` gives a working local daemon with nothing else
-      done by hand; `DRY_RUN=1` lists exactly what the install then makes; a second
-      `make install` upgrades the binaries and keeps the keystore, state and pins; a
-      `SETUP` this OS doesn't offer is refused with the list.
+- [ ] On a Mac without Writ, the guided `make install` (every question answered at the
+      prompt: the `local` setup, the approval key, the Secure Enclave for the TLS key and
+      `agent-01`) then `writ unseal` gives a working local daemon with nothing else done by
+      hand; the summary before the go lists exactly what the install then makes, and `n`
+      there changes nothing; a second `make install` upgrades the binaries and keeps the
+      keystore, state and pins.
 - [ ] An agent under `writ run -- <agent>` works on a real repository through the local
       daemon (the GitHub throwaway repository of the manual checks): its lease bound to
       `/opt/writ/bin/writ` (signed `dev.writ.writ`), refused from outside the session, revoked
@@ -453,8 +465,8 @@ Acceptance:
 - [ ] The recovery guide's macOS steps run as written.
 - [ ] `make uninstall` leaves the Mac as before the install (the role user, the
       LaunchDaemon, the binaries, the directories and `~/.writ/`'s pins gone, checked
-      against a listing taken before), the daemon's data kept unless `PURGE=1` is
-      confirmed; the repositories `writ init` wired taken back when asked.
+      against a listing taken before), the daemon's data kept unless `delete` is typed at
+      its question; the repositories `writ init` wired taken back when asked.
 
 ## M8 — Detached deployment
 
@@ -488,12 +500,13 @@ LAN or VPN.
   stack started. It ends by printing what each client pins (the host key, the TLS
   fingerprint) and the `make install` to run on them. Upgrading rebuilds the image and
   restarts the stack in order, the volumes kept. `make uninstall` takes the stack down and
-  removes the image and the files it made, the volumes kept unless `PURGE=1` is confirmed.
+  removes the image and the files it made, the volumes kept unless `delete` is typed at its
+  question. Guided like the `local` setup ([conventions](conventions.md#installers-are-guided)).
 - **The installer's `client` setup**, on each machine that uses a detached daemon (the
   approver's Mac, an agent VM): `writ` and `writ-sign` on the `PATH`, `~/.writ/` with the
-  daemon's endpoints, its host key and TLS certificate pinned (asked for, or given as
-  `WRIT_URL`, `HOST_KEY`, `TLS_PIN`, and checked against the daemon before anything is
-  written), and on the approver's machine (`APPROVER=<.pub>`) the approval key and the
+  daemon's endpoints, its host key and TLS certificate pinned (asked at the prompt, each
+  checked against the daemon before anything is written; variables answer without a
+  terminal), and on the approver's machine (asked whether it is one) the approval key and the
   reader key (`writ reader`), printing the line for the daemon's `readers`. `make uninstall`
   takes it back and asks the repos question as in M7.
 
@@ -510,14 +523,15 @@ Acceptance:
 - [ ] Q38 settled before building; if kept, a secret file planted or swapped in the keys
       directory (a key with its matching `.pub`, a token) stops the unseal, naming the file.
 - [ ] The recovery guide's Docker steps run as written, end to end (`make e2e`).
-- [ ] The first item above set up with the installer only: `SETUP=detached` on the homelab,
-      `SETUP=client` on the Mac and on the VM, nothing else by hand but `writ unseal` and
+- [ ] The first item above set up with the guided installer only: `detached` picked on the
+      homelab, `client` on the Mac and on the VM, nothing else by hand but `writ unseal` and
       the `readers` line; the setup question on each offers only what that OS can install.
-- [ ] `make e2e` sets its agents' containers up with `SETUP=client`, and its daemon from the
+- [ ] `make e2e` sets its agents' containers up with the `client` setup (its variables, no
+      terminal), and its daemon from the
       compose file and the `writd.yaml` the `detached` setup writes; a client given a host
       key or TLS pin the daemon doesn't have writes nothing and says why.
 - [ ] `make uninstall` takes each setup back, checked against a listing taken before: the
-      volumes kept unless `PURGE=1` is confirmed, the clients' repos question as in M7.
+      volumes kept unless `delete` is typed, the clients' repos question as in M7.
 
 ## M8.5 — Non-exportable session keys
 

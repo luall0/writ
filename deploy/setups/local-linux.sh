@@ -1,4 +1,5 @@
 # writ-setup: local Linux /etc/writ/install.manifest
+# writ-setup-about: the daemon on this machine, a systemd service under its own user; your agents run here
 # shellcheck shell=sh
 # shellcheck disable=SC2034 # CURRENT is the frame's (the step a failure names)
 #
@@ -65,14 +66,20 @@ check_prefix() {
     return 0
 }
 
-check_approver() {
-    [ -n "${APPROVER:-}" ] || fail "APPROVER=<your approval key's .pub> is needed (its public half: who may sign)"
-    [ -r "$APPROVER" ] || fail "APPROVER=$APPROVER: not a readable file"
-    grep -q 'PRIVATE KEY' "$APPROVER" && fail "APPROVER=$APPROVER is a private key: give its .pub"
-    case $(head -n 1 "$APPROVER") in
-        ssh-* | ecdsa-* | sk-*) ;;
-        *) fail "APPROVER=$APPROVER is not an SSH public key" ;;
-    esac
+# The setup's own questions, after the frame's (the setup, the approval key). Software is
+# the only key backend on Linux: nothing more to choose.
+setup_questions() {
+    choose_approver
+}
+
+# The setup's answers, for the summary before the go.
+setup_answers() {
+    if [ -d "$DATA" ]; then
+        say "  The daemon's data kept from before: its keystore and policy are used again"
+        return 0
+    fi
+    say "  TLS key: software (the only backend on Linux)"
+    say "  Agent signing key agent-01: Ed25519, in software"
 }
 
 preflight() {
@@ -120,9 +127,10 @@ EOF
 
 policy_yaml() {
     cat <<'EOF'
-# The starting policy: no repository yet. Add keys, hosts, repos and templates with
-# `writ admin` (docs/operators/policy-yaml.md).
-keys: {}
+# The starting policy: your agents' first signing key, no repository yet. Add keys, hosts,
+# repos and templates with `writ admin` (docs/operators/policy-yaml.md).
+keys:
+  agent-01: { use: signing, format: ssh, algorithm: ed25519 }
 upstream_hosts: {}
 repos: {}
 templates: {}
@@ -185,7 +193,6 @@ EOF
 }
 
 setup_install() {
-    check_approver
     preflight
 
     step "The installer's own directory and manifest ($MANIFEST)"

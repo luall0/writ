@@ -208,6 +208,27 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   text goes through `display::block` or `display::cut`, each continuation behind the gutter;
   the terminal never wraps a row.
 
+## Installers are guided
+
+What sets a machine up (`make install`, `make uninstall`, each setup in `deploy/setups/`)
+is written for the person running it, who may not know Writ yet (asked by the user, M7.5):
+
+- **Every choice is asked on the terminal**, one question at a time, each with what it means
+  in plain words, the values it takes and what Enter keeps (`ask`, `choose_one`,
+  `choose_approver` in `deploy/frame.sh`). A wrong answer is said and asked again, never a
+  failure the person has to start over from. Nothing the person must know beforehand (a
+  variable, a flag, a path convention) is needed to get through.
+- **Nothing changes before one confirmation**: the answers and every change, in order (the
+  dry run's list, `planned`), then `Install?` / `Upgrade?` / `Uninstall?`. Anything but yes
+  leaves the machine as it was.
+- **Deleting for good is typed out** (`delete`), never a yes.
+- **Variables answer the same questions for scripts and tests** (no terminal), each checked
+  as a typed answer would be; the guide lists them apart ("Without a terminal"), never as the
+  way to install. A setup's question and its variable come together: `setup_questions` asks,
+  `setup_answers` says what was chosen.
+- Each setup says what it is in one line (`# writ-setup-about:`), shown where the setup is
+  chosen.
+
 ## Comments and docs
 
 - **Every public item that isn't obvious from its name and type has a doc comment**; contract

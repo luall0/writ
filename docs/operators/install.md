@@ -20,29 +20,30 @@ takes it all back.
 ## Install
 
 ```sh
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub
+make install
 ```
 
-It builds the release binaries, then asks `sudo` for each step that needs root, and asks
-you to choose the keystore's passphrase. Write the passphrase down somewhere safe: nothing
-opens the keystore without it.
+It builds the release binaries, then asks its questions, one at a time, each with what it
+means and what Enter keeps:
 
-To see every change before anything is done:
+1. **The setup**: the ones this machine can have, each said in a line (today, `local`).
+2. **Your approval key**: the path to its public half, the `.pub`. A path that isn't one is
+   asked again. The installer reads that file and nothing else of yours.
+3. On the Mac, **where the key of the HTTPS approval API is made**: `software`, or
+   `se-cryptokit`, the Mac's Secure Enclave, which makes the key and never lets it out. HTTPS
+   is off in this setup; the key serves it if you turn it on later.
+4. On the Mac, **where your agents' first signing key, `agent-01`, is made**: `software` (an
+   Ed25519 key) or `se-cryptokit` (a P-256 key in the Secure Enclave). On Linux it is an
+   Ed25519 key in software, the only backend there.
 
-```sh
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub DRY_RUN=1
-```
+Then it shows your answers and **every change it will make, in order**, and asks `Install?`.
+Nothing is done before you answer `y`; anything else leaves the machine as it was. It then
+asks `sudo` for each step that needs root, and asks you to choose the keystore's passphrase.
+Write the passphrase down somewhere safe: nothing opens the keystore without it.
 
-Without `SETUP`, it asks which setup to install, offering only the ones this machine can have.
-
-On the Mac it also asks where the key of the HTTPS approval API is made: `software` (Enter),
-or `se-cryptokit`, the Mac's Secure Enclave, which makes the key and never lets it out. HTTPS
-is off in this setup, but the key is there if you turn it on later, and `writ admin tls rotate
---backend` moves it either way. Without a terminal, `TLS_BACKEND` answers:
-
-```sh
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub TLS_BACKEND=se-cryptokit
-```
+Both choices can be changed later from your machine: `writ admin tls rotate --backend` moves
+the HTTPS key, `writ admin key rotate --backend` moves a signing key
+([Daily operations](sealing.md)).
 
 ## What it sets up
 
@@ -77,7 +78,8 @@ On Linux the service can hold one privilege, `CAP_SYS_PTRACE`, so the daemon can
 programs your agents run (Linux shows another user's programs only to a process that has it).
 Only a small helper of the daemon keeps it; the daemon itself drops it before it reads any key.
 
-The starting policy has no repository. You add them from your machine with `writ admin`.
+The starting policy declares your agents' first signing key, `agent-01`, and no repository.
+You add repositories from your machine with `writ admin`.
 
 ## After the install
 
@@ -93,10 +95,11 @@ The starting policy has no repository. You add them from your machine with `writ
 
 ## Upgrade
 
-Run `make install` again. It stops the daemon cleanly, replaces the binaries and starts it
-again. The keystore, the state, the configuration and your pins are kept. Unseal again
-afterwards. If `writ` changed, it says so: run `writ skill update --all` to update the agent
-skill in every repository `writ init` set up.
+Run `make install` again. It says what an upgrade does and lists its changes, then asks
+`Upgrade?`. Yes stops the daemon cleanly, replaces the binaries and starts it again. The
+keystore, the state, the configuration and your pins are kept. Unseal again afterwards. If
+`writ` changed, it says so: run `writ skill update --all` to update the agent skill in every
+repository `writ init` set up.
 
 ## If the install stops
 
@@ -110,13 +113,28 @@ on Linux): `make uninstall` takes it back.
 make uninstall
 ```
 
-It stops the daemon and removes everything the install made, and nothing else: on Linux, your
-membership of the `writ` group too.
+It asks its questions first, then lists what it takes back and asks `Uninstall?`. Nothing
+changes before you answer `y`. It stops the daemon and removes everything the install made,
+and nothing else: on Linux, your membership of the `writ` group too.
 
 - **The repositories `writ init` set up**: it lists them and asks whether to take Writ out of
-  them too. Answer before anything changes. Once `writ` is gone, only a new install can take
-  them back. Without a terminal, say it with `REPOS=undo` or `REPOS=keep`.
+  them too. Once `writ` is gone, only a new install can take them back.
 - **The daemon's data** (the keystore, the leases, the ledger, the audit log) and your reader
-  key are kept, so a later `make install` picks them up again. To delete them too, run
-  `make uninstall PURGE=1`: it lists what it deletes and asks you to type `delete`.
-- `DRY_RUN=1` lists what it would do and does nothing.
+  key: it lists them and asks. Enter keeps them, so a later `make install` picks them up
+  again; type `delete` to delete them for good.
+
+## Without a terminal
+
+For a script, each question has a variable that answers it, checked as an answer typed would
+be. With no terminal there is no summary and no `Install?`: the variables are the answers, so
+give every one.
+
+| Variable | Answers |
+|---|---|
+| `SETUP=local` | The setup |
+| `APPROVER=<path to the .pub>` | Your approval key |
+| `TLS_BACKEND=software\|se-cryptokit` | Where the HTTPS key is made (the Mac; `software` when left out) |
+| `AGENT_BACKEND=software\|se-cryptokit` | Where `agent-01` is made (the Mac; `software` when left out) |
+| `DRY_RUN=1` | Only list the changes, make none |
+| `REPOS=undo\|keep` | The uninstall's question about the repositories `writ init` set up |
+| `PURGE=1` | Delete the daemon's data at the uninstall: this one still needs a terminal, where you type `delete` |

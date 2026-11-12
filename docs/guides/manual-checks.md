@@ -281,14 +281,17 @@ sudo sh -c 'ls -la /opt /etc/paths.d /var/db /Library/LaunchDaemons /Library/Log
 ls -la ~/.writ >> ~/writ-before.txt 2>&1
 ```
 
-**2. Install**, the setup picked at its question, then again with `SETUP=local` (an upgrade):
+**2. Install**, guided: every question answered at the prompt, then again (an upgrade):
 
 ```sh
-make install DRY_RUN=1 APPROVER=~/.ssh/writ-approval.pub    # lists every change, makes none
-make install APPROVER=~/.ssh/writ-approval.pub               # asks the setup: local
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub   # an upgrade: the keystore kept
-make install SETUP=detached                                  # refused, the offered setups listed
+make install    # Enter (local), a wrong path then ~/.ssh/writ-approval.pub, se-cryptokit for
+                # the TLS key and for agent-01; the summary lists every change: answer n
+make install    # the same answers, then y: the passphrase asked, the keystore made
+make install    # an upgrade: its changes listed, y; the keystore kept
 ```
+
+Check that the summary named the Secure Enclave for both keys, and that `writ admin key list`
+shows `agent-01` as `signing ssh p256` once unsealed.
 
 **3. Unseal and use it.** In a new terminal: `writ unseal` (Touch ID), then add a repo from
 the [GitHub manual check](#a-throwaway-github-repo-m4)'s throwaway repository with
@@ -313,11 +316,11 @@ Reboot the Mac: after logging in, the daemon is running again (sealed): `writ un
 **6. Uninstall** and compare:
 
 ```sh
-make uninstall                      # lists the wired repos, asks: answer y
+make uninstall                      # the wired repos: y; the data: Enter (kept); its go: y
 sudo sh -c 'ls -la /opt /etc/paths.d /var/db /Library/LaunchDaemons /Library/Logs "/Library/Application Support"; dscl . -list /Users UniqueID; dscl . -list /Groups PrimaryGroupID' > ~/writ-after.txt
 ls -la ~/.writ >> ~/writ-after.txt 2>&1
 diff ~/writ-before.txt ~/writ-after.txt   # /var/db/writ (kept) and ~/.writ/reader; directory times aside
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub && make uninstall PURGE=1   # type delete
+make install && make uninstall      # installed as in step 2; then type delete, and y
 ```
 
 After the purge, the diff with `~/writ-before.txt` shows only directory times, and the
@@ -342,9 +345,9 @@ ls -la ~/.writ >> ~/writ-before.txt 2>&1
 **2. Install**, then again (an upgrade):
 
 ```sh
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub DRY_RUN=1   # lists every change, makes none
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub             # the passphrase asked
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub             # an upgrade: the keystore kept
+make install    # Enter (local), ~/.ssh/writ-approval.pub; the summary lists every change: n
+make install    # the same answers, then y: the passphrase asked, the keystore made
+make install    # an upgrade: its changes listed, y; the keystore kept
 ```
 
 **3. Unseal and use it.** Log in again (the `writ` group), then `writ unseal`, add a repo
@@ -376,11 +379,11 @@ sudo grep ^Cap /proc/"$(pgrep -x -f '/usr/local/bin/writd run /etc/writ/writd.ya
 **6. Uninstall** and compare:
 
 ```sh
-make uninstall                      # lists the wired repos, asks: answer y
+make uninstall                      # the wired repos: y; the data: Enter (kept); its go: y
 sudo sh -c 'ls -la /usr/local/bin /etc /etc/systemd/system /var/lib; getent passwd; getent group' > ~/writ-after.txt
 ls -la ~/.writ >> ~/writ-after.txt 2>&1
 diff ~/writ-before.txt ~/writ-after.txt   # /var/lib/writ (kept) and ~/.writ/reader; directory times aside
-make install SETUP=local APPROVER=~/.ssh/writ-approval.pub && make uninstall PURGE=1   # type delete
+make install && make uninstall      # installed as in step 2; then type delete, and y
 ```
 
 After the purge, the diff with `~/writ-before.txt` shows only directory times, and the
