@@ -5,6 +5,8 @@
 # - `agent`: an agent's host (another host, as in detached mode): `writ`, `writ-sign`, git and
 #   OpenSSH, a user `agent` (the agents, and the operator's own git) and a user `approver`
 #   (the approver's machine: `writ` and a throwaway ssh-agent holding the approval key).
+# - `local`: local mode on Linux, one machine: the daemon as `writd` on Unix sockets, the agent
+#   and the approver as `dev` (scenario 24).
 # - `runner`: the scenarios (crates/writ-e2e/tests/scenarios), driving the others through
 #   the Docker socket and Forgejo's API.
 # - `tls-front`: Forgejo over HTTPS (`https://forgejo-https:3443`), for the daemon's HTTPS
@@ -75,6 +77,24 @@ RUN useradd --create-home --shell /bin/sh agent \
 COPY --from=build /out/writ /out/writ-sign /usr/local/bin/
 USER agent
 WORKDIR /home/agent
+CMD ["sleep", "infinity"]
+
+FROM runtime AS local
+# Local mode on Linux (M7.1, scenario 24): one machine, the daemon as the system user `writd`
+# (started as its systemd unit starts it: `setpriv` with the ambient CAP_SYS_PTRACE its
+# process reader keeps), the agent and the approver as `dev`, in the `writ` group that opens
+# the sockets. nc (OpenBSD's, for `nc -U`: git over the socket), and strace and gdb to show
+# `dev` can't attach to the daemon.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends netcat-openbsd procps strace gdb \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd --system --user-group --no-create-home --home-dir /var/lib/writ \
+        --shell /usr/sbin/nologin writd \
+    && groupadd --system writ \
+    && useradd --create-home --shell /bin/sh --groups writ dev \
+    && install -d -m 0755 /etc/writ \
+    && install -d -m 0700 -o writd -g writd /var/lib/writ
+COPY --from=build /out/writd /out/writ /out/writ-sign /usr/local/bin/
 CMD ["sleep", "infinity"]
 
 FROM runtime AS runner

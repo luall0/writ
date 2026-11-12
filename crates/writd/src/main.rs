@@ -76,6 +76,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("hook", "pre-receive"),
     ("upstream-ssh", "<max bytes> <ssh> <args…>"),
     ("upstream-credential", "<socket> <get|store|erase>"),
+    // Started by `writd run` on Linux, never by hand (docs/architecture/platform.md).
+    ("proc-reader", ""),
 ];
 
 /// The usage text: one line per command.
@@ -85,7 +87,7 @@ fn usage() -> String {
         .enumerate()
         .map(|(i, (name, args))| {
             let lead = if i == 0 { "usage: " } else { "       " };
-            format!("{lead}writd {name} {args}")
+            format!("{lead}writd {name} {args}").trim_end().to_owned()
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -115,6 +117,9 @@ fn main() -> ExitCode {
                 .map(ExitCode::from)
                 .unwrap_or(ExitCode::FAILURE);
         }
+        // The process reader `writd run` starts on Linux: hardened first, quietly.
+        ["proc-reader"] => hardening::harden(hardening::Say::Refusals)
+            .and_then(|()| platform::serve_process_reader()),
         ["init", config] => hardening::harden(hardening::Say::Stderr)
             .and_then(|()| keystore::init(Path::new(config))),
         ["run", config] => run(Path::new(config)),
@@ -343,6 +348,9 @@ fn init_logging() {
 
 fn run(path: &Path) -> anyhow::Result<()> {
     init_logging();
+    // First: the process reader started while the capability it keeps is there, then every
+    // capability dropped (Linux; nothing elsewhere).
+    let process_reader = platform::start_process_reader()?;
     // Before any secret is read: a refused step stops the daemon here.
     hardening::harden(hardening::Say::Log)?;
     let config = Arc::new(Config::load(path)?);
@@ -378,7 +386,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
     runtime.block_on(async move {
         let mut signals = StopSignals::take()?;
         let mirror_config = mirror_config(&config, repos, pinned, ca_certs)?;
-        let platform = platform::build(&config).await?;
+        let platform = platform::build(&config, &process_reader).await?;
         let (boot, open) = match start {
             Start::Sealed(boot) => (boot, None),
             Start::Open(boot, opened) => (boot, Some(*opened)),
@@ -702,7 +710,7 @@ mod tests {
             .unwrap();
         for (name, args) in COMMANDS {
             // A fixed word is part of the command (`hook pre-receive`), a `<value>` isn't.
-            let feature = if args.starts_with('<') {
+            let feature = if args.is_empty() || args.starts_with('<') {
                 format!("writd {name}")
             } else {
                 format!("writd {name} {args}")

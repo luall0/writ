@@ -42,6 +42,14 @@ services:
   agent:
     build: { context: .., dockerfile: e2e/Dockerfile, target: agent }
     init: true
+  # Local mode on Linux (scenario 24): the daemon started as its systemd unit starts it, which
+  # needs CAP_SYS_PTRACE for its process reader (Docker drops it by default).
+  local:
+    build: { context: .., dockerfile: e2e/Dockerfile, target: local }
+    init: true
+    cap_add: [SYS_PTRACE]
+    ulimits:
+      memlock: -1
   runner:
     build: { context: .., dockerfile: e2e/Dockerfile, target: runner }
     profiles: [runner]

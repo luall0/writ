@@ -84,7 +84,7 @@ allow: [...] }`.
 | `transports.approvals.ssh` | Listeners | `[]` (off) | The approval API over SSH (`ssh://host:port`). Port `2223` |
 | `transports.approvals.https` | Listeners | `[]` (off) | The approval API over HTTPS, with the daemon's own pinned certificate. Port `8443`. `ssh` and `https` can't both be off: nothing could be approved |
 | `<listener>.tcp` | `host:port` | — | A TCP listener. Exactly one of `tcp` and `unix` |
-| `<listener>.unix` | Path | — | A Unix socket (local mode), at most 103 bytes; relative to `writd.yaml`'s directory. Its directory must already exist, owned by the daemon's user or root, and nobody but its owner may write it: it decides who can connect (on the Mac, `_writd:_writ` `0750`). The daemon makes the socket `0660` and replaces an old socket left there, never anything else. Needs `attestor: macos_process_chain`: the `network` attestor can't attest its callers, so it is refused at start |
+| `<listener>.unix` | Path | — | A Unix socket (local mode), at most 103 bytes; relative to `writd.yaml`'s directory. Its directory must already exist, owned by the daemon's user or root, and nobody but its owner may write it: it decides who can connect (on the Mac, `_writd:_writ` `0750`; on Linux, `/run/writ`, `writd:writ` `0750`, made by systemd). The daemon makes the socket `0660` and replaces an old socket left there, never anything else. Needs `attestor: macos_process_chain` or `linux_process_chain`: the `network` attestor can't attest its callers, so it is refused at start |
 | `<listener>.allow` | Addresses or CIDR ranges | — | Who may connect. [Rules](#allow) |
 
 ### `allow`
@@ -100,8 +100,8 @@ allow: [...] }`.
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
-| `attestor` | `network` or `macos_process_chain` | **required** | How the daemon identifies a caller beyond its certificate ([platform](../architecture/platform.md)). `network`: its source address (detached mode). `macos_process_chain` (local mode, macOS builds only): for a caller on a Unix socket, the processes it descends from as the kernel knows them, checked against a lease's `caller`; for a TCP caller, its source address only, so a lease with a `caller` refuses it |
-| `session_watcher` | `none` or `macos` | **required** | Whether a lease is revoked when its agent's session ends. `macos` (macOS builds only): a lease with a `caller` is revoked when that process ends. `none`: such a lease is never granted |
+| `attestor` | `network`, `macos_process_chain` or `linux_process_chain` | **required** | How the daemon identifies a caller beyond its certificate ([platform](../architecture/platform.md)). `network`: its source address (detached mode). `macos_process_chain` (local mode, macOS builds only) and `linux_process_chain` (local mode, Linux builds only): for a caller on a Unix socket, the processes it descends from as the kernel knows them, checked against a lease's `caller`; for a TCP caller, its source address only, so a lease with a `caller` refuses it. `linux_process_chain` needs Linux 6.5 or later and a `/proc` without `hidepid` (else the daemon doesn't start, and says which), and `CAP_SYS_PTRACE` at start to read the processes of other users than its own: the systemd unit gives it, and only the daemon's process reader keeps it ([deployment](../architecture/deployment.md#local-linux)) |
+| `session_watcher` | `none`, `macos` or `linux` | **required** | Whether a lease is revoked when its agent's session ends. `macos` (macOS builds only) and `linux` (Linux builds only, Linux 5.3 or later): a lease with a `caller` is revoked when that process ends. `none`: such a lease is never granted |
 
 ## Notifications
 

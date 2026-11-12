@@ -181,11 +181,14 @@ async fn listener(config: &TransportConfig) -> anyhow::Result<Listener> {
 }
 
 /// What the kernel says about a Unix socket's peer, on this OS: on macOS its audit token
-/// (user, group, pid and the pid's generation); elsewhere its user, group and pid.
+/// (user, group, pid and the pid's generation), on Linux its credentials and its pidfd (the
+/// generation its start time); elsewhere its user, group and pid.
 fn unix_peer() -> PeerReader {
     #[cfg(target_os = "macos")]
     return writ_platform_macos::peer::audit_token_peer;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    return writ_platform_linux::peer::pidfd_peer;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     return writ_platform::transport::unix::portable_peer;
 }
 
@@ -205,6 +208,81 @@ fn macos_watcher() -> anyhow::Result<Arc<dyn SessionWatcher>> {
     bail!("session_watcher macos is macOS's: this build is for another OS")
 }
 
+/// How the Linux attestor reads other users' processes, settled before anything else
+/// ([`start_process_reader`]). Empty on another OS.
+pub struct ProcessReader {
+    #[cfg(target_os = "linux")]
+    reader: Arc<dyn writ_platform_linux::read::ReadProcess>,
+}
+
+/// The first thing `writd run` does on Linux (docs/architecture/platform.md): started with
+/// `CAP_SYS_PTRACE` (the unit's `AmbientCapabilities`), it starts the process reader
+/// (`writd proc-reader`, this same binary) which alone keeps it; then it drops every
+/// capability it holds, before it reads a secret. Started without it (a development daemon
+/// running as its user), the attestor reads `/proc` itself, which reaches only this user's
+/// processes. On another OS, nothing.
+pub fn start_process_reader() -> anyhow::Result<ProcessReader> {
+    #[cfg(target_os = "linux")]
+    {
+        use writ_platform_linux::{caps, helper::Helper, read};
+        let reader: Arc<dyn read::ReadProcess> = if caps::passes_ptrace_on()? {
+            let me = std::env::current_exe()?;
+            let helper = Helper::spawn(&me, &["proc-reader"])?;
+            tracing::info!("the process reader started: it alone keeps CAP_SYS_PTRACE");
+            Arc::new(helper)
+        } else {
+            Arc::new(read::Direct::new(read::Host::Myself))
+        };
+        if caps::holds_any()? {
+            caps::drop_all()?;
+            tracing::info!("every capability dropped");
+        }
+        Ok(ProcessReader { reader })
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(ProcessReader {})
+}
+
+/// `writd proc-reader`: the process reader's side, on its stdin (a socket pair's end
+/// `writd run` holds). It keeps `CAP_SYS_PTRACE` alone, ends with its parent, and answers
+/// one process at a time until its stdin closes.
+pub fn serve_process_reader() -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    return Ok(writ_platform_linux::helper::serve_stdin()?);
+    #[cfg(not(target_os = "linux"))]
+    bail!("proc-reader is Linux's: this build is for another OS")
+}
+
+/// Local mode's attestor on Linux: the caller's process chain from `/proc`, read through
+/// `reader`, once the kernel and `/proc` are checked to give what it needs.
+fn linux_attestor(reader: &ProcessReader) -> anyhow::Result<Arc<dyn CallerAttestor>> {
+    #[cfg(target_os = "linux")]
+    {
+        writ_platform_linux::kernel::check_process_chain()
+            .map_err(|e| anyhow::anyhow!("attestor linux_process_chain: {e}"))?;
+        Ok(Arc::new(writ_platform_linux::attest::ProcessChain::new(
+            reader.reader.clone(),
+        )?))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = reader;
+        bail!("attestor linux_process_chain is Linux's: this build is for another OS")
+    }
+}
+
+/// Local mode's session watcher on Linux: pidfds.
+fn linux_watcher() -> anyhow::Result<Arc<dyn SessionWatcher>> {
+    #[cfg(target_os = "linux")]
+    {
+        writ_platform_linux::kernel::check_pidfds()
+            .map_err(|e| anyhow::anyhow!("session_watcher linux: {e}"))?;
+        Ok(Arc::new(writ_platform_linux::watch::PidfdWatcher::new()?))
+    }
+    #[cfg(not(target_os = "linux"))]
+    bail!("session_watcher linux is Linux's: this build is for another OS")
+}
+
 async fn listeners(configs: &[TransportConfig]) -> anyhow::Result<Vec<Listener>> {
     let mut built = Vec::new();
     for config in configs {
@@ -213,17 +291,19 @@ async fn listeners(configs: &[TransportConfig]) -> anyhow::Result<Vec<Listener>>
     Ok(built)
 }
 
-pub async fn build(config: &Config) -> anyhow::Result<Platform> {
+pub async fn build(config: &Config, reader: &ProcessReader) -> anyhow::Result<Platform> {
     let agents = listeners(&config.transports.agents).await?;
     let approvals_ssh = listeners(&config.transports.approvals.ssh).await?;
     let approvals_https = listeners(&config.transports.approvals.https).await?;
     let attestor: Arc<dyn CallerAttestor> = match config.attestor {
         AttestorConfig::Network => Arc::new(NetworkAttestor::new()),
         AttestorConfig::MacosProcessChain => macos_attestor()?,
+        AttestorConfig::LinuxProcessChain => linux_attestor(reader)?,
     };
     let watcher: Arc<dyn SessionWatcher> = match config.session_watcher {
         WatcherConfig::None => Arc::new(NoSessionWatcher::new()),
         WatcherConfig::Macos => macos_watcher()?,
+        WatcherConfig::Linux => linux_watcher()?,
     };
     let notifiers = Arc::new(LateNotifiers::default());
     for n in &config.notifiers {

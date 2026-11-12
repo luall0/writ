@@ -47,8 +47,8 @@ transports:
     https:
       - { tcp: "127.0.0.1:8443" }  # pin `writd tls-fingerprint writd.yaml` on the client
 
-attestor: network                  # network | macos_process_chain (local mode, M7)
-session_watcher: none              # none | macos (local mode, M7)
+attestor: network                  # network | macos_process_chain (local mode, M7) | linux_process_chain (M7.1)
+session_watcher: none              # none | macos (local mode, M7) | linux (M7.1)
 
 # Notifications (none by default): a Telegram bot.
 # notifiers:

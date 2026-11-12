@@ -232,19 +232,21 @@ impl Daemon {
         Self::launch(setup(policy, Some(&edit), false), approvals, "info")
     }
 
-    /// Local mode on the Mac: [`Daemon::start`] with a second agents' listener on a Unix
-    /// socket ([`Daemon::agents_socket`]), the macOS process chain attestor and the kqueue
-    /// session watcher. The TCP listeners stay (a TCP caller gets no process chain).
+    /// Local mode: [`Daemon::start`] with a second agents' listener on a Unix socket
+    /// ([`Daemon::agents_socket`]), this OS's process chain attestor and session watcher
+    /// (macOS: kqueue; Linux: pidfds, `/proc` read by the daemon itself, which runs as the
+    /// test's user). The TCP listeners stay (a TCP caller gets no process chain).
     pub fn start_local(policy: &str, approvals: Approvals) -> Self {
-        Self::start_with(policy, approvals, |yaml| {
+        let local = match std::env::consts::OS {
+            "linux" => "attestor: linux_process_chain\nsession_watcher: linux",
+            _ => "attestor: macos_process_chain\nsession_watcher: macos",
+        };
+        Self::start_with(policy, approvals, move |yaml| {
             yaml.replace(
                 "  agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }]",
                 "  agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }, { unix: run/agents.sock }]",
             )
-            .replace(
-                "attestor: network\nsession_watcher: none",
-                "attestor: macos_process_chain\nsession_watcher: macos",
-            )
+            .replace("attestor: network\nsession_watcher: none", local)
         })
     }
 

@@ -374,6 +374,7 @@ impl TransportConfig {
 pub enum AttestorConfig {
     Network,
     MacosProcessChain,
+    LinuxProcessChain,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,6 +382,7 @@ pub enum AttestorConfig {
 pub enum WatcherConfig {
     None,
     Macos,
+    Linux,
 }
 
 #[derive(Debug, Deserialize)]
@@ -528,7 +530,8 @@ impl Config {
                 if transport.unix.is_some() && matches!(config.attestor, AttestorConfig::Network) {
                     return Err(fail(format!(
                         "{name}[{i}].unix: the network attestor can't attest a Unix socket's \
-                         callers; local mode's attestor does (attestor: macos_process_chain)"
+                         callers; local mode's attestor does (attestor: macos_process_chain or \
+                         linux_process_chain)"
                     )));
                 }
             }
@@ -988,7 +991,8 @@ mod tests {
             assert!(
                 error.ends_with(&format!(
                     "{at}.unix: the network attestor can't attest a Unix socket's callers; \
-                     local mode's attestor does (attestor: macos_process_chain)"
+                     local mode's attestor does (attestor: macos_process_chain or \
+                     linux_process_chain)"
                 )),
                 "{error}"
             );

@@ -1,6 +1,8 @@
-//! Local mode on the Mac with the real daemon (M7): agents on a Unix socket, the macOS
-//! process chain attestor and the kqueue session watcher plugged into an unchanged core. On
-//! another OS these tests say so and pass: the Linux implementations come with M7.1.
+//! Local mode with the real daemon (M7 on the Mac, M7.1 on Linux): agents on a Unix socket,
+//! this OS's process chain attestor and session watcher plugged into an unchanged core. On
+//! Linux the daemon runs as the test's user and reads `/proc` itself (no process reader: the
+//! capability and other users are the end-to-end scenario's). On another OS these tests say
+//! so and pass.
 
 #![allow(
     clippy::unwrap_used,
@@ -52,14 +54,19 @@ const TICKET: &str = "repos:\n  demo:\n    operations: [fetch]\n    branches: [\
 
 /// Whether this OS has local mode's implementations in this build.
 fn local_mode_here() -> bool {
-    let here = std::env::consts::OS == "macos";
+    let here = matches!(std::env::consts::OS, "macos" | "linux");
     if !here {
         eprintln!(
-            "local mode on {} comes with M7.1: nothing to run",
+            "no local mode on {} in this build: nothing to run",
             std::env::consts::OS
         );
     }
     here
+}
+
+/// Whether this is the Mac (code signatures, launchd at the top of every chain).
+fn on_the_mac() -> bool {
+    std::env::consts::OS == "macos"
 }
 
 #[test]
@@ -83,7 +90,8 @@ fn a_ticket_over_the_unix_socket_carries_the_kernel_s_process_chain() {
     assert_eq!(status.code(), Some(0), "{out}{err}");
 
     // The submission's caller: `writ` first, as the kernel resolved it, then its ancestors
-    // up to launchd.
+    // (up to launchd on the Mac; on Linux up to the first one of another user, which the
+    // daemon running as the test's user can't read).
     let audit = daemon.audit();
     let submitted = audit_events(&audit, "submit", "allowed");
     let chain = submitted[0]["process_chain"].as_array().unwrap();
@@ -91,7 +99,12 @@ fn a_ticket_over_the_unix_socket_carries_the_kernel_s_process_chain() {
         .canonicalize()
         .unwrap();
     assert_eq!(chain[0], writ.to_str().unwrap(), "{chain:?}");
-    assert_eq!(chain.last().unwrap(), "/sbin/launchd", "{chain:?}");
+    if on_the_mac() {
+        assert_eq!(chain.last().unwrap(), "/sbin/launchd", "{chain:?}");
+    } else {
+        let test = std::env::current_exe().unwrap();
+        assert!(chain.contains(&test.to_str().unwrap().into()), "{chain:?}");
+    }
     // Over TCP, the same daemon has no chain to give.
     let request = daemon.request("tcp", TICKET);
     let out = daemon.run(&["refuse", &request.id, "-m", "Not this one"], "");
@@ -256,14 +269,15 @@ fn a_lease_bound_to_its_session_serves_inside_it_only_and_ends_with_it() {
         .unwrap_or_else(|| panic!("{first}"))
         .to_owned();
     // The approver sees the binding the daemon completed: the session's shell as the
-    // kernel names it (macOS's /bin/sh runs on as /bin/bash), by its pid, with its signature.
+    // kernel names it (macOS's /bin/sh runs on as /bin/bash, Debian's is dash), by its pid,
+    // with its signature on the Mac (Linux has none).
     let out = daemon.run(&["sign", &id, "--yes"], "");
     assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
     let shown = format!("{}{}", stdout(&out), stderr(&out));
     assert!(
-        shown.contains("caller             descends from /bin/")
+        shown.contains("caller             descends from /")
             && shown.contains(&format!("(pid {}, generation", root.pid()))
-            && shown.contains("signed com.apple."),
+            && shown.contains("signed com.apple.") == on_the_mac(),
         "{shown}"
     );
     let (said, status) = root.finish();
@@ -347,7 +361,8 @@ fn the_agent_workflow_runs_under_writ_run_against_the_local_daemon() {
     // Bound to `writ run` itself (its path wrapped on the approver's screen), by its pid.
     assert!(
         shown.contains("caller             descends from")
-            && shown.contains(&format!("writ (pid {}, generation", harness.pid())),
+            // Where the line wraps depends on the path's length.
+            && shown.contains(&format!("writ (pid {},", harness.pid())),
         "{shown}"
     );
     let (said, status) = harness.finish();

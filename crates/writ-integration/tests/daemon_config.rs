@@ -571,7 +571,8 @@ fn a_unix_listener_under_the_network_attestor_is_refused_at_start() {
     assert!(
         last.ends_with(
             "writd.yaml: transports.agents[0].unix: the network attestor can't attest a Unix \
-             socket's callers; local mode's attestor does (attestor: macos_process_chain)"
+             socket's callers; local mode's attestor does (attestor: macos_process_chain or \
+             linux_process_chain)"
         ),
         "{error}"
     );
@@ -579,26 +580,63 @@ fn a_unix_listener_under_the_network_attestor_is_refused_at_start() {
 
 #[test]
 fn what_this_build_does_not_have_is_refused_at_start() {
-    // Local mode's macOS implementations: in a macOS build only (M7). On the Mac they start
-    // (tests/local_mode.rs); elsewhere each is refused, naming why.
-    if std::env::consts::OS == "macos" {
-        eprintln!("the macOS implementations are this build's: tests/local_mode.rs runs them");
-        return;
+    // Local mode's implementations are each OS's own (macOS: M7, Linux: M7.1): a build for
+    // one refuses the other's at start, naming why. This OS's start (tests/local_mode.rs).
+    let others: &[(&str, &str, &str)] = match std::env::consts::OS {
+        "macos" => &[
+            (
+                "attestor: network",
+                "attestor: linux_process_chain",
+                "attestor linux_process_chain is Linux's",
+            ),
+            (
+                "session_watcher: none",
+                "session_watcher: linux",
+                "session_watcher linux is Linux's",
+            ),
+        ],
+        "linux" => &[
+            (
+                "attestor: network",
+                "attestor: macos_process_chain",
+                "attestor macos_process_chain is macOS's",
+            ),
+            (
+                "session_watcher: none",
+                "session_watcher: macos",
+                "session_watcher macos is macOS's",
+            ),
+        ],
+        _ => &[
+            (
+                "attestor: network",
+                "attestor: macos_process_chain",
+                "attestor macos_process_chain is macOS's",
+            ),
+            (
+                "attestor: network",
+                "attestor: linux_process_chain",
+                "attestor linux_process_chain is Linux's",
+            ),
+            (
+                "session_watcher: none",
+                "session_watcher: macos",
+                "session_watcher macos is macOS's",
+            ),
+            (
+                "session_watcher: none",
+                "session_watcher: linux",
+                "session_watcher linux is Linux's",
+            ),
+        ],
+    };
+    for (from, to, why) in others {
+        let error = Daemon::refused(POLICY, |yaml| yaml.replace(from, to));
+        assert_eq!(
+            error.lines().last().unwrap(),
+            format!("writd: {why}: this build is for another OS")
+        );
     }
-    let error = Daemon::refused(POLICY, |yaml| {
-        yaml.replace("attestor: network", "attestor: macos_process_chain")
-    });
-    assert_eq!(
-        error.lines().last().unwrap(),
-        "writd: attestor macos_process_chain is macOS's: this build is for another OS"
-    );
-    let error = Daemon::refused(POLICY, |yaml| {
-        yaml.replace("session_watcher: none", "session_watcher: macos")
-    });
-    assert_eq!(
-        error.lines().last().unwrap(),
-        "writd: session_watcher macos is macOS's: this build is for another OS"
-    );
 }
 
 /// M7: `<home>/config`, the client's settings file, gives the endpoints when no flag or
