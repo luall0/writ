@@ -847,6 +847,7 @@ fn process(pid: u32, generation: u64, exe: &str) -> ProcessRef {
         generation,
         executable: PathBuf::from(exe),
         code_identity: None,
+        unbindable: None,
     }
 }
 

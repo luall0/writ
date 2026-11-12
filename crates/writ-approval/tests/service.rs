@@ -97,6 +97,7 @@ fn in_sessions() -> CallerFacts {
         generation: 7,
         executable: PathBuf::from(executable),
         code_identity: None,
+        unbindable: None,
     };
     CallerFacts {
         source_addr: None,
@@ -731,6 +732,7 @@ fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
             generation: 7,
             executable: PathBuf::from("/usr/local/bin/harness"),
             code_identity: None,
+            unbindable: None,
         }]),
     };
     h.service

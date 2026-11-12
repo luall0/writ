@@ -51,6 +51,7 @@ fn a_binding_takes_the_kernel_s_process_within_the_bounds() {
             signing_id: "dev.writ.writ".to_owned(),
             team_id: None,
         }),
+        unbindable: None,
     };
     let at = format!("/{}", "a".repeat(MAX_EXECUTABLE_BYTES - 1));
     let ticket = from_chain(&[process(at.clone().into())]).unwrap();
@@ -74,6 +75,42 @@ fn a_binding_takes_the_kernel_s_process_within_the_bounds() {
         assert!(rejection.session);
         assert_eq!(rejection.reasons, [expected.to_owned()]);
     }
+}
+
+#[test]
+fn a_process_whose_path_doesn_t_name_its_program_is_never_a_session_s_root() {
+    use writ_core::caller::{MAX_UNBINDABLE_CHARS, ProcessRef};
+    let process = |pid: u32, unbindable: Option<String>| ProcessRef {
+        pid,
+        generation: 9,
+        executable: "/usr/local/bin/writ".into(),
+        code_identity: None,
+        unbindable,
+    };
+    // A sandboxed caller under a root on the host: bound to the root.
+    let why = Some("in another pid namespace than pid 1's".to_owned());
+    let ticket = from_chain(&[process(50, why.clone()), process(42, None)]).unwrap();
+    assert_eq!(ticket.subject.caller.unwrap().descends_from.pid, 42);
+    // The root itself elsewhere: refused, its reason said, bounded.
+    let rejection = from_chain(&[process(42, why)]).unwrap_err();
+    assert!(rejection.session);
+    assert_eq!(
+        rejection.reasons,
+        [
+            "caller.descends_from.pid: 42 can't be a session's root: in another pid namespace \
+          than pid 1's"
+                .to_owned()
+        ]
+    );
+    let long = "x".repeat(MAX_UNBINDABLE_CHARS + 1);
+    let rejection = from_chain(&[process(42, Some(long))]).unwrap_err();
+    assert_eq!(
+        rejection.reasons,
+        [format!(
+            "caller.descends_from.pid: 42 can't be a session's root: {}…",
+            "x".repeat(MAX_UNBINDABLE_CHARS)
+        )]
+    );
 }
 
 #[test]

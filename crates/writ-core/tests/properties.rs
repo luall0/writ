@@ -119,12 +119,14 @@ static OMEGA_CHAIN: std::sync::LazyLock<Vec<ProcessRef>> = std::sync::LazyLock::
             generation: 7,
             executable: PathBuf::from("/opt/writ/bin/writ"),
             code_identity: None,
+            unbindable: None,
         },
         ProcessRef {
             pid: 4242,
             generation: 118,
             executable: PathBuf::from(OMEGA),
             code_identity: None,
+            unbindable: None,
         },
     ]
 });
@@ -463,6 +465,7 @@ fn arb_facts() -> impl Strategy<Value = Facts> {
         generation,
         executable: PathBuf::from(exe),
         code_identity: None,
+        unbindable: None,
     };
     let chains = vec![
         None,
@@ -568,6 +571,7 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
             generation: 118,
             executable: PathBuf::from(OMEGA),
             code_identity: None,
+            unbindable: None,
         }]),
     ];
     (

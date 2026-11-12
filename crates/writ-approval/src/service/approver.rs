@@ -517,6 +517,7 @@ impl Service {
             generation: target.generation,
             executable: PathBuf::from(&target.executable),
             code_identity: target.code_identity.clone(),
+            unbindable: None,
         };
         let me = self.me.clone();
         let (lease_id, serial) = (lease.id.clone(), lease.cert_serial);

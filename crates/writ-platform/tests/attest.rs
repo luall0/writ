@@ -56,6 +56,7 @@ fn chain_facts() -> CallerFacts {
                 signing_id: "com.example.agent".to_owned(),
                 team_id: Some("ABCDE12345".to_owned()),
             }),
+            unbindable: None,
         }]),
     }
 }

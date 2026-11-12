@@ -27,7 +27,16 @@ pub struct ProcessRef {
     /// Resolved by the kernel, never from the process's own name or arguments.
     pub executable: PathBuf,
     pub code_identity: Option<CodeIdentity>,
+    /// Why the executable's path doesn't name this process's program in the daemon's view,
+    /// when it doesn't: on Linux, a process in another pid or mount namespace than the host's
+    /// (a container, a sandbox), or whose executable was deleted. Such a process can't be a
+    /// session's root (the binding is refused) and never matches a lease's process. `None`
+    /// on the host, and on a platform without namespaces (macOS).
+    pub unbindable: Option<String>,
 }
+
+/// The longest reason a [`ProcessRef::unbindable`] holds (an attestor's own words).
+pub const MAX_UNBINDABLE_CHARS: usize = 256;
 
 /// A code signature identity (macOS): the signing identifier and the team.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -82,7 +91,9 @@ pub const MAX_TEAM_ID_CHARS: usize = 64;
 
 impl ProcessMatch {
     fn matches(&self, process: &ProcessRef) -> bool {
-        process.pid == self.pid
+        // A process whose path doesn't name its program is never the one a lease names.
+        process.unbindable.is_none()
+            && process.pid == self.pid
             && process.generation == self.generation
             // Compared as written, byte for byte: `Path`'s comparison normalizes (`/usr//bin/`
             // equals `/usr/bin`), and a security check never compares loosely.
@@ -259,6 +270,7 @@ mod tests {
             generation: 1,
             executable: PathBuf::from(executable),
             code_identity: None,
+            unbindable: None,
         };
         let c = constraint("/usr/bin/agent");
         let facts = |executable: &str| CallerFacts {
@@ -266,6 +278,17 @@ mod tests {
             process_chain: Some(vec![process(executable)]),
         };
         assert_eq!(check(Some(&c), &facts("/usr/bin/agent")), Ok(()));
+        // A process whose path doesn't name its program never matches, even by every field.
+        let mut elsewhere = process("/usr/bin/agent");
+        elsewhere.unbindable = Some("in another mount namespace".to_owned());
+        let facts_elsewhere = CallerFacts {
+            source_addr: None,
+            process_chain: Some(vec![elsewhere]),
+        };
+        assert!(matches!(
+            check(Some(&c), &facts_elsewhere),
+            Err(CallerError::NotDescendant { .. })
+        ));
         // `Path` would call these equal; the check doesn't.
         for other in ["/usr//bin/agent", "/usr/bin/./agent", "/usr/bin/agent/"] {
             assert!(

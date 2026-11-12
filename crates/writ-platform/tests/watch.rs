@@ -24,6 +24,7 @@ fn process(pid: u32, generation: u64) -> ProcessRef {
         generation,
         executable: "/usr/bin/agent".into(),
         code_identity: None,
+        unbindable: None,
     }
 }
 

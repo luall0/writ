@@ -45,12 +45,14 @@ fn lifecycle() -> Vec<AuditEvent> {
                 generation: 1,
                 executable: PathBuf::from("/usr/local/bin/writ-sign"),
                 code_identity: None,
+                unbindable: None,
             },
             ProcessRef {
                 pid: 4242,
                 generation: 118,
                 executable: PathBuf::from("/Applications/Omega Code.app/Contents/MacOS/omega"),
                 code_identity: None,
+                unbindable: None,
             },
         ]),
     };
@@ -164,6 +166,43 @@ fn one_json_line_per_event() {
             .as_str()
             .unwrap()
             .contains("submit an amendment")
+    );
+}
+
+#[test]
+fn a_process_the_binding_can_t_take_is_said_beside_its_path_bounded() {
+    let process = |unbindable: Option<String>| ProcessRef {
+        pid: 7,
+        generation: 1,
+        executable: PathBuf::from("/usr/bin/git"),
+        code_identity: None,
+        unbindable,
+    };
+    let chain = |why: Option<String>| {
+        let event =
+            AuditEvent::new(t(0), EventKind::Fetch, Outcome::Allowed).caller(&CallerFacts {
+                source_addr: None,
+                process_chain: Some(vec![process(None), process(why)]),
+            });
+        event.process_chain.unwrap()
+    };
+    let why = "in another mount namespace (mnt:[4026532201])".to_owned();
+    assert_eq!(
+        chain(Some(why.clone())),
+        [
+            "/usr/bin/git".to_owned(),
+            format!("/usr/bin/git (unbindable: {why})"),
+        ]
+    );
+    let at = "w".repeat(writ_core::caller::MAX_UNBINDABLE_CHARS);
+    assert_eq!(
+        chain(Some(at.clone()))[1],
+        format!("/usr/bin/git (unbindable: {at})")
+    );
+    let past = format!("{at}w");
+    assert_eq!(
+        chain(Some(past))[1],
+        format!("/usr/bin/git (unbindable: {at}…)")
     );
 }
 

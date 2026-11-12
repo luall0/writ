@@ -98,6 +98,7 @@ impl ProcessChain {
             generation: u64::from(before.generation),
             executable,
             code_identity,
+            unbindable: None,
         };
         Ok((process, before))
     }

@@ -604,6 +604,12 @@ fn bind(
             "{pid} is not a process this submission descends from"
         )));
     };
+    if let Some(why) = &process.unbindable {
+        return Err(refused(format!(
+            "{pid} can't be a session's root: {}",
+            crate::text::shown(why, crate::caller::MAX_UNBINDABLE_CHARS)
+        )));
+    }
     let executable = process
         .executable
         .to_str()

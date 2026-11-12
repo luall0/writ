@@ -338,6 +338,7 @@ impl ProcessDriver for FakeWatcher {
             generation,
             executable: "/usr/bin/fake-agent".into(),
             code_identity: None,
+            unbindable: None,
         }
     }
 

@@ -432,12 +432,14 @@ fn session_watcher_unsupported<W: SessionWatcher + ?Sized>(watcher: &W) {
             generation: 0,
             executable: "/usr/bin/agent".into(),
             code_identity: None,
+            unbindable: None,
         },
         ProcessRef {
             pid: 1,
             generation: 1,
             executable: "/sbin/init".into(),
             code_identity: None,
+            unbindable: None,
         },
     ];
     let (tx, rx) = std::sync::mpsc::channel::<()>();

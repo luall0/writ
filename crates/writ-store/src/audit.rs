@@ -278,7 +278,17 @@ impl AuditEvent {
         self.process_chain = facts.process_chain.as_ref().map(|chain| {
             chain
                 .iter()
-                .map(|p| p.executable.to_string_lossy().into_owned())
+                .map(|p| {
+                    let executable = p.executable.to_string_lossy();
+                    match &p.unbindable {
+                        None => executable.into_owned(),
+                        // Said beside its path: a process the binding can't take.
+                        Some(why) => format!(
+                            "{executable} (unbindable: {})",
+                            writ_core::text::shown(why, writ_core::caller::MAX_UNBINDABLE_CHARS)
+                        ),
+                    }
+                })
                 .collect()
         });
         self
