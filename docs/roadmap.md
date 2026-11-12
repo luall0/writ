@@ -42,7 +42,7 @@ picked.
 | M6.2 | [Managing the daemon from the CLI](history/m6.2-managing-the-daemon-from-the-cli.md) ✅ | Every key declared in the signed policy, upstream host keys pinned by signed changes, repos naming their templates; `writ admin repo\|template\|key\|host` to read, add step by step and edit one field at a time, with no host access |
 | M7 | [Local mode on the Mac](history/m7-local-mode-on-the-mac.md) ✅ | macOS implementations plugged in: Unix socket, process chain, `writ run` binding a lease to the harness it starts, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
 | M7.1 | [Local mode on Linux](history/m7.1-local-mode-on-linux.md) ✅ | Linux implementations plugged in the same way: the peer's pidfd and a `/proc` process chain read by a capped helper, a pidfd watcher, a systemd service under its own user, the installer's Linux local setup, local mode in `make e2e` |
-| M7.2 | [Upstream proxies](#m72--upstream-proxies) | A repo's upstream reached through a named proxy (SOCKS5, Tor included, or HTTP CONNECT, with an optional password from the keystore), for remotes reachable only from some addresses; `writ admin proxy`, host scans through it |
+| M7.2 | [Upstream proxies](history/m7.2-upstream-proxies.md) ✅ | A repo's upstream reached through a named proxy (SOCKS5, Tor included, or HTTP CONNECT, with an optional password from the keystore), for remotes reachable only from some addresses; `writ admin proxy`, host scans through it |
 | M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
 | M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, unsealing with no passphrase |
 | M7.7 | [Local mode checked on the Mac](#m77--local-mode-checked-on-the-mac) | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
@@ -215,89 +215,10 @@ repository, `writ exec -C`, timings per set of repositories. `make ci` and `make
 
 ## M7.2 — Upstream proxies
 
-Some remotes answer only from given addresses (an office network, a VPN exit, a bastion), or
-only inside a network (a Tor onion service). A repo can name a **proxy** the daemon reaches its
-upstream through: every sync, push, notes push and host key scan for it goes through the
-proxy, and nothing else does. The forks were settled with the user at its start
-([decision log](decisions.md), 2026-11-12, M7.2).
-
-- **In the signed policy** (settled with the user): a fifth section, `proxies.<name>`, and
-  `repos.<name>.proxy` naming one. Changed like the rest of the policy, by a signed change from
-  the approver's machine, applied live (the repos using a proxy whose entry changes get their
-  mirrors reopened). `writ admin proxy list|show|add|edit|set|remove`, the generic entry
-  commands; `writ admin repo set <repo> proxy=<name>` (`proxy!` takes it off). A proxy a repo
-  names can't be removed.
-  - `proxies.<name>.url`: `socks5://[user@]host:port` or `http://[user@]host:port`, read
-    strictly (a plain host name or address, an explicit port, no path, query, fragment or
-    password: a password is a credential).
-  - `proxies.<name>.credential`: a key id, `use: upstream`, `kind: token` and `host` the
-    proxy's host: the password, added with `writ admin token <id>` like an upstream token.
-    Required with a user in the URL, refused without one. One key is a repo's credential or a
-    proxy's, never both. Missing from the keystore: the repos behind the proxy are refused,
-    naming the command that adds it, as an HTTPS token is.
-  - `proxies.<name>.connect_timeout`: how long reaching upstream through the proxy may take
-    (its handshake and the tunnel's opening), `30s` by default, 1s to 5m (an onion service
-    can take a minute).
-  - At most 64 proxies.
-- **Protocols** (settled with the user): **SOCKS5** (RFC 1928; with the credential, RFC 1929's
-  user and password) and **HTTP CONNECT** (with the credential, Basic `Proxy-Authorization`).
-  Only tunnels: never plain HTTP forwarding, so TLS (HTTPS upstreams) or SSH (with its pinned
-  host key) stays end to end, and the proxy sees ciphertext. **Tor** is a SOCKS5 proxy
-  (`socks5://127.0.0.1:9050`, or the Tor container's name): an `ssh://git@<name>.onion/…`
-  upstream with its onion host's key pinned, as the user's own `ProxyCommand nc -X 5 -x
-  127.0.0.1:9050` does. A `ProxyCommand`-like program run by the daemon is not offered (a
-  signed change would choose a program the daemon runs); it is a [backlog](backlog/README.md)
-  idea.
-- **The host's name is never resolved by the daemon** behind a proxy: the proxy resolves it
-  (SOCKS5's domain address type, CONNECT's `host:port`), so an onion name works and nothing
-  leaks to the daemon's DNS. Only the proxy's own host is resolved by the daemon.
-- **How each upstream gets there**: the daemon's one-operation SOCKS5 socket of M4.5
-  (`writ_mirror::proxy`) is what dials, through a **dialer** (direct, or through the repo's
-  proxy), still to the registry's host and port alone, still counting what upstream sends.
-  - `https://`: git's `http.proxy` is that socket, as today.
-  - `ssh://` behind a proxy: ssh's `ProxyCommand` is the daemon's own program, `writd
-    upstream-tunnel <socket> <host> <port>` (by absolute path, like the relay), which asks the
-    same one-operation socket for upstream and relays ssh's stream; the relay still wraps ssh
-    and caps it. Without a proxy, ssh connects as today (`ProxyCommand=none`).
-  - The host key scan (`writ admin host add|rescan --proxy <name>`; the guided `repo add` with
-    `proxy=` given scans through it) opens its handshakes through the dialer. The scan's
-    signed request names the proxy (`writ-scan/1` gains an optional `proxy`, absent when
-    there is none: the bytes of a scan without one don't change). A rescan defaults to the
-    proxy the host's repos share.
-- **What the proxy answers is untrusted**: the SOCKS5 replies read field by field (version,
-  status, an address of a known type and length), the HTTP response's head at most 8 KiB, its
-  status `200` only (a `407` says the credential was refused); any other answer, or none
-  within `connect_timeout`, refuses the operation with a reason naming the proxy, cut and
-  cleaned like everything upstream says. A failure reaches the audit line and the agent's
-  terminal (why the proxy refused), never the password.
-- **The password** is a secret like the token: read into memory wiped on drop, never
-  printed or logged, sent only to the proxy's host. Over SOCKS5 and plain HTTP it crosses the
-  network to the proxy in clear (both protocols' design): a proxy on the daemon's host or a
-  trusted network, or one that needs no password (restricted by address), is the advice; a
-  TLS link to the proxy is a [backlog](backlog/README.md) idea. Recorded in the
-  [threat model](threat-model.md).
-
-Acceptance:
-- [ ] The policy's `proxies` section and `repos.<name>.proxy`, with every bound refused on
-      both sides (scheme, user without credential and the reverse, credential of another use,
-      kind or host, a key shared with a repo, a proxy no one declared, a timeout out of
-      bounds, 65 proxies), and the canonical layout reading back to itself.
-- [ ] `writ admin proxy` list, show, add, edit, set, remove (refused while a repo names it);
-      `writ admin repo set <repo> proxy=…` and `proxy!`; the change applied live.
-- [ ] SOCKS5 and HTTP CONNECT, with and without the credential, for `ssh://` and `https://`
-      upstreams: syncs, pushes and notes go through the proxy, and the upstream's name is
-      resolved by the proxy alone (a name only the proxy's network knows).
-- [ ] The host key scan through a proxy (`--proxy`, and the guided `repo add`), signed with
-      the proxy named.
-- [ ] Hostile proxies: a wrong reply version, an unknown address type, a refusal, a `407`, an
-      endless head, silence past `connect_timeout`; each refuses with its reason, the
-      password in no message.
-- [ ] A missing password refuses the repo's operations naming `writ admin token`; added, it is
-      used at once.
-- [ ] `make e2e`: a scenario with a real SOCKS5 proxy (Dante) and a real HTTP proxy
-      (tinyproxy), each with a password, in front of a Forgejo name only they resolve; every new
-      command and flag in the registry.
-- [ ] The [manual check](guides/manual-checks.md): a repo behind Tor (an onion service).
+**Done.** Moved to [history/m7.2-upstream-proxies.md](history/m7.2-upstream-proxies.md): named
+proxies in the signed policy (SOCKS5, Tor among them, and HTTP CONNECT, an optional password
+from the keystore), the upstream's name resolved by the proxy alone, `writ admin proxy`, host
+key scans through a proxy, scenario 25 with real proxies.
 
 ## M7.5 — Secure Enclave signer on the Mac
 
