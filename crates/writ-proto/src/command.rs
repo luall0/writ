@@ -70,6 +70,13 @@ pub enum Command {
     /// and write access proven with nothing pushed, the mirror synced. Reply:
     /// [`UpstreamChecked`].
     RepoCheck { repo: RepoName },
+    /// `writ admin tls rotate`, first step: the HTTPS approval API's certificate in force
+    /// (its fingerprint and backend) and the daemon a `writ-tls/1` names. Reply:
+    /// [`TlsShown`].
+    TlsShow,
+    /// `writ admin tls rotate`: an approver's signed `writ-tls/1` ([`TlsRequest`] on stdin):
+    /// a new key and certificate, in force at once. Reply: [`TlsRotated`].
+    TlsRotate,
 }
 
 impl Command {
@@ -110,6 +117,8 @@ impl Command {
                 ("check", Some(repo)) => Some(Self::RepoCheck {
                     repo: repo.parse().ok()?,
                 }),
+                ("tls", Some("show")) => Some(Self::TlsShow),
+                ("tls", Some("rotate")) => Some(Self::TlsRotate),
                 _ => None,
             };
         }
@@ -166,6 +175,8 @@ impl Command {
             Self::ScanNonce => "writ admin scan-nonce".to_owned(),
             Self::Scan => "writ admin scan".to_owned(),
             Self::RepoCheck { repo } => format!("writ admin check {repo}"),
+            Self::TlsShow => "writ admin tls show".to_owned(),
+            Self::TlsRotate => "writ admin tls rotate".to_owned(),
         }
     }
 
@@ -203,6 +214,7 @@ impl Command {
     /// | admin keys | `GET /v1/keys` |
     /// | admin scan-nonce, admin scan | `GET /v1/scan`, `POST /v1/scan` |
     /// | admin check | `POST /v1/repos/<repo>/check` |
+    /// | admin tls (show, rotate) | `GET /v1/tls`, `POST /v1/tls` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request
@@ -228,6 +240,8 @@ impl Command {
             Self::ScanNonce => Some(("GET", "/v1/scan".to_owned())),
             Self::Scan => Some(("POST", "/v1/scan".to_owned())),
             Self::RepoCheck { repo } => Some(("POST", format!("/v1/repos/{repo}/check"))),
+            Self::TlsShow => Some(("GET", "/v1/tls".to_owned())),
+            Self::TlsRotate => Some(("POST", "/v1/tls".to_owned())),
         }
     }
 
@@ -265,6 +279,8 @@ impl Command {
             ("POST", ["repos", repo, "check"], None) => Self::RepoCheck {
                 repo: repo.parse().ok()?,
             },
+            ("GET", ["tls"], None) => Self::TlsShow,
+            ("POST", ["tls"], None) => Self::TlsRotate,
             _ => return None,
         };
         Some(command)

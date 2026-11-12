@@ -52,6 +52,10 @@ pub enum RefusalCode {
     Scan,
     /// An upstream check that can't run: a repo not in the registry, too many checks a minute.
     Check,
+    /// A TLS key rotation that can't be done (M7.5): not a `writ-tls/1` document, another
+    /// daemon's, a certificate no longer in force, a backend the daemon lacks, too many
+    /// rotations a minute, or the key or certificate not made.
+    Tls,
 }
 
 /// Why a request to the service failed. What a client may see is its `Display`; an internal

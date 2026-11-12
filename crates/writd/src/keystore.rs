@@ -5,6 +5,7 @@
 mod dev;
 mod init;
 mod sealed;
+pub mod tls;
 
 pub use init::init;
 
@@ -236,35 +237,11 @@ pub struct Keys {
 /// The HTTPS approval API's key id in its `Signer`.
 pub const TLS_KEY: &str = "tls-01";
 
-/// The HTTPS approval API's key (ECDSA P-256, for its `Signer`) and its certificate.
+/// The HTTPS approval API's key (ECDSA P-256, for its `Signer`: in software, or a device's)
+/// and its certificate.
 pub struct TlsKeyPair {
-    pub key: PrivateKey,
+    pub key: Material,
     pub cert_pem: String,
-}
-
-/// Makes the HTTPS approval API's key (written to `key_path`, 0600) and its self-signed
-/// certificate, signed through a `Signer` holding the key, as every handshake is later
-/// (written to `cert_path`, by `write_cert`). The key is moved into that signer, never copied.
-fn make_tls(
-    key_path: &Path,
-    cert_path: &Path,
-    write_cert: &dyn Fn(&Path, &str) -> anyhow::Result<()>,
-) -> anyhow::Result<String> {
-    use writ_crypto::keys::{KeyKind, generate};
-    let key = generate(KeyKind::P256)?;
-    write_private(
-        key_path,
-        key.to_openssh(writ_crypto::ssh_key::LineEnding::LF)?
-            .as_bytes(),
-    )?;
-    let id: KeyId = TLS_KEY.parse()?;
-    let signer: Arc<dyn writ_signer::Signer> = Arc::new(
-        writ_signer::software::SoftwareSigner::new([(id.clone(), key)])?,
-    );
-    let tls = writ_signer::tls::TlsSigner::new(signer, id)?;
-    let cert_pem = writ_crypto::tls::remote::self_signed(&tls)?;
-    write_cert(cert_path, &cert_pem)?;
-    Ok(cert_pem)
 }
 
 /// The daemon's keys, public halves: what the commands that print a key need. From the sealed
@@ -327,6 +304,14 @@ pub fn public(
             PublicKeys::of(&dev::boot(dir)?, &dev::keys(dir, declared, makers)?)
         }
         KeystoreConfig::Sealed(sealed) => sealed::public(sealed, declared),
+    }
+}
+
+/// Where the HTTPS approval API's key and certificate are, in the configured keystore.
+pub fn tls_files(config: &Config) -> tls::TlsFiles {
+    match &config.keystore {
+        KeystoreConfig::Dev(dir) => dev::tls_files(dir),
+        KeystoreConfig::Sealed(sealed) => sealed::tls_files(sealed),
     }
 }
 

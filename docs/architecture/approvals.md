@@ -270,6 +270,39 @@ Routes: `GET /v1/admin/<target>`, `POST /v1/admin` (SSH: `writ admin show <targe
 `writ admin apply`); `GET /v1/tokens/<id>`, `POST /v1/tokens` (SSH: `writ admin token show
 <id>`, `writ admin token apply`); `GET /v1/keys` (SSH: `writ admin keys`).
 
+## `writ admin tls rotate`
+
+The HTTPS approval API's key and its self-signed certificate (`tls-01` in the boot tier) are
+replaced by an approver's signed change, on a running, unsealed daemon (M7.5): `writ admin
+tls rotate [--backend <name>]`. The same command moves the key between backends (`software`,
+`se-cryptokit` on a Mac) and rotates it on its own.
+
+- `writ` asks `tls show` (`GET /v1/tls`, `TlsShown`): the daemon's host key fingerprint, the
+  certificate in force, its key's backend and the daemon's backends. A backend it doesn't
+  list, or one that makes no P-256 key, is refused before the signature is asked for.
+- The approver signs `writ-tls/1` (`{daemon, replaces, backend}`) in the `writ-approval`
+  namespace; `writ` sends it (`tls rotate`, `POST /v1/tls`, `TlsRequest`). The service decodes
+  it strictly, checks the signature against `approvers` and the daemon (refused `tls` or
+  `signature`), five a minute daemon-wide; one admin change at a time.
+- The daemon refuses it unless `replaces` is the certificate in force (so the same document
+  sent again rotates nothing), makes the new key on the backend (software: generated; a
+  device: `create_key` on a helper signer of its own), signs its certificate through it, and
+  writes the key, its public half (a device's) and the certificate beside the old ones as
+  `.new`, the certificate last. It builds the new identity from them (a failure drops them and
+  keeps the old), renames each over the old one, then puts it in force: every handshake from
+  then on gets the new certificate, the connections open keep theirs (the reply goes back
+  over the old one). A start finding a `.new` certificate finishes the renames; `.new` files
+  without one are dropped. One `admin` line (`TLS key rotated: certificate <old> replaced by
+  <new>, its key on backend <name>`, or `not rotated` with the reason), and the notifiers told.
+- **The pin:** over HTTPS, `writ` replaces the line for this daemon in `tls_pins` (only the
+  line that names it with the old pin, the file written whole then renamed), says so, and
+  connects again with the new pin; over SSH it prints the line to pin. Every other approver's
+  machine is refused until it re-pins, from that line or `writd tls-fingerprint` on the host.
+  The old certificate vouches for the new one in the reply: after a suspected copy of the
+  boot tier, re-pin from the host instead ([threat model](../threat-model.md#residual-risks-v1)).
+- `writd init --tls-backend <name>` makes the first key on that backend (the installer asks
+  it on a Mac).
+
 ## `writ unseal`
 
 A sealed daemon ([Flows § 7](../flows.md#7-daemon-startup-sealed)) answers only `writ info`

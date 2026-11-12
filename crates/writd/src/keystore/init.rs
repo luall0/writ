@@ -19,7 +19,7 @@ use writ_platform::{DataKey, Passphrase};
 use super::sealed::{Layout, seal, write_public};
 use writ_proto::KeyRole;
 
-use super::{PublicKeys, make_tls, of_role, private_dir, write_private};
+use super::{PublicKeys, of_role, private_dir, write_private};
 use crate::config::{Config, KeystoreConfig, SealedConfig};
 use crate::declared::Declarations;
 
@@ -27,8 +27,21 @@ use crate::declared::Declarations;
 /// cheap work factor in tests.
 pub type Enroll<'a> = &'a dyn Fn(&SealedConfig, &Passphrase, &DataKey) -> anyhow::Result<()>;
 
-pub fn init(path: &Path) -> anyhow::Result<()> {
+pub fn init(path: &Path, tls_backend: &str) -> anyhow::Result<()> {
     let config = Config::load(path)?;
+    // The backend the HTTPS approval API's key is made on (the Secure Enclave on a Mac, from
+    // the installer): one this daemon has, checked before anything is asked.
+    let tls_backend = crate::platform::BACKENDS
+        .iter()
+        .copied()
+        .find(|b| b.name() == tls_backend)
+        .ok_or_else(|| {
+            let names: Vec<&str> = crate::platform::BACKENDS.iter().map(|b| b.name()).collect();
+            anyhow::anyhow!(
+                "--tls-backend {tls_backend}: this daemon has no such backend (it has: {})",
+                names.join(", ")
+            )
+        })?;
     let KeystoreConfig::Sealed(sealed) = &config.keystore else {
         bail!(
             "{}: `writd init` makes a sealed keystore: set keystore.sealed (dir, boot)",
@@ -72,13 +85,20 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
     // Nothing is written before here.
     crate::keystore::private_dir(&config.state_dir)?;
     let store = writ_store::Store::open(&db)?;
+    // A device backend a key or the TLS key lives on answers before anything is made.
+    crate::platform::check_devices(&config, &declared)?;
+    let makers = crate::platform::makers(&config)?;
+    if tls_backend.is_device() {
+        makers.device(tls_backend)?;
+    }
     let made = make(
         sealed,
         &declared,
         &policy,
         &passphrase,
         &crate::platform::enroll,
-        &crate::platform::makers(&config)?,
+        tls_backend,
+        &makers,
     )?;
     // The keystore and the state are made together or not at all: a state that can't take
     // the files' first versions leaves the directories empty again, so `writd init` can run
@@ -165,6 +185,7 @@ pub fn make(
     policy: &PolicyConfig,
     passphrase: &Passphrase,
     enroll: Enroll<'_>,
+    tls_backend: crate::declared::Backend,
     makers: &super::Makers,
 ) -> anyhow::Result<Made> {
     refuse_existing(sealed)?;
@@ -187,9 +208,9 @@ pub fn make(
     // The boot tier: read at a sealed start.
     let host = generate(KeyKind::Ed25519)?;
     write_private(&layout.host(), host.to_openssh(LineEnding::LF)?.as_bytes())?;
-    let cert_pem = make_tls(&layout.tls_key(), &layout.tls_cert(), &|path, pem| {
-        write_public(path, pem)
-    })?;
+    let tls = super::sealed::tls_files(sealed);
+    tls.make(tls_backend, makers)?;
+    let cert_pem = writ_platform::fs::read_authority(&tls.cert, "the TLS certificate")?;
     let tls_fingerprint = writ_crypto::tls::fingerprint_pem(&cert_pem)?;
 
     // Sealed: each its own age file, its public half beside it.

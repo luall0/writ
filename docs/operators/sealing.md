@@ -63,6 +63,14 @@ writ admin key remove <id>                 # refused while something uses it
   a rotation. `writ admin key list` ends with the backends this daemon has.
 - `writ admin key add <id> … backend=se-cryptokit` declares a new key in the Secure Enclave;
   on a terminal, `add` asks for the backend when the daemon has more than one.
+- `writ admin tls rotate` gives the HTTPS approval API a new key and certificate, in force at
+  once. Add `--backend se-cryptokit` to make the key in the Mac's Secure Enclave, or
+  `--backend software` to come back. Run over HTTPS, it replaces your own pin and checks it;
+  over SSH, it prints the line to pin. Every other approver's `writ` is then refused until
+  its `~/.writ/tls_pins` holds the new line: print it with `writd tls-fingerprint writd.yaml`
+  on the daemon's host. If you think someone copied the daemon's boot tier, rotate, then
+  re-pin from that command on the host, not from what `writ` printed: a copy of the old key
+  could have answered for the daemon.
 - `writ admin host add <host>` and `writ admin host rescan <host>`: the daemon scans the
   host, you compare its keys with the ones the remote publishes, then a second signature
   pins them. For a host behind a [proxy](setup.md#a-remote-behind-a-proxy), add `proxy=<name>`

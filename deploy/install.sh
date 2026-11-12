@@ -3,6 +3,7 @@
 # `make install` and `make uninstall`:
 #
 #   deploy/install.sh install     SETUP=<name> DRY_RUN=1 APPROVER=<approval key .pub>
+#                                 TLS_BACKEND=software|se-cryptokit (the Mac's local setup)
 #   deploy/install.sh uninstall   DRY_RUN=1 PURGE=1 REPOS=undo|keep
 #
 # One frame for every setup (frame.sh: the choice of setup, the dry run, the manifest, the

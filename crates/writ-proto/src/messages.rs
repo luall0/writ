@@ -302,6 +302,42 @@ pub struct ScanNonce {
     pub nonce: BootNonce,
 }
 
+/// Reply to [`Command::TlsShow`](crate::Command::TlsShow): the HTTPS approval API's
+/// certificate in force, and what a `writ-tls/1` names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsShown {
+    /// The fingerprint of the daemon's SSH host key.
+    pub daemon: KeyFingerprint,
+    /// The certificate in force, as clients pin it.
+    pub fingerprint: writ_core::signed::CertFingerprint,
+    /// The backend its key is on.
+    pub backend: String,
+    /// The backends this daemon has, each with the algorithms it makes (a TLS key is P-256).
+    pub backends: Vec<BackendShown>,
+}
+
+/// Body of [`Command::TlsRotate`](crate::Command::TlsRotate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsRequest {
+    /// The canonical bytes of the `writ-tls/1` document.
+    pub document: String,
+    /// The approver's SSHSIG over them (namespace `writ-approval`).
+    pub signature: String,
+}
+
+/// Reply to [`Command::TlsRotate`](crate::Command::TlsRotate): the new certificate in force.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsRotated {
+    /// The certificate it replaced.
+    pub previous: writ_core::signed::CertFingerprint,
+    /// The new one, as clients pin it from now on.
+    pub fingerprint: writ_core::signed::CertFingerprint,
+    pub backend: String,
+}
+
 /// Body of [`Command::Scan`](crate::Command::Scan).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

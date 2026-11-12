@@ -35,6 +35,15 @@ make install SETUP=local APPROVER=~/.ssh/writ-approval.pub DRY_RUN=1
 
 Without `SETUP`, it asks which setup to install, offering only the ones this machine can have.
 
+On the Mac it also asks where the key of the HTTPS approval API is made: `software` (Enter),
+or `se-cryptokit`, the Mac's Secure Enclave, which makes the key and never lets it out. HTTPS
+is off in this setup, but the key is there if you turn it on later, and `writ admin tls rotate
+--backend` moves it either way. Without a terminal, `TLS_BACKEND` answers:
+
+```sh
+make install SETUP=local APPROVER=~/.ssh/writ-approval.pub TLS_BACKEND=se-cryptokit
+```
+
 ## What it sets up
 
 On the Mac:

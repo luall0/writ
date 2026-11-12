@@ -465,12 +465,37 @@ enum AdminCommand {
         #[command(subcommand)]
         command: EntryCommand,
     },
+    /// The HTTPS approval API's TLS key (M7.5).
+    Tls {
+        #[command(subcommand)]
+        command: TlsCommand,
+    },
     /// Add or replace the token ID (a token the policy declares, or a notifier's sealed
     /// token): asked for with no echo (or one line of stdin), encrypted here to the daemon's
     /// keystore, then one signature with your approval key. It is used at once.
     Token {
         /// The credential id.
         id: String,
+        /// Sign without asking (what is replaced is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+}
+
+/// `writ admin tls <verb>`.
+#[derive(Subcommand)]
+enum TlsCommand {
+    /// A new key for the HTTPS approval API, on BACKEND (the current one by default: the
+    /// same command rotates it), and its certificate, in force at once: one signature. Reached
+    /// over HTTPS, your pin is replaced; every other approver re-pins.
+    Rotate {
+        /// The backend the new key is made on (software, se-cryptokit: the daemon's).
+        #[arg(long)]
+        backend: Option<String>,
         /// Sign without asking (what is replaced is still shown first).
         #[arg(long)]
         yes: bool,
@@ -1319,6 +1344,27 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("token id {id:?}: {e}"))?;
             approver::admin_token(&paths, &url.get(&paths)?, &signer(&paths, args), &id, *yes).await
+        }
+        Commands::Admin {
+            command:
+                AdminCommand::Tls {
+                    command:
+                        TlsCommand::Rotate {
+                            backend,
+                            yes,
+                            url,
+                            signer: args,
+                        },
+                },
+        } => {
+            approver::admin_tls_rotate(
+                &paths,
+                &url.get(&paths)?,
+                &signer(&paths, args),
+                backend.as_deref(),
+                *yes,
+            )
+            .await
         }
         Commands::Unseal { url, signer: args } => {
             approver::unseal(&paths, &url.get(&paths)?, &signer(&paths, args)).await

@@ -68,7 +68,10 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 /// Every command `main` dispatches, with its arguments: the usage text, and the list the
 /// end-to-end coverage registry is checked against (docs/end-to-end.md).
 const COMMANDS: &[(&str, &str)] = &[
-    ("init", "<writd.yaml>"),
+    (
+        "init",
+        "<writd.yaml> [--tls-backend <software|se-cryptokit>]",
+    ),
     ("run", "<writd.yaml>"),
     ("recover", "<writd.yaml> <policy|approvers|readers> <file>"),
     ("host-key", "<writd.yaml>"),
@@ -128,8 +131,9 @@ fn main() -> ExitCode {
         // The process reader `writd run` starts on Linux: hardened first, quietly.
         ["proc-reader"] => hardening::harden(hardening::Say::Refusals)
             .and_then(|()| platform::serve_process_reader()),
-        ["init", config] => hardening::harden(hardening::Say::Stderr)
-            .and_then(|()| keystore::init(Path::new(config))),
+        ["init", config, rest @ ..] => {
+            hardening::harden(hardening::Say::Stderr).and_then(|()| init(Path::new(config), rest))
+        }
         ["run", config] => run(Path::new(config)),
         ["recover", config, target, file] => hardening::harden(hardening::Say::Stderr)
             .and_then(|()| recover::recover(Path::new(config), target, Path::new(file))),
@@ -160,6 +164,16 @@ fn host_key(path: &Path) -> anyhow::Result<()> {
             .to_openssh()?
     );
     Ok(())
+}
+
+/// `writd init <writd.yaml> [--tls-backend <name>]`.
+fn init(path: &Path, options: &[&str]) -> anyhow::Result<()> {
+    let backend = match options {
+        [] => "software",
+        [flag, backend] if *flag == "--tls-backend" => backend,
+        _ => bail!("usage: writd init <writd.yaml> [--tls-backend <software|se-cryptokit>]"),
+    };
+    keystore::init(path, backend)
 }
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
@@ -417,7 +431,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
             .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
             .to_string()
             .parse()?;
-        let tls = platform::tls_identity(boot.tls)?;
+        let tls = Arc::new(platform::tls_identity(&config, boot.tls)?);
         log_access(&loaded.approvers, &loaded.readers);
         let readers = writ_crypto::readers::ReaderSet::new(loaded.readers);
         let service = start_service(
@@ -458,6 +472,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
         )
         .await?;
         opener.set_gateway(gateway.clone());
+        opener.set_tls(tls.clone());
         let sealed = open.is_none();
         match open {
             Some(opened) => {

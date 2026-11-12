@@ -134,6 +134,16 @@ impl Daemon {
         Self::launch(setup(policy, None, true), approvals, "info")
     }
 
+    /// [`Daemon::start_sealed`], its HTTPS approval API's key made by `writd init` on
+    /// `tls_backend` (`--tls-backend`).
+    pub fn start_sealed_tls(policy: &str, approvals: Approvals, tls_backend: &str) -> Self {
+        Self::launch(
+            setup_tls(policy, None, true, Some(tls_backend)),
+            approvals,
+            "info",
+        )
+    }
+
     /// [`Daemon::start_sealed`] with the default `writd.yaml` edited by `edit`.
     pub fn start_sealed_with(
         policy: &str,
@@ -632,6 +642,16 @@ fn approval_url(approvals: Approvals, ssh: u16, https: u16) -> String {
 /// `writd.yaml` (edited by `edit`, which must change it); the daemon's upstream credential is
 /// authorized on the remote.
 fn setup(policy: &str, edit: Option<Edit<'_>>, sealed: bool) -> Setup {
+    setup_tls(policy, edit, sealed, None)
+}
+
+/// [`setup`], `writd init` given `--tls-backend <backend>` (a sealed keystore).
+fn setup_tls(
+    policy: &str,
+    edit: Option<Edit<'_>>,
+    sealed: bool,
+    tls_backend: Option<&str>,
+) -> Setup {
     crate::tools::require();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -713,6 +733,11 @@ fn setup(policy: &str, edit: Option<Edit<'_>>, sealed: bool) -> Setup {
         let mut init = Command::new(bin("writd"))
             .arg("init")
             .arg(root.join("writd.yaml"))
+            .args(
+                tls_backend
+                    .map(|b| vec!["--tls-backend", b])
+                    .unwrap_or_default(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

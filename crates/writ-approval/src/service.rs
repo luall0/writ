@@ -20,6 +20,7 @@ mod scan;
 mod sign;
 mod submissions;
 mod sweep;
+mod tls;
 mod token;
 mod unseal;
 
@@ -32,6 +33,7 @@ pub use submissions::{
     DEFAULT_SUBMISSIONS_IN_ALL, DEFAULT_SUBMISSIONS_PER_SOURCE, MAX_SUBMISSIONS_IN_ALL,
     MAX_SUBMISSIONS_PER_SOURCE, SubmissionLimits,
 };
+pub use tls::{CheckedTls, MAX_ROTATIONS_A_MINUTE};
 pub use token::CheckedToken;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};

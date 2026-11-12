@@ -2,8 +2,8 @@
 //! required when the daemon's `decisions` setting is `signed`; a proof, always required:
 //! the approver lets an agent signing key sign one message for a remote that asks for it
 //! before it shows commits as verified (Forgejo, Gitea); an unseal, which with the
-//! keystore's passphrase opens a sealed daemon; an admin change of an authority file; and a
-//! sealed token.
+//! keystore's passphrase opens a sealed daemon; an admin change of an authority file; a
+//! sealed token; and a rotation of the HTTPS approval API's TLS key (M7.5).
 //!
 //! Like a ticket, each is a [`Canonical`] document: canonical bytes, `kind` first, decoded only
 //! from exactly those bytes. The `kind` keeps one signed document from
@@ -238,6 +238,98 @@ impl Scan {
     }
 }
 
+/// Only `"writ-tls/1"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TlsKind {
+    #[default]
+    #[serde(rename = "writ-tls/1")]
+    V1,
+}
+
+/// A TLS certificate's fingerprint as clients pin it: `SHA256:` and the 43 characters of its
+/// digest in base64 without padding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CertFingerprint(String);
+
+/// Not a certificate fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a certificate fingerprint (SHA256: and 43 base64 characters)")]
+pub struct CertFingerprintError;
+
+impl CertFingerprint {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CertFingerprint {
+    type Error = CertFingerprintError;
+
+    fn try_from(value: String) -> Result<Self, CertFingerprintError> {
+        let digest = value.strip_prefix("SHA256:").ok_or(CertFingerprintError)?;
+        let base64 = |b: u8| b.is_ascii_alphanumeric() || b == b'+' || b == b'/';
+        if digest.len() == 43 && digest.bytes().all(base64) {
+            Ok(Self(value))
+        } else {
+            Err(CertFingerprintError)
+        }
+    }
+}
+
+impl std::str::FromStr for CertFingerprint {
+    type Err = CertFingerprintError;
+
+    fn from_str(s: &str) -> Result<Self, CertFingerprintError> {
+        Self::try_from(s.to_owned())
+    }
+}
+
+impl From<CertFingerprint> for String {
+    fn from(fingerprint: CertFingerprint) -> String {
+        fingerprint.0
+    }
+}
+
+impl std::fmt::Display for CertFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The approver asks one daemon (named by its SSH host key's fingerprint) to make a new key
+/// for its HTTPS approval API on `backend` (M7.5, `writ admin tls rotate`), with its
+/// self-signed certificate, in place of the certificate `replaces` (its fingerprint, as
+/// pinned). Once done, `replaces` names a certificate no longer in force: the same document
+/// sent again is refused, so a replay rotates nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsRotation {
+    pub kind: TlsKind,
+    pub daemon: KeyFingerprint,
+    pub replaces: CertFingerprint,
+    pub backend: crate::config::BackendName,
+}
+
+impl Canonical for TlsRotation {
+    const KIND: &'static str = "writ-tls/1";
+}
+
+impl TlsRotation {
+    pub fn new(
+        daemon: KeyFingerprint,
+        replaces: CertFingerprint,
+        backend: crate::config::BackendName,
+    ) -> Self {
+        Self {
+            kind: TlsKind::V1,
+            daemon,
+            replaces,
+            backend,
+        }
+    }
+}
+
 /// Only `"writ-admin/2"` (`writ-admin/1` named the version it replaced by its digest alone,
 /// so a change could be applied again once the text came back to that version).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -452,6 +544,59 @@ mod tests {
         assert_eq!(
             ProofMessage::try_from("é".repeat(2049)).unwrap_err(),
             ProofMessageError(4098)
+        );
+    }
+
+    #[test]
+    fn a_tls_rotation_is_pinned_strict_and_names_the_certificate_it_replaces() {
+        let daemon: KeyFingerprint = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+            .parse()
+            .unwrap();
+        let replaces: CertFingerprint = "SHA256:n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg"
+            .parse()
+            .unwrap();
+        let rotation = TlsRotation::new(
+            daemon,
+            replaces,
+            "se-cryptokit".to_owned().try_into().unwrap(),
+        );
+        let bytes = rotation.canonical_bytes().unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            r#"{"kind":"writ-tls/1","daemon":"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU","replaces":"SHA256:n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg","backend":"se-cryptokit"}"#
+        );
+        assert_eq!(TlsRotation::from_canonical(&bytes).unwrap(), rotation);
+        // Never another document, nor the other way round.
+        assert!(matches!(
+            Scan::from_canonical(&bytes),
+            Err(CanonicalError::Decode { .. })
+        ));
+        let revocation = Revocation::new(id(1)).canonical_bytes().unwrap();
+        assert!(matches!(
+            TlsRotation::from_canonical(&revocation),
+            Err(CanonicalError::Decode { .. })
+        ));
+        // Each field read strictly.
+        let text = String::from_utf8(bytes).unwrap();
+        for bad in [
+            text.replace("n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg", "short"),
+            text.replace("SHA256:n4bQ", "MD5:n4bQ"),
+            text.replace("+qgx", "-qgx"),
+            text.replace("se-cryptokit", "SE"),
+            text.replace(r#","backend":"se-cryptokit""#, ""),
+            text.replace(r#""}"#, r#"","extra":1}"#),
+        ] {
+            assert!(
+                matches!(
+                    TlsRotation::from_canonical(bad.as_bytes()),
+                    Err(CanonicalError::Decode { .. } | CanonicalError::NotCanonical { .. })
+                ),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            "SHA256:".parse::<CertFingerprint>(),
+            Err(CertFingerprintError)
         );
     }
 

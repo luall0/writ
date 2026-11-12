@@ -113,6 +113,7 @@ pub(crate) fn approval_has_body(command: &Command) -> bool {
             | Command::AdminApply
             | Command::TokenApply
             | Command::Scan
+            | Command::TlsRotate
     )
 }
 
@@ -174,6 +175,14 @@ pub(crate) async fn approval_reply(
             None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
         },
         Command::TokenApply => token_apply(gateway, facts, &body).await,
+        Command::TlsShow => match gateway.shared.config.admin.clone() {
+            Some(applier) => match applier.tls_show().await {
+                Ok(shown) => encoded(Ok(shown)),
+                Err(reason) => encoded::<()>(Err(ApiError::new(reason))),
+            },
+            None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
+        },
+        Command::TlsRotate => tls_rotate(gateway, facts, &body).await,
         Command::ScanNonce => encoded(blocking(move || service.scan_nonce()).await),
         Command::Scan => scan(gateway, facts, &body).await,
         Command::RepoCheck { repo } => check(gateway, facts, repo).await,
@@ -368,6 +377,46 @@ async fn token_apply(
     match applier.apply_token(checked, facts).await {
         Ok(applied) => encoded(Ok(applied)),
         Err(reason) => encoded::<()>(Err(ApiError::new(format!("not applied: {reason}")))),
+    }
+}
+
+/// `writ admin tls rotate` (M7.5): the service checks the `writ-tls/1` and its signature; the
+/// daemon checks it names the certificate in force and makes the new key and certificate, put
+/// in force at once (this connection keeps the one it was opened with). One admin change at a
+/// time; the outcome logged once, here (`admin`).
+async fn tls_rotate(
+    gateway: Gateway,
+    facts: CallerFacts,
+    body: &[u8],
+) -> (Vec<u8>, Option<String>) {
+    let request: writ_proto::TlsRequest = match writ_proto::decode_body(body) {
+        Ok(request) => request,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let Some(applier) = gateway.shared.config.admin.clone() else {
+        return encoded::<()>(Err(ApiError::new("this daemon takes no admin change")));
+    };
+    let _one = gateway.shared.administering.lock().await;
+    let (service, caller) = (gateway.service().clone(), facts.clone());
+    let checked = match blocking(move || service.check_tls(&request, &caller)).await {
+        Ok(checked) => checked,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let done = applier.rotate_tls(checked.clone(), facts.clone()).await;
+    let service = gateway.service().clone();
+    let logged = done.clone();
+    blocking(move || {
+        match &logged {
+            Ok(rotated) => service.tls_logged(Some(&checked), Ok(&rotated.fingerprint), &facts),
+            Err(why) => service.tls_logged(Some(&checked), Err(why), &facts),
+        }
+        Ok::<(), writ_approval::ServiceError>(())
+    })
+    .await
+    .ok();
+    match done {
+        Ok(rotated) => encoded(Ok(rotated)),
+        Err(reason) => encoded::<()>(Err(ApiError::new(format!("not rotated: {reason}")))),
     }
 }
 

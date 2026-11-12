@@ -11,7 +11,7 @@
 
 pub mod remote;
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use base64ct::{Base64Unpadded, Encoding};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -90,8 +90,15 @@ pub fn fingerprint_pem(cert_pem: &str) -> Result<String> {
 ///
 /// The private key is moved straight into rustls when the identity is made: no other copy is
 /// kept (rustls holds it for the daemon's life, without zeroizing it: see the threat model's
-/// residual risks).
+/// residual risks). It can be replaced while the daemon runs ([`TlsIdentity::replace`], M7.5:
+/// `writ admin tls rotate`): every handshake from then on gets the new certificate, and
+/// connections already open keep theirs.
 pub struct TlsIdentity {
+    current: Arc<RwLock<Current>>,
+}
+
+/// The certificate in force and its fingerprint.
+struct Current {
     certified: Arc<CertifiedKey>,
     fingerprint: String,
 }
@@ -99,7 +106,7 @@ pub struct TlsIdentity {
 impl std::fmt::Debug for TlsIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TlsIdentity")
-            .field("fingerprint", &self.fingerprint)
+            .field("fingerprint", &self.fingerprint())
             .finish_non_exhaustive()
     }
 }
@@ -144,10 +151,35 @@ impl TlsIdentity {
             CertifiedKey::new(vec![cert], provider().key_provider.load_private_key(key)?);
         // Unlike `from_der`, an unknown consistency is refused too.
         certified.keys_match()?;
-        Ok(Self {
-            certified: Arc::new(certified),
-            fingerprint,
-        })
+        Ok(Self::of(certified, fingerprint))
+    }
+
+    fn of(certified: CertifiedKey, fingerprint: String) -> Self {
+        Self {
+            current: Arc::new(RwLock::new(Current {
+                certified: Arc::new(certified),
+                fingerprint,
+            })),
+        }
+    }
+
+    // poisoned: the value is replaced whole, by one assignment; the last one written stands.
+    fn current(&self) -> std::sync::RwLockReadGuard<'_, Current> {
+        self.current.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Puts `next`'s certificate and key in force: the handshakes from now on get it (every
+    /// server configuration made by [`TlsIdentity::server_config`] reads it), the ones done
+    /// keep theirs. `next` is consumed; this identity is the new one from now on.
+    pub fn replace(&self, next: TlsIdentity) {
+        let taken = {
+            let mut theirs = next.current.write().unwrap_or_else(PoisonError::into_inner);
+            Current {
+                certified: theirs.certified.clone(),
+                fingerprint: std::mem::take(&mut theirs.fingerprint),
+            }
+        };
+        *self.current.write().unwrap_or_else(PoisonError::into_inner) = taken;
     }
 
     /// A certificate (PEM) and the key that signs for it elsewhere (the daemon's `Signer`):
@@ -159,15 +191,12 @@ impl TlsIdentity {
         let certified = CertifiedKey::new(vec![cert], Arc::new(remote::RemoteSigningKey(key)));
         // The certificate's public key must be the key's: a replaced certificate is refused.
         certified.keys_match()?;
-        Ok(Self {
-            certified: Arc::new(certified),
-            fingerprint,
-        })
+        Ok(Self::of(certified, fingerprint))
     }
 
-    /// The pin clients check: `SHA256:<base64>` of the certificate.
-    pub fn fingerprint(&self) -> &str {
-        &self.fingerprint
+    /// The pin clients check: `SHA256:<base64>` of the certificate in force.
+    pub fn fingerprint(&self) -> String {
+        self.current().fingerprint.clone()
     }
 
     /// The server configuration, for a TLS acceptor: a client must present a certificate
@@ -181,19 +210,31 @@ impl TlsIdentity {
         let mut config = rustls::ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .with_client_cert_verifier(verifier)
-            .with_cert_resolver(Arc::new(Single(self.certified.clone())));
+            .with_cert_resolver(Arc::new(Live(self.current.clone())));
         config.alpn_protocols = vec![ALPN.to_vec()];
         Ok(Arc::new(config))
     }
 }
 
-/// Always the daemon's one certificate (no SNI: clients pin it).
-#[derive(Debug)]
-struct Single(Arc<CertifiedKey>);
+/// Always the daemon's one certificate in force (no SNI: clients pin it), read at each
+/// handshake.
+struct Live(Arc<RwLock<Current>>);
 
-impl ResolvesServerCert for Single {
+impl std::fmt::Debug for Live {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Live")
+    }
+}
+
+impl ResolvesServerCert for Live {
     fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        Some(self.0.clone())
+        Some(
+            self.0
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .certified
+                .clone(),
+        )
     }
 }
 
@@ -471,10 +512,10 @@ mod tests {
             Err(CryptoError::Tls(rustls::Error::InconsistentKeys(_)))
         ));
         let reader = generate(KeyKind::Ed25519).unwrap();
-        assert!(pinned_client_config(identity.fingerprint(), &reader).is_ok());
+        assert!(pinned_client_config(&identity.fingerprint(), &reader).is_ok());
         let p256 = generate(KeyKind::P256).unwrap();
         assert!(matches!(
-            pinned_client_config(identity.fingerprint(), &p256),
+            pinned_client_config(&identity.fingerprint(), &p256),
             Err(CryptoError::Pem("reader key (must be ssh-ed25519)"))
         ));
     }
@@ -518,6 +559,36 @@ mod tests {
     }
 
     #[test]
+    fn a_replaced_identity_serves_its_certificate_at_the_next_handshake_and_the_old_pin_fails() {
+        let first = generate_self_signed().unwrap();
+        let identity = TlsIdentity::from_pem(&first.cert_pem, &first.key_pem).unwrap();
+        let reader = generate(KeyKind::Ed25519).unwrap();
+        let readers = crate::readers::parse(&format!(
+            "mac {}",
+            reader.public_key().to_openssh().unwrap()
+        ))
+        .unwrap();
+        // One server configuration, made before the rotation, as the listener holds it.
+        let server = identity.server_config(ReaderSet::new(readers)).unwrap();
+        let old_pin = identity.fingerprint();
+        let pinned = |pin: &str| pinned_client_config(pin, &reader).unwrap();
+        assert_eq!(handshake(server.clone(), pinned(&old_pin)), Ok(()));
+        let second = generate_self_signed().unwrap();
+        let next = TlsIdentity::from_pem(&second.cert_pem, &second.key_pem).unwrap();
+        let new_pin = next.fingerprint();
+        identity.replace(next);
+        assert_eq!(identity.fingerprint(), new_pin);
+        assert_ne!(new_pin, old_pin);
+        assert_eq!(handshake(server.clone(), pinned(&new_pin)), Ok(()));
+        assert_eq!(
+            handshake(server, pinned(&old_pin)),
+            Err(rustls::Error::General(
+                "the daemon's certificate doesn't match the pinned fingerprint".to_owned()
+            ))
+        );
+    }
+
+    #[test]
     fn only_a_reader_key_gets_through_mutual_tls() {
         let generated = generate_self_signed().unwrap();
         let identity = TlsIdentity::from_pem(&generated.cert_pem, &generated.key_pem).unwrap();
@@ -530,7 +601,7 @@ mod tests {
         let server = identity
             .server_config(ReaderSet::new(readers.clone()))
             .unwrap();
-        let client = |key: &PrivateKey| pinned_client_config(identity.fingerprint(), key).unwrap();
+        let client = |key: &PrivateKey| pinned_client_config(&identity.fingerprint(), key).unwrap();
 
         assert_eq!(handshake(server.clone(), client(&reader)), Ok(()));
         let stranger = generate(KeyKind::Ed25519).unwrap();

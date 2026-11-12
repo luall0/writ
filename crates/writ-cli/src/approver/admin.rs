@@ -16,7 +16,8 @@ use writ_core::names::KeyId;
 use writ_core::signed::{Admin, Replaced, Token};
 use writ_crypto::passphrase::PassphraseError;
 use writ_proto::{
-    AdminApplied, AdminRequest, AdminShown, Command, Info, TokenApplied, TokenRequest, TokenShown,
+    AdminApplied, AdminRequest, AdminShown, Command, Info, TlsRequest, TlsRotated, TlsShown,
+    TokenApplied, TokenRequest, TokenShown,
 };
 
 use super::{Signer, connect, read_line};
@@ -226,6 +227,124 @@ pub async fn token(
             Ok(Exit::Ok)
         })
         .await
+}
+
+/// `writ admin tls rotate [--backend <name>]` (M7.5): the certificate in force and its key's
+/// backend (`writ admin tls show`'s reply), one signature over the `writ-tls/1` naming it and
+/// the backend the new key is made on (the current one by default), the new certificate's
+/// fingerprint. Reached over HTTPS, the pin is replaced in `tls_pins` (the old certificate
+/// vouched for the reply) and checked with a new connection; over SSH, the line to pin is
+/// printed.
+pub async fn tls_rotate(
+    paths: &Paths,
+    url: &str,
+    signer: &Signer,
+    backend: Option<&str>,
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    let endpoint = crate::client::Endpoint::parse(url)?;
+    let rotated = connect(paths, url)
+        .await?
+        .run(async |session| {
+            let shown: TlsShown = session.call(&Command::TlsShow, b"").await??;
+            let backend = backend.unwrap_or(&shown.backend).to_owned();
+            let Some(offered) = shown.backends.iter().find(|b| b.name == backend) else {
+                let names: Vec<String> = shown.backends.iter().map(|b| clean(&b.name)).collect();
+                bail!(
+                    "the daemon has no backend {} (it has: {})",
+                    clean(&backend),
+                    names.join(", ")
+                );
+            };
+            if !offered.algorithms.iter().any(|a| a == "p256") {
+                bail!(
+                    "{} makes no p256 key: the TLS key is P-256",
+                    clean(&backend)
+                );
+            }
+            println!(
+                "The HTTPS approval API of daemon {}: certificate {}, its key on {}.",
+                shown.daemon,
+                shown.fingerprint,
+                clean(&shown.backend)
+            );
+            println!(
+                "A new key on {} and its certificate replace them at once: every approver \
+                 re-pins it (writ does it here when it reaches the daemon over HTTPS).",
+                clean(&backend)
+            );
+            if !yes {
+                print!("Sign this TLS key rotation? [y/N] ");
+                std::io::stdout().flush()?;
+                if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
+                    println!("Not signed.");
+                    return Ok(None);
+                }
+            }
+            let backend: writ_core::config::BackendName = backend
+                .clone()
+                .try_into()
+                .map_err(|e| anyhow::anyhow!("--backend: {e}"))?;
+            let document = writ_core::signed::TlsRotation::new(
+                shown.daemon.clone(),
+                shown.fingerprint.clone(),
+                backend,
+            )
+            .canonical_bytes()?;
+            let request = TlsRequest {
+                signature: signer.sign(&document)?,
+                document: String::from_utf8(document)?,
+            };
+            let rotated: TlsRotated = session
+                .call(&Command::TlsRotate, &writ_proto::encode_body(&request)?)
+                .await??;
+            println!(
+                "TLS key rotated: certificate {} (key on {}), replacing {}.",
+                rotated.fingerprint,
+                clean(&rotated.backend),
+                rotated.previous
+            );
+            Ok(Some(rotated))
+        })
+        .await?;
+    let Some(rotated) = rotated else {
+        return Ok(Exit::Ok);
+    };
+    let name = endpoint.known_hosts_name();
+    match &endpoint {
+        crate::client::Endpoint::Https { .. } => {
+            crate::https::repin(
+                &paths.tls_pins,
+                &name,
+                rotated.previous.as_str(),
+                rotated.fingerprint.as_str(),
+            )?;
+            println!(
+                "Pinned in {}: {name} {}.",
+                paths.tls_pins.display(),
+                rotated.fingerprint
+            );
+            // The new pin, on a new connection: the daemon answers with its new certificate.
+            connect(paths, url)
+                .await?
+                .run(async |session| {
+                    let _: Info = session.call(&Command::Info, b"").await??;
+                    Ok(())
+                })
+                .await?;
+            println!("Checked: the daemon answers with the new certificate.");
+        }
+        _ => println!(
+            "Pin it wherever you reach the daemon over HTTPS: `<host>:<port> {}` in \
+             ~/.writ/tls_pins (writd tls-fingerprint prints it on the daemon's host).",
+            rotated.fingerprint
+        ),
+    }
+    println!(
+        "Other approvers' machines are refused until they re-pin it (the old certificate is no \
+         longer served)."
+    );
+    Ok(Exit::Ok)
 }
 
 /// A token that couldn't be read, said as a token (the reader is the passphrase's).

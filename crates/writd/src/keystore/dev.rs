@@ -15,18 +15,26 @@ use writ_platform::notify::telegram::BotToken;
 use writ_proto::KeyRole;
 
 use super::{
-    Boot, Keys, StoredKey, TlsKeyPair, make_tls, of_role, private_dir, tokens_declared,
-    write_private,
+    Boot, Keys, StoredKey, TlsKeyPair, of_role, private_dir, tokens_declared, write_private,
 };
 use crate::declared::{Declarations, Declared};
 
 /// The TLS key and certificate of the dev keystore, made on first start.
+/// Where the development keystore keeps the TLS key and certificate.
+pub fn tls_files(dir: &Path) -> super::tls::TlsFiles {
+    super::tls::TlsFiles {
+        key: dir.join("tls-01"),
+        cert: dir.join("tls-01.crt"),
+    }
+}
+
 fn dev_tls(dir: &Path) -> anyhow::Result<TlsKeyPair> {
-    let (cert_path, key_path) = (dir.join("tls-01.crt"), dir.join("tls-01"));
+    let files = tls_files(dir);
+    files.finish()?;
     // The key is written first: a cert without its key (or a key alone, after a crash
-    // between the two writes) is a pair to make again.
-    if !(cert_path.exists() && key_path.exists()) {
-        for leftover in [&cert_path, &key_path] {
+    // between the two writes) is a pair to make again, in software.
+    if !(files.cert.exists() && files.key.exists()) {
+        for leftover in [&files.cert, &files.key, &files.public()] {
             match std::fs::remove_file(leftover) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                     return Err(e).with_context(|| format!("cannot remove {}", leftover.display()));
@@ -34,16 +42,12 @@ fn dev_tls(dir: &Path) -> anyhow::Result<TlsKeyPair> {
                 _ => {}
             }
         }
-        make_tls(&key_path, &cert_path, &|path, pem| {
-            std::fs::write(path, pem).with_context(|| format!("cannot write {}", path.display()))
-        })?;
+        files.make(
+            crate::declared::Backend::Software,
+            &super::Makers::default(),
+        )?;
     }
-    let cert_pem = std::fs::read_to_string(&cert_path)
-        .with_context(|| format!("reading {}", cert_path.display()))?;
-    Ok(TlsKeyPair {
-        key: dev_key(dir, "tls-01")?,
-        cert_pem,
-    })
+    files.read()
 }
 
 /// The dev keystore's key `name`, generated on first start.

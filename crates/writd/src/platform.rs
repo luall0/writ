@@ -55,6 +55,25 @@ pub const BACKENDS: &[Backend] = &[Backend::Software, Backend::SeCryptokit];
 #[cfg(not(target_os = "macos"))]
 pub const BACKENDS: &[Backend] = &[Backend::Software];
 
+/// The backends this daemon has, each with the algorithms it makes, as replies show them.
+pub fn backends_shown() -> Vec<writ_proto::BackendShown> {
+    BACKENDS
+        .iter()
+        .map(|backend| {
+            let mut algorithms: Vec<String> = Vec::new();
+            for (algorithm, _) in backend.pairs() {
+                if !algorithms.iter().any(|a| a == algorithm.name()) {
+                    algorithms.push(algorithm.name().to_owned());
+                }
+            }
+            writ_proto::BackendShown {
+                name: backend.name().to_owned(),
+                algorithms,
+            }
+        })
+        .collect()
+}
+
 /// How the device backend `backend`'s helper is started.
 fn helper_config(config: &Config, backend: Backend) -> anyhow::Result<HelperConfig> {
     match backend {
@@ -263,22 +282,47 @@ impl writ_crypto::tls::remote::TlsKey for OffAsync {
 /// own (one queue per use: a device stuck on commit signing never holds up a handshake, nor
 /// the other way round). The key is moved into the backend; rustls asks it for every
 /// handshake signature.
-pub fn tls_identity(tls: crate::keystore::TlsKeyPair) -> anyhow::Result<Arc<TlsIdentity>> {
+pub fn tls_identity(
+    config: &Config,
+    tls: crate::keystore::TlsKeyPair,
+) -> anyhow::Result<TlsIdentity> {
     let id: KeyId = crate::keystore::TLS_KEY.parse()?;
-    let backend = SoftwareSigner::new([(id.clone(), tls.key)])?;
-    let queued: Arc<dyn Signer> = Arc::new(QueuedSigner::new(
-        backend,
-        QueueConfig {
-            name: "writ-tls".to_owned(),
-            capacity: TLS_QUEUE,
-            deadline: TLS_DEADLINE,
-        },
-    )?);
+    let queue = QueueConfig {
+        name: "writ-tls".to_owned(),
+        capacity: TLS_QUEUE,
+        deadline: TLS_DEADLINE,
+    };
+    let queued: Arc<dyn Signer> = match tls.key {
+        Material::Software(pair) => Arc::new(QueuedSigner::new(
+            SoftwareSigner::new([(id.clone(), pair)])?,
+            queue,
+        )?),
+        Material::Device {
+            backend,
+            stored,
+            public,
+        } => {
+            // The boot tier's key on a device: its blob checked as every device key's; one
+            // refused leaves no key to serve HTTPS with, so the start stops.
+            let held = HelperSigner::new(
+                check_device(config, backend)?,
+                [Load {
+                    id: id.clone(),
+                    stored,
+                    public,
+                }],
+            )?;
+            if let Some((_, why)) = held.refused().first() {
+                bail!("the TLS key on backend {}: refused ({why})", backend.name());
+            }
+            Arc::new(QueuedSigner::new(held, queue)?)
+        }
+    };
     let key = writ_signer::tls::TlsSigner::new(queued, id)?;
-    Ok(Arc::new(TlsIdentity::with_key(
+    Ok(TlsIdentity::with_key(
         &tls.cert_pem,
         Arc::new(OffAsync(key)),
-    )?))
+    )?)
 }
 
 /// The process hardening of this OS (docs/operators/hardening.md): Linux's or macOS's, or

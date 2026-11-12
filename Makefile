@@ -135,7 +135,8 @@ hooks:
 
 # The installer (deploy/install.sh, docs/operators/install.md): the release binaries built as
 # you, then a setup installed, `local` on the Mac (SETUP=local answers its question; DRY_RUN=1
-# lists every change and makes none; APPROVER=<your approval key's .pub>). Run again, it
+# lists every change and makes none; APPROVER=<your approval key's .pub>; on the Mac,
+# TLS_BACKEND=software|se-cryptokit answers where the HTTPS key is made). Run again, it
 # upgrades. `make uninstall` takes back what it made (PURGE=1 the daemon's data too, confirmed
 # on the terminal; REPOS=undo|keep answers the question about the repositories writ init wired).
 install:

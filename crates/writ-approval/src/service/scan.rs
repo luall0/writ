@@ -37,10 +37,12 @@ pub(crate) struct Outbound {
     nonces: Vec<(BootNonce, Timestamp)>,
     scans: VecDeque<Timestamp>,
     checks: VecDeque<Timestamp>,
+    /// When the last TLS key rotations were asked for (M7.5).
+    pub(crate) rotations: VecDeque<Timestamp>,
 }
 
 /// Whether one more fits `window` (the last minute's) under `max`: when it does, it is counted.
-fn within(window: &mut VecDeque<Timestamp>, now: Timestamp, max: usize) -> bool {
+pub(crate) fn within(window: &mut VecDeque<Timestamp>, now: Timestamp, max: usize) -> bool {
     while window
         .front()
         .is_some_and(|t| now.unix().saturating_sub(t.unix()) >= 60)
@@ -89,7 +91,7 @@ fn refused(reason: impl Into<String>) -> ServiceError {
 }
 
 impl Service {
-    fn outbound(&self) -> std::sync::MutexGuard<'_, Outbound> {
+    pub(crate) fn outbound(&self) -> std::sync::MutexGuard<'_, Outbound> {
         // poisoned: what it holds is still right (nonces and times), only possibly stale.
         self.outbound
             .lock()

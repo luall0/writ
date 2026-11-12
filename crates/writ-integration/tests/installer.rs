@@ -374,7 +374,7 @@ fn the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_
     // On a terminal, the setup is asked.
     let mut asked = fake.command("install", &[("DRY_RUN", "1")]);
     asked.env("APPROVER", &fake.approver);
-    let (status, shown) = on_terminal(asked, &["local"]);
+    let (status, shown) = on_terminal(asked, &["local", ""]);
     assert!(status.success(), "{shown}");
     assert!(
         shown.contains("Which setup? Offered on Darwin: local"),

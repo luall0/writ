@@ -120,9 +120,15 @@ names!(
 
 /// Where a key lives: a backend the daemon has (`software`, its memory; hardware ones
 /// later). The policy only checks the name's form; the daemon refuses one it doesn't have.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
-#[serde(try_from = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, serde::Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct BackendName(String);
+
+impl From<BackendName> for String {
+    fn from(name: BackendName) -> String {
+        name.0
+    }
+}
 
 impl BackendName {
     pub fn as_str(&self) -> &str {

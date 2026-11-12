@@ -96,6 +96,8 @@ struct Inner {
     notifiers: Arc<LateNotifiers>,
     /// Set right after the gateway starts, before any listener runs.
     gateway: OnceLock<Gateway>,
+    /// The HTTPS approval API's identity the listeners serve, replaced by a rotation (M7.5).
+    tls: OnceLock<Arc<writ_crypto::tls::TlsIdentity>>,
 }
 
 impl Opener {
@@ -116,7 +118,104 @@ impl Opener {
             service,
             notifiers,
             gateway: OnceLock::new(),
+            tls: OnceLock::new(),
         }))
+    }
+
+    /// The HTTPS approval API's identity, as the listeners serve it.
+    pub fn set_tls(&self, tls: Arc<writ_crypto::tls::TlsIdentity>) {
+        let _ = self.0.tls.set(tls);
+    }
+
+    fn tls(&self) -> Result<&Arc<writ_crypto::tls::TlsIdentity>, String> {
+        self.0
+            .tls
+            .get()
+            .ok_or_else(|| "the HTTPS approval API is not started".to_owned())
+    }
+
+    /// The certificate in force, its key's backend, and what a `writ-tls/1` names.
+    fn show_tls(&self) -> Result<writ_proto::TlsShown, String> {
+        let fingerprint = self
+            .tls()?
+            .fingerprint()
+            .parse()
+            .map_err(|e| format!("the certificate in force: {e}"))?;
+        let backend = keystore::tls_files(&self.0.config)
+            .backend()
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(writ_proto::TlsShown {
+            daemon: self.0.service.daemon().clone(),
+            fingerprint,
+            backend: backend.name().to_owned(),
+            backends: platform::backends_shown(),
+        })
+    }
+
+    /// A checked `writ-tls/1` done (see [`AdminApplier::rotate_tls`]): refused unless it names
+    /// the certificate in force and a backend this daemon has; the new key and certificate
+    /// written beside the old, built into the next identity, renamed over the old, then put in
+    /// force for every handshake from now on; and the approvers told.
+    fn rotate(
+        &self,
+        checked: &writ_approval::CheckedTls,
+    ) -> Result<writ_proto::TlsRotated, String> {
+        let inner = &self.0;
+        let rotation = checked.rotation();
+        let identity = self.tls()?;
+        let previous = identity.fingerprint();
+        if rotation.replaces.as_str() != previous {
+            return Err(format!(
+                "it replaces certificate {}, but {previous} is in force (rotated meanwhile?): \
+                 writ admin tls rotate again",
+                rotation.replaces
+            ));
+        }
+        let backend = platform::BACKENDS
+            .iter()
+            .copied()
+            .find(|b| b.name() == rotation.backend.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "this daemon has no backend {} (writ admin key list names them)",
+                    rotation.backend
+                )
+            })?;
+        let makers = platform::makers(&inner.config).map_err(|e| format!("{e:#}"))?;
+        let config = inner.config.clone();
+        let next = keystore::tls_files(&config)
+            .rotate(backend, &makers, |pair| {
+                platform::tls_identity(&config, pair)
+            })
+            .map_err(|e| format!("{e:#}"))?;
+        let fingerprint = next.fingerprint();
+        identity.replace(next);
+        tracing::info!(
+            previous = %previous,
+            fingerprint = %fingerprint,
+            backend = backend.name(),
+            "the HTTPS approval API's TLS key was rotated: approvers re-pin"
+        );
+        let _ = writ_platform::Notifier::notify(
+            &*inner.notifiers,
+            &writ_platform::Notification {
+                title: "Writ: TLS key rotated".to_owned(),
+                message: format!(
+                    "The HTTPS approval API's TLS key was rotated (backend {}): its certificate is \
+                 now {fingerprint}. Approvers re-pin it in ~/.writ/tls_pins.",
+                    backend.name()
+                ),
+                priority: writ_platform::notify::Priority::Default,
+                tags: vec!["tls".to_owned()],
+            },
+        );
+        Ok(writ_proto::TlsRotated {
+            previous: rotation.replaces.clone(),
+            fingerprint: fingerprint
+                .parse()
+                .map_err(|e| format!("the new certificate: {e}"))?,
+            backend: backend.name().to_owned(),
+        })
     }
 
     pub fn set_gateway(&self, gateway: Gateway) {
@@ -666,25 +765,10 @@ impl Opener {
                 proxies: users.proxies,
             });
         }
-        let backends = platform::BACKENDS
-            .iter()
-            .map(|backend| {
-                let mut algorithms: Vec<String> = Vec::new();
-                for (algorithm, _) in backend.pairs() {
-                    if !algorithms.iter().any(|a| a == algorithm.name()) {
-                        algorithms.push(algorithm.name().to_owned());
-                    }
-                }
-                writ_proto::BackendShown {
-                    name: backend.name().to_owned(),
-                    algorithms,
-                }
-            })
-            .collect();
         Ok(KeysShown {
             version,
             keys,
-            backends,
+            backends: platform::backends_shown(),
         })
     }
 
@@ -896,6 +980,29 @@ impl AdminApplier for Opener {
             tokio::task::spawn_blocking(move || me.show_keys())
                 .await
                 .map_err(|_| "the read stopped".to_owned())?
+        })
+    }
+
+    fn tls_show(&self) -> BoxFuture<'static, Result<writ_proto::TlsShown, String>> {
+        let me = self.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || me.show_tls())
+                .await
+                .map_err(|_| "the read stopped".to_owned())?
+        })
+    }
+
+    fn rotate_tls(
+        &self,
+        checked: writ_approval::CheckedTls,
+        _caller: CallerFacts,
+    ) -> BoxFuture<'static, Result<writ_proto::TlsRotated, String>> {
+        let me = self.clone();
+        // Files and a device: off the async threads; run to its end even if the client goes.
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || me.rotate(&checked))
+                .await
+                .map_err(|_| "the rotation stopped".to_owned())?
         })
     }
 }

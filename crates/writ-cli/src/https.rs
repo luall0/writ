@@ -47,6 +47,63 @@ pub fn pinned_fingerprint(pins: &Path, name: &str) -> anyhow::Result<String> {
     )
 }
 
+/// Replaces the pin `old` of `name` with `new` in the pins file (M7.5, `writ admin tls rotate`:
+/// the daemon's new certificate, given over a connection its old one authenticated). Only a
+/// line naming `name` with `old` changes; the file is read with the same checks as for a
+/// connection, written whole beside it (mode 0600), then renamed over it. None such: refused.
+pub fn repin(pins: &Path, name: &str, old: &str, new: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let text = crate::client::read_pins(pins)?;
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len().saturating_add(64));
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let hit = matches!(
+            (fields.next(), fields.next(), fields.next()),
+            (Some(hosts), Some(pin), None)
+                if !line.trim_start().starts_with('#')
+                    && pin == old
+                    && hosts.split(',').any(|h| h == name)
+        );
+        if hit {
+            let hosts = line.split_whitespace().next().unwrap_or_default();
+            out.push_str(&format!("{hosts} {new}\n"));
+            changed = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !changed {
+        bail!(
+            "{}: no line pins {name} to {old}: add `{name} {new}` yourself",
+            pins.display()
+        );
+    }
+    let temporary = pins.with_extension(format!(
+        "new-{}",
+        writ_crypto::keys::random_hex(8).map_err(|e| anyhow::anyhow!("{e}"))?
+    ));
+    let written = (|| -> anyhow::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .with_context(|| format!("cannot create {}", temporary.display()))?;
+        file.write_all(out.as_bytes())
+            .and_then(|()| file.sync_all())
+            .with_context(|| format!("cannot write {}", temporary.display()))?;
+        std::fs::rename(&temporary, pins)
+            .with_context(|| format!("cannot replace {}", pins.display()))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
 /// An HTTPS client of the approval API, for one pinned daemon.
 pub struct Client {
     host: String,

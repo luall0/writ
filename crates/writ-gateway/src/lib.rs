@@ -148,6 +148,20 @@ pub trait AdminApplier: Send + Sync {
     fn keys_show(
         &self,
     ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::KeysShown, String>>;
+
+    /// The HTTPS approval API's certificate in force and its key's backend (M7.5).
+    fn tls_show(
+        &self,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::TlsShown, String>>;
+
+    /// A checked `writ-tls/1` done: refused unless it names the certificate in force; a new
+    /// key made on its backend, its certificate, both written to the boot tier and put in force
+    /// for every handshake from now on. Logged by the gateway, from what this answers.
+    fn rotate_tls(
+        &self,
+        checked: writ_approval::CheckedTls,
+        caller: CallerFacts,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::TlsRotated, String>>;
 }
 
 /// What the gateway needs to run.

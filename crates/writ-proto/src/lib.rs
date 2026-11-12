@@ -36,8 +36,8 @@ pub use messages::{
     KeyRole, KeyShown, KeysShown, Listing, OpenpgpShown, OtherLease, Others, PassphraseText,
     Phases, Previous, ProveRequest, Proved, RefuseRequest, Relation, RemovedKey, Renewal,
     RepoPolicy, Report, ReportCommit, ReportPush, RevokeRequest, ScanNonce, ScanRequest, Scanned,
-    ScannedKey, SealedBoot, Shown, Submitted, Summary, TemplateView, TokenApplied, TokenRequest,
-    TokenShown, UnsealRequest, Unsealed, UpstreamChecked,
+    ScannedKey, SealedBoot, Shown, Submitted, Summary, TemplateView, TlsRequest, TlsRotated,
+    TlsShown, TokenApplied, TokenRequest, TokenShown, UnsealRequest, Unsealed, UpstreamChecked,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).

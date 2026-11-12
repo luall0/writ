@@ -244,16 +244,18 @@ fn tls_cert(sealed: &SealedConfig) -> anyhow::Result<String> {
     )?)
 }
 
-/// The boot tier's TLS key and certificate.
+/// Where the boot tier keeps the TLS key and certificate.
+pub fn tls_files(sealed: &SealedConfig) -> super::tls::TlsFiles {
+    let layout = Layout(sealed);
+    super::tls::TlsFiles {
+        key: layout.tls_key(),
+        cert: layout.tls_cert(),
+    }
+}
+
+/// The boot tier's TLS key and certificate (a rotation cut short finished first).
 pub fn tls(sealed: &SealedConfig) -> anyhow::Result<TlsKeyPair> {
-    let path = Layout(sealed).tls_key();
-    let text = writ_platform::fs::read_secret(&path, "the TLS key", MAX_SECRET_FILE)?;
-    let key = PrivateKey::from_openssh(text.as_slice())
-        .with_context(|| format!("{}: not an OpenSSH private key", path.display()))?;
-    Ok(TlsKeyPair {
-        key,
-        cert_pem: tls_cert(sealed)?,
-    })
+    tls_files(sealed).read()
 }
 
 /// What a sealed daemon reads at start: the boot tier, and the CA's public half.
@@ -604,6 +606,7 @@ mod tests {
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &cheap,
+            crate::declared::Backend::Software,
             &crate::keystore::Makers::default(),
         )
         .unwrap();
@@ -1145,6 +1148,7 @@ templates:
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &cheap,
+            crate::declared::Backend::Software,
             &crate::keystore::Makers::default(),
         );
         let error = again.err().unwrap().to_string();
@@ -1170,6 +1174,7 @@ templates:
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &failing,
+            crate::declared::Backend::Software,
             &crate::keystore::Makers::default(),
         );
         assert_eq!(error.err().unwrap().to_string(), "no room left");
@@ -1181,6 +1186,7 @@ templates:
                 &policy(),
                 &Passphrase::new(PASSPHRASE.to_owned()),
                 &cheap,
+                crate::declared::Backend::Software,
                 &crate::keystore::Makers::default(),
             )
             .is_ok()

@@ -46,8 +46,8 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
     let home = &stack.operator;
     // The approvers and readers first: `writd init` records the three files in force.
     home.ok(
-        "mkdir -p sealed-init sealed-short && cp approvers readers sealed-init/ && \
-             cp approvers readers sealed-short/",
+        "mkdir -p sealed-init sealed-short sealed-tls && cp approvers readers sealed-init/ && \
+             cp approvers readers sealed-short/ && cp approvers readers sealed-tls/",
     );
     let dir = home.with(&format!("{}/sealed-init", home.dir), None);
     dir.write("writd.yaml", &sealed_yaml(), "0644");
@@ -229,6 +229,27 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
         short.ok("ls"),
         "approvers\npolicy.yaml\nreaders\nwritd.yaml\n"
     );
+
+    // The TLS key's backend at `writd init` (M7.5, the installer's way to the Secure Enclave on
+    // a Mac): one this Linux daemon lacks refused before anything is asked; `software` given.
+    let chosen = home.with(&format!("{}/sealed-tls", home.dir), None);
+    chosen.write("writd.yaml", &sealed_yaml(), "0644");
+    chosen.write("policy.yaml", POLICY_YAML, "0644");
+    let out = chosen.run_with(
+        "writd init writd.yaml --tls-backend se-cryptokit",
+        b"an end-to-end passphrase\n",
+    );
+    let (_, why) = expect(&out, 1, "a TLS backend the daemon lacks");
+    assert_eq!(
+        why.trim_end(),
+        "writd: --tls-backend se-cryptokit: this daemon has no such backend (it has: software)"
+    );
+    let out = chosen.run_with(
+        "writd init writd.yaml --tls-backend software",
+        b"an end-to-end passphrase\n",
+    );
+    let (said, _) = expect(&out, 0, "writd init --tls-backend software");
+    assert!(said.contains("TLS fingerprint: SHA256:"), "{said}");
 }
 
 /// The second daemon's policy: an `ssh://` repo, and an `https://` one whose token only an
@@ -490,5 +511,78 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
         format!("{passphrase}\n").as_bytes(),
     );
     expect(&out, 0, "unseal after recovery");
+
+    // The HTTPS approval API's TLS key rotated live, from the approver's machine (M7.5): over
+    // HTTPS the approver's pin replaced, the old one refused from then on.
+    approver.ok("cp $HOME/.writ-sealed/tls_pins $HOME/.writ-sealed/tls_pins.old");
+    let out = approver.run(&format!(
+        "{writ} admin tls rotate --yes --approval-url {https} {signer}"
+    ));
+    let (said, _) = expect(&out, 0, "writ admin tls rotate over HTTPS");
+    assert!(
+        said.contains("TLS key rotated: certificate SHA256:"),
+        "{said}"
+    );
+    assert!(
+        said.contains("(key on software), replacing SHA256:"),
+        "{said}"
+    );
+    assert!(
+        said.contains("Checked: the daemon answers with the new certificate."),
+        "{said}"
+    );
+    let rotated = dir.ok("writd tls-fingerprint writd.yaml");
+    assert!(
+        approver
+            .read(".writ-sealed/tls_pins")
+            .contains(&format!("[{DAEMON}]:9443 {}", rotated.trim())),
+        "the approver's pin replaced"
+    );
+    let out = approver.run(&format!(
+        "writ --known-hosts $HOME/.writ-sealed/known_hosts --tls-pins \
+         $HOME/.writ-sealed/tls_pins.old ls --approval-url {https}"
+    ));
+    let (_, why) = expect(&out, 1, "the old pin");
+    assert!(
+        why.contains("the daemon's certificate doesn't match the pinned fingerprint"),
+        "{why}"
+    );
+    // A backend this Linux daemon lacks: refused before any signature.
+    let out = approver.run(&format!(
+        "{writ} admin tls rotate --backend se-cryptokit --yes --approval-url {ssh} {signer}"
+    ));
+    let (_, why) = expect(&out, 1, "a backend the daemon lacks");
+    assert!(
+        why.contains("the daemon has no backend se-cryptokit (it has: software)"),
+        "{why}"
+    );
+    // Over SSH, with --backend: the line to pin printed; the approver re-pins from the host's
+    // `writd tls-fingerprint`, as the guide says.
+    let out = approver.run(&format!(
+        "{writ} admin tls rotate --backend software --yes --approval-url {ssh} {signer}"
+    ));
+    let (said, _) = expect(&out, 0, "writ admin tls rotate over SSH");
+    assert!(
+        said.contains("Pin it wherever you reach the daemon over HTTPS"),
+        "{said}"
+    );
+    let again = dir.ok("writd tls-fingerprint writd.yaml");
+    assert_ne!(again.trim(), rotated.trim());
+    approver.write(
+        ".writ-sealed/tls_pins",
+        &format!("[{DAEMON}]:9443 {}\n", again.trim()),
+        "0644",
+    );
+    expect(
+        &approver.run(&format!("{writ} ls --approval-url {https}")),
+        0,
+        "re-pinned",
+    );
+    let audit = dir.read("data/audit.jsonl");
+    assert_eq!(
+        audit.matches("TLS key rotated: certificate").count(),
+        2,
+        "{audit}"
+    );
     dir.ok("kill $(cat writd.pid)");
 }

@@ -97,6 +97,23 @@ check_approver() {
     esac
 }
 
+# Where the HTTPS approval API's TLS key is made (M7.5): TLS_BACKEND, or asked on a
+# terminal; software unless you choose this Mac's Secure Enclave. Checked before any change.
+choose_tls_backend() {
+    if [ -z "${TLS_BACKEND:-}" ] && terminal; then
+        say "The HTTPS approval API's TLS key (HTTPS is off in this setup; the key serves it if you"
+        say "turn it on later): software, or se-cryptokit (this Mac's Secure Enclave: the key never"
+        say "leaves it; writ admin tls rotate --backend moves it later either way)."
+        printf '%s' "TLS key backend [software]: "
+        read -r TLS_BACKEND || TLS_BACKEND=
+    fi
+    TLS_BACKEND=${TLS_BACKEND:-software}
+    case $TLS_BACKEND in
+        software | se-cryptokit) ;;
+        *) fail "TLS_BACKEND=$TLS_BACKEND: software or se-cryptokit" ;;
+    esac
+}
+
 preflight() {
     step "Checks"
     [ -n "$ROOT" ] || [ "$(id -u)" != 0 ] || fail "run as yourself, not root: the installer asks sudo for the steps that need it"
@@ -182,6 +199,7 @@ EOF
 setup_install() {
     check_approver
     preflight
+    [ -d "$DATA" ] || choose_tls_backend
 
     step "The installer's own directory and manifest ($MANIFEST)"
     as_root install -d -m 0755 "$APP"
@@ -281,7 +299,7 @@ setup_install() {
         put_root "$DATA/approvers" 0644 "$DAEMON_USER:$DAEMON_USER" "approver $(head -n 1 "$APPROVER")"
         put_root "$DATA/readers" 0644 "$DAEMON_USER:$DAEMON_USER" "$reader_line"
         step "The keystore (writd init, as $DAEMON_USER): choose its passphrase"
-        as_daemon "$DAEMON_USER" "$BIN/writd" init "$CONFIG"
+        as_daemon "$DAEMON_USER" "$BIN/writd" init "$CONFIG" --tls-backend "$TLS_BACKEND"
     fi
 
     step "The LaunchDaemon $LABEL ($PLIST), started"
