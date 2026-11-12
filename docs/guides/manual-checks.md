@@ -322,3 +322,65 @@ make install SETUP=local APPROVER=~/.ssh/writ-approval.pub && make uninstall PUR
 
 After the purge, the diff with `~/writ-before.txt` shows only directory times, and the
 repository wired in step 3 is as it was before its `writ init`.
+
+## Local mode on Linux (M7.1)
+
+The `local` setup on Linux runs in `make test` against a fake root (its unit checked by
+`systemd-analyze verify`), and the daemon itself, laid out as the setup lays it out, in
+end-to-end scenario 24; this is the real install, on a Debian 13 machine without Writ (a VM
+you can reboot), with systemd and `sudo`. When every step passes, tick M7.1's last acceptance
+item.
+
+**1. Before.** Keep what is there now, to compare with after the uninstall:
+
+```sh
+sudo sh -c 'ls -la /usr/local/bin /etc /etc/systemd/system /var/lib; getent passwd; getent group' > ~/writ-before.txt
+ls -la ~/.writ >> ~/writ-before.txt 2>&1
+```
+
+**2. Install**, then again (an upgrade):
+
+```sh
+make install SETUP=local APPROVER=~/.ssh/writ-approval.pub DRY_RUN=1   # lists every change, makes none
+make install SETUP=local APPROVER=~/.ssh/writ-approval.pub             # the passphrase asked
+make install SETUP=local APPROVER=~/.ssh/writ-approval.pub             # an upgrade: the keystore kept
+```
+
+**3. Unseal and use it.** Log in again (the `writ` group), then `writ unseal`, add a repo
+from the [GitHub manual check](#a-throwaway-github-repo-m4)'s throwaway repository with
+`writ admin`, `writ init <repo>` in a clone, and run an agent under `writ run -- <agent>`: its
+ticket shows `caller descends from /usr/local/bin/writ (pid …)`; its commit and push work.
+From another terminal, `writ git fetch` in the same clone is refused (`caller`). Under the
+session, a command in a bubblewrap sandbox is served
+(`bwrap --ro-bind / / --dev /dev --proc /proc --bind /run/writ /run/writ --unshare-pid writ git fetch`
+in the clone), and its process is marked `unbindable` in the audit line
+(`sudo journalctl -u writd` names the audit log: `/var/lib/writ/state/audit.jsonl`). Quit the
+agent: `writ ls` shows the lease revoked.
+
+**4. The daemon is out of your reach:**
+
+```sh
+cat /var/lib/writ/keys/identity.age                      # Permission denied
+gdb -batch -p "$(pgrep -x -f '/usr/local/bin/writd run /etc/writ/writd.yaml')"   # ptrace: Operation not permitted
+strace -p "$(pgrep -x -f '/usr/local/bin/writd proc-reader')"                    # Operation not permitted
+sudo grep ^Cap /proc/"$(pgrep -x -f '/usr/local/bin/writd run /etc/writ/writd.yaml')"/status   # CapPrm and CapEff 0
+```
+
+**5. Stop and recover.** `sudo systemctl stop writd`: `journalctl -u writd` says
+`stopping signal="SIGTERM"`, then `stopped`, and the service stays stopped. While it runs,
+`writd recover` is refused naming its pid; stopped, the
+[recovery guide's Linux steps](../operators/recovery.md#linux-local-mode-m71) run as written.
+`sudo systemctl start writd`, then reboot: the daemon is running again (sealed): `writ unseal`.
+
+**6. Uninstall** and compare:
+
+```sh
+make uninstall                      # lists the wired repos, asks: answer y
+sudo sh -c 'ls -la /usr/local/bin /etc /etc/systemd/system /var/lib; getent passwd; getent group' > ~/writ-after.txt
+ls -la ~/.writ >> ~/writ-after.txt 2>&1
+diff ~/writ-before.txt ~/writ-after.txt   # /var/lib/writ (kept) and ~/.writ/reader; directory times aside
+make install SETUP=local APPROVER=~/.ssh/writ-approval.pub && make uninstall PURGE=1   # type delete
+```
+
+After the purge, the diff with `~/writ-before.txt` shows only directory times, and the
+repository wired in step 3 is as it was before its `writ init`.

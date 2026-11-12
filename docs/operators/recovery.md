@@ -85,7 +85,7 @@ With the development daemon (`make run`), it is your own user: stop it, and run
 
 The daemon is a LaunchDaemon running as the dedicated user `_writd`. Your user can't read its
 files, by design. The label and paths are the ones `make install` sets
-([Installing on your Mac](install.md)):
+([Installing on your machine](install.md)):
 
 ```sh
 sudo launchctl bootout system/dev.writ.writd                         # 1. stop the daemon
@@ -122,17 +122,26 @@ writ unseal --key ~/.writ/new-approval.pub
   (`docker compose run --rm --user root writd chown …`), but never run `writd recover` itself
   as root.
 
-### Linux, natively
+### Linux, local mode (M7.1)
 
-The daemon runs under systemd as a dedicated system user, for example `writd`:
+The daemon is the systemd service `writd`, running as the system user `writd`. Your user
+can't read its files, by design. The paths are the ones `make install` sets
+([Installing on your machine](install.md)):
 
 ```sh
-sudo systemctl stop writd                                       # 1.
-sudo install -o writd -g writd -m 0644 approvers.new /var/lib/writ/approvers.new   # 2.
-sudo -u writd writd recover /etc/writ/writd.yaml approvers /var/lib/writ/approvers.new
-sudo systemctl start writd                                      # 4.
-writ unseal --key ~/.writ/new-approval.pub
+sudo systemctl stop writd                                       # 1. stop the daemon
+sudo install -o writd -g writd -m 0644 approvers.new /var/lib/writ/approvers.new   # 2. the file, owned by writd
+sudo -u writd /usr/local/bin/writd recover /etc/writ/writd.yaml approvers /var/lib/writ/approvers.new
+sudo systemctl start writd                                      # 4. start it
+writ unseal --key ~/.writ/new-approval.pub                      #    and unseal from your user
 ```
+
+`writd recover` runs without the service's capability (it needs none). The daemon's log is
+`journalctl -u writd`.
+
+`sudo` asks for your password. That password is what separates you (and any agent running as
+you) from the daemon's keys, so your user must not have passwordless `sudo`
+([threat model](../threat-model.md#6-local-mode-the-daemon-vs-my-own-user)).
 
 ## What recovery can't do
 

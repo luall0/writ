@@ -268,8 +268,11 @@ capability, and the daemon itself keeps none.
   `writ-core`'s `ProcessRef` (`unbindable`: why, or none; none on the Mac) and its words in
   the audit line's chain.
 - A `/proc` mounted with `hidepid` (other users' processes hidden from the daemon) is a
-  startup error naming the mount option; an entry the daemon or the helper can't read at run
-  time refuses the caller with its reason, never crashes.
+  startup error naming the mount option; a caller the daemon or the helper can't read at run
+  time is refused with its reason, never a crash. An ancestor it can't read ends the chain
+  there, as a parent gone does (settled while building: a development daemon running as my
+  user, with no helper, reaches root's processes above the session; a lease bound past the end
+  is refused all the same).
 - `writ-platform-linux`: **a pidfd `SessionWatcher`** (`session_watcher: linux`): one thread
   on an epoll set, one pidfd per watched process (shared by the leases of a session), the
   start time checked once the pidfd is held (an exit in between is said at once); a failing
@@ -311,21 +314,51 @@ capability, and the daemon itself keeps none.
   capability) and the [product](product.md)'s modes.
 
 Acceptance:
-- [ ] **The graft test:** only new implementations in `writ-platform-linux`, `writd`'s wiring
+- [x] **The graft test:** only new implementations in `writ-platform-linux`, `writd`'s wiring
       and config (the helper's subcommand among them), the installer's new setup, and the
       change settled at M7.1's start (`ProcessRef::unbindable` in `writ-core`, refused as a
       binding's root, its words in the audit line).
-- [ ] The Linux implementations pass the same contract suites as the portable and macOS ones.
-- [ ] The M6 agent workflow works against the local Linux daemon, as an end-to-end scenario.
-- [ ] A lease bound to a session refuses a caller outside that process tree whatever its
+      *`writ-core`: the field, `matches` and `fit::bind`; `writ-store`: the audit words; the
+      other crates only fill the field (`None`) in their literals. `writ-platform` untouched
+      (the Unix transport's `PeerReader` stays a function: Linux's reads `/proc/<pid>/stat`,
+      world-readable). `writd`: the config values, `platform.rs`, `proc-reader` in `main`.
+      `deploy/`: the new setup, and a bug fix in the frame (the setup's question printed on
+      stdout inside `$(…)`, found when the installer's tests first ran on Linux).*
+- [x] The Linux implementations pass the same contract suites as the portable and macOS ones.
+      *`writ-platform-linux/tests/local_mode.rs`: the attestor (reading `/proc` itself and
+      through the process reader's protocol), the pidfd watcher and the Unix transport with
+      the pidfd peer through `writ_platform::contract`'s suites, with real processes; three
+      runs in a row in a Debian 13 container (Linux 7.0).*
+- [x] The M6 agent workflow works against the local Linux daemon, as an end-to-end scenario.
+      *Scenario 24 (`local_mode`): under `writ run`, `writ request` bound by the daemon,
+      `writ init`, a commit signed, `writ git push` landing on Forgejo, the push's chain in
+      its audit line; and `writ-integration`'s `local_mode.rs`, now run on Linux too.*
+- [x] A lease bound to a session refuses a caller outside that process tree whatever its
       name or arguments, a TCP caller, a pid reused mid-walk, and a root in another
       namespace, each with its exact reason; a caller in a sandbox under the session is
       served; a `/proc` it can't read refuses, never crashes.
-- [ ] Ending the session's root process revokes the lease (end-to-end scenario).
+      *Outside the tree: scenario 24 and `a_lease_bound_to_its_session_serves_inside_it_only_and_ends_with_it`
+      (`caller`; over TCP too). Its name: `the_caller_is_its_executable_whatever_it_calls_itself`
+      (`exec -a`). A pid reused: `a_caller_whose_pid_was_reused_is_refused`,
+      `a_parent_reused_or_gone_ends_the_chain_there`, `a_peer_that_ended_before_it_was_read_is_refused`.
+      A root elsewhere: `a_process_whose_path_doesn_t_name_its_program_is_never_a_session_s_root`
+      (`session`, its reason); a sandboxed caller under a host root bound and walked:
+      the same test and `a_sandboxed_or_deleted_process_is_walked_and_marked_unbindable`
+      (a real bubblewrap sandbox is the manual check's: Docker's seccomp refuses namespaces to
+      an unprivileged user). Unreadable: `a_parent_that_can_t_be_read_ends_the_chain_and_a_caller_that_can_t_is_refused`,
+      `hidepid` refused at start (`hidepid_is_found_on_proc_only`, `kernel::check_process_chain`).*
+- [x] Ending the session's root process revokes the lease (end-to-end scenario).
+      *Scenario 24: the harness ends, `writ run` exits 0, the `revoke` line.*
 - [ ] My user (so any agent) can't read the daemon's keystore or attach to it or its helper
       (`cat`, `gdb -p`, `strace -p` refused), the daemon holds no capability once started,
       and it starts again after a reboot.
+      *All but the reboot, in scenario 24: `dev` refused `/var/lib/writ`, the keystore and
+      `/proc/<pid>/mem`, `strace -p` and `gdb -p` on both processes; `writd`'s capability sets
+      all empty (its bounding set `CAP_SYS_PTRACE`, unusable), the reader's `CAP_SYS_PTRACE`
+      alone. The reboot is the manual check's.*
 - [ ] `systemctl stop` stops the daemon in order (the `stopping` line).
+      *SIGTERM to `writd` alone (what `KillMode=mixed` sends) in scenario 24: `stopping`,
+      `writd` and its reader gone. Through systemd itself: the manual check.*
 - [ ] On a Debian 13 machine without Writ (a VM, by hand), `make install` with
       `SETUP=local` then `writ unseal` gives a working daemon; `make uninstall` leaves the
       machine as before, checked against a listing taken before, the repos question as in

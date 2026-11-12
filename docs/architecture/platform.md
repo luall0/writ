@@ -96,6 +96,10 @@ pub struct ProcessRef {
     /// Resolved by the kernel, never from the process's own name or arguments.
     pub executable: PathBuf,
     pub code_identity: Option<CodeIdentity>,
+    /// Why the path doesn't name the program in the daemon's view (Linux: another pid or
+    /// mount namespace than the host's, or a deleted executable): never a session's root,
+    /// never matched. `None` on the host, and on the Mac.
+    pub unbindable: Option<String>,
 }
 
 /// macOS code signature: signing identifier and team.
@@ -111,7 +115,9 @@ facts; **missing facts fail closed**: a lease that requires a process ancestor c
 used over TCP, because the network attestor can't provide a process chain. That is the whole
 difference between modes, as far as the policy is concerned. The constraint matches when a
 process in the chain (the caller included) has the same executable path, pid and generation,
-and the same code identity if the constraint names one (`writ_core::caller::check`).
+and the same code identity if the constraint names one (`writ_core::caller::check`); a process
+marked `unbindable` never matches, and a binding naming one is refused at submission
+(`session`).
 
 ```rust
 /// What a process does, first thing, so the secrets it will hold don't leave through the OS.
@@ -158,7 +164,7 @@ attach refused).
 | `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, Telegram notifier, passphrase unlock, system clock), and, behind a `testing` feature, fakes of each trait and the contract suites (`writ_platform::contract`) every implementation runs |
 | `writ-signer` | The `Signer` trait, the software backend, cross-platform hardware backends behind Cargo features (YubiKey) |
 | `writ-platform-macos` | Everything macOS-only, its system calls in its one `unsafe` module (`sys`): process hardening (M5: `PT_DENY_ATTACH`), the Unix socket peer from its audit token (`peer::audit_token_peer`), the process chain attestor (`attest::ProcessChain`: libproc, code signature), the kqueue watcher (`watch::KqueueWatcher`) (M7), the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and `KeystoreUnlock` |
-| `writ-platform-linux` | Linux-only implementations: process hardening (M5, through `rustix`, no `unsafe`); from M7.1 the `SO_PEERCRED` + `/proc` attestor and the pidfd watcher; later TPM |
+| `writ-platform-linux` | Linux-only implementations, their one `unsafe` call (`getsockopt(SO_PEERPIDFD)`) in `sys`: process hardening (M5), the Unix socket peer from its pidfd (`peer::pidfd_peer`), the process chain attestor (`attest::ProcessChain`) reading `/proc` through a `read::ReadProcess` (the capped process reader `helper::Helper`, or `read::Direct`), the pidfd watcher (`watch::PidfdWatcher`), the capabilities (`caps`) and the startup checks (`kernel`) (M7.1); later TPM |
 | `writd` | `platform.rs`: builds the set of implementations from the configuration and the target OS. The **only** place outside the platform crates with `#[cfg(target_os = …)]` |
 
 The Unix socket transport itself is portable (Unix), so it lives in `writ-platform`
@@ -166,9 +172,10 @@ The Unix socket transport itself is portable (Unix), so it lives in `writ-platfo
 directory decides who connects: the transport refuses one that group or others can write (they
 could put their own socket in the daemon's place), makes the socket `0660`, and replaces only a
 stale socket at its path. What the kernel says about the peer is read at accept by a
-`PeerReader` `writd` picks per OS: user, group and pid everywhere (`PeerInfo::Unix`), and on
-macOS the audit token's pid generation too, so a pid reused after the connect can't be taken
-for the caller. A peer the kernel can't describe is dropped. Under the `network` attestor a
+`PeerReader` `writd` picks per OS: user, group and pid everywhere (`PeerInfo::Unix`), and the
+pid's generation too (on macOS the audit token's pidversion, on Linux the start time read while
+the peer's pidfd shows it running), so a pid reused after the connect can't be taken for the
+caller. A peer the kernel can't describe is dropped. Under the `network` attestor a
 Unix listener is refused at start: none of its callers could be attested. A transport only carries bytes: the gateway speaks
 SSH on it, or TLS and HTTP for the HTTPS approval API, and attests the caller either way.
 
@@ -205,6 +212,52 @@ thread: the service sets a watch under the state lock that the revocation takes.
 generation is checked again once the watch is set, so an exit in between is never missed.
 An exit reported late never ends a watch set on the pid reused since. If the kqueue fails,
 every watch fires, so every bound lease is revoked (fail closed).
+
+### The Linux process chain and session watcher
+
+On Linux the daemon runs as `writd` and the agents as my user, and the kernel lets one user
+read another's `/proc/<pid>/stat` but not its `exe` or `ns/*` links (a ptrace read check:
+`CAP_SYS_PTRACE`, or the same user). So the daemon has a **process reader**: `writd run`'s first
+step, when it starts with `CAP_SYS_PTRACE` (systemd's `AmbientCapabilities`), starts
+`writd proc-reader` (its own binary) on a socket pair, which alone keeps that capability; then
+`writd` drops every capability it holds, before it reads a secret. The reader hardens itself
+(not dumpable, no core dumps), ends with its parent, and answers one pid at a time with what
+`/proc` says of it: parent, start time, executable (whether deleted), pid and mount namespaces,
+each read while a pidfd shows the process running. A compromised `writd` can ask it nothing
+else, and can't attach to it (a process holding a capability its tracer lacks can't be traced).
+An answer late (5 s), broken or oversized ends the reader's use for good: every Unix caller is
+refused from then on, logged once, and it is never started again (nothing left to start it
+with). Started without the capability (a development daemon, the tests), `writd` reads `/proc`
+itself (`read::Direct`), which reaches its own user's processes only.
+
+`attest::ProcessChain` (`attestor: linux_process_chain`):
+
+- **The caller** is the pid `SO_PEERCRED` gives and the pidfd `SO_PEERPIDFD` gives (Linux
+  6.5), both taken at connect; its generation is its start time (`stat`'s 22nd field), read
+  while that pidfd shows it running. Read again with another start time, it is refused.
+- **Each ancestor** is the parent `stat` names, linked when it started no later than its
+  child: a pid reused by a later process breaks the link, and the chain ends there. A parent
+  gone, or one the reader can't read, ends it too: a lease bound past the end is refused, never
+  matched elsewhere. At most 64 processes. An orphan's chain goes to whoever adopted it (a
+  subreaper or pid 1), never through the session it left.
+- **Namespaces**: pids and paths are the daemon's view (the kernel translates `SO_PEERCRED`'s
+  pid, the daemon's `/proc` walks it), so a chain runs through a sandbox (bubblewrap, as some
+  harnesses run their tools) as through anything else. A process in another pid or mount
+  namespace than the host's (pid 1's for the reader: systemd's sandboxing gives `writd` a mount
+  namespace of its own; the daemon's own for `read::Direct`), or whose executable the kernel
+  shows as deleted, is marked `unbindable`.
+- **No code identity**: Linux has no code signature. A constraint naming one denies.
+- **A TCP caller** gets its source address and no chain.
+
+`watch::PidfdWatcher` (`session_watcher: linux`) runs one epoll set with one thread and one
+pidfd per watched process (shared by the leases of a session). The pidfd is opened first and
+the start time checked after, so a pidfd always names the process watched; a process already
+ended, or a pid now running another, is reported at once, off the caller's thread. If the epoll
+set fails, every watch fires.
+
+At start, `kernel` checks by trying the calls (never from a version string): pidfds for the
+watcher (Linux 5.3), and for the attestor also `SO_PEERPIDFD` (Linux 6.5) and a `/proc` mounted
+without `hidepid` (other users' processes visible). Any missing is a startup error naming it.
 
 ## Rules
 
@@ -255,6 +308,17 @@ described in `crates/writd/src/config.rs` and [the operator reference](../operat
 ([the queue in front of a backend](signer.md#the-queue-in-front-of-a-backend)); a backend per
 key comes with M5.5's declarations and M7.5. The keystore's unlock is the passphrase
 (`platform::unlock`); M7.6 brings hardware recipients, picked there too.
+
+```yaml
+# local (native on Linux: make install's local setup)
+transports:
+  agents: [{ unix: /run/writ/agents.sock }]          # writd:writ 0750, systemd's RuntimeDirectory
+  approvals:
+    ssh: [{ unix: /run/writ/approvals.sock }]
+attestor: linux_process_chain
+session_watcher: linux
+keystore: { sealed: { dir: /var/lib/writ/keys, boot: /var/lib/writ/boot } }   # software keys (writd only)
+```
 
 Asking for an implementation the build doesn't have (e.g. `macos_process_chain` on Linux) is
 a startup error, never a silent fallback.

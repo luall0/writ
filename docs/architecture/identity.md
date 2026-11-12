@@ -32,10 +32,14 @@ kernel and walks its ancestry, so a lease can require "caller descends from this
 session".
 
 - Match on the **executable path** (and on macOS the code signature) only: it's resolved by
-  the kernel.
+  the kernel. On Linux, a process whose path doesn't name its program in the daemon's view
+  (in another pid or mount namespace than the host's, a sandbox's or a container's, or with
+  its executable deleted) is marked `unbindable`: never a session's root, never matched.
 - Process name and arguments are advisory: a process can change them itself, so they never
   decide anything.
-- Track processes by pid + pidversion to avoid PID reuse.
+- Track processes by pid + generation to avoid PID reuse: the pidversion on macOS, the start
+  time on Linux, each read while the kernel vouches the pid is still that process (the audit
+  token taken at connect; a pidfd).
 
 In local mode, the lease is also revoked when the session's root process exits
 ([lifecycle](../lease-model.md#lifecycle)). The watches live in memory, so the daemon watches
@@ -48,6 +52,6 @@ None of this is special-cased in the core: the Unix socket is a `Transport`, the
 produced by a `CallerAttestor` as `CallerFacts`, exit notices come from a `SessionWatcher`, and
 `writ-core` checks the lease's caller constraint against the facts, denying when a fact is
 missing ([Platform interfaces](platform.md#caller-facts-and-the-policy)). The macOS
-implementations live in `writ-platform-macos`; the Linux ones (`SO_PEERCRED` and `/proc`, a
-pidfd watcher, no code identity) come the same way in `writ-platform-linux`
-([M7.1](../roadmap.md#m71--local-mode-on-linux)).
+implementations live in `writ-platform-macos`; the Linux ones (the peer's pidfd and `/proc`,
+read by a capped process reader, a pidfd watcher, no code identity) in `writ-platform-linux`
+([platform](platform.md#the-linux-process-chain-and-session-watcher)).

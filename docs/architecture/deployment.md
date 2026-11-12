@@ -63,10 +63,40 @@ Built in [M7](../history/m7-local-mode-on-the-mac.md).
 ## Local (Linux)
 
 The same on a Linux workstation: a systemd system service running as the dedicated system
-user `writd`, its state in `/var/lib/writ` (`0700`), the agents' socket in `/run/writ/`
-reachable through a `writ` group my user is in, with the Linux process chain (`SO_PEERCRED`
-and `/proc`) and a pidfd watcher. Installed by the installer's `local` setup. Built in
-[M7.1](../roadmap.md#m71--local-mode-on-linux).
+user `writd`, isolated from my user, with the Linux process chain (the peer's pidfd and
+`/proc`, read by the daemon's capped process reader) and a pidfd watcher
+([platform](platform.md#the-linux-process-chain-and-session-watcher)). It is the local
+[configuration preset](platform.md#configuration-presets) with the Linux implementations
+plugged in, installed by the [installer](#installing-and-uninstalling)'s `local` setup
+(`deploy/setups/local-linux.sh`, [the operator's page](../operators/install.md)). Linux 6.5 or
+later, with systemd.
+
+| What | Where | Owner, mode |
+|---|---|---|
+| The system user and its own group, the sockets' group (you in it) | `writd` (a system id, no login shell, home `/var/lib/writ`), `writ` | — |
+| The binaries | `/usr/local/bin` (`writd`, `writ`, `writ-sign`), on every `PATH` already | root:root 0755 (the installer refuses a directory on the way you could write: a swapped `writd` would run as `writd`, with its capability) |
+| The configuration | `/etc/writ/writd.yaml` (its paths absolute) | root:root 0644 |
+| The keys and state: `policy.yaml`, `approvers`, `readers`, `keys/`, `boot/`, `state/` | `/var/lib/writ` | `writd` 0700 |
+| The sockets (agents', approvals') | `/run/writ`, made by systemd at each start (`RuntimeDirectory`) | `writd:writ` 0750 |
+| The log | the journal (`journalctl -u writd`) | — |
+| The service | `/etc/systemd/system/writd.service`, enabled and started | root:root 0644 |
+| The installer's manifest | `/etc/writ/install.manifest` | root:root 0644 |
+| Your client | `~/.writ`: `known_hosts` (`writ-local <host key>`), `config` (the two sockets), `reader`, `approver.pub` | yours |
+
+The unit runs `writd run /etc/writ/writd.yaml` as `User=writd`, `Group=writ`, with systemd's
+sandboxing: `NoNewPrivileges`, `ProtectSystem=strict` (the file system read-only but
+`/var/lib/writ` and `/run/writ`), `ProtectHome`, `PrivateTmp`, `PrivateDevices`, the kernel's
+tunables, modules, logs and cgroups protected, no new namespaces, `UMask=0077`, the address
+families Unix and IP only. **One capability**, `CAP_SYS_PTRACE`, the bounding set and ambient,
+for the process reader alone: `writd` starts it first and then drops every capability, before
+it reads a secret. `ptrace` and `process_vm_readv`/`writev` are refused by its system call
+filter, so even the reader can only read `/proc`. Never `ProtectProc=invisible` or
+`PrivatePIDs`: the daemon must see the agents' processes. `LimitMEMLOCK=infinity` (the memory
+lock), `LimitCORE=0`. `Restart=on-failure` (an orderly stop stays stopped), `TimeoutStopSec`
+330 s (the orderly stop's waits), `KillMode=mixed` (SIGTERM to `writd` alone, so its reader
+outlives the stop's waits).
+
+Built in [M7.1](../roadmap.md#m71--local-mode-on-linux).
 
 ## Installing and uninstalling
 

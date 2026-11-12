@@ -90,8 +90,8 @@ through Writ.
 - **The agent on another machine** (a VM, a container) against a daemon on another host:
   detached mode ([M8](../roadmap.md#m8--detached-deployment)). The agent host then holds no
   key and no remote credential at all.
-- **A daemon running as its own user** on your Mac: local mode
-  ([Installing on your Mac](install.md)). The agent can't read the daemon's keys,
+- **A daemon running as its own user** on your Mac or your Linux workstation: local mode
+  ([Installing on your machine](install.md)). The agent can't read the daemon's keys,
   though it still runs as you.
 - **One agent per OS user, container or VM** when several agents share a host. Under one user,
   each could read the others' session files and use their leases
