@@ -2,13 +2,16 @@
 //! software P-256 keys (its stored bytes the key itself behind a header: a fake), and fails on
 //! demand, to hold the helper signer to what a hostile or broken helper may do.
 //!
-//! `writ-fake-se [--fault <op>:<fault>]… [--once <marker file>] [--no-enclave]`: `op` is
+//! `writ-fake-se [--fault <op>:<fault>]… [--once <marker file>] [--record <file>]
+//! [--no-enclave]`: `op` is
 //! `hello`, `create`, `public` or `sign`; `fault` is `crash` (exits mid-answer), `silent`
 //! (never answers), `oversize` (announces an answer past the bound), `bad-point`,
 //! `other-key` (another key's point), `bad-signature` (a signature of other bytes), `refuse`
 //! (refuses with a clean code), `dirty-code` (a code outside the alphabet), `extra-field`,
 //! `unknown-status`. With `--once`, the faults hit only a process that finds no marker (it
-//! writes one): the next helper answers right.
+//! writes one): the next helper answers right. With `--record`, each request's operation and
+//! its first field's length are appended to the file, one line each, before it is answered
+//! (what the tests check never reached the helper).
 
 #![allow(
     clippy::unwrap_used,
@@ -30,6 +33,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut faults: Vec<(String, String)> = Vec::new();
     let mut once = None;
+    let mut record: Option<String> = None;
     let mut enclave = true;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -39,6 +43,7 @@ fn main() {
                 faults.push((op.to_owned(), fault.to_owned()));
             }
             "--once" => once = Some(it.next().unwrap().clone()),
+            "--record" => record = Some(it.next().unwrap().clone()),
             "--no-enclave" => enclave = false,
             other => panic!("unknown argument {other}"),
         }
@@ -60,6 +65,15 @@ fn main() {
         let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
         stdin.read_exact(&mut body).unwrap();
         let (op, fields) = parse(&body);
+        if let Some(record) = &record {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(record)
+                .unwrap();
+            let first = fields.first().map_or(0, Vec::len);
+            writeln!(file, "{op} {first}").unwrap();
+        }
         let fault = faults
             .iter()
             .find(|(o, _)| o == op)

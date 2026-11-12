@@ -43,7 +43,7 @@ On the Mac:
 |---|---|
 | A user for the daemon, hidden, with no shell | `_writd` |
 | A group for the agents' sockets, with you in it | `_writ` |
-| The binaries, owned by root | `/opt/writ/bin` (`writd`, `writ`, `writ-sign`), on your `PATH` through `/etc/paths.d/writ` |
+| The binaries, owned by root | `/opt/writ/bin` (`writd`, `writ`, `writ-sign`, and `writ-se`, the helper `writd` starts for keys in the Secure Enclave), on your `PATH` through `/etc/paths.d/writ` |
 | The daemon's keys, state and configuration, readable by the daemon only | `/var/db/writ` |
 | The sockets the agents and you connect to | `/Library/Application Support/Writ/run` |
 | The daemon's log, readable by you | `/Library/Logs/Writ/writd.log` |

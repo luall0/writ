@@ -48,13 +48,15 @@ check:
 	sh tool/shellcheck.sh deploy/install.sh deploy/frame.sh deploy/setups/*.sh
 	cargo deny --locked check
 
-# The integration tests run the binaries (writd, writ, writ-sign) as they ship, built first on
-# their own in target/bins (writd with the dev keystore the tests use). Every test runs under
+# The integration tests run the binaries (writd, writ, writ-sign, and on the Mac writ-se, the
+# Secure Enclave helper: tool/build-writ-se.sh) as they ship, built first on their own in
+# target/bins (writd with the dev keystore the tests use). Every test runs under
 # cargo-nextest, in a process of its own (.config/nextest.toml), without backtraces (a
 # deliberate panic would cost seconds); the property tests with the fixed seed only (CI adds
 # a random one). Then target/ is pruned to the last builds (docs/testing.md#how-make-test-runs).
 test:
 	CARGO_TARGET_DIR=target/bins $(RECORD) bins build --locked $(BINARIES) --features writd/dev-keystore
+	sh tool/build-writ-se.sh target/bins/debug
 	$(RECORD) test test --locked --workspace --no-run
 	WRIT_BIN_DIR=$(CURDIR)/target/bins/debug RUST_BACKTRACE=0 cargo nextest run --locked --workspace
 	python3 -I tool/target-cache.py prune
@@ -73,6 +75,7 @@ test-props:
 test-agent:
 	@test -n "$(KEY)" || { echo "usage: make test-agent KEY=<public key .pub> [AGENT=<socket>]"; exit 2; }
 	CARGO_TARGET_DIR=target/bins $(RECORD) bins build --locked $(BINARIES) --features writd/dev-keystore
+	sh tool/build-writ-se.sh target/bins/debug
 	WRIT_TEST_AGENT_KEY="$(KEY)" SSH_AUTH_SOCK="$(or $(AGENT),$(SSH_AUTH_SOCK))" \
 		WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo nextest run --locked --workspace --run-ignored only \
 		-E 'binary_id(writ-integration::interop) & test(=your_agent_key_signs_approvals_rust_verifies)'
@@ -105,6 +108,7 @@ fmt:
 # dev/approvers, both gitignored).
 run:
 	$(RECORD) writd-dev build --locked -p writd --features dev-keystore
+	sh tool/build-writ-se.sh target/debug
 	cargo run --locked -p writd --features dev-keystore -- run dev/writd.yaml
 
 # Pins the development daemon's host key and TLS certificate for the client
@@ -133,6 +137,7 @@ hooks:
 # on the terminal; REPOS=undo|keep answers the question about the repositories writ init wired).
 install:
 	cargo build --release --locked $(BINARIES)
+	sh tool/build-writ-se.sh target/release
 	sh deploy/install.sh install
 
 uninstall:

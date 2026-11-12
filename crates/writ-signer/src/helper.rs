@@ -25,10 +25,19 @@
 //! refused and the next one starts a new helper. Started with an empty environment, its
 //! stderr discarded. P-256 with SHA-256 is the only pair it signs with in this build.
 //!
-//! A key whose stored bytes the helper refuses when the signer is built (corrupted, another
-//! device's, or one it dies on) stays listed from the public half the daemon kept, and every
-//! signature with it is refused ([`SignerError::Unusable`]): the daemon keeps running and its
-//! other keys sign. [`HelperSigner::refused`] says which, for the daemon's log and audit log.
+//! **No blob reaches the device unless it is the one the device made for that key.** A
+//! malformed blob does more than crash the helper: one made the Secure Enclave's firmware
+//! panic and the Mac with it (2026-11-12). So what the daemon keeps for a key ([`Stored`]) is
+//! the blob framed with a digest: `writ-se-blob/1\n`, then SHA-256 over that header, the key's
+//! public point and the blob, then the blob. When the signer is built, each key's frame is
+//! checked against the public half the daemon kept **before** the helper sees its blob: a
+//! frame that doesn't check (corrupted, cut, another key's, not a frame) never leaves the
+//! daemon. Only then is the helper asked for the blob's point, which must be the key's.
+//!
+//! A key whose stored bytes are refused when the signer is built stays listed from the public
+//! half the daemon kept, and every signature with it is refused ([`SignerError::Unusable`]):
+//! the daemon keeps running and its other keys sign. [`HelperSigner::refused`] says which, for
+//! the daemon's log and audit log.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -39,6 +48,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use writ_core::names::KeyId;
 use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignerHash};
 use writ_crypto::keypair::RawSignature;
@@ -65,6 +75,59 @@ const MAX_CODE: usize = 64;
 
 /// The pair a helper signs with.
 const PAIR: (KeyAlgorithm, SignerHash) = (KeyAlgorithm::P256, Some(Hash::Sha256));
+
+/// What a stored frame starts with ([`frame`]).
+const FRAME: &[u8] = b"writ-se-blob/1\n";
+
+/// The length of a frame's digest.
+const DIGEST: usize = 32;
+
+/// The digest of `blob` for the key whose public point is `point`.
+fn digest(point: &[u8], blob: &[u8]) -> [u8; DIGEST] {
+    let mut hash = Sha256::new();
+    hash.update(FRAME);
+    hash.update(point);
+    hash.update(blob);
+    hash.finalize().into()
+}
+
+/// The public point of a P-256 public key (SEC1, uncompressed), or None for another key.
+fn point_of(public: &PublicKey) -> Option<&[u8]> {
+    match public.key_data() {
+        KeyData::Ecdsa(key @ EcdsaPublicKey::NistP256(_)) => Some(key.as_sec1_bytes()),
+        _ => None,
+    }
+}
+
+/// What the daemon keeps for a key the helper made: the blob framed with its digest.
+fn frame(public: &PublicKey, blob: &[u8]) -> Result<Stored, HelperError> {
+    let point = point_of(public).ok_or(HelperError::Malformed("not a P-256 point"))?;
+    let mut framed = FRAME.to_vec();
+    framed.extend_from_slice(&digest(point, blob));
+    framed.extend_from_slice(blob);
+    Ok(Stored::new(framed))
+}
+
+/// The blob inside `stored`, if `stored` is the frame made for the key `public`: checked by
+/// the daemon alone, before any helper or device sees it.
+fn unframe(stored: &Stored, public: &PublicKey) -> Result<Stored, &'static str> {
+    let point = point_of(public).ok_or("the public half kept for it is not a P-256 key")?;
+    let rest = stored
+        .as_bytes()
+        .strip_prefix(FRAME)
+        .ok_or("its stored bytes are not a writ-se-blob/1 frame")?;
+    let (kept, blob) = rest
+        .split_first_chunk::<DIGEST>()
+        .ok_or("its stored bytes are cut")?;
+    if blob.is_empty() || blob.len() > MAX_ANSWER {
+        return Err("its stored blob's length is out of bounds");
+    }
+    // Not secret (the digest of a blob the daemon holds): a plain comparison.
+    if &digest(point, blob) != kept {
+        return Err("its stored bytes don't match their digest (corrupted, or another key's)");
+    }
+    Ok(Stored::new(blob.to_vec()))
+}
 
 /// The bytes signed when a key is made, to prove the point answered is the key's.
 const PROBE: &[u8] = b"writ-se/1 probe: the key just made signs";
@@ -250,6 +313,9 @@ fn point(bytes: &[u8]) -> Result<PublicKey, HelperError> {
     if bytes.len() != 65 || bytes.first() != Some(&4) {
         return Err(HelperError::Malformed("not an uncompressed P-256 point"));
     }
+    // On the curve: the encoding alone doesn't say (`EcdsaPublicKey` doesn't check).
+    p256::PublicKey::from_sec1_bytes(bytes)
+        .map_err(|_| HelperError::Malformed("not a point on P-256"))?;
     let key = EcdsaPublicKey::from_sec1_bytes(bytes)
         .map_err(|_| HelperError::Malformed("not a P-256 point"))?;
     if !matches!(key, EcdsaPublicKey::NistP256(_)) {
@@ -330,14 +396,10 @@ impl Drop for Helper {
 }
 
 enum Held {
-    Ready {
-        stored: Stored,
-        public: PublicKey,
-    },
+    /// The blob alone, its frame checked.
+    Ready { blob: Stored, public: PublicKey },
     /// Refused when the signer was built: listed, never signed with.
-    Unusable {
-        public: PublicKey,
-    },
+    Unusable { public: PublicKey },
 }
 
 impl Held {
@@ -381,8 +443,9 @@ pub fn check(config: &HelperConfig) -> Result<(), HelperError> {
 
 impl HelperSigner {
     /// A signer over the helper `config` starts, holding the keys `keys` gives back: each
-    /// one's stored bytes checked by the helper against the public half the daemon kept. One
-    /// it refuses, or answers another public half for, is held unusable and said in
+    /// one's frame checked against the public half the daemon kept (before the helper sees
+    /// its blob), then the blob's point asked of the helper. One whose frame doesn't check,
+    /// or the helper refuses or answers another point for, is held unusable and said in
     /// [`HelperSigner::refused`] (and the daemon's log); two keys with one id are refused.
     pub fn new(
         config: HelperConfig,
@@ -398,26 +461,32 @@ impl HelperSigner {
             if held.contains_key(&id) {
                 return Err(SignerError::DuplicateKey(id));
             }
-            let checked = helper
-                .call(Op::Public, &[stored.as_bytes()], 1)
-                .and_then(|fields| match fields.as_slice() {
-                    [answered] => point(answered),
-                    _ => Err(HelperError::Malformed(
-                        "not the fields the operation answers",
-                    )),
-                });
-            let why = match checked {
-                Ok(answered) if answered.key_data() == public.key_data() => None,
-                Ok(_) => Some("its stored bytes are another key's".to_owned()),
-                Err(e @ HelperError::Malformed(_)) => {
-                    helper.end();
-                    Some(e.to_string())
+            let checked = match unframe(&stored, &public) {
+                Err(why) => Err(why.to_owned()),
+                Ok(blob) => {
+                    let answered =
+                        helper
+                            .call(Op::Public, &[blob.as_bytes()], 1)
+                            .and_then(|fields| match fields.as_slice() {
+                                [answered] => point(answered),
+                                _ => Err(HelperError::Malformed(
+                                    "not the fields the operation answers",
+                                )),
+                            });
+                    match answered {
+                        Ok(answered) if answered.key_data() == public.key_data() => Ok(blob),
+                        Ok(_) => Err("the helper answers another key for its blob".to_owned()),
+                        Err(e @ HelperError::Malformed(_)) => {
+                            helper.end();
+                            Err(e.to_string())
+                        }
+                        Err(e) => Err(e.to_string()),
+                    }
                 }
-                Err(e) => Some(e.to_string()),
             };
-            let entry = match why {
-                None => Held::Ready { stored, public },
-                Some(why) => {
+            let entry = match checked {
+                Ok(blob) => Held::Ready { blob, public },
+                Err(why) => {
                     tracing::error!(
                         backend = %helper.config.backend,
                         key = %id,
@@ -468,11 +537,11 @@ impl HelperSigner {
         }
     }
 
-    /// Signs `data` with the stored key, checked against `public`.
+    /// Signs `data` with the key's blob, the signature checked against `public`.
     fn sign_with(
         &self,
         id: &KeyId,
-        stored: &Stored,
+        blob: &Stored,
         public: &PublicKey,
         data: &[u8],
     ) -> Result<RawSignature, SignerError> {
@@ -484,7 +553,7 @@ impl HelperSigner {
         }
         let fields = self
             .helper
-            .call(Op::Sign, &[stored.as_bytes(), data], 1)
+            .call(Op::Sign, &[blob.as_bytes(), data], 1)
             .map_err(|e| self.failed(id, "the helper did not sign", &e))?;
         let [signature] = fields.as_slice() else {
             return Err(SignerError::Failed(id.clone()));
@@ -531,7 +600,7 @@ impl Signer for HelperSigner {
             });
         }
         match held {
-            Held::Ready { stored, public } => self.sign_with(id, stored, public, data),
+            Held::Ready { blob, public } => self.sign_with(id, blob, public, data),
             Held::Unusable { .. } => Err(SignerError::Unusable(id.clone())),
         }
     }
@@ -560,14 +629,23 @@ impl Signer for HelperSigner {
             .helper
             .call(Op::Create, &[algorithm.name().as_bytes()], 2)
             .map_err(|e| self.failed(&id, "the helper did not make a key", &e))?;
-        let [stored, answered] = fields.as_slice() else {
+        let [blob, answered] = fields.as_slice() else {
             return Err(SignerError::Failed(id));
         };
-        let stored = Stored::new(stored.clone());
+        if blob.is_empty() || blob.len() > MAX_ANSWER {
+            return Err(self.lied(
+                &id,
+                "the helper did not make a key",
+                &HelperError::Malformed("a blob's length out of bounds"),
+            ));
+        }
+        let blob = Stored::new(blob.clone());
         let public =
             point(answered).map_err(|e| self.lied(&id, "the helper did not make a key", &e))?;
         // The key proves the point is its own before it is kept.
-        self.sign_with(&id, &stored, &public, PROBE)?;
+        self.sign_with(&id, &blob, &public, PROBE)?;
+        let stored = frame(&public, blob.as_bytes())
+            .map_err(|e| self.lied(&id, "the helper did not make a key", &e))?;
         let mut keys = self.keys.write().unwrap_or_else(PoisonError::into_inner);
         if keys.contains_key(&id) {
             return Err(SignerError::DuplicateKey(id));
@@ -575,7 +653,7 @@ impl Signer for HelperSigner {
         keys.insert(
             id.clone(),
             Held::Ready {
-                stored: Stored::new(stored.as_bytes().to_vec()),
+                blob,
                 public: public.clone(),
             },
         );

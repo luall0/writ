@@ -22,6 +22,9 @@ libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 writ-platform = { workspace = true, features = ["testing"] }
+# The Secure Enclave helper's tests: the Signer contract on the real Secure Enclave.
+writ-signer = { workspace = true, features = ["testing"] }
+writ-crypto.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

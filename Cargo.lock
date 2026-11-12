@@ -4095,7 +4095,9 @@ dependencies = [
  "tokio",
  "tracing",
  "writ-core",
+ "writ-crypto",
  "writ-platform",
+ "writ-signer",
 ]
 
 [[package]]
@@ -4124,7 +4126,9 @@ dependencies = [
 name = "writ-signer"
 version = "0.0.0"
 dependencies = [
+ "p256",
  "rustls",
+ "sha2 0.10.9",
  "signature",
  "ssh-key",
  "tempfile",

@@ -269,6 +269,12 @@ user at its start ([decision log](decisions.md), 2026-11-12, M7.5).
   - Its path: `signers.se_cryptokit.helper` in `writd.yaml`, `writ-se` beside `writd` by
     default, checked at start (it runs and answers, and the Secure Enclave is there) when a
     key or the TLS key is on `se-cryptokit`.
+- **No blob reaches the Secure Enclave unless it is the one it made for that key** (found
+  while building it, 2026-11-12: corrupted blobs sent to the real device made its firmware
+  panic and crashed the Mac). What the backend hands the daemon to keep is the blob framed
+  with a SHA-256 over the key's public point and the blob, checked before the helper sees it,
+  wherever it is kept (the keystore, the boot tier); no test sends the real device a
+  malformed blob.
 - **The blob is sealed in the keystore** (settled with the user), like a software key: one age
   file (`signing/<id>`, `upstream/<id>`) sealed to the keystore's recipient, its public half
   beside it, its `writ-key/1` header naming the backend; so nothing signs before unseal, and
@@ -336,8 +342,9 @@ Acceptance:
 - [ ] The helper signer against hostile fake helpers: a crash on each request, silence past
       the deadline, a frame past its bound, a bad point, a signature that doesn't verify;
       each refused with its exact error, the daemon's process alive, the next job served.
-- [ ] A corrupted blob and a foreign one are refused with a reason, the key listed and
-      refusing, every other key signing, the daemon running.
+- [ ] A corrupted, cut, bare or foreign blob is refused with a reason **before it reaches the
+      helper or the Secure Enclave** (checked against the fake helper, which records every
+      request), the key listed and refusing, every other key signing, the daemon running.
 - [ ] Commits signed with it verify with `git verify-commit`, as in M3 (both formats), and an
       upstream credential on it pushes.
 - [ ] With the TLS key in the Secure Enclave, HTTPS approvals work after re-pinning, and the

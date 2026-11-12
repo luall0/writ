@@ -19,6 +19,9 @@ required-features = ["testing"]
 [dependencies]
 writ-core.workspace = true
 writ-crypto.workspace = true
+p256.workspace = true
+# The digest framing a helper's blob (helper::frame).
+sha2.workspace = true
 signature.workspace = true
 ssh-key.workspace = true
 thiserror.workspace = true

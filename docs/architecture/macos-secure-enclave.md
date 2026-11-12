@@ -151,8 +151,15 @@ Notes for M7 and M7.5:
   signing after I log out.
 - **The Mac must stay awake:** with the lid closed it sleeps and the daemon pauses (true of
   the agents too).
-- **A corrupted blob crashes the process** inside CryptoKit instead of throwing: the backend
-  must guard against it (check the blob, or load it where a crash can't take the daemon down).
+- **A corrupted blob crashes the process** inside CryptoKit instead of throwing (its own
+  `try!`, `SEP_P256.swift`): the backend must guard against it (check the blob, or load it
+  where a crash can't take the daemon down).
+- **And it can crash the Mac** (found in M7.5, 2026-11-12): many corrupted blobs sent in a
+  row made the Secure Enclave's firmware panic (`SEP Panic: :sks`), which panics the kernel.
+  So M7.5's backend never hands the Secure Enclave a blob it didn't make for that key: each
+  blob is kept framed with a digest over the key's public point, checked before use
+  ([signer](signer.md#a-helper-process)), and no test sends one a malformed blob
+  ([testing](../testing.md#hardened-tests)).
 - The first signatures after a boot take 170–420 ms, then 15–45 ms.
 
 ## Summary

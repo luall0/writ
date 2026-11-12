@@ -188,12 +188,22 @@ tested on every OS against a fake helper (`writ-fake-se`, built with `testing` o
   before it is kept. A helper that dies, answers wrong or stays silent past its deadline is
   killed and the job refused (`Failed`, `Timeout`); the next job starts a new helper. Its own
   refusal keeps it. ([security inventory](../security.md#untrusted-inputs))
+- **No blob reaches the device unless it is the one the device made for that key.** A
+  malformed blob does more than crash the helper: corrupted ones sent to the real Secure
+  Enclave made its firmware panic and the Mac with it (2026-11-12). So what `create_key`
+  answers in `stored` is the blob **framed**: `writ-se-blob/1\n`, a SHA-256 over that header,
+  the key's public point and the blob, then the blob. Wherever the daemon keeps it (sealed in
+  the keystore, whose age encryption already refuses a changed file; or the boot tier, a
+  plain file), the frame is checked against the key's kept public half before the helper
+  sees the blob: corrupted, cut, bare, another key's, or a kept half that isn't P-256 never
+  leaves the daemon. The digest guards against damage, not against someone who can write the
+  daemon's files ([threat model](../threat-model.md#residual-risks-v1)).
 - **Built from what the keystore holds:** `HelperSigner::new` takes each key's stored bytes
-  and the public half the daemon kept, and asks the helper for the point the bytes hold. A
-  key it refuses (corrupted, another Mac's, one it dies on) or answers another point for stays
-  listed from the kept public half and refuses every signature (`SignerError::Unusable`,
-  naming `writ admin key rotate`); `refused()` says which and why, for the daemon's log and
-  audit log. Every other key signs.
+  and the public half the daemon kept, checks the frame, then asks the helper for the point
+  the blob holds (on the curve, checked, and the key's). A key refused at either step (one the
+  helper refuses or dies on, too) stays listed from the kept public half and refuses every
+  signature (`SignerError::Unusable`, naming `writ admin key rotate`); `refused()` says which
+  and why, for the daemon's log and audit log. Every other key signs.
 
 The daemon signs commits with `sshsig`, in git's namespace `git`, with the key the lease's
 template names (`signing_key`) and the hash its declaration gives. Every key is

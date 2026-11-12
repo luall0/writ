@@ -22,7 +22,7 @@ LOG=$LOGS/writd.log
 PLIST=$(sys /Library/LaunchDaemons/$LABEL.plist)
 WHOME=${WRIT_HOME:-$HOME/.writ}
 ME=$(id -un)
-BINARIES_SHIPPED="writd writ writ-sign"
+BINARIES_SHIPPED="writd writ writ-sign writ-se"
 # The ids the role user and the sockets' group take: the hidden system range.
 ID_FIRST=450
 ID_LAST=499

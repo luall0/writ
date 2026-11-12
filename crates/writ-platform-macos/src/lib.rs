@@ -7,6 +7,7 @@
 //! | `CallerAttestor` | [`attest::ProcessChain`] |
 //! | `SessionWatcher` | [`watch::KqueueWatcher`] |
 //! | Unix socket peer (`PeerReader`) | [`peer::audit_token_peer`] |
+//! | `Signer` (`se-cryptokit`) | `writ_signer::helper` over `writ-se` ([`secure_enclave`]) |
 //!
 //! The calls `rustix` has no wrapper for are in [`sys`], the crate's one `unsafe` module.
 
@@ -15,6 +16,7 @@
 pub mod attest;
 pub mod hardening;
 pub mod peer;
+pub mod secure_enclave;
 pub mod watch;
 // The crate's only unsafe code: the calls rustix doesn't wrap, each with its SAFETY.
 #[allow(unsafe_code)]

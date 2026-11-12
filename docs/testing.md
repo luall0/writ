@@ -111,6 +111,13 @@ These rules hold for every test, at every level.
     before the change) has a test that makes the step after it fail (`FailingSigner`,
     `AuditBreaker`, `StoreBreaker`) and checks what is left; a fix's test is seen to fail
     without the fix before it is committed.
+- **Hardware is never fuzzed.** Hostile input for a hardware backend (corrupted, cut,
+  random or foreign blobs, malformed requests) goes to a fake (`writ-fake-se`), never to the
+  real device: on 2026-11-12, corrupted CryptoKit blobs sent to the real Secure Enclave made
+  its firmware panic (`SEP Panic: :sks`) and crashed the Mac. A test on the real device
+  (`crates/writ-platform-macos/tests/secure_enclave.rs`) does only what the daemon does:
+  keys made, framed, given back and signed with. That the daemon refuses a bad blob before
+  the device sees it is tested against the fake, which records every request it gets.
 - **Fixtures are shared, not copied**: the test kits and the integration harness hold the
   service setup, the approver's signatures, the agent, the daemon. A fixture edited for a test
   asserts the edit applied, so a drifted fixture fails instead of weakening the test.

@@ -176,13 +176,36 @@ impl Fake {
         }
     }
 
-    /// `deploy/install.sh <action>` in the fake root, with `env` on top.
-    fn command(&self, action: &str, env: &[(&str, &str)]) -> Command {
-        let deploy = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/install.sh");
-        let binaries = writ_integration::binaries::bin("writd")
+    /// The binaries the installer installs: the ones `make test` built, and `writ-se` (the
+    /// Secure Enclave helper), built there on the Mac only, a stub elsewhere (the macOS setup
+    /// runs against a fake root on Linux too).
+    fn binaries(&self) -> PathBuf {
+        let built = writ_integration::binaries::bin("writd")
             .parent()
             .unwrap()
             .to_path_buf();
+        let dir = self.root.parent().unwrap().join("binaries");
+        if !dir.exists() {
+            fs::create_dir_all(&dir).unwrap();
+            for name in ["writd", "writ", "writ-sign"] {
+                std::os::unix::fs::symlink(built.join(name), dir.join(name)).unwrap();
+            }
+            let helper = built.join("writ-se");
+            if helper.exists() {
+                std::os::unix::fs::symlink(helper, dir.join("writ-se")).unwrap();
+            } else {
+                fs::write(dir.join("writ-se"), "#!/bin/sh\nexit 1\n").unwrap();
+                fs::set_permissions(dir.join("writ-se"), fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+        }
+        dir
+    }
+
+    /// `deploy/install.sh <action>` in the fake root, with `env` on top.
+    fn command(&self, action: &str, env: &[(&str, &str)]) -> Command {
+        let deploy = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/install.sh");
+        let binaries = self.binaries();
         let mut command = Command::new("/bin/sh");
         command
             .arg(deploy)
@@ -373,7 +396,8 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
         "setup local-macos\ngroup _writd\nuser _writd\ngroup _writ\nmember _writ ".to_owned()
             + &whoami()
             + "\ndir /opt\ndir /opt/writ\ndir /opt/writ/bin\nfile /opt/writ/bin/writd\n\
-               file /opt/writ/bin/writ\nfile /opt/writ/bin/writ-sign\nfile /etc/paths.d/writ\n\
+               file /opt/writ/bin/writ\nfile /opt/writ/bin/writ-sign\nfile /opt/writ/bin/writ-se\n\
+               file /etc/paths.d/writ\n\
                tree /Library/Application Support/Writ/run\ntree /Library/Logs/Writ\n\
                userdir ~/.writ\nuserdata ~/.writ/reader\ndata /var/db/writ\n\
                file /Library/LaunchDaemons/dev.writ.writd.plist\ndaemon dev.writ.writd\n\

@@ -174,54 +174,150 @@ fn every_way_a_helper_fails_to_sign_is_refused_and_the_next_job_served() {
     ));
 }
 
+/// Stored bytes that aren't the frame made for the key, each with why it is refused.
+fn tampered(good: &Load, other: &Load) -> Vec<(&'static str, Vec<u8>, &'static str)> {
+    let bytes = good.stored.as_bytes();
+    let frame_len = b"writ-se-blob/1\n".len();
+    let flip = |at: usize| {
+        let mut b = bytes.to_vec();
+        b[at] ^= 0x5a;
+        b
+    };
+    let digest = "its stored bytes don't match their digest (corrupted, or another key's)";
+    vec![
+        ("flipped-blob", flip(bytes.len() - 7), digest),
+        ("flipped-digest", flip(frame_len + 3), digest),
+        (
+            "flipped-header",
+            flip(2),
+            "its stored bytes are not a writ-se-blob/1 frame",
+        ),
+        ("cut-blob", bytes[..bytes.len() - 1].to_vec(), digest),
+        (
+            "cut-digest",
+            bytes[..frame_len + 31].to_vec(),
+            "its stored bytes are cut",
+        ),
+        (
+            "no-blob",
+            bytes[..frame_len + 32].to_vec(),
+            "its stored blob's length is out of bounds",
+        ),
+        (
+            "empty",
+            Vec::new(),
+            "its stored bytes are not a writ-se-blob/1 frame",
+        ),
+        // The bare blob, as the helper made it: never sent without its frame.
+        (
+            "bare",
+            bytes[frame_len + 32..].to_vec(),
+            "its stored bytes are not a writ-se-blob/1 frame",
+        ),
+        // Another key's frame, whole and well-formed, under this key's public half.
+        ("other-key", other.stored.as_bytes().to_vec(), digest),
+    ]
+}
+
 #[test]
-fn stored_bytes_refused_at_start_leave_the_key_listed_and_unusable() {
-    let mut loads = made(&["good", "other"]);
-    let public = loads[0].public.clone();
-    loads.push(Load {
-        id: id("corrupted"),
-        stored: Stored::new(b"fake-se/1\nnot a key".to_vec()),
-        public: public.clone(),
-    });
-    // Another key's stored bytes under this one's public half.
-    let other = loads.remove(1);
-    loads.push(Load {
-        id: id("swapped"),
-        stored: other.stored,
-        public: public.clone(),
-    });
-    let held = HelperSigner::new(config(&[], PATIENT), loads).unwrap();
-    let listed: Vec<KeyId> = held
-        .list_keys()
-        .unwrap()
-        .into_iter()
-        .map(|k| k.id)
+fn stored_bytes_not_framed_for_the_key_never_reach_the_helper() {
+    let made = made(&["good", "other"]);
+    let cases = tampered(&made[0], &made[1]);
+    let public = made[0].public.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("requests");
+    let mut loads: Vec<Load> = cases
+        .iter()
+        .map(|(name, bytes, _)| Load {
+            id: id(name),
+            stored: Stored::new(bytes.clone()),
+            public: public.clone(),
+        })
         .collect();
-    assert_eq!(listed, [id("corrupted"), id("good"), id("swapped")]);
-    assert_eq!(
-        held.refused(),
-        [
-            (
-                id("corrupted"),
-                "the helper refused: invalid-blob".to_owned()
-            ),
-            (
-                id("swapped"),
-                "its stored bytes are another key's".to_owned()
-            ),
-        ]
+    loads.extend(made);
+    let args = ["--record", record.to_str().unwrap()];
+    let held = HelperSigner::new(config(&args, PATIENT), loads).unwrap();
+    // The helper was asked for the two good keys' points, and nothing else.
+    let requests = std::fs::read_to_string(&record).unwrap();
+    assert_eq!(requests.lines().count(), 2, "{requests}");
+    assert!(
+        requests.lines().all(|l| l.starts_with("public ")),
+        "{requests}"
     );
-    for refused in ["corrupted", "swapped"] {
+    let mut expected: Vec<(KeyId, String)> = cases
+        .iter()
+        .map(|(name, _, why)| (id(name), (*why).to_owned()))
+        .collect();
+    expected.sort();
+    let mut refused = held.refused().to_vec();
+    refused.sort();
+    assert_eq!(refused, expected);
+    for (name, _, _) in &cases {
         let error = held
-            .sign(&id(refused), b"data", Some(Hash::Sha256))
+            .sign(&id(name), b"data", Some(Hash::Sha256))
             .unwrap_err();
-        assert!(matches!(&error, SignerError::Unusable(k) if k == &id(refused)));
+        assert!(matches!(&error, SignerError::Unusable(k) if k == &id(name)));
         assert!(
             error.to_string().contains("writ admin key rotate"),
             "{error}"
         );
     }
+    // Listed all the same, from the public half kept; the good keys sign.
+    assert_eq!(held.list_keys().unwrap().len(), cases.len() + 2);
     held.sign(&id("good"), b"data", Some(Hash::Sha256)).unwrap();
+    held.sign(&id("other"), b"data", Some(Hash::Sha256))
+        .unwrap();
+    let asked = std::fs::read_to_string(&record).unwrap().lines().count();
+    assert_eq!(asked, 4, "two points, then two signatures");
+    // A public half kept that isn't P-256: refused before the helper too.
+    let ed25519 = writ_crypto::keypair::KeyPair::generate(KeyAlgorithm::Ed25519)
+        .unwrap()
+        .public_key();
+    let good = made_one("k");
+    let held = HelperSigner::new(
+        config(&args, PATIENT),
+        [Load {
+            id: id("k"),
+            stored: good.stored,
+            public: ed25519,
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        held.refused(),
+        [(
+            id("k"),
+            "the public half kept for it is not a P-256 key".to_owned()
+        )]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&record).unwrap().lines().count(),
+        asked,
+        "nothing more asked"
+    );
+}
+
+fn made_one(name: &str) -> Load {
+    made(&[name]).pop().unwrap()
+}
+
+#[test]
+fn a_framed_blob_the_helper_refuses_or_reads_as_another_key_is_unusable() {
+    for (fault, why) in [
+        ("public:refuse", "the helper refused: refused-on-demand"),
+        (
+            "public:other-key",
+            "the helper answers another key for its blob",
+        ),
+        (
+            "public:bad-point",
+            "the helper's answer is malformed: not a point on P-256",
+        ),
+    ] {
+        let held =
+            HelperSigner::new(config(&["--fault", fault], PATIENT), [made_one("k")]).unwrap();
+        assert_eq!(held.refused(), [(id("k"), why.to_owned())], "{fault}");
+    }
 }
 
 #[test]
