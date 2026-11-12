@@ -72,6 +72,8 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | picked as [M7.1](../history/m7.1-local-mode-on-linux.md) |
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
+| [A TLS link to an upstream proxy](#a-tls-link-to-an-upstream-proxy) | Upstream | hardening | S | idea |
+| [A proxy program](#a-proxy-program) | Upstream | feature | M | idea |
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
 | [One program, several repositories](#one-program-several-repositories) | Clients | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
 | [Submodules](#submodules) | Clients, Gateway | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
@@ -174,6 +176,22 @@ Bind a session certificate to the source address it was requested from (SSH cert
 Deploy keys or bot accounts so upstream credentials stop having account-wide access, and the
 repo registry is no longer the only per-repo boundary
 ([residual risks](../threat-model.md#residual-risks-v1)).
+
+### A TLS link to an upstream proxy
+
+Since [M7.2](../roadmap.md#m72--upstream-proxies), a repo's upstream can be reached through a
+SOCKS5 or HTTP CONNECT proxy, the link to the proxy in clear: its password crosses the network
+to it as both protocols send it. An `https://` proxy (CONNECT inside TLS, the proxy's
+certificate verified against the system's CAs or a pinned one) would keep the password off the
+wire for a proxy reached over an untrusted network.
+
+### A proxy program
+
+M7.2's proxies are protocols the daemon speaks itself. Some networks need a program in between
+(an SSH bastion with `ssh -W`, a corporate client, `nc` variants), what OpenSSH's
+`ProxyCommand` runs. A program the daemon runs per connection, with `%h` and `%p`, named in
+`writd.yaml` (a host's setting, read at start, like `mirrors.ssh`) and only *referenced* by
+name from the signed policy: a signed change must never choose a program the daemon runs.
 
 ### Old upstream histories
 
