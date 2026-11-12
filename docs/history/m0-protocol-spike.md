@@ -73,7 +73,7 @@ Acceptance checklist, all must pass:
   - [x] If A and B fail: Plan D's YubiKey PIN caching per PC/SC session.
     *Not needed: Plan B passed.*
   - [x] The result recorded: the backend for [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac)
-        and how the daemon runs in [M7](../roadmap.md#m7--local-mode-on-the-mac) (app bundle or dedicated
+        and how the daemon runs in [M7](m7-local-mode-on-the-mac.md) (app bundle or dedicated
         user), in the [decision log](../decisions.md) (settles Q27); the doc's status, its ⚠️
         marks and its "What doesn't work" list updated.
     *`se-cryptokit` under a `_writd` LaunchDaemon ([Q33](../decisions.md)); results in

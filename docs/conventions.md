@@ -301,7 +301,7 @@ fixing it, often in a hurry. It must stay readable by a human. The design pages 
 **Status**
 
 - **Not built yet** is said in bold with its milestone and a roadmap link ("**Refused by this
-  build** ([M7](roadmap.md#m7--local-mode-on-the-mac))"), and nowhere else: no milestone
+  build** ([M8](roadmap.md#m8--detached-deployment))"), and nowhere else: no milestone
   history, no internal names (crates, functions, test names) unless the reader needs them.
 - **Commands the pipeline runs keep their exact text** (hard rule 18): every `sh` block of a
   page listed in [commands the docs show](end-to-end.md#commands-the-docs-show) is run by

@@ -58,7 +58,7 @@ implementations plugged in. Installed by the [installer](#installing-and-uninsta
 | The installer's manifest | `/Library/Application Support/Writ/install.manifest` | root:wheel 0644 |
 | Your client | `~/.writ`: `known_hosts` (`writ-local <host key>`), `config` (the two sockets), `reader`, `approver.pub` | yours |
 
-Built in [M7](../roadmap.md#m7--local-mode-on-the-mac).
+Built in [M7](../history/m7-local-mode-on-the-mac.md).
 
 ## Local (Linux)
 
@@ -76,7 +76,7 @@ those this build has on this OS (`SETUP=<name>` answers without asking), and
 
 | Setup | Where | What it installs | Built in |
 |---|---|---|---|
-| `local` | The Mac | The `_writd` user, the binaries, the LaunchDaemon, `writd init`, my user's `~/.writ/` | [M7](../roadmap.md#m7--local-mode-on-the-mac) |
+| `local` | The Mac | The `_writd` user, the binaries, the LaunchDaemon, `writd init`, my user's `~/.writ/` | [M7](../history/m7-local-mode-on-the-mac.md) |
 | `local` | A Linux workstation | The `writd` user and `writ` group, the binaries, the systemd unit, `writd init`, my user's `~/.writ/` | [M7.1](../roadmap.md#m71--local-mode-on-linux) |
 | `detached` | The daemon host (Linux, Docker) | The image, the compose file and `writd.yaml`, the volumes, `writd init`, the stack started | [M8](../roadmap.md#m8--detached-deployment) |
 | `client` | A machine using a detached daemon (the approver's Mac, an agent host) | `writ` and `writ-sign`, `~/.writ/` with the daemon's endpoints and pins, the approval and reader keys on the approver's machine | [M8](../roadmap.md#m8--detached-deployment) |
