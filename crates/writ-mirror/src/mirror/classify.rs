@@ -23,6 +23,9 @@ impl MirrorGuard {
                 repo,
                 max: self.shared.config.max_fetch_bytes,
             }
+        } else if let Some(failure @ crate::dial::DialError::Proxy { .. }) = access.dial_failure() {
+            // git only says the proxy failed: the dialer says why.
+            MirrorError::Proxy { repo, failure }
         } else if text.contains("Host key verification failed") {
             MirrorError::HostKey { repo }
         } else if access.transport == Transport::Https && is_certificate_failure(&text) {
@@ -87,7 +90,7 @@ fn is_certificate_failure(stderr: &str) -> bool {
 
 /// `text` [`shown`], with every form of `token` (sent as `user`) taken out, before and after
 /// its hidden characters go.
-fn redacted(text: &[u8], token: &str, user: &str) -> String {
+pub(crate) fn redacted(text: &[u8], token: &str, user: &str) -> String {
     let forms = token_forms(token, user);
     let redact = |text: &str| {
         forms

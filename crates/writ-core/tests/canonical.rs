@@ -387,6 +387,25 @@ fn a_scan_document_is_its_daemon_host_port_and_nonce_and_nothing_else() {
          \"host\":\"forgejo.home\",\"port\":2222,\"nonce\":\"07070707070707070707070707070707\"}"
     );
     assert_eq!(Scan::from_canonical(&bytes).unwrap(), scan);
+    // Through a proxy (M7.2): named last; without one, the bytes above, unchanged.
+    let through = scan
+        .clone()
+        .through(Some("tor".parse().unwrap()))
+        .canonical_bytes()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(through.clone()).unwrap(),
+        String::from_utf8(bytes.clone())
+            .unwrap()
+            .replace("}", ",\"proxy\":\"tor\"}")
+    );
+    assert_eq!(
+        Scan::from_canonical(&through)
+            .unwrap()
+            .proxy
+            .map(|p| p.to_string()),
+        Some("tor".to_owned())
+    );
     let text = String::from_utf8(bytes).unwrap();
     for (from, to, why) in [
         ("writ-scan/1", "writ-unseal/1", "unknown variant"),
@@ -396,6 +415,9 @@ fn a_scan_document_is_its_daemon_host_port_and_nonce_and_nothing_else() {
         ("07070707070707070707070707070707", "0707", "boot nonce"),
         (",\"nonce\"", ",\"extra\":1,\"nonce\"", "unknown field"),
         ("{\"kind\"", "{ \"kind\"", "canonical form"),
+        // A proxy that isn't a name, and an explicit null (absent is the only "directly").
+        ("}", ",\"proxy\":\"-x\"}", "proxy name"),
+        ("}", ",\"proxy\":null}", "canonical form"),
     ] {
         let bad = text.replacen(from, to, 1);
         assert_ne!(bad, text);

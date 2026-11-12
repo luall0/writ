@@ -117,6 +117,27 @@ const HOST_FIELDS: &[Field] = &[required(
     "the host keys, `<type> <base64>` as OpenSSH writes them, 1 to 16",
 )];
 
+const PROXY_FIELDS: &[Field] = &[
+    required(
+        "url",
+        Text,
+        "socks5://[user@]host:port or http://[user@]host:port (Tor: socks5://127.0.0.1:9050)",
+    ),
+    field(
+        "credential",
+        Text,
+        "with a user in the URL: a token key on the proxy's host, holding the password",
+    ),
+    or(
+        field(
+            "connect_timeout",
+            Text,
+            "how long reaching upstream through it may take, 1s to 5m",
+        ),
+        "30s",
+    ),
+];
+
 const REPO_FIELDS: &[Field] = &[
     required(
         "upstream",
@@ -127,6 +148,14 @@ const REPO_FIELDS: &[Field] = &[
         "upstream_credential",
         Text,
         "a key declared with use: upstream, of the kind the URL takes",
+    ),
+    or(
+        field(
+            "proxy",
+            Text,
+            "a proxy in proxies, to reach upstream through",
+        ),
+        "none: upstream reached directly",
     ),
     required(
         "templates",
@@ -248,6 +277,7 @@ pub fn fields(section: Section) -> &'static [Field] {
     match section {
         Section::Keys => KEY_FIELDS,
         Section::UpstreamHosts => HOST_FIELDS,
+        Section::Proxies => PROXY_FIELDS,
         Section::Repos => REPO_FIELDS,
         Section::Templates => TEMPLATE_FIELDS,
     }

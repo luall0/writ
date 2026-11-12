@@ -238,6 +238,7 @@ impl GitGateway {
                     scan_timeout: writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE,
                 },
                 registry.repos(),
+                registry.proxies(),
                 upstream_signer,
                 &tokens,
             ))

@@ -117,6 +117,16 @@ impl SshUrl {
         &self.url
     }
 
+    /// The host, as the URL names it (an IPv6 address without its brackets).
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The port, 22 when the URL names none.
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(22)
+    }
+
     /// The name ssh looks the host key up by: `host`, or `[host]:port` off port 22.
     pub fn known_hosts_name(&self) -> String {
         match self.port {

@@ -210,7 +210,21 @@ async fn scan(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Op
         .mirrors()
         .map(|m| m.scan_timeout())
         .unwrap_or(writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE);
-    let scanned = writ_mirror::scan::scan(host.as_str(), port, deadline).await;
+    // Through the proxy the signed scan names, as the policy in force declares it.
+    let proxy = checked.scan().proxy.clone();
+    let dialer = match proxy.as_ref() {
+        None => Ok(writ_mirror::dial::Dialer::Direct),
+        Some(_) => gateway
+            .mirrors()
+            .map_err(|e| e.to_string())
+            .and_then(|m| m.dialer(proxy.as_ref())),
+    };
+    let scanned = match dialer {
+        Ok(dialer) => writ_mirror::scan::scan(host.as_str(), port, &dialer, deadline)
+            .await
+            .map_err(|e| e.to_string()),
+        Err(why) => Err(why),
+    };
     let service = gateway.service().clone();
     match scanned {
         Ok(keys) => {
@@ -244,8 +258,7 @@ async fn scan(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Op
                 keys: shown,
             }))
         }
-        Err(e) => {
-            let why = e.to_string();
+        Err(why) => {
             let logged = (checked.clone(), why.clone());
             blocking(move || {
                 service.scan_logged(Some(&logged.0), Err(&logged.1), &facts);

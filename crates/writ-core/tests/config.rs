@@ -1371,3 +1371,262 @@ fn a_policy_with_no_entry_is_one_to_start_from() {
         "{written}"
     );
 }
+
+/// The test policy with `proxies` (each line one entry), extra `keys`, and `omega-code`
+/// reached through `repo_proxy` when given.
+fn with_proxies(proxies: &str, keys: &str, repo_proxy: Option<&str>) -> String {
+    let mut text = POLICY
+        .replacen("\nrepos:\n", &format!("\nproxies:\n{proxies}\nrepos:\n"), 1)
+        .replacen("keys:\n", &format!("keys:\n{keys}"), 1);
+    if let Some(proxy) = repo_proxy {
+        text = text.replacen(
+            "    upstream_credential: upstream-github-01\n",
+            &format!("    upstream_credential: upstream-github-01\n    proxy: {proxy}\n"),
+            1,
+        );
+    }
+    text
+}
+
+#[test]
+fn a_proxy_takes_a_credential_exactly_with_a_user_on_its_host() {
+    use writ_core::config::{ProxyScheme, Section};
+    use writ_core::names::ProxyName;
+
+    let tor_key = "  tor-pass: { use: upstream, kind: token, host: Tor }\n";
+    let ok = with_proxies(
+        "  tor: { url: \"socks5://writ@tor:9050\", credential: tor-pass, connect_timeout: 2m }\n  \
+         office: { url: \"http://[::1]:3128\" }\n",
+        tor_key,
+        Some("tor"),
+    );
+    let policy = PolicyConfig::from_yaml(&ok).unwrap();
+    let tor: ProxyName = "tor".parse().unwrap();
+    let proxy = policy.proxy(&tor).unwrap();
+    assert_eq!(proxy.url.scheme(), ProxyScheme::Socks5);
+    assert_eq!(proxy.connect_timeout().seconds(), 120);
+    let office = policy.proxy(&"office".parse().unwrap()).unwrap();
+    assert_eq!(office.connect_timeout().seconds(), 30);
+    assert_eq!(
+        policy.proxy_users(&tor),
+        vec!["omega-code".parse().unwrap()]
+    );
+    let users = policy.key_users(&"tor-pass".parse().unwrap());
+    assert_eq!(users.proxies, vec![tor.clone()]);
+    assert_eq!(users.to_string(), "proxies tor");
+    assert_eq!(
+        policy.entry_names(Section::Proxies),
+        vec!["office".to_owned(), "tor".to_owned()]
+    );
+    // The canonical layout reads back to itself, the section between the pins and the repos.
+    let written = policy.to_yaml();
+    assert_eq!(PolicyConfig::from_yaml(&written).unwrap(), policy);
+    let pins = written.find("\nupstream_hosts:").unwrap();
+    let proxies = written.find("\nproxies:\n").unwrap();
+    let repos = written.find("\nrepos:\n").unwrap();
+    assert!(pins < proxies && proxies < repos, "{written}");
+    assert_eq!(
+        policy.entry_yaml(Section::Proxies, "tor").unwrap(),
+        "tor:\n  url: \"socks5://writ@tor:9050\"\n  credential: tor-pass\n  connect_timeout: 2m\n"
+    );
+    assert!(written.contains("    proxy: tor\n"), "{written}");
+
+    let signing = "  sign-key: { use: signing, format: ssh, algorithm: ed25519 }\n";
+    let ssh_key = "  ssh-key: { use: upstream, kind: ssh, algorithm: ed25519 }\n";
+    let other_host = "  elsewhere: { use: upstream, kind: token, host: proxy.corp }\n";
+    for (case, text, expected) in [
+        (
+            "a user without a credential",
+            with_proxies("  tor: { url: \"socks5://writ@tor:9050\" }\n", "", None),
+            "proxies.tor.credential: required with a user in the URL",
+        ),
+        (
+            "a credential without a user",
+            with_proxies(
+                "  tor: { url: \"socks5://tor:9050\", credential: tor-pass }\n",
+                tor_key,
+                None,
+            ),
+            "proxies.tor.credential: only with a user in the URL",
+        ),
+        (
+            "an undeclared credential",
+            with_proxies(
+                "  tor: { url: \"socks5://u@tor:9050\", credential: nowhere }\n",
+                "",
+                None,
+            ),
+            "proxies.tor.credential: nowhere is not declared in keys",
+        ),
+        (
+            "a signing key",
+            with_proxies(
+                "  tor: { url: \"socks5://u@tor:9050\", credential: sign-key }\n",
+                signing,
+                None,
+            ),
+            "proxies.tor.credential: keys.sign-key is not a token",
+        ),
+        (
+            "an ssh credential",
+            with_proxies(
+                "  tor: { url: \"socks5://u@tor:9050\", credential: ssh-key }\n",
+                ssh_key,
+                None,
+            ),
+            "proxies.tor.credential: keys.ssh-key is not a token",
+        ),
+        (
+            "a token for another host",
+            with_proxies(
+                "  tor: { url: \"socks5://u@tor:9050\", credential: elsewhere }\n",
+                other_host,
+                None,
+            ),
+            "proxies.tor.credential: keys.elsewhere is a token for proxy.corp, not for this \
+             proxy's host tor",
+        ),
+        (
+            "a timeout under 1s",
+            with_proxies(
+                "  tor: { url: \"socks5://tor:9050\", connect_timeout: 0s }\n",
+                "",
+                None,
+            ),
+            "proxies.tor.connect_timeout: 0s, must be from 1s to 5m",
+        ),
+        (
+            "a timeout over 5m",
+            with_proxies(
+                "  tor: { url: \"socks5://tor:9050\", connect_timeout: 301s }\n",
+                "",
+                None,
+            ),
+            "proxies.tor.connect_timeout: 301s, must be from 1s to 5m",
+        ),
+        (
+            "an unknown field",
+            with_proxies("  tor: { url: \"socks5://tor:9050\", via: x }\n", "", None),
+            "proxies.tor.via: unknown field `via`, expected one of url, credential, connect_timeout",
+        ),
+        (
+            "a bad URL",
+            with_proxies("  tor: { url: \"socks5h://tor:9050\" }\n", "", None),
+            "proxies.tor.url: write socks5://",
+        ),
+        (
+            "a repo naming no declared proxy",
+            with_proxies(
+                "  tor: { url: \"socks5://tor:9050\" }\n",
+                "",
+                Some("elsewhere"),
+            ),
+            "repos.omega-code.proxy: elsewhere is not declared in proxies",
+        ),
+    ] {
+        assert_error(&error_of(&text), expected);
+        let _ = case;
+    }
+    // The timeout's bounds themselves are taken.
+    for bound in ["1s", "5m"] {
+        let text = with_proxies(
+            &format!("  tor: {{ url: \"socks5://tor:9050\", connect_timeout: {bound} }}\n"),
+            "",
+            None,
+        );
+        assert!(PolicyConfig::from_yaml(&text).is_ok(), "{bound}");
+    }
+    // One key is a repo's credential or a proxy's, never both.
+    let shared = with_upstream(
+        "https://github.com/user/omega-code.git",
+        "gh-token",
+        "  gh-token: { use: upstream, kind: token, host: github.com }\n",
+    )
+    .replacen(
+        "\nrepos:\n",
+        "\nproxies:\n  gh: { url: \"http://u@github.com:3128\", credential: gh-token }\n\nrepos:\n",
+        1,
+    );
+    assert_error(
+        &error_of(&shared),
+        "repos.omega-code.upstream_credential: keys.gh-token is the password of proxies.gh",
+    );
+}
+
+#[test]
+fn at_most_sixty_four_proxies_are_declared() {
+    let proxies = |n: usize| -> String {
+        (0..n)
+            .map(|i| format!("  p{i}: {{ url: \"socks5://proxy:1080\" }}\n"))
+            .collect()
+    };
+    assert!(PolicyConfig::from_yaml(&with_proxies(&proxies(64), "", None)).is_ok());
+    assert_error(
+        &error_of(&with_proxies(&proxies(65), "", None)),
+        "proxies: at most 64 proxies are declared",
+    );
+}
+
+#[test]
+fn a_proxy_is_edited_field_by_field_and_a_repo_names_it() {
+    use writ_core::config::Section;
+    use writ_core::config::edit::{self, FieldEdit};
+    use writ_core::units::Duration;
+
+    let policy = PolicyConfig::from_yaml(POLICY).unwrap();
+    let edits = |list: &[&str]| -> Vec<FieldEdit> {
+        list.iter().map(|e| FieldEdit::parse(e).unwrap()).collect()
+    };
+    let min = Duration::from_seconds(300);
+    let added = edit::add(
+        &policy,
+        Section::Proxies,
+        "tor",
+        &edits(&["url=socks5://127.0.0.1:9050", "connect_timeout=2m"]),
+        min,
+    )
+    .unwrap();
+    let routed = edit::edit(
+        &added,
+        Section::Repos,
+        "omega-code",
+        &edits(&["proxy=tor"]),
+        min,
+    )
+    .unwrap();
+    let repo = routed.repo(&"omega-code".parse().unwrap()).unwrap();
+    assert_eq!(repo.proxy.as_ref().map(|p| p.as_str()), Some("tor"));
+    let direct = edit::edit(
+        &routed,
+        Section::Repos,
+        "omega-code",
+        &edits(&["proxy!"]),
+        min,
+    )
+    .unwrap();
+    assert_eq!(
+        direct.repo(&"omega-code".parse().unwrap()).unwrap().proxy,
+        None
+    );
+    // A required field is required; a timeout back to its default is written no more.
+    let error = edit::add(&policy, Section::Proxies, "bare", &[], min).unwrap_err();
+    assert_error(&error.to_string(), "proxies.bare: missing field `url`");
+    let unset = edit::edit(
+        &added,
+        Section::Proxies,
+        "tor",
+        &edits(&["connect_timeout!"]),
+        min,
+    )
+    .unwrap();
+    assert_eq!(
+        unset.entry_yaml(Section::Proxies, "tor").unwrap(),
+        "tor:\n  url: \"socks5://127.0.0.1:9050\"\n"
+    );
+    // Removed while a repo names it: refused by the read back.
+    let error = edit::remove(&routed, Section::Proxies, "tor", min).unwrap_err();
+    assert_error(
+        &error.to_string(),
+        "repos.omega-code.proxy: tor is not declared in proxies",
+    );
+}

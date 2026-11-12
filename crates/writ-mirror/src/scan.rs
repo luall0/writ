@@ -7,12 +7,18 @@
 //! at most [`MAX_KEYS`] keys. What comes back is shown, never pinned: a second signed change
 //! pins it, once the approver compared it with what the remote publishes. A host offering only
 //! RSA or P-521 keys answers none: its keys are given to `writ admin host add` instead.
+//!
+//! Each handshake's connection is opened by a [`Dialer`]: directly, or through a proxy of the
+//! policy (`--proxy`, M7.2), which then resolves the host's name. The proxy's own
+//! `connect_timeout` bounds opening it; `mirrors.scan_timeout` the handshake after.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use ssh_key::{Algorithm, EcdsaCurve, PublicKey};
+
+use crate::dial::{DialError, Dialer};
 
 /// The handshakes one scan makes: one per algorithm.
 pub const MAX_HANDSHAKES: usize = 3;
@@ -71,6 +77,7 @@ impl russh::client::Handler for Capture {
 async fn handshake(
     host: &str,
     port: u16,
+    dialer: &Dialer,
     algorithm: Algorithm,
     deadline: Duration,
 ) -> Result<Option<PublicKey>, String> {
@@ -85,9 +92,13 @@ async fn handshake(
     });
     let seen = Arc::new(Mutex::new(None));
     let handler = Capture(seen.clone());
+    let stream = dialer.connect(host, port).await.map_err(|e| match e {
+        DialError::Direct(why) => why,
+        proxied @ DialError::Proxy { .. } => proxied.to_string(),
+    })?;
     let attempt = tokio::time::timeout(
         deadline,
-        russh::client::connect(config, (host, port), handler),
+        russh::client::connect_stream(config, stream, handler),
     )
     .await;
     let key = seen.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -105,13 +116,21 @@ async fn handshake(
     }
 }
 
-/// Scans `host` on `port`, each handshake within `deadline`: the keys it holds of each
-/// algorithm Writ verifies, each once.
-pub async fn scan(host: &str, port: u16, deadline: Duration) -> Result<Vec<PublicKey>, ScanError> {
-    let target = format!("{host}:{port}");
+/// Scans `host` on `port`, reached through `dialer`, each handshake within `deadline`: the
+/// keys it holds of each algorithm Writ verifies, each once.
+pub async fn scan(
+    host: &str,
+    port: u16,
+    dialer: &Dialer,
+    deadline: Duration,
+) -> Result<Vec<PublicKey>, ScanError> {
+    let target = match dialer.proxy() {
+        None => format!("{host}:{port}"),
+        Some(route) => format!("{host}:{port} through proxy {}", route.name()),
+    };
     let mut keys: Vec<PublicKey> = Vec::new();
     for algorithm in ALGORITHMS {
-        match handshake(host, port, algorithm, deadline).await {
+        match handshake(host, port, dialer, algorithm, deadline).await {
             Ok(Some(key)) => {
                 if keys.len() < MAX_KEYS && !keys.iter().any(|k| k.key_data() == key.key_data()) {
                     keys.push(key);

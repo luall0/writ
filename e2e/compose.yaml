@@ -14,13 +14,35 @@ services:
     # More names for the same Forgejo, pinned by no one at the start: the repo the setup adds
     # from the approver's machine, the host key scan and a guided `repo add` on a host with no
     # pin (scenario 23).
+    # And on `behind` as `forgejo-behind`: a name only the proxies resolve (scenario 25).
     networks:
       default:
         aliases: [forgejo-scan, forgejo-new, forgejo-added]
-  # Forgejo over HTTPS, for the daemon's HTTPS upstream (the `https` repo).
+      behind:
+        aliases: [forgejo-behind, forgejo-behind-scan]
+  # Forgejo over HTTPS, for the daemon's HTTPS upstream (the `https` repo); on `behind` too, as
+  # `forgejo-https-behind` (its certificate holds both names), reached through the HTTP proxy.
   forgejo-https:
-    build: { context: .., dockerfile: e2e/Dockerfile, target: tls-front }
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+      target: tls-front
+      args: { TLS_SAN: "DNS:forgejo-https,DNS:forgejo-https-behind" }
     init: true
+    networks:
+      default: {}
+      behind:
+        aliases: [forgejo-https-behind]
+  # The proxies in front of `behind` (scenario 25): the daemon reaches its two repositories
+  # there only through them (it is not on `behind`, so it can't even resolve their names).
+  socks-proxy:
+    build: { context: .., dockerfile: e2e/Dockerfile, target: socks-proxy }
+    init: true
+    networks: [default, behind]
+  http-proxy:
+    build: { context: .., dockerfile: e2e/Dockerfile, target: http-proxy }
+    init: true
+    networks: [default, behind]
   # The same front with its own certificate, which only the daemon container's system store
   # trusts (the `https-system` repo): `mirrors.ca_certs` names the other one, so it is refused.
   forgejo-https-system:
@@ -55,3 +77,7 @@ services:
     profiles: [runner]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+networks:
+  default: {}
+  # What only the proxies reach.
+  behind: {}

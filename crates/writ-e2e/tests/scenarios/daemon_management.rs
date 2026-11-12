@@ -406,6 +406,8 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
             "new",
             "",
             "rsa3072",
+            // proxy: none, upstream reached directly.
+            "",
             "managed",
             "",
             "",
@@ -430,7 +432,17 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     let shown = on_terminal(
         approver,
         &format!("writ admin repo edit guided-repo {url}"),
-        &["", "", "managed,guided", "refs/heads/main", "", "", "", "y"],
+        &[
+            "",
+            "",
+            "",
+            "managed,guided",
+            "refs/heads/main",
+            "",
+            "",
+            "",
+            "y",
+        ],
     );
     assert!(
         shown.contains(
@@ -527,7 +539,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     ));
     assert!(said.contains("with repo guided-other added"), "{said}");
     for (noun, name, answers) in [
-        ("repo", "guided-other", vec!["", "", "", "", "", "", ""]),
+        ("repo", "guided-other", vec!["", "", "", "", "", "", "", ""]),
         ("template", "guided-yes", vec!["", "", "", "", "", "", ""]),
         ("key", "guided-signing", vec!["sha256"]),
         ("host", "guided.invalid", vec![""]),
@@ -687,6 +699,8 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
             "ssh://git@forgejo-new/writ/setup.git",
             "y",
             "upstream-setup",
+            // proxy: none.
+            "",
             "managed",
             "",
             "",

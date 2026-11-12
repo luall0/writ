@@ -46,6 +46,7 @@ pub async fn no_repos(dir: &Path) -> Result<Mirrors> {
             scan_timeout: crate::scan::DEFAULT_HANDSHAKE_DEADLINE,
         },
         &BTreeMap::new(),
+        &BTreeMap::new(),
         Arc::new(signer),
         &BTreeMap::new(),
     )
@@ -78,7 +79,10 @@ mod tests {
         let signer: Arc<dyn writ_signer::Signer> = Arc::new(signer);
         let none = BTreeMap::new();
         let no_tokens = BTreeMap::new();
-        let open = |config: MirrorConfig| Mirrors::open(config, &none, signer.clone(), &no_tokens);
+        let no_proxies = BTreeMap::new();
+        let open = |config: MirrorConfig| {
+            Mirrors::open(config, &none, &no_proxies, signer.clone(), &no_tokens)
+        };
         match open(config.clone()).await {
             Err(crate::MirrorError::Config(m)) => {
                 assert!(m.contains("root repos must be an absolute path"), "{m}")
@@ -118,7 +122,10 @@ mod tests {
             scan_timeout: crate::scan::DEFAULT_HANDSHAKE_DEADLINE,
         };
         let (none, no_tokens) = (BTreeMap::new(), BTreeMap::new());
-        let open = |config: MirrorConfig| Mirrors::open(config, &none, signer.clone(), &no_tokens);
+        let no_proxies = BTreeMap::new();
+        let open = |config: MirrorConfig| {
+            Mirrors::open(config, &none, &no_proxies, signer.clone(), &no_tokens)
+        };
         assert!(open(config.clone()).await.is_ok(), "as configured: opened");
         let missing = dir.path().join("missing");
         for (what, path, why) in [

@@ -1,6 +1,6 @@
 //! The policy in Writ's canonical layout: what `writ admin repo|template|key|host` signs once
 //! it changed a field. One layout, whatever the text it started from: the sections in the
-//! order `keys`, `upstream_hosts`, `repos`, `templates`, each entry's fields in the operator
+//! order `keys`, `upstream_hosts`, `proxies`, `repos`, `templates`, each entry's fields in the operator
 //! reference's order, a field left out when it holds its default, lists in flow style (host
 //! keys one per line), and a scalar quoted unless it reads back as the same string. Read back,
 //! the text is the policy it was written from (the tests and a property test check it).
@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::{
-    DirectSsh, Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, PushMode, RepoEntry, Section,
-    Template, TicketLink, UpstreamKey,
+    DirectSsh, Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, Proxy, PushMode, RepoEntry,
+    Section, Template, TicketLink, UpstreamKey,
 };
 use crate::units::ByteSize;
 
@@ -29,6 +29,13 @@ pub(super) fn policy(policy: &PolicyConfig) -> String {
             for key in pinned {
                 let _ = writeln!(out, "    - {}", scalar(key.as_str()));
             }
+        }
+    }
+    if !policy.proxies.is_empty() {
+        out.push_str("\nproxies:\n");
+        for (name, proxy) in &policy.proxies {
+            entry(&mut out, name.as_str());
+            write_proxy(&mut out, proxy);
         }
     }
     out.push('\n');
@@ -65,6 +72,14 @@ pub(super) fn one_entry(policy: &PolicyConfig, section: Section, name: &str) -> 
             for key in pinned {
                 let _ = writeln!(out, "    - {}", scalar(key.as_str()));
             }
+        }
+        Section::Proxies => {
+            let (proxy, body) = policy
+                .proxies
+                .iter()
+                .find(|(proxy, _)| proxy.as_str() == name)?;
+            entry(&mut out, proxy.as_str());
+            write_proxy(&mut out, body);
         }
         Section::Repos => {
             let (repo, body) = policy
@@ -148,6 +163,16 @@ fn push_modes(modes: &BTreeSet<PushMode>) -> Option<String> {
     (*modes != default).then(|| list(names.iter().map(String::as_str)))
 }
 
+fn write_proxy(out: &mut String, proxy: &Proxy) {
+    field(out, "url", &scalar(proxy.url.as_str()));
+    if let Some(credential) = &proxy.credential {
+        field(out, "credential", &scalar(credential.as_str()));
+    }
+    if let Some(timeout) = proxy.connect_timeout {
+        field(out, "connect_timeout", &timeout.to_string());
+    }
+}
+
 fn write_repo(out: &mut String, repo: &RepoEntry) {
     field(out, "upstream", &scalar(&repo.upstream));
     field(
@@ -155,6 +180,9 @@ fn write_repo(out: &mut String, repo: &RepoEntry) {
         "upstream_credential",
         &scalar(repo.upstream_credential.as_str()),
     );
+    if let Some(proxy) = &repo.proxy {
+        field(out, "proxy", &scalar(proxy.as_str()));
+    }
     field(
         out,
         "templates",

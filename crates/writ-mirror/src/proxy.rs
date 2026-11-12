@@ -1,17 +1,21 @@
-//! A SOCKS5 proxy for one HTTPS upstream operation (RFC 1928, `CONNECT` without
-//! authentication): git reaches upstream only through it, on a Unix socket in a private
-//! directory (`http.proxy=socks5h://localhost/<socket>`). It connects only to the upstream's
-//! host and port, and counts the bytes upstream sends, all connections together: past the cap
-//! it ends every tunnel, so a sync never takes more than `mirrors.max_fetch` (git has no limit
-//! of its own on a fetch, the gap the ssh [`relay`](crate::relay) closes for `ssh://`).
+//! A SOCKS5 proxy for one upstream operation (RFC 1928, `CONNECT` without authentication):
+//! git reaches an HTTPS upstream only through it, on a Unix socket in a private directory
+//! (`http.proxy=socks5h://localhost/<socket>`), and so does ssh for an `ssh://` upstream behind
+//! a proxy of the policy ([`tunnel`](crate::tunnel), its `ProxyCommand`). It connects only to
+//! the upstream's host and port, through the repo's [`Dialer`] (directly, or through that
+//! proxy), and counts the bytes upstream sends, all connections together: past the cap it ends
+//! every tunnel, so a sync never takes more than `mirrors.max_fetch` (git has no limit of its
+//! own on a fetch, the gap the ssh [`relay`](crate::relay) closes for `ssh://`).
 //!
-//! TLS stays end to end between git and upstream: the proxy relays ciphertext, and never sees
-//! the token. Dropping the [`UpstreamProxy`] ends every tunnel and removes the socket file.
+//! TLS (or SSH) stays end to end between git and upstream: the proxy relays ciphertext, and
+//! never sees the token. A connection the dialer couldn't open is refused to git, and why is
+//! kept ([`UpstreamProxy::failure`]): git only says the proxy failed. Dropping the
+//! [`UpstreamProxy`] ends every tunnel and removes the socket file.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -19,7 +23,7 @@ use tokio::net::{TcpStream, UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::upstream::HttpsUrl;
+use crate::dial::{DialError, Dialer};
 use crate::{MirrorError, Result};
 
 /// Connections one proxy accepts in its life (git keeps one open, and opens another when
@@ -27,8 +31,6 @@ use crate::{MirrorError, Result};
 pub const MAX_CONNECTIONS: usize = 16;
 /// How long git may take to ask for its tunnel.
 pub const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(30);
-/// How long connecting to upstream may take.
-pub const CONNECT_DEADLINE: Duration = Duration::from_secs(15);
 
 const VERSION: u8 = 5;
 const NO_AUTHENTICATION: u8 = 0;
@@ -60,12 +62,22 @@ struct Shared {
     tunnels: AtomicUsize,
     /// Set once upstream sent more than `max`: every tunnel ends.
     over: watch::Sender<bool>,
+    dialer: Dialer,
+    /// Why the last connection to upstream couldn't be opened.
+    failure: Mutex<Option<DialError>>,
 }
 
 impl UpstreamProxy {
-    /// Serves a proxy to `upstream` on a new socket in `dir`, a private directory, letting
-    /// upstream send at most `max_bytes`.
-    pub fn start(dir: &Path, upstream: &HttpsUrl, max_bytes: u64) -> Result<Self> {
+    /// Serves a proxy to upstream (`host` and `port`, as the registry names them) on a new
+    /// socket in `dir`, a private directory, reaching it through `dialer`, letting upstream
+    /// send at most `max_bytes`.
+    pub fn start(
+        dir: &Path,
+        host: &str,
+        port: u16,
+        max_bytes: u64,
+        dialer: Dialer,
+    ) -> Result<Self> {
         let name =
             writ_crypto::keys::random_hex(8).map_err(|source| MirrorError::NoRandomness {
                 what: "the upstream proxy socket",
@@ -78,13 +90,15 @@ impl UpstreamProxy {
             source,
         })?;
         let shared = Arc::new(Shared {
-            host: upstream.host().to_owned(),
-            address: upstream.host().parse().ok(),
-            port: upstream.port(),
+            host: host.to_owned(),
+            address: host.parse().ok(),
+            port,
             max: max_bytes,
             received: AtomicU64::new(0),
             tunnels: AtomicUsize::new(0),
             over: watch::Sender::new(false),
+            dialer,
+            failure: Mutex::new(None),
         });
         let task = tokio::spawn(serve(listener, shared.clone()));
         Ok(Self { path, task, shared })
@@ -112,6 +126,15 @@ impl UpstreamProxy {
     /// The tunnels it opened to upstream.
     pub fn tunnels(&self) -> usize {
         self.shared.tunnels.load(Ordering::Acquire)
+    }
+
+    /// Why the last connection to upstream couldn't be opened, if one couldn't.
+    pub fn failure(&self) -> Option<DialError> {
+        self.shared
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -247,26 +270,23 @@ async fn read_request(client: &mut UnixStream) -> std::io::Result<(u8, Asked, u1
     Ok((command, asked, u16::from_be_bytes(port)))
 }
 
-/// Connects to upstream (by the host the URL names, never what git sent) within
-/// [`CONNECT_DEADLINE`], and tells git how it went.
+/// Connects to upstream (by the host the URL names, never what git sent) through the
+/// dialer, within its deadline, and tells git how it went; a failure is kept, for the
+/// operation's error.
 async fn connect(client: &mut UnixStream, shared: &Shared) -> std::io::Result<TcpStream> {
-    let connected = tokio::time::timeout(
-        CONNECT_DEADLINE,
-        TcpStream::connect((shared.host.as_str(), shared.port)),
-    )
-    .await;
-    match connected {
-        Ok(Ok(upstream)) => {
+    match shared.dialer.connect(&shared.host, shared.port).await {
+        Ok(upstream) => {
             reply(client, SUCCEEDED).await?;
             Ok(upstream)
         }
-        Ok(Err(e)) => {
+        Err(e) => {
+            tracing::debug!(upstream = %shared.host, error = %e, "cannot reach upstream");
+            *shared
+                .failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(e.clone());
             reply(client, HOST_UNREACHABLE).await?;
-            Err(e)
-        }
-        Err(_) => {
-            reply(client, HOST_UNREACHABLE).await?;
-            Err(std::io::Error::other("connecting to upstream timed out"))
+            Err(std::io::Error::other(e.to_string()))
         }
     }
 }
@@ -387,8 +407,8 @@ mod tests {
     async fn it_tunnels_only_to_upstream() {
         let dir = tempfile::tempdir().unwrap();
         let port = server(100).await;
-        let url = HttpsUrl::parse(&format!("https://127.0.0.1:{port}/demo.git")).unwrap();
-        let proxy = UpstreamProxy::start(dir.path(), &url, 1 << 20).unwrap();
+        let proxy =
+            UpstreamProxy::start(dir.path(), "127.0.0.1", port, 1 << 20, Dialer::Direct).unwrap();
         assert_eq!(
             proxy.url(),
             format!("socks5h://localhost{}", proxy.path().display())
@@ -416,21 +436,23 @@ mod tests {
     #[tokio::test]
     async fn a_name_matches_case_aside_and_other_commands_are_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let url = HttpsUrl::parse("https://Git.Example.org/u/r.git").unwrap();
         let shared = Shared {
-            host: url.host().to_owned(),
+            host: "Git.Example.org".to_owned(),
             address: None,
             port: 443,
             max: 1,
             received: AtomicU64::new(0),
             tunnels: AtomicUsize::new(0),
             over: watch::Sender::new(false),
+            dialer: Dialer::Direct,
+            failure: Mutex::new(None),
         };
         assert!(Asked::Name(b"git.example.ORG".to_vec()).is(&shared));
         assert!(!Asked::Name(b"git.example.org.evil".to_vec()).is(&shared));
         assert!(!Asked::Address(IpAddr::V4(Ipv4Addr::LOCALHOST)).is(&shared));
 
-        let proxy = UpstreamProxy::start(dir.path(), &url, 1).unwrap();
+        let proxy =
+            UpstreamProxy::start(dir.path(), "Git.Example.org", 443, 1, Dialer::Direct).unwrap();
         let mut stream = UnixStream::connect(proxy.path()).await.unwrap();
         // BIND, not CONNECT.
         stream
@@ -458,14 +480,15 @@ mod tests {
     async fn past_the_cap_every_tunnel_ends() {
         let dir = tempfile::tempdir().unwrap();
         let port = server(600).await;
-        let url = HttpsUrl::parse(&format!("https://127.0.0.1:{port}/demo.git")).unwrap();
+        let start =
+            |max| UpstreamProxy::start(dir.path(), "127.0.0.1", port, max, Dialer::Direct).unwrap();
         // Exactly the cap: fine.
-        let proxy = UpstreamProxy::start(dir.path(), &url, 600).unwrap();
+        let proxy = start(600);
         let (_, sent) = through(&proxy, DOMAIN, b"127.0.0.1", port).await;
         assert_eq!(sent.len(), 600);
         assert!(!proxy.too_large());
         // One byte past it, over two tunnels: the second one is cut.
-        let proxy = UpstreamProxy::start(dir.path(), &url, 1199).unwrap();
+        let proxy = start(1199);
         let (_, first) = through(&proxy, DOMAIN, b"127.0.0.1", port).await;
         assert_eq!(first.len(), 600);
         let (_, second) = through(&proxy, DOMAIN, b"127.0.0.1", port).await;
@@ -491,8 +514,8 @@ mod tests {
                 let _ = held.send(stream).await;
             }
         });
-        let url = HttpsUrl::parse(&format!("https://127.0.0.1:{port}/demo.git")).unwrap();
-        let proxy = UpstreamProxy::start(dir.path(), &url, 1 << 20).unwrap();
+        let proxy =
+            UpstreamProxy::start(dir.path(), "127.0.0.1", port, 1 << 20, Dialer::Direct).unwrap();
         let mut stream = UnixStream::connect(proxy.path()).await.unwrap();
         stream
             .write_all(&[VERSION, 1, NO_AUTHENTICATION])

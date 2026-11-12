@@ -99,8 +99,13 @@ fn lines(policy: &PolicyConfig, section: Section, keys: Option<&KeysShown>) -> V
                         names(&repo.templates.iter().collect::<Vec<_>>())
                     ),
                 };
+                let proxy = repo
+                    .proxy
+                    .as_ref()
+                    .map(|p| format!("  proxy {}", clean(p.as_str())))
+                    .unwrap_or_default();
                 format!(
-                    "{}  {}  credential {}  {templates}",
+                    "{}  {}  credential {}{proxy}  {templates}",
                     clean(name.as_str()),
                     clean(&repo.upstream),
                     clean(repo.upstream_credential.as_str())
@@ -137,6 +142,23 @@ fn lines(policy: &PolicyConfig, section: Section, keys: Option<&KeysShown>) -> V
                 )
             })
             .collect(),
+        Section::Proxies => policy
+            .proxies()
+            .iter()
+            .map(|(name, proxy)| {
+                let credential = proxy
+                    .credential
+                    .as_ref()
+                    .map(|c| format!("  credential {}", clean(c.as_str())))
+                    .unwrap_or_default();
+                format!(
+                    "{}  {}{credential}  repos {}",
+                    clean(name.as_str()),
+                    clean(proxy.url.as_str()),
+                    names(&policy.proxy_users(name))
+                )
+            })
+            .collect(),
         Section::Keys => keys
             .map(|keys| keys.keys.iter().map(key_line).collect())
             .unwrap_or_default(),
@@ -161,15 +183,19 @@ fn key_line(key: &KeyShown) -> String {
 }
 
 fn used_by(key: &KeyShown) -> String {
-    match (key.repos.is_empty(), key.templates.is_empty()) {
-        (true, true) => "unused".to_owned(),
-        (false, true) => format!("repos {}", names(&key.repos)),
-        (true, false) => format!("templates {}", names(&key.templates)),
-        (false, false) => format!(
-            "repos {}; templates {}",
-            names(&key.repos),
-            names(&key.templates)
-        ),
+    let mut parts = Vec::new();
+    if !key.repos.is_empty() {
+        parts.push(format!("repos {}", names(&key.repos)));
+    }
+    if !key.proxies.is_empty() {
+        parts.push(format!("proxies {}", names(&key.proxies)));
+    }
+    if !key.templates.is_empty() {
+        parts.push(format!("templates {}", names(&key.templates)));
+    }
+    match parts.is_empty() {
+        true => "unused".to_owned(),
+        false => parts.join("; "),
     }
 }
 
@@ -304,9 +330,32 @@ fn details(policy: &PolicyConfig, section: Section, name: &str, key: Option<&Key
                         clean(&key.describe())
                     ));
                 }
+                match repo
+                    .proxy
+                    .as_ref()
+                    .and_then(|p| Some((p, policy.proxy(p)?)))
+                {
+                    Some((name, proxy)) => out.push_str(&format!(
+                        "reached through: proxy {} ({})\n",
+                        clean(name.as_str()),
+                        clean(proxy.url.as_str())
+                    )),
+                    None => out.push_str("reached through: directly\n"),
+                }
                 if repo.templates.is_empty() {
                     out.push_str("closed: no template allows tickets for it\n");
                 }
+            }
+        }
+        Section::Proxies => {
+            if let Some((proxy, entry)) = policy.proxies().iter().find(|(p, _)| p.as_str() == name)
+            {
+                out.push_str(&format!(
+                    "protocol: {}, the upstream's name resolved by the proxy\n",
+                    entry.url.scheme()
+                ));
+                out.push_str(&format!("connect timeout: {}\n", entry.connect_timeout()));
+                out.push_str(&format!("repos: {}\n", names(&policy.proxy_users(proxy))));
             }
         }
         Section::Templates => {
@@ -474,7 +523,7 @@ pub async fn remove(
                         }
                     }
                 }
-                Section::Templates | Section::UpstreamHosts => {}
+                Section::Templates | Section::UpstreamHosts | Section::Proxies => {}
             }
             let next = writ_core::config::edit::remove(
                 &policy,
@@ -510,6 +559,11 @@ fn users(policy: &PolicyConfig, section: Section, name: &str) -> Option<String> 
             let repos = policy.host_users(&host);
             (!repos.is_empty()).then(|| format!("repos {}", names(&repos)))
         }
+        Section::Proxies => {
+            let proxy = name.parse().ok()?;
+            let repos = policy.proxy_users(&proxy);
+            (!repos.is_empty()).then(|| format!("repos {}", names(&repos)))
+        }
     }
 }
 
@@ -527,7 +581,20 @@ mod tests {
             token_added: token,
             repos: vec!["demo".parse().unwrap()],
             templates: vec![],
+            proxies: vec![],
         }
+    }
+
+    #[test]
+    fn a_proxy_s_password_is_shown_used_by_its_proxy() {
+        let mut key = shown("k", None, Some(true));
+        key.repos.clear();
+        assert_eq!(used_by(&key), "unused");
+        key.proxies = vec!["tor".parse().unwrap()];
+        assert_eq!(used_by(&key), "proxies tor");
+        key.repos = vec!["demo".parse().unwrap()];
+        key.templates = vec!["t".parse().unwrap()];
+        assert_eq!(used_by(&key), "repos demo; proxies tor; templates t");
     }
 
     #[test]

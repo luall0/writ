@@ -39,6 +39,7 @@ use crate::known_hosts::PinnedHosts;
 use crate::upstream::{HttpsUrl, SshUrl};
 use crate::{MirrorError, Result};
 pub use check::CheckStep;
+pub(crate) use classify::redacted;
 
 pub use notes::{MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, NOTES_AUTHOR, Note, NotesPushed};
 
@@ -142,6 +143,9 @@ struct Shared {
     syncs: Arc<Semaphore>,
     /// The upstream operations in flight, shared the same way.
     in_flight: Arc<in_flight::InFlight>,
+    /// The policy's proxies, each with its password from the keystore: what a host key scan
+    /// through one dials with.
+    proxies: BTreeMap<writ_core::names::ProxyName, crate::dial::Dialer>,
 }
 
 struct Repo {
@@ -150,6 +154,8 @@ struct Repo {
     entry: writ_core::config::RepoEntry,
     path: PathBuf,
     reach: Reach,
+    /// How its upstream's connections are opened: directly, or through its proxy.
+    dialer: crate::dial::Dialer,
     format: ObjectFormat,
     state: Arc<Mutex<SyncState>>,
 }
@@ -226,6 +232,33 @@ impl Mirrors {
     /// How long one handshake of a host key scan may take (`mirrors.scan_timeout`).
     pub fn scan_timeout(&self) -> Duration {
         self.shared.config.scan_timeout
+    }
+
+    /// How a host key scan reaches its host: through `proxy` of the policy in force (with its
+    /// password), or directly. A proxy the policy doesn't declare is refused, so is one whose
+    /// password isn't in the keystore yet.
+    pub fn dialer(
+        &self,
+        proxy: Option<&writ_core::names::ProxyName>,
+    ) -> std::result::Result<crate::dial::Dialer, String> {
+        let Some(name) = proxy else {
+            return Ok(crate::dial::Dialer::Direct);
+        };
+        let dialer = self
+            .shared
+            .proxies
+            .get(name)
+            .ok_or_else(|| format!("proxy {name} is not declared in proxies"))?;
+        if let Some(key) = dialer
+            .proxy()
+            .and_then(crate::dial::ProxyRoute::missing_password)
+        {
+            return Err(format!(
+                "proxy {name}'s password ({key}) isn't in the keystore yet: an approver adds it \
+                 with `writ admin token {key}`"
+            ));
+        }
+        Ok(dialer.clone())
     }
 
     /// The registered repos.

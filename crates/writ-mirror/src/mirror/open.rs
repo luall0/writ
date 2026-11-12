@@ -8,12 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Semaphore};
-use writ_core::config::{ObjectFormat, RepoEntry};
-use writ_core::names::{KeyId, RepoName};
+use writ_core::config::{ObjectFormat, Proxy, RepoEntry};
+use writ_core::names::{KeyId, ProxyName, RepoName};
 use writ_signer::Signer;
 
 use super::{CaCerts, MAX_SYNCS, MirrorConfig, Mirrors, Reach, Repo, Shared, SyncState};
 use crate::credential::UpstreamToken;
+use crate::dial::Dialer;
 use crate::git::{self, Hooks};
 use crate::known_hosts::PinnedHosts;
 use crate::upstream::{SshUrl, Upstream};
@@ -26,10 +27,12 @@ impl Mirrors {
     /// (ssh), a git too old for it; and a directory in the mirror's place that isn't one the
     /// daemon made (another object or ref format, not bare, a link). An `https://` repo whose
     /// token `tokens` lacks is opened, and reaches nothing upstream until it is added
-    /// ([`MirrorError::NoToken`]).
+    /// ([`MirrorError::NoToken`]); so is a repo behind a proxy of `proxies` whose password
+    /// `tokens` lacks ([`MirrorError::NoProxyPassword`]).
     pub async fn open(
         config: MirrorConfig,
         repos: &BTreeMap<RepoName, RepoEntry>,
+        proxies: &BTreeMap<ProxyName, Proxy>,
         signer: Arc<dyn Signer>,
         tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
     ) -> Result<Self> {
@@ -38,7 +41,17 @@ impl Mirrors {
         remove_unfinished_mirrors(&config.root)?;
         let mut opened = BTreeMap::new();
         for (name, entry) in repos {
-            let repo = open_repo(&config, &files.keys_dir, &*signer, tokens, name, entry).await?;
+            let dialer = dialer(name, entry, proxies, tokens)?;
+            let repo = open_repo(
+                &config,
+                &files.keys_dir,
+                &*signer,
+                tokens,
+                name,
+                entry,
+                dialer,
+            )
+            .await?;
             opened.insert(name.clone(), Arc::new(repo));
         }
         Ok(Self {
@@ -52,6 +65,7 @@ impl Mirrors {
                 home: files.home,
                 syncs: Arc::new(Semaphore::new(MAX_SYNCS)),
                 in_flight: super::in_flight::InFlight::new(),
+                proxies: routes(proxies, tokens),
             }),
         })
     }
@@ -64,10 +78,12 @@ impl Mirrors {
     /// served. `pinned` are the host keys in force (the file ssh reads is written again with
     /// them, for every operation from now on); `signer` and `tokens` the upstream credentials
     /// in force: an `https://` repo whose token changed (added or replaced: `writ admin
-    /// token`) is opened again with it.
+    /// token`) is opened again with it, and so is a repo whose proxy changed in `proxies` (its
+    /// entry, or its password).
     pub async fn with_registry(
         &self,
         repos: &BTreeMap<RepoName, RepoEntry>,
+        proxies: &BTreeMap<ProxyName, Proxy>,
         pinned: PinnedHosts,
         signer: Arc<dyn Signer>,
         tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
@@ -79,16 +95,22 @@ impl Mirrors {
         let keys_dir = shared.config.run_dir.join("keys");
         let mut opened = BTreeMap::new();
         for (name, entry) in repos {
+            let dialer = dialer(name, entry, proxies, tokens)?;
             let kept = shared
                 .repos
                 .get(name)
-                .filter(|repo| repo.entry == *entry && same_token(&repo.reach, tokens))
+                .filter(|repo| {
+                    repo.entry == *entry
+                        && same_token(&repo.reach, tokens)
+                        && repo.dialer.same_as(&dialer)
+                })
                 .cloned();
             let repo = match kept {
                 Some(repo) => repo,
                 None => {
                     let mut repo =
-                        open_repo(&config, &keys_dir, &*signer, tokens, name, entry).await?;
+                        open_repo(&config, &keys_dir, &*signer, tokens, name, entry, dialer)
+                            .await?;
                     // The same mirror on disk keeps its one lock: an operation holding it
                     // from before the change still excludes every one after (the review
                     // after M5.5, S10).
@@ -113,9 +135,45 @@ impl Mirrors {
                 home: shared.home.clone(),
                 syncs: shared.syncs.clone(),
                 in_flight: shared.in_flight.clone(),
+                proxies: routes(proxies, tokens),
             }),
         })
     }
+}
+
+/// How `name`'s upstream connections are opened: through the proxy its entry names (with its
+/// password from `tokens`), or directly. A proxy `proxies` doesn't declare is refused (the
+/// policy never lets one through).
+fn dialer(
+    name: &RepoName,
+    entry: &RepoEntry,
+    proxies: &BTreeMap<ProxyName, Proxy>,
+    tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+) -> Result<Dialer> {
+    let dialer = Dialer::for_repo(entry.proxy.as_ref(), proxies, tokens)
+        .map_err(|why| MirrorError::Config(format!("repo {name}: {why}")))?;
+    if let Some(key) = dialer.proxy().and_then(|p| p.missing_password()) {
+        tracing::warn!(
+            repo = %name,
+            credential = %key,
+            "no proxy password yet: syncs and pushes are refused until `writ admin token` adds it"
+        );
+    }
+    Ok(dialer)
+}
+
+/// Each proxy of the policy as a dialer, with its password from `tokens`.
+fn routes(
+    proxies: &BTreeMap<ProxyName, Proxy>,
+    tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+) -> BTreeMap<ProxyName, Dialer> {
+    proxies
+        .iter()
+        .map(|(name, proxy)| {
+            let route = crate::dial::ProxyRoute::new(name, proxy, tokens);
+            (name.clone(), Dialer::Proxy(Arc::new(route)))
+        })
+        .collect()
 }
 
 /// Whether `reach` holds the token `tokens` has for its credential (an `ssh://` one: always).
@@ -265,6 +323,7 @@ async fn open_repo(
     tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
     name: &RepoName,
     entry: &RepoEntry,
+    dialer: Dialer,
 ) -> Result<Repo> {
     let reach = reach(config, keys_dir, signer, tokens, name, entry)?;
     let path = config.root.join(format!("{name}.git"));
@@ -286,6 +345,7 @@ async fn open_repo(
         entry: entry.clone(),
         path,
         reach,
+        dialer,
         format: entry.object_format,
         state: Arc::new(Mutex::new(SyncState::default())),
     })

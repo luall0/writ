@@ -72,9 +72,15 @@ impl CheckedScan {
         &self.approver
     }
 
-    /// The host and port, as a line names them.
+    /// The host and port, as a line names them, and the proxy it goes through.
     fn target(&self) -> String {
-        format!("{}:{}", self.scan.host, self.scan.port)
+        match &self.scan.proxy {
+            None => format!("{}:{}", self.scan.host, self.scan.port),
+            Some(proxy) => format!(
+                "{}:{} through proxy {proxy}",
+                self.scan.host, self.scan.port
+            ),
+        }
     }
 }
 

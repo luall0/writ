@@ -49,6 +49,18 @@ pub const SYSTEM_REPO: &str = "https-system";
 /// its declared host only), so what refuses the sync is the certificate, not a missing token.
 pub const SYSTEM_CREDENTIAL: &str = "token-https-system";
 
+/// The repositories behind the proxies (scenario 25): Forgejo under names only the proxies
+/// resolve (`forgejo-behind`, `forgejo-https-behind`), the HTTPS one's token (the same Forgejo
+/// token, declared for that host), and each proxy's password, as its container sets it
+/// (e2e/Dockerfile, e2e/proxy/tinyproxy.conf): a throwaway stack's.
+pub const SOCKS_REPO: &str = "behind-socks";
+pub const HTTP_REPO: &str = "behind-http";
+pub const BEHIND_CREDENTIAL: &str = "token-https-behind";
+pub const SOCKS_PASSWORD_ID: &str = "proxy-socks-password";
+pub const HTTP_PASSWORD_ID: &str = "proxy-http-password";
+pub const SOCKS_PASSWORD: &str = "e2e-socks-proxy-password";
+pub const HTTP_PASSWORD: &str = "e2e-http-proxy-password";
+
 /// The reader's name in the daemon's `readers` file.
 pub const READER: &str = "e2e-approver";
 
@@ -302,6 +314,7 @@ pub fn run() -> Stack {
     // adds it once the daemon is unsealed, step 10); the HTTPS front's certificate is the
     // daemon's `mirrors.ca_certs` (no system CA signed it).
     forgejo.create_repo(HTTPS_REPO);
+    forgejo.create_repo(HTTP_REPO);
     let https_token = forgejo.repository_token("writd-https-upstream");
     let front = Container::of("forgejo-https").run_as("front", "cat /tls/cert.pem");
     assert_eq!(front.status.code(), Some(0), "{}", stderr(&front));
@@ -458,6 +471,23 @@ pub fn run() -> Stack {
         said.contains(&format!("Token {SYSTEM_CREDENTIAL} in force (file sha256 ")),
         "{said}"
     );
+    // The repositories behind the proxies: the HTTPS one's token, then each proxy's password.
+    for (id, secret) in [
+        (BEHIND_CREDENTIAL, https_token.as_str()),
+        (SOCKS_PASSWORD_ID, SOCKS_PASSWORD),
+        (HTTP_PASSWORD_ID, HTTP_PASSWORD),
+    ] {
+        let said = doc_step_with(
+            &approver,
+            "writ admin token <id>",
+            &[("<id>", id)],
+            format!("{secret}\ny\n").as_bytes(),
+        );
+        assert!(
+            said.contains(&format!("Token {id} in force (file sha256 ")),
+            "{said}"
+        );
+    }
 
     Stack {
         operator,

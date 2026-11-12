@@ -34,7 +34,7 @@ The daemon's configuration. Start from the [template](templates/writd.yaml). Exa
 These three files are read once, by `writd init` (or the development keystore's first start).
 After that the daemon keeps its own copy and writes it back to these paths. A hand edit is
 moved aside at the next start, never applied. To change them, from your machine:
-[`writ admin repo|template|key|host`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
+[`writ admin repo|template|key|host|proxy`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
 for the policy's entries, `writ admin apply` for a whole file; or
 [`writd recover`](recovery.md) on the host.
 

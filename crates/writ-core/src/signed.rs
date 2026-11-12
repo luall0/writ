@@ -196,7 +196,9 @@ pub enum ScanKind {
 /// The approver asks one daemon (named by its SSH host key's fingerprint) to read the host
 /// keys `host` offers on `port` (M6.2, `writ admin host add`), once: `nonce` is one the
 /// daemon handed out for it, used once. The scan pins nothing: a second signed change does,
-/// once the approver compared the keys with the ones the remote publishes.
+/// once the approver compared the keys with the ones the remote publishes. `proxy` (M7.2):
+/// the proxy of the policy the scan goes through; absent when there is none, so a scan's bytes
+/// without one are what they were.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scan {
@@ -205,6 +207,8 @@ pub struct Scan {
     pub host: crate::config::hosts::HostName,
     pub port: u16,
     pub nonce: BootNonce,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<crate::names::ProxyName>,
 }
 
 impl Canonical for Scan {
@@ -224,7 +228,13 @@ impl Scan {
             host,
             port,
             nonce,
+            proxy: None,
         }
+    }
+
+    /// The same scan, through `proxy` (none: directly).
+    pub fn through(self, proxy: Option<crate::names::ProxyName>) -> Self {
+        Self { proxy, ..self }
     }
 }
 

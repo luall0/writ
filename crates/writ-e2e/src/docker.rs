@@ -59,6 +59,21 @@ impl Container {
         );
     }
 
+    /// What the container wrote on its standard streams so far (`docker logs`), both merged.
+    pub fn logs(&self) -> String {
+        let out = finish(
+            Command::new("docker")
+                .args(["logs", &self.name])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        assert_eq!(out.status.code(), Some(0), "docker logs {}", self.name);
+        format!("{}{}", stdout(&out), stderr(&out))
+    }
+
     /// `docker exec` as `user` in `workdir`: the command line, ready to spawn.
     fn exec(&self, user: &str, workdir: &str, script: &str) -> Command {
         let mut command = Command::new("docker");

@@ -43,11 +43,22 @@ keys:
   upstream-pr-web: { use: upstream, kind: ssh, algorithm: ed25519 }
   token-https: { use: upstream, kind: token, host: forgejo-https }
   token-https-system: { use: upstream, kind: token, host: forgejo-https-system }
+  # Scenario 25's: behind the proxies, and the proxies' passwords (added with `writ admin token`).
+  upstream-behind-socks: { use: upstream, kind: ssh, algorithm: ed25519 }
+  token-https-behind: { use: upstream, kind: token, host: forgejo-https-behind }
+  proxy-socks-password: { use: upstream, kind: token, host: socks-proxy }
+  proxy-http-password: { use: upstream, kind: token, host: http-proxy }
 upstream_hosts:
   # Forgejo's host key: the setup scans it, compares it with the one Forgejo publishes, and
   # puts it here before `writd init` (docs/operators/setup.md, step 3).
   forgejo: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]
+  # The same Forgejo under a name only the proxies resolve (scenario 25).
+  forgejo-behind: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"]
   managed.invalid: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJON0F+SC7vTbwXqnI857uLvAWDJtDsl1W7eeWrS7GMg"]
+# The two proxies in front of the `behind` network (scenario 25): the daemon isn't on it.
+proxies:
+  socks: { url: "socks5://writ@socks-proxy:1080", credential: proxy-socks-password }
+  http: { url: "http://writ@http-proxy:8888", credential: proxy-http-password, connect_timeout: 20s }
 repos:
   setup:      { upstream: "ssh://git@forgejo/writ/setup.git",      upstream_credential: upstream-setup, templates: [feature],      protected_refs: ["refs/heads/main", "refs/tags/*"] }
   lifecycle:  { upstream: "ssh://git@forgejo/writ/lifecycle.git",  upstream_credential: upstream-lifecycle, templates: [feature],  protected_refs: ["refs/heads/main", "refs/tags/*"] }
@@ -83,6 +94,9 @@ repos:
   # The same Forgejo repository behind a front whose certificate only the system trusts, not
   # `mirrors.ca_certs`: every sync refused (scenario 13).
   https-system: { upstream: "https://forgejo-https-system:3443/writ/https.git", upstream_credential: token-https-system, templates: [feature], protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  # Behind a proxy (scenario 25): ssh through SOCKS5, HTTPS through HTTP CONNECT.
+  behind-socks: { upstream: "ssh://git@forgejo-behind/writ/behind-socks.git", upstream_credential: upstream-behind-socks, proxy: socks, templates: [feature], protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  behind-http: { upstream: "https://forgejo-https-behind:3443/writ/behind-http.git", upstream_credential: token-https-behind, proxy: http, templates: [feature], protected_refs: ["refs/heads/main", "refs/tags/*"] }
 templates:
   feature:
     operations: [fetch, commit_sign, push]

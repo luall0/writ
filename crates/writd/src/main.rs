@@ -17,6 +17,8 @@
 //!   an `ssh://` upstream (it caps what upstream sends).
 //! - `writd upstream-credential <socket> <operation>`: the credential helper git runs for an
 //!   `https://` upstream (it asks the daemon for the token, for one operation).
+//! - `writd upstream-tunnel <socket> <host> <port>`: the `ProxyCommand` ssh runs for an
+//!   `ssh://` upstream behind a proxy (it carries ssh's stream through the daemon's socket).
 //!
 //! Only this binary wires the crates together and reads configuration
 //! (docs/architecture/overview.md).
@@ -76,6 +78,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("hook", "pre-receive"),
     ("upstream-ssh", "<max bytes> <ssh> <args…>"),
     ("upstream-credential", "<socket> <get|store|erase>"),
+    ("upstream-tunnel", "<socket> <host> <port>"),
     // Started by `writd run` on Linux, never by hand (docs/architecture/platform.md).
     ("proc-reader", ""),
 ];
@@ -104,6 +107,11 @@ fn main() -> ExitCode {
         }
         ["upstream-ssh", rest @ ..] => {
             return u8::try_from(writ_mirror::relay::run(rest))
+                .map(ExitCode::from)
+                .unwrap_or(ExitCode::FAILURE);
+        }
+        ["upstream-tunnel", rest @ ..] => {
+            return u8::try_from(writ_mirror::tunnel::run(rest))
                 .map(ExitCode::from)
                 .unwrap_or(ExitCode::FAILURE);
         }

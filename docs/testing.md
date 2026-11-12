@@ -249,6 +249,10 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: upstream_hosts.<host>` | `another_host_key_or_an_unpinned_host_is_refused`, `a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons` |
 | `policy.yaml: repos.<name>.upstream` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees` |
 | `policy.yaml: repos.<name>.upstream_credential` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_credential_the_remote_does_not_take_is_refused`, `an_https_upstream_syncs_with_the_token_which_nothing_else_holds` |
+| `policy.yaml: proxies.<name>.url` | `an_ssh_upstream_behind_a_proxy_is_synced_and_written_through_it_by_a_name_it_alone_resolves`, `an_https_upstream_behind_a_proxy_is_synced_through_it`, `repos_behind_a_socks5_and_an_http_proxy_are_reached_through_them_alone` |
+| `policy.yaml: proxies.<name>.credential` | `a_missing_proxy_password_refuses_every_operation_until_it_is_added`, `every_way_a_proxy_refuses_or_fails_refuses_the_sync_with_its_reason`, `repos_behind_a_socks5_and_an_http_proxy_are_reached_through_them_alone` |
+| `policy.yaml: proxies.<name>.connect_timeout` | `every_way_a_proxy_refuses_or_fails_refuses_the_sync_with_its_reason` |
+| `policy.yaml: repos.<name>.proxy` | `an_ssh_upstream_behind_a_proxy_is_synced_and_written_through_it_by_a_name_it_alone_resolves`, `a_changed_proxy_reopens_the_repo_and_the_new_one_is_used_at_once`, `repos_behind_a_socks5_and_an_http_proxy_are_reached_through_them_alone` |
 | `policy.yaml: repos.<name>.templates` | `writ_policy_and_a_dry_run_tell_the_agent_what_fits_before_it_asks`, `the_policy_is_changed_field_by_field_and_entries_removed_from_the_approver_s_machine` |
 | `policy.yaml: repos.<name>.protected_refs` | `fetch_and_push_through_the_gateway`, `every_push_denial_leaves_forgejo_and_the_mirror_unchanged` |
 | `policy.yaml: repos.<name>.push_modes` | `push_modes_without_gateway_refuse_a_gateway_push`; the value proxy planned: M9, the value direct_ssh planned: M10 |

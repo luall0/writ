@@ -133,7 +133,7 @@ state put back from an older copy is a restored backup: it carries a valid MAC.
 
 ## Reading the policy entry by entry
 
-`writ admin repo|template|key|host list` and `show <name>` (M6.2) read the policy in force
+`writ admin repo|template|key|host|proxy list` and `show <name>` (M6.2; `proxy` M7.2) read the policy in force
 with the reader key: `writ admin show policy`'s text, parsed by `writ` only to show it (with
 the lowest `min_ttl` any daemon takes, so a policy in force always reads), each entry as the
 canonical layout writes it (`PolicyConfig::entry_yaml`). Keys add `writ admin keys` (`GET
@@ -198,11 +198,14 @@ number (10 a minute, daemon-wide) and logged.
 <host>`, and a guided `repo add` on a host with no pin) runs only on an approver's signature:
 `writ` asks the daemon for a nonce (`writ admin scan-nonce`, `GET /v1/scan`: 16 bytes, used
 once, for 5 minutes, at most 16 outstanding), signs a `writ-scan/1` document naming the daemon
-(its host key's fingerprint), the host, the port and the nonce in the `writ-approval`
+(its host key's fingerprint), the host, the port, the nonce and, for a host behind a proxy of
+the policy (M7.2, `proxy=<name>` or `--proxy`), that proxy, in the `writ-approval`
 namespace, and sends it (`writ admin scan`, `POST /v1/scan`). A reader key alone can't make
 the daemon reach a host, so the scan can't probe the daemon's network. The daemon checks the
 document strictly, the signature against `approvers`, the daemon and the nonce (refused
-`scan`, or `signature`), then makes one SSH handshake per key algorithm Writ verifies
+`scan`, or `signature`), then makes one SSH handshake per key algorithm Writ verifies, each connection opened
+through the named proxy when there is one ([gateway](gateway.md#through-a-proxy)) and refused
+when the policy in force declares no such proxy or lacks its password,
 (Ed25519, ECDSA P-256 and P-384) with its own SSH library (russh, `writ_mirror::scan`), each
 asking for that algorithm alone, dropped once the host proved it holds the key and before any
 authentication, within `mirrors.scan_timeout` (30 s by default). The keys come back with their

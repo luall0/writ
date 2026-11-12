@@ -459,6 +459,12 @@ enum AdminCommand {
         #[command(subcommand)]
         command: HostCommand,
     },
+    /// The proxies in the policy in force, which repos reach their upstream through (SOCKS5,
+    /// Tor included, or HTTP CONNECT).
+    Proxy {
+        #[command(subcommand)]
+        command: EntryCommand,
+    },
     /// Add or replace the token ID (a token the policy declares, or a notifier's sealed
     /// token): asked for with no echo (or one line of stdin), encrypted here to the daemon's
     /// keystore, then one signature with your approval key. It is used at once.
@@ -557,6 +563,10 @@ enum HostCommand {
     /// replacing the pin. On a terminal.
     Rescan {
         host: String,
+        /// Scan through this proxy of the policy (default: the one every repo on the host is
+        /// reached through, when they share one).
+        #[arg(long, value_name = "NAME")]
+        proxy: Option<String>,
         /// Sign without asking (the diff is still shown first; the keys are still compared).
         #[arg(long)]
         yes: bool,
@@ -1138,14 +1148,26 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             }
             HostCommand::Rescan {
                 host,
+                proxy,
                 yes,
                 url,
                 signer: args,
             } => {
                 let signer = signer(&paths, args);
-                approver::guided_rescan(&paths, &url.get(&paths)?, &signer, host, *yes).await
+                approver::guided_rescan(
+                    &paths,
+                    &url.get(&paths)?,
+                    &signer,
+                    host,
+                    proxy.as_deref(),
+                    *yes,
+                )
+                .await
             }
         },
+        Commands::Admin {
+            command: AdminCommand::Proxy { command },
+        } => entry_command(&paths, writ_core::config::Section::Proxies, command, None).await,
         Commands::Admin {
             command: AdminCommand::Template { command },
         } => {

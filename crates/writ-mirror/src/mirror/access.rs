@@ -1,7 +1,9 @@
 //! How one operation reaches upstream ([`Access`]): for `ssh://`, an agent socket serving the
-//! repo's key and the ssh command that uses it through the relay; for `https://`, the
-//! byte-capping proxy, the credential socket serving the token to the daemon's helper, and
-//! git's HTTPS settings. Each socket goes when the operation ends. And git run through it.
+//! repo's key and the ssh command that uses it through the relay (behind a proxy of the
+//! policy, with the byte-capping proxy as its tunnel); for `https://`, the byte-capping proxy,
+//! the credential socket serving the token to the daemon's helper, and git's HTTPS settings.
+//! The byte-capping proxy reaches upstream through the repo's dialer. Each socket goes when the
+//! operation ends. And git run through it.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -14,11 +16,12 @@ use super::in_flight::Running;
 use super::{MirrorGuard, Reach, Shared};
 use crate::agent::AgentSocket;
 use crate::credential::{CredentialSocket, UpstreamToken};
+use crate::dial::{DialError, Dialer};
 use crate::git::{self, Hooks, Transport};
 use crate::process::{self, RunError};
 use crate::proxy::UpstreamProxy;
 use crate::quarantine::Quarantine;
-use crate::upstream::{HttpsUrl, SshCommand, quote};
+use crate::upstream::{HttpsUrl, SshCommand, SshTunnel, SshUrl, quote};
 use crate::{MirrorError, Result};
 
 /// How one operation reaches upstream: what its git is given, and what serves it, for this
@@ -51,6 +54,12 @@ impl Access {
     pub(super) fn too_large(&self) -> bool {
         self.proxy.as_ref().is_some_and(UpstreamProxy::too_large)
     }
+
+    /// Why a connection to upstream couldn't be opened, if one couldn't: git only says the
+    /// proxy failed.
+    pub(super) fn dial_failure(&self) -> Option<DialError> {
+        self.proxy.as_ref().and_then(UpstreamProxy::failure)
+    }
 }
 
 impl MirrorGuard {
@@ -58,7 +67,8 @@ impl MirrorGuard {
     /// key, and the ssh command that uses it through the relay. `https://`: the byte-capping
     /// proxy, the credential socket serving the token to the daemon's helper, and git's HTTPS
     /// settings. Each socket goes when the operation ends. An `https://` repo whose token
-    /// isn't in the keystore yet reaches nothing: refused with the command that adds it.
+    /// isn't in the keystore yet reaches nothing: refused with the command that adds it; so is
+    /// a repo behind a proxy whose password isn't.
     pub(super) fn reach_upstream(&self) -> Result<Access> {
         let running = self
             .shared
@@ -67,18 +77,36 @@ impl MirrorGuard {
             .ok_or_else(|| MirrorError::Stopping {
                 repo: self.repo.name.clone(),
             })?;
+        let dialer = &self.repo.dialer;
+        if let Some(route) = dialer.proxy()
+            && let Some(key) = route.missing_password()
+        {
+            return Err(MirrorError::NoProxyPassword {
+                repo: self.repo.name.clone(),
+                proxy: route.name().clone(),
+                key: key.clone(),
+            });
+        }
         match &self.repo.reach {
             Reach::Ssh {
+                url,
                 credential,
                 public,
                 identity,
-                ..
-            } => ssh_access(&self.shared, credential, public, identity, running),
+            } => ssh_access(
+                &self.shared,
+                url,
+                dialer,
+                credential,
+                public,
+                identity,
+                running,
+            ),
             Reach::Https {
                 url,
                 token: Some(token),
                 ..
-            } => https_access(&self.shared, url, token, running),
+            } => https_access(&self.shared, url, dialer, token, running),
             Reach::Https {
                 credential,
                 token: None,
@@ -117,9 +145,13 @@ impl MirrorGuard {
 }
 
 /// An `ssh://` operation: an agent socket serving `credential` (whose public half is `public`,
-/// written at `identity`), and the ssh command, through the relay, that uses it.
+/// written at `identity`), and the ssh command, through the relay, that uses it. Behind a
+/// proxy, ssh's `ProxyCommand` is the daemon's tunnel to the byte-capping proxy, which reaches
+/// `url`'s host and port alone, through `dialer`.
 fn ssh_access(
     shared: &Shared,
+    url: &SshUrl,
+    dialer: &Dialer,
     credential: &KeyId,
     public: &PublicKey,
     identity: &Path,
@@ -131,6 +163,16 @@ fn ssh_access(
         credential.clone(),
         public,
     )?;
+    let proxy = match dialer {
+        Dialer::Direct => None,
+        Dialer::Proxy(_) => Some(UpstreamProxy::start(
+            &shared.socket_dir,
+            url.host(),
+            url.port(),
+            shared.config.max_fetch_bytes,
+            dialer.clone(),
+        )?),
+    };
     let ssh = SshCommand {
         relay: &shared.config.relay,
         ssh: &shared.config.ssh,
@@ -138,6 +180,12 @@ fn ssh_access(
         agent: agent.path(),
         identity,
         max_bytes: shared.config.max_fetch_bytes,
+        tunnel: proxy.as_ref().map(|proxy| SshTunnel {
+            socket: proxy.path(),
+            host: url.host(),
+            port: url.port(),
+            connect_timeout: dialer.deadline(),
+        }),
     }
     .to_git_ssh_command()?;
     Ok(Access {
@@ -149,7 +197,7 @@ fn ssh_access(
         ],
         _agent: Some(agent),
         _credential: None,
-        proxy: None,
+        proxy,
         _running: running,
     })
 }
@@ -160,10 +208,17 @@ fn ssh_access(
 fn https_access(
     shared: &Shared,
     url: &HttpsUrl,
+    dialer: &Dialer,
     token: &Arc<UpstreamToken>,
     running: Running,
 ) -> Result<Access> {
-    let proxy = UpstreamProxy::start(&shared.socket_dir, url, shared.config.max_fetch_bytes)?;
+    let proxy = UpstreamProxy::start(
+        &shared.socket_dir,
+        url.host(),
+        url.port(),
+        shared.config.max_fetch_bytes,
+        dialer.clone(),
+    )?;
     let credential = CredentialSocket::start(&shared.socket_dir, url.clone(), token.clone())?;
     let helper = format!(
         "credential.helper=!{} upstream-credential {}",

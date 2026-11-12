@@ -15,6 +15,21 @@ use crate::{MirrorError, Result};
 
 pub use writ_core::upstream::{HTTPS_PORT, HttpsUrl, SshUrl, Upstream};
 
+/// An `ssh://` upstream behind a proxy: ssh's `ProxyCommand` is `writd upstream-tunnel
+/// <socket> <host> <port>`, the operation's byte-capping proxy reaching upstream through the
+/// repo's proxy.
+#[derive(Debug, Clone, Copy)]
+pub struct SshTunnel<'a> {
+    /// The operation's byte-capping proxy socket.
+    pub socket: &'a Path,
+    /// Upstream's host and port, as the registry names them.
+    pub host: &'a str,
+    pub port: u16,
+    /// How long the proxy may take to open the tunnel: ssh waits that long, and more, for
+    /// upstream's banner.
+    pub connect_timeout: std::time::Duration,
+}
+
 /// What the ssh command for one operation is made of.
 #[derive(Debug, Clone, Copy)]
 pub struct SshCommand<'a> {
@@ -30,6 +45,8 @@ pub struct SshCommand<'a> {
     pub identity: &'a Path,
     /// The most bytes upstream may send.
     pub max_bytes: u64,
+    /// Behind a proxy: the tunnel ssh connects through (none: ssh connects itself).
+    pub tunnel: Option<SshTunnel<'a>>,
 }
 
 impl SshCommand<'_> {
@@ -59,6 +76,19 @@ impl SshCommand<'_> {
         }
         let [relay, ssh, known_hosts, agent, identity] = quoted.as_slice() else {
             return Err(MirrorError::Config("internal error".to_owned()));
+        };
+        let (proxy_command, connect_timeout) = match &self.tunnel {
+            None => (
+                "ProxyCommand=none".to_owned(),
+                "ConnectTimeout=15".to_owned(),
+            ),
+            Some(tunnel) => (
+                proxy_command(self.relay, tunnel)?,
+                format!(
+                    "ConnectTimeout={}",
+                    tunnel.connect_timeout.as_secs().saturating_add(15)
+                ),
+            ),
         };
         let mut words = vec![
             relay.clone(),
@@ -90,14 +120,14 @@ impl SshCommand<'_> {
             "ForwardX11=no".to_owned(),
             "ClearAllForwardings=yes".to_owned(),
             "PermitLocalCommand=no".to_owned(),
-            "ProxyCommand=none".to_owned(),
+            proxy_command,
             "ProxyJump=none".to_owned(),
             "ControlMaster=no".to_owned(),
             "ControlPath=none".to_owned(),
             "CanonicalizeHostname=no".to_owned(),
             "RequestTTY=no".to_owned(),
             "EscapeChar=none".to_owned(),
-            "ConnectTimeout=15".to_owned(),
+            connect_timeout,
             "ServerAliveInterval=15".to_owned(),
             "ServerAliveCountMax=3".to_owned(),
             "LogLevel=ERROR".to_owned(),
@@ -108,6 +138,35 @@ impl SshCommand<'_> {
         }
         Ok(words.join(" "))
     }
+}
+
+/// The `ProxyCommand` option for `tunnel`, as one word of git's `sh -c` (double quotes): ssh
+/// runs its value with `sh -c "exec …"`, the relay's and the socket's paths in single quotes
+/// there. Neither may hold what either shell, or ssh's own `%` tokens, would read (`"`, `$`,
+/// `` ` ``, `\\`, `%`): the daemon's own paths never need it.
+fn proxy_command(relay: &Path, tunnel: &SshTunnel<'_>) -> Result<String> {
+    for path in [relay, tunnel.socket] {
+        if path.to_string_lossy().contains(['"', '$', '`', '\\', '%']) {
+            return Err(MirrorError::Config(format!(
+                "path {} can't be given to ssh's ProxyCommand (one of \" $ ` \\ %)",
+                path.display()
+            )));
+        }
+    }
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_');
+    if tunnel.host.is_empty() || tunnel.host.starts_with('-') || !tunnel.host.chars().all(plain) {
+        return Err(MirrorError::Config(format!(
+            "upstream host {:?} can't be given to ssh's ProxyCommand",
+            tunnel.host
+        )));
+    }
+    Ok(format!(
+        "\"ProxyCommand={} upstream-tunnel {} {} {}\"",
+        quote(relay)?,
+        quote(tunnel.socket)?,
+        tunnel.host,
+        tunnel.port
+    ))
 }
 
 /// `path` in single quotes for `sh`. A path holding a quote or anything unprintable is refused
@@ -147,6 +206,7 @@ mod tests {
             agent: &agent,
             identity: &id,
             max_bytes: 1000,
+            tunnel: None,
         }
         .to_git_ssh_command()
         .unwrap();
@@ -173,6 +233,7 @@ mod tests {
             agent: &agent,
             identity: &id,
             max_bytes: 1000,
+            tunnel: None,
         }
         .to_git_ssh_command();
         assert!(matches!(result, Err(MirrorError::Config(_))), "{result:?}");
@@ -186,6 +247,7 @@ mod tests {
             agent: &agent,
             identity: &id,
             max_bytes: 1000,
+            tunnel: None,
         }
         .to_git_ssh_command();
         match result {
@@ -203,10 +265,77 @@ mod tests {
                 agent: &agent,
                 identity: &id,
                 max_bytes: 1000,
+                tunnel: None,
             }
             .to_git_ssh_command()
             .unwrap()
             .starts_with("'/opt/my writ/writd' ")
         );
+    }
+
+    #[test]
+    fn behind_a_proxy_ssh_connects_through_the_daemon_s_tunnel_only() {
+        let (relay, ssh, kh, agent, id, socket) = (
+            PathBuf::from("/opt/writ/writd"),
+            PathBuf::from("/usr/bin/ssh"),
+            PathBuf::from("/var/lib/writ/mirror/known_hosts"),
+            PathBuf::from("/var/lib/writ/mirror/sockets/a.sock"),
+            PathBuf::from("/var/lib/writ/mirror/upstream-01.pub"),
+            PathBuf::from("/var/lib/writ/mirror/sockets/b.proxy"),
+        );
+        let command = |relay: &Path, socket: &Path, host: &str| {
+            SshCommand {
+                relay,
+                ssh: &ssh,
+                known_hosts: &kh,
+                agent: &agent,
+                identity: &id,
+                max_bytes: 1000,
+                tunnel: Some(SshTunnel {
+                    socket,
+                    host,
+                    port: 2222,
+                    connect_timeout: std::time::Duration::from_secs(120),
+                }),
+            }
+            .to_git_ssh_command()
+        };
+        let line = command(&relay, &socket, "abc.onion").unwrap();
+        assert!(
+            line.contains(
+                "-o \"ProxyCommand='/opt/writ/writd' upstream-tunnel \
+                 '/var/lib/writ/mirror/sockets/b.proxy' abc.onion 2222\""
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("ProxyCommand=none"), "{line}");
+        assert!(line.contains("-o ProxyJump=none"), "{line}");
+        assert!(line.contains("-o ConnectTimeout=135"), "{line}");
+        // What either shell or ssh's tokens would read: refused, never escaped.
+        for bad in [
+            "/opt/w$x/writd",
+            "/opt/w`x`/writd",
+            "/opt/w\"x/writd",
+            "/opt/w%h/writd",
+            "/opt/w\\x/writd",
+        ] {
+            let result = command(Path::new(bad), &socket, "abc.onion");
+            assert!(
+                matches!(result, Err(MirrorError::Config(_))),
+                "{bad}: {result:?}"
+            );
+            let result = command(&relay, Path::new(bad), "abc.onion");
+            assert!(
+                matches!(result, Err(MirrorError::Config(_))),
+                "{bad}: {result:?}"
+            );
+        }
+        for bad in ["", "-oProxyCommand=x", "a;b", "a b"] {
+            let result = command(&relay, &socket, bad);
+            assert!(
+                matches!(result, Err(MirrorError::Config(_))),
+                "{bad}: {result:?}"
+            );
+        }
     }
 }

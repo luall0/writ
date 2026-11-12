@@ -240,7 +240,8 @@ network that can be hostile), so what a sync takes from it is checked and bounde
 
 ## Upstream
 
-The repo's `upstream` URL picks the way ([Q4](../decisions.md)): **SSH** (`ssh://`) with the
+The repo's `upstream` URL picks the way ([Q4](../decisions.md)), and its `proxy` whether
+connections go [through a proxy](#through-a-proxy): **SSH** (`ssh://`) with the
 repo's `upstream_credential`, a key in the [signer](signer.md) (its own queue: 8 waiting, 10 s
 each), or **HTTPS** (`https://`) with the token of that id from the keystore
 ([below](#https-with-a-token)). Either way git does the protocol, and what the daemon gives it
@@ -254,8 +255,8 @@ serves that one operation.
   runs on its mirrors) runs the system's OpenSSH (`mirrors.ssh`, `/usr/bin/ssh` by default)
   with `-F /dev/null` and every option that matters stated: the pinned host keys only (as the
   daemon rewrote them: plain host names or `[host]:port`, no wildcard, hashed name or marker,
-  no DSA key), public key authentication only, no forwarding, proxy, control socket or local
-  command, `BatchMode`.
+  no DSA key), public key authentication only, no forwarding, proxy (but the daemon's own tunnel, [behind a proxy](#through-a-proxy)),
+  control socket or local command, `BatchMode`.
 - The key never leaves the signer: for each operation the daemon serves an **ssh-agent
   socket** (`writ_mirror::agent`) in a private directory, offering only that repo's key,
   signing through the `Signer`; it takes 4 connections, makes 4 signatures, reads messages up
@@ -311,6 +312,38 @@ host ([operator guide](../operators/setup.md#https-upstreams-and-tokens)).
   (no `.netrc`).
 - Whatever upstream says has the token taken out before it reaches an error: a hostile
   upstream received it, and could print it back.
+
+### Through a proxy
+
+A repo naming a proxy of the policy (`repos.<name>.proxy`, `proxies.<name>`, M7.2) has every
+connection to its upstream opened through it: syncs, pushes, notes, `writ admin repo check` and
+the host key scan. The one place that dials is the operation's byte-capping SOCKS5 socket
+(`writ_mirror::proxy`), through the repo's **dialer** (`writ_mirror::dial`): directly, or
+through the proxy, still to the registry's host and port alone and still counting what
+upstream sends.
+
+- **`https://`:** git's `http.proxy` is that socket, as without a proxy.
+- **`ssh://`:** ssh's `ProxyCommand` is the daemon's own program, `writd upstream-tunnel
+  <socket> <host> <port>` (by absolute path, like the relay), which asks the operation's socket
+  for the registry's host by name and carries ssh's stream; the relay still wraps ssh, the
+  pinned host key is still the only one taken, and `ConnectTimeout` is the proxy's
+  `connect_timeout` and 15 s. Without a proxy, ssh connects itself (`ProxyCommand=none`).
+- **The scan** opens each handshake's connection through the dialer, then speaks SSH over it.
+- **The protocols:** SOCKS5 (RFC 1928; with a credential, RFC 1929 alone is offered) and HTTP
+  `CONNECT` (with a credential, Basic `Proxy-Authorization`). The upstream's name goes to the
+  proxy as a name (SOCKS5's domain address type, `CONNECT host:port`), an address as an
+  address: the daemon resolves only the proxy's own host. Only tunnels: no plain HTTP
+  forwarding.
+- **What the proxy answers** is read field by field within its `connect_timeout` (an HTTP head
+  at most 8 KiB, byte by byte, so nothing of upstream's is taken with it; only `200` opens the
+  tunnel); a failure is kept by the operation's socket and becomes the operation's error
+  (`repo <name>: proxy <name>: …`), git only saying its proxy failed. What the proxy says is
+  cleaned and cut, the password and its Basic form taken out.
+- **The password** is a `kind: token` key on the proxy's host, from the keystore (`writ admin
+  token`), wiped on drop, never in a command line, a file or a log: the dialer writes it to the
+  proxy's socket itself. Missing, the repo's operations are refused before anything is sent.
+- A registry change that changes a repo's proxy (its entry, or its password) reopens the
+  repo's mirror, as a changed entry does.
 
 ### Pushing upstream
 

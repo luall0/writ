@@ -113,6 +113,7 @@ impl Fixture {
         self.runtime.block_on(Mirrors::open(
             config,
             policy.repos(),
+            policy.proxies(),
             self.signer(),
             &BTreeMap::new(),
         ))
@@ -573,6 +574,7 @@ fn an_upstream_the_daemon_cannot_reach_as_configured_is_refused_at_start_and_one
         f.runtime.block_on(Mirrors::open(
             f.config(),
             policy.repos(),
+            policy.proxies(),
             f.signer(),
             &BTreeMap::new(),
         ))
@@ -1168,6 +1170,7 @@ fn a_registry_change_keeps_one_lock_per_mirror() {
         .runtime
         .block_on(mirrors.with_registry(
             changed.repos(),
+            changed.proxies(),
             f.config().pinned,
             f.signer(),
             &BTreeMap::new(),

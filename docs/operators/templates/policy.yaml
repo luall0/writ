@@ -1,4 +1,4 @@
-# policy.yaml: the keys, the upstream host keys, the repo registry and the templates
+# policy.yaml: the keys, the upstream host keys, the proxies, the repo registry and the templates
 # (docs/operators/policy-yaml.md has every key). Required keys are set; every optional key is
 # commented out at its default value. `writd init` puts it in force and makes its keys; after
 # that, `writ admin` changes it, one signed change at a time.
@@ -24,15 +24,26 @@ keys:                              # every key the policy names, made by the cha
   #   use: upstream
   #   kind: token
   #   host: github.com             # the only host it is sent to
+  # proxy_password:                # a proxy's password: a token on the proxy's host
+  #   use: upstream
+  #   kind: token
+  #   host: proxy.example.org
 
 upstream_hosts:                    # each ssh:// upstream's host keys: `writ admin host add` scans them
   github.com:                      # host, or "[host]:port" off port 22
     - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
+# proxies:                         # for remotes reachable only through a proxy (an allowed address, Tor)
+#   office:                        # Tor: url "socks5://127.0.0.1:9050", no credential, connect_timeout 2m
+#     url: "http://writ@proxy.example.org:3128"   # socks5://[user@]host:port | http://[user@]host:port
+#     credential: proxy_password   # only with a user in the URL: the key holding its password
+#     connect_timeout: 30s         # 1s to 5m
+
 repos:
   my-repo:                         # the name agents use; unique ignoring case
     upstream: ssh://git@github.com/me/my-repo.git   # or https://host/path, with a token
     upstream_credential: upstream-my-repo-01   # a key declared with use: upstream
+    # proxy: null                  # a proxy in proxies, to reach upstream through; null: directly
     templates: [feature-branch]    # the templates its tickets may use; []: the repo is closed
     # protected_refs: []           # full refs no lease may push, e.g. ["refs/heads/main", "refs/tags/*"]
     # push_modes: [gateway]        # gateway | proxy (M9) | direct_ssh (M10)

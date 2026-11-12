@@ -154,6 +154,7 @@ impl Opener {
         let mirrors = Mirrors::open(
             inner.mirrors.clone(),
             inner.policy.repos(),
+            inner.policy.proxies(),
             upstream.clone(),
             &tokens,
         )
@@ -324,6 +325,7 @@ impl Opener {
                     .map_err(refuse)?
                     .with_registry(
                         policy.repos(),
+                        policy.proxies(),
                         pinned,
                         open.upstream.clone(),
                         &open.tokens(),
@@ -622,6 +624,7 @@ impl Opener {
                 token_added: signer.is_none().then(|| tokens.contains_key(id)),
                 repos: users.repos,
                 templates: users.templates,
+                proxies: users.proxies,
             });
         }
         Ok(KeysShown { version, keys })
@@ -719,6 +722,7 @@ impl Opener {
                 (Ok(mirrors), Ok(pinned)) => mirrors
                     .with_registry(
                         policy.repos(),
+                        policy.proxies(),
                         pinned,
                         open.upstream.clone(),
                         &open.tokens(),

@@ -9,6 +9,8 @@
 #   and the approver as `dev` (scenario 24).
 # - `runner`: the scenarios (crates/writ-e2e/tests/scenarios), driving the others through
 #   the Docker socket and Forgejo's API.
+# - `socks-proxy`, `http-proxy`: microsocks (SOCKS5) and tinyproxy (HTTP CONNECT), each with a user
+#   and a password, the only way to `forgejo-behind` and `forgejo-https-behind` (scenario 25).
 # - `tls-front`: Forgejo over HTTPS (`https://forgejo-https:3443`), for the daemon's HTTPS
 #   upstream: socat terminating TLS with a throwaway self-signed certificate made at build
 #   time, in front of Forgejo's plain HTTP. Built twice, each with its own certificate: for
@@ -105,9 +107,29 @@ RUN apt-get update \
 COPY --from=build /out/scenarios /usr/local/bin/scenarios
 ENTRYPOINT ["/usr/local/bin/scenarios", "--ignored"]
 
+FROM ${DEBIAN_IMAGE} AS socks-proxy
+# microsocks: SOCKS5 with a user and a password (RFC 1929), CONNECT only, names resolved by
+# it. The password is a throwaway stack's, the one the setup adds with `writ admin token`
+# (crates/writ-e2e/src/setup.rs).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends microsocks \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --no-create-home --shell /usr/sbin/nologin socks
+USER socks
+CMD ["microsocks", "-i", "0.0.0.0", "-p", "1080", "-u", "writ", "-P", "e2e-socks-proxy-password"]
+
+FROM ${DEBIAN_IMAGE} AS http-proxy
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tinyproxy \
+    && rm -rf /var/lib/apt/lists/*
+COPY e2e/proxy/tinyproxy.conf /etc/tinyproxy/tinyproxy.conf
+USER tinyproxy
+CMD ["tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]
+
 FROM ${DEBIAN_IMAGE} AS tls-front
-# The name the certificate is made for (and the compose service's).
+# The name the certificate is made for (and the compose service's), and every name it holds.
 ARG TLS_NAME=forgejo-https
+ARG TLS_SAN=DNS:${TLS_NAME}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends socat openssl \
     && rm -rf /var/lib/apt/lists/* \
@@ -119,6 +141,6 @@ WORKDIR /tls
 # `forgejo-https`'s: the operator setup copies it to the daemon as its `mirrors.ca_certs`;
 # `forgejo-https-system`'s: scenario 13 adds it to the daemon container's system store.
 RUN openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
-        -subj "/CN=${TLS_NAME}" -addext "subjectAltName=DNS:${TLS_NAME}" \
+        -subj "/CN=${TLS_NAME}" -addext "subjectAltName=${TLS_SAN}" \
         -keyout key.pem -out cert.pem 2>/dev/null
 CMD ["socat", "OPENSSL-LISTEN:3443,reuseaddr,fork,cert=/tls/cert.pem,key=/tls/key.pem,verify=0", "TCP:forgejo:3000"]

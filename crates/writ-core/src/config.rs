@@ -1,5 +1,5 @@
-//! The policy: the keys, the upstream host pins, the repo registry and the templates, as an
-//! approver signed them.
+//! The policy: the keys, the upstream host pins, the proxies, the repo registry and the
+//! templates, as an approver signed them.
 //!
 //! Parsed from YAML text (reading the file is the daemon's job), and written back in Writ's
 //! canonical layout ([`PolicyConfig::to_yaml`]). Every error names the field it is about,
@@ -7,12 +7,14 @@
 //!
 //! - [`keys`]: `keys.<id>`, every key the policy names, declared with its use.
 //! - [`hosts`]: `upstream_hosts`, the pinned upstream host keys.
+//! - [`proxies`]: `proxies.<name>`, the proxies a repo's upstream may be reached through.
 //! - [`edit`]: one entry's fields edited, as `writ admin <noun> set` and `remove` do.
 //! - `write`: the canonical layout.
 
 pub mod edit;
 pub mod hosts;
 pub mod keys;
+pub mod proxies;
 mod write;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,8 +27,9 @@ pub use keys::{
     BackendName, HashName, Key, KeyAlgorithm, KeyFormat, KeyUse, MAX_UIDS, SigningKey, TokenHost,
     UpstreamKey, UpstreamKind,
 };
+pub use proxies::{Proxy, ProxyScheme, ProxyUrl};
 
-use crate::names::{CommitterName, Email, KeyId, RepoName, TemplateName, Uid};
+use crate::names::{CommitterName, Email, KeyId, ProxyName, RepoName, TemplateName, Uid};
 use crate::pattern::{BranchPattern, RefPattern};
 use crate::ticket::Operation;
 use crate::units::{ByteSize, Duration};
@@ -190,6 +193,9 @@ pub struct RepoEntry {
     pub upstream: String,
     /// The declared upstream credential (`keys.<id>`, `use: upstream`) that reaches it.
     pub upstream_credential: KeyId,
+    /// The proxy (`proxies.<name>`) upstream is reached through; none: directly.
+    #[serde(default)]
+    pub proxy: Option<ProxyName>,
     /// The templates whose tickets may reach the repo; empty: the repo is paused (registered,
     /// with its mirror and credential, while no ticket fits it).
     pub templates: BTreeSet<TemplateName>,
@@ -276,6 +282,8 @@ struct RawPolicyConfig {
     keys: BTreeMap<KeyId, keys::RawKey>,
     #[serde(default)]
     upstream_hosts: BTreeMap<UpstreamHost, Vec<HostKey>>,
+    #[serde(default)]
+    proxies: BTreeMap<ProxyName, Proxy>,
     repos: BTreeMap<RepoName, RepoEntry>,
     templates: BTreeMap<TemplateName, Template>,
     /// Before M6.2, the OpenPGP user ids: refused, naming `keys.<id>.uids`.
@@ -284,12 +292,13 @@ struct RawPolicyConfig {
 }
 
 /// The policy, cross-checked: every key named is declared for its use, every `ssh://`
-/// upstream's host pinned, every template a repo names defined, and each template carrying
-/// what its operations need.
+/// upstream's host pinned, every proxy and template a repo names defined, and each template
+/// carrying what its operations need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyConfig {
     keys: BTreeMap<KeyId, Key>,
     upstream_hosts: BTreeMap<UpstreamHost, Vec<HostKey>>,
+    proxies: BTreeMap<ProxyName, Proxy>,
     repos: BTreeMap<RepoName, RepoEntry>,
     templates: BTreeMap<TemplateName, Template>,
 }
@@ -299,33 +308,38 @@ pub struct PolicyConfig {
 pub enum Section {
     Keys,
     UpstreamHosts,
+    Proxies,
     Repos,
     Templates,
 }
 
 impl Section {
-    pub const ALL: [Section; 4] = [
+    pub const ALL: [Section; 5] = [
         Section::Keys,
         Section::UpstreamHosts,
+        Section::Proxies,
         Section::Repos,
         Section::Templates,
     ];
 
-    /// Its key in the policy (`keys`, `upstream_hosts`, `repos`, `templates`).
+    /// Its key in the policy (`keys`, `upstream_hosts`, `proxies`, `repos`, `templates`).
     pub fn as_str(self) -> &'static str {
         match self {
             Section::Keys => "keys",
             Section::UpstreamHosts => "upstream_hosts",
+            Section::Proxies => "proxies",
             Section::Repos => "repos",
             Section::Templates => "templates",
         }
     }
 
-    /// The noun `writ admin` names one entry of it by (`key`, `host`, `repo`, `template`).
+    /// The noun `writ admin` names one entry of it by (`key`, `host`, `proxy`, `repo`,
+    /// `template`).
     pub fn noun(self) -> &'static str {
         match self {
             Section::Keys => "key",
             Section::UpstreamHosts => "host",
+            Section::Proxies => "proxy",
             Section::Repos => "repo",
             Section::Templates => "template",
         }
@@ -338,16 +352,18 @@ impl fmt::Display for Section {
     }
 }
 
-/// What uses a key: the repos it reaches upstream for, the templates that sign with it.
+/// What uses a key: the repos it reaches upstream for, the proxies it is the password of,
+/// the templates that sign with it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeyUsers {
     pub repos: Vec<RepoName>,
+    pub proxies: Vec<ProxyName>,
     pub templates: Vec<TemplateName>,
 }
 
 impl KeyUsers {
     pub fn is_empty(&self) -> bool {
-        self.repos.is_empty() && self.templates.is_empty()
+        self.repos.is_empty() && self.proxies.is_empty() && self.templates.is_empty()
     }
 }
 
@@ -359,6 +375,12 @@ impl fmt::Display for KeyUsers {
             parts.push(format!(
                 "repos {}",
                 join(self.repos.iter().map(RepoName::as_str).collect())
+            ));
+        }
+        if !self.proxies.is_empty() {
+            parts.push(format!(
+                "proxies {}",
+                join(self.proxies.iter().map(ProxyName::as_str).collect())
             ));
         }
         if !self.templates.is_empty() {
@@ -445,8 +467,24 @@ impl PolicyConfig {
                 ));
             }
         }
+        if raw.proxies.len() > proxies::MAX_PROXIES {
+            return Err(FieldError::at(
+                "proxies",
+                format!("at most {} proxies are declared", proxies::MAX_PROXIES),
+            ));
+        }
+        for (name, proxy) in &raw.proxies {
+            validate_proxy(name, proxy, &keys)?;
+        }
         for (name, repo) in &raw.repos {
-            validate_repo(name, repo, &keys, &raw.upstream_hosts, &raw.templates)?;
+            validate_repo(
+                name,
+                repo,
+                &keys,
+                &raw.upstream_hosts,
+                &raw.proxies,
+                &raw.templates,
+            )?;
         }
         for (name, template) in &raw.templates {
             validate_template(name, template, &keys, min_ttl)?;
@@ -454,6 +492,7 @@ impl PolicyConfig {
         Ok(Self {
             keys,
             upstream_hosts: raw.upstream_hosts,
+            proxies: raw.proxies,
             repos: raw.repos,
             templates: raw.templates,
         })
@@ -476,6 +515,7 @@ impl PolicyConfig {
         match section {
             Section::Keys => self.keys.keys().map(|k| k.to_string()).collect(),
             Section::UpstreamHosts => self.upstream_hosts.keys().map(|h| h.to_string()).collect(),
+            Section::Proxies => self.proxies.keys().map(|p| p.to_string()).collect(),
             Section::Repos => self.repos.keys().map(|r| r.to_string()).collect(),
             Section::Templates => self.templates.keys().map(|t| t.to_string()).collect(),
         }
@@ -523,6 +563,12 @@ impl PolicyConfig {
                 .filter(|(_, r)| r.upstream_credential == *id)
                 .map(|(name, _)| name.clone())
                 .collect(),
+            proxies: self
+                .proxies
+                .iter()
+                .filter(|(_, p)| p.credential.as_ref() == Some(id))
+                .map(|(name, _)| name.clone())
+                .collect(),
             templates: self
                 .templates
                 .iter()
@@ -546,6 +592,24 @@ impl PolicyConfig {
                 _ => false,
             })
             .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// The declared proxies.
+    pub fn proxies(&self) -> &BTreeMap<ProxyName, Proxy> {
+        &self.proxies
+    }
+
+    pub fn proxy(&self, name: &ProxyName) -> Option<&Proxy> {
+        self.proxies.get(name)
+    }
+
+    /// The repos reached through the proxy `name`.
+    pub fn proxy_users(&self, name: &ProxyName) -> Vec<RepoName> {
+        self.repos
+            .iter()
+            .filter(|(_, r)| r.proxy.as_ref() == Some(name))
+            .map(|(repo, _)| repo.clone())
             .collect()
     }
 
@@ -588,6 +652,7 @@ fn validate_repo(
     repo: &RepoEntry,
     keys: &BTreeMap<KeyId, Key>,
     pins: &BTreeMap<UpstreamHost, Vec<HostKey>>,
+    proxies: &BTreeMap<ProxyName, Proxy>,
     templates: &BTreeMap<TemplateName, Template>,
 ) -> Result<(), FieldError> {
     let at = |field: &str| format!("repos.{name}.{field}");
@@ -648,6 +713,26 @@ fn validate_repo(
             ));
         }
     }
+    if let Some(proxy) = &repo.proxy
+        && !proxies.contains_key(proxy)
+    {
+        return Err(FieldError::at(
+            at("proxy"),
+            format!("{proxy} is not declared in proxies"),
+        ));
+    }
+    if let Some((proxy, _)) = proxies
+        .iter()
+        .find(|(_, p)| p.credential.as_ref() == Some(id))
+    {
+        return Err(FieldError::at(
+            at("upstream_credential"),
+            format!(
+                "keys.{id} is the password of proxies.{proxy}: a key is a repo's credential or \
+                 a proxy's, never both"
+            ),
+        ));
+    }
     if let Some(unknown) = repo.templates.iter().find(|t| !templates.contains_key(*t)) {
         return Err(FieldError::at(
             at("templates"),
@@ -692,6 +777,73 @@ fn validate_repo(
         }
         _ => Ok(()),
     }
+}
+
+/// A proxy: a credential exactly when the URL names a user, a token on the proxy's host; a
+/// connect timeout within its bounds.
+fn validate_proxy(
+    name: &ProxyName,
+    proxy: &Proxy,
+    keys: &BTreeMap<KeyId, Key>,
+) -> Result<(), FieldError> {
+    let at = |field: &str| format!("proxies.{name}.{field}");
+    match (proxy.url.user(), &proxy.credential) {
+        (None, None) => {}
+        (Some(_), None) => {
+            return Err(FieldError::at(
+                at("credential"),
+                "required with a user in the URL: the key that holds its password",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(FieldError::at(
+                at("credential"),
+                "only with a user in the URL (socks5://user@host:port): the password goes with it",
+            ));
+        }
+        (Some(_), Some(id)) => match keys.get(id) {
+            None => {
+                return Err(FieldError::at(
+                    at("credential"),
+                    format!("{id} is not declared in keys"),
+                ));
+            }
+            Some(Key::Upstream(UpstreamKey::Token { host, .. })) => {
+                if !host.is(proxy.url.host()) {
+                    return Err(FieldError::at(
+                        at("credential"),
+                        format!(
+                            "keys.{id} is a token for {host}, not for this proxy's host {}",
+                            proxy.url.host()
+                        ),
+                    ));
+                }
+            }
+            Some(_) => {
+                return Err(FieldError::at(
+                    at("credential"),
+                    format!(
+                        "keys.{id} is not a token: a proxy's password is declared with use: \
+                         upstream, kind: token, host: {}",
+                        proxy.url.host()
+                    ),
+                ));
+            }
+        },
+    }
+    if let Some(timeout) = proxy.connect_timeout
+        && !(proxies::MIN_CONNECT_TIMEOUT..=proxies::MAX_CONNECT_TIMEOUT).contains(&timeout)
+    {
+        return Err(FieldError::at(
+            at("connect_timeout"),
+            format!(
+                "{timeout}, must be from {} to {}",
+                proxies::MIN_CONNECT_TIMEOUT,
+                proxies::MAX_CONNECT_TIMEOUT
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_template(

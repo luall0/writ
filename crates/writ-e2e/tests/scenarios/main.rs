@@ -36,6 +36,7 @@ mod sealed_keystore;
 mod sessions_and_renewals;
 mod ticket_lifecycle;
 mod upstream_moved;
+mod upstream_proxies;
 mod verified_commits;
 mod whole_repo;
 mod workspaces;

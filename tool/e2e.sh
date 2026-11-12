@@ -48,5 +48,5 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 compose --profile runner build
-compose up -d forgejo forgejo-https forgejo-https-system writd agent local
+compose up -d forgejo forgejo-https forgejo-https-system socks-proxy http-proxy writd agent local
 compose run --rm -e WRIT_E2E_PROJECT="$PROJECT" runner "$@"

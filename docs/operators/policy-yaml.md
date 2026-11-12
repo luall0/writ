@@ -1,10 +1,12 @@
 # `policy.yaml`
 
-Four sections:
+Five sections:
 
 - **`keys`**: every key the policy names, each declared with what it is for. Signing keys sign
   commits under a template; upstream credentials reach a repo's upstream.
 - **`upstream_hosts`**: the host keys the daemon accepts from each `ssh://` upstream.
+- **`proxies`**: the proxies a repo's upstream can be reached through, for remotes that only
+  answer from some addresses, or only inside a network such as Tor.
 - **`repos`**, the repo registry: each repo agents may use, its hard limits, and the
   templates its tickets may use.
 - **`templates`**: the most a ticket may ask in a repo that names the template.
@@ -14,7 +16,7 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
 (`make run`) and the [end-to-end one](../../e2e/config/policy.yaml).
 
 - **Changing it:** after `writd init`, only by a signed change from your machine:
-  [`writ admin repo|template|key|host`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
+  [`writ admin repo|template|key|host|proxy`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
   entry by entry (`add`, `edit`, `set <name> <field>=<value>`, `remove`), or `writ admin
   apply policy` for the whole file ([`writd recover`](recovery.md) on the host, as a last
   resort). Editing the file on the host does nothing.
@@ -25,8 +27,8 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
 - **Unknown keys are refused**, and every error names its key:
   `templates.quick-fix.max_ttl: invalid duration "1 hour"`. The fields that moved in M6.2
   (`templates.<name>.repos`, a top-level `signing_keys`) are refused naming their new place.
-- **Names** are the map keys (`keys.<id>`, `repos.<name>`, `templates.<name>`). Repo names
-  must be unique ignoring case.
+- **Names** are the map keys (`keys.<id>`, `proxies.<name>`, `repos.<name>`,
+  `templates.<name>`). Repo names must be unique ignoring case.
 - **Patterns, durations, sizes:** [patterns and units](../lease-model.md#patterns-and-units).
 
 ## Keys: `keys.<id>`
@@ -46,7 +48,7 @@ a new key under another id.
 | `keys.<id>.algorithm` | `ed25519`, `p256`, `p384`, `rsa3072`, `rsa4096` | **required** for a signing key and an `ssh` credential, refused for a token | The key's algorithm. RSA keys are 3072 or 4096 bits (some remotes take only RSA upstream keys). Which combinations a backend signs: [hashes](#hashes) |
 | `keys.<id>.hash` | `sha256`, `sha384`, `sha512` | the strongest allowed | A signing key's hash. A combination the format, algorithm and backend don't take is refused, never adjusted. Refused for an upstream credential |
 | `keys.<id>.uids` | 1 to 16 user ids, `Name <local@domain>` or `<local@domain>`, printable ASCII | none | An OpenPGP signing key's identities: its certificate carries them. Each is unique. Every committer email a template signing with the key allows needs one, as `<committer_name> <email>` when the template sets a name. Refused for any other key |
-| `keys.<id>.host` | A host name or address | **required** for a `token`, refused otherwise | The only host the token is sent to: a repo using it must have its `https://` upstream there (compared ignoring case) |
+| `keys.<id>.host` | A host name or address | **required** for a `token`, refused otherwise | The only host the token is sent to: a repo using it must have its `https://` upstream there, a proxy using it as its password must be there (compared ignoring case). One token is a repo's or a proxy's, never both |
 | `keys.<id>.backend` | A backend name | `software` | Where the key lives: `software` (the daemon's memory, from its sealed keystore) is the only one today. A backend this daemon doesn't have refuses the policy |
 
 The policy, or the start, is refused, naming the key and the reason, when the format,
@@ -70,12 +72,30 @@ compare with the ones the remote publishes; pinning them is a second signed chan
 |---|---|---|---|
 | `upstream_hosts.<host>` | 1 to 16 host keys, `<type> <base64>` as OpenSSH writes them (no comment) | — | The keys `<host>` may present. `<host>` is as ssh looks it up: `github.com`, or `"[forgejo.home]:2222"` off port 22. Plain names and addresses only: no wildcard, negation, hashed name or `@cert-authority`. Types: `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, `ecdsa-sha2-nistp521`, `ssh-rsa`; never DSA. At most 256 hosts. Every `ssh://` repo's host must be here; a host no repo uses yet is fine |
 
+## Proxies: `proxies.<name>`
+
+A repo naming a proxy (`repos.<name>.proxy`) has everything the daemon sends its upstream go
+through it: syncs, pushes, notes and the host key scan. The daemon only asks the proxy for a
+tunnel to the repo's host and port, so TLS (`https://`) or SSH (`ssh://`, with the host key
+pinned) stays end to end: the proxy sees encrypted bytes only. The proxy resolves the
+upstream's name, never the daemon, so a name only the proxy's network knows works, and so does
+a Tor onion service ([example](setup.md#a-remote-behind-a-proxy)).
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `proxies.<name>.url` | `socks5://[user@]host:port` or `http://[user@]host:port` | **required** | The proxy: SOCKS5, or an HTTP proxy that takes `CONNECT`. The port is required. No password in the URL (it is the `credential`), no path. `socks5h://`, `https://` and SOCKS4 are refused. Tor: `socks5://127.0.0.1:9050` |
+| `proxies.<name>.credential` | Key id | none | The password, with the URL's user: **required** when the URL names a user, refused otherwise. A key declared with `use: upstream`, `kind: token` and `host` the proxy's host, added with `writ admin token <id>`. Until it is added, the repos behind the proxy reach nothing. It goes to the proxy in clear (SOCKS5 and HTTP send it so): use one only on a network you trust |
+| `proxies.<name>.connect_timeout` | Duration, 1s to 5m | `30s` | The longest reaching upstream through the proxy may take, its answer and the tunnel's opening. Raise it for Tor (`2m`) |
+
+At most 64 proxies. A proxy a repo names can't be removed.
+
 ## The repo registry: `repos.<name>`
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
 | `repos.<name>.upstream` | URL | **required** | Where the daemon fetches and pushes: `ssh://[user@]host[:port]/path` or `https://[user@]host[:port]/path`. Printable ASCII. Never `http://`, never a password in the URL, no user or host starting with `-` ([gateway](../architecture/gateway.md#upstream)) |
 | `repos.<name>.upstream_credential` | Key id | **required** | The key the daemon reaches `upstream` with: declared in [`keys`](#keys-keysid) with `use: upstream`, `kind: ssh` for an `ssh://` upstream (`writd upstream-keys` prints its public half) or `kind: token` for an `https://` one, on the URL's host ([how](setup.md#https-upstreams-and-tokens)) |
+| `repos.<name>.proxy` | Proxy name | none | The [proxy](#proxies-proxiesname) everything the daemon sends `upstream` goes through. Not set: the daemon connects to upstream itself |
 | `repos.<name>.templates` | Template names | **required** | The templates whose tickets may reach the repo: each must exist. `[]` closes the repo (registered, with its mirror and credential, while every ticket for it is refused, and `writ policy` says so). A template no repo names is valid, unused |
 | `repos.<name>.protected_refs` | Ref patterns | `[]` | Refs no lease may push, whatever its branches: full refs (`refs/heads/main`, `refs/tags/*`), ignoring case |
 | `repos.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | How pushes may reach upstream. [Push modes](#push-modes) |

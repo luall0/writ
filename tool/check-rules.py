@@ -33,6 +33,8 @@ PRINT_ALLOWED = {
     "crates/writ-mirror/src/relay.rs",
     # The upstream credential helper runs as its own process (git's); git shows its stderr.
     "crates/writ-mirror/src/credential/helper.rs",
+    # The upstream tunnel runs as its own process (ssh's ProxyCommand); git shows its stderr.
+    "crates/writ-mirror/src/tunnel.rs",
 }
 CFG_TARGET_OS = re.compile(r"cfg!?\s*\([^)]*target_os")
 PRINT = re.compile(r"\b(e?println!|e?print!|dbg!)")

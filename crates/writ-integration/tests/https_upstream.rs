@@ -99,8 +99,13 @@ impl Fixture {
             "token-01".parse::<KeyId>().unwrap(),
             Arc::new(UpstreamToken::from_bytes(TOKEN.as_bytes()).unwrap()),
         )]);
-        self.runtime
-            .block_on(Mirrors::open(config, policy.repos(), signer, &tokens))
+        self.runtime.block_on(Mirrors::open(
+            config,
+            policy.repos(),
+            policy.proxies(),
+            signer,
+            &tokens,
+        ))
     }
 
     fn open_with(&self, config: MirrorConfig) -> Mirrors {

@@ -402,3 +402,116 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     );
     assert_eq!(daemon.audited("check", "denied"), 4);
 }
+
+#[test]
+fn a_host_behind_a_proxy_is_scanned_through_it_on_the_approver_s_signature() {
+    use writ_integration::proxy::{ProxyKind, TestProxy};
+
+    // A remote the daemon reaches only through the proxy, under names only the proxy
+    // resolves: one pinned with a repo behind the proxy, one an approver adds.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let remote = TestRemote::start(
+        &runtime,
+        &dir.path().join("remote"),
+        generate(KeyKind::Ed25519).unwrap().public_key().clone(),
+    );
+    let proxy = TestProxy::start(&runtime, ProxyKind::Socks5, None);
+    let at = ([127, 0, 0, 1], remote.port).into();
+    proxy.map("pinned.invalid", at);
+    proxy.map("added.invalid", at);
+    let public = remote.host_key.public_key();
+    let fingerprint = public.fingerprint(HashAlg::Sha256).to_string();
+    let key: Vec<String> = public
+        .to_openssh()
+        .unwrap()
+        .split(' ')
+        .take(2)
+        .map(str::to_owned)
+        .collect();
+    let pinned = format!("[pinned.invalid]:{}", remote.port);
+    let policy = POLICY.replacen(
+        "repos:\n",
+        &format!(
+            "  \"{pinned}\":\n    - \"{}\"\nproxies:\n  p:\n    url: \"{}\"\nrepos:\n  \
+                 behind:\n    upstream: ssh://git@pinned.invalid:{}/demo.git\n    \
+                 upstream_credential: upstream-02\n    proxy: p\n    templates: [feature]\n",
+            key.join(" "),
+            proxy.url(),
+            remote.port
+        ),
+        1,
+    );
+    let daemon = Daemon::start_with(&policy, Approvals::Ssh, |yaml| {
+        yaml.replace(
+            "mirrors: { fresh_for: 0s }",
+            "mirrors: { fresh_for: 0s, scan_timeout: 2s }",
+        )
+    });
+
+    // A rescan with no --proxy goes through the one its repos share: the pin is current.
+    let (status, shown) = on_terminal(daemon.writ(&["admin", "host", "rescan", &pinned]), &["y"]);
+    assert!(status.success(), "{shown}");
+    assert!(
+        shown.contains(&format!(
+            "Scanning pinned.invalid:{} from the daemon through proxy p",
+            remote.port
+        )),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("The pin already holds these keys"),
+        "{shown}"
+    );
+    assert!(
+        proxy
+            .asked()
+            .contains(&format!("pinned.invalid:{}", remote.port))
+    );
+
+    // A new host, `proxy=` naming the proxy: scanned through it, pinned once compared.
+    let added = format!("[added.invalid]:{}", remote.port);
+    let (status, shown) = on_terminal(
+        daemon.writ(&["admin", "host", "add", &added, "proxy=p", "--yes"]),
+        &["y"],
+    );
+    assert!(status.success(), "{shown}");
+    assert!(
+        shown.contains(&format!("  ssh-ed25519 {fingerprint}\r\n")),
+        "{shown}"
+    );
+    assert_eq!(pins(&daemon, &added).map(|p| p.len()), Some(1));
+    let scans = audit_events(&daemon.audit(), "scan", "allowed");
+    assert_eq!(
+        scans.last().unwrap()["reason"],
+        format!(
+            "added.invalid:{} through proxy p: {fingerprint}",
+            remote.port
+        )
+    );
+
+    // Directly, the name reaches nothing: refused, logged.
+    let other = format!("[other.invalid]:{}", remote.port);
+    let (_, shown) = on_terminal(daemon.writ(&["admin", "host", "add", &other]), &["y"]);
+    assert!(shown.contains("cannot reach other.invalid:"), "{shown}");
+    // A proxy the policy doesn't declare: refused by the daemon, nothing reached.
+    let asked = proxy.asked().len();
+    let (_, shown) = on_terminal(
+        daemon.writ(&["admin", "host", "add", &other, "proxy=nope"]),
+        &["y"],
+    );
+    assert!(
+        shown.contains("proxy nope is not declared in proxies"),
+        "{shown}"
+    );
+    assert_eq!(proxy.asked().len(), asked);
+    let denied = audit_events(&daemon.audit(), "scan", "denied");
+    assert_eq!(
+        denied.last().unwrap()["reason"],
+        format!(
+            "other.invalid:{} through proxy nope: proxy nope is not declared in proxies",
+            remote.port
+        )
+    );
+    assert!(pins(&daemon, &other).is_none());
+}

@@ -745,9 +745,31 @@ proptest! {
         committer in "[ -~]{1,16}|[^\\x00-\\x1f]{1,8}",
         email_local in "[a-z0-9.+_-]{1,8}",
         uid_name in "[ -~]{0,12}",
+        proxy in "[A-Za-z0-9_][A-Za-z0-9._-]{0,6}|true|null|no|1e5|0x1f|0o7|12|1_000|5d",
+        timeout in proptest::option::of(1u64..=300),
     ) {
         let quoted = |text: &str| serde_json::to_string(text).unwrap();
+        let timeout = timeout.map(|t| format!(", connect_timeout: {t}s")).unwrap_or_default();
         let text = POLICY
+            .replacen(
+                "\nrepos:\n",
+                &format!(
+                    "\nproxies:\n  {}: {{ url: \"socks5://writ@tor:9050\", credential: \
+                     tor-password{timeout} }}\n\nrepos:\n",
+                    quoted(&proxy)
+                ),
+                1,
+            )
+            .replacen(
+                "    upstream_credential: upstream-github-01\n",
+                &format!("    upstream_credential: upstream-github-01\n    proxy: {}\n", quoted(&proxy)),
+                1,
+            )
+            .replacen(
+                "keys:\n",
+                "keys:\n  tor-password: { use: upstream, kind: token, host: tor }\n",
+                1,
+            )
             .replace("read-only", &template)
             .replacen(
                 "    committer_emails: [\"user+agent@example.org\"]\n",

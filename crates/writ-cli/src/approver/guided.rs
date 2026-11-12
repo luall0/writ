@@ -15,6 +15,7 @@ use writ_core::canonical::Canonical;
 use writ_core::config::edit::{self, Change, FieldEdit, FieldKind};
 use writ_core::config::hosts::HostName;
 use writ_core::config::{Key, PolicyConfig, Section, UpstreamHost, UpstreamKey};
+use writ_core::names::ProxyName;
 use writ_core::signed::Scan;
 use writ_core::upstream::Upstream;
 use writ_proto::{Command, ScanNonce, ScanRequest, Scanned, UpstreamChecked};
@@ -82,6 +83,8 @@ fn relevant(section: Section, name: &str, values: &BTreeMap<String, String>) -> 
             "direct_ssh.hosts" | "direct_ssh.allow_account_wide" => has("push_modes", "direct_ssh"),
             _ => true,
         },
+        // A password goes with a user: asked only when the URL names one.
+        Section::Proxies => name != "credential" || value("url").contains('@'),
         Section::UpstreamHosts => true,
     }
 }
@@ -95,6 +98,14 @@ fn choices(policy: &PolicyConfig, section: Section, name: &str) -> Option<String
     };
     match (section, name) {
         (Section::Repos, "templates") => join(policy.entry_names(Section::Templates)),
+        (Section::Repos, "proxy") => join(policy.entry_names(Section::Proxies)),
+        (Section::Proxies, "credential") => join(
+            policy
+                .upstream_keys()
+                .filter(|(_, k)| matches!(k, writ_core::config::UpstreamKey::Token { .. }))
+                .map(|(id, _)| id.to_string())
+                .collect(),
+        ),
         (Section::Templates, "signing_key") => join(
             policy
                 .signing_keys()
@@ -301,12 +312,18 @@ async fn scanned(
     signer: &Signer,
     host: &HostName,
     port: u16,
+    proxy: Option<&ProxyName>,
     pinned: &[String],
 ) -> anyhow::Result<Option<Vec<String>>> {
     let nonce: ScanNonce = session.call(&Command::ScanNonce, b"").await??;
-    let document = Scan::new(nonce.daemon, host.clone(), port, nonce.nonce).canonical_bytes()?;
+    let document = Scan::new(nonce.daemon, host.clone(), port, nonce.nonce)
+        .through(proxy.cloned())
+        .canonical_bytes()?;
+    let through = proxy
+        .map(|p| format!(" through proxy {}", clean(p.as_str())))
+        .unwrap_or_default();
     println!(
-        "Scanning {}:{port} from the daemon: one signature with your approval key.",
+        "Scanning {}:{port} from the daemon{through}: one signature with your approval key.",
         clean(host.as_str())
     );
     let request = ScanRequest {
@@ -358,12 +375,29 @@ async fn pin_edit(
     signer: &Signer,
     host: &HostName,
     port: u16,
+    proxy: Option<&ProxyName>,
 ) -> anyhow::Result<Option<FieldEdit>> {
-    match scanned(session, signer, host, port, &[]).await? {
+    match scanned(session, signer, host, port, proxy, &[]).await? {
         Some(keys) => Ok(Some(
             FieldEdit::parse(&format!("keys={}", keys.join(","))).map_err(anyhow::Error::msg)?,
         )),
         None => Ok(None),
+    }
+}
+
+/// The proxy every repo reached through the pin `entry` names, when they all name the same
+/// one (none: some reach it directly, or there is no repo on it).
+fn shared_proxy(policy: &PolicyConfig, entry: &str) -> Option<ProxyName> {
+    let host = UpstreamHost::try_from(entry.to_owned()).ok()?;
+    let proxies: Vec<Option<ProxyName>> = policy
+        .host_users(&host)
+        .iter()
+        .filter_map(|repo| policy.repo(repo))
+        .map(|r| r.proxy.clone())
+        .collect();
+    match proxies.split_first() {
+        Some((first @ Some(_), rest)) if rest.iter().all(|p| p == first) => first.clone(),
+        _ => None,
     }
 }
 
@@ -382,14 +416,17 @@ fn same_key(a: &str, b: &str) -> bool {
 /// `writ admin host rescan <host>`: the pinned host scanned again (its keys changed, or to
 /// see whether they did), each key shown against the pin (pinned, new, gone), compared by
 /// the approver, then one signed change replacing the pin. A pinned key of a type the scan
-/// doesn't read (RSA, P-521) is kept, said. Only on a terminal.
+/// doesn't read (RSA, P-521) is kept, said. Through `proxy`, or the proxy every repo on the
+/// host is reached through when they share one. Only on a terminal.
 pub async fn rescan(
     paths: &Paths,
     url: &str,
     signer: &Signer,
     name: &str,
+    proxy: Option<&str>,
     yes: bool,
 ) -> anyhow::Result<Exit> {
+    let proxy: Option<ProxyName> = proxy.map(str::parse).transpose()?;
     let (host, port, entry) = host_and_port(name)?;
     if !terminal() {
         bail!(
@@ -415,7 +452,10 @@ pub async fn rescan(
                     clean(&entry)
                 );
             };
-            let Some(mut keys) = scanned(session, signer, &host, port, &pinned).await? else {
+            let proxy = proxy.or_else(|| shared_proxy(&policy, &entry));
+            let Some(mut keys) =
+                scanned(session, signer, &host, port, proxy.as_ref(), &pinned).await?
+            else {
                 return Ok(Exit::Ok);
             };
             for kept in pinned.iter().filter(|p| !scannable(p)) {
@@ -509,6 +549,29 @@ fn next_steps(policy: &PolicyConfig, keys: &[String]) {
     }
 }
 
+/// The proxy a scan made while adding to `section` goes through: for a host, the `proxy=`
+/// given (taken out of `given`: a pin has no such field); for a repo, its `proxy` field given.
+fn scan_proxy(section: Section, given: &mut Vec<FieldEdit>) -> anyhow::Result<Option<ProxyName>> {
+    let named = |edit: &FieldEdit| match &edit.change {
+        Change::Set(value) => value.parse::<ProxyName>().map_err(anyhow::Error::from),
+        _ => Err(anyhow::anyhow!(
+            "proxy=<name> names the proxy to scan through"
+        )),
+    };
+    match section {
+        Section::UpstreamHosts => match given.iter().position(|g| g.field == "proxy") {
+            Some(at) => named(&given.remove(at)).map(Some),
+            None => Ok(None),
+        },
+        Section::Repos => given
+            .iter()
+            .find(|g| g.field == "proxy")
+            .map(named)
+            .transpose(),
+        _ => Ok(None),
+    }
+}
+
 /// `writ admin <noun> add <name> [<field>=<value>…]`: each field asked in order (the ones
 /// given not asked); with no terminal nothing is asked, and every required field must be
 /// given. `from` (a template) starts from that template's values.
@@ -523,13 +586,16 @@ pub async fn add(
     from: Option<&str>,
     yes: bool,
 ) -> anyhow::Result<Exit> {
-    let given = parsed(given)?;
+    let mut given = parsed(given)?;
     let interactive = terminal();
     // A host by the entry it is pinned under (`[host]:port` off port 22).
     let host = match section {
         Section::UpstreamHosts => Some(host_and_port(name)?),
         _ => None,
     };
+    // The proxy its scan goes through: a host's `proxy=<name>` (not a field of the pin: taken
+    // out), a repo's own `proxy` field.
+    let proxy = scan_proxy(section, &mut given)?;
     let name = host.as_ref().map_or(name, |(_, _, pin)| pin.as_str());
     if section == Section::UpstreamHosts && !interactive && !given.iter().any(|g| g.field == "keys")
     {
@@ -570,7 +636,7 @@ pub async fn add(
             if let (Some((host, port, _)), true) = (&host, interactive)
                 && !given.iter().any(|g| g.field == "keys")
             {
-                match pin_edit(session, signer, host, *port).await? {
+                match pin_edit(session, signer, host, *port, proxy.as_ref()).await? {
                     Some(keys) => edits.push(keys),
                     None => return Ok(None),
                 }
@@ -612,7 +678,7 @@ pub async fn add(
                         if !policy.upstream_hosts().keys().any(|h| h.as_str() == wanted) {
                             println!("Its host {} has no pin: it is scanned now.", clean(&wanted));
                             let (host, port, entry) = host_and_port(&wanted)?;
-                            match pin_edit(session, signer, &host, port).await? {
+                            match pin_edit(session, signer, &host, port, proxy.as_ref()).await? {
                                 Some(keys) => pin = Some((entry, keys)),
                                 None => return Ok(None),
                             }

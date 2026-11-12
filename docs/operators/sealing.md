@@ -39,8 +39,8 @@ After `writd init`, the daemon keeps its own copy of `policy.yaml`, `approvers` 
 `readers`. **Editing the files on the host does nothing**: at the next start, an edited file
 is moved aside (`<file>.unapplied-<time>`) and the daemon's copy is written back.
 
-**The policy, entry by entry**, from your machine. The same verbs for each of its four
-nouns, `repo`, `template`, `key` and `host`:
+**The policy, entry by entry**, from your machine. The same verbs for each of its five
+nouns, `repo`, `template`, `key`, `host` and `proxy`:
 
 ```sh
 writ admin repo list                       # one line per entry (a reader key is enough)
@@ -60,7 +60,9 @@ writ admin key remove <id>                 # refused while something uses it
   you registered it, every repo and template switches to it; then the old key can go.
 - `writ admin host add <host>` and `writ admin host rescan <host>`: the daemon scans the
   host, you compare its keys with the ones the remote publishes, then a second signature
-  pins them.
+  pins them. For a host behind a [proxy](setup.md#a-remote-behind-a-proxy), add `proxy=<name>`
+  to `host add` (or to `repo add` with the repo's other fields); `host rescan` goes through
+  the proxy the host's repos share, or the one `--proxy <name>` names.
 - `writ admin repo check <repo>`: the repo's upstream reached with its key, read and write
   access proven, nothing pushed.
 

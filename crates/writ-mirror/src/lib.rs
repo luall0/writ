@@ -28,6 +28,7 @@
 
 pub mod agent;
 pub mod credential;
+pub mod dial;
 pub mod git;
 pub mod known_hosts;
 mod mirror;
@@ -38,6 +39,7 @@ pub mod relay;
 pub mod scan;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod tunnel;
 pub mod upstream;
 
 pub use mirror::in_flight;
@@ -49,7 +51,7 @@ pub use mirror::{
 
 use std::path::PathBuf;
 
-use writ_core::names::{KeyId, RepoName};
+use writ_core::names::{KeyId, ProxyName, RepoName};
 
 /// The oldest git the daemon runs with: reftable (2.45), `fetch --porcelain` (2.41).
 pub const MIN_GIT: (u32, u32) = (2, 45);
@@ -88,6 +90,23 @@ pub enum MirrorError {
          `writ admin token {key}`"
     )]
     NoToken { repo: RepoName, key: KeyId },
+    /// A repo behind a proxy whose password isn't in the keystore yet: nothing reaches
+    /// upstream.
+    #[error(
+        "repo {repo}: proxy {proxy}'s password ({key}) isn't in the keystore yet: an approver \
+         adds it with `writ admin token {key}`"
+    )]
+    NoProxyPassword {
+        repo: RepoName,
+        proxy: ProxyName,
+        key: KeyId,
+    },
+    /// The repo's proxy refused, failed or couldn't be reached (why, never the password).
+    #[error("repo {repo}: {failure}")]
+    Proxy {
+        repo: RepoName,
+        failure: crate::dial::DialError,
+    },
     #[error("repo {repo}: no pinned host key for {host} in the upstream known_hosts")]
     HostNotPinned { repo: RepoName, host: String },
     #[error("repo {repo}: {path} is not a mirror made by writd: {why}")]

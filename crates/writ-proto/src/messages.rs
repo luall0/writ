@@ -385,6 +385,9 @@ pub struct KeyShown {
     pub repos: Vec<RepoName>,
     /// The templates that sign with it.
     pub templates: Vec<TemplateName>,
+    /// The proxies it is the password of (M7.2).
+    #[serde(default)]
+    pub proxies: Vec<writ_core::names::ProxyName>,
 }
 
 /// An OpenPGP key's public side.

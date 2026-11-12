@@ -204,7 +204,7 @@ machine with `writ admin`, one signed change at a time (steps 10 to 14).
 
     Paste the token (it isn't shown), then sign.
 
-Done. `writ admin repo|template|key|host list` and `show` read what is in force; `set`
+Done. `writ admin repo|template|key|host|proxy list` and `show` read what is in force; `set`
 changes one field ([changing the policy](sealing.md#changing-the-policy-the-approvers-or-the-readers)).
 Next: [wire a repo for an agent](good-practice.md).
 
@@ -273,6 +273,58 @@ everything else works.
 credential helper, through a socket only the daemon's user can reach. It never appears in a
 command line, an environment variable, a URL, a config file or a log. Redirects are refused,
 and git can only reach the policy's host, through a proxy that caps how much it downloads.
+
+## A remote behind a proxy
+
+Some remotes answer only from some addresses (an office network, a VPN exit, a bastion), or
+only inside a network, such as a Tor onion service. Give such a repo a **proxy**: everything
+the daemon sends its upstream then goes through it. Other repos are not affected.
+
+**Declare the proxy, then name it in the repo.** In the policy:
+
+```yaml
+proxies:
+  tor:
+    url: "socks5://127.0.0.1:9050"     # Tor's SOCKS port on the daemon's host
+    connect_timeout: 2m                # onion services are slow to answer
+  office:
+    url: "http://writ@proxy.example.org:3128"
+    credential: office-proxy           # the password, a token on the proxy's host
+repos:
+  internal:
+    upstream: ssh://git@git.internal.example.org/team/internal.git
+    upstream_credential: upstream-internal
+    proxy: office
+```
+
+Or from your machine: `writ admin repo set <repo> proxy=<name>` names it, `proxy!` takes it
+off.
+
+**Pick the kind your proxy speaks:**
+
+| Proxy | `url` |
+|---|---|
+| Tor, `ssh -D`, Dante, microsocks | `socks5://host:port` |
+| squid, tinyproxy, a corporate proxy | `http://host:port` (it must allow `CONNECT` to the remote's port: 22 or 443) |
+
+**A password**, if the proxy asks for one: put the user in the URL (`socks5://user@host:port`),
+declare a token on the proxy's host (`writ admin key add <id> use=upstream kind=token
+host=<proxy host>`), name it in `credential`, then add it with `writ admin token <id>`. Until
+it is added, the repos behind that proxy reach nothing, and say which command to run.
+
+**Pin the host key as usual.** For an `ssh://` remote the daemon still checks the host key you
+pinned: the proxy only carries the connection. For an `https://` one it still checks the
+certificate.
+
+**Good to know:**
+
+- The proxy resolves the remote's name. The daemon never does, so a name only the proxy's
+  network knows works (an `.onion` name, an internal DNS name).
+- The password reaches the proxy in clear: SOCKS5 and HTTP send it that way. Use one only on a
+  network you trust, or a proxy that allows the daemon's address without a password.
+- The proxy sees which host the daemon talks to and when, never what it says.
+- If the proxy refuses or doesn't answer within `connect_timeout`, the operation fails with the
+  proxy's reason. The daemon never falls back to connecting directly.
 
 ## Notes on the remote
 

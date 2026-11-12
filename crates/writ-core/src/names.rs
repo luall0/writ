@@ -1,4 +1,4 @@
-//! Validated names and identifiers: repos, templates, key ids, emails, ticket ids, commit ids
+//! Validated names and identifiers: repos, templates, key ids, proxies, emails, ticket ids, commit ids
 //! and key fingerprints.
 //!
 //! Each is a string newtype that can only hold a valid value, so the rest of the policy never
@@ -79,6 +79,10 @@ string_newtype!(
 string_newtype!(
     /// The id of a key or credential held by the signer (`agent-ed25519-01`).
     KeyId, "key id", validate_plain_name
+);
+string_newtype!(
+    /// A proxy of the policy (`proxies.<name>`), named by the repos reached through it.
+    ProxyName, "proxy name", validate_plain_name
 );
 string_newtype!(
     /// A committer email, compared exactly (case included).
