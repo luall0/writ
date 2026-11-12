@@ -8,6 +8,8 @@
 //!   rest comes in M5).
 //! - [`queue`]: a decorator in front of any backend, so a slow or hung device never holds
 //!   up a caller past a deadline (one worker thread, a bounded queue).
+//! - [`helper`]: keys a helper process makes and signs with (the Secure Enclave's, through
+//!   `writ-se`), so a crash in the library it calls costs one job, never the daemon.
 //! - [`route`]: a decorator over several backends, sending each key's jobs to the one that
 //!   holds it (a use's keys may live on a software backend and a device at once).
 //! - Hardware backends (Secure Enclave in `writ-platform-macos`, YubiKey) implement the same
@@ -18,6 +20,7 @@
 //! [`testing::FakeDevice`] (one that makes its own keys, like a device) and the [`contract`]
 //! suite every backend passes.
 
+pub mod helper;
 pub mod queue;
 pub mod route;
 pub mod software;
@@ -66,6 +69,13 @@ pub enum SignerError {
     /// outside it (the software backend).
     #[error("key {0}: this signer backend makes no key itself")]
     MakesNoKeys(KeyId),
+    /// What the keystore holds for the key was refused when its backend started (corrupted,
+    /// another device's): the key is listed, never signed with, until it is replaced.
+    #[error(
+        "key {0} is unusable: what the keystore holds for it was refused when its backend \
+         started (the daemon's log says why; `writ admin key rotate` replaces it)"
+    )]
+    Unusable(KeyId),
 }
 
 /// A key a backend exposes: its id (what templates name in `signing_key`) and its public

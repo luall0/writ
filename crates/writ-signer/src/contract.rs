@@ -27,6 +27,7 @@ use writ_crypto::CryptoError;
 use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat, SignerHash};
 use writ_crypto::keypair::{KeyPair, verify};
 use writ_crypto::keys::random_hex;
+use writ_crypto::ssh_key::PublicKey;
 
 use crate::queue::{QueueConfig, QueuedSigner};
 use crate::testing::GatedSigner;
@@ -226,8 +227,9 @@ pub fn add_key_contract(signer: &dyn Signer) {
     signer.remove_key(&id).unwrap();
 }
 
-/// Builds a backend again from what its keys stored (a daemon's next start).
-pub type Rebuild<'a> = &'a dyn Fn(Vec<(KeyId, Stored)>) -> Box<dyn Signer>;
+/// Builds a backend again from what its keys stored and their public halves, as the daemon
+/// keeps them (its next start).
+pub type Rebuild<'a> = &'a dyn Fn(Vec<(KeyId, Stored, PublicKey)>) -> Box<dyn Signer>;
 
 /// Runs the key-making contract on a backend (it makes keys with fresh ids):
 /// - one that says it makes keys ([`crate::Capabilities::makes_keys`]) makes a key of the
@@ -291,7 +293,7 @@ pub fn create_key_contract(signer: &dyn Signer, rebuild: Option<Rebuild<'_>>) {
     }
     // Built again from what it stored: the same key.
     if let Some(rebuild) = rebuild {
-        let again = rebuild(vec![(id.clone(), created.stored)]);
+        let again = rebuild(vec![(id.clone(), created.stored, public.clone())]);
         assert_eq!(public_key(&*again, &id).unwrap(), public);
         let armored = sshsig(&*again, &id, "git", hash, msg).unwrap();
         writ_crypto::sshsig::verify(std::slice::from_ref(&public), "git", msg, &armored).unwrap();

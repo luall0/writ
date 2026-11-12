@@ -23,8 +23,8 @@ fn id(text: &str) -> KeyId {
     text.parse().unwrap()
 }
 
-fn rebuild(stored: Vec<(KeyId, Stored)>) -> Box<dyn Signer> {
-    Box::new(FakeDevice::new(stored).unwrap())
+fn rebuild(stored: Vec<(KeyId, Stored, writ_crypto::ssh_key::PublicKey)>) -> Box<dyn Signer> {
+    Box::new(FakeDevice::new(stored.into_iter().map(|(id, s, _)| (id, s))).unwrap())
 }
 
 #[test]

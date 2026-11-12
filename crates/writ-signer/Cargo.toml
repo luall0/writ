@@ -10,6 +10,12 @@ publish.workspace = true
 # for the tests of this crate and of others.
 testing = []
 
+# A fake `writ-se` for the helper signer's tests: never shipped.
+[[bin]]
+name = "writ-fake-se"
+path = "src/bin/writ-fake-se.rs"
+required-features = ["testing"]
+
 [dependencies]
 writ-core.workspace = true
 writ-crypto.workspace = true

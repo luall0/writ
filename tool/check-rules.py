@@ -94,6 +94,7 @@ TEST_SUPPORT = {
     "crates/writ-approval/src/testing.rs",
     "crates/writ-signer/src/contract.rs",
     "crates/writ-signer/src/testing.rs",
+    "crates/writ-signer/src/bin/writ-fake-se.rs",
 }
 
 errors = []

@@ -143,8 +143,8 @@ doesn't change:
 - **a backend that panics is not trusted again**: the worker answers that job
   `SignerError::Unavailable`, writes one error line to the daemon's log (the queue and the
   key), and stops; every later signature through that queue is `Unavailable` until the
-  daemon restarts. (A backend that aborts the process instead, as CryptoKit does on a bad
-  blob, is M7.5's to contain.)
+  daemon restarts. A backend that aborts its process instead, as CryptoKit does on a bad
+  blob, runs in a helper process ([below](#a-helper-process)), so the abort costs one job.
 
 **One queue per use**: the agent keys (commit signatures) now; the TLS key (M5, maybe on the
 Secure Enclave in M7.5) and the upstream credential (M4) get their own, so a device stuck on
@@ -162,6 +162,38 @@ The contract suite has a decorator section (`writ_signer::contract::queued_signe
 behind a queue, a backend passes the whole contract, a full queue answers `Busy` at once, a
 backend held stuck (by `testing::GatedSigner`, released on a signal) answers `Timeout`, its keys
 are still listed, and an abandoned job is never signed. Every backend runs it.
+
+### A helper process
+
+A backend whose library can't be called from Rust, or may take its process down, runs in a
+helper process: `writ_signer::helper::HelperSigner` is a `Signer` over one (M7.5, the Secure
+Enclave's `writ-se`, a Swift program calling CryptoKit). The Rust side is generic, so it is
+tested on every OS against a fake helper (`writ-fake-se`, built with `testing` only).
+
+- **The protocol** (`writ-se/1`) over the helper's stdin and stdout, one request at a time:
+  frames of a 4-byte big-endian length and a body; a request is an operation byte then its
+  fields, an answer a status byte (0 ok, 1 refused) then its fields, each field a 4-byte length
+  and its bytes. `hello` answers the protocol's name (the startup check; a helper without its
+  device refuses with a code, `no-secure-enclave`); `create <algorithm>` answers the key's
+  stored bytes and public point (SEC1, uncompressed); `public <stored>` its public point;
+  `sign <stored> <data>` the signature over the data's SHA-256, `r ‖ s`. A refusal is one code
+  of at most 64 bytes of `[a-z0-9-]`. P-256 with SHA-256 is the only pair in this build.
+- **The helper keeps no state:** each request carries its stored bytes, so a new helper
+  answers as the old one did. It starts on first use, with an empty environment and its
+  stderr discarded.
+- **What it answers is untrusted:** an answer past 64 KiB, a field count or length other than
+  the operation's, a point that isn't one, a code outside its alphabet, a public point other
+  than the key's, or a signature that doesn't verify with the key's public half (checked on
+  every signature, before it leaves) is refused and logged. A key just made signs a probe
+  before it is kept. A helper that dies, answers wrong or stays silent past its deadline is
+  killed and the job refused (`Failed`, `Timeout`); the next job starts a new helper. Its own
+  refusal keeps it. ([security inventory](../security.md#untrusted-inputs))
+- **Built from what the keystore holds:** `HelperSigner::new` takes each key's stored bytes
+  and the public half the daemon kept, and asks the helper for the point the bytes hold. A
+  key it refuses (corrupted, another Mac's, one it dies on) or answers another point for stays
+  listed from the kept public half and refuses every signature (`SignerError::Unusable`,
+  naming `writ admin key rotate`); `refused()` says which and why, for the daemon's log and
+  audit log. Every other key signs.
 
 The daemon signs commits with `sshsig`, in git's namespace `git`, with the key the lease's
 template names (`signing_key`) and the hash its declaration gives. Every key is
