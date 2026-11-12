@@ -29,6 +29,9 @@
 //!   timeout: 5m                      # one sync or upstream push, then git and ssh are killed
 //!   max_fetch: 1GiB                  # the most one sync takes from upstream
 //!   scan_timeout: 30s                # one handshake of a host key scan (writ admin host add)
+//! signers:                           # M7.5: the device backends' programs
+//!   se_cryptokit:                    # macOS: keys in the Secure Enclave (backend: se-cryptokit)
+//!     helper: /opt/writ/bin/writ-se  # by absolute path (default: writ-se beside writd)
 //! transports:
 //!   agents:                          # TCP: `allow` is required (`0.0.0.0/0` for anyone)
 //!     - { tcp: "0.0.0.0:2222", allow: ["10.0.0.0/24"] }
@@ -83,6 +86,9 @@ pub struct Config {
     /// The mirrors and how they reach upstream.
     #[serde(default)]
     pub mirrors: MirrorsConfig,
+    /// The programs the device backends run (M7.5).
+    #[serde(default)]
+    pub signers: SignersConfig,
     pub transports: Transports,
     pub attestor: AttestorConfig,
     pub session_watcher: WatcherConfig,
@@ -286,6 +292,39 @@ impl MirrorsConfig {
     }
 }
 
+/// `signers`: the programs the device backends run.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignersConfig {
+    #[serde(default)]
+    pub se_cryptokit: SeCryptokitConfig,
+}
+
+/// `signers.se_cryptokit`: the Secure Enclave backend (macOS).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeCryptokitConfig {
+    /// The Secure Enclave helper (`writ-se`); left out: `writ-se` beside the running `writd`.
+    #[serde(default)]
+    helper: Option<PathBuf>,
+}
+
+impl SeCryptokitConfig {
+    /// The helper's path: the one set (absolute once loaded), or `writ-se` beside the running
+    /// `writd`.
+    pub fn helper(&self) -> anyhow::Result<PathBuf> {
+        if let Some(helper) = &self.helper {
+            return Ok(helper.clone());
+        }
+        let me = std::env::current_exe()
+            .map_err(|e| anyhow::anyhow!("cannot find writd's own path for writ-se: {e}"))?;
+        let dir = me
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("writd's own path has no directory"))?;
+        Ok(dir.join("writ-se"))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum KeystoreConfig {
@@ -451,6 +490,9 @@ impl Config {
         resolve(&mut config.readers);
         if let Some(ca_certs) = &mut config.mirrors.ca_certs {
             resolve(ca_certs);
+        }
+        if let Some(helper) = &mut config.signers.se_cryptokit.helper {
+            resolve(helper);
         }
         match &mut config.keystore {
             KeystoreConfig::Sealed(sealed) => {
@@ -1124,9 +1166,16 @@ mod tests {
                 "sign_requests",
                 "keystore",
                 "mirrors",
+                "signers",
                 "transports",
                 "notifiers",
             ],
+        );
+        section("signers: { __probe__: 0 }", "signers.", &["se_cryptokit"]);
+        section(
+            "signers: { se_cryptokit: { __probe__: 0 } }",
+            "signers.se_cryptokit.",
+            &[],
         );
         section("submissions: { __probe__: 0 }", "submissions.", &[]);
         section("sign_requests: { __probe__: 0 }", "sign_requests.", &[]);

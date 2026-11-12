@@ -1199,8 +1199,20 @@ fn a_busy_or_late_signer_is_refused_with_its_reason() {
         DenyCode::Invalid,
         "the signer failed (see the daemon's log)",
     );
+    // A key whose stored bytes its device refused (M7.5): said by name, with what replaces it.
+    h.signer.fail_with(|id| SignerError::Unusable(id.clone()));
+    let unusable = h.sign(&cert, &commit, "omega-code");
+    let Err(denial) = &unusable else {
+        panic!("signed with an unusable key: {unusable:?}");
+    };
+    assert_eq!(denial.code, DenyCode::Invalid);
+    assert!(
+        denial.reason.contains("is unusable") && denial.reason.contains("writ admin key rotate"),
+        "{}",
+        denial.reason
+    );
     h.signer.set_failing(false);
-    assert_eq!(h.signatures(&lease), 3, "each one used its slot");
+    assert_eq!(h.signatures(&lease), 4, "each one used its slot");
     assert!(h.ledger(&lease).is_empty());
     h.sign(&cert, &commit, "omega-code").unwrap();
 }

@@ -78,10 +78,24 @@ fn each_refused_key_declaration_stops_the_start_with_its_reason() {
             declaring("use: signing, format: ssh, algorithm: rsa2048"),
             "\"rsa2048\" is not a key algorithm (RSA keys are 3072 or 4096 bits)",
         ),
-        // A backend this build doesn't have.
+        // A backend no build has (the Secure Enclave's is the Mac's: secure_enclave.rs).
         (
-            declaring("use: signing, format: ssh, algorithm: p256, backend: se-cryptokit"),
-            "keys.agent-01.backend: this daemon has no backend se-cryptokit (it has: software)",
+            declaring("use: signing, format: ssh, algorithm: p256, backend: yubikey"),
+            if std::env::consts::OS == "macos" {
+                "keys.agent-01.backend: this daemon has no backend yubikey (it has: software, \
+                 se-cryptokit)"
+            } else {
+                "keys.agent-01.backend: this daemon has no backend yubikey (it has: software)"
+            },
+        ),
+        // A pair the Secure Enclave doesn't sign (on a Mac; elsewhere the backend is refused).
+        (
+            declaring("use: signing, format: ssh, algorithm: ed25519, backend: se-cryptokit"),
+            if std::env::consts::OS == "macos" {
+                "keys.agent-01: the se-cryptokit backend can't sign with ed25519"
+            } else {
+                "keys.agent-01.backend: this daemon has no backend se-cryptokit (it has: software)"
+            },
         ),
         // OpenPGP P-256 takes SHA-256 only.
         (

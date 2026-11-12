@@ -13,7 +13,7 @@ a YubiKey) means writing an implementation of an existing interface and register
 
 | Interface | What it abstracts | v1 implementations | Later |
 |---|---|---|---|
-| `Signer` | Where keys live and how they sign ([signer.md](signer.md)) | Software (age keystore) | YubiKey PIV, TPM, Secure Enclave, ssh-agent |
+| `Signer` | Where keys live and how they sign ([signer.md](signer.md)) | Software (age keystore) | The Secure Enclave (M7.5, `se-cryptokit`, through a helper process); YubiKey PIV, TPM, ssh-agent |
 | `Transport` | How clients reach the daemon; every transport carries the same SSH protocol | TCP (SSH gateway); Unix socket (local mode) | — |
 | `CallerAttestor` | What the network or the kernel says about the caller, as `CallerFacts` | Network (source address); macOS process chain (local mode, M7); Linux process chain (local mode, M7.1) | — |
 | `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS kqueue (local mode, M7); Linux pidfd (local mode, M7.1) | — |
@@ -163,7 +163,7 @@ attach refused).
 | `writ-core` | `CallerFacts`, `ProcessRef` and the caller checks (pure) |
 | `writ-platform` | The traits above (except `Signer`), the portable implementations (TCP transport, network attestor, no-op watcher, Telegram notifier, passphrase unlock, system clock), and, behind a `testing` feature, fakes of each trait and the contract suites (`writ_platform::contract`) every implementation runs |
 | `writ-signer` | The `Signer` trait, the software backend, cross-platform hardware backends behind Cargo features (YubiKey) |
-| `writ-platform-macos` | Everything macOS-only, its system calls in its one `unsafe` module (`sys`): process hardening (M5: `PT_DENY_ATTACH`), the Unix socket peer from its audit token (`peer::audit_token_peer`), the process chain attestor (`attest::ProcessChain`: libproc, code signature), the kqueue watcher (`watch::KqueueWatcher`) (M7), the Secure Enclave `Signer` (M7.5, [macOS Secure Enclave](macos-secure-enclave.md)) and `KeystoreUnlock` |
+| `writ-platform-macos` | Everything macOS-only, its system calls in its one `unsafe` module (`sys`): process hardening (M5: `PT_DENY_ATTACH`), the Unix socket peer from its audit token (`peer::audit_token_peer`), the process chain attestor (`attest::ProcessChain`: libproc, code signature), the kqueue watcher (`watch::KqueueWatcher`) (M7), the Secure Enclave helper (M7.5: `writ-se`, the Swift program in `swift/`, built by its `build.rs` and `tool/build-writ-se.sh`; `writd/src/platform.rs` makes the `Signer` from `writ_signer::helper` with it, [macOS Secure Enclave](macos-secure-enclave.md)) and, from M7.6, its `KeystoreUnlock` |
 | `writ-platform-linux` | Linux-only implementations, their one `unsafe` call (`getsockopt(SO_PEERPIDFD)`) in `sys`: process hardening (M5), the Unix socket peer from its pidfd (`peer::pidfd_peer`), the process chain attestor (`attest::ProcessChain`) reading `/proc` through a `read::ReadProcess` (the capped process reader `helper::Helper`, or `read::Direct`), the pidfd watcher (`watch::PidfdWatcher`), the capabilities (`caps`) and the startup checks (`kernel`) (M7.1); later TPM |
 | `writd` | `platform.rs`: builds the set of implementations from the configuration and the target OS. The **only** place outside the platform crates with `#[cfg(target_os = …)]` |
 

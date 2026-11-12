@@ -19,8 +19,13 @@ use writ_platform::unlock::passphrase::PassphraseUnlock;
 use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{CallerAttestor, Notifier, SessionWatcher, Transport};
 use writ_signer::Signer;
+use writ_signer::helper::{HelperConfig, HelperSigner, Load};
 use writ_signer::queue::{QueueConfig, QueuedSigner};
+use writ_signer::route::{Backends, Routed};
 use writ_signer::software::SoftwareSigner;
+
+use crate::declared::{Backend, Declarations};
+use crate::keystore::{Build, Makers, Material, StoredKey};
 
 use crate::config::{
     AttestorConfig, Config, NotifierConfig, SealedConfig, TelegramConfig, TokenConfig,
@@ -43,29 +48,93 @@ pub struct Platform {
     pub notifier: Arc<LateNotifiers>,
 }
 
-/// Commit signatures that may wait for the agent keys' backend while it signs one.
+/// The key backends this build has: software everywhere, and on macOS the Secure Enclave
+/// (`se-cryptokit`, M7.5). A policy naming another is refused by name.
+#[cfg(target_os = "macos")]
+pub const BACKENDS: &[Backend] = &[Backend::Software, Backend::SeCryptokit];
+#[cfg(not(target_os = "macos"))]
+pub const BACKENDS: &[Backend] = &[Backend::Software];
+
+/// How the device backend `backend`'s helper is started.
+fn helper_config(config: &Config, backend: Backend) -> anyhow::Result<HelperConfig> {
+    match backend {
+        Backend::Software => bail!("the software backend runs no helper"),
+        Backend::SeCryptokit => se_cryptokit_config(config),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn se_cryptokit_config(config: &Config) -> anyhow::Result<HelperConfig> {
+    use writ_platform_macos::secure_enclave::{BACKEND, DEADLINE};
+    Ok(HelperConfig {
+        backend: BACKEND.to_owned(),
+        program: config.signers.se_cryptokit.helper()?,
+        args: Vec::new(),
+        deadline: DEADLINE,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn se_cryptokit_config(_: &Config) -> anyhow::Result<HelperConfig> {
+    bail!("the se-cryptokit backend is macOS's: this build is for another OS")
+}
+
+/// Checks that the helper of `backend` runs and has its device: `writ-se` found, speaking
+/// `writ-se/1`, the Secure Enclave there. Refused naming the path and why.
+fn check_device(config: &Config, backend: Backend) -> anyhow::Result<HelperConfig> {
+    let helper = helper_config(config, backend)?;
+    writ_signer::helper::check(&helper).map_err(|e| {
+        anyhow::anyhow!(
+            "backend {}: {} ({}; signers.se_cryptokit.helper sets its path)",
+            backend.name(),
+            e,
+            helper.program.display()
+        )
+    })?;
+    Ok(helper)
+}
+
+/// The startup check: each device backend a declared key lives on runs and has its device.
+pub fn check_devices(config: &Config, declared: &Declarations) -> anyhow::Result<()> {
+    let mut used: Vec<Backend> = declared.values().map(|k| k.backend).collect();
+    used.sort();
+    used.dedup();
+    for backend in used.into_iter().filter(|b| b.is_device()) {
+        check_device(config, backend)?;
+        tracing::info!(backend = backend.name(), "the device backend answers");
+    }
+    Ok(())
+}
+
+/// Where `writd init`, `writd recover` and the development keystore make device keys: a
+/// helper signer of their own per device backend this build has, started (and checked) on
+/// first use.
+pub fn makers(config: &Config) -> anyhow::Result<Makers> {
+    let mut builds = std::collections::BTreeMap::new();
+    for backend in BACKENDS.iter().copied().filter(|b| b.is_device()) {
+        let helper = helper_config(config, backend)?;
+        let build: Build = Box::new(move || {
+            writ_signer::helper::check(&helper).map_err(|e| {
+                anyhow::anyhow!(
+                    "backend {}: {e} ({}; signers.se_cryptokit.helper sets its path)",
+                    backend.name(),
+                    helper.program.display()
+                )
+            })?;
+            let signer: Arc<dyn Signer> = Arc::new(HelperSigner::new(helper.clone(), [])?);
+            Ok(signer)
+        });
+        builds.insert(backend, build);
+    }
+    Ok(Makers::lazy(builds))
+}
+
+/// Commit signatures that may wait for one of the agent keys' backends while it signs one.
 const AGENT_KEYS_QUEUE: usize = 16;
 
-/// How long a commit signature waits for the agent keys' backend (a software key signs in
-/// microseconds, a hardware one in milliseconds: past this, the device is stuck).
+/// How long a commit signature waits for its backend (a software key signs in microseconds,
+/// the Secure Enclave in milliseconds: past this, the device is stuck).
 const AGENT_KEYS_DEADLINE: Duration = Duration::from_secs(10);
-
-/// The `Signer` holding the keys commits are signed with, behind its own queue (one per use:
-/// the TLS key and the upstream credential get theirs). This build has the software
-/// backend only, so the configuration doesn't name one yet: the `signer:` key comes with the
-/// sealed keystore (M5), and hardware backends with their milestones (M7.5).
-pub fn signer(keys: Vec<crate::keystore::StoredKey>) -> anyhow::Result<Arc<dyn Signer>> {
-    let backend = SoftwareSigner::new(keys.into_iter().map(|k| (k.id, k.key)))?;
-    let queued = QueuedSigner::new(
-        backend,
-        QueueConfig {
-            name: "writ-sign-agent".to_owned(),
-            capacity: AGENT_KEYS_QUEUE,
-            deadline: AGENT_KEYS_DEADLINE,
-        },
-    )?;
-    Ok(Arc::new(queued))
-}
 
 /// Upstream signatures that may wait (one per ssh authentication: a sync or a push).
 const UPSTREAM_QUEUE: usize = 8;
@@ -73,19 +142,93 @@ const UPSTREAM_QUEUE: usize = 8;
 /// How long an upstream signature waits for its backend.
 const UPSTREAM_DEADLINE: Duration = Duration::from_secs(10);
 
-/// The `Signer` holding the upstream credentials, behind its own queue: a device stuck on
-/// commit signing never holds up a sync or a push, nor the other way round.
-pub fn upstream_signer(keys: Vec<crate::keystore::StoredKey>) -> anyhow::Result<Arc<dyn Signer>> {
-    let backend = SoftwareSigner::new(keys.into_iter().map(|k| (k.id, k.key)))?;
-    let queued = QueuedSigner::new(
-        backend,
-        QueueConfig {
-            name: "writ-upstream".to_owned(),
-            capacity: UPSTREAM_QUEUE,
-            deadline: UPSTREAM_DEADLINE,
-        },
-    )?;
-    Ok(Arc::new(queued))
+/// A use's signer: each backend this build has, behind its own queue, routed by key; and the
+/// keys whose stored bytes a device refused (listed, never signed with), with why.
+pub struct UseSigner {
+    pub signer: Arc<Routed>,
+    pub refused: Vec<(writ_core::names::KeyId, String)>,
+}
+
+/// The signer of one use (`name`: `agent` or `upstream`) over `keys`: the software keys in
+/// memory, each device's keys given back to its helper (their frames checked first), each
+/// backend on its own queue (a stuck Secure Enclave never holds up a software key).
+fn use_signer(
+    config: &Config,
+    keys: Vec<StoredKey>,
+    name: &str,
+    capacity: usize,
+    deadline: Duration,
+) -> anyhow::Result<UseSigner> {
+    let mut software = Vec::new();
+    let mut devices: std::collections::BTreeMap<Backend, Vec<Load>> =
+        std::collections::BTreeMap::new();
+    for key in keys {
+        match key.key {
+            Material::Software(pair) => software.push((key.id, pair)),
+            Material::Device {
+                backend,
+                stored,
+                public,
+            } => devices.entry(backend).or_default().push(Load {
+                id: key.id,
+                stored,
+                public,
+            }),
+        }
+    }
+    let queue = |suffix: &str| QueueConfig {
+        name: format!("writ-{name}{suffix}"),
+        capacity,
+        deadline,
+    };
+    let mut backends = Backends::new();
+    let mut refused = Vec::new();
+    for backend in BACKENDS.iter().copied() {
+        let queued: Arc<dyn Signer> = match backend {
+            Backend::Software => Arc::new(QueuedSigner::new(
+                SoftwareSigner::new(std::mem::take(&mut software))?,
+                queue(""),
+            )?),
+            device => {
+                let loads = devices.remove(&device).unwrap_or_default();
+                let held = HelperSigner::new(helper_config(config, device)?, loads)?;
+                refused.extend(held.refused().iter().cloned());
+                Arc::new(QueuedSigner::new(
+                    held,
+                    queue(&format!("-{}", device.name())),
+                )?)
+            }
+        };
+        backends.insert(backend.name().to_owned(), queued);
+    }
+    if let Some(backend) = devices.keys().next() {
+        bail!(
+            "keys on backend {}, which this daemon lacks",
+            backend.name()
+        );
+    }
+    Ok(UseSigner {
+        signer: Arc::new(Routed::new(backends)?),
+        refused,
+    })
+}
+
+/// The signer holding the keys commits are signed with (one per use: the TLS key and the
+/// upstream credentials get theirs).
+pub fn signer(config: &Config, keys: Vec<StoredKey>) -> anyhow::Result<UseSigner> {
+    use_signer(
+        config,
+        keys,
+        "sign-agent",
+        AGENT_KEYS_QUEUE,
+        AGENT_KEYS_DEADLINE,
+    )
+}
+
+/// The signer holding the upstream credentials: a device stuck on commit signing never holds
+/// up a sync or a push, nor the other way round.
+pub fn upstream_signer(config: &Config, keys: Vec<StoredKey>) -> anyhow::Result<UseSigner> {
+    use_signer(config, keys, "upstream", UPSTREAM_QUEUE, UPSTREAM_DEADLINE)
 }
 
 /// Handshake signatures that may wait for the TLS key's backend.

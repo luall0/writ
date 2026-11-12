@@ -18,43 +18,69 @@ use writ_crypto::keypair::KeyPair;
 use writ_crypto::ssh_key::PublicKey;
 use writ_proto::KeyRole;
 
-/// A backend this daemon has.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// A backend a daemon may have: which ones this one has is `crate::platform::BACKENDS`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Backend {
     /// In the daemon's memory, from its keystore.
     #[default]
     Software,
+    /// The Secure Enclave of the Mac the daemon runs on (M7.5): P-256 keys it makes itself,
+    /// through `writ-se`; the daemon keeps each one's framed blob, sealed.
+    SeCryptokit,
 }
 
 impl Backend {
-    /// Every backend this build has.
-    pub const ALL: [Backend; 1] = [Backend::Software];
-
     pub fn name(self) -> &'static str {
         match self {
             Backend::Software => "software",
+            Backend::SeCryptokit => "se-cryptokit",
+        }
+    }
+
+    /// Whether the key is a device's (made by the backend, which hands back what to keep).
+    pub fn is_device(self) -> bool {
+        self != Backend::Software
+    }
+
+    /// The backend a key file names (none: software).
+    pub fn of_meta(meta: &KeyMeta) -> Option<Self> {
+        match meta.backend {
+            None => Some(Backend::Software),
+            Some(name) => [Backend::SeCryptokit]
+                .into_iter()
+                .find(|b| b.name() == name.as_str()),
         }
     }
 
     /// The backend a declaration names, at `at` (`keys.<id>.backend`), or why this daemon
     /// has none by that name.
     fn of(name: &BackendName, at: &str) -> anyhow::Result<Self> {
-        Self::ALL
-            .into_iter()
+        let have = crate::platform::BACKENDS;
+        have.iter()
+            .copied()
             .find(|b| b.name() == name.as_str())
             .ok_or_else(|| {
-                let have: Vec<&str> = Self::ALL.iter().map(|b| b.name()).collect();
+                let names: Vec<&str> = have.iter().map(|b| b.name()).collect();
                 anyhow::anyhow!(
                     "{at}: this daemon has no backend {name} (it has: {})",
-                    have.join(", ")
+                    names.join(", ")
                 )
             })
     }
 
     /// The (algorithm, signer hash) pairs it signs with.
-    fn pairs(self) -> Vec<(KeyAlgorithm, SignerHash)> {
+    pub fn pairs(self) -> Vec<(KeyAlgorithm, SignerHash)> {
         match self {
             Backend::Software => writ_signer::software::pairs(),
+            Backend::SeCryptokit => writ_signer::helper::pairs(),
+        }
+    }
+
+    /// What its key files' header names it (none: software).
+    pub fn key_backend(self) -> anyhow::Result<Option<writ_crypto::keyfile::KeyBackend>> {
+        match self {
+            Backend::Software => Ok(None),
+            device => Ok(Some(writ_crypto::keyfile::KeyBackend::new(device.name())?)),
         }
     }
 }
@@ -176,16 +202,41 @@ pub fn check_key(
             meta.format
         );
     }
+    let held = Backend::of_meta(meta);
+    if held != Some(declared.backend) {
+        bail!(
+            "{name}: declared on backend {} but the keystore holds it on {} (a key never \
+             changes backend: `writ admin key rotate --backend` makes a new one)",
+            declared.backend.name(),
+            meta.backend
+                .map_or_else(|| "software".to_owned(), |b| b.as_str().to_owned())
+        );
+    }
     Ok(())
 }
 
-/// A new key as `declared` describes it, made now.
-pub fn make(declared: &Declared) -> anyhow::Result<(KeyPair, KeyMeta)> {
-    let key = KeyPair::generate(declared.algorithm)?;
+/// A new key's metadata as `declared` describes it, made now.
+pub fn meta_now(declared: &Declared) -> anyhow::Result<KeyMeta> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
-    Ok((key, KeyMeta::new(declared.format, now)?))
+    let meta = KeyMeta::new(declared.format, now)?;
+    Ok(match declared.backend.key_backend()? {
+        Some(backend) => meta.on(backend),
+        None => meta,
+    })
+}
+
+/// A new software key as `declared` describes it, made now.
+pub fn make(declared: &Declared) -> anyhow::Result<(KeyPair, KeyMeta)> {
+    if declared.backend.is_device() {
+        bail!(
+            "{}: a device's key is made by its backend, never in software",
+            declared.backend.name()
+        );
+    }
+    let key = KeyPair::generate(declared.algorithm)?;
+    Ok((key, meta_now(declared)?))
 }
 
 /// The armored OpenPGP certificate of `key` with `uids`, each self-signature made with the
@@ -196,6 +247,7 @@ pub fn certificate(
     key: &crate::keystore::StoredKey,
     declared: &Declared,
     uids: &[writ_core::names::Uid],
+    makers: &crate::keystore::Makers,
 ) -> anyhow::Result<Option<String>> {
     let Some(created) = key.meta.created else {
         return Ok(None);
@@ -208,7 +260,7 @@ pub fn certificate(
     for uid in uids {
         let prepared = writ_crypto::openpgp::certification(&openpgp, declared.hash, uid.as_str())?;
         let (data, hash) = prepared.signer_input();
-        let signature = key.key.sign(data, hash)?;
+        let signature = makers.sign(&key.id, &key.key, data, hash)?;
         certified.push((uid.as_str(), prepared.packet(&signature)?));
     }
     Ok(Some(writ_crypto::openpgp::certificate(
@@ -329,6 +381,12 @@ mod tests {
         assert_eq!(declared[&id("c")].algorithm, KeyAlgorithm::Rsa3072);
         assert!(!declared.contains_key(&id("t")), "a token is never made");
         assert_eq!(key_uses(&declared).len(), 2, "signing keys only");
+        // What this build has: software everywhere, and the Secure Enclave on a Mac.
+        let have: Vec<&str> = crate::platform::BACKENDS.iter().map(|b| b.name()).collect();
+        let have = have.join(", ");
+        let yubikey =
+            format!("keys.a.backend: this daemon has no backend yubikey (it has: {have})");
+        let tpm = format!("keys.t.backend: this daemon has no backend tpm (it has: {have})");
         for (keys, why) in [
             (
                 "  a: { use: signing, format: openpgp, algorithm: p256, hash: sha512 }",
@@ -340,11 +398,11 @@ mod tests {
             ),
             (
                 "  a: { use: signing, format: ssh, algorithm: ed25519, backend: yubikey }",
-                "keys.a.backend: this daemon has no backend yubikey (it has: software)",
+                yubikey.as_str(),
             ),
             (
                 "  t: { use: upstream, kind: token, host: github.com, backend: tpm }",
-                "keys.t.backend: this daemon has no backend tpm (it has: software)",
+                tpm.as_str(),
             ),
         ] {
             assert_eq!(

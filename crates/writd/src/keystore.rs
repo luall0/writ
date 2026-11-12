@@ -24,7 +24,7 @@ use writ_proto::KeyRole;
 use zeroize::Zeroizing;
 
 use crate::config::{Config, KeystoreConfig, SealedConfig};
-use crate::declared::{Declarations, Declared};
+use crate::declared::{Backend, Declarations, Declared};
 
 /// Creates a directory (and its parents) only the daemon can enter (0700).
 pub fn private_dir(path: &Path) -> anyhow::Result<()> {
@@ -63,11 +63,163 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 /// A key the policy declares (a signing key or an `ssh` upstream credential), opened: its key
-/// and what its file says it is (format, creation time), checked against its declaration.
+/// and what its file says it is (format, creation time, backend), checked against its
+/// declaration.
 pub struct StoredKey {
     pub id: KeyId,
-    pub key: KeyPair,
+    pub key: Material,
     pub meta: KeyMeta,
+}
+
+/// A declared key's material, opened: a key the daemon holds in software, or what a device
+/// backend gave it to keep for a key the device holds (M7.5), with the key's public half.
+pub enum Material {
+    Software(KeyPair),
+    Device {
+        backend: Backend,
+        stored: writ_signer::Stored,
+        public: PublicKey,
+    },
+}
+
+impl Material {
+    pub fn public_key(&self) -> PublicKey {
+        match self {
+            Material::Software(key) => key.public_key(),
+            Material::Device { public, .. } => public.clone(),
+        }
+    }
+
+    /// The key file's private half (wiped on drop).
+    pub fn encode(&self, meta: KeyMeta) -> anyhow::Result<Zeroizing<String>> {
+        Ok(match self {
+            Material::Software(key) => writ_crypto::keyfile::encode_secret(key, meta)?,
+            Material::Device { stored, .. } => {
+                writ_crypto::keyfile::encode_device(stored.as_bytes(), meta)?
+            }
+        })
+    }
+
+    /// The material a key file's private half holds, `public` its kept public half.
+    pub fn decode(text: &[u8], public: PublicKey) -> anyhow::Result<(Self, KeyMeta)> {
+        use writ_crypto::keyfile::Held;
+        let (held, meta) = writ_crypto::keyfile::decode_held(text)?;
+        let material = match held {
+            Held::Software(key) => Material::Software(key),
+            Held::Device(stored) => Material::Device {
+                backend: Backend::of_meta(&meta)
+                    .ok_or_else(|| anyhow::anyhow!("a key file naming a backend writd lacks"))?,
+                stored: writ_signer::Stored::new(stored.to_vec()),
+                public,
+            },
+        };
+        Ok((material, meta))
+    }
+}
+
+/// Where the keys a declaration puts on a device are made: by each device backend's signer
+/// (`writd init`, `writd recover` and the development keystore: one of their own; the running
+/// daemon: the use's signer, which then holds the key). Software keys are made here.
+#[derive(Default)]
+pub struct Makers {
+    devices: BTreeMap<Backend, Device>,
+}
+
+/// How a device backend's signer is had: built on first use (a command that never makes a
+/// device key never starts its helper), or the running daemon's.
+pub type Build = Box<dyn Fn() -> anyhow::Result<Arc<dyn writ_signer::Signer>> + Send + Sync>;
+
+struct Device {
+    built: std::sync::OnceLock<Arc<dyn writ_signer::Signer>>,
+    build: Option<Build>,
+}
+
+impl Makers {
+    /// The running daemon's signers, by backend.
+    pub fn running(devices: BTreeMap<Backend, Arc<dyn writ_signer::Signer>>) -> Self {
+        let devices = devices
+            .into_iter()
+            .map(|(backend, signer)| {
+                let built = std::sync::OnceLock::new();
+                let _ = built.set(signer);
+                (backend, Device { built, build: None })
+            })
+            .collect();
+        Self { devices }
+    }
+
+    /// Signers of their own, each built on first use.
+    pub fn lazy(builds: BTreeMap<Backend, Build>) -> Self {
+        let devices = builds
+            .into_iter()
+            .map(|(backend, build)| {
+                let device = Device {
+                    built: std::sync::OnceLock::new(),
+                    build: Some(build),
+                };
+                (backend, device)
+            })
+            .collect();
+        Self { devices }
+    }
+
+    /// The signer of the device backend `backend`, or why there is none.
+    pub fn device(&self, backend: Backend) -> anyhow::Result<Arc<dyn writ_signer::Signer>> {
+        let device = self.devices.get(&backend).with_context(|| {
+            format!("this daemon has no {} backend to make keys", backend.name())
+        })?;
+        if let Some(signer) = device.built.get() {
+            return Ok(signer.clone());
+        }
+        let build = device
+            .build
+            .as_ref()
+            .with_context(|| format!("the {} backend is not started", backend.name()))?;
+        let signer = build()?;
+        Ok(device.built.get_or_init(|| signer).clone())
+    }
+
+    /// A new key `id` as `declared` describes it: made in software, or by its device.
+    pub fn make(&self, id: &KeyId, declared: &Declared) -> anyhow::Result<(Material, KeyMeta)> {
+        if !declared.backend.is_device() {
+            let (key, meta) = crate::declared::make(declared)?;
+            return Ok((Material::Software(key), meta));
+        }
+        let meta = crate::declared::meta_now(declared)?;
+        let created = self
+            .device(declared.backend)?
+            .create_key(id.clone(), declared.algorithm)
+            .with_context(|| {
+                format!(
+                    "{}: the {} backend did not make it",
+                    crate::declared::named(declared.role, id),
+                    declared.backend.name()
+                )
+            })?;
+        Ok((
+            Material::Device {
+                backend: declared.backend,
+                stored: created.stored,
+                public: created.info.public_key,
+            },
+            meta,
+        ))
+    }
+
+    /// Signs `data` with the key `id` (`writd init` and `writd recover`: an OpenPGP key's
+    /// certificate): in software, or through the device that made it.
+    pub fn sign(
+        &self,
+        id: &KeyId,
+        key: &Material,
+        data: &[u8],
+        hash: writ_crypto::algorithm::SignerHash,
+    ) -> anyhow::Result<writ_crypto::keypair::RawSignature> {
+        match key {
+            Material::Software(key) => Ok(key.sign(data, hash)?),
+            Material::Device { backend, .. } => Ok(self.device(*backend)?.sign(id, data, hash)?),
+        }
+    }
 }
 
 /// The daemon's keys an unseal opens (private halves).
@@ -165,9 +317,15 @@ pub fn of_role(
 
 /// The public halves of the daemon's keys, from the configured keystore: no unseal needed.
 /// Each declared key must be there, as declared.
-pub fn public(config: &Config, declared: &Declarations) -> anyhow::Result<PublicKeys> {
+pub fn public(
+    config: &Config,
+    declared: &Declarations,
+    makers: &Makers,
+) -> anyhow::Result<PublicKeys> {
     match &config.keystore {
-        KeystoreConfig::Dev(dir) => PublicKeys::of(&dev::boot(dir)?, &dev::keys(dir, declared)?),
+        KeystoreConfig::Dev(dir) => {
+            PublicKeys::of(&dev::boot(dir)?, &dev::keys(dir, declared, makers)?)
+        }
         KeystoreConfig::Sealed(sealed) => sealed::public(sealed, declared),
     }
 }
@@ -222,11 +380,12 @@ pub fn read_certificate(config: &Config, id: &KeyId) -> anyhow::Result<Option<St
 pub fn make_missing(
     config: &Config,
     declared: &Declarations,
+    makers: &Makers,
 ) -> anyhow::Result<Vec<(KeyId, KeyRole, PublicKey, KeyMeta)>> {
     let mut made = Vec::new();
     for (id, key) in declared {
         let (stored, new) = match &config.keystore {
-            KeystoreConfig::Dev(dir) => dev::key_or_make(dir, id, key)?,
+            KeystoreConfig::Dev(dir) => dev::key_or_make(dir, id, key, makers)?,
             KeystoreConfig::Sealed(sealed) => {
                 let layout = sealed::Layout(sealed);
                 if layout.key(key.role, id).exists() {
@@ -235,7 +394,10 @@ pub fn make_missing(
                     continue;
                 }
                 let recipient = sealed::recipient(sealed)?;
-                (sealed::make_key(&layout, &recipient, id, key)?, true)
+                (
+                    sealed::make_key(&layout, &recipient, id, key, makers)?,
+                    true,
+                )
             }
         };
         if new {
@@ -292,9 +454,10 @@ impl Live {
         &self,
         id: &KeyId,
         declared: &Declared,
+        makers: &Makers,
     ) -> anyhow::Result<(StoredKey, bool)> {
         match self {
-            Self::Dev(dir) => dev::key_or_make(dir, id, declared),
+            Self::Dev(dir) => dev::key_or_make(dir, id, declared, makers),
             Self::Sealed {
                 sealed,
                 files,
@@ -304,7 +467,10 @@ impl Live {
                 if layout.key(declared.role, id).exists() {
                     return Ok((sealed::stored_key(files, &layout, id, declared)?, false));
                 }
-                Ok((sealed::make_key(&layout, recipient, id, declared)?, true))
+                Ok((
+                    sealed::make_key(&layout, recipient, id, declared, makers)?,
+                    true,
+                ))
             }
         }
     }
@@ -314,7 +480,12 @@ impl Live {
     /// fine; what can't be removed is an error, naming the file.
     pub fn forget(&self, id: &KeyId, role: KeyRole) -> anyhow::Result<()> {
         let files = match self {
-            Self::Dev(dir) => vec![dev::key_path(dir, role, id)],
+            Self::Dev(dir) => {
+                let key = dev::key_path(dir, role, id);
+                // A device key's public half beside it.
+                let public = key.with_file_name(format!("{id}.pub"));
+                vec![key, public]
+            }
             Self::Sealed { sealed, .. } => {
                 let layout = sealed::Layout(sealed);
                 let mut files = vec![layout.key(role, id), layout.key_public(role, id)];
@@ -457,6 +628,7 @@ pub fn start(
     config: &Config,
     declared: &Declarations,
     policy: &PolicyConfig,
+    makers: &Makers,
 ) -> anyhow::Result<Start> {
     match &config.keystore {
         KeystoreConfig::Sealed(sealed) => {
@@ -466,7 +638,7 @@ pub fn start(
         KeystoreConfig::Dev(dir) => Ok(Start::Open(
             dev::boot(dir)?,
             Box::new(Opened {
-                keys: dev::keys(dir, declared)?,
+                keys: dev::keys(dir, declared, makers)?,
                 live: Live::Dev(dir.clone()),
                 authority: dev::authority_key(dir)?,
                 tokens: dev::tokens(dir, policy)?,

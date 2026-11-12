@@ -73,6 +73,17 @@ Programs are named by absolute path, never looked up in `PATH`, and checked at s
 | `mirrors.max_fetch` | 1MiB to 64GiB | `1GiB` | The most one sync may download, over SSH or HTTPS. Past it, the sync fails and the mirror stays as it was |
 | `mirrors.scan_timeout` | 1s to 5m | `30s` | The longest one handshake of a host key scan (`writ admin host add`) may take: raise it for a host slow to answer. A scan makes up to three, one per key algorithm |
 
+## Key backends
+
+The programs the key backends other than `software` run (a key's backend is chosen in the
+policy: [`keys.<id>.backend`](policy-yaml.md#keys-keysid)). Each is checked at start when a
+key lives on its backend: the daemon refuses to start, naming the path and why, when the
+program is missing or the device isn't there.
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `signers.se_cryptokit.helper` | Path (made absolute) | `writ-se` beside `writd` | The Secure Enclave helper on the Mac (`se-cryptokit`), installed by `make install` beside `writd`. Set it only if you keep it elsewhere |
+
 ## Listeners
 
 Where the daemon listens. Each of the three lists holds **listeners**: `{ tcp: "host:port",

@@ -481,9 +481,9 @@ pub fn stored_key(
     let role = declared.role;
     let path = layout.key(role, id);
     let text = files.read(&path, &crate::declared::named(role, id))?;
-    let (key, meta) =
-        keyfile::decode_secret(&text).with_context(|| format!("{}: not a key", path.display()))?;
     let (public, public_meta) = stored_public(layout, role, id)?;
+    let (key, meta) = super::Material::decode(&text, public.clone())
+        .with_context(|| format!("{}: not a key", path.display()))?;
     if public != key.public_key() || public_meta != meta {
         bail!(
             "{} does not match {}: one of them was replaced",
@@ -507,6 +507,7 @@ pub fn make_key(
     recipient: &dyn age::Recipient,
     id: &KeyId,
     declared: &Declared,
+    makers: &super::Makers,
 ) -> anyhow::Result<StoredKey> {
     let role = declared.role;
     let (secret, public) = (layout.key(role, id), layout.key_public(role, id));
@@ -524,13 +525,9 @@ pub fn make_key(
         }
         _ => {}
     }
-    let (key, meta) = crate::declared::make(declared)?;
+    let (key, meta) = makers.make(id, declared)?;
     write_public(&public, &keyfile::encode_public(&key.public_key(), meta)?)?;
-    seal(
-        &secret,
-        keyfile::encode_secret(&key, meta)?.as_bytes(),
-        &[recipient],
-    )?;
+    seal(&secret, key.encode(meta)?.as_bytes(), &[recipient])?;
     Ok(StoredKey {
         id: id.clone(),
         key,
@@ -607,6 +604,7 @@ mod tests {
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &cheap,
+            &crate::keystore::Makers::default(),
         )
         .unwrap();
         (root, sealed, made)
@@ -987,7 +985,15 @@ templates:
         let both = crate::declared::declarations(&naming_agent_02()).unwrap();
         let decl = both.get(&id).unwrap();
         let (secret, public) = (layout.signing(&id), layout.signing_public(&id));
-        let make = || make_key(&layout, &recipient_of(&sealed), &id, decl);
+        let make = || {
+            make_key(
+                &layout,
+                &recipient_of(&sealed),
+                &id,
+                decl,
+                &crate::keystore::Makers::default(),
+            )
+        };
         let key = make().unwrap();
         // Sealed to the recipient, its half beside it, both as `writd init` writes them.
         let text = String::from_utf8(std::fs::read(&secret).unwrap()).unwrap_or_default();
@@ -1038,7 +1044,14 @@ templates:
                     hash: Hash::Sha256,
                     backend: crate::declared::Backend::Software,
                 };
-                let made = make_key(&layout, &recipient_of(&sealed), &id, &decl).unwrap();
+                let made = make_key(
+                    &layout,
+                    &recipient_of(&sealed),
+                    &id,
+                    &decl,
+                    &crate::keystore::Makers::default(),
+                )
+                .unwrap();
                 assert_eq!(made.meta.format, format);
                 assert_eq!(
                     made.meta.created.is_some(),
@@ -1132,6 +1145,7 @@ templates:
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &cheap,
+            &crate::keystore::Makers::default(),
         );
         let error = again.err().unwrap().to_string();
         assert!(error.starts_with("keystore.sealed.dir "), "{error}");
@@ -1156,6 +1170,7 @@ templates:
             &policy(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &failing,
+            &crate::keystore::Makers::default(),
         );
         assert_eq!(error.err().unwrap().to_string(), "no room left");
         assert!(files(&fresh.dir).is_empty() && files(&fresh.boot).is_empty());
@@ -1165,7 +1180,8 @@ templates:
                 &declared(),
                 &policy(),
                 &Passphrase::new(PASSPHRASE.to_owned()),
-                &cheap
+                &cheap,
+                &crate::keystore::Makers::default(),
             )
             .is_ok()
         );

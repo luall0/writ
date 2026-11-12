@@ -50,13 +50,15 @@ check:
 
 # The integration tests run the binaries (writd, writ, writ-sign, and on the Mac writ-se, the
 # Secure Enclave helper: tool/build-writ-se.sh) as they ship, built first on their own in
-# target/bins (writd with the dev keystore the tests use). Every test runs under
+# target/bins, with writ-fake-se (the fake helper, built apart so its `testing` feature never
+# reaches a shipped binary) (writd with the dev keystore the tests use). Every test runs under
 # cargo-nextest, in a process of its own (.config/nextest.toml), without backtraces (a
 # deliberate panic would cost seconds); the property tests with the fixed seed only (CI adds
 # a random one). Then target/ is pruned to the last builds (docs/testing.md#how-make-test-runs).
 test:
 	CARGO_TARGET_DIR=target/bins $(RECORD) bins build --locked $(BINARIES) --features writd/dev-keystore
 	sh tool/build-writ-se.sh target/bins/debug
+	CARGO_TARGET_DIR=target/bins $(RECORD) fake-se build --locked -q -p writ-signer --features testing --bin writ-fake-se
 	$(RECORD) test test --locked --workspace --no-run
 	WRIT_BIN_DIR=$(CURDIR)/target/bins/debug RUST_BACKTRACE=0 cargo nextest run --locked --workspace
 	python3 -I tool/target-cache.py prune
@@ -76,6 +78,7 @@ test-agent:
 	@test -n "$(KEY)" || { echo "usage: make test-agent KEY=<public key .pub> [AGENT=<socket>]"; exit 2; }
 	CARGO_TARGET_DIR=target/bins $(RECORD) bins build --locked $(BINARIES) --features writd/dev-keystore
 	sh tool/build-writ-se.sh target/bins/debug
+	CARGO_TARGET_DIR=target/bins $(RECORD) fake-se build --locked -q -p writ-signer --features testing --bin writ-fake-se
 	WRIT_TEST_AGENT_KEY="$(KEY)" SSH_AUTH_SOCK="$(or $(AGENT),$(SSH_AUTH_SOCK))" \
 		WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo nextest run --locked --workspace --run-ignored only \
 		-E 'binary_id(writ-integration::interop) & test(=your_agent_key_signs_approvals_rust_verifies)'

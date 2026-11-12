@@ -36,6 +36,10 @@ keystore:                          # made once by `writd init writd.yaml`
   # max_fetch: 1GiB                # 1MiB to 64GiB: the most one sync takes from upstream
   # scan_timeout: 30s              # 1s to 5m: one handshake of a host key scan (writ admin host add)
 
+# signers:                         # the programs the key backends other than software run
+  # se_cryptokit:                  # macOS: keys in the Secure Enclave (backend: se-cryptokit)
+    # helper: /opt/writ/bin/writ-se  # absolute path; default: writ-se beside writd
+
 # Listeners: each is `tcp: "host:port"` (or `unix: <path>`, refused until local mode, M7),
 # with `allow`, the addresses or CIDR ranges that may connect.
 transports:

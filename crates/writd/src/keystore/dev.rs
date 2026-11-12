@@ -73,7 +73,7 @@ pub fn key_path(dir: &Path, role: KeyRole, id: &KeyId) -> std::path::PathBuf {
 }
 
 /// The ids of the keys of `role` the development keystore holds (its file names that are
-/// key ids; a certificate or anything else left out).
+/// key ids; a certificate, a device key's public half or anything else left out).
 pub fn held(dir: &Path, role: KeyRole) -> anyhow::Result<Vec<KeyId>> {
     let dir = role_dir(dir, role);
     let entries = match std::fs::read_dir(&dir) {
@@ -87,7 +87,9 @@ pub fn held(dir: &Path, role: KeyRole) -> anyhow::Result<Vec<KeyId>> {
         if let Some(id) = entry
             .file_name()
             .to_str()
-            .filter(|name| !name.starts_with('.') && !name.ends_with(".asc"))
+            .filter(|name| {
+                !name.starts_with('.') && !name.ends_with(".asc") && !name.ends_with(".pub")
+            })
             .and_then(|name| name.parse::<KeyId>().ok())
         {
             ids.push(id);
@@ -103,9 +105,10 @@ pub fn key_or_make(
     dir: &Path,
     id: &KeyId,
     declared: &Declared,
+    makers: &super::Makers,
 ) -> anyhow::Result<(StoredKey, bool)> {
     allowed()?;
-    dev_key_or_make(dir, id, declared)
+    dev_key_or_make(dir, id, declared, makers)
 }
 
 /// [`key_or_make`], once the build is known to take the development keystore.
@@ -113,16 +116,22 @@ fn dev_key_or_make(
     dir: &Path,
     id: &KeyId,
     declared: &Declared,
+    makers: &super::Makers,
 ) -> anyhow::Result<(StoredKey, bool)> {
     let dir = role_dir(dir, declared.role);
     private_dir(&dir)?;
     let path = dir.join(id.as_str());
+    // A device's key keeps its public half beside it (its file holds what the device keeps).
+    let public_path = dir.join(format!("{id}.pub"));
     if !path.exists() {
-        let (key, meta) = crate::declared::make(declared)?;
-        write_private(
-            &path,
-            writ_crypto::keyfile::encode_secret(&key, meta)?.as_bytes(),
-        )?;
+        let (key, meta) = makers.make(id, declared)?;
+        if declared.backend.is_device() {
+            write_private(
+                &public_path,
+                writ_crypto::keyfile::encode_public(&key.public_key(), meta)?.as_bytes(),
+            )?;
+        }
+        write_private(&path, key.encode(meta)?.as_bytes())?;
         let made = StoredKey {
             id: id.clone(),
             key,
@@ -130,9 +139,24 @@ fn dev_key_or_make(
         };
         return Ok((made, true));
     }
-    let text = writ_platform::fs::read_secret(&path, "the key", 1 << 16)?;
-    let (key, meta) = writ_crypto::keyfile::decode_secret(&text)
-        .with_context(|| format!("{}: not a key", path.display()))?;
+    // Twice the largest stored part, in hex, and its header.
+    let text = writ_platform::fs::read_secret(&path, "the key", 1 << 18)?;
+    let public = match public_path.exists() {
+        true => {
+            let line =
+                writ_platform::fs::read_secret(&public_path, "the key's public half", 1 << 16)?;
+            Some(writ_crypto::keyfile::decode_public(&line)?.0)
+        }
+        false => None,
+    };
+    let (key, meta) = match public {
+        Some(public) => super::Material::decode(&text, public)?,
+        None => {
+            let (key, meta) = writ_crypto::keyfile::decode_secret(&text)
+                .with_context(|| format!("{}: not a key", path.display()))?;
+            (super::Material::Software(key), meta)
+        }
+    };
     crate::declared::check_key(id, declared, &key.public_key(), &meta)?;
     Ok((
         StoredKey {
@@ -149,9 +173,10 @@ fn dev_keys_of(
     dir: &Path,
     declared: &Declarations,
     role: KeyRole,
+    makers: &super::Makers,
 ) -> anyhow::Result<Vec<StoredKey>> {
     of_role(declared, role)
-        .map(|(id, key)| Ok(dev_key_or_make(dir, id, key)?.0))
+        .map(|(id, key)| Ok(dev_key_or_make(dir, id, key, makers)?.0))
         .collect()
 }
 
@@ -241,13 +266,13 @@ fn allowed() -> anyhow::Result<()> {
 
 /// The daemon's keys, from the development keystore in `dir`: every declared key, made on
 /// first start.
-pub fn keys(dir: &Path, declared: &Declarations) -> anyhow::Result<Keys> {
+pub fn keys(dir: &Path, declared: &Declarations, makers: &super::Makers) -> anyhow::Result<Keys> {
     allowed()?;
     private_dir(dir)?;
     Ok(Keys {
         ca: dev_key(dir, "ca")?,
-        signing: dev_keys_of(dir, declared, KeyRole::Signing)?,
-        upstream: dev_keys_of(dir, declared, KeyRole::Upstream)?,
+        signing: dev_keys_of(dir, declared, KeyRole::Signing, makers)?,
+        upstream: dev_keys_of(dir, declared, KeyRole::Upstream, makers)?,
     })
 }
 
@@ -315,11 +340,13 @@ templates: {{}}
         let dir = tempfile::tempdir().unwrap();
         let declared = crate::declared::declarations(&policy()).unwrap();
         // The build's dev-keystore gate aside (`keys` checks it first): what it reads.
+        let makers = super::super::Makers::default();
+        let makers = &makers;
         let keys = |dir: &Path, declared: &Declarations| -> anyhow::Result<Keys> {
             Ok(Keys {
                 ca: dev_key(dir, "ca")?,
-                signing: dev_keys_of(dir, declared, KeyRole::Signing)?,
-                upstream: dev_keys_of(dir, declared, KeyRole::Upstream)?,
+                signing: dev_keys_of(dir, declared, KeyRole::Signing, makers)?,
+                upstream: dev_keys_of(dir, declared, KeyRole::Upstream, makers)?,
             })
         };
         let first = keys(dir.path(), &declared).unwrap();

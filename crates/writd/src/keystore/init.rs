@@ -78,6 +78,7 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
         &policy,
         &passphrase,
         &crate::platform::enroll,
+        &crate::platform::makers(&config)?,
     )?;
     // The keystore and the state are made together or not at all: a state that can't take
     // the files' first versions leaves the directories empty again, so `writd init` can run
@@ -164,6 +165,7 @@ pub fn make(
     policy: &PolicyConfig,
     passphrase: &Passphrase,
     enroll: Enroll<'_>,
+    makers: &super::Makers,
 ) -> anyhow::Result<Made> {
     refuse_existing(sealed)?;
     private_dir(&sealed.dir)?;
@@ -204,9 +206,11 @@ pub fn make(
     private_dir(&layout.upstream_dir())?;
     let mut signing = Vec::new();
     for (id, key) in of_role(declared, KeyRole::Signing) {
-        let made = super::sealed::make_key(&layout, &recipient, id, key)?;
+        let made = super::sealed::make_key(&layout, &recipient, id, key, makers)?;
         // An OpenPGP key's certificate, with the user ids the policy gives it.
-        if let Some(certificate) = crate::declared::certificate(&made, key, policy.uids(id))? {
+        if let Some(certificate) =
+            crate::declared::certificate(&made, key, policy.uids(id), makers)?
+        {
             write_public(
                 &layout.signing_dir().join(format!("{id}.asc")),
                 &certificate,
@@ -216,7 +220,7 @@ pub fn make(
     }
     let mut upstream = Vec::new();
     for (id, key) in of_role(declared, KeyRole::Upstream) {
-        let made = super::sealed::make_key(&layout, &recipient, id, key)?;
+        let made = super::sealed::make_key(&layout, &recipient, id, key, makers)?;
         upstream.push((made.id, made.key.public_key()));
     }
     undo.done = true;

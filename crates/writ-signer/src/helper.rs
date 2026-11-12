@@ -132,6 +132,11 @@ fn unframe(stored: &Stored, public: &PublicKey) -> Result<Stored, &'static str> 
 /// The bytes signed when a key is made, to prove the point answered is the key's.
 const PROBE: &[u8] = b"writ-se/1 probe: the key just made signs";
 
+/// The (algorithm, signer hash) pairs a helper signs with: P-256 with SHA-256.
+pub fn pairs() -> Vec<(KeyAlgorithm, SignerHash)> {
+    vec![PAIR]
+}
+
 /// How to start the helper.
 #[derive(Debug, Clone)]
 pub struct HelperConfig {

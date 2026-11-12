@@ -35,6 +35,7 @@ use writ_proto::{
     AdminApplied, CreatedKey, KeyRole, KeyShown, KeysShown, RemovedKey, TokenApplied, TokenShown,
 };
 use writ_signer::Signer;
+use writ_signer::route::Routed;
 
 use crate::config::{Config, KeystoreConfig, NotifierConfig, TelegramConfig, TokenConfig};
 use crate::declared::Declarations;
@@ -45,10 +46,10 @@ use crate::platform::{self, LateNotifiers};
 /// they are added to, the `https://` tokens in force.
 struct Open {
     live: Arc<Live>,
-    /// The agent signing keys' signer (the service holds it too).
-    signing: Arc<dyn Signer>,
-    /// The `ssh://` upstream credentials' signer (the mirrors hold it too).
-    upstream: Arc<dyn Signer>,
+    /// The agent signing keys' signer, over each backend (the service holds it too).
+    signing: Arc<Routed>,
+    /// The `ssh://` upstream credentials' signer, over each backend (the mirrors hold it too).
+    upstream: Arc<Routed>,
     tokens: RwLock<BTreeMap<KeyId, Arc<UpstreamToken>>>,
 }
 
@@ -149,8 +150,13 @@ impl Opener {
             .iter()
             .filter_map(|k| k.meta.created.map(|created| (k.id.clone(), created)))
             .collect();
-        let signer = platform::signer(keys.signing)?;
-        let upstream = platform::upstream_signer(keys.upstream)?;
+        let platform::UseSigner {
+            signer,
+            refused: mut unusable,
+        } = platform::signer(&inner.config, keys.signing)?;
+        let upstream = platform::upstream_signer(&inner.config, keys.upstream)?;
+        unusable.extend(upstream.refused);
+        let upstream = upstream.signer;
         let mirrors = Mirrors::open(
             inner.mirrors.clone(),
             inner.policy.repos(),
@@ -173,6 +179,14 @@ impl Opener {
         .await
         .context("the unseal stopped")?
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // A key whose stored bytes its device refused is listed and signs nothing: said once in
+        // the audit log (the daemon's log has it too), its leases denied by name.
+        for (id, why) in &unusable {
+            inner.service.admin_note(&format!(
+                "key {id} is unusable: its stored bytes were refused at unseal ({why}); writ \
+                 admin key rotate replaces it"
+            ));
+        }
         gateway.set_mirrors(mirrors);
         let _ = inner.open.set(Open {
             live: Arc::new(live),
@@ -421,20 +435,45 @@ impl Opener {
                 if writ_signer::public_key(&**signer, id).is_ok() {
                     continue;
                 }
-                let (stored, made) = live.key_or_make(id, key)?;
+                // A device's key is made by the use's own backend, which then holds it.
+                let mut devices = BTreeMap::new();
+                if let Some(device) = signer
+                    .on(key.backend.name())
+                    .filter(|_| key.backend.is_device())
+                {
+                    devices.insert(key.backend, device.clone());
+                }
+                let makers = keystore::Makers::running(devices);
+                let (stored, made) = live.key_or_make(id, key, &makers)?;
                 if let Some(created) = stored.meta.created {
                     openpgp.insert(id.clone(), created);
                 }
-                let info = signer
-                    .add_key(id.clone(), stored.key)
-                    .with_context(|| crate::declared::named(key.role, id))?;
+                let name = crate::declared::named(key.role, id);
+                let public_key = match stored.key {
+                    keystore::Material::Software(pair) => {
+                        signer
+                            .add_key_on(key.backend.name(), id.clone(), pair)
+                            .with_context(|| name.clone())?
+                            .public_key
+                    }
+                    keystore::Material::Device { public, .. } => {
+                        if !made {
+                            bail!(
+                                "{name} is in the keystore but its {} backend doesn't hold it: \
+                                 restart the daemon to give it back",
+                                key.backend.name()
+                            );
+                        }
+                        public
+                    }
+                };
                 if made {
                     tracing::info!(%id, role = key.role.as_str(), "key made in the keystore");
                 }
                 added.push(CreatedKey {
                     id: id.clone(),
                     role: key.role,
-                    public_key: info.public_key.to_openssh()?,
+                    public_key: public_key.to_openssh()?,
                 });
             }
             Ok((added, openpgp))

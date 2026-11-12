@@ -98,6 +98,7 @@ impl Service {
                 let reason = match e {
                     SignerError::UnknownKey(id) => format!("the signer has no key {id}"),
                     SignerError::Busy => "the signer is busy; retry shortly".to_owned(),
+                    SignerError::Unusable(_) => e.to_string(),
                     _ => "the signer failed (see the daemon's log)".to_owned(),
                 };
                 return denied.deny(&mut inner, RefusalCode::Proof, reason);

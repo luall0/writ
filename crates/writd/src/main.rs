@@ -155,14 +155,19 @@ fn host_key(path: &Path) -> anyhow::Result<()> {
     let (config, _, declared) = load_checked(path)?;
     println!(
         "{}",
-        keystore::public(&config, &declared)?.host.to_openssh()?
+        keystore::public(&config, &declared, &platform::makers(&config)?)?
+            .host
+            .to_openssh()?
     );
     Ok(())
 }
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
     let (config, _, declared) = load_checked(path)?;
-    println!("{}", keystore::public(&config, &declared)?.tls_fingerprint);
+    println!(
+        "{}",
+        keystore::public(&config, &declared, &platform::makers(&config)?)?.tls_fingerprint
+    );
     Ok(())
 }
 
@@ -179,7 +184,7 @@ pub(crate) fn joined<T: AsRef<str>>(names: &[T]) -> String {
 /// each remote (as a deploy key, or on the account).
 fn upstream_keys(path: &Path) -> anyhow::Result<()> {
     let (config, policy, declared) = load_checked(path)?;
-    for (id, key) in keystore::public(&config, &declared)?.upstream {
+    for (id, key) in keystore::public(&config, &declared, &platform::makers(&config)?)?.upstream {
         println!(
             "{id} {} (repos: {})",
             key.to_openssh()?,
@@ -194,7 +199,9 @@ fn upstream_keys(path: &Path) -> anyhow::Result<()> {
 /// key's fingerprint, then its certificate (as the daemon last made it).
 fn signing_keys(path: &Path) -> anyhow::Result<()> {
     let (config, policy, declared) = load_checked(path)?;
-    for (id, key, meta) in keystore::public(&config, &declared)?.signing {
+    for (id, key, meta) in
+        keystore::public(&config, &declared, &platform::makers(&config)?)?.signing
+    {
         println!(
             "{} (templates: {})",
             declared::describe(&id, &key, &meta)?,
@@ -385,7 +392,13 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let pinned = PinnedHosts::from_policy(loaded.policy.upstream_hosts())?;
     let ca_certs = load_ca_certs(&config)?;
     let declared = declared::declarations(&loaded.policy)?;
-    let start = keystore::start(&config, &declared, &loaded.policy)?;
+    platform::check_devices(&config, &declared)?;
+    let start = keystore::start(
+        &config,
+        &declared,
+        &loaded.policy,
+        &platform::makers(&config)?,
+    )?;
     let repos = config.state_dir.join("repos");
     std::fs::create_dir_all(&repos)
         .with_context(|| format!("cannot create {}", repos.display()))?;

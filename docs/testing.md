@@ -233,6 +233,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: mirrors.timeout` | `an_upstream_that_never_answers_is_cut_at_the_deadline`, `a_mirror_held_past_its_deadline_is_busy_never_waited_on_forever` |
 | `writd.yaml: mirrors.max_fetch` | `a_sync_past_the_byte_cap_is_refused_on_both_sides` |
 | `writd.yaml: mirrors.scan_timeout` | `a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked` |
+| `writd.yaml: signers.se_cryptokit.helper` | `a_damaged_blob_leaves_its_key_unusable_and_the_daemon_running` |
 | `writd.yaml: transports.agents` | `listeners_take_only_the_sources_they_allow`, `rejected_signed_narrowed_and_refused_tickets_end_to_end` |
 | `writd.yaml: transports.approvals.ssh` | `listeners_take_only_the_sources_they_allow`, `https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled` |
 | `writd.yaml: transports.approvals.https` | `listeners_take_only_the_sources_they_allow`, `https_approval_clients_check_the_pin_and_both_transports_cannot_be_disabled`, `revocation_and_expiry_drop_sessions_and_refuse_the_certificate` |
@@ -252,7 +253,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: keys.<id>.hash` | `each_refused_key_declaration_stops_the_start_with_its_reason`, `a_key_held_otherwise_than_declared_is_refused_by_recover_and_stops_the_start` |
 | `policy.yaml: keys.<id>.uids` | `an_openpgp_key_s_certificate_is_printed_and_imports_into_gpg_with_its_user_ids`, `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified`, `each_refused_key_declaration_stops_the_start_with_its_reason` |
 | `policy.yaml: keys.<id>.host` | `each_refused_key_declaration_stops_the_start_with_its_reason`, `a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees` |
-| `policy.yaml: keys.<id>.backend` | `each_refused_key_declaration_stops_the_start_with_its_reason` |
+| `policy.yaml: keys.<id>.backend` | `each_refused_key_declaration_stops_the_start_with_its_reason`, `secure_enclave_keys_sign_commits_git_verifies_and_push_upstream`, `a_build_without_the_secure_enclave_refuses_its_backend_by_name` |
 | `policy.yaml: upstream_hosts.<host>` | `another_host_key_or_an_unpinned_host_is_refused`, `a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons` |
 | `policy.yaml: repos.<name>.upstream` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_push_reaches_an_https_upstream_with_the_token_which_the_agent_never_sees` |
 | `policy.yaml: repos.<name>.upstream_credential` | `a_push_reaches_upstream_with_the_daemon_s_credential_only`, `a_credential_the_remote_does_not_take_is_refused`, `an_https_upstream_syncs_with_the_token_which_nothing_else_holds` |

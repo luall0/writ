@@ -132,6 +132,8 @@ fn signer_reason(e: &SignerError) -> String {
         SignerError::Timeout(_) => {
             "the signer did not sign in time (see the daemon's log)".to_owned()
         }
+        // The daemon's own words (the key, and the command that replaces it): no cause.
+        SignerError::Unusable(_) => e.to_string(),
         _ => "the signer failed (see the daemon's log)".to_owned(),
     }
 }
