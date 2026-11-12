@@ -18,7 +18,7 @@ use writ_core::config::{Key, PolicyConfig, Section, UpstreamHost, UpstreamKey};
 use writ_core::names::ProxyName;
 use writ_core::signed::Scan;
 use writ_core::upstream::Upstream;
-use writ_proto::{Command, ScanNonce, ScanRequest, Scanned, UpstreamChecked};
+use writ_proto::{BackendShown, Command, ScanNonce, ScanRequest, Scanned, UpstreamChecked};
 
 use super::admin::sign_applied;
 use super::manage::policy_in_force;
@@ -47,7 +47,12 @@ fn ask(label: &str, help: &str, keeps: Option<&str>) -> anyhow::Result<String> {
 /// Whether the field `name` of `section` is asked, given the answers so far: only the fields
 /// the entry's other values need (a template's branches with commit_sign or push, a key's
 /// fields for its use and kind, a repo's notes ref with notes).
-fn relevant(section: Section, name: &str, values: &BTreeMap<String, String>) -> bool {
+fn relevant(
+    section: Section,
+    name: &str,
+    values: &BTreeMap<String, String>,
+    backends: &[BackendShown],
+) -> bool {
     let value = |field: &str| values.get(field).map(String::as_str).unwrap_or_default();
     let has = |field: &str, item: &str| value(field).split(',').any(|v| v.trim() == item);
     match section {
@@ -60,7 +65,8 @@ fn relevant(section: Section, name: &str, values: &BTreeMap<String, String>) -> 
                 "uids" => signing && value("format") == "openpgp",
                 "algorithm" => signing || value("kind") == "ssh",
                 "host" => !signing && value("kind") == "token",
-                // One backend today: asked only once there is a choice.
+                // Asked for a key (a token has no backend) once the daemon has a choice.
+                "backend" => (signing || value("kind") == "ssh") && backends.len() > 1,
                 _ => false,
             }
         }
@@ -91,7 +97,12 @@ fn relevant(section: Section, name: &str, values: &BTreeMap<String, String>) -> 
 
 /// What the prompt for the field `name` adds to its help: the names it may take from the
 /// policy in force (templates, keys of the right use).
-fn choices(policy: &PolicyConfig, section: Section, name: &str) -> Option<String> {
+fn choices(
+    policy: &PolicyConfig,
+    section: Section,
+    name: &str,
+    backends: &[BackendShown],
+) -> Option<String> {
     let join = |names: Vec<String>| match names.is_empty() {
         true => None,
         false => Some(names.join(", ")),
@@ -106,6 +117,7 @@ fn choices(policy: &PolicyConfig, section: Section, name: &str) -> Option<String
                 .map(|(id, _)| id.to_string())
                 .collect(),
         ),
+        (Section::Keys, "backend") => join(backends.iter().map(backend_choice).collect()),
         (Section::Templates, "signing_key") => join(
             policy
                 .signing_keys()
@@ -114,6 +126,26 @@ fn choices(policy: &PolicyConfig, section: Section, name: &str) -> Option<String
         ),
         _ => None,
     }
+}
+
+/// A backend as a prompt offers it: its name and the algorithms it makes.
+fn backend_choice(backend: &BackendShown) -> String {
+    format!(
+        "{} ({})",
+        clean(&backend.name),
+        backend
+            .algorithms
+            .iter()
+            .map(|a| clean(a))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// The key backends the daemon has, from `writ admin key list`'s reply.
+async fn daemon_backends(session: &super::Approvals) -> anyhow::Result<Vec<BackendShown>> {
+    let keys: writ_proto::KeysShown = session.call(&Command::AdminKeys, b"").await??;
+    Ok(keys.backends)
 }
 
 /// The edits the answers give, asked field by field: `given` not asked, the others asked when
@@ -125,6 +157,7 @@ fn asked(
     given: &[FieldEdit],
     current: &BTreeMap<&'static str, String>,
     adding: bool,
+    backends: &[BackendShown],
 ) -> anyhow::Result<Vec<FieldEdit>> {
     let mut values: BTreeMap<String, String> = current
         .iter()
@@ -137,14 +170,16 @@ fn asked(
     }
     let mut edits: Vec<FieldEdit> = Vec::new();
     for field in edit::fields(section) {
-        if given.iter().any(|g| g.field == field.name) || !relevant(section, field.name, &values) {
+        if given.iter().any(|g| g.field == field.name)
+            || !relevant(section, field.name, &values, backends)
+        {
             continue;
         }
         // What an existing key is never changes: not asked in an edit.
         if field.fixed && !adding {
             continue;
         }
-        let help = match choices(policy, section, field.name) {
+        let help = match choices(policy, section, field.name, backends) {
             Some(names) => format!("{}; in force: {names}", field.help),
             None => field.help.to_owned(),
         };
@@ -205,6 +240,7 @@ fn credential(
     policy: &PolicyConfig,
     repo: &str,
     upstream: &str,
+    backends: &[BackendShown],
 ) -> anyhow::Result<(FieldEdit, Option<NewKey>)> {
     let parsed = Upstream::parse(upstream).map_err(|why| anyhow::anyhow!("upstream: {why}"))?;
     let token_host = match &parsed {
@@ -267,6 +303,20 @@ fn credential(
                     FieldEdit::parse(&format!("algorithm={algorithm}"))
                         .map_err(anyhow::Error::msg)?,
                 );
+                if backends.len() > 1 {
+                    let offered: Vec<String> = backends.iter().map(backend_choice).collect();
+                    let backend = ask(
+                        "backend",
+                        &format!("where the key lives: {}", offered.join(", ")),
+                        Some("software"),
+                    )?;
+                    if !backend.is_empty() && backend != "software" {
+                        key.push(
+                            FieldEdit::parse(&format!("backend={backend}"))
+                                .map_err(anyhow::Error::msg)?,
+                        );
+                    }
+                }
             }
         }
         return Ok((
@@ -618,6 +668,11 @@ pub async fn add(
                     clean(name)
                 );
             }
+            // The daemon's key backends: offered where a key is declared.
+            let backends = match (section, interactive) {
+                (Section::Keys | Section::Repos, true) => daemon_backends(session).await?,
+                _ => Vec::new(),
+            };
             let start: BTreeMap<&'static str, String> = match from {
                 Some(other) => edit::current(&policy, Section::Templates, other)
                     .ok_or_else(|| anyhow::anyhow!("no template {} to start from", clean(other)))?,
@@ -684,11 +739,11 @@ pub async fn add(
                             }
                         }
                     }
-                    let (repo_edit, key) = credential(&policy, name, &upstream)?;
+                    let (repo_edit, key) = credential(&policy, name, &upstream, &backends)?;
                     asked_given.push(repo_edit);
                     new_key = key;
                 }
-                let more = asked(&policy, section, &asked_given, &start, true)?;
+                let more = asked(&policy, section, &asked_given, &start, true, &backends)?;
                 edits.extend(asked_given);
                 edits.extend(more);
             } else {
@@ -790,7 +845,7 @@ pub async fn edit_entry(
                 section.noun(),
                 clean(name)
             );
-            let edits = asked(&policy, section, &[], &current, false)?;
+            let edits = asked(&policy, section, &[], &current, false, &[])?;
             if edits.is_empty() {
                 println!("Nothing changed.");
                 return Ok(Exit::Ok);
@@ -836,17 +891,19 @@ pub fn next_id(policy: &PolicyConfig, id: &str) -> String {
     }
 }
 
-/// `writ admin key rotate <id> [--name <new>]`: a new key declared like the old one (one
-/// signed change: its public half printed, to register); once it is registered, every repo
-/// and template that used the old one switched to it (a second signed change); then the old
-/// one offered for removal. Without a terminal, `--yes` answers the question between the
-/// two (the old key is then left declared, unused).
+/// `writ admin key rotate <id> [--backend <name>] [--name <new>]`: a new key declared like the
+/// old one, on the backend named (the old one's by default: moving a key between software and
+/// the Secure Enclave is a rotation) (one signed change: its public half printed, to
+/// register); once it is registered, every repo and template that used the old one switched
+/// to it (a second signed change); then the old one offered for removal. Without a terminal,
+/// `--yes` answers the question between the two (the old key is then left declared, unused).
 pub async fn rotate(
     paths: &Paths,
     url: &str,
     signer: &Signer,
     id: &str,
     name: Option<&str>,
+    backend: Option<&str>,
     yes: bool,
 ) -> anyhow::Result<Exit> {
     let interactive = terminal();
@@ -867,17 +924,35 @@ pub async fn rotate(
                 Some(name) => name.to_owned(),
                 None => next_id(&policy, id),
             };
-            let edits: Vec<FieldEdit> = values
+            let mut edits: Vec<FieldEdit> = values
                 .iter()
+                .filter(|(field, _)| backend.is_none() || **field != "backend")
                 .map(|(field, value)| FieldEdit {
                     field: (*field).to_owned(),
                     change: Change::Set(value.clone()),
                 })
                 .collect();
+            if let Some(backend) = backend {
+                let backends = daemon_backends(session).await?;
+                let algorithm = values.get("algorithm").map(String::as_str);
+                check_backend(&backends, backend, algorithm, id)?;
+                edits.push(FieldEdit {
+                    field: "backend".to_owned(),
+                    change: Change::Set(backend.to_owned()),
+                });
+            }
             let next = edit::add(&policy, Section::Keys, &fresh, &edits, MIN_TTL)
                 .map_err(|e| anyhow::anyhow!("not rotated: {}", clean(&e.to_string())))?;
             let text = AdminText::try_from(next.to_yaml())?;
-            let what = format!("with key {} declared like {}", clean(&fresh), clean(id));
+            let what = match backend {
+                Some(backend) => format!(
+                    "with key {} declared like {}, on backend {}",
+                    clean(&fresh),
+                    clean(id),
+                    clean(backend)
+                ),
+                None => format!("with key {} declared like {}", clean(&fresh), clean(id)),
+            };
             let applied = sign_applied(session, signer, &shown, &text, &what, yes).await?;
             if applied.is_none() {
                 return Ok(None);
@@ -955,9 +1030,97 @@ pub async fn rotate(
     Ok(Exit::Ok)
 }
 
+/// Refuses `--backend <backend>` for the key `id` of `algorithm` unless the daemon has it and
+/// it makes keys of that algorithm (a token, with no algorithm, lives on no device): what the
+/// daemon would refuse after the signature, said before it is asked for.
+fn check_backend(
+    backends: &[BackendShown],
+    backend: &str,
+    algorithm: Option<&str>,
+    id: &str,
+) -> anyhow::Result<()> {
+    let Some(shown) = backends.iter().find(|b| b.name == backend) else {
+        let names: Vec<String> = backends.iter().map(|b| clean(&b.name)).collect();
+        bail!(
+            "the daemon has no backend {} (it has: {})",
+            clean(backend),
+            names.join(", ")
+        );
+    };
+    let Some(algorithm) = algorithm else {
+        bail!(
+            "{} is a token: it is sealed in the keystore, on no backend",
+            clean(id)
+        );
+    };
+    if !shown.algorithms.iter().any(|a| a == algorithm) {
+        bail!(
+            "{} makes {} keys only: {} is {} (declare a new key of one of these with writ \
+             admin key add, then point what uses {id} at it)",
+            clean(backend),
+            shown
+                .algorithms
+                .iter()
+                .map(|a| clean(a))
+                .collect::<Vec<_>>()
+                .join(", "),
+            clean(id),
+            clean(algorithm)
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backend_is_checked_against_what_the_daemon_has_and_makes() {
+        let backends = [
+            BackendShown {
+                name: "software".to_owned(),
+                algorithms: vec!["ed25519".to_owned(), "p256".to_owned()],
+            },
+            BackendShown {
+                name: "se-cryptokit".to_owned(),
+                algorithms: vec!["p256".to_owned()],
+            },
+        ];
+        check_backend(&backends, "se-cryptokit", Some("p256"), "k").unwrap();
+        check_backend(&backends, "software", Some("ed25519"), "k").unwrap();
+        for (backend, algorithm, why) in [
+            (
+                "yubikey",
+                Some("p256"),
+                "the daemon has no backend yubikey (it has: software, se-cryptokit)",
+            ),
+            (
+                "se-cryptokit",
+                Some("ed25519"),
+                "se-cryptokit makes p256 keys only: k is ed25519",
+            ),
+            (
+                "se-cryptokit",
+                None,
+                "k is a token: it is sealed in the keystore, on no backend",
+            ),
+        ] {
+            let error = check_backend(&backends, backend, algorithm, "k")
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with(why), "{error}");
+        }
+        // What the daemon sends is shown escaped.
+        let hostile = [BackendShown {
+            name: "x\u{1b}[2J".to_owned(),
+            algorithms: vec![],
+        }];
+        let error = check_backend(&hostile, "y", Some("p256"), "k")
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains('\u{1b}'), "{error:?}");
+    }
 
     #[test]
     fn a_rotated_key_takes_the_next_free_id() {
@@ -982,19 +1145,37 @@ mod tests {
                 .collect()
         };
         let fetch = values(&[("operations", "fetch")]);
-        assert!(!relevant(Section::Templates, "branches", &fetch));
-        assert!(!relevant(Section::Templates, "signing_key", &fetch));
-        assert!(relevant(Section::Templates, "max_ttl", &fetch));
+        assert!(!relevant(Section::Templates, "branches", &fetch, &[]));
+        assert!(!relevant(Section::Templates, "signing_key", &fetch, &[]));
+        assert!(relevant(Section::Templates, "max_ttl", &fetch, &[]));
         let signs = values(&[("operations", "fetch, commit_sign")]);
-        assert!(relevant(Section::Templates, "signing_key", &signs));
-        assert!(!relevant(Section::Templates, "force_push", &signs));
+        assert!(relevant(Section::Templates, "signing_key", &signs, &[]));
+        assert!(!relevant(Section::Templates, "force_push", &signs, &[]));
         let token = values(&[("use", "upstream"), ("kind", "token")]);
-        assert!(relevant(Section::Keys, "host", &token));
-        assert!(!relevant(Section::Keys, "algorithm", &token));
+        assert!(relevant(Section::Keys, "host", &token, &[]));
+        assert!(!relevant(Section::Keys, "algorithm", &token, &[]));
         let pgp = values(&[("use", "signing"), ("format", "openpgp")]);
-        assert!(relevant(Section::Keys, "uids", &pgp) && !relevant(Section::Keys, "kind", &pgp));
+        assert!(
+            relevant(Section::Keys, "uids", &pgp, &[])
+                && !relevant(Section::Keys, "kind", &pgp, &[])
+        );
+        // A key's backend: asked once the daemon has a choice, never for a token.
+        let backend = |name: &str, algorithms: &[&str]| BackendShown {
+            name: name.to_owned(),
+            algorithms: algorithms.iter().map(|a| (*a).to_owned()).collect(),
+        };
+        let both = [
+            backend("software", &["ed25519", "p256"]),
+            backend("se-cryptokit", &["p256"]),
+        ];
+        let ssh = values(&[("use", "upstream"), ("kind", "ssh")]);
+        let signing = values(&[("use", "signing")]);
+        assert!(relevant(Section::Keys, "backend", &ssh, &both));
+        assert!(relevant(Section::Keys, "backend", &signing, &both));
+        assert!(!relevant(Section::Keys, "backend", &token, &both));
+        assert!(!relevant(Section::Keys, "backend", &signing, &both[..1]));
         let notes = values(&[("ticket_link", "notes")]);
-        assert!(relevant(Section::Repos, "notes_ref", &notes));
-        assert!(!relevant(Section::Repos, "direct_ssh.hosts", &notes));
+        assert!(relevant(Section::Repos, "notes_ref", &notes, &[]));
+        assert!(!relevant(Section::Repos, "direct_ssh.hosts", &notes, &[]));
     }
 }

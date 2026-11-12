@@ -170,8 +170,10 @@ refuses unless `--yes` answers its questions; the signature is asked for all the
 `writ admin <noun> add <name> [<field>=<value>…]` asks each field in order, with its bounds and
 default (`writ_core::config::edit::fields`), the ones given not asked, and only those the
 entry needs (a template's branches with `commit_sign` or `push`, its committer emails and
-signing key with `commit_sign`; a key's fields for its use and kind; a repo's `notes_ref`
-with `ticket_link: notes`). Enter keeps what the prompt shows, `!` leaves an optional field
+signing key with `commit_sign`; a key's fields for its use and kind, and its `backend` once
+the daemon has more than one, offered with the algorithms each makes (M7.5: the reply to
+`writ admin key list` names them, `backends`; a new credential a guided `repo add` declares
+is asked its backend too); a repo's `notes_ref` with `ticket_link: notes`). Enter keeps what the prompt shows, `!` leaves an optional field
 out, `none` empties a list. `edit <name>` asks the same, Enter keeping each current value
 (what a key is is never asked: it doesn't change). A repo's credential is one the policy
 declares for its URL's kind, or a new key declared in the same change (its id, and an SSH
@@ -181,7 +183,10 @@ half to register (a deploy key with write access), a token to add with `writ adm
 Without a terminal `add` asks nothing and refuses unless every required field is given,
 naming the missing ones; `edit` refuses (`set` changes fields without one).
 
-`writ admin key rotate <id> [--name <new>]` declares a new key like the old one (`<id>-2`, the
+`writ admin key rotate <id> [--backend <name>] [--name <new>]` declares a new key like the old
+one, on the backend named (`software`, `se-cryptokit`; the old one's by default: a key never
+changes backend, so moving one is a rotation; `writ` refuses a backend the daemon doesn't
+list, or one that doesn't make the key's algorithm, before the signature is asked for) (`<id>-2`, the
 next number after a trailing one, or the name given), one signed change, its public half
 printed to register; once it is registered (Enter), switches every repo and template that
 used the old key to it, a second signed change (a signing key's leases then stop fitting

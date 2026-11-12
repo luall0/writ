@@ -80,6 +80,22 @@ pub async fn list(paths: &Paths, url: &str, section: Section) -> anyhow::Result<
             for line in lines {
                 println!("{line}");
             }
+            // Where a key may live on this daemon (`backend=` of `key add`, `key rotate
+            // --backend`).
+            if let Some(keys) = &keys
+                && !keys.backends.is_empty()
+            {
+                let backends: Vec<String> = keys
+                    .backends
+                    .iter()
+                    .map(|b| {
+                        let algorithms: Vec<String> =
+                            b.algorithms.iter().map(|a| clean(a)).collect();
+                        format!("{} ({})", clean(&b.name), algorithms.join(", "))
+                    })
+                    .collect();
+                eprintln!("backends: {}", backends.join("; "));
+            }
             Ok(Exit::Ok)
         })
         .await

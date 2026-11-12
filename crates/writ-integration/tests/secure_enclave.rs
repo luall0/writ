@@ -320,3 +320,162 @@ fn a_damaged_blob_leaves_its_key_unusable_and_the_daemon_running() {
         stderr(&refused)
     );
 }
+
+/// A software policy with two signing keys: Ed25519 (which the Secure Enclave doesn't make)
+/// and P-256.
+const SOFTWARE: &str = r#"
+keys:
+  agent-ed:
+    use: signing
+    format: ssh
+    algorithm: ed25519
+  agent-p256:
+    use: signing
+    format: ssh
+    algorithm: p256
+  upstream-01:
+    use: upstream
+    kind: ssh
+    algorithm: ed25519
+upstream_hosts:
+  remote.invalid:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+repos:
+  demo:
+    upstream: ssh://git@remote.invalid/demo.git
+    upstream_credential: upstream-01
+    templates: [feature]
+templates:
+  feature:
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ"]
+    signing_key: agent-p256
+    max_ttl: 2h
+    max_signatures: 10
+    max_pushes: 10
+    max_ops_per_minute: 100
+    max_push_size: 10MB
+"#;
+
+#[test]
+fn a_key_moves_to_the_secure_enclave_and_back_from_the_cli_alone() {
+    if !on_the_mac() {
+        return;
+    }
+    let daemon = Daemon::start(SOFTWARE, Approvals::Ssh);
+    let root = daemon.root().to_owned();
+    // The daemon says where a key may live.
+    let out = daemon.run(&["admin", "key", "list"], "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(
+            "backends: software (ed25519, p256, p384, rsa3072, rsa4096); se-cryptokit (p256)"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    // What the Secure Enclave can't make is refused before any signature is asked for.
+    let out = daemon.run(
+        &[
+            "admin",
+            "key",
+            "rotate",
+            "agent-ed",
+            "--backend",
+            "se-cryptokit",
+            "--yes",
+        ],
+        "",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("se-cryptokit makes p256 keys only: agent-ed is ed25519"),
+        "{}",
+        stderr(&out)
+    );
+    let out = daemon.run(
+        &[
+            "admin",
+            "key",
+            "rotate",
+            "agent-p256",
+            "--backend",
+            "yubikey",
+            "--yes",
+        ],
+        "",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("the daemon has no backend yubikey (it has: software, se-cryptokit)"),
+        "{}",
+        stderr(&out)
+    );
+
+    // To the Secure Enclave: a new key made there, the template switched to it.
+    let out = daemon.run(
+        &[
+            "admin",
+            "key",
+            "rotate",
+            "agent-p256",
+            "--backend",
+            "se-cryptokit",
+            "--name",
+            "agent-se",
+            "--yes",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out)
+            .contains("New signing key agent-se (register it on the remote): ecdsa-sha2-nistp256 "),
+        "{}",
+        stdout(&out)
+    );
+    let file = fs::read_to_string(root.join("s/keys/signing/agent-se")).unwrap();
+    assert!(file.contains("backend: se-cryptokit\n"), "{file}");
+    assert!(
+        daemon
+            .print("signing-keys")
+            .contains("agent-se ecdsa-sha2-nistp256 "),
+        "the template signs with it now"
+    );
+
+    // And back to software: one more rotation, a policy change only.
+    let out = daemon.run(
+        &[
+            "admin",
+            "key",
+            "rotate",
+            "agent-se",
+            "--backend",
+            "software",
+            "--name",
+            "agent-back",
+            "--yes",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let file = fs::read_to_string(root.join("s/keys/signing/agent-back")).unwrap();
+    let (back, meta) = writ_crypto::keyfile::decode_secret(file.as_bytes())
+        .unwrap_or_else(|e| panic!("a software key again: {e}"));
+    assert_eq!(meta.backend, None);
+    assert_eq!(
+        writ_crypto::algorithm::KeyAlgorithm::of_public(back.public_key().key_data()),
+        Some(writ_crypto::algorithm::KeyAlgorithm::P256)
+    );
+    let printed = daemon.print("signing-keys");
+    let back = printed
+        .lines()
+        .find(|l| l.starts_with("agent-back "))
+        .unwrap_or_else(|| panic!("{printed}"));
+    assert!(
+        back.starts_with("agent-back ecdsa-sha2-nistp256 ")
+            && back.ends_with("(templates: feature)"),
+        "the template signs with the software key again: {printed}"
+    );
+}

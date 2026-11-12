@@ -57,7 +57,12 @@ writ admin key remove <id>                 # refused while something uses it
 - Each change is shown as a diff, then signed once. If the policy changed in between
   (someone else applied a change), yours is refused: run the command again.
 - `writ admin key rotate <id>`: a new key like the old one, its public half printed; once
-  you registered it, every repo and template switches to it; then the old key can go.
+  you registered it, every repo and template switches to it; then the old key can go. Add
+  `--backend se-cryptokit` to make the new key in the Mac's Secure Enclave (a `p256` key
+  only), or `--backend software` to come back: a key never changes backend, so moving it is
+  a rotation. `writ admin key list` ends with the backends this daemon has.
+- `writ admin key add <id> … backend=se-cryptokit` declares a new key in the Secure Enclave;
+  on a terminal, `add` asks for the backend when the daemon has more than one.
 - `writ admin host add <host>` and `writ admin host rescan <host>`: the daemon scans the
   host, you compare its keys with the ones the remote publishes, then a second signature
   pins them. For a host behind a [proxy](setup.md#a-remote-behind-a-proxy), add `proxy=<name>`

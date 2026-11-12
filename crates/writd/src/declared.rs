@@ -131,8 +131,17 @@ pub fn declarations(policy: &PolicyConfig) -> anyhow::Result<Declarations> {
                 crypto::<KeyAlgorithm>(algorithm.as_str(), &format!("{at}.algorithm"))?,
                 None,
             ),
-            // A token: sealed bytes the daemon never signs with.
-            Key::Upstream(UpstreamKey::Token { .. }) => continue,
+            // A token: sealed bytes the daemon never signs with, held by no device.
+            Key::Upstream(UpstreamKey::Token { .. }) => {
+                if backend.is_device() {
+                    bail!(
+                        "{at}.backend: a token is sealed in the keystore: the {} backend holds \
+                         keys only",
+                        backend.name()
+                    );
+                }
+                continue;
+            }
         };
         let hash = writ_crypto::algorithm::check(
             format,

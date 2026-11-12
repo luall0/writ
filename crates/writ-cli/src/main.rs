@@ -762,6 +762,10 @@ enum KeyCommand {
         /// The new key's id.
         #[arg(long)]
         name: Option<String>,
+        /// The backend the new key is made on (software, se-cryptokit: the daemon's, as
+        /// `writ admin key list` says); the old key's by default.
+        #[arg(long)]
+        backend: Option<String>,
         /// Answer the question between the two changes (without a terminal too); the old key
         /// is then left declared, unused. The signatures are still asked for.
         #[arg(long)]
@@ -1263,6 +1267,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 KeyCommand::Rotate {
                     id,
                     name,
+                    backend,
                     yes,
                     url,
                     signer: args,
@@ -1274,6 +1279,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                         &signer,
                         id,
                         name.as_deref(),
+                        backend.as_deref(),
                         *yes,
                     )
                     .await

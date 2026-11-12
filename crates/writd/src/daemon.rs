@@ -666,7 +666,26 @@ impl Opener {
                 proxies: users.proxies,
             });
         }
-        Ok(KeysShown { version, keys })
+        let backends = platform::BACKENDS
+            .iter()
+            .map(|backend| {
+                let mut algorithms: Vec<String> = Vec::new();
+                for (algorithm, _) in backend.pairs() {
+                    if !algorithms.iter().any(|a| a == algorithm.name()) {
+                        algorithms.push(algorithm.name().to_owned());
+                    }
+                }
+                writ_proto::BackendShown {
+                    name: backend.name().to_owned(),
+                    algorithms,
+                }
+            })
+            .collect();
+        Ok(KeysShown {
+            version,
+            keys,
+            backends,
+        })
     }
 
     fn show_token(&self, id: &KeyId) -> Result<TokenShown, String> {

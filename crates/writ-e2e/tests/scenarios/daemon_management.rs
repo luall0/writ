@@ -534,6 +534,34 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
         ),
         "{said}"
     );
+    // Where a key may live (M7.5): this daemon, on Linux, has software alone, so a key is
+    // moved with --backend to it, and the Secure Enclave is refused before any signature.
+    let listed = approver.run(&format!("writ admin key list {url}"));
+    assert!(
+        writ_e2e::stderr(&listed)
+            .contains("backends: software (ed25519, p256, p384, rsa3072, rsa4096)"),
+        "{}",
+        writ_e2e::stderr(&listed)
+    );
+    let refused = approver.run(&format!(
+        "writ admin key rotate guided-signing --backend se-cryptokit --yes {url}"
+    ));
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        writ_e2e::stderr(&refused)
+            .contains("the daemon has no backend se-cryptokit (it has: software)"),
+        "{}",
+        writ_e2e::stderr(&refused)
+    );
+    let said = approver.ok(&format!(
+        "writ admin key rotate guided-signing --backend software --name guided-signing-sw --yes {url}"
+    ));
+    assert!(
+        said.contains(
+            "New signing key guided-signing-sw (register it on the remote): ecdsa-sha2-nistp256 "
+        ) && said.contains("guided-signing stays declared, unused"),
+        "{said}"
+    );
     let said = approver.ok(&format!(
         "writ admin repo add guided-other upstream=ssh://git@forgejo/writ/guided-other.git upstream_credential=guided-repo-upstream-2 templates= --yes {url}"
     ));

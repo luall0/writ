@@ -360,6 +360,18 @@ pub struct KeysShown {
     /// The policy version the keys are declared in.
     pub version: u64,
     pub keys: Vec<KeyShown>,
+    /// The key backends this daemon has (M7.5), for `writ` to offer: a key on another is
+    /// refused by the daemon all the same.
+    #[serde(default)]
+    pub backends: Vec<BackendShown>,
+}
+
+/// A key backend the daemon has (`software`, `se-cryptokit`) and the algorithms it makes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackendShown {
+    pub name: String,
+    pub algorithms: Vec<String>,
 }
 
 /// One declared key, as [`KeysShown`] lists it.
