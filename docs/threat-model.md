@@ -130,12 +130,13 @@ passwordless `sudo`.
 
 On Linux the daemon must read my user's processes (their executables and namespaces), which
 the kernel allows only with `CAP_SYS_PTRACE`. That capability is held by one small helper
-alone, `writd proc-reader`: it answers one pid at a time with what `/proc` says of it, and a
-system call filter refuses it `ptrace` and `process_vm_*`. `writd` itself drops every
-capability before it reads a secret, so a compromised `writd` can ask the reader for process
-facts and nothing else, and can't attach to it. **Residual risk:** the reader can still open
-any process's `/proc/<pid>/mem` (the filter can't refuse an `open`): a flaw in its few lines
-(it reads a pid, nothing more) would expose every process's memory, root's included.
+alone, `writd proc-reader`: it answers one pid at a time with what that process's `exe` and
+`ns/*` links say, under its own seccomp filter, which lets it read and write its socket,
+`readlink`, manage its memory and exit, and kills it on anything else: it can't `open` a file,
+so not `/proc/<pid>/mem`, nor trace, signal or start a process. `writd` itself drops every
+capability before it reads a secret, so a compromised `writd` can ask the reader for links and
+nothing else, and can't attach to it. **Residual risk:** an exploited reader could still
+`readlink` any process's links: the names of its working directory, root and open files.
 
 See [macOS Secure Enclave](architecture/macos-secure-enclave.md) and
 [platform](architecture/platform.md#the-linux-process-chain-and-session-watcher).
@@ -258,7 +259,7 @@ too (`decide_push`, called by `Service::push` on what git verified in the quaran
 | The authority files' state put back whole from an older copy (the policy, approvers and readers of that time) is accepted: every version in it carries a valid MAC | It is what restoring a backup is; anyone able to put the state back can also stop the daemon; the audit log keeps every change, and the files are written back with what is in force, so the change is visible | A hardware monotonic counter (a TPM's) in the head's MAC, with M7.6's hardware |
 | Libraries hold copies of secrets while their call runs: age's encryption buffer (the plaintext of a key sealed at runtime: a policy change, `writ admin token` on the approver's Mac, `writd init`'s data key), bech32's checksum work and age's parse (the keystore identity's encoding at unseal); and what never goes through the heap: the stack and registers, git's own processes (an HTTPS token), the kernel's socket buffers | Since [M5.7](history/m5.7-memory-wiped-on-free.md) every block is zeroed when it is freed, whatever library made it (the wiping allocator of `writd`, `writ` and `writ-sign`), so such a copy lives only while its call runs; Writ wipes every copy it owns (the identity's text and 5-bit groups, the PEM bodies, the request bodies, each sized up front); a live copy is in the daemon's memory, or the approver's `writ`, which only their user can read | Hardware recipients (M7.6): no identity, and keys made in the device |
 | RSA keys sign through AWS-LC (C and assembly, `aws-lc-rs`): a flaw there is in the signing path of an RSA key ([M5.5](history/m5.5-signature-formats-and-key-algorithms.md)) | Only RSA keys use it, and only an operator who declares one; it signs in constant time, which the pure-Rust `rsa` crate (banned: Marvin) doesn't, and agents can ask for signatures and time them | Ed25519 or ECDSA keys (pure Rust); hardware backends |
-| Local mode on Linux (M7.1): the daemon's process reader holds `CAP_SYS_PTRACE`, which lets it open any process's `/proc/<pid>/mem`, root's included (a system call filter refuses it `ptrace` and `process_vm_*`, but can't refuse an `open`). A flaw in the reader, or in the kernel's checks around it, would expose every process's memory | The kernel shows another user's executables and namespaces to that capability alone, and the daemon must see the agents' processes; the reader is a few lines that read a pid and answer from `/proc`, and `writd`, which handles every untrusted input, holds no capability and can't attach to it | A kernel interface that names a process's executable without the capability (none in Linux 6.x); a Landlock rule keeping the reader to `/proc/*/stat`, `exe` and `ns/*` once Landlock filters `/proc` |
+| Local mode on Linux (M7.1): the daemon's process reader holds `CAP_SYS_PTRACE`. Its seccomp filter leaves it `readlink` (and its socket, memory and exit), so an exploited reader could learn the names behind any process's links (its working directory, root, open files), never their contents or any process's memory | The kernel shows another user's executables and namespaces to that capability alone, and the daemon must see the agents' processes; the reader is a few lines that read a pid and answer two links, and `writd`, which handles every untrusted input, holds no capability and can't attach to it | A kernel interface that names a process's executable without the capability (none in Linux 6.x) |
 | Restart needs a human (sealed start) | Keeps keys encrypted at rest | [Hardware-wrapped secrets](roadmap.md#m76--hardware-wrapped-secrets) (M7.6) |
 | `writd` running as my user while developing (M0–M6) | Test keys and test repos only | A daemon isolated from my user (M7), Secure Enclave keys (M7.5) |
 | `direct_ssh` repos: refs and content unchecked | Opt-in per repo, deploy key required by default | Prefer `proxy` (same checks as `gateway`, no mirror) |

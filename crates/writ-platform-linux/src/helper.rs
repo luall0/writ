@@ -1,15 +1,22 @@
 //! The process reader, a capped helper (docs/architecture/platform.md): `writd run` starts
 //! `writd proc-reader` first, which alone keeps `CAP_SYS_PTRACE`, and drops every capability
-//! itself. The helper reads one process per request on a socket pair (its stdin) and answers
-//! with what `/proc` says of it ([`serve`]); the daemon asks through a [`Helper`].
+//! itself. The helper reads one process's links per request on a socket pair (its stdin) and
+//! answers with what they say ([`serve`]); the daemon asks through a [`Helper`], which reads
+//! the rest (`stat`, world-readable) and holds the pidfd around the answer ([`read_with`]).
+//!
+//! Before it reads a request, the helper installs a seccomp filter ([`crate::sys::confine`]):
+//! from then on it can read and write its socket, `readlink`, manage its memory and exit,
+//! nothing else (no `open`, so no `/proc/<pid>/mem`; no `ptrace`, `pidfd_getfd`,
+//! `process_vm_*`). Any other call kills it, and the daemon refuses every Unix caller from then
+//! on, as for a helper that crashed.
 //!
 //! The protocol, one request then one answer, little-endian:
 //!
 //! - request: the pid, `u32` (`0` asks for the host's namespaces);
-//! - answer: a tag, then for `0` (read) the parent `u32`, the start time `u64`, the pid and
-//!   mount namespaces `u64` each, deleted `u8` (0 or 1), the executable's length `u16` and
-//!   its bytes; for `1` (gone) and `2` (unreadable) the reason's length `u16` and its UTF-8;
-//!   for `3` (the host's namespaces) the pid and mount namespaces.
+//! - answer: a tag, then for `0` (links) the pid and mount namespaces `u64` each, deleted `u8`
+//!   (0 or 1), the executable's length `u16` and its bytes; for `1` (gone) and `2`
+//!   (unreadable) the reason's length `u16` and its UTF-8; for `3` (the host's namespaces) the
+//!   pid and mount namespaces.
 //!
 //! The helper's answers are bounded and checked like any other input: a broken one ends the
 //! helper's use, as an answer that doesn't come within [`ANSWER_DEADLINE`] does. It is never
@@ -26,7 +33,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::procfs::{MAX_EXECUTABLE_BYTES, Namespaces, ReadError};
-use crate::read::{Entry, ReadProcess};
+use crate::read::{Entry, Links, ReadLinks, ReadProcess, read_with};
 
 /// How long one answer may take (a few system calls): past it, the helper is stuck.
 pub const ANSWER_DEADLINE: Duration = Duration::from_secs(5);
@@ -48,22 +55,35 @@ const HOST: u32 = 0;
 // ----- The helper's side -----
 
 /// `writd proc-reader`: ends with its parent (`PR_SET_PDEATHSIG`, and its stdin closing),
-/// keeps `CAP_SYS_PTRACE` alone, then [`serve`]s its stdin with a [`Direct`] reader whose host
-/// is pid 1's.
+/// keeps `CAP_SYS_PTRACE` alone, then [`serve_confined`]s its stdin with a
+/// [`Direct`](crate::read::Direct) reader whose host is pid 1's.
 pub fn serve_stdin() -> std::io::Result<()> {
     use std::os::fd::AsFd as _;
     rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
     crate::caps::keep_ptrace_only()?;
     let stdin = std::io::stdin().as_fd().try_clone_to_owned()?;
-    serve(
+    serve_confined(
         UnixStream::from(stdin),
         &crate::read::Direct::new(crate::read::Host::Init),
     )
 }
 
+/// [`serve`], once [`confine`]d: the helper's way.
+pub fn serve_confined(stream: UnixStream, reader: &dyn ReadLinks) -> std::io::Result<()> {
+    confine()?;
+    serve(stream, reader)
+}
+
+/// Installs the helper's seccomp filter on the calling thread (and whatever it starts), for
+/// good: its socket read and written, `readlink`, its memory, its exit; any other call kills
+/// the process. x86_64 and aarch64 only (elsewhere, refused).
+pub fn confine() -> std::io::Result<()> {
+    crate::sys::confine()
+}
+
 /// Says the helper is ready, then answers requests on `stream` with `reader` until the
 /// daemon closes it (or an I/O error ends it).
-pub fn serve(mut stream: UnixStream, reader: &dyn ReadProcess) -> std::io::Result<()> {
+pub fn serve(mut stream: UnixStream, reader: &dyn ReadLinks) -> std::io::Result<()> {
     stream.write_all(&[READY])?;
     loop {
         let mut request = [0u8; 4];
@@ -74,13 +94,13 @@ pub fn serve(mut stream: UnixStream, reader: &dyn ReadProcess) -> std::io::Resul
         }
         let pid = u32::from_le_bytes(request);
         let answer = if pid == HOST {
-            match reader.host() {
+            match reader.host_namespaces() {
                 Ok(host) => host_answer(host),
                 Err(e) => error_answer(&e),
             }
         } else {
-            match reader.read(pid) {
-                Ok(entry) => read_answer(&entry),
+            match reader.links(pid) {
+                Ok(links) => links_answer(pid, &links),
                 Err(e) => error_answer(&e),
             }
         };
@@ -88,21 +108,18 @@ pub fn serve(mut stream: UnixStream, reader: &dyn ReadProcess) -> std::io::Resul
     }
 }
 
-fn read_answer(entry: &Entry) -> Vec<u8> {
-    let executable = entry.executable.as_os_str().as_encoded_bytes();
+fn links_answer(pid: u32, links: &Links) -> Vec<u8> {
+    let executable = links.executable.as_os_str().as_encoded_bytes();
     // `procfs::executable` bounds it; past the bound, said unreadable rather than cut.
     let Ok(length) = u16::try_from(executable.len()) else {
         return error_answer(&ReadError::Unreadable(format!(
-            "pid {}: its executable's path is too long",
-            entry.pid
+            "pid {pid}: its executable's path is too long"
         )));
     };
     let mut out = vec![TAG_READ];
-    out.extend_from_slice(&entry.ppid.to_le_bytes());
-    out.extend_from_slice(&entry.start.to_le_bytes());
-    out.extend_from_slice(&entry.namespaces.pid.to_le_bytes());
-    out.extend_from_slice(&entry.namespaces.mnt.to_le_bytes());
-    out.push(u8::from(entry.deleted));
+    out.extend_from_slice(&links.namespaces.pid.to_le_bytes());
+    out.extend_from_slice(&links.namespaces.mnt.to_le_bytes());
+    out.push(u8::from(links.deleted));
     out.extend_from_slice(&length.to_le_bytes());
     out.extend_from_slice(executable);
     out
@@ -244,7 +261,7 @@ impl Drop for Helper {
 }
 
 enum Answer {
-    Read(Entry),
+    Read(Links),
     Host(Namespaces),
     Error(ReadError),
 }
@@ -256,8 +273,6 @@ fn exchange(stream: &mut UnixStream, pid: u32) -> Result<Answer, String> {
     let mut answer = Reader(stream);
     match answer.u8()? {
         TAG_READ => {
-            let ppid = answer.u32()?;
-            let start = answer.u64()?;
             let namespaces = Namespaces {
                 pid: answer.u64()?,
                 mnt: answer.u64()?,
@@ -268,10 +283,7 @@ fn exchange(stream: &mut UnixStream, pid: u32) -> Result<Answer, String> {
                 other => return Err(format!("its answer has a deleted flag of {other}")),
             };
             let bytes = answer.bytes(MAX_EXECUTABLE_BYTES)?;
-            Ok(Answer::Read(Entry {
-                pid,
-                ppid,
-                start,
+            Ok(Answer::Read(Links {
                 executable: PathBuf::from(OsString::from_vec(bytes)),
                 deleted,
                 namespaces,
@@ -313,11 +325,6 @@ impl Reader<'_> {
         let [value] = b;
         Ok(value)
     }
-    fn u32(&mut self) -> Result<u32, String> {
-        let mut b = [0u8; 4];
-        self.fill(&mut b)?;
-        Ok(u32::from_le_bytes(b))
-    }
     fn u64(&mut self) -> Result<u64, String> {
         let mut b = [0u8; 8];
         self.fill(&mut b)?;
@@ -336,24 +343,36 @@ impl Reader<'_> {
     }
 }
 
-impl ReadProcess for Helper {
-    fn read(&self, pid: u32) -> Result<Entry, ReadError> {
+impl ReadLinks for Helper {
+    fn links(&self, pid: u32) -> Result<Links, ReadError> {
         if pid == HOST {
             return Err(ReadError::Gone("pid 0: no such process".to_owned()));
         }
         match self.ask(pid)? {
-            Answer::Read(entry) => Ok(entry),
+            Answer::Read(links) => Ok(links),
             Answer::Error(e) => Err(e),
             Answer::Host(_) => Err(self.broken("a host answer to a process request")),
         }
     }
 
-    fn host(&self) -> Result<Namespaces, ReadError> {
+    fn host_namespaces(&self) -> Result<Namespaces, ReadError> {
         match self.ask(HOST)? {
             Answer::Host(host) => Ok(host),
             Answer::Error(e) => Err(e),
             Answer::Read(_) => Err(self.broken("a process answer to the host request")),
         }
+    }
+}
+
+/// The daemon's read of a process through the helper: `stat` and the pidfd here, the links
+/// there.
+impl ReadProcess for Helper {
+    fn read(&self, pid: u32) -> Result<Entry, ReadError> {
+        read_with(self, pid)
+    }
+
+    fn host(&self) -> Result<Namespaces, ReadError> {
+        self.host_namespaces()
     }
 }
 

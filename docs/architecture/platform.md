@@ -221,10 +221,15 @@ read another's `/proc/<pid>/stat` but not its `exe` or `ns/*` links (a ptrace re
 step, when it starts with `CAP_SYS_PTRACE` (systemd's `AmbientCapabilities`), starts
 `writd proc-reader` (its own binary) on a socket pair, which alone keeps that capability; then
 `writd` drops every capability it holds, before it reads a secret. The reader hardens itself
-(not dumpable, no core dumps), ends with its parent, and answers one pid at a time with what
-`/proc` says of it: parent, start time, executable (whether deleted), pid and mount namespaces,
-each read while a pidfd shows the process running. A compromised `writd` can ask it nothing
-else, and can't attach to it (a process holding a capability its tracer lacks can't be traced).
+(not dumpable, no core dumps), ends with its parent, then installs a **seccomp filter** before
+it reads a request: from then on it can read and write its socket, `readlink`, manage its memory
+and exit, and any other call kills it (no `open`, so no `/proc/<pid>/mem`; no `ptrace`,
+`pidfd_getfd`, `process_vm_*`, signals or `execve`; another architecture's or x32's calls
+refused). It answers one pid at a time with what that process's links say: its executable
+(whether deleted) and its pid and mount namespaces. The daemon reads the rest itself (`stat` is
+world-readable) and holds a pidfd of the process around the answer, so everything it gets is
+that process's (`read::read_with`). A compromised `writd` can ask the reader nothing else, and
+can't attach to it (a process holding a capability its tracer lacks can't be traced).
 An answer late (5 s), broken or oversized ends the reader's use for good: every Unix caller is
 refused from then on, logged once, and it is never started again (nothing left to start it
 with). Started without the capability (a development daemon, the tests), `writd` reads `/proc`

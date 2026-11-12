@@ -89,8 +89,9 @@ sandboxing: `NoNewPrivileges`, `ProtectSystem=strict` (the file system read-only
 tunables, modules, logs and cgroups protected, no new namespaces, `UMask=0077`, the address
 families Unix and IP only. **One capability**, `CAP_SYS_PTRACE`, the bounding set and ambient,
 for the process reader alone: `writd` starts it first and then drops every capability, before
-it reads a secret. `ptrace` and `process_vm_readv`/`writev` are refused by its system call
-filter, so even the reader can only read `/proc`. Never `ProtectProc=invisible` or
+it reads a secret. `ptrace` and `process_vm_readv`/`writev` are refused by the unit's system
+call filter, and the reader installs a stricter one of its own (its socket, `readlink`, its
+memory, its exit: [platform](platform.md#the-linux-process-chain-and-session-watcher)). Never `ProtectProc=invisible` or
 `PrivatePIDs`: the daemon must see the agents' processes. `LimitMEMLOCK=infinity` (the memory
 lock), `LimitCORE=0`. `Restart=on-failure` (an orderly stop stays stopped), `TimeoutStopSec`
 330 s (the orderly stop's waits), `KillMode=mixed` (SIGTERM to `writd` alone, so its reader

@@ -6,7 +6,7 @@
 //! the approver as `dev`, in that group, over the Unix sockets; the upstream on Forgejo.
 //!
 //! What it proves, which the Mac can only check by hand: the daemon holds no capability once
-//! started and its process reader `CAP_SYS_PTRACE` alone; `dev` can't read the daemon's files
+//! started and its process reader `CAP_SYS_PTRACE` alone, under its seccomp filter; `dev` can't read the daemon's files
 //! or attach to it or its reader (`cat`, `strace -p`, `gdb -p`); the M6 workflow under
 //! `writ run` (a ticket bound to the session by the daemon from the kernel, a commit signed,
 //! pushed to Forgejo, the chain of each operation in its audit line, read by the reader across
@@ -246,6 +246,14 @@ fn local_mode_on_linux_binds_a_lease_to_its_session_and_keeps_the_daemon_out_of_
         ]
     );
     assert_eq!(root.ok(&format!("ps -o ppid= -p {reader}")).trim(), writd);
+    // And under its seccomp filter (mode 2): no open, so no /proc/<pid>/mem, whatever its
+    // capability allows.
+    assert_eq!(
+        root.ok(&format!("grep '^Seccomp:' /proc/{reader}/status"))
+            .split_whitespace()
+            .collect::<Vec<_>>(),
+        ["Seccomp:", "2"]
+    );
 
     // `dev` (so any agent) can't read the daemon's files, nor attach to it or its reader.
     for (what, script) in [

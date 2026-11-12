@@ -33,7 +33,7 @@ use writ_platform_linux::attest::{MAX_CHAIN, ProcessChain};
 use writ_platform_linux::helper::{self, Helper};
 use writ_platform_linux::peer::pidfd_peer;
 use writ_platform_linux::procfs::ReadError;
-use writ_platform_linux::read::{Direct, Host, ReadProcess};
+use writ_platform_linux::read::{Direct, Host, ReadLinks, ReadProcess};
 use writ_platform_linux::watch::PidfdWatcher;
 
 /// A short private directory for sockets (their paths are bounded).
@@ -303,12 +303,12 @@ fn unreadable(result: Result<impl std::fmt::Debug, ReadError>) -> String {
 
 #[test]
 fn a_broken_answer_ends_the_process_reader_for_good() {
-    let read = |pid: u32| {
+    // A links answer (tag 0, the two namespaces, deleted 0) saying `length` bytes follow.
+    let read = |length: u16| {
         let mut answer = vec![0u8];
-        answer.extend_from_slice(&1u32.to_le_bytes());
-        answer.extend_from_slice(&[0u8; 24]);
+        answer.extend_from_slice(&[0u8; 16]);
         answer.push(0);
-        answer.extend_from_slice(&u16::try_from(pid).unwrap().to_le_bytes());
+        answer.extend_from_slice(&length.to_le_bytes());
         answer
     };
     let cases: Vec<(&str, Vec<u8>)> = vec![
@@ -316,7 +316,7 @@ fn a_broken_answer_ends_the_process_reader_for_good() {
         ("it has ended", [CLOSE, &[0, 1, 2]].concat()),
         ("its answer has a deleted flag of 2", {
             let mut a = read(0);
-            a[29] = 2;
+            a[17] = 2;
             a
         }),
         // An executable past PATH_MAX, said before its bytes.
@@ -335,14 +335,14 @@ fn a_broken_answer_ends_the_process_reader_for_good() {
     ];
     for (why, answer) in cases {
         let (reader, _done) = fake_helper(answer, helper::ANSWER_DEADLINE);
-        let first = unreadable(reader.read(42));
+        let first = unreadable(reader.links(42));
         assert_eq!(
             first,
             format!("the process reader can't be used any more ({why})")
         );
         // Never asked again: the same refusal, at once.
-        assert_eq!(unreadable(reader.read(43)), first);
-        assert_eq!(unreadable(reader.host()), first);
+        assert_eq!(unreadable(reader.links(43)), first);
+        assert_eq!(unreadable(reader.host_namespaces()), first);
     }
 }
 
@@ -353,11 +353,11 @@ fn a_process_reader_that_doesn_t_answer_in_time_is_not_used_again() {
     theirs.write_all(b"R").unwrap();
     let reader = Helper::over(mine, Duration::from_millis(200)).unwrap();
     assert_eq!(
-        unreadable(reader.read(42)),
+        unreadable(reader.links(42)),
         "the process reader can't be used any more (no answer within its deadline)"
     );
     assert_eq!(
-        unreadable(reader.read(42)),
+        unreadable(reader.links(42)),
         "the process reader can't be used any more (no answer within its deadline)"
     );
     drop(theirs);
@@ -390,6 +390,7 @@ fn the_process_reader_says_gone_and_its_host_as_the_reader_it_serves() {
     assert_eq!(reader.read(me).unwrap(), direct.read(me).unwrap());
     // No process has pid 0, and a pid past the kernel's maximum is no one's.
     assert!(matches!(reader.read(0), Err(ReadError::Gone(_))));
+    assert!(matches!(reader.links(0), Err(ReadError::Gone(_))));
     assert!(matches!(reader.read(u32::MAX), Err(ReadError::Gone(_))));
     // Still answering after those.
     assert_eq!(reader.read(me).unwrap(), direct.read(me).unwrap());
