@@ -328,8 +328,9 @@ repository wired in step 3 is as it was before its `writ init`.
 The `local` setup on Linux runs in `make test` against a fake root (its unit checked by
 `systemd-analyze verify`), and the daemon itself, laid out as the setup lays it out, in
 end-to-end scenario 24; this is the real install, on a Debian 13 machine without Writ (a VM
-you can reboot), with systemd and `sudo`. When every step passes, tick M7.1's last acceptance
-item.
+you can reboot), with systemd and `sudo`. M7.1 was closed before it ran: when every step
+passes, tick the three acceptance items left open on
+[its history page](../history/m7.1-local-mode-on-linux.md#acceptance).
 
 **1. Before.** Keep what is there now, to compare with after the uninstall:
 

@@ -96,7 +96,7 @@ lock), `LimitCORE=0`. `Restart=on-failure` (an orderly stop stays stopped), `Tim
 330 s (the orderly stop's waits), `KillMode=mixed` (SIGTERM to `writd` alone, so its reader
 outlives the stop's waits).
 
-Built in [M7.1](../roadmap.md#m71--local-mode-on-linux).
+Built in [M7.1](../history/m7.1-local-mode-on-linux.md).
 
 ## Installing and uninstalling
 
@@ -107,7 +107,7 @@ those this build has on this OS (`SETUP=<name>` answers without asking), and
 | Setup | Where | What it installs | Built in |
 |---|---|---|---|
 | `local` | The Mac | The `_writd` user, the binaries, the LaunchDaemon, `writd init`, my user's `~/.writ/` | [M7](../history/m7-local-mode-on-the-mac.md) |
-| `local` | A Linux workstation | The `writd` user and `writ` group, the binaries, the systemd unit, `writd init`, my user's `~/.writ/` | [M7.1](../roadmap.md#m71--local-mode-on-linux) |
+| `local` | A Linux workstation | The `writd` user and `writ` group, the binaries, the systemd unit, `writd init`, my user's `~/.writ/` | [M7.1](../history/m7.1-local-mode-on-linux.md) |
 | `detached` | The daemon host (Linux, Docker) | The image, the compose file and `writd.yaml`, the volumes, `writd init`, the stack started | [M8](../roadmap.md#m8--detached-deployment) |
 | `client` | A machine using a detached daemon (the approver's Mac, an agent host) | `writ` and `writ-sign`, `~/.writ/` with the daemon's endpoints and pins, the approval and reader keys on the approver's machine | [M8](../roadmap.md#m8--detached-deployment) |
 

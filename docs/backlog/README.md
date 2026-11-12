@@ -69,7 +69,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
 | [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
-| [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | picked as [M7.1](../roadmap.md#m71--local-mode-on-linux) |
+| [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | picked as [M7.1](../history/m7.1-local-mode-on-linux.md) |
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
@@ -160,7 +160,7 @@ Same, on the iPhone (Secure Enclave + Face ID), to approve away from the Mac.
 start time as the pid's generation) and a pidfd `SessionWatcher`, so leases bound to a session
 work for agents on a Linux workstation too. Only implementations and a config preset
 ([Platform interfaces](../architecture/platform.md)). Picked: the plan is
-[M7.1](../roadmap.md#m71--local-mode-on-linux).
+[M7.1](../history/m7.1-local-mode-on-linux.md).
 
 ### Source-address pinning
 

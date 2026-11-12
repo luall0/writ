@@ -53,7 +53,7 @@ run it once M7.5 and M7.6 are in place, the setup that fits their workflow.
 - **One installer, a setup to pick**: `make install` runs the installer (`deploy/install.sh`),
   which asks which setup to install, listing only the ones this build offers on this OS
   (`SETUP=<name>` answers without asking; an unknown or unavailable one is refused with the
-  list). M7 brings `local` on macOS; [M7.1](../roadmap.md#m71--local-mode-on-linux) adds `local` on Linux,
+  list). M7 brings `local` on macOS; [M7.1](../history/m7.1-local-mode-on-linux.md) adds `local` on Linux,
   and [M8](../roadmap.md#m8--detached-deployment) `detached` and `client`. Every setup shares one frame:
   the dry run, the manifest, the upgrade, the uninstall; each setup is its own steps, and
   adding one changes no other. The installer runs as my user and asks `sudo` only for the

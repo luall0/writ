@@ -66,7 +66,7 @@ Each step is drawn in [Flows](flows.md).
 | Mode | Where the daemon runs | Typical signer |
 |---|---|---|
 | **Detached** | Linux server, Docker (homelab) | Software keys (v1), YubiKey / TPM later |
-| **Local** | My Mac or a Linux workstation, native ([M7](history/m7-local-mode-on-the-mac.md), [M7.1](roadmap.md#m71--local-mode-on-linux)) | Secure Enclave on the Mac, software keys on Linux |
+| **Local** | My Mac or a Linux workstation, native ([M7](history/m7-local-mode-on-the-mac.md), [M7.1](history/m7.1-local-mode-on-linux.md)) | Secure Enclave on the Mac, software keys on Linux |
 
 Same daemon, same protocol. Details in [Architecture overview](architecture/overview.md#deployment-modes).
 
