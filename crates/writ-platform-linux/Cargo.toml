@@ -9,11 +9,21 @@ publish.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 writ-platform.workspace = true
-# Limits, not dumpable (`process`), `mlockall` (`mm`), the effective capabilities (`thread`).
-rustix = { workspace = true, features = ["mm", "process", "thread"] }
+writ-core.workspace = true
+# The Unix socket transport's peer reader (a tokio UnixStream).
+tokio.workspace = true
+tracing.workspace = true
+# Limits, not dumpable and the parent's death signal (`process`), `mlockall` (`mm`), the
+# capabilities (`thread`), pidfds polled and the watcher's epoll set (`event`).
+rustix = { workspace = true, features = ["event", "mm", "process", "thread"] }
+# `getsockopt(SO_PEERPIDFD)`, in the one `unsafe` module (`sys`), and its constant.
+libc.workspace = true
+linux-raw-sys.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 writ-platform = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

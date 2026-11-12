@@ -4074,7 +4074,13 @@ dependencies = [
 name = "writ-platform-linux"
 version = "0.0.0"
 dependencies = [
+ "libc",
+ "linux-raw-sys",
  "rustix",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "writ-core",
  "writ-platform",
 ]
 
