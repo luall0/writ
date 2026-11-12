@@ -1,9 +1,12 @@
-//! The installer (M7): `deploy/install.sh` with the `local` setup, against a fake root (every
-//! system path under a directory, `WRIT_INSTALL_ROOT`) with the system tools that need root
-//! stubbed on PATH (`sudo`, `dscl`, `dseditgroup`, `launchctl`, `codesign`, `chown`), and the
-//! real binaries (`writd init` makes the keystore for real). The real install on the Mac is a
-//! manual check (docs/guides/manual-checks.md). Runs on Linux too (`WRIT_INSTALL_OS` stands
-//! for macOS): the frame and the setup are POSIX sh.
+//! The installer (M7, M7.1): `deploy/install.sh` with the `local` setups of the Mac and of
+//! Linux, against a fake root (every system path under a directory, `WRIT_INSTALL_ROOT`) with
+//! the system tools that need root stubbed on PATH (the Mac's `sudo`, `dscl`, `dseditgroup`,
+//! `launchctl`, `codesign`, `chown`; Linux's `sudo`, `useradd`, `userdel`, `groupadd`,
+//! `groupdel`, `gpasswd`, `getent`, `systemctl`, `chown`), and the real binaries (`writd init`
+//! makes the keystore for real). Both run on either OS (`WRIT_INSTALL_OS` stands for
+//! `uname -s`): the frame and the setups are POSIX sh. On Linux, the unit file is checked by
+//! `systemd-analyze verify`. The real installs are manual checks
+//! (docs/guides/manual-checks.md).
 
 #![allow(
     clippy::unwrap_used,
@@ -47,12 +50,61 @@ case $1 in
 esac
 "#;
 
+/// Linux's user and group tools, as a file of `passwd <name> <uid>` and
+/// `group <name> <gid> [<member>…]` lines.
+const USERS: &str = r#"#!/bin/sh
+db="$WRIT_INSTALL_ROOT/.users"; touch "$db"
+name=$(basename "$0")
+{ printf '%s' "$name"; printf ' %s' "$@"; printf '\n'; } >> "$WRIT_INSTALL_ROOT/.calls"
+[ "${STUB_FAIL:-}" = "$name" ] && { echo "$name: failing (stub)" >&2; exit 1; }
+case $name in
+  getent) awk -v kind="$1" -v key="$2" '$1 == kind && ($2 == key || $3 == key) { print; found = 1 } END { exit !found }' "$db" ;;
+  useradd)
+    uid=; own=no
+    while [ $# -gt 1 ]; do
+      case $1 in --uid) uid=$2; shift ;; --user-group) own=yes ;; --home-dir|--shell|--comment) shift ;; esac
+      shift
+    done
+    [ -n "$uid" ] || uid=$((999 - $(grep -c '^passwd ' "$db")))
+    echo "passwd $1 $uid" >> "$db"
+    [ "$own" = yes ] && echo "group $1 $uid" >> "$db" ;;
+  userdel) grep -v "^passwd $1 \|^group $1 " "$db" > "$db.new" || true; mv "$db.new" "$db" ;;
+  groupadd) for g; do :; done; echo "group $g $((900 + $(grep -c '^group ' "$db")))" >> "$db" ;;
+  groupdel) grep -v "^group $1 " "$db" > "$db.new" || true; mv "$db.new" "$db" ;;
+  gpasswd)
+    case $1 in
+      -a) sed "s/^group $3 .*/& $2/" "$db" > "$db.new" ;;
+      -d) sed "s/^\(group $3 .*\) $2\$/\1/" "$db" > "$db.new" ;;
+    esac
+    mv "$db.new" "$db" ;;
+esac
+"#;
+
 /// `sudo [-u <user>] <command>`: the command, as the test's user.
 const SUDO: &str = "#!/bin/sh\n[ \"$1\" = -u ] && shift 2\nexec \"$@\"\n";
 
-/// A Mac's directories, in a fake root, with the stubs and an approval key.
+/// Which system the fake root stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Os {
+    Mac,
+    Linux,
+}
+
+impl Os {
+    /// What `uname -s` says there.
+    fn uname(self) -> &'static str {
+        match self {
+            Self::Mac => "Darwin",
+            Self::Linux => "Linux",
+        }
+    }
+}
+
+/// A Mac's or a Linux machine's directories, in a fake root, with the stubs and an approval
+/// key.
 struct Fake {
     _dir: tempfile::TempDir,
+    os: Os,
     root: PathBuf,
     home: PathBuf,
     stubs: PathBuf,
@@ -61,16 +113,24 @@ struct Fake {
 
 impl Fake {
     fn new() -> Self {
+        Self::of(Os::Mac)
+    }
+
+    fn of(os: Os) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
         let (root, home, stubs) = (base.join("root"), base.join("home"), base.join("stubs"));
-        for system in [
-            "etc/paths.d",
-            "var/db",
-            "Library/LaunchDaemons",
-            "Library/Logs",
-            "Library/Application Support",
-        ] {
+        let systems: &[&str] = match os {
+            Os::Mac => &[
+                "etc/paths.d",
+                "var/db",
+                "Library/LaunchDaemons",
+                "Library/Logs",
+                "Library/Application Support",
+            ],
+            Os::Linux => &["etc/systemd/system", "usr/local/bin", "var/lib"],
+        };
+        for system in systems {
             fs::create_dir_all(root.join(system)).unwrap();
         }
         fs::create_dir_all(&home).unwrap();
@@ -81,9 +141,23 @@ impl Fake {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         };
         script("sudo", SUDO);
-        script("dscl", DSCL);
-        for tool in ["dseditgroup", "launchctl", "codesign", "chown"] {
-            script(tool, LOGGING);
+        match os {
+            Os::Mac => {
+                script("dscl", DSCL);
+                for tool in ["dseditgroup", "launchctl", "codesign", "chown"] {
+                    script(tool, LOGGING);
+                }
+            }
+            Os::Linux => {
+                for tool in [
+                    "useradd", "userdel", "groupadd", "groupdel", "gpasswd", "getent",
+                ] {
+                    script(tool, USERS);
+                }
+                for tool in ["systemctl", "chown"] {
+                    script(tool, LOGGING);
+                }
+            }
         }
         let approver = base.join("approver.pub");
         let key = generate(KeyKind::Ed25519).unwrap();
@@ -94,6 +168,7 @@ impl Fake {
         .unwrap();
         Self {
             _dir: dir,
+            os,
             root,
             home,
             stubs,
@@ -119,7 +194,7 @@ impl Fake {
             )
             .env("HOME", &self.home)
             .env("WRIT_INSTALL_ROOT", &self.root)
-            .env("WRIT_INSTALL_OS", "Darwin")
+            .env("WRIT_INSTALL_OS", self.os.uname())
             .env("WRIT_INSTALL_BINARIES", binaries)
             .envs(env.iter().copied());
         command
@@ -154,7 +229,9 @@ impl Fake {
     fn tree(&self) -> Vec<String> {
         listing(&self.root)
             .into_iter()
-            .filter(|p| p != ".calls" && p != ".dscl" && !p.starts_with(".dscl"))
+            .filter(|p| {
+                !p.starts_with(".calls") && !p.starts_with(".dscl") && !p.starts_with(".users")
+            })
             .collect()
     }
 
@@ -166,13 +243,22 @@ impl Fake {
         fs::read_to_string(self.root.join(".calls")).unwrap_or_default()
     }
 
+    /// The users and groups the stubs hold.
     fn directory(&self) -> String {
-        fs::read_to_string(self.root.join(".dscl")).unwrap_or_default()
+        let db = match self.os {
+            Os::Mac => ".dscl",
+            Os::Linux => ".users",
+        };
+        fs::read_to_string(self.root.join(db)).unwrap_or_default()
     }
 
     fn manifest(&self) -> PathBuf {
-        self.root
-            .join("Library/Application Support/Writ/install.manifest")
+        match self.os {
+            Os::Mac => self
+                .root
+                .join("Library/Application Support/Writ/install.manifest"),
+            Os::Linux => self.root.join("etc/writ/install.manifest"),
+        }
     }
 
     /// `p` (a system path) under the fake root.
@@ -257,10 +343,10 @@ fn the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_
     refused(
         &fake.run(
             "install",
-            &[("WRIT_INSTALL_OS", "Linux"), ("SETUP", "local")],
+            &[("WRIT_INSTALL_OS", "FreeBSD"), ("SETUP", "local")],
             "",
         ),
-        "no setup for Linux in this build",
+        "no setup for FreeBSD in this build",
     );
     // On a terminal, the setup is asked.
     let mut asked = fake.command("install", &[("DRY_RUN", "1")]);
@@ -504,6 +590,249 @@ fn the_uninstall_takes_back_only_the_installer_s_own_paths() {
         "{said}"
     );
     assert!(outside.exists() && fake.at("/var/db/writ").exists());
+}
+
+// ----- The `local` setup on Linux (M7.1) -----
+
+#[test]
+fn on_linux_the_dry_run_lists_every_change_and_makes_none() {
+    let fake = Fake::of(Os::Linux);
+    let before = fake.tree();
+    let said = fake.shown(&ok(&fake.install(&[("DRY_RUN", "1")])));
+    for change in [
+        "Dry run: these are the changes; none is made.",
+        "    (root) useradd --system --user-group --no-create-home --home-dir /var/lib/writ \
+         --shell /usr/sbin/nologin --comment Writ daemon writd",
+        "    (root) groupadd --system writ",
+        "    (root) gpasswd -a ",
+        "    (root) install -m 0755 ",
+        "    (root) write /etc/writ/writd.yaml (0644, root:root):",
+        "        attestor: linux_process_chain\n        session_watcher: linux",
+        "        agents: [{ unix: /run/writ/agents.sock }]",
+        "    (root) install -d -m 0700 /var/lib/writ",
+        "    (writd) /usr/local/bin/writd init /etc/writ/writd.yaml",
+        "    (root) write /etc/systemd/system/writd.service (0644, root:root):",
+        "        AmbientCapabilities=CAP_SYS_PTRACE",
+        "    (root) systemctl enable --now writd.service",
+        "        url = unix:/run/writ/agents.sock",
+    ] {
+        assert!(said.contains(change), "{change:?} not in:\n{said}");
+    }
+    assert_eq!(fake.tree(), before, "nothing made");
+    assert_eq!(fake.home(), Vec::<String>::new());
+    assert_eq!(fake.directory(), "");
+    refused(
+        &fake.run("install", &[], ""),
+        "SETUP=<name> is needed without a terminal (offered on Linux: local )",
+    );
+}
+
+/// The unit's settings that make the daemon what deployment.md says it is.
+const UNIT_SETTINGS: &[&str] = &[
+    "User=writd\n",
+    "Group=writ\n",
+    "ExecStart=/usr/local/bin/writd run /etc/writ/writd.yaml\n",
+    "TimeoutStopSec=330\n",
+    "KillMode=mixed\n",
+    "UMask=0077\n",
+    "RuntimeDirectory=writ\n",
+    "RuntimeDirectoryMode=0750\n",
+    "ReadWritePaths=/var/lib/writ\n",
+    "NoNewPrivileges=yes\n",
+    "CapabilityBoundingSet=CAP_SYS_PTRACE\n",
+    "AmbientCapabilities=CAP_SYS_PTRACE\n",
+    "SystemCallFilter=~ptrace process_vm_readv process_vm_writev\n",
+    "ProtectSystem=strict\n",
+    "ProtectHome=yes\n",
+    "PrivateTmp=yes\n",
+    "LimitMEMLOCK=infinity\n",
+    "LimitCORE=0\n",
+    "WantedBy=multi-user.target\n",
+];
+
+/// On Linux, the unit as systemd reads it (`systemd-analyze verify`), its program the fake
+/// root's `writd`. Elsewhere, nothing: systemd is Linux's.
+fn verified_by_systemd(fake: &Fake, unit: &str) {
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("writd.service");
+    let writd = fake.at("/usr/local/bin/writd");
+    fs::write(
+        &copy,
+        unit.replace("/usr/local/bin/writd", writd.to_str().unwrap()),
+    )
+    .unwrap();
+    let out = Command::new("systemd-analyze")
+        .arg("verify")
+        .arg(&copy)
+        .output()
+        .expect("systemd-analyze is needed on Linux (the systemd package)");
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+}
+
+#[test]
+fn on_linux_an_install_upgrades_and_uninstalls_leaving_the_machine_as_before() {
+    let fake = Fake::of(Os::Linux);
+    let before = fake.tree();
+    let said = fake.shown(&ok(&fake.install(&[])));
+    assert!(said.contains("keystore made: /var/lib/writ/keys"), "{said}");
+    assert!(
+        said.contains("1. Log in again (or run newgrp writ)"),
+        "{said}"
+    );
+    assert!(said.contains("journalctl -u writd"), "{said}");
+    let me = whoami();
+    let manifest = fs::read_to_string(fake.manifest()).unwrap();
+    assert_eq!(
+        fake.shown(&manifest),
+        format!(
+            "setup local-linux\nuser writd\ngroup writ\nmember writ {me}\n\
+             file /usr/local/bin/writd\nfile /usr/local/bin/writ\nfile /usr/local/bin/writ-sign\n\
+             userdir ~/.writ\nuserdata ~/.writ/reader\nfile /etc/writ/writd.yaml\n\
+             data /var/lib/writ\nfile /etc/systemd/system/writd.service\ndaemon writd\n\
+             userfile ~/.writ/known_hosts\nuserfile ~/.writ/config\nuserfile ~/.writ/approver.pub\n"
+        )
+    );
+    assert_eq!(
+        fake.directory(),
+        format!("passwd writd 999\ngroup writd 999\ngroup writ 901 {me}\n")
+    );
+    let config = fake.shown(&fs::read_to_string(fake.at("/etc/writ/writd.yaml")).unwrap());
+    for part in [
+        "state_dir: /var/lib/writ/state\n",
+        "keystore: { sealed: { dir: /var/lib/writ/keys, boot: /var/lib/writ/boot } }\n",
+        "agents: [{ unix: /run/writ/agents.sock }]\n",
+        "ssh: [{ unix: /run/writ/approvals.sock }]\n",
+        "attestor: linux_process_chain\nsession_watcher: linux\n",
+    ] {
+        assert!(config.contains(part), "{part} not in {config}");
+    }
+    let unit = fs::read_to_string(fake.at("/etc/systemd/system/writd.service")).unwrap();
+    for part in UNIT_SETTINGS {
+        assert!(unit.contains(part), "{part} not in {unit}");
+    }
+    for hiding in ["ProtectProc=invisible", "PrivatePIDs", "ProcSubset"] {
+        assert!(
+            !unit.contains(hiding),
+            "{hiding} would hide the agents:\n{unit}"
+        );
+    }
+    verified_by_systemd(&fake, &unit);
+    let calls = fake.shown(&fake.calls());
+    for call in [
+        "systemctl daemon-reload\n",
+        "systemctl enable --now writd.service\n",
+        &format!("gpasswd -a {me} writ\n"),
+    ] {
+        assert!(calls.contains(call), "{call} not in {calls}");
+    }
+    let client = fake.shown(&fs::read_to_string(fake.home.join(".writ/config")).unwrap());
+    assert!(
+        client.contains("url = unix:/run/writ/agents.sock\n")
+            && client.contains("approval_url = unix:/run/writ/approvals.sock\n"),
+        "{client}"
+    );
+    let pins = fs::read_to_string(fake.home.join(".writ/known_hosts")).unwrap();
+    assert!(pins.starts_with("writ-local ssh-ed25519 "), "{pins}");
+    let identity = fs::read(fake.at("/var/lib/writ/keys/identity.age")).unwrap();
+
+    // Run again: an upgrade, the daemon stopped and started through systemd, the rest kept.
+    fs::write(fake.root.join(".calls"), "").unwrap();
+    let said = ok(&fake.run("install", &[], ""));
+    assert!(said.contains("Upgrading the installed setup"), "{said}");
+    assert_eq!(
+        fake.calls()
+            .lines()
+            .filter(|l| l.starts_with("systemctl"))
+            .collect::<Vec<_>>(),
+        [
+            "systemctl stop writd.service",
+            "systemctl start writd.service"
+        ]
+    );
+    assert_eq!(
+        fs::read(fake.at("/var/lib/writ/keys/identity.age")).unwrap(),
+        identity
+    );
+
+    // Uninstalled: the machine as before, but the daemon's data and the reader key; the user,
+    // the group and the membership taken back.
+    fs::write(fake.root.join(".calls"), "").unwrap();
+    ok(&fake.run("uninstall", &[("REPOS", "keep")], ""));
+    let calls = fake.calls();
+    for call in [
+        "systemctl disable --now writd.service\n",
+        &format!("gpasswd -d {me} writ\n"),
+        "groupdel writ\n",
+        "userdel writd\n",
+        "systemctl daemon-reload\n",
+    ] {
+        assert!(calls.contains(call), "{call} not in {calls}");
+    }
+    let mut expected = before.clone();
+    expected.extend(
+        listing(&fake.at("/var/lib/writ"))
+            .iter()
+            .map(|p| format!("var/lib/writ/{p}")),
+    );
+    expected.push("var/lib/writ".to_owned());
+    expected.sort();
+    assert_eq!(fake.tree(), expected);
+    assert_eq!(fake.directory(), "");
+    assert!(fake.home().contains(&".writ/reader".to_owned()));
+
+    // Installed again: the data picked up, the user made with the data's uid.
+    let said = ok(&fake.install(&[]));
+    assert!(
+        said.contains("The daemon's data from before is kept"),
+        "{said}"
+    );
+    assert!(!said.contains("keystore made"), "{said}");
+    let uid = rustix::process::getuid().as_raw();
+    assert!(
+        fake.directory()
+            .starts_with(&format!("passwd writd {uid}\n")),
+        "{}",
+        fake.directory()
+    );
+    assert!(fake.calls().contains(&format!(" --uid {uid} ")));
+
+    // PURGE=1 on a terminal: everything gone.
+    let (status, shown) = on_terminal(
+        fake.command("uninstall", &[("PURGE", "1"), ("REPOS", "keep")]),
+        &["delete"],
+    );
+    assert!(status.success(), "{shown}");
+    assert_eq!(fake.tree(), before);
+    assert_eq!(fake.home(), Vec::<String>::new());
+    assert_eq!(fake.directory(), "");
+}
+
+#[test]
+fn on_linux_a_failed_install_stops_saying_where_and_the_uninstall_takes_back_what_was_made() {
+    let fake = Fake::of(Os::Linux);
+    let before = fake.tree();
+    let out = fake.install(&[("STUB_FAIL", "groupadd")]);
+    refused(
+        &out,
+        "install: stopped at: The system user writd and the sockets' group writ",
+    );
+    assert!(fake.directory().contains("passwd writd "));
+    ok(&fake.run("uninstall", &[("REPOS", "keep")], ""));
+    assert_eq!(fake.tree(), before);
+    assert_eq!(fake.directory(), "");
+    // A user of that name already there (not this install's): refused, nothing made.
+    fs::write(fake.root.join(".users"), "passwd writd 120\n").unwrap();
+    refused(
+        &fake.install(&[]),
+        "writd exists already and isn't this install's",
+    );
+    // Its uninstall takes back what was made, never that user.
+    ok(&fake.run("uninstall", &[("REPOS", "keep")], ""));
+    assert_eq!(fake.tree(), before);
+    assert_eq!(fake.directory(), "passwd writd 120\n");
 }
 
 fn whoami() -> String {

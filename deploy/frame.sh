@@ -134,8 +134,9 @@ choose_setup() {
     [ -n "$offered" ] || fail "no setup for $OS in this build"
     if [ -z "$SETUP" ]; then
         terminal || fail "SETUP=<name> is needed without a terminal (offered on $OS: $offered)"
-        say "Which setup? Offered on $OS: $offered"
-        printf 'Setup: '
+        # On stderr: what this function prints on stdout is the setup's file.
+        say "Which setup? Offered on $OS: $offered" >&2
+        printf 'Setup: ' >&2
         read -r SETUP || fail "no setup given"
     fi
     chosen=$(setups_here | while read -r name file; do
