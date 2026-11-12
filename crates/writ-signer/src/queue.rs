@@ -11,9 +11,10 @@
 //!   result;
 //! - [`Signer::list_keys`] and [`Signer::capabilities`] answer from what the backend said at
 //!   startup, never through the queue: they must never wait behind the device;
-//! - [`Signer::add_key`] goes through the queue like a signature (in order with the jobs
-//!   before it, bounded and with the same deadline); once the backend took the key, the worker
-//!   refreshes what `list_keys` and `capabilities` answer from;
+//! - [`Signer::add_key`], [`Signer::create_key`] and [`Signer::remove_key`] go through the
+//!   queue like a signature (in order with the jobs before them, bounded and with the same
+//!   deadline); once the backend took, made or dropped the key, the worker refreshes what
+//!   `list_keys` and `capabilities` answer from;
 //! - a backend that panics is not trusted again: the worker answers that job
 //!   [`SignerError::Unavailable`], logs it once, and stops; every later signature is
 //!   `Unavailable` until the daemon restarts (fail closed, and said once where it happened).
@@ -28,10 +29,10 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use writ_core::names::KeyId;
-use writ_crypto::algorithm::SignerHash;
+use writ_crypto::algorithm::{KeyAlgorithm, SignerHash};
 use writ_crypto::keypair::{KeyPair, RawSignature};
 
-use crate::{Capabilities, KeyInfo, Signer, SignerError};
+use crate::{Capabilities, Created, KeyInfo, Signer, SignerError};
 
 /// How a queue is sized.
 #[derive(Debug, Clone)]
@@ -58,6 +59,10 @@ enum Work {
         /// Boxed: a key is far larger than a signature job.
         key: Box<KeyPair>,
         answer: SyncSender<Result<KeyInfo, SignerError>>,
+    },
+    Create {
+        algorithm: KeyAlgorithm,
+        answer: SyncSender<Result<Created, SignerError>>,
     },
     Remove {
         answer: SyncSender<Result<(), SignerError>>,
@@ -234,44 +239,13 @@ fn work(name: &str, backend: &dyn Signer, inbox: &Receiver<Job>, known: &RwLock<
                     }
                 }
             }
-            Work::Add { key, answer } => {
-                let added = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    let added = backend.add_key(id.clone(), *key);
-                    if added.is_ok() {
-                        refresh(backend, known);
-                    }
-                    added
-                }));
-                match added {
-                    Ok(added) => {
-                        let _ = answer.try_send(added);
-                        true
-                    }
-                    Err(_) => {
-                        let _ = answer.try_send(Err(SignerError::Unavailable));
-                        false
-                    }
-                }
-            }
-            Work::Remove { answer } => {
-                let removed = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    let removed = backend.remove_key(&id);
-                    if removed.is_ok() {
-                        refresh(backend, known);
-                    }
-                    removed
-                }));
-                match removed {
-                    Ok(removed) => {
-                        let _ = answer.try_send(removed);
-                        true
-                    }
-                    Err(_) => {
-                        let _ = answer.try_send(Err(SignerError::Unavailable));
-                        false
-                    }
-                }
-            }
+            Work::Add { key, answer } => changed(backend, known, &answer, || {
+                backend.add_key(id.clone(), *key)
+            }),
+            Work::Create { algorithm, answer } => changed(backend, known, &answer, || {
+                backend.create_key(id.clone(), algorithm)
+            }),
+            Work::Remove { answer } => changed(backend, known, &answer, || backend.remove_key(&id)),
         };
         if !survived {
             tracing::error!(
@@ -285,7 +259,35 @@ fn work(name: &str, backend: &dyn Signer, inbox: &Receiver<Job>, known: &RwLock<
     }
 }
 
-/// Reads again what the backend holds and can do, after a key was added. A backend that can't
+/// Runs a job that changes the backend's keys, and answers it: on success, what `known` says
+/// is read again first (so the key is listed, or no longer listed, when the caller hears of
+/// it). False when the backend panicked (answered `Unavailable`).
+fn changed<T>(
+    backend: &dyn Signer,
+    known: &RwLock<Known>,
+    answer: &SyncSender<Result<T, SignerError>>,
+    job: impl FnOnce() -> Result<T, SignerError>,
+) -> bool {
+    let done = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let done = job();
+        if done.is_ok() {
+            refresh(backend, known);
+        }
+        done
+    }));
+    match done {
+        Ok(done) => {
+            let _ = answer.try_send(done);
+            true
+        }
+        Err(_) => {
+            let _ = answer.try_send(Err(SignerError::Unavailable));
+            false
+        }
+    }
+}
+
+/// Reads again what the backend holds and can do, after a key was added, made or removed. A backend that can't
 /// list its keys any more keeps the last list (its signatures then fail on their own).
 fn refresh(backend: &dyn Signer, known: &RwLock<Known>) {
     if let Ok(keys) = backend.list_keys() {
@@ -316,25 +318,21 @@ impl Signer for QueuedSigner {
             drop(key);
             return Err(SignerError::CannotTakeKeys(id));
         }
-        let deadline = Instant::now()
-            .checked_add(self.deadline)
-            .ok_or(SignerError::Unavailable)?;
-        let (answer, reply) = std::sync::mpsc::sync_channel(1);
-        let abandoned = self.queue(
-            &id,
-            Work::Add {
-                key: Box::new(key),
-                answer,
-            },
-        )?;
-        let left = deadline.saturating_duration_since(Instant::now());
-        let answer = match reply.recv_timeout(left) {
-            Ok(answer) => answer,
-            Err(RecvTimeoutError::Timeout) => Err(SignerError::Timeout(id)),
-            Err(RecvTimeoutError::Disconnected) => Err(SignerError::Unavailable),
-        };
-        abandoned.store(true, Ordering::Release);
-        answer
+        self.through(&id, |answer| Work::Add {
+            key: Box::new(key),
+            answer,
+        })
+    }
+
+    /// Through the queue like [`Signer::add_key`]: past the deadline the caller gets
+    /// [`SignerError::Timeout`], and a key the worker made all the same is listed (making it
+    /// again is [`SignerError::DuplicateKey`]; its stored bytes are dropped, so it is gone at
+    /// the next start).
+    fn create_key(&self, id: KeyId, algorithm: KeyAlgorithm) -> Result<Created, SignerError> {
+        if !self.known().capabilities.makes_keys {
+            return Err(SignerError::MakesNoKeys(id));
+        }
+        self.through(&id, |answer| Work::Create { algorithm, answer })
     }
 
     /// Through the queue, in order with the jobs before it (a signature queued before the
@@ -342,14 +340,31 @@ impl Signer for QueuedSigner {
     /// gets [`SignerError::Timeout`]; the worker skips the removal if it hasn't reached it yet,
     /// or removes the key all the same if it has.
     fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
-        if !self.known().capabilities.takes_keys {
+        // The guard is dropped here: the worker writes `known` once the key is gone.
+        let (takes, makes) = {
+            let known = self.known();
+            (known.capabilities.takes_keys, known.capabilities.makes_keys)
+        };
+        if !takes && !makes {
             return Err(SignerError::CannotTakeKeys(id.clone()));
         }
+        self.through(id, |answer| Work::Remove { answer })
+    }
+}
+
+impl QueuedSigner {
+    /// Queues the job `work` builds for the key `id` and waits for its answer until the
+    /// deadline; then marks it abandoned (the worker skips it if it hasn't reached it).
+    fn through<T>(
+        &self,
+        id: &KeyId,
+        work: impl FnOnce(SyncSender<Result<T, SignerError>>) -> Work,
+    ) -> Result<T, SignerError> {
         let deadline = Instant::now()
             .checked_add(self.deadline)
             .ok_or(SignerError::Unavailable)?;
         let (answer, reply) = std::sync::mpsc::sync_channel(1);
-        let abandoned = self.queue(id, Work::Remove { answer })?;
+        let abandoned = self.queue(id, work(answer))?;
         let left = deadline.saturating_duration_since(Instant::now());
         let answer = match reply.recv_timeout(left) {
             Ok(answer) => answer,

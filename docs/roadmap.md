@@ -284,6 +284,22 @@ user at its start ([decision log](decisions.md), 2026-11-12, M7.5).
   them. Going back to software is a policy change: a key declared on `software` (`writ admin
   key rotate`'s new key, then the switch of what used the old one). A daemon built for
   another OS refuses `se-cryptokit` by name, as any backend it lacks.
+- **All of it from the CLI** (asked by the user): making a key on the backend wanted, and
+  giving it to what uses it, needs no host access, like the rest of M6.2.
+  - The daemon says which backends it has (`writ admin key list` and the reply `writ`'s
+    guided flows read, `GET /v1/keys`), so `writ` offers only those.
+  - `writ admin key add <id> backend=<name>`: `backend` becomes a field the guided flow asks
+    (`software` by default, the daemon's others offered, with the algorithms each makes:
+    `se-cryptokit` only `p256`), still never changed once declared (`set` refuses it, naming
+    `key rotate`).
+  - `writ admin key rotate <id> [--backend <name>] [--name <new>]`: the new key on the backend
+    named (the old key's by default), so moving a key between software and the Secure Enclave
+    is one command; then, as today, the switch of every repo and template that used the old
+    key, and the offer to remove it.
+  - Giving a key to its uses stays `writ admin template set <t> signing_key=<id>` and `writ
+    admin repo set <r> upstream_credential=<id>`; the guided `repo add` and `template add`
+    that declare a new key in the same change ask its backend too.
+  - The TLS key: `writ admin tls rotate [--backend <name>]` (below).
 - **The TLS key, moved by a signed admin change, live** (settled with the user):
   `writ admin tls rotate [--backend <name>]` makes a new HTTPS approval API key on the
   backend named (the current one by default: the same command rotates it), on a running,
@@ -328,6 +344,10 @@ Acceptance:
       old pin is refused; `writ admin tls rotate` refused on a replay, on a stale
       `replaces`, by a non-approver; scenario in `make e2e` (software to software, on Linux).
 - [ ] Going back to the software backend is a policy change only.
+- [ ] From the CLI alone: `writ admin key add … backend=se-cryptokit` (and its guided flow
+      offering the daemon's backends), `writ admin key rotate --backend` both ways, the key
+      given to a template and a repo; `backend` refused by `set`; a backend the daemon lacks
+      refused by name; every new flag in `make e2e`'s registry.
 - [ ] With the real daemon under `_writd`: signing needs no prompt, works after a reboot and
       with the screen locked; another process, and my user, can't find or use the key. Run
       with M7.7's real install (the [manual check](guides/manual-checks.md)), where the user

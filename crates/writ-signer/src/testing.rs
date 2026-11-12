@@ -1,7 +1,7 @@
 //! Test support (feature `testing`): a signer that fails on demand, to check that a backend
-//! failure is refused and logged, never turned into a signature; and one that blocks each
+//! failure is refused and logged, never turned into a signature; one that blocks each
 //! signature until the test releases it, to drive what happens while a device signs without
-//! ever sleeping.
+//! ever sleeping; and a fake device that makes its own keys, as a Secure Enclave does.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,17 +12,17 @@
     clippy::cast_possible_truncation
 )]
 
-use std::collections::{HashSet, VecDeque};
-use std::sync::{Condvar, Mutex};
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::sync::{Condvar, Mutex, RwLock};
 use std::time::Duration;
 
 use writ_core::names::KeyId;
-use writ_crypto::algorithm::SignerHash;
+use writ_crypto::algorithm::{KeyAlgorithm, SignerHash};
 use writ_crypto::keypair::{KeyPair, RawSignature};
 use writ_crypto::keys::{KeyKind, generate};
 
 use crate::software::SoftwareSigner;
-use crate::{Capabilities, KeyInfo, Signer, SignerError};
+use crate::{Capabilities, Created, KeyInfo, Signer, SignerError, Stored};
 
 /// A software signer with a fresh key of `kind` for each id.
 pub fn software_signer(ids: &[&str], kind: KeyKind) -> SoftwareSigner {
@@ -86,6 +86,10 @@ impl<S: Signer> Signer for FailingSigner<S> {
 
     fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         self.inner.add_key(id, key)
+    }
+
+    fn create_key(&self, id: KeyId, algorithm: KeyAlgorithm) -> Result<Created, SignerError> {
+        self.inner.create_key(id, algorithm)
     }
 
     fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
@@ -235,7 +239,135 @@ impl<S: Signer> Signer for GatedSigner<S> {
         self.inner.add_key(id, key)
     }
 
+    fn create_key(&self, id: KeyId, algorithm: KeyAlgorithm) -> Result<Created, SignerError> {
+        self.inner.create_key(id, algorithm)
+    }
+
     fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
         self.inner.remove_key(id)
+    }
+}
+
+/// What a [`FakeDevice`]'s stored bytes start with.
+const FAKE_DEVICE: &[u8] = b"writ-fake-device/1\n";
+
+/// A backend that makes its own keys and takes none from outside, as a device does (a Secure
+/// Enclave): P-256 keys only, its stored bytes the key itself behind a header (a fake: a real
+/// device's are useless off the device). Built again from what it handed out, it signs with
+/// the same keys.
+pub struct FakeDevice {
+    keys: RwLock<BTreeMap<KeyId, KeyPair>>,
+}
+
+impl FakeDevice {
+    /// A device holding the keys `stored` gives back (each from an earlier
+    /// [`Signer::create_key`]); bytes it didn't hand out are [`SignerError::Failed`].
+    pub fn new(stored: impl IntoIterator<Item = (KeyId, Stored)>) -> Result<Self, SignerError> {
+        let mut keys = BTreeMap::new();
+        for (id, bytes) in stored {
+            let pem = bytes
+                .as_bytes()
+                .strip_prefix(FAKE_DEVICE)
+                .ok_or_else(|| SignerError::Failed(id.clone()))?;
+            let key = KeyPair::from_pem(pem).map_err(|_| SignerError::Failed(id.clone()))?;
+            if keys.insert(id.clone(), key).is_some() {
+                return Err(SignerError::DuplicateKey(id));
+            }
+        }
+        Ok(Self {
+            keys: RwLock::new(keys),
+        })
+    }
+
+    /// A device holding one fresh key under each id; answers what each one stored, to build
+    /// it again.
+    pub fn with_keys(ids: &[&str]) -> (Self, Vec<(KeyId, Stored)>) {
+        let device = Self::new([]).unwrap();
+        let stored = ids
+            .iter()
+            .map(|id| {
+                let id: KeyId = id.parse().unwrap();
+                let created = device.create_key(id.clone(), KeyAlgorithm::P256).unwrap();
+                (id, created.stored)
+            })
+            .collect();
+        (device, stored)
+    }
+}
+
+impl Signer for FakeDevice {
+    fn list_keys(&self) -> Result<Vec<KeyInfo>, SignerError> {
+        Ok(self
+            .keys
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(id, key)| KeyInfo {
+                id: id.clone(),
+                public_key: key.public_key(),
+            })
+            .collect())
+    }
+
+    fn sign(&self, id: &KeyId, data: &[u8], hash: SignerHash) -> Result<RawSignature, SignerError> {
+        let keys = self.keys.read().unwrap();
+        let key = keys
+            .get(id)
+            .ok_or_else(|| SignerError::UnknownKey(id.clone()))?;
+        if hash != Some(writ_crypto::algorithm::Hash::Sha256) {
+            return Err(SignerError::Unsupported {
+                id: id.clone(),
+                what: writ_crypto::keypair::pair(KeyAlgorithm::P256, hash),
+            });
+        }
+        key.sign(data, hash)
+            .map_err(|_| SignerError::Failed(id.clone()))
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            pairs: vec![(
+                KeyAlgorithm::P256,
+                Some(writ_crypto::algorithm::Hash::Sha256),
+            )],
+            exportable: false,
+            needs_touch: false,
+            takes_keys: false,
+            makes_keys: true,
+        }
+    }
+
+    fn create_key(&self, id: KeyId, algorithm: KeyAlgorithm) -> Result<Created, SignerError> {
+        if algorithm != KeyAlgorithm::P256 {
+            return Err(SignerError::Unsupported {
+                id,
+                what: format!("making a {algorithm} key"),
+            });
+        }
+        let mut keys = self.keys.write().unwrap();
+        if keys.contains_key(&id) {
+            return Err(SignerError::DuplicateKey(id));
+        }
+        let key = KeyPair::generate(algorithm).unwrap();
+        let mut stored = FAKE_DEVICE.to_vec();
+        stored.extend_from_slice(key.to_pem().unwrap().as_bytes());
+        let info = KeyInfo {
+            id: id.clone(),
+            public_key: key.public_key(),
+        };
+        keys.insert(id, key);
+        Ok(Created {
+            info,
+            stored: Stored::new(stored),
+        })
+    }
+
+    fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
+        self.keys
+            .write()
+            .unwrap()
+            .remove(id)
+            .map(drop)
+            .ok_or_else(|| SignerError::UnknownKey(id.clone()))
     }
 }

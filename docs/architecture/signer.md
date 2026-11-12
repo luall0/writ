@@ -19,15 +19,22 @@ pub trait Signer: Send + Sync {
     fn sign(&self, id: &KeyId, data: &[u8], hash: Option<Hash>)
         -> Result<RawSignature, SignerError>;
     /// What this backend can do: the (algorithm, signer hash) pairs it supports,
-    /// exportability, touch requirement, whether it takes keys made outside it.
+    /// exportability, touch requirement, whether it takes keys made outside it
+    /// (`takes_keys`), whether it makes its own (`makes_keys`).
     fn capabilities(&self) -> Capabilities;
     /// Takes a key made outside the backend (moved in, never copied) under `id`, usable at
     /// once. A backend that can't take one (a device makes its own keys) answers
     /// `CannotTakeKeys`, the default; an id it holds already is `DuplicateKey`.
     fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError>;
-    /// Drops the key `id` (wiped), no longer listed nor signed with: a key the policy no
-    /// longer declares (M6.2). `UnknownKey` for an id it doesn't hold; `CannotTakeKeys`, the
-    /// default, for a backend that takes no key from outside.
+    /// Makes a key of `algorithm` in the backend under `id`, usable at once: its public half
+    /// and `stored`, the opaque bytes the daemon keeps to give the key back at the next start
+    /// (`Created { info, stored }`). A backend that makes no key itself (software) answers
+    /// `MakesNoKeys`, the default; an id it holds is `DuplicateKey`, an algorithm it doesn't
+    /// make `Unsupported`.
+    fn create_key(&self, id: KeyId, algorithm: KeyAlgorithm) -> Result<Created, SignerError>;
+    /// Drops the key `id` (wiped; a device's key forgotten), no longer listed nor signed
+    /// with: a key the policy no longer declares (M6.2). `UnknownKey` for an id it doesn't
+    /// hold; `CannotTakeKeys`, the default, for a backend that neither takes nor makes keys.
     fn remove_key(&self, id: &KeyId) -> Result<(), SignerError>;
 }
 ```
@@ -82,12 +89,29 @@ next unseal: the keys the keystore holds that the policy in force doesn't declar
 each said in the audit log. The contract suite checks a removed key is no longer listed nor
 signed with, removing it again is refused by name, and the id then takes a new key.
 
-`add_key` is the verb for a key made outside the backend, which only a software backend can
-take. A device that makes its own keys (the Secure Enclave, a YubiKey) gets its own verb
-with its milestone (M7.5: e.g. `create_key(id, algorithm)`), and M5.5's declared
-algorithms and formats may reshape `add_key`: each backend implements the verb that fits it
-and answers `Unsupported` for the other, the daemon picks by backend. Both milestones change
-this interface first (its contract tests, this page), as hard rule 4 asks.
+**Two verbs for a new key** (M7.5, [decision log](../decisions.md)): `add_key` for a key made
+outside the backend, which only a software backend takes; `create_key` for a device that
+makes its own (the Secure Enclave; a YubiKey or a TPM later). Each backend implements the one
+that fits it and answers the other refused by name (`CannotTakeKeys`, `MakesNoKeys`); the
+daemon picks by the backend's `Capabilities`. What `create_key` answers in `stored` (a
+`writ_signer::Stored`: wiped on drop, its `Debug` its length only) is opaque to the daemon:
+sealed in the keystore like a software key, and handed back to the backend's constructor
+at the next start. Through `QueuedSigner`, `create_key` and `remove_key` go through the
+worker like `add_key`, in order, and refresh the cached key list. The contract suite's
+`create_key_contract` checks a key made is listed at once and signs, its id refused twice,
+an algorithm the backend declares no pair for refused by name with nothing listed, a backend
+built again from the stored bytes signing with the same key, and a removed id making a new
+key; `writ_signer::testing::FakeDevice` (P-256 keys it makes itself, no key taken) runs it
+alone and behind a queue, as every device backend does.
+
+**Several backends for one use** (M7.5): a use's keys (the agent keys, the upstream
+credentials) may live on a software backend and a device at once. The daemon's signer for a
+use is a `writ_signer::route::Routed`, itself a `Signer`, over its backends by name, each
+behind its own `QueuedSigner`: a signature or a removal goes to the backend that lists the
+key (none: `UnknownKey`; two: `DuplicateKey`, refused, never one picked, and refused at
+construction too); a new key goes to the backend named (`add_key_on`, `create_key_on`),
+refused when another holds its id. A stuck device never holds up a software key (tested with
+the device held at a gate).
 
 `writ_signer::sshsig` builds an SSHSIG (what `ssh-keygen -Y sign` writes) through any
 backend, with the message hash it is given (`sha256` or `sha512`). Errors never carry key

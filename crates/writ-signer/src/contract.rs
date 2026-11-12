@@ -6,7 +6,10 @@
 //! decorator section: behind a [`QueuedSigner`], the backend passes the same contract, a full
 //! queue refuses at once, a stuck backend times out, and its keys are still listed. And
 //! [`add_key_contract`]: a backend that takes keys made outside it lists and signs with one at
-//! once and refuses its id twice; one that doesn't says so, and holds nothing new.
+//! once and refuses its id twice; one that doesn't says so, and holds nothing new. And
+//! [`create_key_contract`]: a backend that makes its own keys lists and signs with one at
+//! once, refuses its id twice and an algorithm it doesn't make, and, built again from what it
+//! stored, signs with the same key; one that doesn't says so, and holds nothing new.
 
 #![allow(
     clippy::unwrap_used,
@@ -27,7 +30,7 @@ use writ_crypto::keys::random_hex;
 
 use crate::queue::{QueueConfig, QueuedSigner};
 use crate::testing::GatedSigner;
-use crate::{Signer, SignerError, key_algorithm, public_key, sshsig};
+use crate::{Signer, SignerError, Stored, key_algorithm, public_key, sshsig};
 
 /// Every signer hash a pair may carry, to try the ones a backend doesn't declare.
 const HASHES: [SignerHash; 4] = [
@@ -223,6 +226,96 @@ pub fn add_key_contract(signer: &dyn Signer) {
     signer.remove_key(&id).unwrap();
 }
 
+/// Builds a backend again from what its keys stored (a daemon's next start).
+pub type Rebuild<'a> = &'a dyn Fn(Vec<(KeyId, Stored)>) -> Box<dyn Signer>;
+
+/// Runs the key-making contract on a backend (it makes keys with fresh ids):
+/// - one that says it makes keys ([`crate::Capabilities::makes_keys`]) makes a key of the
+///   first algorithm it declares, answers its [`crate::KeyInfo`], lists it at once, signs
+///   with it (verified as an SSHSIG); refuses the same id again by name, the first key kept;
+///   refuses an algorithm it declares no pair for ([`SignerError::Unsupported`], named), with
+///   nothing new listed; with `rebuild`, a backend built again from the stored bytes lists
+///   the same public half and signs with it; removed, the key is no longer listed nor signed
+///   with, removed again is refused by name, and the id then makes a new key;
+/// - one that doesn't answers [`SignerError::MakesNoKeys`] with the id, and lists nothing
+///   new.
+pub fn create_key_contract(signer: &dyn Signer, rebuild: Option<Rebuild<'_>>) {
+    let before = signer.list_keys().unwrap();
+    let id: KeyId = format!("contract-made-{}", random_hex(4).unwrap())
+        .parse()
+        .unwrap();
+    let capabilities = signer.capabilities();
+    let Some(&(algorithm, _)) = capabilities.pairs.first() else {
+        panic!("the backend declares no pair");
+    };
+    if !capabilities.makes_keys {
+        assert!(matches!(
+            signer.create_key(id.clone(), algorithm),
+            Err(SignerError::MakesNoKeys(refused)) if refused == id
+        ));
+        assert_eq!(signer.list_keys().unwrap(), before, "nothing new is listed");
+        return;
+    }
+    let created = signer.create_key(id.clone(), algorithm).unwrap();
+    assert_eq!(created.info.id, id);
+    let public = created.info.public_key.clone();
+    assert_eq!(KeyAlgorithm::of_public(public.key_data()), Some(algorithm));
+    assert!(!created.stored.as_bytes().is_empty(), "something to keep");
+    let listed = signer.list_keys().unwrap();
+    assert_eq!(listed.len(), before.len() + 1);
+    assert!(listed.contains(&created.info), "listed at once");
+    let msg = b"signed with a key the backend made while it runs";
+    let hash = *writ_crypto::algorithm::hashes(SignatureFormat::Ssh, algorithm)
+        .first()
+        .unwrap();
+    let armored = sshsig(signer, &id, "git", hash, msg).unwrap();
+    writ_crypto::sshsig::verify(std::slice::from_ref(&public), "git", msg, &armored).unwrap();
+    // The same id again: refused by name, the first key kept.
+    assert!(matches!(
+        signer.create_key(id.clone(), algorithm),
+        Err(SignerError::DuplicateKey(refused)) if refused == id
+    ));
+    assert_eq!(public_key(signer, &id).unwrap(), public);
+    // An algorithm it declares no pair for: refused by name, nothing new.
+    if let Some(other) = KeyAlgorithm::ALL
+        .into_iter()
+        .find(|a| capabilities.pairs.iter().all(|(held, _)| held != a))
+    {
+        let refused: KeyId = format!("{id}-other").parse().unwrap();
+        let answer = signer.create_key(refused.clone(), other);
+        assert!(
+            matches!(&answer, Err(SignerError::Unsupported { id, .. }) if id == &refused),
+            "an algorithm it doesn't make ({other}) is refused by name: {answer:?}"
+        );
+        assert_eq!(signer.list_keys().unwrap().len(), before.len() + 1);
+    }
+    // Built again from what it stored: the same key.
+    if let Some(rebuild) = rebuild {
+        let again = rebuild(vec![(id.clone(), created.stored)]);
+        assert_eq!(public_key(&*again, &id).unwrap(), public);
+        let armored = sshsig(&*again, &id, "git", hash, msg).unwrap();
+        writ_crypto::sshsig::verify(std::slice::from_ref(&public), "git", msg, &armored).unwrap();
+    }
+    // Removed: no longer listed nor signed with; removed again refused; the id makes a new key.
+    signer.remove_key(&id).unwrap();
+    assert_eq!(
+        signer.list_keys().unwrap(),
+        before,
+        "removed: only the others"
+    );
+    assert!(matches!(
+        sshsig(signer, &id, "git", hash, msg),
+        Err(SignerError::UnknownKey(refused)) if refused == id
+    ));
+    assert!(matches!(
+        signer.remove_key(&id),
+        Err(SignerError::UnknownKey(refused)) if refused == id
+    ));
+    let fresh = signer.create_key(id.clone(), algorithm).unwrap();
+    assert_ne!(fresh.info.public_key, public, "a new key under the old id");
+    signer.remove_key(&id).unwrap();
+}
+
 /// The decorator section: `backend` behind a [`QueuedSigner`] (with a [`GatedSigner`] between
 /// them, to hold the backend stuck on a signal):
 /// - the whole [`signer_contract`] passes through the queue;
@@ -233,7 +326,7 @@ pub fn add_key_contract(signer: &dyn Signer) {
 ///   nobody), the late result is thrown away, and the next job signs;
 /// - a key added while the backend is stuck waits its turn behind the job before it (not
 ///   listed until the backend took it), then lands; and the whole [`add_key_contract`]
-///   passes through the queue.
+///   and [`create_key_contract`] pass through the queue.
 pub fn queued_signer_contract<S: Signer + 'static>(backend: S) {
     let keys = backend.list_keys().unwrap();
     let capabilities = backend.capabilities();
@@ -326,4 +419,5 @@ pub fn queued_signer_contract<S: Signer + 'static>(backend: S) {
         assert_eq!(public_key(&queued, &id).unwrap(), public);
     }
     add_key_contract(&queued);
+    create_key_contract(&queued, None);
 }

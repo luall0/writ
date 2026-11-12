@@ -14,7 +14,9 @@ use writ_core::names::KeyId;
 use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignerHash};
 use writ_crypto::keypair::{KeyPair, RawSignature};
 use writ_crypto::keys::{KeyKind, generate};
-use writ_signer::contract::{add_key_contract, queued_signer_contract, signer_contract};
+use writ_signer::contract::{
+    add_key_contract, create_key_contract, queued_signer_contract, signer_contract,
+};
 use writ_signer::queue::{QueueConfig, QueuedSigner};
 use writ_signer::software::SoftwareSigner;
 use writ_signer::testing::{FailingSigner, keypair, software_signer};
@@ -50,7 +52,9 @@ fn the_software_backend_passes_the_contract() {
     assert!(mixed.capabilities().exportable);
     assert!(!mixed.capabilities().needs_touch);
     assert!(mixed.capabilities().takes_keys);
+    assert!(!mixed.capabilities().makes_keys);
     add_key_contract(&mixed);
+    create_key_contract(&mixed, None);
     // A backend that holds no key yet takes one too, and gives it back (the contract removes
     // what it added).
     let empty = SoftwareSigner::empty();

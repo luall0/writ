@@ -8,14 +8,18 @@
 //!   rest comes in M5).
 //! - [`queue`]: a decorator in front of any backend, so a slow or hung device never holds
 //!   up a caller past a deadline (one worker thread, a bounded queue).
+//! - [`route`]: a decorator over several backends, sending each key's jobs to the one that
+//!   holds it (a use's keys may live on a software backend and a device at once).
 //! - Hardware backends (Secure Enclave in `writ-platform-macos`, YubiKey) implement the same
 //!   trait and run the same [`contract`] suite.
 //!
 //! With the `testing` feature: [`testing::FailingSigner`] (a backend that refuses on demand),
-//! [`testing::GatedSigner`] (one that blocks until the test releases it) and the [`contract`]
+//! [`testing::GatedSigner`] (one that blocks until the test releases it),
+//! [`testing::FakeDevice`] (one that makes its own keys, like a device) and the [`contract`]
 //! suite every backend passes.
 
 pub mod queue;
+pub mod route;
 pub mod software;
 pub mod tls;
 
@@ -28,6 +32,7 @@ use writ_core::names::KeyId;
 use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignatureFormat, SignerHash};
 use writ_crypto::keypair::{KeyPair, RawSignature};
 use writ_crypto::ssh_key::PublicKey;
+use zeroize::Zeroizing;
 
 /// Why a signer didn't sign. Never holds key material.
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +62,10 @@ pub enum SignerError {
     /// its own keys.
     #[error("key {0}: this signer backend takes no key made outside it")]
     CannotTakeKeys(KeyId),
+    /// The backend makes no key itself ([`Signer::create_key`]): one that takes keys made
+    /// outside it (the software backend).
+    #[error("key {0}: this signer backend makes no key itself")]
+    MakesNoKeys(KeyId),
 }
 
 /// A key a backend exposes: its id (what templates name in `signing_key`) and its public
@@ -83,6 +92,38 @@ pub struct Capabilities {
     /// Whether [`Signer::add_key`] takes a key made outside the backend (a software backend
     /// does; a device that makes its own keys doesn't).
     pub takes_keys: bool,
+    /// Whether [`Signer::create_key`] makes a key in the backend (a device does; the software
+    /// backend doesn't: the daemon makes its keys and hands them over).
+    pub makes_keys: bool,
+}
+
+/// What a backend answers for a key it made ([`Signer::create_key`]): its public half, and
+/// what the daemon keeps to give the key back to the backend at the next start.
+#[derive(Debug)]
+pub struct Created {
+    pub info: KeyInfo,
+    pub stored: Stored,
+}
+
+/// The bytes a backend gives the daemon to keep for one of the keys it made (a Secure
+/// Enclave key's blob, a device's handle), opaque to the daemon: sealed in the keystore, and
+/// handed back to the backend when it is built. Wiped on drop, never printed.
+pub struct Stored(Zeroizing<Vec<u8>>);
+
+impl Stored {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Stored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Stored({} bytes)", self.0.len())
+    }
 }
 
 /// Where keys live and how they sign. Used as a trait object (`Arc<dyn Signer>`).
@@ -101,16 +142,27 @@ pub trait Signer: Send + Sync {
     /// Takes `key`, made outside the backend, under `id` (moved in, never copied), usable at
     /// once; answers its [`KeyInfo`]. An id it holds already is [`SignerError::DuplicateKey`],
     /// an algorithm it doesn't hold [`SignerError::Unsupported`]. A backend that takes no key
-    /// from outside (a device makes its own: M7.5 brings that verb) keeps this default,
+    /// from outside (a device makes its own: [`Signer::create_key`]) keeps this default,
     /// [`SignerError::CannotTakeKeys`], and says so in [`Capabilities::takes_keys`].
     fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         drop(key);
         Err(SignerError::CannotTakeKeys(id))
     }
-    /// Drops the key `id` (wiped, a software key), no longer listed nor signed with: a key
-    /// the policy no longer declares, deleted for good (M6.2). An id it doesn't hold is
-    /// [`SignerError::UnknownKey`]. A backend that takes no key from outside keeps this
-    /// default, [`SignerError::CannotTakeKeys`] (a device's own key verb comes with M7.5).
+    /// Makes a key of `algorithm` in the backend under `id`, usable at once; answers its
+    /// public half and what the daemon keeps to give it back at the next start
+    /// ([`Created`]). An id it holds already is [`SignerError::DuplicateKey`], an algorithm
+    /// it doesn't make [`SignerError::Unsupported`]. A backend that makes no key itself (the
+    /// software backend: the daemon makes its keys, [`Signer::add_key`]) keeps this default,
+    /// [`SignerError::MakesNoKeys`], and says so in [`Capabilities::makes_keys`].
+    fn create_key(&self, id: KeyId, algorithm: KeyAlgorithm) -> Result<Created, SignerError> {
+        let _ = algorithm;
+        Err(SignerError::MakesNoKeys(id))
+    }
+    /// Drops the key `id` (wiped, a software key; a device's forgotten, its stored bytes no
+    /// longer given back), no longer listed nor signed with: a key the policy no longer
+    /// declares, deleted for good (M6.2). An id it doesn't hold is
+    /// [`SignerError::UnknownKey`]. A backend that neither takes nor makes keys keeps this
+    /// default, [`SignerError::CannotTakeKeys`].
     fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {
         Err(SignerError::CannotTakeKeys(id.clone()))
     }
@@ -132,6 +184,10 @@ impl<S: Signer + ?Sized> Signer for std::sync::Arc<S> {
 
     fn add_key(&self, id: KeyId, key: KeyPair) -> Result<KeyInfo, SignerError> {
         (**self).add_key(id, key)
+    }
+
+    fn create_key(&self, id: KeyId, algorithm: KeyAlgorithm) -> Result<Created, SignerError> {
+        (**self).create_key(id, algorithm)
     }
 
     fn remove_key(&self, id: &KeyId) -> Result<(), SignerError> {

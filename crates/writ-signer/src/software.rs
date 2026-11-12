@@ -119,6 +119,7 @@ impl Signer for SoftwareSigner {
             exportable: true,
             needs_touch: false,
             takes_keys: true,
+            makes_keys: false,
         }
     }
 
