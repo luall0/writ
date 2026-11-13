@@ -108,10 +108,14 @@ crates/
                         credential through a one-operation agent socket, the byte-capping
                         relay) or HTTPS (the token through a one-operation credential
                         socket, the byte-capping proxy)
-  writ-signer/          the `Signer` trait, the software backend, its contract suite
-  writ-platform-linux/  Linux-only implementations: process hardening (M5)
-  writ-platform-macos/  macOS-only implementations: process hardening (M5; process chain,
-                        kqueue, Secure Enclave from M7)
+  writ-signer/          the `Signer` trait, the software backend, the helper backend (a
+                        device behind `writ-se/1`, M7.5) and its key agreement (M7.6), the
+                        contract suite, the fake helper `writ-fake-se` (feature `testing`)
+  writ-platform-linux/  Linux-only implementations: process hardening (M5), the process
+                        chain, the pidfd watcher, the process reader (M7.1)
+  writ-platform-macos/  macOS-only implementations: process hardening (M5), the process
+                        chain and kqueue watcher (M7), the Secure Enclave helper `writ-se`
+                        (M7.5) and its keystore recipient (M7.6)
   writ-gateway/         russh server: git upload/receive-pack, sign, lease commands, the
                         approval API over SSH and HTTPS
   writ-approval/        the approval service: tickets, approvals, refusals, revocations,
@@ -124,6 +128,10 @@ crates/
                         driving the binaries in theirs (depends on no internal crate)
 e2e/                    the end-to-end images (Dockerfile), stack (compose) and the daemon's
                         configuration the operator setup installs (docs/end-to-end.md)
+skill/writ/SKILL.md     the agent skill, built into `writ` and installed by `writ init` (M6)
+skill/writ-workspace/   the skill at a folder of repositories (a workspace), likewise (M6.1)
+deploy/                 the installer (`install.sh`, `frame.sh`) and one script per setup
+                        (`setups/`: local on the Mac, local on Linux) (M7, M7.1)
 tool/                   check scripts run by `make check`, `make e2e`'s script
 dev/                    the development daemon's configuration
 docs/
@@ -132,10 +140,8 @@ docs/
 Planned, created by the milestone that needs them:
 
 ```
-crates/
-skill/writ/SKILL.md     the agent skill, built into `writ` and installed by `writ init`
-skill/writ-workspace/   the skill at a folder of repositories (a workspace), likewise
-deploy/                 Dockerfile, compose.yaml (M8, built on e2e/'s images)
+deploy/                 the detached deployment's Dockerfile and compose.yaml (M8, built on
+                        e2e/'s images)
 spikes/                 throwaway spike code, outside the workspace, removed once done
 ```
 

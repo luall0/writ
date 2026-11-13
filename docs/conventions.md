@@ -22,10 +22,11 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
 - **`writ-core` is pure**: no I/O, no clock, no randomness. Time comes in as `now: Timestamp`,
   randomness as bytes (`TicketId::from_parts`).
 - **Test support lives behind a `testing` feature** (`writ-platform`, `writ-store`,
-  `writ-signer`, `writ-approval`, `writ-alloc`): fakes, contract suites, builders, test-only constructors
+  `writ-signer`, `writ-approval`, `writ-alloc`, `writ-mirror`, `writ-crypto`): fakes, contract suites, builders, test-only constructors
   (`Store::open_in_memory`). A crate's own tests turn it on through a dev-dependency on itself.
-  Production code never enables it. `make check` also lints each library alone, so code that
-  only compiles with the feature can't hide.
+  Production code never enables it. `make check` also lints each library alone (`LIBRARIES`
+  in the Makefile, the platform crates with them), so code that only compiles with the
+  feature can't hide.
 - **Dependencies**: versions once in the root `Cargo.toml`, `dep.workspace = true` in the crate.
   A dependency nothing uses is removed. Each crate in [stack.md](stack.md) is "Decided" before
   it is relied on.

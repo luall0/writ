@@ -2,7 +2,8 @@
 //! the daemon host, when no admin change can (every approver or reader key lost), or to apply
 //! a file edited there. Run as the daemon's user, with the daemon stopped (refused while
 //! `writd run` holds the state's lock, [`crate::lock`]). It needs the
-//! keystore's passphrase: with the host, that opens every secret already, so recovery gives
+//! keystore's passphrase, or its recovery key (M7.6: the only way into a keystore its
+//! hardware opens): with the host, either opens every secret already, so recovery gives
 //! nobody anything new. The file is checked like an admin change (with the two others in
 //! force), recorded as a new version under the keystore's MAC, logged (`admin`, no approver),
 //! and written to the file `writd.yaml` names. A policy's keys the keystore lacks are made

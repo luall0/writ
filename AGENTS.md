@@ -42,7 +42,7 @@ gets its page (the template there) written up to its plan before any code.
 | Daemon data (container) | `/var/lib/writ/` (keystore in `/var/lib/writ/keys/`) |
 | Ports (detached) | `2222` gateway (SSH, agents), `2223` approval API (SSH), `8443` approval API (HTTPS); each approval transport can be disabled, not both |
 | SSH users | `git` (lease holders, with a certificate), `writ` (ticket submission with a session key; the approval API with a reader key) |
-| Client files | `~/.writ/known_hosts` (the daemon's pinned host key), `~/.writ/tls_pins` (its pinned TLS certificate), `~/.writ/approver.pub`, `~/.writ/reader` (the reader key) |
+| Client files | `~/.writ/known_hosts` (the daemon's pinned host key), `~/.writ/tls_pins` (its pinned TLS certificate), `~/.writ/approver.pub`, `~/.writ/reader` (the reader key), `~/.writ/config` (the daemon's endpoints, when no flag or variable gives them), `~/.writ/repos` (the repositories `writ init` wired) |
 | Daemon files granting access | `approvers` (who may sign), `readers` (who may use the approval API) |
 | Env vars | `WRIT_*` |
 | Agent skill | `skill/writ/SKILL.md`; at a workspace root (`writ init` with no repo named), `skill/writ-workspace/SKILL.md` |
@@ -171,6 +171,8 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Run the development daemon on `dev/writd.yaml` (test keys in `dev/data`, your approval public key in `dev/approvers`; `writd host-key dev/writd.yaml` / `writd tls-fingerprint dev/writd.yaml` print what to pin) | `make run` |
 | End-to-end scenarios: the binaries in containers against Forgejo, every command and flag (Docker; `ARGS=<filter>`, `WRIT_E2E_KEEP=1` keeps the stack) | `make e2e [ARGS=<scenario>]` |
 | The wiping allocator's benchmark: `writd` with and without it under heavy load, in release (by hand; `LINUX=1` in a Linux container) | `make bench-alloc [RUNS=<n>] [LINUX=1]` |
+| The guided installer (by hand: `sudo`): a setup to pick, every choice asked before anything changes; run again, it upgrades ([install](docs/operators/install.md)) | `make install` |
+| Take the install back (the daemon's data kept unless `delete` is typed) | `make uninstall` |
 | Build the Docker image (from M8) | `make docker` |
 | Add a dependency | add its version to `[workspace.dependencies]` in the root `Cargo.toml`, then `dep.workspace = true` in the crate |
 

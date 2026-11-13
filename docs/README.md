@@ -27,7 +27,10 @@ conventions, hard rules and commands, and points here for details.
   [`policy.yaml`](operators/policy-yaml.md) (registry and templates),
   [the ticket file](operators/ticket.md), [client settings](operators/clients.md);
   [good practice](operators/good-practice.md) beside an agent (wrapper or whole repo, your own
-  keys, guardrails, checking what landed).
+  keys, guardrails, checking what landed); [installing](operators/install.md) on a Mac or
+  Linux host, [daily operations](operators/sealing.md) (unsealing, policy changes, tokens,
+  the recovery key, auto-unseal), [hardening](operators/hardening.md) the daemon's process,
+  and [recovery](operators/recovery.md) when every approval key is lost.
 
 ## Domain
 - [Lease model](lease-model.md): repo registry, templates, ticket / lease schema, trust of
