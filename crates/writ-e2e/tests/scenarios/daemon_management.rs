@@ -536,7 +536,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     );
     // Where a key may live (M7.5): this daemon, on Linux, has software alone, so a key is
     // moved with --backend to it, and the Secure Enclave is refused before any signature.
-    let listed = approver.run(&format!("writ admin key list {url}"));
+    let listed = approver.run("writ admin key list");
     assert!(
         writ_e2e::stderr(&listed)
             .contains("backends: software (ed25519, p256, p384, rsa3072, rsa4096)"),
