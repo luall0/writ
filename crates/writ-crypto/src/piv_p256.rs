@@ -321,6 +321,19 @@ pub mod software {
             out
         }
 
+        /// The shared secret with `peer` (a SEC1 point), as a device answers it; none for a
+        /// peer that isn't a point on the curve.
+        pub fn agree_with(&self, peer: &[u8]) -> Option<[u8; SHARED_BYTES]> {
+            let peer = p256::PublicKey::from_sec1_bytes(peer).ok()?;
+            let shared = p256::elliptic_curve::ecdh::diffie_hellman(
+                self.secret.to_nonzero_scalar(),
+                peer.as_affine(),
+            );
+            let mut out = [0u8; SHARED_BYTES];
+            out.copy_from_slice(shared.raw_secret_bytes().as_slice());
+            Some(out)
+        }
+
         /// The file key from a stanza of this key's: parse, tag, agree, unwrap.
         pub fn unwrap(
             &self,

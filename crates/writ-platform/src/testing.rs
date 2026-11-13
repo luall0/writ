@@ -7,6 +7,7 @@
 //! | [`FakeTransport`] + [`FakeConnector`] | a [`Transport`] over in-memory pipes, any [`PeerInfo`] |
 //! | [`FakeAttestor`] | a [`CallerAttestor`] with chosen facts, failing, or network-like |
 //! | [`FakeWatcher`] | a [`SessionWatcher`] whose processes the test starts and ends |
+//! | [`FakeAgreement`] | a [`KeyAgreement`](crate::unlock::piv::KeyAgreement) device in software, refusing on demand, every agreement counted |
 //! | [`FakeUnwrap`] + [`FakeRecipient`] | a [`KeystoreUnwrap`] standing for a hardware key: a stanza of its own, refusing on demand, every use counted |
 //! | [`RecordingNotifier`] | a [`Notifier`] that records what it delivers, or always fails |
 //! | [`FakeClock`] | a [`Clock`] moved by hand |
@@ -449,6 +450,69 @@ impl KeystoreUnwrap for FakeUnwrap {
             .try_into()
             .map_err(|_| PlatformError::Unlock("a damaged fake stanza".to_owned()))?;
         Ok(Some(crate::unlock::FileKey::new(Box::new(key))))
+    }
+}
+
+/// A P-256 key-agreement device in software (`writ_crypto::piv_p256::software`): the ECDH a
+/// Secure Enclave or a YubiKey does, refusing once [`FakeAgreement::refuse`] is called, every
+/// agreement it is asked for counted. Clones share the key, the switch and the count.
+#[derive(Clone)]
+pub struct FakeAgreement {
+    key: Arc<writ_crypto::piv_p256::software::SoftwareKey>,
+    refusing: Arc<std::sync::atomic::AtomicBool>,
+    uses: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl std::fmt::Debug for FakeAgreement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FakeAgreement({})", self.key.recipient())
+    }
+}
+
+impl FakeAgreement {
+    /// The device whose key is `scalar` (refused unless one), its recipient printed `age1se1…`.
+    pub fn new(scalar: [u8; 32]) -> Result<Self> {
+        let key = writ_crypto::piv_p256::software::SoftwareKey::from_scalar(&scalar, "age1se")
+            .map_err(|e| PlatformError::Config(e.to_string()))?;
+        Ok(Self {
+            key: Arc::new(key),
+            refusing: Arc::default(),
+            uses: Arc::default(),
+        })
+    }
+
+    pub fn recipient(&self) -> writ_crypto::piv_p256::P256Recipient {
+        self.key.recipient().clone()
+    }
+
+    /// The way into the keystore over this device, named `name`.
+    pub fn way(&self, name: &str) -> crate::unlock::piv::PivUnwrap {
+        crate::unlock::piv::PivUnwrap::new(name, self.recipient(), Arc::new(self.clone()))
+    }
+
+    pub fn refuse(&self) {
+        self.refusing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn uses(&self) -> usize {
+        self.uses.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl crate::unlock::piv::KeyAgreement for FakeAgreement {
+    fn agree(
+        &self,
+        peer: &[u8; writ_crypto::piv_p256::UNCOMPRESSED_BYTES],
+    ) -> Result<zeroize::Zeroizing<[u8; writ_crypto::piv_p256::SHARED_BYTES]>> {
+        self.uses.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(PlatformError::Unlock("the fake device refuses".to_owned()));
+        }
+        self.key
+            .agree_with(peer)
+            .map(zeroize::Zeroizing::new)
+            .ok_or_else(|| PlatformError::Unlock("not a point on the curve".to_owned()))
     }
 }
 

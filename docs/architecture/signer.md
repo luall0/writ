@@ -176,7 +176,10 @@ tested on every OS against a fake helper (`writ-fake-se`, built with `testing` o
   and its bytes. `hello` answers the protocol's name (the startup check; a helper without its
   device refuses with a code, `no-secure-enclave`); `create <algorithm>` answers the key's
   stored bytes and public point (SEC1, uncompressed); `public <stored>` its public point;
-  `sign <stored> <data>` the signature over the data's SHA-256, `r ‖ s`. A refusal is one code
+  `sign <stored> <data>` the signature over the data's SHA-256, `r ‖ s`; and for the
+  keystore's hardware recipient (M7.6, `writ_signer::helper::agreement`), `create-agreement
+  <algorithm>` a P-256 key-agreement key's stored bytes and point, `public-agreement <stored>`
+  its point, `agree <stored> <peer>` the ECDH shared secret (32 bytes). A refusal is one code
   of at most 64 bytes of `[a-z0-9-]`. P-256 with SHA-256 is the only pair in this build.
 - **The helper keeps no state:** each request carries its stored bytes, so a new helper
   answers as the old one did. It starts on first use, with an empty environment and its

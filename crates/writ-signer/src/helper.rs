@@ -14,6 +14,9 @@
 //! | `create` (2) | the algorithm (`p256`) | the key's stored bytes, its public point (SEC1, uncompressed) |
 //! | `public` (3) | stored bytes | the public point |
 //! | `sign` (4) | stored bytes, the data | the signature over the data's SHA-256, `r ‖ s` |
+//! | `create-agreement` (5) | the algorithm (`p256`) | a key-agreement key's stored bytes, its public point (M7.6, [`agreement`]) |
+//! | `public-agreement` (6) | stored bytes | its public point |
+//! | `agree` (7) | stored bytes, a peer point (SEC1, uncompressed) | the ECDH shared secret (its x coordinate, 32 bytes) |
 //! | refused | | a code: at most 64 bytes of `[a-z0-9-]` |
 //!
 //! The helper keeps no state: each request carries its stored bytes, so a new helper answers
@@ -38,6 +41,8 @@
 //! half the daemon kept, and every signature with it is refused ([`SignerError::Unusable`]):
 //! the daemon keeps running and its other keys sign. [`HelperSigner::refused`] says which, for
 //! the daemon's log and audit log.
+
+pub mod agreement;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -84,8 +89,14 @@ const DIGEST: usize = 32;
 
 /// The digest of `blob` for the key whose public point is `point`.
 fn digest(point: &[u8], blob: &[u8]) -> [u8; DIGEST] {
+    digest_under(FRAME, point, blob)
+}
+
+/// The digest of `blob` for the key whose public point is `point`, framed under `header` (a
+/// signing key's, or a key-agreement key's: a blob of one kind never passes for the other).
+fn digest_under(header: &[u8], point: &[u8], blob: &[u8]) -> [u8; DIGEST] {
     let mut hash = Sha256::new();
-    hash.update(FRAME);
+    hash.update(header);
     hash.update(point);
     hash.update(blob);
     hash.finalize().into()
@@ -184,6 +195,9 @@ enum Op {
     Create = 2,
     Public = 3,
     Sign = 4,
+    CreateAgreement = 5,
+    PublicAgreement = 6,
+    Agree = 7,
 }
 
 /// A running helper: its stdin, and the answers its reader thread reads from its stdout.
@@ -336,6 +350,14 @@ struct Helper {
 }
 
 impl Helper {
+    /// A helper that starts on its first request.
+    fn new(config: HelperConfig) -> Self {
+        Self {
+            config,
+            process: Mutex::new(None),
+        }
+    }
+
     /// Sends one request and waits for its answer, until the deadline. Any failure but the
     /// helper's own refusal ends the process: the next request starts a new one.
     fn call(&self, op: Op, fields: &[&[u8]], count: usize) -> Result<Vec<Vec<u8>>, HelperError> {

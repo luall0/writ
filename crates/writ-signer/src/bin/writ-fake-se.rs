@@ -4,11 +4,13 @@
 //!
 //! `writ-fake-se [--fault <op>:<fault>]… [--once <marker file>] [--record <file>]
 //! [--no-enclave]`: `op` is
-//! `hello`, `create`, `public` or `sign`; `fault` is `crash` (exits mid-answer), `silent`
+//! `hello`, `create`, `public`, `sign`, `create-agreement`, `public-agreement` or `agree`;
+//! `fault` is `crash` (exits mid-answer), `silent`
 //! (never answers), `oversize` (announces an answer past the bound), `bad-point`,
 //! `other-key` (another key's point), `bad-signature` (a signature of other bytes), `refuse`
 //! (refuses with a clean code), `dirty-code` (a code outside the alphabet), `extra-field`,
-//! `unknown-status`. With `--once`, the faults hit only a process that finds no marker (it
+//! `unknown-status`, and for an agreement `short-secret` (31 bytes) or `other-secret` (another
+//! key's shared secret). With `--once`, the faults hit only a process that finds no marker (it
 //! writes one): the next helper answers right. With `--record`, each request's operation and
 //! its first field's length are appended to the file, one line each, before it is answered
 //! (what the tests check never reached the helper).
@@ -100,9 +102,10 @@ fn main() {
                 ok.extend_from_slice(&field(b"more"));
                 ok
             }
-            Some(other @ ("bad-point" | "other-key" | "bad-signature")) => {
-                tampered(op, &fields, other)
-            }
+            Some(
+                other @ ("bad-point" | "other-key" | "bad-signature" | "short-secret"
+                | "other-secret"),
+            ) => tampered(op, &fields, other),
             Some(other) => panic!("unknown fault {other}"),
             None => answer(op, &fields, enclave),
         };
@@ -120,6 +123,9 @@ fn parse(body: &[u8]) -> (&'static str, Vec<Vec<u8>>) {
         2 => "create",
         3 => "public",
         4 => "sign",
+        5 => "create-agreement",
+        6 => "public-agreement",
+        7 => "agree",
         other => panic!("unknown operation {other}"),
     };
     let mut fields = Vec::new();
@@ -187,8 +193,58 @@ fn answer(op: &str, fields: &[Vec<u8>], enclave: bool) -> Vec<u8> {
             }
             None => refused(b"invalid-blob"),
         },
+        "create-agreement" if fields[0] != b"p256" => refused(b"unsupported-algorithm"),
+        "create-agreement" => {
+            let scalar = agreement_scalar();
+            ok(&[&agreement_blob(&scalar), &agreement_point(&scalar)])
+        }
+        "public-agreement" => match agreement_key(&fields[0]) {
+            Some(scalar) => ok(&[&agreement_point(&scalar)]),
+            None => refused(b"invalid-blob"),
+        },
+        "agree" => match (
+            agreement_key(&fields[0]),
+            p256::PublicKey::from_sec1_bytes(&fields[1]),
+        ) {
+            (Some(scalar), Ok(peer)) => ok(&[&shared(&scalar, &peer)]),
+            (None, _) => refused(b"invalid-blob"),
+            (_, Err(_)) => refused(b"invalid-point"),
+        },
         _ => unreachable!(),
     }
+}
+
+/// A fake key-agreement blob: its header, then the scalar (a fake: no secrecy).
+const AGREEMENT_HEADER: &[u8] = b"fake-se-agreement/1\n";
+
+fn agreement_scalar() -> p256::SecretKey {
+    loop {
+        let bytes = writ_crypto::keys::random_array::<32>().unwrap();
+        if let Ok(key) = p256::SecretKey::from_slice(&bytes) {
+            return key;
+        }
+    }
+}
+
+fn agreement_blob(key: &p256::SecretKey) -> Vec<u8> {
+    let mut blob = AGREEMENT_HEADER.to_vec();
+    blob.extend_from_slice(&key.to_bytes());
+    blob
+}
+
+fn agreement_key(blob: &[u8]) -> Option<p256::SecretKey> {
+    p256::SecretKey::from_slice(blob.strip_prefix(AGREEMENT_HEADER)?).ok()
+}
+
+fn agreement_point(key: &p256::SecretKey) -> Vec<u8> {
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    key.public_key().to_sec1_point(false).as_bytes().to_vec()
+}
+
+fn shared(key: &p256::SecretKey, peer: &p256::PublicKey) -> Vec<u8> {
+    p256::elliptic_curve::ecdh::diffie_hellman(key.to_nonzero_scalar(), peer.as_affine())
+        .raw_secret_bytes()
+        .to_vec()
 }
 
 fn tampered(op: &str, fields: &[Vec<u8>], fault: &str) -> Vec<u8> {
@@ -211,6 +267,23 @@ fn tampered(op: &str, fields: &[Vec<u8>], fault: &str) -> Vec<u8> {
             ok(&[signature.as_bytes()])
         }
         ("sign", "bad-point") => ok(&[&[0u8; 63]]),
+        ("create-agreement", "bad-point") => {
+            ok(&[&agreement_blob(&agreement_scalar()), &bad_point])
+        }
+        ("create-agreement", "other-key") => {
+            let other = agreement_scalar();
+            ok(&[
+                &agreement_blob(&agreement_scalar()),
+                &agreement_point(&other),
+            ])
+        }
+        ("public-agreement", "bad-point") => ok(&[&bad_point]),
+        ("public-agreement", "other-key") => ok(&[&agreement_point(&agreement_scalar())]),
+        ("agree", "short-secret") => ok(&[&[7u8; 31]]),
+        ("agree", "other-secret") => {
+            let peer = p256::PublicKey::from_sec1_bytes(&fields[1]).unwrap();
+            ok(&[&shared(&agreement_scalar(), &peer)])
+        }
         _ => panic!("no {fault} for {op}"),
     }
 }

@@ -4071,6 +4071,7 @@ dependencies = [
  "tracing",
  "ureq",
  "writ-core",
+ "writ-crypto",
  "writ-platform",
  "zeroize",
 ]
@@ -4103,6 +4104,7 @@ dependencies = [
  "writ-crypto",
  "writ-platform",
  "writ-signer",
+ "zeroize",
 ]
 
 [[package]]
@@ -4142,6 +4144,7 @@ dependencies = [
  "tracing-subscriber",
  "writ-core",
  "writ-crypto",
+ "writ-platform",
  "writ-signer",
  "zeroize",
 ]

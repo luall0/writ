@@ -2,11 +2,12 @@
 //
 // Speaks writ-se/1 on stdin and stdout, one request at a time, and keeps no state: each
 // request carries the key's blob (CryptoKit's dataRepresentation, usable only by this Mac's
-// Secure Enclave). P-256 only. Keys are made with the access control `privateKeyUsage` alone
+// Secure Enclave). P-256 only: signing keys, and (M7.6) key-agreement keys, each kind used only
+// with its own operations (writd frames each blob with its kind before any helper sees it). Keys are made with the access control `privateKeyUsage` alone
 // and `AfterFirstUnlockThisDeviceOnly`: no prompt, the screen locked or not.
 //
 // Frames: a 4-byte big-endian length, then the body. A request: an operation byte (1 hello,
-// 2 create, 3 public, 4 sign), then its fields, each a 4-byte length and its bytes. An
+// 2 create, 3 public, 4 sign; 5 create-agreement, 6 public-agreement, 7 agree), then its fields, each a 4-byte length and its bytes. An
 // answer: 0 and its fields, or 1 and one code of [a-z0-9-]. No `try!` and no force unwrap:
 // every error is answered by its code. writd checks every answer; a crash inside CryptoKit
 // (a corrupted blob) costs writd one job.
@@ -25,6 +26,9 @@ enum Op: UInt8 {
     case create = 2
     case publicPoint = 3
     case sign = 4
+    case createAgreement = 5
+    case publicAgreement = 6
+    case agree = 7
 }
 
 struct Refusal: Error {
@@ -103,6 +107,22 @@ func key(_ blob: Data) throws -> SecureEnclave.P256.Signing.PrivateKey {
     }
 }
 
+func agreementKey(_ blob: Data) throws -> SecureEnclave.P256.KeyAgreement.PrivateKey {
+    do {
+        return try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob)
+    } catch {
+        throw Refusal(code: "invalid-blob")
+    }
+}
+
+func accessControl() throws -> SecAccessControl {
+    var error: Unmanaged<CFError>?
+    guard let access = SecAccessControlCreateWithFlags(
+        nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, .privateKeyUsage, &error)
+    else { throw Refusal(code: "access-control-failed") }
+    return access
+}
+
 func handle(_ op: Op, _ args: [Data]) throws -> [Data] {
     switch op {
     case .hello:
@@ -113,10 +133,7 @@ func handle(_ op: Op, _ args: [Data]) throws -> [Data] {
         guard args.count == 1 else { throw Refusal(code: "bad-request") }
         guard args[0] == Data("p256".utf8) else { throw Refusal(code: "unsupported-algorithm") }
         guard SecureEnclave.isAvailable else { throw Refusal(code: "no-secure-enclave") }
-        var error: Unmanaged<CFError>?
-        guard let access = SecAccessControlCreateWithFlags(
-            nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, .privateKeyUsage, &error)
-        else { throw Refusal(code: "access-control-failed") }
+        let access = try accessControl()
         do {
             let made = try SecureEnclave.P256.Signing.PrivateKey(
                 compactRepresentable: false, accessControl: access)
@@ -134,6 +151,38 @@ func handle(_ op: Op, _ args: [Data]) throws -> [Data] {
             return [try signer.signature(for: args[1]).rawRepresentation]
         } catch {
             throw Refusal(code: "sign-failed")
+        }
+    case .createAgreement:
+        guard args.count == 1 else { throw Refusal(code: "bad-request") }
+        guard args[0] == Data("p256".utf8) else { throw Refusal(code: "unsupported-algorithm") }
+        guard SecureEnclave.isAvailable else { throw Refusal(code: "no-secure-enclave") }
+        let access = try accessControl()
+        do {
+            let made = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+                compactRepresentable: false, accessControl: access)
+            return [made.dataRepresentation, made.publicKey.x963Representation]
+        } catch {
+            throw Refusal(code: "create-failed")
+        }
+    case .publicAgreement:
+        guard args.count == 1 else { throw Refusal(code: "bad-request") }
+        return [try agreementKey(args[0]).publicKey.x963Representation]
+    case .agree:
+        // The peer point: an uncompressed P-256 point writd already checked on the curve;
+        // CryptoKit checks it again.
+        guard args.count == 2, args[1].count == 65 else { throw Refusal(code: "bad-request") }
+        let key = try agreementKey(args[0])
+        let peer: P256.KeyAgreement.PublicKey
+        do {
+            peer = try P256.KeyAgreement.PublicKey(x963Representation: args[1])
+        } catch {
+            throw Refusal(code: "invalid-point")
+        }
+        do {
+            let shared = try key.sharedSecretFromKeyAgreement(with: peer)
+            return [shared.withUnsafeBytes { Data($0) }]
+        } catch {
+            throw Refusal(code: "agree-failed")
         }
     }
 }

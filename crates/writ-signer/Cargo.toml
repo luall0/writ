@@ -34,6 +34,8 @@ rustls.workspace = true
 tempfile.workspace = true
 # The tests use the test support: always build it with `testing`.
 writ-signer = { workspace = true, features = ["testing"] }
+# The helper's key agreement as a way into the keystore: the unwrap contract (M7.6).
+writ-platform = { workspace = true, features = ["testing"] }
 # Reads what the queue logs (a backend that panicked).
 tracing-subscriber.workspace = true
 

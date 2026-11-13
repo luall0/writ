@@ -25,6 +25,8 @@ writ-platform = { workspace = true, features = ["testing"] }
 # The Secure Enclave helper's tests: the Signer contract on the real Secure Enclave.
 writ-signer = { workspace = true, features = ["testing"] }
 writ-crypto.workspace = true
+# The keystore's hardware recipient on the real Secure Enclave (M7.6): its shared secret.
+zeroize.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

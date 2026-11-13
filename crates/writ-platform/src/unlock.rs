@@ -4,10 +4,12 @@
 //!
 //! Portable implementations: [`passphrase::PassphraseUnwrap`] (age's scrypt stanza: the
 //! keystore's identity wrapped with the passphrase) and [`x25519::X25519Unwrap`] (an age X25519
-//! identity: the keystore's own, and from M7.6 the offline recovery identity). Hardware ways
-//! (the Secure Enclave, later a YubiKey, a TPM, a KMS) are more implementations.
+//! identity: the keystore's own, and from M7.6 the offline recovery identity), and
+//! [`piv::PivUnwrap`], the `piv-p256` stanza over any device that does P-256 key agreement
+//! ([`piv::KeyAgreement`]: the Secure Enclave through its helper, later a YubiKey or a TPM).
 
 pub mod passphrase;
+pub mod piv;
 pub mod x25519;
 
 use std::io::Read;

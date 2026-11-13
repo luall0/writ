@@ -79,3 +79,50 @@ fn the_secure_enclave_passes_the_contract_alone_and_behind_a_queue() {
     create_key_contract(&held, Some(&rebuild));
     queued_signer_contract(HelperSigner::new(config(), loads(made(&["se-01"]))).unwrap());
 }
+
+/// M7.6: the keystore's hardware recipient on this Mac's real Secure Enclave: a key-agreement
+/// key made through `writ-se`, loaded again from what the daemon keeps, and the unwrap
+/// contract through the `piv-p256` way. Only stanzas this crate wrapped reach the device here
+/// (the contract changes a stanza's body, never its point nor the blob); hostile stanzas and
+/// blobs are tested against the fake helper (`crates/writ-signer/tests/agreement.rs`).
+#[test]
+fn the_secure_enclave_key_agreement_passes_the_unwrap_contract() {
+    use std::sync::Arc;
+    use writ_crypto::piv_p256::{P256Recipient, SHARED_BYTES, UNCOMPRESSED_BYTES};
+    use writ_platform::unlock::piv::{KeyAgreement, PivUnwrap};
+    use writ_signer::helper::agreement::HelperAgreement;
+
+    struct Device(HelperAgreement);
+    impl KeyAgreement for Device {
+        fn agree(
+            &self,
+            peer: &[u8; UNCOMPRESSED_BYTES],
+        ) -> writ_platform::Result<zeroize::Zeroizing<[u8; SHARED_BYTES]>> {
+            self.0
+                .agree(peer)
+                .map_err(|e| writ_platform::PlatformError::Unlock(e.to_string()))
+        }
+    }
+    let way = |name: &str, agreement: HelperAgreement| {
+        let recipient = P256Recipient::from_sec1(agreement.point(), "age1se").unwrap();
+        PivUnwrap::new(name, recipient, Arc::new(Device(agreement)))
+    };
+
+    check(&config()).unwrap_or_else(|e| panic!("this Mac's Secure Enclave can't be used ({e})"));
+    let (_, made) = HelperAgreement::create(&config()).unwrap();
+    // Loaded from what the daemon keeps, as at each start: its frame, point and probe checked.
+    let loaded = HelperAgreement::load(&config(), &made.stored, &made.point).unwrap();
+    let se = way("se-01", loaded);
+    let (other, _) = HelperAgreement::create(&config()).unwrap();
+    let other = way("se-02", other);
+    let fake = writ_platform::testing::FakeUnwrap::new("fake", [1; 16]).recipient();
+    writ_platform::contract::keystore_unwrap(
+        &se,
+        se.recipient(),
+        &[other.recipient(), &fake],
+        &[&other],
+        true,
+        &[],
+    );
+    assert!(se.recipient().to_string().starts_with("age1se1"));
+}

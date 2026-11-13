@@ -7,10 +7,12 @@ publish.workspace = true
 
 [features]
 # Fakes of every interface and the contract suites, for tests of this crate and of others.
-testing = []
+testing = ["writ-crypto/testing"]
 
 [dependencies]
 writ-core.workspace = true
+# The piv-p256 stanza a hardware key-agreement key unwraps (M7.6).
+writ-crypto.workspace = true
 age.workspace = true
 age-core.workspace = true
 bech32.workspace = true

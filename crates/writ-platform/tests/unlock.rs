@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use writ_platform::contract;
-use writ_platform::testing::FakeUnwrap;
+use writ_platform::testing::{FakeAgreement, FakeUnwrap};
 use writ_platform::unlock::passphrase::{self, PassphraseUnwrap};
 use writ_platform::unlock::x25519::X25519Unwrap;
 use writ_platform::unlock::{OpenError, PassphraseFile};
@@ -413,5 +413,75 @@ fn a_passphrase_file_opens_only_where_one_is_allowed() {
             .unwrap()
             .as_slice(),
         KEY
+    );
+}
+
+#[test]
+fn a_hardware_recipient_passes_the_contract() {
+    let device = FakeAgreement::new([0x21; 32]).unwrap();
+    let way = device.way("se-01");
+    let other = FakeAgreement::new([0x22; 32]).unwrap();
+    let x25519 = age::x25519::Identity::generate().to_public();
+    let wrong = other.way("se-02");
+    contract::keystore_unwrap(
+        &way,
+        &device.recipient(),
+        &[&other.recipient(), &x25519],
+        &[&wrong],
+        true,
+        &[],
+    );
+}
+
+/// A `piv-p256` stanza is read before the device is asked: another recipient's, or a
+/// malformed one, never reaches it; a device that refuses fails the way with its reason.
+#[test]
+fn the_device_sees_only_its_own_well_made_stanzas() {
+    let device = FakeAgreement::new([0x21; 32]).unwrap();
+    let way = device.way("se-01");
+    let theirs = FakeAgreement::new([0x22; 32]).unwrap();
+    let file_key = writ_platform::unlock::FileKey::new(Box::new([5; 16]));
+    let for_them = theirs.recipient().wrap(&file_key).unwrap();
+    assert!(
+        way.unwrap(std::slice::from_ref(&for_them))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        device.uses(),
+        0,
+        "another recipient's stanza never reaches the device"
+    );
+
+    let mut malformed = device.recipient().wrap(&file_key).unwrap();
+    malformed.args.truncate(1);
+    let Err(error) = way.unwrap(std::slice::from_ref(&malformed)) else {
+        panic!("a malformed stanza must be refused");
+    };
+    assert_eq!(
+        error.to_string(),
+        "cannot unlock the keystore: a piv-p256 stanza takes 2 arguments, not 1"
+    );
+    assert_eq!(
+        device.uses(),
+        0,
+        "a malformed stanza never reaches the device"
+    );
+
+    let mine = device.recipient().wrap(&file_key).unwrap();
+    let Ok(Some(opened)) = way.unwrap(&[for_them, mine]) else {
+        panic!("its own stanza opens, after another's");
+    };
+    assert_eq!(age::secrecy::ExposeSecret::expose_secret(&opened), &[5; 16]);
+    assert_eq!(device.uses(), 1);
+
+    device.refuse();
+    let mine = device.recipient().wrap(&file_key).unwrap();
+    let Err(error) = way.unwrap(&[mine]) else {
+        panic!("a refusing device opens nothing");
+    };
+    assert_eq!(
+        error.to_string(),
+        "cannot unlock the keystore: the fake device refuses"
     );
 }
