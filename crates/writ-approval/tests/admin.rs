@@ -801,3 +801,73 @@ fn a_user_id_needs_an_approver_s_signature_and_a_signed_one_is_certified_and_log
         .unwrap();
     assert!(!last.contains("certified"), "{last}");
 }
+
+/// The review after M7.6 (S-2): a CA or TLS rotation's line is written before the new key is
+/// in force, and the rotation refused when the log can't take it (no line, no rotation), like
+/// an admin change's; the line names what replaced what, and the approver.
+#[test]
+fn a_rotation_s_line_comes_first_and_none_means_no_rotation() {
+    use writ_core::signed::{CaRotation, CertFingerprint, TlsRotation};
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let backend: writ_core::config::BackendName = "se-cryptokit".to_owned().try_into().unwrap();
+    let ca: KeyFingerprint = writ_crypto::keys::fingerprint(h.ca_key.public_key())
+        .parse()
+        .unwrap();
+    let document = CaRotation::new(h.daemon.clone(), ca.clone(), backend.clone())
+        .canonical_bytes()
+        .unwrap();
+    let request = writ_proto::CaRequest {
+        signature: sshsig::sign(&h.approver, APPROVAL_NAMESPACE, &document).unwrap(),
+        document: String::from_utf8(document).unwrap(),
+    };
+    let checked = h.service.check_ca(&request, &facts()).unwrap();
+    let new: KeyFingerprint =
+        writ_crypto::keys::fingerprint(generate(KeyKind::Ed25519).unwrap().public_key())
+            .parse()
+            .unwrap();
+    h.audit_breaker.set_broken(true);
+    let error = h.service.ca_rotating(&checked, &new, &facts()).unwrap_err();
+    assert!(matches!(error, ServiceError::AuditLog(_)), "{error:?}");
+    h.audit_breaker.set_broken(false);
+    h.service.ca_rotating(&checked, &new, &facts()).unwrap();
+    let pin = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+    let document = TlsRotation::new(
+        h.daemon.clone(),
+        pin.parse::<CertFingerprint>().unwrap(),
+        backend,
+    )
+    .canonical_bytes()
+    .unwrap();
+    let request = writ_proto::TlsRequest {
+        signature: sshsig::sign(&h.approver, APPROVAL_NAMESPACE, &document).unwrap(),
+        document: String::from_utf8(document).unwrap(),
+    };
+    let checked = h.service.check_tls(&request, &facts()).unwrap();
+    let next: CertFingerprint = "SHA256:57DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+        .parse()
+        .unwrap();
+    h.audit_breaker.set_broken(true);
+    let error = h
+        .service
+        .tls_rotating(&checked, &next, &facts())
+        .unwrap_err();
+    assert!(matches!(error, ServiceError::AuditLog(_)), "{error:?}");
+    h.audit_breaker.set_broken(false);
+    h.service.tls_rotating(&checked, &next, &facts()).unwrap();
+    let done: Vec<String> = h
+        .events("admin", "done")
+        .iter()
+        .map(|e| e["reason"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        done,
+        [
+            format!("SSH CA rotated: {ca} replaced by {new}, its key on backend se-cryptokit"),
+            format!(
+                "TLS key rotated: certificate {pin} replaced by {next}, its key on backend \
+                 se-cryptokit"
+            ),
+        ]
+    );
+}

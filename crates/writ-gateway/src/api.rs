@@ -404,7 +404,8 @@ async fn token_apply(
 /// `writ admin tls rotate` (M7.5): the service checks the `writ-tls/1` and its signature; the
 /// daemon checks it names the certificate in force and makes the new key and certificate, put
 /// in force at once (this connection keeps the one it was opened with). One admin change at a
-/// time; the outcome logged once, here (`admin`).
+/// time; a rotation done is logged by the daemon before it is in force (the review after
+/// M7.6, S-2), a refusal here.
 async fn tls_rotate(
     gateway: Gateway,
     facts: CallerFacts,
@@ -424,17 +425,15 @@ async fn tls_rotate(
         Err(e) => return encoded::<()>(Err(e)),
     };
     let done = applier.rotate_tls(checked.clone(), facts.clone()).await;
-    let service = gateway.service().clone();
-    let logged = done.clone();
-    blocking(move || {
-        match &logged {
-            Ok(rotated) => service.tls_logged(Some(&checked), Ok(&rotated.fingerprint), &facts),
-            Err(why) => service.tls_logged(Some(&checked), Err(why), &facts),
-        }
-        Ok::<(), writ_approval::ServiceError>(())
-    })
-    .await
-    .ok();
+    if let Err(why) = &done {
+        let (service, why) = (gateway.service().clone(), why.clone());
+        blocking(move || {
+            service.tls_logged(Some(&checked), Err(&why), &facts);
+            Ok::<(), writ_approval::ServiceError>(())
+        })
+        .await
+        .ok();
+    }
     match done {
         Ok(rotated) => encoded(Ok(rotated)),
         Err(reason) => encoded::<()>(Err(ApiError::new(format!("not rotated: {reason}")))),
@@ -442,7 +441,8 @@ async fn tls_rotate(
 }
 
 /// `writ admin ca rotate` (M7.6): the service checks the document and the signature, the
-/// daemon rotates (one admin change at a time), the outcome logged once.
+/// daemon rotates (one admin change at a time), its line written before the new CA is in force
+/// (the review after M7.6, S-2); a refusal logged here.
 async fn ca_rotate(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Option<String>) {
     let request: writ_proto::CaRequest = match writ_proto::decode_body(body) {
         Ok(request) => request,
@@ -458,17 +458,15 @@ async fn ca_rotate(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8
         Err(e) => return encoded::<()>(Err(e)),
     };
     let done = applier.rotate_ca(checked.clone(), facts.clone()).await;
-    let service = gateway.service().clone();
-    let logged = done.clone();
-    blocking(move || {
-        match &logged {
-            Ok(rotated) => service.ca_logged(Some(&checked), Ok(&rotated.fingerprint), &facts),
-            Err(why) => service.ca_logged(Some(&checked), Err(why), &facts),
-        }
-        Ok::<(), writ_approval::ServiceError>(())
-    })
-    .await
-    .ok();
+    if let Err(why) = &done {
+        let (service, why) = (gateway.service().clone(), why.clone());
+        blocking(move || {
+            service.ca_logged(Some(&checked), Err(&why), &facts);
+            Ok::<(), writ_approval::ServiceError>(())
+        })
+        .await
+        .ok();
+    }
     match done {
         Ok(rotated) => encoded(Ok(rotated)),
         Err(reason) => encoded::<()>(Err(ApiError::new(format!("not rotated: {reason}")))),

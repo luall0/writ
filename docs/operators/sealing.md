@@ -249,7 +249,8 @@ every automatic start is logged and notified ("writd unsealed automatically").
    `writ unseal`.
 
 `writ admin auto-unseal on` is refused while anything is still in software, naming each one,
-and so is a policy change that sets `unseal: auto` by hand. If something becomes software
+and so is a policy change that sets `unseal: auto` by hand. While it is on, `writ admin ca
+rotate --backend software` is refused too: turn it off first. If something becomes software
 again behind the daemon's back, it refuses to start and says what. To start it by hand
 instead, put in force a policy with `unseal: approver` with [`writd recover`](recovery.md),
 which takes the recovery key, never the Secure Enclave alone.

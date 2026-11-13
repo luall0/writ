@@ -240,6 +240,9 @@ impl Command {
     /// | admin scan-nonce, admin scan | `GET /v1/scan`, `POST /v1/scan` |
     /// | admin check | `POST /v1/repos/<repo>/check` |
     /// | admin tls (show, rotate) | `GET /v1/tls`, `POST /v1/tls` |
+    /// | recovery check | `GET /v1/recovery` |
+    /// | admin ca (show, rotate) | `GET /v1/ca`, `POST /v1/ca` |
+    /// | admin auto-unseal | `GET /v1/auto-unseal` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request

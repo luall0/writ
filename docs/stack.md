@@ -19,7 +19,7 @@ later approver apps.
 | SQLite access | `rusqlite` 0.41 (bundled SQLite) | Decided (M1) |
 | age | `age` 0.11 (0.12 pulls `ml-kem` 0.2, whose `kem` pre-release conflicts with russh 0.65's); `bech32` 0.9 (age's own encoding of the keystore's X25519 identity from the 32-byte data key) and `age-core` 0.11 (the stanza and file key types of the keystore's ways, `writ-platform`; age's HKDF and ChaCha20-Poly1305 for the `piv-p256` stanza, `writ-crypto`, M7.6), both already in the tree through `age`; `p256` =0.14.0 with `ecdh` for `piv-p256` (in the tree through `ssh-key`) | Decided (M2; M5; M7.6) |
 | Approval API | The gateway's SSH protocol on its own listener (`russh`), and HTTPS (`hyper` 1 + `rustls` 0.23 with `ring`, `tokio-rustls`; self-signed certificate from `rcgen`); clients pin the host key or the certificate ([Q29](decisions.md)); reader keys as client certificates, parsed with `rustls-webpki` 0.103 (rustls's own parser, no new code in the tree) | Decided (M2; readers M2.6) |
-| Config | `serde` + `serde-saphyr` 2 (YAML, duplicate keys refused) + `serde_path_to_error` (errors name the field) | Decided (M1): `serde_yaml` is deprecated |
+| Config | `serde` + `serde-saphyr` 2 (YAML, duplicate keys refused (whatever their YAML form: `1`, `"1"` and `!!str 1` are one key)) + `serde_path_to_error` (errors name the field) | Decided (M1): `serde_yaml` is deprecated |
 | CLI | `clap` 4 (derive, env) | Decided (M2) |
 | Errors | `thiserror` in library crates, `anyhow` only in binaries | Decided (M0) |
 | OpenPGP signatures (M5.5) | A minimal v4 writer in `writ-crypto` (packets, certificate, detached signatures, armor); not `pgp` (rPGP depends on the banned `rsa` crate), never `sequoia-openpgp` (LGPL) | Decided (M5.5 plan) |

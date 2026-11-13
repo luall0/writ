@@ -105,7 +105,8 @@ impl RawRecord {
 /// The lease row `l` joined with the row of its terms in force `c`.
 pub(super) fn lease_query(condition: &str) -> String {
     format!(
-        "SELECT l.id, l.state, l.cert_serial, c.id, c.canonical, c.approver, c.namespace, c.sshsig
+        "SELECT l.id, l.state, l.cert_serial, c.id, c.canonical, c.approver, c.namespace, c.sshsig,
+                l.renews
          FROM tickets l JOIN tickets c ON c.id = l.current_ticket
          WHERE {condition} AND l.cert_serial IS NOT NULL ORDER BY l.id"
     )
@@ -118,6 +119,7 @@ pub(super) struct RawLease {
     current_id: String,
     canonical: Vec<u8>,
     approval: RawApproval,
+    renews: Option<String>,
 }
 
 pub(super) fn raw_lease(row: &Row<'_>) -> rusqlite::Result<RawLease> {
@@ -132,6 +134,7 @@ pub(super) fn raw_lease(row: &Row<'_>) -> rusqlite::Result<RawLease> {
             namespace: row.get(6)?,
             sshsig: row.get(7)?,
         },
+        renews: row.get(8)?,
     })
 }
 
@@ -156,6 +159,11 @@ impl RawLease {
             approval,
             state,
             cert_serial: u64::try_from(self.cert_serial).map_err(|e| corrupt(&self.id, e))?,
+            renews: self
+                .renews
+                .as_deref()
+                .map(|r| r.parse().map_err(|e| corrupt(&self.id, e)))
+                .transpose()?,
         })
     }
 }

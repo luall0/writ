@@ -78,6 +78,8 @@ struct Switch {
     failures: std::sync::atomic::AtomicU32,
     /// -1: off; n: n more lease lists work, the one after fails, then off.
     lists_after: std::sync::atomic::AtomicI64,
+    /// How many state changes (`transition`, `close`) fail from now, then off.
+    changes: std::sync::atomic::AtomicU32,
 }
 
 /// Makes lease lookups of a [`Store`] fail, to test what a fault in the middle of an
@@ -100,6 +102,14 @@ impl StoreBreaker {
         self.0
             .after
             .store(if fail == 0 { -1 } else { i64::from(succeed) }, ordering);
+    }
+
+    /// The next `fail` state changes of a lease (a revocation, a close) fail, then they work
+    /// again.
+    pub fn fail_state_changes(&self, fail: u32) {
+        self.0
+            .changes
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The next `succeed` lists of leases by state work, the one after fails, then they work
@@ -137,6 +147,7 @@ impl Store {
             after: std::sync::atomic::AtomicI64::new(-1),
             failures: std::sync::atomic::AtomicU32::new(0),
             lists_after: std::sync::atomic::AtomicI64::new(-1),
+            changes: std::sync::atomic::AtomicU32::new(0),
         });
         let mut store = Self::open(path)?;
         store.breaker = Some(switch.clone());
@@ -288,6 +299,7 @@ impl Store {
         if matches!(to, State::Active | State::Applied | State::Refused) {
             return Err(lease::LifecycleError::Transition { from, to }.into());
         }
+        self.broken_change()?;
         let changed = self.conn.execute(
             "UPDATE tickets SET state = ?2, updated_at = ?3 WHERE id = ?1 AND state = ?4",
             params![id.as_str(), to.as_str(), now.unix(), from.as_str()],
@@ -424,6 +436,7 @@ impl Store {
             }
             .into());
         };
+        self.broken_change()?;
         let changed = self.conn.execute(
             "UPDATE tickets SET state = ?2, summary = ?3, updated_at = CASE WHEN ?2 = ?4 THEN updated_at ELSE ?5 END
              WHERE id = ?1 AND state = ?4 AND cert_serial IS NOT NULL",
@@ -499,6 +512,22 @@ impl Store {
         )?;
         self.expect_changed(changed, &lease.id, State::Active)?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// A state change the test's breaker fails ([`StoreBreaker::fail_state_changes`]).
+    fn broken_change(&self) -> Result<()> {
+        #[cfg(feature = "testing")]
+        if let Some(switch) = &self.breaker {
+            let ordering = std::sync::atomic::Ordering::SeqCst;
+            let left = switch.changes.load(ordering);
+            if left > 0 {
+                switch.changes.store(left.saturating_sub(1), ordering);
+                return Err(StoreError::Io(std::io::Error::other(
+                    "the store was broken by the test",
+                )));
+            }
+        }
         Ok(())
     }
 

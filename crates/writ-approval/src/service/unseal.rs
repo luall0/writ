@@ -182,6 +182,9 @@ impl Service {
             }
             self.set_openpgp(super::openpgp::OpenpgpKeys { created, certified });
         }
+        // The approvers in force now carry their MAC: the leases a removed approver signed,
+        // which a change cut short left active, are revoked (the review after M7.6, A-4).
+        self.revoke_orphaned();
         self.changed.notify_waiters();
         match by {
             UnsealedBy::Approver(_) => self.notify(Notification {

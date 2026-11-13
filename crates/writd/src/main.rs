@@ -1,6 +1,7 @@
 //! `writd`, the Writ daemon.
 //!
-//! - `writd init <writd.yaml>`: makes the sealed keystore, once (asks for its passphrase).
+//! - `writd init <writd.yaml> [--tls-backend <name>] [--ca-backend <name>]`: makes the sealed
+//!   keystore, once (asks for its passphrase), its TLS key and SSH CA on those backends.
 //! - `writd run <writd.yaml>`: the daemon (gateway, approval API, expiry timer).
 //! - `writd recover <writd.yaml> <policy|approvers|readers> <file>`: puts a file in force from
 //!   the host (the daemon stopped), with the keystore's passphrase.
@@ -19,6 +20,8 @@
 //!   `https://` upstream (it asks the daemon for the token, for one operation).
 //! - `writd upstream-tunnel <socket> <host> <port>`: the `ProxyCommand` ssh runs for an
 //!   `ssh://` upstream behind a proxy (it carries ssh's stream through the daemon's socket).
+//! - `writd proc-reader`: local mode on Linux, the capped helper `writd run` starts to read
+//!   other users' processes (M7.1).
 //!
 //! Only this binary wires the crates together and reads configuration
 //! (docs/architecture/overview.md).
@@ -440,6 +443,26 @@ fn run(path: &Path) -> anyhow::Result<()> {
             );
         }
     }
+    // A CA or TLS rotation cut short (M7.6, M7.5), finished or dropped before anything reads
+    // them: said in the audit log once it is open (the review after M7.6, S-2).
+    let mut finished = Vec::new();
+    if let config::KeystoreConfig::Sealed(sealed) = &config.keystore {
+        match keystore::ca::finish(sealed)? {
+            keystore::ca::Finished::Completed => finished
+                .push("a CA rotation cut short after its key was in force was finished at start"),
+            keystore::ca::Finished::Dropped => finished.push(
+                "a CA rotation cut short before its key was in force was dropped at start: the \
+                 old CA stays",
+            ),
+            keystore::ca::Finished::Nothing => {}
+        }
+        if keystore::tls_files(&config).finish()? {
+            finished.push(
+                "a TLS key rotation cut short after it was decided was finished at start: \
+                 approvers re-pin the certificate writd tls-fingerprint prints",
+            );
+        }
+    }
     let start = keystore::start(
         &config,
         &declared,
@@ -478,6 +501,10 @@ fn run(path: &Path) -> anyhow::Result<()> {
             daemon,
             &platform,
         )?;
+        for note in &finished {
+            tracing::warn!("{note}");
+            service.admin_note(note);
+        }
         // What `writ info` says of a rotation of the data key owed (S-8), before the unseal.
         service.set_keystore(
             keystore::recipient(&config)?,
@@ -823,9 +850,7 @@ mod tests {
                         !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '-')
                     })
                     .collect();
-                // `["keys", "create", …]` is one command of two words.
                 match words.as_slice() {
-                    ["keys", "create", ..] => "keys create".to_owned(),
                     [first, ..] => (*first).to_owned(),
                     [] => String::new(),
                 }

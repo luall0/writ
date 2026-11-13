@@ -50,7 +50,8 @@ fn options() -> serde_saphyr::Options {
 }
 
 /// Parses YAML into `T` with the hardened [`options`], reporting the path of the failing
-/// field.
+/// field. Every mapping's keys are unique as the text they are read as, whatever their YAML
+/// form ([`UniqueKeys`]).
 pub fn parse_yaml<T: DeserializeOwned>(text: &str) -> Result<T, FieldError> {
     if text.len() > MAX_YAML_BYTES {
         return Err(FieldError::at(
@@ -58,6 +59,12 @@ pub fn parse_yaml<T: DeserializeOwned>(text: &str) -> Result<T, FieldError> {
             format!("the document is larger than {MAX_YAML_BYTES} bytes"),
         ));
     }
+    parse_with::<UniqueKeys>(text)?;
+    parse_with::<T>(text)
+}
+
+/// [`parse_yaml`]'s one pass, into `T`.
+fn parse_with<T: DeserializeOwned>(text: &str) -> Result<T, FieldError> {
     let mut failed_at: Option<String> = None;
     let result = serde_saphyr::with_deserializer_from_str_with_options(text, options(), |de| {
         serde_path_to_error::deserialize::<_, T>(de).map_err(|e| {
@@ -72,6 +79,86 @@ pub fn parse_yaml<T: DeserializeOwned>(text: &str) -> Result<T, FieldError> {
         let message = first.strip_prefix("error: ").unwrap_or(first).to_owned();
         FieldError::at(failed_at.unwrap_or_else(|| ".".to_owned()), message)
     })
+}
+
+/// A document read only to check that no mapping holds a key twice as the text its key is
+/// read as (the review after M7.6, P-2): the parser compares a plain `1` and a quoted `"1"` (or
+/// `!!str 1`) as different keys, while a map of names reads both as `"1"`, the last one
+/// winning silently.
+struct UniqueKeys;
+
+impl<'de> serde::Deserialize<'de> for UniqueKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_any(Walk)
+    }
+}
+
+/// A key, as the text a map of names reads it as.
+struct KeyText(String);
+
+impl<'de> serde::Deserialize<'de> for KeyText {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        String::deserialize(de).map(KeyText)
+    }
+}
+
+struct Walk;
+
+impl<'de> serde::de::Visitor<'de> for Walk {
+    type Value = UniqueKeys;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("YAML")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<UniqueKeys, A::Error> {
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(KeyText(key)) = map.next_key()? {
+            if !seen.insert(key.clone()) {
+                return Err(serde::de::Error::custom(format!(
+                    "the key {key:?} is given twice (in two forms of one text)"
+                )));
+            }
+            map.next_value::<UniqueKeys>()?;
+        }
+        Ok(UniqueKeys)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<UniqueKeys, A::Error> {
+        while seq.next_element::<UniqueKeys>()?.is_some() {}
+        Ok(UniqueKeys)
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_i128<E>(self, _: i128) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_u128<E>(self, _: u128) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_str<E>(self, _: &str) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_unit<E>(self) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_none<E>(self) -> Result<UniqueKeys, E> {
+        Ok(UniqueKeys)
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, de: D) -> Result<UniqueKeys, D::Error> {
+        de.deserialize_any(Walk)
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +181,30 @@ mod tests {
             Ok(doc) => panic!("accepted {text:?} as {doc:?}"),
             Err(e) => e.to_string(),
         }
+    }
+
+    /// The review after M7.6 (P-2): a plain integer key and the same digits quoted or tagged
+    /// were two keys to the parser, one to a map of names: the last won silently.
+    #[test]
+    fn a_key_given_twice_in_two_forms_is_refused() {
+        use std::collections::BTreeMap;
+        for text in [
+            "1: a\n\"1\": b\n",
+            "1: a\n!!str 1: b\n",
+            "r:\n  1: a\n  '1': b\n",
+        ] {
+            let error = match parse_yaml::<BTreeMap<String, serde::de::IgnoredAny>>(text) {
+                Ok(map) => panic!("accepted {text:?} as {map:?}"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                error.contains("the key \"1\" is given twice (in two forms of one text)"),
+                "{text:?}: {error}"
+            );
+        }
+        // One of each, and keys that only look alike: read.
+        let map: BTreeMap<String, String> = parse_yaml("1: a\n\"2\": b\n10: c\n").unwrap();
+        assert_eq!(map.len(), 3);
     }
 
     #[test]

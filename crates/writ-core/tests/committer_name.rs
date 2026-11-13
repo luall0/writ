@@ -317,3 +317,32 @@ fn an_openpgp_key_must_carry_the_name_in_its_user_ids() {
             .is_some()
     );
 }
+
+/// The review after M7.6 (C-3): a renewal that drops `commit_sign` has no committer name (no
+/// commit is signed), which was refused as "another identity" under a template that sets one.
+/// It isn't: only a ticket that signs names someone.
+#[test]
+fn a_renewal_that_signs_nothing_names_no_other_identity() {
+    use writ_core::canonical::Canonical;
+    const FULL: &[u8] = include_bytes!("fixtures/ticket-full.json");
+    let signing = Ticket::from_canonical(FULL).unwrap();
+    assert!(signing.common.committer_name.is_some());
+    let mut push_only = signing.clone();
+    push_only.common.committer_name = None;
+    for terms in push_only.repos.values_mut() {
+        terms
+            .operations
+            .remove(&writ_core::ticket::Operation::CommitSign);
+    }
+    assert_eq!(
+        narrow::widenings(&signing, &push_only),
+        Vec::<String>::new()
+    );
+    // Still signing, without the name: another identity.
+    let mut unnamed = signing.clone();
+    unnamed.common.committer_name = None;
+    assert_eq!(
+        narrow::widenings(&signing, &unnamed),
+        ["common.committer_name changed".to_owned()]
+    );
+}

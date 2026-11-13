@@ -167,6 +167,33 @@ fn on_the_mac_a_daemon_with_everything_in_hardware_opens_itself_at_each_start() 
         said.contains("Everything is in hardware: the daemon can open itself"),
         "{said}"
     );
+    // The daemon's own refusal with exactly one thing in software (the review after M7.6,
+    // T-5): a whole text asking for auto-unseal with the upstream credential in software.
+    let shown = stdout(&daemon.run(&["admin", "show", "policy"], ""));
+    let one_left = format!("{shown}unseal: auto\n").replacen(
+        "    kind: ssh\n    algorithm: p256\n    backend: se-cryptokit\n",
+        "    kind: ssh\n    algorithm: p256\n",
+        1,
+    );
+    assert!(
+        !one_left.contains("kind: ssh\n    algorithm: p256\n    backend"),
+        "{one_left}"
+    );
+    let file = daemon.root().join("one-left.yaml");
+    fs::write(&file, one_left).unwrap();
+    let out = daemon.run(
+        &["admin", "apply", "policy", file.to_str().unwrap(), "--yes"],
+        "",
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains(
+            "unseal: auto: not everything is in hardware yet: upstream credential upstream-01 is \
+             in software: writ admin key rotate upstream-01 --backend se-cryptokit"
+        ),
+        "{}",
+        stderr(&out)
+    );
     let out = daemon.run(&["admin", "auto-unseal", "on", "--yes"], "");
     assert_eq!(
         out.status.code(),
@@ -176,6 +203,21 @@ fn on_the_mac_a_daemon_with_everything_in_hardware_opens_itself_at_each_start() 
         stderr(&out)
     );
     assert!(stdout(&out).contains("With auto-unseal on, the daemon opens itself"));
+    // Under auto-unseal, a CA rotation to software is refused (the review after M7.6, D-2):
+    // the next start would refuse itself.
+    let out = daemon.run(
+        &["admin", "ca", "rotate", "--backend", "software", "--yes"],
+        "",
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains(
+            "unseal: auto is in force, and this would put the CA's key in software: turn \
+             auto-unseal off first (writ admin auto-unseal off)"
+        ),
+        "{}",
+        stderr(&out)
+    );
 
     // A start: open with no one, logged as automatic, notified.
     daemon.restart();

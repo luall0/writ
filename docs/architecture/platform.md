@@ -321,11 +321,12 @@ notifiers: [{ telegram: { token: { sealed: telegram-01 }, chat_id: "123456789" }
 
 The full file (`writd.yaml`: state directory, policy, approvers, `decisions`, keystore) is
 described in `crates/writd/src/config.rs` and [the operator reference](../operators/writd-yaml.md);
-`dev/writd.yaml` is the development one. The build has the software backend only, which
-`writd/src/platform.rs` builds (`platform::signer`) from the keystore's keys, behind its queue
-([the queue in front of a backend](signer.md#the-queue-in-front-of-a-backend)); a backend per
-key comes with M5.5's declarations and M7.5. The keystore's unlock is the passphrase
-(`platform::unlock`); M7.6 brings hardware recipients, picked there too.
+`dev/writd.yaml` is the development one. `writd/src/platform.rs` builds each use's signer
+(`platform::signer`) from the keystore's keys, a backend per key as the policy declares it
+(software, or the Secure Enclave through `writ-se` on a Mac), each behind its queue
+([the queue in front of a backend](signer.md#the-queue-in-front-of-a-backend)). The keystore
+opens with the passphrase (`platform::data_key`) or its hardware recipients
+(`platform::agreement_way`), which `writd/src/keystore/recipients.rs` loads.
 
 ```yaml
 # local (native on Linux: make install's local setup)

@@ -291,11 +291,26 @@ impl Service {
         };
         let state = match (&record.ticket.text.amends, &record.ticket.text.renews) {
             (Some(lease_id), _) => {
-                self.apply_amendment_approval(&mut inner, lease_id, approving)?
+                let state = self.apply_amendment_approval(&mut inner, lease_id, approving)?;
+                drop(inner);
+                state
             }
-            (None, renews) => self.grant_lease(&mut inner, approving, renews.as_ref())?,
+            (None, renews) => {
+                // Phase 1, under the lock: the whole decision, nothing recorded (the review
+                // after M7.6, A-2: the CA may be a device, never run under the state lock).
+                let first = self.decide_grant(&mut inner, &approving, renews.as_ref(), None)?;
+                let renews = renews.clone();
+                let Approving {
+                    signed,
+                    approval,
+                    caller,
+                    denied,
+                    ..
+                } = approving;
+                drop(inner);
+                self.grant_lease(id, signed, approval, caller, denied, renews.as_ref(), first)?
+            }
         };
-        drop(inner);
         self.changed.notify_waiters();
         Ok(Ack {
             id: id.clone(),
@@ -346,22 +361,25 @@ impl Service {
         Ok(State::Applied)
     }
 
-    /// An approved ticket becomes an active lease, with a certificate for its session key. A
-    /// renewal (`renews`) also ends the lease it renews, in the same change.
-    fn grant_lease(
+    /// What granting a ticket decides, before its certificate is signed: every check made
+    /// (the renewed lease, the session key, `max_active_per_source`, the lease's terms and
+    /// validity), nothing recorded. `serial` keeps phase 1's in the last phase.
+    fn decide_grant(
         &self,
         inner: &mut Inner,
-        approving: Approving<'_>,
+        approving: &Approving<'_>,
         renews: Option<&TicketId>,
-    ) -> Result<State, ServiceError> {
+        serial: Option<u64>,
+    ) -> Result<Grant, ServiceError> {
         let Approving {
             record,
             signed,
             approval,
-            caller,
             now,
             denied,
+            ..
         } = approving;
+        let (record, now) = (*record, *now);
         let renewed = match renews {
             None => None,
             Some(id) => match inner.store.lease(id).map_err(internal) {
@@ -386,7 +404,8 @@ impl Service {
             Ok(key) => key,
             Err(reason) => return denied.deny(inner, RefusalCode::Session, reason),
         };
-        // Checked again: a lease granted since the submission takes the slot it counted on.
+        // Checked again: a lease granted since the submission takes the slot it counted on
+        // (and in the last phase, one granted while this certificate was signed).
         if let (Some(max), Some(source)) = (self.config.max_active_per_source, record.source) {
             let replaced = renewed
                 .as_ref()
@@ -400,16 +419,25 @@ impl Service {
                 return denied.deny(inner, RefusalCode::TooManyActive, e.reason_text());
             }
         }
-        let approver = approval.approver.clone();
-        let serial = denied.or_failed(inner, keys::random_serial().map_err(internal))?;
+        let serial = match serial {
+            Some(serial) => serial,
+            None => denied.or_failed(inner, keys::random_serial().map_err(internal))?,
+        };
         let policy = self.policy();
         let activated = match &renewed {
-            None => lease::activate(&policy, record, signed, approval, serial, now),
+            None => lease::activate(
+                &policy,
+                record,
+                signed.clone(),
+                approval.clone(),
+                serial,
+                now,
+            ),
             Some((old, renewals)) => lease::activate_renewal(
                 &policy,
                 record,
-                signed,
-                approval,
+                signed.clone(),
+                approval.clone(),
                 serial,
                 Renewed {
                     lease: old,
@@ -423,10 +451,6 @@ impl Service {
             Ok(lease) => lease,
             Err(e) => return denied.deny(inner, RefusalCode::Lifecycle, e.to_string()),
         };
-        let watch = match self.watch_session(&lease) {
-            Ok(watch) => watch,
-            Err(reason) => return denied.deny(inner, RefusalCode::Session, reason),
-        };
         // A time that doesn't fit fails the grant: no fallback (a 0 would mean "valid since
         // 1970").
         let valid_after = denied.or_failed(
@@ -437,21 +461,138 @@ impl Service {
             inner,
             u64::try_from(lease.ticket.limits.expires_at.unix()).map_err(internal),
         )?;
-        let issued = self.opened().and_then(|opened| {
-            opened
-                .ca
-                .issue(&CertificateRequest {
-                    subject: &session_key,
-                    serial,
-                    key_id: lease.id.as_str(),
-                    principals: &[PRINCIPAL],
-                    valid_after,
-                    valid_before,
-                })
-                .and_then(|cert| Ok(cert.to_openssh()?))
-                .map_err(internal)
-        });
-        let certificate = denied.or_failed(inner, issued)?;
+        Ok(Grant {
+            lease,
+            renewed,
+            session_key,
+            serial,
+            valid_after,
+            valid_before,
+        })
+    }
+
+    /// An approved ticket becomes an active lease, with a certificate for its session key. A
+    /// renewal (`renews`) also ends the lease it renews, in the same change. In phases, like
+    /// [`Service::sign`] (the review after M7.6, A-2): decided under the lock (`first`), the
+    /// certificate signed without it (the CA may be a device), then everything decided again
+    /// under the lock before the lease is recorded: a ticket refused, revoked or expired
+    /// meanwhile, an approver removed, a source's slot taken, each discards the certificate,
+    /// the reason logged; a CA rotated meanwhile signs it again (the gateway trusts the old
+    /// one only for the leases recorded before it was replaced).
+    #[allow(clippy::too_many_arguments)] // the parts of one approval, taken apart once
+    fn grant_lease(
+        &self,
+        id: &TicketId,
+        signed: Ticket,
+        approval: Approval,
+        caller: &CallerFacts,
+        denied: Denied,
+        renews: Option<&TicketId>,
+        first: Grant,
+    ) -> Result<State, ServiceError> {
+        let mut decided = first;
+        for _ in 0..MAX_SIGNED_AGAIN {
+            // Phase 2: the certificate, with no lock held.
+            let opened = self.opened()?;
+            let issued = opened.ca.issue(&CertificateRequest {
+                subject: &decided.session_key,
+                serial: decided.serial,
+                key_id: decided.lease.id.as_str(),
+                principals: &[PRINCIPAL],
+                valid_after: decided.valid_after,
+                valid_before: decided.valid_before,
+            });
+            // Phase 3: decided again, under the lock, before anything is recorded.
+            let (now, mut inner) = self.begin()?;
+            let certificate = match issued.and_then(|cert| {
+                let by = cert.signature_key().clone();
+                Ok((cert.to_openssh()?, by))
+            }) {
+                Ok(issued) => issued,
+                Err(e) => return denied.failed(&mut inner, internal(e)),
+            };
+            let found = inner.record(id);
+            let record = denied.or_failed(&mut inner, found)?;
+            if record.state != State::Pending {
+                return denied.deny(
+                    &mut inner,
+                    RefusalCode::WrongState,
+                    format!(
+                        "ticket {id} became {} while its certificate was signed: the certificate \
+                         is discarded",
+                        record.state
+                    ),
+                );
+            }
+            let bytes = signed.canonical_bytes().map_err(internal);
+            let bytes = denied.or_failed(&mut inner, bytes)?;
+            if let Err(reason) = self.verify_approver(&bytes, &approval.sshsig) {
+                return denied.deny(
+                    &mut inner,
+                    RefusalCode::Signature,
+                    format!(
+                        "{reason} (the approvers changed while its certificate was signed: the \
+                         certificate is discarded)"
+                    ),
+                );
+            }
+            let approving = Approving {
+                record: &record,
+                signed: signed.clone(),
+                approval: approval.clone(),
+                caller,
+                now,
+                denied: denied.clone(),
+            };
+            let again = self.decide_grant(&mut inner, &approving, renews, Some(decided.serial))?;
+            let same_ca = certificate.1 == *opened.ca.public_key().key_data();
+            if same_ca
+                && again.valid_before == decided.valid_before
+                && again.session_key == decided.session_key
+            {
+                return self.record_grant(&mut inner, approving, again, certificate.0);
+            }
+            // The CA rotated, or the terms moved, meanwhile: signed again, for what holds now.
+            decided = again;
+        }
+        let (_, mut inner) = self.begin()?;
+        denied.deny(
+            &mut inner,
+            RefusalCode::WrongState,
+            format!(
+                "the SSH CA changed {MAX_SIGNED_AGAIN} times while ticket {id}'s certificate was \
+                 signed: approve it again"
+            ),
+        )
+    }
+
+    /// The last phase's record: the lease active with its certificate (a renewal ends the lease
+    /// it renews in the same change), its session watched.
+    fn record_grant(
+        &self,
+        inner: &mut Inner,
+        approving: Approving<'_>,
+        grant: Grant,
+        certificate: String,
+    ) -> Result<State, ServiceError> {
+        let Approving {
+            approval,
+            caller,
+            now,
+            denied,
+            ..
+        } = approving;
+        let Grant {
+            lease,
+            renewed,
+            serial,
+            ..
+        } = grant;
+        let watch = match self.watch_session(&lease) {
+            Ok(watch) => watch,
+            Err(reason) => return denied.deny(inner, RefusalCode::Session, reason),
+        };
+        let approver = approval.approver.clone();
         let mut event = AuditEvent::new(now, EventKind::Grant, Outcome::Allowed)
             .lease(&lease.id)
             .cert(serial)
@@ -656,6 +797,13 @@ impl Service {
                         .map_err(internal)
                 });
                 self.deny_serial(lease.cert_serial);
+                // Not recorded: retried by each sweep, like the daemon's own revocations (the
+                // review after M7.6, A-9), so a restart never makes the lease active again.
+                if done.is_err() {
+                    inner
+                        .unrecorded
+                        .insert(id.clone(), "revoked by an approver".to_owned());
+                }
                 done?;
             }
             (State::Pending, _) => {
@@ -683,6 +831,19 @@ impl Service {
         })
     }
 }
+
+/// What phase 1 of a grant decided ([`Service::decide_grant`]).
+struct Grant {
+    lease: Lease,
+    renewed: Option<(Lease, u32)>,
+    session_key: PublicKey,
+    serial: u64,
+    valid_after: u64,
+    valid_before: u64,
+}
+
+/// How many times a grant's certificate is signed again when the CA rotates meanwhile.
+const MAX_SIGNED_AGAIN: usize = 3;
 
 /// What an approval carries into [`Service::grant_lease`] or
 /// [`Service::apply_amendment_approval`].

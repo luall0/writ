@@ -335,19 +335,28 @@ its backend, the CAs it replaced still trusted, and the daemon's backends.
   (refused `ca` or `signature`), within the rotations' rate shared with the TLS key's (five a
   minute); one admin change at a time.
 - The daemon refuses it unless `replaces` is the CA in force (a replay rotates nothing) and a
-  backend it has, makes the new key (software: Ed25519, generated; a device: P-256, by the
-  device), builds its signer (a key its device refuses: nothing written), then writes the
-  retired record, the new `ca.age` and `ca.pub` beside the old as `.new`, and moves them in.
-  A start finishing a cut rotation moves the public half after its key; one cut before the
-  key moved is dropped.
-- **The old CA stays trusted until the last lease it certified ends** (the latest
-  `expires_at` of the active leases at the rotation; none active: not kept). Every retired CA
-  is kept in `ca-retired.pub`, each with its deadline (at most 16, past ones dropped at the
-  next rotation): the gateway takes a certificate signed by the CA in force, or by a retired
-  one before its deadline, and no other. New leases (renewals and amendments too) are
-  certified by the new CA. Agents notice nothing.
-- One `admin` line (`SSH CA rotated: <old> replaced by <new>, its key on backend <name>`, or
-  `not rotated` with the reason).
+  backend it has, and refuses a software backend while `unseal: auto` is in force (the next
+  start would refuse itself; the review after M7.6, D-2). It makes the new key (software:
+  Ed25519, generated; a device: P-256, by the device), builds its signer (a key its device
+  refuses: nothing written), stages `ca.age`, `ca.pub` and `ca.backend` beside the old as
+  `.new`, writes its `admin` line (`SSH CA rotated: <old> replaced by <new>, its key on backend
+  <name>`; refused when the log can't take it, nothing in force changed: S-2), then moves the
+  key in, the point of no return, and the two others after it. A start finishing a cut
+  rotation moves the public half and the marker after the key, its own line in the audit log
+  then; one cut before the key moved is dropped. A failure after the point of no return is
+  answered as a rotation and noted "rotated, but …", never "not rotated" (D-4). At each
+  unseal the marker must be the backend of the key opened (`auto-unseal` reads it while
+  sealed), or the unseal is refused, naming it.
+- **The old CA stays trusted until the last lease it certified ends**: the latest `expires_at`
+  of the active leases, read once the new CA is in force (the review after M7.6, D-3: a grant
+  whose certificate the old CA signed meanwhile is signed again by the new one before its
+  lease is recorded), capped at the longest template's `max_ttl` from now (S-9); none active:
+  not kept. Every retired CA is kept in `ca-retired.pub`, each with its deadline (at most 16,
+  each within a year; a record past either is refused at read, naming the line): the gateway
+  takes a certificate signed by the CA in force, or by a retired one before its deadline, and
+  no other. New leases (renewals too) are certified by the new CA; an amendment keeps its
+  lease's certificate. Agents notice nothing.
+- A refusal is one `admin` line, `not rotated` with the reason.
 - `writd init --ca-backend <name>` makes the first CA key on that backend (the installer asks
   it on a Mac).
 

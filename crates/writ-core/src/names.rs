@@ -215,6 +215,10 @@ fn validate_uid(value: &str) -> Result<(), &'static str> {
         if name.contains(['<', '>']) {
             return Err("no '<' or '>' in the name");
         }
+        // A list's separator in the CLI's field edits (the review after M7.6, P-3).
+        if name.contains(',') {
+            return Err("no ',' in the name (write `John Doe`, not `Doe, John`)");
+        }
     }
     validate_email(email).map_err(|_| "the address in <> must be a valid email")
 }

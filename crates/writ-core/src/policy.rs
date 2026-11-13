@@ -7,7 +7,10 @@
 //!
 //! The order of checks in every decision: the lease is live, the caller fits, the operation
 //! and repo are in scope, the lease still fits its template under the current config, then
-//! the operation's own checks, then the counts and the rate.
+//! the operation's own checks, then the counts and the rate. One exception: a signature's
+//! path check (`paths_check`) runs after the count and the rate, so a request at the limit
+//! costs no path match under the lock (the review after M5.5, S8); it is then refused for its
+//! count or rate, and `on_violation` doesn't fire.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -746,7 +749,7 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
     check_ref_updates(id, entry, scope, &request.repo, &request.updates)?;
     // The chain must start with the lease this one says it renews: anything else is a fault
     // in the daemon's lookup, never a reason to accept more.
-    if request.predecessors.first() != lease.ticket.text.renews.as_ref() {
+    if request.predecessors.first() != lease.renews.as_ref() {
         return Err(Denial::internal());
     }
     decide_push_commits(ctx, request, template, scope)

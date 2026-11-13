@@ -610,6 +610,23 @@ impl Live {
         }
     }
 
+    /// The declared key `id` the keystore holds, checked against `declared` by its public
+    /// half (nothing secret opened: a hardware keystore's identity is gone after unseal), and
+    /// what its file says it is (an OpenPGP key's creation time).
+    pub fn check_held(
+        &self,
+        id: &KeyId,
+        declared: &Declared,
+        makers: &Makers,
+    ) -> anyhow::Result<KeyMeta> {
+        match self {
+            Self::Dev(dir) => Ok(dev::key_or_make(dir, id, declared, makers)?.0.meta),
+            Self::Sealed { sealed, .. } => {
+                sealed::check_public(&sealed::Layout(sealed), id, declared)
+            }
+        }
+    }
+
     /// Deletes the key `id` of `role` from the keystore: a key a policy change took out
     /// (its sealed file, its public half, an OpenPGP key's certificate). What isn't there is
     /// fine; what can't be removed is an error, naming the file.

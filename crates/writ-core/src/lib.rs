@@ -10,7 +10,7 @@
 //! - [`caller`]: caller facts and the lease's caller constraint.
 //! - [`policy`]: the decisions for signing, pushing and fetching.
 //! - [`signed`]: the other documents an approver signs: refusal, revocation, proof, unseal,
-//!   admin change.
+//!   admin change, token, host key scan, TLS and CA rotation.
 //! - [`names`], [`pattern`], [`units`]: validated names, patterns and units.
 //! - [`upstream`]: an upstream's URL, read strictly.
 //! - [`text`]: agent-written text made safe to show.

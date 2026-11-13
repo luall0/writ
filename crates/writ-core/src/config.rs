@@ -502,6 +502,24 @@ impl PolicyConfig {
                 ));
             }
         }
+        // The same for what else names a file (the review after M7.6, P-1): a key's or a
+        // token's sealed file, a recipient's blob; and for a host's pin, which ssh matches
+        // ignoring case.
+        unique_ignoring_case(
+            "keys",
+            keys.keys().map(KeyId::as_str),
+            "its file in the keystore would be another's on a case-insensitive file system",
+        )?;
+        unique_ignoring_case(
+            "recipients",
+            raw.recipients.keys().map(KeyId::as_str),
+            "its file in the keystore would be another's on a case-insensitive file system",
+        )?;
+        unique_ignoring_case(
+            "upstream_hosts",
+            raw.upstream_hosts.keys().map(|h| h.as_str()),
+            "ssh matches host names ignoring case: one would take the other's keys",
+        )?;
         if raw.proxies.len() > proxies::MAX_PROXIES {
             return Err(FieldError::at(
                 "proxies",
@@ -715,6 +733,24 @@ impl PolicyConfig {
     pub fn templates(&self) -> &BTreeMap<TemplateName, Template> {
         &self.templates
     }
+}
+
+/// Refuses two names of `section` equal ignoring ASCII case, naming the second.
+fn unique_ignoring_case<'a>(
+    section: &str,
+    names: impl Iterator<Item = &'a str>,
+    why: &str,
+) -> Result<(), FieldError> {
+    let mut folded = BTreeSet::new();
+    for name in names {
+        if !folded.insert(name.to_ascii_lowercase()) {
+            return Err(FieldError::at(
+                format!("{section}.{name}"),
+                format!("another entry has the same name ignoring case ({why})"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_repo(

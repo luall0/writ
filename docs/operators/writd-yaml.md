@@ -60,7 +60,9 @@ Lower `min_ttl` only if you accept more. You can still sign a lease shorter than
 ## Mirrors and upstream
 
 How the daemon reaches each repo's `upstream` ([gateway](../architecture/gateway.md#upstream)).
-Programs are named by absolute path, never looked up in `PATH`, and checked at start.
+Programs are named by absolute path, never looked up in `PATH`. `signers.*` and
+`session_launcher` are checked at start; `mirrors.git` and `mirrors.ssh` when the mirrors
+open, at unseal (a wrong path then refuses the unseal, naming it).
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
@@ -94,7 +96,7 @@ allow: [...] }`.
 | `transports.agents` | Listeners, at least one | **required** | Where agents submit tickets, fetch, push and sign commits. Port `2222` in detached mode |
 | `transports.approvals.ssh` | Listeners | `[]` (off) | The approval API over SSH (`ssh://host:port`). Port `2223` |
 | `transports.approvals.https` | Listeners | `[]` (off) | The approval API over HTTPS, with the daemon's own pinned certificate. Port `8443`. `ssh` and `https` can't both be off: nothing could be approved |
-| `<listener>.tcp` | `host:port` | — | A TCP listener. Exactly one of `tcp` and `unix` |
+| `<listener>.tcp` | An address and port, literal (`127.0.0.1:2222`, `[::1]:2222`) | — | A TCP listener. Exactly one of `tcp` and `unix`. A host name is refused: it is never resolved |
 | `<listener>.unix` | Path | — | A Unix socket (local mode), at most 103 bytes; relative to `writd.yaml`'s directory. Its directory must already exist, owned by the daemon's user or root, and nobody but its owner may write it: it decides who can connect (on the Mac, `_writd:_writ` `0750`; on Linux, `/run/writ`, `writd:writ` `0750`, made by systemd). The daemon makes the socket `0660` and replaces an old socket left there, never anything else. Needs `attestor: macos_process_chain` or `linux_process_chain`: the `network` attestor can't attest its callers, so it is refused at start |
 | `<listener>.allow` | Addresses or CIDR ranges | — | Who may connect. [Rules](#allow) |
 

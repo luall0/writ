@@ -459,10 +459,16 @@ pub fn held(layout: &Layout<'_>, role: KeyRole) -> anyhow::Result<Vec<KeyId>> {
     Ok(ids)
 }
 
-/// Checks the public half of the held key `id` against its declaration.
-pub fn check_public(layout: &Layout<'_>, id: &KeyId, declared: &Declared) -> anyhow::Result<()> {
+/// Checks the public half of the held key `id` against its declaration: what its file says
+/// it is.
+pub fn check_public(
+    layout: &Layout<'_>,
+    id: &KeyId,
+    declared: &Declared,
+) -> anyhow::Result<KeyMeta> {
     let (public, meta) = stored_public(layout, declared.role, id)?;
-    crate::declared::check_key(id, declared, &public, &meta)
+    crate::declared::check_key(id, declared, &public, &meta)?;
+    Ok(meta)
 }
 
 /// The public halves: the boot tier's keys, and the `.pub` files beside each sealed key, for

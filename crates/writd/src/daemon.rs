@@ -139,24 +139,25 @@ impl Opener {
             .ok_or_else(|| "the HTTPS approval API is not started".to_owned())
     }
 
-    /// The certificate in force, its key's backend, and what a `writ-tls/1` names.
     /// The SSH CA in force, its backend, and the CA it replaced while trusted (M7.6).
     fn show_ca(&self) -> Result<writ_proto::CaShown, String> {
         let inner = &self.0;
         let open = inner.open.get().ok_or("the daemon is not open")?;
         let public = inner.service.ca_in_force().map_err(|e| e.to_string())?;
         let retired = match &inner.config.keystore {
-            KeystoreConfig::Sealed(sealed) => keystore::ca::retired(sealed)
-                .map_err(|e| format!("{e:#}"))?
-                .into_iter()
-                .filter(|(_, until)| *until > inner.service.now_unix())
-                .map(|(key, until)| {
-                    Ok::<_, String>(writ_proto::RetiredCa {
-                        fingerprint: fingerprint_of(&key)?,
-                        until,
+            KeystoreConfig::Sealed(sealed) => {
+                keystore::ca::retired(sealed, inner.service.now_unix())
+                    .map_err(|e| format!("{e:#}"))?
+                    .into_iter()
+                    .filter(|(_, until)| *until > inner.service.now_unix())
+                    .map(|(key, until)| {
+                        Ok::<_, String>(writ_proto::RetiredCa {
+                            fingerprint: fingerprint_of(&key)?,
+                            until,
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>, String>>()?,
+                    .collect::<Result<Vec<_>, String>>()?
+            }
             KeystoreConfig::Dev(_) => Vec::new(),
         };
         Ok(writ_proto::CaShown {
@@ -175,12 +176,17 @@ impl Opener {
     }
 
     /// A checked `writ-ca/1` done (see [`AdminApplier::rotate_ca`]): refused unless it names
-    /// the CA in force and a backend this daemon has; the new key made there, written beside
-    /// the old and moved over it, the old CA recorded as trusted until the last active lease
-    /// ends, the new one put in force for every certificate from now on.
+    /// the CA in force and a backend this daemon has (one in software refused under `unseal:
+    /// auto`, the review after M7.6, D-2); the new key made there and staged beside the old
+    /// with its backend's marker (D-4), its audit line written (refused without it, S-2), the
+    /// key moved over the old (the point of no return), the new CA put in force for every
+    /// certificate from now on, then the old one recorded as trusted until the last lease active
+    /// once the new one was in force ends (D-3). What fails after the point of no return is said
+    /// as "rotated, but …".
     fn rotate_ca_now(
         &self,
         checked: &writ_approval::CheckedCa,
+        caller: &CallerFacts,
     ) -> Result<writ_proto::CaRotated, String> {
         let inner = &self.0;
         let rotation = checked.rotation();
@@ -189,9 +195,12 @@ impl Opener {
             .gateway
             .get()
             .ok_or("the gateway is not started yet")?;
-        let Some((sealed, recipient)) = open.live.sealed_parts() else {
+        // The sealed state held for the whole rotation: a rotation of the data key waits, so
+        // the new CA is never sealed to an identity being replaced (step 8's handoff).
+        let Some((sealed, sealing)) = open.live.sealing() else {
             return Err("the development keystore's CA is a file: it isn't rotated".to_owned());
         };
+        let recipient = sealing.recipient().clone();
         let old = inner.service.ca_in_force().map_err(|e| e.to_string())?;
         let previous = fingerprint_of(&old)?;
         if rotation.replaces != previous {
@@ -216,6 +225,17 @@ impl Opener {
                         .join(", ")
                 )
             })?;
+        // Under auto-unseal everything is in hardware: a CA back in software would make the
+        // next start refuse itself (the review after M7.6, D-2).
+        if !backend.is_device()
+            && inner.service.policy().unseal() == writ_core::config::Unseal::Auto
+        {
+            return Err(
+                "unseal: auto is in force, and this would put the CA's key in software: turn \
+                 auto-unseal off first (writ admin auto-unseal off)"
+                    .to_owned(),
+            );
+        }
         let fail = |e: anyhow::Error| format!("{e:#}");
         let (material, meta) = match backend.is_device() {
             false => (
@@ -263,26 +283,89 @@ impl Opener {
         if let Some((_, why)) = refused.first() {
             return Err(format!("the new CA key was refused by its device: {why}"));
         }
-        let until = inner
+        let fingerprint = fingerprint_of(&public)?;
+        keystore::ca::stage(sealed, &recipient, &material, meta, backend.name()).map_err(fail)?;
+        // The line first: no line, no rotation.
+        if let Err(e) = inner.service.ca_rotating(checked, &fingerprint, caller) {
+            keystore::ca::unstage(sealed);
+            return Err(e.to_string());
+        }
+        // The gateway takes the new CA's certificates before any is issued, and the old one's
+        // while its deadline is worked out below.
+        let now = inner.service.now_unix();
+        let still = keystore::ca::retired(sealed, now).unwrap_or_default();
+        let trusted = |old_until: u64, kept: &[(writ_crypto::ssh_key::PublicKey, u64)]| {
+            std::iter::once((
+                old.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+                old_until,
+            ))
+            .chain(kept.iter().map(|(key, until)| {
+                (
+                    key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+                    *until,
+                )
+            }))
+            .collect::<Vec<_>>()
+        };
+        let mut but = Vec::new();
+        match keystore::ca::commit(sealed) {
+            Ok(()) => {}
+            Err(keystore::ca::Committed::NotInForce(why)) => {
+                keystore::ca::unstage(sealed);
+                inner.service.ca_logged(Some(checked), Err(&why), caller);
+                return Err(why);
+            }
+            Err(keystore::ca::Committed::Unfinished(why)) => but.push(format!(
+                "its public half and marker aren't moved in yet ({why}): the next start does it"
+            )),
+        }
+        gateway.set_authorities(
+            public.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+            trusted(u64::MAX, &still),
+        );
+        if let Err(e) = inner.service.replace_ca(signer) {
+            but.push(format!(
+                "the running daemon still signs with the old CA ({e}): restart it"
+            ));
+        }
+        *open
+            .ca_backend
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = backend;
+        // The old CA's deadline, read now that every new certificate is the new CA's: no lease
+        // the old one certified is recorded after this (the review after M7.6, D-3), and none
+        // lasts longer than the longest template allows (S-9).
+        let longest = inner
             .service
-            .last_active_expiry()
-            .map_err(|e| e.to_string())?
-            .filter(|until| *until > inner.service.now_unix());
-        let kept = keystore::ca::rotate(
-            sealed,
-            &recipient,
-            &material,
-            meta,
-            &old,
-            until,
-            inner.service.now_unix(),
-        )
-        .map_err(fail)?;
-        inner
-            .service
-            .replace_ca(signer)
-            .map_err(|e| e.to_string())?;
-        keystore::ca::set_backend(sealed, backend.name()).map_err(fail)?;
+            .policy()
+            .templates()
+            .values()
+            .map(|t| t.max_ttl.seconds())
+            .max()
+            .unwrap_or(0);
+        let until = match inner.service.last_active_expiry() {
+            Ok(until) => until
+                .filter(|until| *until > now)
+                .map(|until| until.min(now.saturating_add(longest))),
+            Err(e) => {
+                but.push(format!("the active leases can't be read ({e}): the old CA is kept as long as the longest template allows"));
+                Some(now.saturating_add(longest))
+            }
+        };
+        let kept = match keystore::ca::retire(sealed, &old, until, now) {
+            Ok(kept) => kept,
+            Err(e) => {
+                but.push(format!(
+                    "the retired CAs' record can't be written ({e:#}): leases the old CA \
+                     certified are refused after a restart"
+                ));
+                until
+                    .map(|u| (old.clone(), u))
+                    .into_iter()
+                    .chain(still)
+                    .collect()
+            }
+        };
         gateway.set_authorities(
             public.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
             kept.iter()
@@ -294,11 +377,11 @@ impl Opener {
                 })
                 .collect(),
         );
-        *open
-            .ca_backend
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = backend;
-        let fingerprint = fingerprint_of(&public)?;
+        for why in &but {
+            let reason = format!("SSH CA rotated to {fingerprint}, but {why}");
+            tracing::error!("{reason}");
+            inner.service.admin_note(&reason);
+        }
         tracing::info!(previous = %previous, ca = %fingerprint, backend = backend.name(), "SSH CA rotated");
         Ok(writ_proto::CaRotated {
             previous,
@@ -309,6 +392,7 @@ impl Opener {
         })
     }
 
+    /// The certificate in force, its key's backend, and what a `writ-tls/1` names.
     fn show_tls(&self) -> Result<writ_proto::TlsShown, String> {
         let fingerprint = self
             .tls()?
@@ -333,6 +417,7 @@ impl Opener {
     fn rotate(
         &self,
         checked: &writ_approval::CheckedTls,
+        caller: &CallerFacts,
     ) -> Result<writ_proto::TlsRotated, String> {
         let inner = &self.0;
         let rotation = checked.rotation();
@@ -357,10 +442,23 @@ impl Opener {
             })?;
         let makers = platform::makers(&inner.config).map_err(|e| format!("{e:#}"))?;
         let config = inner.config.clone();
+        let service = inner.service.clone();
         let next = keystore::tls_files(&config)
-            .rotate(backend, &makers, |pair| {
-                platform::tls_identity(&config, pair)
-            })
+            .rotate(
+                backend,
+                &makers,
+                |pair| platform::tls_identity(&config, pair),
+                // The line first (the review after M7.6, S-2): no line, no rotation.
+                |built| {
+                    let fingerprint = built
+                        .fingerprint()
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("the new certificate: {e}"))?;
+                    service
+                        .tls_rotating(checked, &fingerprint, caller)
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                },
+            )
             .map_err(|e| format!("{e:#}"))?;
         let fingerprint = next.fingerprint();
         identity.replace(next);
@@ -370,19 +468,18 @@ impl Opener {
             backend = backend.name(),
             "the HTTPS approval API's TLS key was rotated: approvers re-pin"
         );
-        let _ = writ_platform::Notifier::notify(
-            &*inner.notifiers,
-            &writ_platform::Notification {
-                title: "Writ: TLS key rotated".to_owned(),
-                message: format!(
-                    "The HTTPS approval API's TLS key was rotated (backend {}): its certificate is \
+        // Through the service's queue (the review after M7.6, D-9): never inline, under the
+        // admin lock, on a sink that may take seconds.
+        inner.service.notify_rotation(writ_platform::Notification {
+            title: "Writ: TLS key rotated".to_owned(),
+            message: format!(
+                "The HTTPS approval API's TLS key was rotated (backend {}): its certificate is \
                  now {fingerprint}. Approvers re-pin it in ~/.writ/tls_pins.",
-                    backend.name()
-                ),
-                priority: writ_platform::notify::Priority::Default,
-                tags: vec!["tls".to_owned()],
-            },
-        );
+                backend.name()
+            ),
+            priority: writ_platform::notify::Priority::Default,
+            tags: vec!["tls".to_owned()],
+        });
         Ok(writ_proto::TlsRotated {
             previous: rotation.replaces.clone(),
             fingerprint: fingerprint
@@ -434,6 +531,20 @@ impl Opener {
             keystore::Material::Device { backend, .. } => *backend,
             keystore::Material::Software(_) => crate::declared::Backend::Software,
         };
+        // The CA's marker, which auto-unseal's check reads while sealed, is the key's own
+        // (the review after M7.6, D-4): one that says otherwise is refused, named.
+        if let KeystoreConfig::Sealed(sealed) = &inner.config.keystore {
+            let marked = keystore::ca::backend(sealed)?;
+            if marked != ca_backend.name() {
+                bail!(
+                    "{}: the CA's backend marker says {marked}, but its key is on {}: put {} \
+                     there (the key is what it is)",
+                    sealed.dir.join("ca.backend").display(),
+                    ca_backend.name(),
+                    ca_backend.name()
+                );
+            }
+        }
         let (ca, refused) = platform::ca(&inner.config, keys.ca)?;
         unusable.extend(refused);
         // The CAs the gateway takes: this one, and one a rotation replaced, while its leases
@@ -442,15 +553,17 @@ impl Opener {
             .public_key()
             .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256);
         let retired = match &inner.config.keystore {
-            KeystoreConfig::Sealed(sealed) => keystore::ca::retired(sealed)?
-                .into_iter()
-                .map(|(key, until)| {
-                    (
-                        key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
-                        until,
-                    )
-                })
-                .collect(),
+            KeystoreConfig::Sealed(sealed) => {
+                keystore::ca::retired(sealed, inner.service.now_unix())?
+                    .into_iter()
+                    .map(|(key, until)| {
+                        (
+                            key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+                            until,
+                        )
+                    })
+                    .collect()
+            }
             KeystoreConfig::Dev(_) => Vec::new(),
         };
         gateway.set_authorities(ca_fingerprint, retired);
@@ -470,6 +583,12 @@ impl Opener {
             authority,
             openpgp,
         };
+        // Before the service reports open, so no admin change can run meanwhile (the review
+        // after M7.6, D-8): the keys the policy in force no longer declares deleted, the files
+        // in force written back.
+        let live = Arc::new(live);
+        self.sweep_keys(live.clone()).await;
+        self.sync_files();
         let (service, approver_owned, caller_owned) =
             (inner.service.clone(), approver.cloned(), caller.clone());
         let automatic = inner.automatic.load(std::sync::atomic::Ordering::SeqCst);
@@ -505,14 +624,12 @@ impl Opener {
             live.rotation_owed(),
         );
         let _ = inner.open.set(Open {
-            live: Arc::new(live),
+            live,
             signing: signer,
             upstream,
             tokens: RwLock::new(tokens),
             ca_backend: RwLock::new(ca_backend),
         });
-        self.sweep_keys().await;
-        self.sync_files();
         self.write_certificates();
         // Open: the notifiers whose token was sealed join the others; one whose token isn't
         // in the keystore yet stays off until `writ admin token` adds it.
@@ -539,12 +656,9 @@ impl Opener {
     /// Deletes the keys the keystore holds that the policy in force no longer declares: left
     /// by a change that took them out, the daemon stopping before it deleted them. Each is said
     /// in the log and the audit log; a failure is logged and tried again at the next unseal.
-    async fn sweep_keys(&self) {
+    async fn sweep_keys(&self, live: Arc<keystore::Live>) {
         let inner = &self.0;
-        let Some(open) = inner.open.get() else {
-            return;
-        };
-        let (live, policy) = (open.live.clone(), inner.service.policy());
+        let policy = inner.service.policy();
         let swept = tokio::task::spawn_blocking(move || {
             let declared = crate::declared::declarations(&policy)?;
             keystore::sweep(&live, &declared)
@@ -670,6 +784,11 @@ impl Opener {
                         )));
                     }
                 }
+                // What a kept key is never changes (the review after M7.6, D-1): the daemon's
+                // own rule, whatever text the change brings.
+                if let Some(why) = changed_identity(&in_force, &policy) {
+                    return Err(refuse(why));
+                }
                 if recipients_changed {
                     self.make_recipients(&policy)
                         .await
@@ -735,6 +854,13 @@ impl Opener {
         .await
         .map_err(|_| "the change stopped".to_owned())?
         .map_err(|e| e.to_string())?;
+        // In force: its file written back now, whatever follows (the review after M7.6, D-7: a
+        // rewrap that failed returned before this, and the next start took the file for a hand
+        // edit).
+        let path = crate::authority::path(&inner.config, target);
+        if let Err(e) = crate::authority::write_back(path, &text) {
+            tracing::warn!(%target, error = %format!("{e:#}"), "cannot write the file in force back");
+        }
         match ready {
             Ready::Policy(mirrors) => {
                 gateway.set_mirrors(mirrors);
@@ -764,10 +890,6 @@ impl Opener {
             }
             Ready::Readers(readers) => gateway.readers().replace(readers),
             Ready::Approvers => {}
-        }
-        let path = crate::authority::path(&inner.config, target);
-        if let Err(e) = crate::authority::write_back(path, &text) {
-            tracing::warn!(%target, error = %format!("{e:#}"), "cannot write the file in force back");
         }
         tracing::info!(%target, version = applied.version, approver = %applied.signed_by, "admin change applied");
         for key in &applied.created {
@@ -876,9 +998,7 @@ impl Opener {
                     KeyRole::Signing => &signing,
                     KeyRole::Upstream => &upstream,
                 };
-                if writ_signer::public_key(&**signer, id).is_ok() {
-                    continue;
-                }
+                let held = writ_signer::public_key(&**signer, id).is_ok();
                 // A device's key is made by the use's own backend, which then holds it.
                 let mut devices = BTreeMap::new();
                 if let Some(device) = signer
@@ -888,6 +1008,16 @@ impl Opener {
                     devices.insert(key.backend, device.clone());
                 }
                 let makers = keystore::Makers::running(devices);
+                // Every declared key, held or not, checked against its declaration (the review
+                // after M7.6, D-1), its OpenPGP creation time kept (a key made by a change then
+                // refused is found again by the retry).
+                if held {
+                    let meta = live.check_held(id, key, &makers)?;
+                    if let Some(created) = meta.created {
+                        openpgp.insert(id.clone(), created);
+                    }
+                    continue;
+                }
                 let (stored, made) = live.key_or_make(id, key, &makers)?;
                 if let Some(created) = stored.meta.created {
                     openpgp.insert(id.clone(), created);
@@ -1256,8 +1386,6 @@ impl Opener {
         }
     }
 
-    /// Opens the sealed keystore with `passphrase` (scrypt: off the async threads): every key
-    /// and token the configuration names. Its errors name what failed, never a secret.
     /// The daemon opens itself through its hardware (M7.6, `unseal: auto`): its keystore's
     /// identity unwrapped by its devices, the service opened with no approver, logged as
     /// automatic and notified. The start checked first that everything is in hardware.
@@ -1284,6 +1412,9 @@ impl Opener {
         Ok(())
     }
 
+    /// Opens the sealed keystore with `passphrase` (scrypt: off the async threads), or its
+    /// hardware: every key and token the configuration names. Its errors name what failed,
+    /// never a secret.
     async fn open_keystore(&self, passphrase: PassphraseText) -> anyhow::Result<Keystore> {
         let inner = self.0.clone();
         tokio::task::spawn_blocking(move || {
@@ -1412,12 +1543,12 @@ impl AdminApplier for Opener {
     fn rotate_ca(
         &self,
         checked: writ_approval::CheckedCa,
-        _caller: CallerFacts,
+        caller: CallerFacts,
     ) -> BoxFuture<'static, Result<writ_proto::CaRotated, String>> {
         let me = self.clone();
         // Files and a device: off the async threads; run to its end even if the client goes.
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || me.rotate_ca_now(&checked))
+            tokio::task::spawn_blocking(move || me.rotate_ca_now(&checked, &caller))
                 .await
                 .map_err(|_| "the rotation stopped".to_owned())?
         })
@@ -1435,16 +1566,47 @@ impl AdminApplier for Opener {
     fn rotate_tls(
         &self,
         checked: writ_approval::CheckedTls,
-        _caller: CallerFacts,
+        caller: CallerFacts,
     ) -> BoxFuture<'static, Result<writ_proto::TlsRotated, String>> {
         let me = self.clone();
         // Files and a device: off the async threads; run to its end even if the client goes.
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || me.rotate(&checked))
+            tokio::task::spawn_blocking(move || me.rotate(&checked, &caller))
                 .await
                 .map_err(|_| "the rotation stopped".to_owned())?
         })
     }
+}
+
+/// Why `next` can't be in force when `current` is: a key both declare, for the same use, whose
+/// format, algorithm or backend differs (what the key is: `writ admin key rotate` makes a new
+/// one, declared otherwise). None when every kept key is what it was.
+fn changed_identity(current: &PolicyConfig, next: &PolicyConfig) -> Option<String> {
+    let (Ok(current), Ok(next)) = (
+        crate::declared::declarations(current),
+        crate::declared::declarations(next),
+    ) else {
+        return None;
+    };
+    for (id, was) in &current {
+        let Some(now) = next.get(id).filter(|now| now.role == was.role) else {
+            continue;
+        };
+        let field = if now.format != was.format {
+            "format"
+        } else if now.algorithm != was.algorithm {
+            "algorithm"
+        } else if now.backend != was.backend {
+            "backend"
+        } else {
+            continue;
+        };
+        return Some(format!(
+            "keys.{id}.{field}: can't change: it is what the key is (writ admin key rotate {id} \
+             makes a new key, declared otherwise)"
+        ));
+    }
+    None
 }
 
 /// What signs with a declared key: the agent keys' signer, the upstream one, or none (a

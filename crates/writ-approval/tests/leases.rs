@@ -476,3 +476,124 @@ fn closes_count_against_the_submission_rates_and_a_flood_of_unknown_ids_is_bound
     }
     refused(close(&lease, &key, &quiet), RefusalCode::RateLimited, "");
 }
+
+/// The review after M7.6 (A-2): with the CA on a device, a certificate signed under the state
+/// lock held every revocation, sweep and decision behind it. It is signed with no lock held:
+/// a revocation of another lease completes while it waits, and what changed meanwhile is
+/// decided again before the lease is recorded (a refusal by another approver: discarded, the
+/// reason logged; a CA rotated: signed again by the new one).
+#[test]
+fn a_certificate_is_signed_outside_the_state_lock_and_decided_again_before_its_lease() {
+    let h = Harness::new(|b| b);
+    let caller = from("10.0.0.1");
+    let (other, _, _) = h.lease(&feature("agent/a-*"), &caller);
+    let held = |branch: &str| {
+        let key = generate(KeyKind::Ed25519).unwrap();
+        let ticket = h.submit(&key, &feature(branch), &caller).unwrap();
+        (ticket, key)
+    };
+
+    // A revocation of another lease completes while a certificate waits at the CA.
+    let (ticket, _) = held("agent/b-*");
+    h.ca_gate.close();
+    std::thread::scope(|scope| {
+        let approving = scope.spawn(|| h.approve(&ticket));
+        h.ca_gate.wait_entered();
+        h.service
+            .revoke(&other, &h.revocation(&other), &CallerFacts::default())
+            .unwrap();
+        assert_eq!(h.state(&other), State::Revoked);
+        // Meanwhile the waiting ticket is refused: its certificate is discarded.
+        h.service
+            .refuse(
+                &ticket.id,
+                &h.refusal(&ticket.id, "not now"),
+                &CallerFacts::default(),
+            )
+            .unwrap();
+        h.ca_gate.open();
+        refused(
+            approving.join().unwrap(),
+            RefusalCode::WrongState,
+            &format!(
+                "ticket {} became refused while its certificate was signed: the certificate is \
+                 discarded",
+                ticket.id
+            ),
+        );
+    });
+    assert_eq!(h.state(&ticket.id), State::Refused);
+    let denied = h.events("grant", "denied");
+    assert!(
+        denied.last().unwrap()["reason"]
+            .as_str()
+            .unwrap()
+            .contains("became refused while its certificate was signed"),
+        "{denied:?}"
+    );
+
+    // The CA rotated while a certificate waits: the lease gets one from the new CA.
+    let (ticket, key) = held("agent/c-*");
+    h.ca_gate.close();
+    let rotated = generate(KeyKind::Ed25519).unwrap();
+    std::thread::scope(|scope| {
+        let approving = scope.spawn(|| h.approve(&ticket));
+        h.ca_gate.wait_entered();
+        h.service
+            .replace_ca(Arc::new(writ_approval::testing::GatedCa::new(
+                &rotated,
+                Arc::new(writ_approval::testing::CaGate::default()),
+            )))
+            .unwrap();
+        h.ca_gate.open();
+        assert_eq!(approving.join().unwrap().unwrap(), State::Active);
+    });
+    let decision = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(h.service.wait(&ticket.id, key.public_key()))
+        .unwrap();
+    let Decision::Active { certificate, .. } = decision else {
+        panic!("expected an active lease, got {decision:?}");
+    };
+    let cert = Certificate::from_openssh(&certificate).unwrap();
+    assert_eq!(cert.signature_key(), rotated.public_key().key_data());
+}
+
+/// The review after M7.6 (A-9): an approver's revocation or an agent's close that the store
+/// couldn't record barred the certificate in memory only: after a restart the lease was
+/// active again. Each is now retried by the sweep, like the daemon's own revocations.
+#[test]
+fn a_revocation_or_close_the_store_can_t_record_is_recorded_by_the_next_sweep() {
+    let h = Harness::new(|b| b);
+    let caller = from("10.0.0.1");
+    let (revoked, _, _) = h.lease(&feature("agent/r-*"), &caller);
+    let (closed, key, _) = h.lease(&feature("agent/c-*"), &caller);
+    h.store_breaker.fail_state_changes(1);
+    // any error: the store the test broke answers an internal error; what is checked is what
+    // the sweep does next.
+    assert!(
+        h.service
+            .revoke(&revoked, &h.revocation(&revoked), &CallerFacts::default())
+            .is_err()
+    );
+    let request = CloseRequest {
+        summary: "done".to_owned(),
+    };
+    // The close's own sweep tries the revocation again (it fails too), then the close.
+    h.store_breaker.fail_state_changes(2);
+    // any error: as above.
+    assert!(
+        h.service
+            .close(&closed, key.public_key(), &request, &caller)
+            .is_err()
+    );
+    // The next request's sweep records both.
+    assert_eq!(h.state(&revoked), State::Revoked);
+    assert_eq!(h.state(&closed), State::Revoked);
+    let revokes = h.events("revoke", "done");
+    assert!(
+        revokes.iter().any(|e| e["lease"] == closed.as_str()
+            && e["reason"] == "closed by its agent (the close couldn't be recorded)"),
+        "{revokes:?}"
+    );
+}

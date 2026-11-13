@@ -388,3 +388,28 @@ fn on_the_mac_the_ca_moves_to_the_secure_enclave_and_back() {
     let said = stdout(&daemon.run(&["admin", "ca", "show"], ""));
     assert_eq!(said.matches("a CA it replaced").count(), 2, "{said}");
 }
+
+/// The review after M7.6 (D-4): the CA's backend marker, which auto-unseal's check reads while
+/// sealed, is checked against the key the unseal opens: one that says otherwise refuses the
+/// unseal, naming the file.
+#[test]
+fn a_ca_marker_that_is_not_the_key_s_backend_stops_the_unseal() {
+    let mut daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    assert_eq!(daemon.unseal().status.code(), Some(0));
+    daemon.stop();
+    let marker = daemon.root().join("s/keys/ca.backend");
+    fs::write(&marker, "se-cryptokit\n").unwrap();
+    daemon.restart();
+    let out = daemon.unseal();
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains(&format!(
+            "{}: the CA's backend marker says se-cryptokit, but its key is on software",
+            marker.canonicalize().unwrap().display()
+        )) || stderr(&out)
+            .contains("the CA's backend marker says se-cryptokit, but its key is on software"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stderr(&daemon.run(&["ls"], "")).contains("daemon sealed"));
+}

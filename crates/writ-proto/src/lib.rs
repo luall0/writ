@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::DryRun`], [`Command::Policy`], [`Command::Wait`], [`Command::Close`] |
-//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`], [`Command::ScanNonce`], [`Command::Scan`], [`Command::RepoCheck`], [`Command::TlsShow`], [`Command::TlsRotate`], [`Command::CaShow`], [`Command::CaRotate`], [`Command::AutoUnsealShow`] |
 //!
 //! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
 //! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed".
@@ -93,6 +93,13 @@ mod tests {
             Command::RepoCheck {
                 repo: "omega-code".parse().unwrap(),
             },
+            // The six M7.x added (the review after M7.6, P-4).
+            Command::RecoveryShow,
+            Command::TlsShow,
+            Command::TlsRotate,
+            Command::CaShow,
+            Command::CaRotate,
+            Command::AutoUnsealShow,
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -171,9 +178,27 @@ mod tests {
             Command::RepoCheck {
                 repo: "omega-code".parse().unwrap(),
             },
+            // The six M7.x added (the review after M7.6, P-4).
+            Command::RecoveryShow,
+            Command::TlsShow,
+            Command::TlsRotate,
+            Command::CaShow,
+            Command::CaRotate,
+            Command::AutoUnsealShow,
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));
+        }
+        // Every approval command is one by name, never by falling outside the agent ones.
+        for command in [
+            Command::RecoveryShow,
+            Command::TlsShow,
+            Command::TlsRotate,
+            Command::CaShow,
+            Command::CaRotate,
+            Command::AutoUnsealShow,
+        ] {
+            assert!(command.is_approval() && !command.is_agent(), "{command:?}");
         }
         assert_eq!(Command::Request.http_route(), None);
         assert_eq!(Command::DryRun.http_route(), None);

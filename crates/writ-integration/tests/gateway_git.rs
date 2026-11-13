@@ -590,3 +590,49 @@ fn a_fetch_is_refused_when_upstream_refuses_the_sync() {
     );
     assert_eq!(gateway.bare_ref("refs/heads/main"), None, "nothing synced");
 }
+
+/// The review after M7.6 (T-4): "a retired CA is trusted until its deadline and no later" was
+/// proven only inside one pure function. At the gateway: a CA set as retired with a deadline
+/// to come gets its certificates past authentication (then refused for having no lease); once
+/// its deadline is past, refused as an unknown authority, said in the audit log.
+#[test]
+fn a_retired_ca_is_trusted_at_the_gateway_until_its_deadline_and_no_later() {
+    let gateway = GitGateway::start(KeyKind::Ed25519, Listen::Tcp);
+    gateway.seed_repo();
+    let url = format!("{}/demo.git", gateway.url);
+    let retired = CertificateAuthority::new(generate(KeyKind::Ed25519).unwrap());
+    let key = gateway.forged_session(&retired, "retired", 0, now() + 3600);
+    let ls_remote = || {
+        gateway.git_with(
+            &gateway.ssh_command(&key, true),
+            gateway.root(),
+            &["ls-remote", &url],
+        )
+    };
+    let unknown = || {
+        let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+        audit_events(&audit, "connect", "denied")
+            .iter()
+            .filter(|e| {
+                e["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("signed by an unknown certificate authority")
+            })
+            .count()
+    };
+    // Before its deadline: the CA is taken, the certificate refused for its lease alone.
+    gateway.gateway.set_authorities(
+        gateway.ca.fingerprint(),
+        vec![(retired.fingerprint(), now() + 3600)],
+    );
+    assert_eq!(ls_remote().status.code(), Some(128));
+    assert_eq!(unknown(), 0);
+    // Its deadline past: an unknown authority.
+    gateway.gateway.set_authorities(
+        gateway.ca.fingerprint(),
+        vec![(retired.fingerprint(), now() - 1)],
+    );
+    assert_eq!(ls_remote().status.code(), Some(128));
+    writ_integration::eventually("the unknown authority's line", || unknown() == 1);
+}

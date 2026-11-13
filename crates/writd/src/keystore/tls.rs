@@ -73,8 +73,9 @@ impl TlsFiles {
         self.key.with_extension("pub")
     }
 
-    /// Finishes a rotation cut short, or drops one never decided (see the module).
-    pub fn finish(&self) -> anyhow::Result<()> {
+    /// Finishes a rotation cut short, or drops one never decided (see the module): whether one
+    /// was finished (said in the audit log at start).
+    pub fn finish(&self) -> anyhow::Result<bool> {
         let parts = [self.public(), self.key.clone(), self.cert.clone()];
         if next(&self.cert).exists() {
             for part in &parts {
@@ -86,12 +87,12 @@ impl TlsFiles {
                 }
             }
             tracing::warn!("a TLS key rotation cut short was finished at start");
-        } else {
-            for part in &parts {
-                remove_if_there(&next(part))?;
-            }
+            return Ok(true);
         }
-        Ok(())
+        for part in &parts {
+            remove_if_there(&next(part))?;
+        }
+        Ok(false)
     }
 
     /// The key and certificate in force, or the `.new` ones (`pending`).
@@ -205,6 +206,7 @@ impl TlsFiles {
         backend: Backend,
         makers: &Makers,
         build: impl FnOnce(TlsKeyPair) -> anyhow::Result<T>,
+        commit: impl FnOnce(&T) -> anyhow::Result<()>,
     ) -> anyhow::Result<T> {
         self.finish()?;
         let built = Self::write(
@@ -215,7 +217,10 @@ impl TlsFiles {
             &next(&self.cert),
         )
         .and_then(|()| self.read_at(true))
-        .and_then(build);
+        .and_then(build)
+        // Its audit line, before anything is in force (the review after M7.6, S-2): a stop
+        // after this finishes the rotation at the next start, said then too.
+        .and_then(|built| commit(&built).map(|()| built));
         let built = match built {
             Ok(built) => built,
             Err(e) => {
@@ -279,23 +284,45 @@ mod tests {
                 Backend::Software,
                 &Makers::default(),
                 |_| -> anyhow::Result<()> { bail!("the identity can't be made") },
+                |_| Ok(()),
             )
             .unwrap_err();
         assert_eq!(failed.to_string(), "the identity can't be made");
         assert_eq!(fingerprint(&files), first);
         assert_eq!(names(dir.path()), ["tls-01", "tls-01.crt"]);
+        // Built, but its audit line refused (the review after M7.6, S-2): nothing in force
+        // changes, the new files dropped.
+        let unlogged = files
+            .rotate(
+                Backend::Software,
+                &Makers::default(),
+                |_| Ok(()),
+                |_| -> anyhow::Result<()> { bail!("the audit log can't take the line") },
+            )
+            .unwrap_err();
+        assert_eq!(unlogged.to_string(), "the audit log can't take the line");
+        assert_eq!(fingerprint(&files), first);
+        assert_eq!(names(dir.path()), ["tls-01", "tls-01.crt"]);
         // A rotation: built from the new pair, then in force.
         let built = files
-            .rotate(Backend::Software, &Makers::default(), |pair| {
-                Ok(writ_crypto::tls::fingerprint_pem(&pair.cert_pem)?)
-            })
+            .rotate(
+                Backend::Software,
+                &Makers::default(),
+                |pair| Ok(writ_crypto::tls::fingerprint_pem(&pair.cert_pem)?),
+                |_| Ok(()),
+            )
             .unwrap();
         assert_ne!(built, first);
         assert_eq!(fingerprint(&files), built);
         assert_eq!(names(dir.path()), ["tls-01", "tls-01.crt"]);
         // A device backend this test has no helper for: refused, nothing changed.
         let refused = files
-            .rotate(Backend::SeCryptokit, &Makers::default(), |_| Ok(()))
+            .rotate(
+                Backend::SeCryptokit,
+                &Makers::default(),
+                |_| Ok(()),
+                |_| Ok(()),
+            )
             .unwrap_err();
         assert_eq!(
             format!("{refused:#}"),

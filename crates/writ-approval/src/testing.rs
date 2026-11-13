@@ -196,7 +196,23 @@ impl TestServiceBuilder {
 
     /// [`TestServiceBuilder::build`], with the service's startup error if it has one.
     pub fn try_build(self, dir: &Path) -> Result<TestService, crate::ServiceError> {
-        let approver = generate(KeyKind::Ed25519).unwrap();
+        // The approver kept across a restart in the same directory (a lease it signed stays
+        // its lease: the unseal revokes those a removed approver signed).
+        let approver_path = dir.join("approver.key");
+        let approver = match std::fs::read_to_string(&approver_path) {
+            Ok(text) => PrivateKey::from_openssh(text).unwrap(),
+            Err(_) => {
+                let key = generate(KeyKind::Ed25519).unwrap();
+                std::fs::write(
+                    &approver_path,
+                    key.to_openssh(writ_crypto::ssh_key::LineEnding::LF)
+                        .unwrap()
+                        .as_bytes(),
+                )
+                .unwrap();
+                key
+            }
+        };
         let ca_key = generate(KeyKind::Ed25519).unwrap();
         let host_key = generate(KeyKind::Ed25519).unwrap();
         let daemon: writ_core::names::KeyFingerprint = host_key
@@ -302,6 +318,7 @@ impl TestServiceBuilder {
             openpgp_created,
             daemon,
             authority: *authority.as_bytes(),
+            ca_gate: Arc::new(CaGate::default()),
         };
         if !self.sealed {
             test.open()?;
@@ -384,6 +401,77 @@ pub struct TestService {
     pub daemon: writ_core::names::KeyFingerprint,
     /// The authority MAC's key the kit hands at open.
     pub authority: [u8; 32],
+    /// Holds the CA's signatures while closed (the review after M7.6, A-2): a certificate in
+    /// the middle of being issued, for as long as a test needs.
+    pub ca_gate: Arc<CaGate>,
+}
+
+/// A gate in front of the kit's CA: [`CaGate::close`] holds every certificate's signature,
+/// [`CaGate::wait_entered`] waits for one to be held, [`CaGate::open`] lets them through.
+#[derive(Default)]
+pub struct CaGate {
+    state: std::sync::Mutex<(bool, u64)>,
+    changed: std::sync::Condvar,
+}
+
+impl CaGate {
+    pub fn close(&self) {
+        self.state.lock().unwrap().0 = true;
+    }
+
+    pub fn open(&self) {
+        self.state.lock().unwrap().0 = false;
+        self.changed.notify_all();
+    }
+
+    /// Waits until a signature is held at the closed gate (at most a minute: the test hangs
+    /// otherwise), counting it seen.
+    pub fn wait_entered(&self) {
+        let state = self.state.lock().unwrap();
+        let (mut state, timeout) = self
+            .changed
+            .wait_timeout_while(state, std::time::Duration::from_secs(60), |s| s.1 == 0)
+            .unwrap();
+        assert!(!timeout.timed_out(), "no certificate reached the CA's gate");
+        state.1 -= 1;
+    }
+
+    fn pass(&self) {
+        let mut state = self.state.lock().unwrap();
+        if state.0 {
+            state.1 += 1;
+            self.changed.notify_all();
+            let _held = self.changed.wait_while(state, |s| s.0).unwrap();
+        }
+    }
+}
+
+/// The kit's CA key behind a [`CaGate`].
+pub struct GatedCa {
+    key: writ_crypto::keypair::KeyPair,
+    public: writ_crypto::ssh_key::PublicKey,
+    gate: Arc<CaGate>,
+}
+
+impl GatedCa {
+    pub fn new(key: &PrivateKey, gate: Arc<CaGate>) -> Self {
+        Self {
+            public: key.public_key().clone(),
+            key: writ_crypto::keypair::KeyPair::from_ssh(key.clone()).unwrap(),
+            gate,
+        }
+    }
+}
+
+impl writ_crypto::ca::CaSigner for GatedCa {
+    fn public_key(&self) -> &writ_crypto::ssh_key::PublicKey {
+        &self.public
+    }
+
+    fn sign(&self, data: &[u8]) -> writ_crypto::Result<writ_crypto::keypair::RawSignature> {
+        self.gate.pass();
+        self.key.sign(data, None)
+    }
 }
 
 impl TestService {
@@ -419,9 +507,13 @@ impl TestService {
         }
     }
 
-    /// The service's CA, to issue certificates no lease stands for.
+    /// The service's CA (behind [`TestService::ca_gate`]), to issue certificates no lease
+    /// stands for too.
     pub fn ca(&self) -> CertificateAuthority {
-        CertificateAuthority::new(self.ca_key.clone())
+        CertificateAuthority::with_signer(Arc::new(GatedCa::new(
+            &self.ca_key,
+            self.ca_gate.clone(),
+        )))
     }
 
     /// Every audit log line, parsed.

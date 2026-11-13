@@ -79,9 +79,36 @@ impl Service {
         Ok(CheckedTls { rotation, approver })
     }
 
-    /// Logs a rotation: done, from the certificate it replaced to the new one on its backend,
-    /// or denied with the reason (the document refused, a certificate no longer in force, the
-    /// key not made).
+    /// Tells the approvers a rotation is done, through the service's notification queue (the
+    /// review after M7.6, D-9): never inline, never under the admin lock's wait on a sink.
+    pub fn notify_rotation(&self, notification: writ_platform::Notification) {
+        self.notify(notification);
+    }
+
+    /// The line of a rotation about to be put in force (the review after M7.6, S-2): written
+    /// before the new key and certificate are moved in, and the rotation refused when the log
+    /// can't take it (no line, no rotation).
+    pub fn tls_rotating(
+        &self,
+        checked: &CheckedTls,
+        new: &CertFingerprint,
+        caller: &CallerFacts,
+    ) -> Result<(), ServiceError> {
+        let now = self.now()?;
+        let mut inner = self.lock()?;
+        let event = AuditEvent::new(now, EventKind::Admin, Outcome::Done)
+            .caller(caller)
+            .approver(&checked.approver)
+            .reason(format!(
+                "TLS key rotated: certificate {} replaced by {new}, its key on backend {}",
+                checked.rotation.replaces, checked.rotation.backend
+            ));
+        Self::log(&mut inner, &event)
+    }
+
+    /// Logs a rotation refused (denied, with the reason: the document refused, a certificate
+    /// no longer in force, the key not made), or one done whose line wasn't written first (a
+    /// rotation finished at start).
     pub fn tls_logged(
         &self,
         checked: Option<&CheckedTls>,

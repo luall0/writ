@@ -168,8 +168,14 @@ pub fn widenings(previous: &Ticket, next: &Ticket) -> Vec<String> {
         reasons.push(format!("common.committer_emails adds {email}"));
     }
     // Another name, or none where there was one, is another identity: never by narrowing or
-    // renewal.
-    if b.committer_name != a.committer_name {
+    // renewal. A ticket that signs nothing names nobody (the review after M7.6, C-3: a push-only
+    // renewal has no name, which is no other identity).
+    let signs = next.repos.values().any(|terms| {
+        terms
+            .operations
+            .contains(&crate::ticket::Operation::CommitSign)
+    });
+    if signs && b.committer_name != a.committer_name {
         reasons.push("common.committer_name changed".to_owned());
     }
     if next.on_violation < previous.on_violation {

@@ -549,6 +549,7 @@ fn pushed_commits_signed_under_this_lease() {
             "signed under the lease this one renews",
             |w, r| {
                 w.lease.ticket.text.renews = Some(ticket_id(98));
+                w.lease.renews = Some(ticket_id(98));
                 r.predecessors = vec![ticket_id(98)];
                 r.commits[0].signed_under = vec![under(ticket_id(98).as_str(), "omega-code")];
             },
@@ -558,6 +559,7 @@ fn pushed_commits_signed_under_this_lease() {
             "signed under the lease that one renewed",
             |w, r| {
                 w.lease.ticket.text.renews = Some(ticket_id(98));
+                w.lease.renews = Some(ticket_id(98));
                 r.predecessors = vec![ticket_id(98), ticket_id(97)];
                 r.commits[0].signed_under = vec![under(ticket_id(97).as_str(), "omega-code")];
             },
@@ -567,6 +569,7 @@ fn pushed_commits_signed_under_this_lease() {
             "signed under a predecessor for another repo",
             |w, r| {
                 w.lease.ticket.text.renews = Some(ticket_id(98));
+                w.lease.renews = Some(ticket_id(98));
                 r.predecessors = vec![ticket_id(98)];
                 r.commits[0].signed_under = vec![under(ticket_id(98).as_str(), "homelab-scripts")];
             },
@@ -576,10 +579,23 @@ fn pushed_commits_signed_under_this_lease() {
             "signed under a lease outside the chain",
             |w, r| {
                 w.lease.ticket.text.renews = Some(ticket_id(98));
+                w.lease.renews = Some(ticket_id(98));
                 r.predecessors = vec![ticket_id(98)];
                 r.commits[0].signed_under = vec![under(ticket_id(99).as_str(), "omega-code")];
             },
             Some(DenyCode::Unsigned),
+        ),
+        // The review after M7.6 (C-2): an amended renewal's terms are the amendment's, which
+        // renews nothing; the lease still renews, and pushes what its chain signed.
+        (
+            "signed under the lease an amended renewal renews",
+            |w, r| {
+                w.lease.ticket.text.renews = None;
+                w.lease.renews = Some(ticket_id(98));
+                r.predecessors = vec![ticket_id(98)];
+                r.commits[0].signed_under = vec![under(ticket_id(98).as_str(), "omega-code")];
+            },
+            None,
         ),
         (
             "a lease that renews nothing given a chain",
@@ -593,13 +609,14 @@ fn pushed_commits_signed_under_this_lease() {
             "a chain that doesn't start with the lease renewed",
             |w, r| {
                 w.lease.ticket.text.renews = Some(ticket_id(98));
+                w.lease.renews = Some(ticket_id(98));
                 r.predecessors = vec![ticket_id(99), ticket_id(98)];
             },
             Some(DenyCode::Invalid),
         ),
         (
             "a renewal given no chain",
-            |w, _| w.lease.ticket.text.renews = Some(ticket_id(98)),
+            |w, _| w.lease.renews = Some(ticket_id(98)),
             Some(DenyCode::Invalid),
         ),
     ]);

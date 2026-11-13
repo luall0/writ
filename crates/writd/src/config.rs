@@ -439,6 +439,12 @@ impl TransportConfig {
             (_, _, Some(ranges)) if ranges.is_empty() => Err(format!(
                 "{at}.allow: empty (nobody could connect); list addresses, or 0.0.0.0/0 for anyone"
             )),
+            // A literal address (the review after M7.6, D-11): a host name would be resolved
+            // at start, so what the listener binds would be DNS's choice.
+            (Some(tcp), _, _) if tcp.parse::<std::net::SocketAddr>().is_err() => Err(format!(
+                "{at}.tcp: {tcp:?} is not an address and port (`127.0.0.1:2222`, `[::1]:2222`): \
+                 a host name is never resolved"
+            )),
             _ => Ok(()),
         }
     }
@@ -693,6 +699,35 @@ mod tests {
         readers: readers\nkeystore: { dev: keys }\n\
         transports: { agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }], approvals: { ssh: [{ tcp: \"127.0.0.1:0\" }] } }\n\
         attestor: network\nsession_watcher: none\n";
+
+    /// The review after M7.6 (D-11): a listener's address is a literal socket address, never a
+    /// name DNS resolves at start.
+    #[test]
+    fn a_tcp_listener_is_a_literal_address() {
+        for good in ["127.0.0.1:0", "[::1]:2222", "0.0.0.0:2222"] {
+            load(&MINIMAL.replace(
+                "tcp: \"127.0.0.1:0\", allow",
+                &format!("tcp: \"{good}\", allow"),
+            ))
+            .unwrap();
+        }
+        for bad in ["localhost:2222", "writ.home:22", "127.0.0.1", "::1:2222"] {
+            let error = format!(
+                "{:#}",
+                load(&MINIMAL.replace(
+                    "tcp: \"127.0.0.1:0\", allow",
+                    &format!("tcp: \"{bad}\", allow")
+                ))
+                .unwrap_err()
+            );
+            assert!(
+                error.contains(&format!(
+                    "transports.agents[0].tcp: {bad:?} is not an address and port"
+                )),
+                "{bad}: {error}"
+            );
+        }
+    }
 
     #[test]
     fn reads_the_minimal_config_with_defaults() {

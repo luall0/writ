@@ -174,6 +174,11 @@ macro_rules! glob1_pattern {
             type Err = PatternError;
 
             fn from_str(value: &str) -> Result<Self, PatternError> {
+                // A list's separator in the CLI's field edits (the review after M7.6, P-3): a
+                // pattern holding one would be read back as two, a broader scope.
+                if value.contains(',') {
+                    return Err(pattern_error($kind, value, "must not contain ','"));
+                }
                 let glob = Glob1::parse(value).map_err(|why| pattern_error($kind, value, why))?;
                 // The pattern must stand for valid names: check the exact name, or the prefix
                 // completed with a sample character.

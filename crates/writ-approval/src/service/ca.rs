@@ -76,8 +76,30 @@ impl Service {
         Ok(CheckedCa { rotation, approver })
     }
 
-    /// Logs a CA rotation: done, from the CA it replaced to the new one on its backend, or
-    /// denied with the reason.
+    /// The line of a rotation about to be put in force (the review after M7.6, S-2): written
+    /// before the new CA's key is moved in, and the rotation refused when the log can't take
+    /// it (no line, no rotation), like an admin change's. From the CA it replaces to `new`, on
+    /// its backend.
+    pub fn ca_rotating(
+        &self,
+        checked: &CheckedCa,
+        new: &KeyFingerprint,
+        caller: &CallerFacts,
+    ) -> Result<(), ServiceError> {
+        let now = self.now()?;
+        let mut inner = self.lock()?;
+        let event = AuditEvent::new(now, EventKind::Admin, Outcome::Done)
+            .caller(caller)
+            .approver(&checked.approver)
+            .reason(format!(
+                "SSH CA rotated: {} replaced by {new}, its key on backend {}",
+                checked.rotation.replaces, checked.rotation.backend
+            ));
+        Self::log(&mut inner, &event)
+    }
+
+    /// Logs a CA rotation refused (denied, with the reason), or one done whose line wasn't
+    /// written first (a rotation finished at start).
     pub fn ca_logged(
         &self,
         checked: Option<&CheckedCa>,
@@ -119,7 +141,9 @@ impl Service {
         Ok(self.opened()?.ca.public_key())
     }
 
-    /// Puts `key` in force for every certificate from now on (a CA rotation).
+    /// Puts `key` in force for every certificate from now on (a CA rotation). A certificate
+    /// signed by the CA it replaces while an approval was in flight is signed again by this
+    /// one before its lease is recorded ([`Service::approve`]'s last phase).
     pub fn replace_ca(
         &self,
         key: std::sync::Arc<dyn writ_crypto::ca::CaSigner>,
@@ -129,7 +153,9 @@ impl Service {
     }
 
     /// When the last active lease ends (seconds since the epoch), none without one: until
-    /// when a CA a rotation replaced is still needed.
+    /// when a CA a rotation replaced is still needed. Read under the state lock after the new
+    /// CA is in force (the review after M7.6, D-3): a lease recorded after that was certified
+    /// by the new one.
     pub fn last_active_expiry(&self) -> Result<Option<u64>, ServiceError> {
         let inner = self.lock()?;
         let leases = inner

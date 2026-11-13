@@ -105,6 +105,15 @@ impl Service {
                         .map_err(internal)
                 });
                 self.deny_serial(lease.cert_serial);
+                // Not recorded: ended all the same by the next sweep (as a revocation, its
+                // reason saying so), never active again after a restart (the review after
+                // M7.6, A-9).
+                if done.is_err() {
+                    inner.unrecorded.insert(
+                        id.clone(),
+                        "closed by its agent (the close couldn't be recorded)".to_owned(),
+                    );
+                }
                 done?;
             }
             State::Expired | State::Exhausted | State::Renewed | State::Revoked => {

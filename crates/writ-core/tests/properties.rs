@@ -680,12 +680,14 @@ fn allows(config: &PolicyConfig, lease: &Lease, facts: &Facts) -> bool {
 
 /// A lease with the ticket's terms, without going through activation.
 fn as_lease(ticket: Ticket) -> Lease {
+    let ticket_renews = ticket.text.renews.clone();
     Lease {
         id: ticket.id.clone(),
         ticket,
         approval: approval(),
         state: State::Active,
         cert_serial: 7,
+        renews: ticket_renews,
     }
 }
 

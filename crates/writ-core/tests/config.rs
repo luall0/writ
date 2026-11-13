@@ -116,6 +116,55 @@ fn repo_names_are_unique_ignoring_case() {
     }
 }
 
+/// The review after M7.6 (P-1): a key's id, a recipient's name and a pinned host name each
+/// name a file (or, for a host, what ssh matches ignoring case): two equal ignoring case would
+/// share it. Refused, the second named; the same name in its own case is the control.
+#[test]
+fn keys_recipients_and_hosts_are_unique_ignoring_case() {
+    let cases = [
+        (
+            "  deploy-dotfiles-01: { use: upstream, kind: ssh, algorithm: ed25519 }\n",
+            "  deploy-dotfiles-01: { use: upstream, kind: ssh, algorithm: ed25519 }\n  \
+             Agent-ed25519-01: { use: signing, format: ssh, algorithm: ed25519 }\n",
+            "keys.agent-ed25519-01",
+        ),
+        (
+            "  forgejo.home: [",
+            "  GitHub.com: [\"ssh-ed25519 \
+             AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\"]\n  \
+             forgejo.home: [",
+            "upstream_hosts.github.com",
+        ),
+        (
+            "\nrepos:\n",
+            "\nrecipients:\n  recovery: { recipient: \
+             age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p }\n  se-01: { \
+             backend: se-cryptokit }\n  SE-01: { backend: se-cryptokit }\n\nrepos:\n",
+            "recipients.se-01",
+        ),
+    ];
+    for (from, to, path) in cases {
+        let policy = POLICY.replacen(from, to, 1);
+        assert_ne!(policy, POLICY, "{path}");
+        let error = PolicyConfig::from_yaml(&policy).unwrap_err();
+        assert_eq!(error.path, path, "{error}");
+        assert!(
+            error
+                .message
+                .starts_with("another entry has the same name ignoring case"),
+            "{error}"
+        );
+    }
+    // The control: one entry of each, in any case, is taken.
+    let policy = POLICY.replacen(
+        "  forgejo.home: [",
+        "  Codeberg.org: [\"ssh-ed25519 \
+         AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\"]\n  forgejo.home: [",
+        1,
+    );
+    PolicyConfig::from_yaml(&policy).unwrap();
+}
+
 #[test]
 fn errors_name_the_field() {
     let cases: Vec<(&str, String, &str)> = vec![
@@ -1843,6 +1892,55 @@ fn the_daemon_unseals_by_an_approver_unless_the_policy_says_auto() {
         assert_error(
             &error_of(&format!("{POLICY}\nunseal: {bad}\n")),
             "unseal: unknown variant",
+        );
+    }
+}
+
+/// The review after M7.6 (P-3): list fields are split on commas, and `current` joins with
+/// them, so a pattern or uid holding one came back as two (`template add --from` widened a
+/// template). Commas are refused where the edit syntax can't carry them, and a template
+/// copied with `--from`'s edits is the template it copies.
+#[test]
+fn a_template_copied_field_by_field_is_the_same_and_commas_are_refused() {
+    use writ_core::config::Section;
+    use writ_core::config::edit::{self, Change, FieldEdit};
+    use writ_core::pattern::{BranchPattern, RefPattern};
+    for bad in ["agent/x,y*", "a,b"] {
+        let error = bad.parse::<BranchPattern>().unwrap_err();
+        assert_eq!(
+            (error.kind, error.why.as_str()),
+            ("branch pattern", "must not contain ','")
+        );
+    }
+    let error = "refs/heads/a,b".parse::<RefPattern>().unwrap_err();
+    assert_eq!(error.why, "must not contain ','");
+    let error = "Doe, John <j@example.org>"
+        .parse::<writ_core::names::Uid>()
+        .unwrap_err();
+    assert!(error.to_string().contains("no ',' in the name"), "{error}");
+    // `--from`: every field of the template set on a new one gives the same template.
+    let policy = PolicyConfig::from_yaml(POLICY).unwrap();
+    for name in ["feature-branch", "quick-fix", "read-only"] {
+        let current = edit::current(&policy, Section::Templates, name).unwrap();
+        let edits: Vec<FieldEdit> = current
+            .iter()
+            .map(|(field, value)| FieldEdit {
+                field: (*field).to_owned(),
+                change: Change::Set(value.clone()),
+            })
+            .collect();
+        let copied = edit::add(
+            &policy,
+            Section::Templates,
+            "copy",
+            &edits,
+            writ_core::fit::MIN_TTL_FLOOR,
+        )
+        .unwrap();
+        assert_eq!(
+            copied.template(&"copy".parse().unwrap()),
+            policy.template(&name.parse().unwrap()),
+            "{name}"
         );
     }
 }

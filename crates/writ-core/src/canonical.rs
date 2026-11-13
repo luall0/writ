@@ -3,7 +3,7 @@
 //!
 //! The canonical bytes of a document are compact JSON (no whitespace) with its fields in the
 //! order its type declares them, set-like lists sorted and deduplicated, absent values as
-//! `null`. The first field, `kind` ([`Canonical::KIND`]: `writ-ticket/2`, …), names the format,
+//! `null`. The first field, `kind` ([`Canonical::KIND`]: `writ-ticket/3`, …), names the format,
 //! so one signed document can never be read as another. [`Canonical::from_canonical`] accepts
 //! only bytes that re-encode to exactly themselves.
 
@@ -25,7 +25,7 @@ pub enum CanonicalError {
 /// A document with canonical bytes. Implementors declare their fields in canonical order,
 /// `kind` first, as a one-value enum that only accepts [`Canonical::KIND`].
 pub trait Canonical: Serialize + DeserializeOwned + Sized {
-    /// The format name, the value of the `kind` field (`writ-ticket/2`).
+    /// The format name, the value of the `kind` field (`writ-ticket/3`).
     const KIND: &'static str;
 
     /// The canonical bytes: what an approver signs and the daemon verifies.

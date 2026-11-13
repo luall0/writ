@@ -634,3 +634,39 @@ fn the_old_policy_fields_are_refused_everywhere_naming_their_new_place() {
         assert!(!daemon.root().join(format!("init-{i}/keys")).exists());
     }
 }
+
+/// The review after M7.6 (D-1): a whole policy text that changed what a kept key is (its
+/// algorithm, format or backend) was taken, the key left as it was: the "can't change" rule
+/// lived only in the CLI's field edits. The daemon refuses it, naming the field.
+#[test]
+fn a_change_to_what_a_kept_key_is_is_refused_by_the_daemon() {
+    let daemon = Daemon::start(POLICY, Approvals::Ssh);
+    let shown = daemon.run(&["admin", "show", "policy"], "");
+    let text = stdout(&shown);
+    let file = daemon.root().join("changed-key.yaml");
+    // The algorithm (the other fields that are what a key is go through the same check).
+    let cases = [(
+        "    algorithm: ed25519\n  upstream-01:",
+        "    algorithm: p256\n  upstream-01:",
+        "algorithm",
+    )];
+    for (from, to, field) in cases {
+        let changed = text.replacen(from, to, 1);
+        assert_ne!(changed, text, "{field}");
+        fs::write(&file, &changed).unwrap();
+        let out = daemon.run(
+            &["admin", "apply", "policy", file.to_str().unwrap(), "--yes"],
+            "",
+        );
+        assert_eq!(out.status.code(), Some(1), "{field}: {}", stdout(&out));
+        assert!(
+            stderr(&out).contains(&format!(
+                "keys.agent-01.{field}: can't change: it is what the key is (writ admin key \
+                 rotate agent-01 makes a new key, declared otherwise)"
+            )),
+            "{field}: {}",
+            stderr(&out)
+        );
+    }
+    assert_eq!(stdout(&daemon.run(&["admin", "show", "policy"], "")), text);
+}

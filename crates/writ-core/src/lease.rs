@@ -226,6 +226,9 @@ pub struct Lease {
     pub state: State,
     /// Serial of the session certificate issued for it.
     pub cert_serial: u64,
+    /// The lease it renews, as it was signed: kept outside the terms, which an amendment
+    /// replaces with its own (that can't renew: the review after M7.6, C-2).
+    pub renews: Option<TicketId>,
 }
 
 impl Lease {
@@ -321,6 +324,7 @@ pub fn activate(
         approval,
         state: State::Active,
         cert_serial,
+        renews: None,
     })
 }
 
@@ -367,6 +371,7 @@ pub fn activate_renewal(
         approval,
         state: State::Active,
         cert_serial,
+        renews: Some(renewed.lease.id.clone()),
     })
 }
 

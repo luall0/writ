@@ -229,7 +229,10 @@ A new input is added here in the same change.
   device, the network, a subprocess), so a revocation never waits behind one; a value read
   under a lock for a slow call is copied out first (`match lock().get(..)` holds the guard
   for the whole arm); what the first phase reserved is never given back. Work under the
-  lock is bounded by the input (the path match by the ticket's bounds).
+  lock is bounded by the input (the path match by the ticket's bounds). A lease's certificate
+  is signed in three phases like a commit (the review after M7.6, A-2): decided under the
+  lock, signed without it (the CA may be a device), decided again under the lock before the
+  lease is recorded.
 - **A lock that serializes leases is held by the work, never by a peer, and waited on with a
   deadline**: a push's mirror is released when `receive-pack` exits, not when the client has
   read its output, at once when the push is refused, and 10 s after the hook's yes at the

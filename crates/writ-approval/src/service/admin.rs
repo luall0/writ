@@ -423,6 +423,11 @@ impl Service {
             }
             AdminParsed::Readers => {}
         }
+        // Their certificates refused before the lock goes (the review after M7.6, A-4): none
+        // of them is usable while the revocations are recorded one by one.
+        for lease in &unapproved {
+            self.bar_serial(lease.cert_serial);
+        }
         drop(inner);
         let revoked = self.revoke_unapproved(unapproved, version);
         self.changed.notify_waiters();
@@ -465,6 +470,42 @@ impl Service {
             }
         }
         revoked
+    }
+
+    /// At unseal, once the approvers' MAC is checked (the review after M7.6, A-4): every active
+    /// lease signed by a key no longer in `approvers` is revoked, so a change whose revocations
+    /// a crash cut short takes them back at the next start. Best effort, each failure logged;
+    /// its certificate is refused in memory whatever the store does.
+    pub(super) fn revoke_orphaned(&self) {
+        let approvers: Vec<KeyFingerprint> = self
+            .approver_keys()
+            .iter()
+            .filter_map(|key| super::fingerprint(key).ok())
+            .collect();
+        let leases = match self.lock().and_then(|inner| {
+            inner
+                .store
+                .leases(writ_core::lease::State::Active)
+                .map_err(super::internal)
+        }) {
+            Ok(leases) => leases,
+            Err(e) => {
+                tracing::error!(error = %e.detail(), "cannot list the active leases to check their approvers");
+                return;
+            }
+        };
+        let orphaned: Vec<Lease> = leases
+            .into_iter()
+            .filter(|lease| !approvers.contains(&lease.approval.approver))
+            .collect();
+        if !orphaned.is_empty() {
+            let version = self
+                .in_force()
+                .versions
+                .get(&AdminTarget::Approvers)
+                .map_or(0, |(version, _)| *version);
+            self.revoke_unapproved(orphaned, version);
+        }
     }
 
     /// Something about the authority files worth a line of its own (a hand-edited file set

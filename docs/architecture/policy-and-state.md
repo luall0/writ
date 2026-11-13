@@ -33,7 +33,9 @@ some repo: otherwise `operation`), the repo is in it (`repo`), and the operation
 repo's terms (`operation`, "… not allowed in repo X"); every template and the repo still exist
 and the lease still fits its templates under the current config. Each decision then reads the
 repo's terms only. Counts and rate come last, so an out-of-scope request gets the out-of-scope
-reason.
+reason; one exception, a signature's path check comes after them (a request at its limit
+costs no path match under the lock), so a path refusal there is reported as the count or the
+rate, and `on_violation` doesn't fire.
 
 Each denial has a code (`DenyCode`). Out-of-scope codes (operation, repo, push mode, object
 type, committer, author, ticket link, paths, ref, protected ref, force push, unsigned
