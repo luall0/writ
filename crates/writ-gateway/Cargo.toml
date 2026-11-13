@@ -27,6 +27,8 @@ tokio-rustls.workspace = true
 
 [dev-dependencies]
 writ-approval = { workspace = true, features = ["testing"] }
+# A TLS identity from a throwaway certificate and key (test support).
+writ-crypto = { workspace = true, features = ["testing"] }
 writ-mirror = { workspace = true, features = ["testing"] }
 rustls.workspace = true
 writ-platform = { workspace = true, features = ["testing"] }

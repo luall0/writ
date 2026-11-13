@@ -206,7 +206,16 @@ async fn prepare<'a>(
         .ok_or_else(|| Refusal::Unlogged(format!("unknown repo {repo}")))?;
     let mirrors = gateway.mirrors().map_err(Refusal::Unlogged)?;
     if let Err(e) = mirrors.sync_if_stale(repo).await {
-        return Err(Refusal::Unlogged(format!("cannot sync from upstream: {e}")));
+        // The whole error in the audit line (and the log); no upstream URL, host or proxy for
+        // the agent (the review after M7.6, M-5).
+        tracing::debug!(repo = %repo, error = %e, "cannot sync from upstream");
+        refusing
+            .deny(format!("cannot sync from upstream: {e}"), Some(repo))
+            .await;
+        return Err(Refusal::Logged(format!(
+            "cannot sync from upstream: {}",
+            e.for_agent()
+        )));
     }
     let LeaseCommand::ReceivePack { .. } = command else {
         return Ok(Prepared { path, push: None });

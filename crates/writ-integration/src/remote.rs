@@ -35,6 +35,10 @@ pub enum Mode {
     /// Advertises refs (valid protocol lines, each a new branch) until it has sent this many
     /// bytes, then ends: git keeps reading, as from a remote with endless refs.
     Flood(usize),
+    /// Advertises refs (each a new branch) until about this many bytes, ends the advertisement
+    /// properly and exits: an `ls-remote` succeeds, anything more fails. Each git of an
+    /// operation gets that much, which only the operation's cap adds up.
+    Advertise(usize),
     /// Says this on stderr and fails, as a hostile remote's message would.
     Say(Vec<u8>),
     /// Takes the command and answers only once [`TestRemote::release`] is called, then as
@@ -309,6 +313,22 @@ impl russh::server::Handler for Handler {
                             return;
                         }
                     }
+                    let _ = tx.exit_status(0).await;
+                    let _ = tx.eof().await;
+                    let _ = tx.close().await;
+                }
+                Mode::Advertise(bytes) => {
+                    let (_rx, tx) = channel.split();
+                    let mut advertised = Vec::new();
+                    let mut n = 0u64;
+                    while advertised.len() < bytes {
+                        let line = format!("{} refs/heads/b{n:012}\n", "1".repeat(40));
+                        advertised.extend_from_slice(format!("{:04x}", line.len() + 4).as_bytes());
+                        advertised.extend_from_slice(line.as_bytes());
+                        n += 1;
+                    }
+                    advertised.extend_from_slice(b"0000");
+                    let _ = tx.data_bytes(advertised).await;
                     let _ = tx.exit_status(0).await;
                     let _ = tx.eof().await;
                     let _ = tx.close().await;

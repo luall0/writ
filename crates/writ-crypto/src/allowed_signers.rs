@@ -141,7 +141,12 @@ fn split_options(options: &str) -> std::result::Result<Vec<(&str, Option<&str>)>
                     let inner = value.strip_prefix('"').and_then(|v| v.strip_suffix('"'));
                     match inner {
                         Some(inner) if !inner.contains('"') => Ok((name, Some(inner))),
-                        None if !value.contains('"') => Ok((name, Some(value))),
+                        // A value always in quotes, as `ssh-keygen -Y verify` reads the file
+                        // (`bad options: missing start quote`): an unquoted one is refused, not
+                        // read where OpenSSH would refuse the line (the review after M7.6, K-8).
+                        None if !value.contains('"') => {
+                            Err(format!("option {name}'s value is not in quotes"))
+                        }
                         _ => Err(format!("malformed option {option:?}")),
                     }
                 }
@@ -220,6 +225,12 @@ mod tests {
             ("x namespaces=\"git,\"", "only plain names are supported"),
             ("x namespaces=\"writ-approval", "unterminated quote"),
             ("x namespaces=writ\"-approval\"", "malformed option"),
+            // Unquoted: OpenSSH refuses the line (`missing start quote`), so does this (the
+            // review after M7.6, K-8); quoted, it is read (`reads_keys_and_honors_namespaces`).
+            (
+                "x namespaces=writ-approval",
+                "option namespaces's value is not in quotes",
+            ),
             ("x namespaces=\"writ-approval\",", "empty option"),
             (
                 "x namespaces=\"writ-approval\",cert-authority",

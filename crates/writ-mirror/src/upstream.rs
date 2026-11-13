@@ -15,9 +15,9 @@ use crate::{MirrorError, Result};
 
 pub use writ_core::upstream::{HTTPS_PORT, HttpsUrl, SshUrl, Upstream};
 
-/// An `ssh://` upstream behind a proxy: ssh's `ProxyCommand` is `writd upstream-tunnel
-/// <socket> <host> <port>`, the operation's byte-capping proxy reaching upstream through the
-/// repo's proxy.
+/// How ssh reaches an `ssh://` upstream: its `ProxyCommand` is `writd upstream-tunnel
+/// <socket> <host> <port>`, the operation's byte-capping proxy reaching upstream directly or
+/// through the repo's proxy (every connection of an operation counted against one cap).
 #[derive(Debug, Clone, Copy)]
 pub struct SshTunnel<'a> {
     /// The operation's byte-capping proxy socket.
@@ -43,10 +43,11 @@ pub struct SshCommand<'a> {
     pub agent: &'a Path,
     /// The credential's public key file (picks the key in the agent).
     pub identity: &'a Path,
-    /// The most bytes upstream may send.
+    /// The most bytes upstream may send to one git (the relay's bound; the operation's proxy
+    /// holds the cap for every git of the operation together).
     pub max_bytes: u64,
-    /// Behind a proxy: the tunnel ssh connects through (none: ssh connects itself).
-    pub tunnel: Option<SshTunnel<'a>>,
+    /// The tunnel ssh connects through.
+    pub tunnel: SshTunnel<'a>,
 }
 
 impl SshCommand<'_> {
@@ -60,16 +61,11 @@ impl SshCommand<'_> {
             self.identity,
         ];
         // ssh splits an option's value at whitespace (`UserKnownHostsFile=/a b` names two
-        // files): the paths given in `-o` options hold none (the review after M5.5).
-        for path in [self.known_hosts, self.agent, self.identity] {
-            if path.to_string_lossy().chars().any(char::is_whitespace) {
-                return Err(MirrorError::Config(format!(
-                    "path {} has a space, which ssh would read as two paths: choose a state \
-                     directory without one",
-                    path.display()
-                )));
-            }
-        }
+        // files): the paths given in `-o` options hold none (the review after M5.5). And it
+        // expands `%` tokens and `${VAR}` in these three: a path holding either would name
+        // another file or socket (the review after M7.6, M-7). Checked at start too (the
+        // daemon's run directory, `Mirrors::open`).
+        check_option_paths(&[self.known_hosts, self.agent, self.identity])?;
         let mut quoted = Vec::new();
         for path in paths {
             quoted.push(quote(path)?);
@@ -77,19 +73,11 @@ impl SshCommand<'_> {
         let [relay, ssh, known_hosts, agent, identity] = quoted.as_slice() else {
             return Err(MirrorError::Config("internal error".to_owned()));
         };
-        let (proxy_command, connect_timeout) = match &self.tunnel {
-            None => (
-                "ProxyCommand=none".to_owned(),
-                "ConnectTimeout=15".to_owned(),
-            ),
-            Some(tunnel) => (
-                proxy_command(self.relay, tunnel)?,
-                format!(
-                    "ConnectTimeout={}",
-                    tunnel.connect_timeout.as_secs().saturating_add(15)
-                ),
-            ),
-        };
+        let proxy_command = proxy_command(self.relay, &self.tunnel)?;
+        let connect_timeout = format!(
+            "ConnectTimeout={}",
+            self.tunnel.connect_timeout.as_secs().saturating_add(15)
+        );
         let mut words = vec![
             relay.clone(),
             "upstream-ssh".to_owned(),
@@ -138,6 +126,31 @@ impl SshCommand<'_> {
         }
         Ok(words.join(" "))
     }
+}
+
+/// The paths ssh is given in `-o` options (`UserKnownHostsFile`, `IdentityAgent`,
+/// `IdentityFile`), refused with the reason if they hold whitespace (ssh would read two paths)
+/// or what ssh expands there (`%` tokens, `${VAR}`): the daemon's own paths never need either,
+/// and the operator chooses another directory.
+pub fn check_option_paths(paths: &[&Path]) -> Result<()> {
+    for path in paths {
+        let text = path.to_string_lossy();
+        if text.chars().any(char::is_whitespace) {
+            return Err(MirrorError::Config(format!(
+                "path {} has a space, which ssh would read as two paths: choose a state \
+                 directory without one",
+                path.display()
+            )));
+        }
+        if text.contains(['%', '$']) {
+            return Err(MirrorError::Config(format!(
+                "path {} holds % or $, which ssh expands in its options: choose a state \
+                 directory without them",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The `ProxyCommand` option for `tunnel`, as one word of git's `sh -c` (double quotes): ssh
@@ -192,84 +205,84 @@ mod tests {
 
     #[test]
     fn the_ssh_command_states_every_option_and_quotes_paths() {
-        let (relay, ssh, kh, agent, id) = (
+        let (relay, ssh, kh, agent, id, socket) = (
             PathBuf::from("/opt/writ/writd"),
             PathBuf::from("/usr/bin/ssh"),
             PathBuf::from("/var/lib/writ/mirror/known_hosts"),
             PathBuf::from("/var/lib/writ/mirror/sockets/a.sock"),
             PathBuf::from("/var/lib/writ/mirror/upstream-01.pub"),
+            PathBuf::from("/var/lib/writ/mirror/sockets/b.proxy"),
         );
-        let command = SshCommand {
-            relay: &relay,
-            ssh: &ssh,
-            known_hosts: &kh,
-            agent: &agent,
-            identity: &id,
-            max_bytes: 1000,
-            tunnel: None,
-        }
-        .to_git_ssh_command()
-        .unwrap();
+        let command = |relay: &Path, kh: &Path, agent: &Path, id: &Path| {
+            SshCommand {
+                relay,
+                ssh: &ssh,
+                known_hosts: kh,
+                agent,
+                identity: id,
+                max_bytes: 1000,
+                tunnel: SshTunnel {
+                    socket: &socket,
+                    host: "git.example.org",
+                    port: 22,
+                    connect_timeout: crate::dial::DIRECT_DEADLINE,
+                },
+            }
+            .to_git_ssh_command()
+        };
+        let line = command(&relay, &kh, &agent, &id).unwrap();
         assert!(
-            command.starts_with("'/opt/writ/writd' upstream-ssh 1000 '/usr/bin/ssh' -F /dev/null "),
-            "{command}"
+            line.starts_with("'/opt/writ/writd' upstream-ssh 1000 '/usr/bin/ssh' -F /dev/null "),
+            "{line}"
         );
         for option in [
             "-o UserKnownHostsFile='/var/lib/writ/mirror/known_hosts'",
             "-o StrictHostKeyChecking=yes",
             "-o IdentityAgent='/var/lib/writ/mirror/sockets/a.sock'",
             "-o IdentitiesOnly=yes",
-            "-o ProxyCommand=none",
             "-o ForwardAgent=no",
             "-o GlobalKnownHostsFile=/dev/null",
+            // Directly too, ssh connects only through the operation's proxy (the review after
+            // M7.6, M-6: the cap per operation), within the direct deadline and a margin.
+            "-o \"ProxyCommand='/opt/writ/writd' upstream-tunnel \
+             '/var/lib/writ/mirror/sockets/b.proxy' git.example.org 22\"",
+            "-o ConnectTimeout=30",
         ] {
-            assert!(command.contains(option), "{option} in {command}");
+            assert!(line.contains(option), "{option} in {line}");
         }
-        let quote_in_path = PathBuf::from("/tmp/it's");
-        let result = SshCommand {
-            relay: &quote_in_path,
-            ssh: &ssh,
-            known_hosts: &kh,
-            agent: &agent,
-            identity: &id,
-            max_bytes: 1000,
-            tunnel: None,
-        }
-        .to_git_ssh_command();
+        assert!(!line.contains("ProxyCommand=none"), "{line}");
+        let result = command(Path::new("/tmp/it's"), &kh, &agent, &id);
         assert!(matches!(result, Err(MirrorError::Config(_))), "{result:?}");
-        // A space in a path an `-o` option names: refused, not split by ssh into two. A
-        // program's path (run by `sh`, quoted) may hold one.
-        let spaced = PathBuf::from("/var/lib/writ/mirror/known hosts");
-        let result = SshCommand {
-            relay: &relay,
-            ssh: &ssh,
-            known_hosts: &spaced,
-            agent: &agent,
-            identity: &id,
-            max_bytes: 1000,
-            tunnel: None,
-        }
-        .to_git_ssh_command();
-        match result {
-            Err(MirrorError::Config(reason)) => {
-                assert!(reason.contains("has a space"), "{reason}");
+        // A space in a path an `-o` option names: refused, not split by ssh into two; so is
+        // what ssh expands there, `%` tokens and `${VAR}` (the review after M7.6, M-7), in
+        // each of the three. A program's path (run by `sh`, quoted) may hold a space.
+        for (bad, why) in [
+            ("/var/lib/writ/mirror/known hosts", "has a space"),
+            ("/var/lib/writ/mirror/k\tnown", "has a space"),
+            ("/var/lib/writ/w%dx/known_hosts", "holds % or $"),
+            ("/var/lib/writ/w${TMPDIR}x/known_hosts", "holds % or $"),
+            ("/var/lib/writ/w$x/known_hosts", "holds % or $"),
+        ] {
+            let bad = Path::new(bad);
+            for result in [
+                command(&relay, bad, &agent, &id),
+                command(&relay, &kh, bad, &id),
+                command(&relay, &kh, &agent, bad),
+            ] {
+                match result {
+                    Err(MirrorError::Config(reason)) => {
+                        assert!(reason.contains(why), "{bad:?}: {reason}");
+                    }
+                    other => panic!("{bad:?}: expected a refusal, got {other:?}"),
+                }
             }
-            other => panic!("expected a refusal, got {other:?}"),
         }
-        let spaced_relay = PathBuf::from("/opt/my writ/writd");
+        // The same paths without them pass the start's check.
+        check_option_paths(&[&kh, &agent, &id]).unwrap();
         assert!(
-            SshCommand {
-                relay: &spaced_relay,
-                ssh: &ssh,
-                known_hosts: &kh,
-                agent: &agent,
-                identity: &id,
-                max_bytes: 1000,
-                tunnel: None,
-            }
-            .to_git_ssh_command()
-            .unwrap()
-            .starts_with("'/opt/my writ/writd' ")
+            command(Path::new("/opt/my writ/writd"), &kh, &agent, &id)
+                .unwrap()
+                .starts_with("'/opt/my writ/writd' ")
         );
     }
 
@@ -291,12 +304,12 @@ mod tests {
                 agent: &agent,
                 identity: &id,
                 max_bytes: 1000,
-                tunnel: Some(SshTunnel {
+                tunnel: SshTunnel {
                     socket,
                     host,
                     port: 2222,
                     connect_timeout: std::time::Duration::from_secs(120),
-                }),
+                },
             }
             .to_git_ssh_command()
         };

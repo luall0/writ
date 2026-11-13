@@ -17,7 +17,7 @@ impl MirrorGuard {
         quarantine: &Quarantine,
         updates: &[UpstreamUpdate],
     ) -> Result<()> {
-        let access = self.reach_upstream()?;
+        let access = self.reach_upstream().await?;
         let mut args: Vec<String> = [
             "push",
             "--atomic",
@@ -57,19 +57,18 @@ impl MirrorGuard {
         }
         let classified = self.classify(&access, &finished.stderr, "upstream push");
         let error = match classified {
-            MirrorError::Git { repo, .. } => {
-                // What upstream said: the refused refs (porcelain), then its own words.
-                let refused: Vec<u8> = String::from_utf8_lossy(&finished.stdout)
-                    .lines()
-                    .filter(|line| line.starts_with('!'))
-                    .flat_map(|line| format!("{line}\n").into_bytes())
-                    .chain(finished.stderr.iter().copied())
-                    .collect();
-                MirrorError::Rejected {
-                    repo,
-                    reason: self.clean(&access, &refused),
-                }
-            }
+            // What upstream said: the refused refs (porcelain), then its own words.
+            MirrorError::Git { repo, .. } => MirrorError::Rejected {
+                repo,
+                reason: self.clean(
+                    &access,
+                    &super::notes::refused_lines(&finished.stdout, &finished.stderr),
+                ),
+                refs: self.clean(
+                    &access,
+                    &super::notes::refused_for_agent(&finished.stdout, &finished.stderr),
+                ),
+            },
             other => other,
         };
         // The operation ends here: its sockets, and the token it unwrapped, go.

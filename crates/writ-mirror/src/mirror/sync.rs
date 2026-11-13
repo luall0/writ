@@ -8,20 +8,21 @@ use tokio::time::Instant;
 
 use super::access::Access;
 use super::open::remove_leftovers;
-use super::{LOCAL_WORK_DEADLINE, MAX_FETCH_OUTPUT, MAX_HEAD_OUTPUT, MAX_MOVES_KEPT, MAX_PACKS};
+use super::{MAX_FETCH_OUTPUT, MAX_HEAD_OUTPUT, MAX_MOVES_KEPT, MAX_PACKS};
 use super::{MirrorGuard, RefMove, SyncReport};
 use crate::git::{self, Hooks};
 use crate::process;
 use crate::{Result, shown};
 
 impl MirrorGuard {
-    /// Fetches upstream's branches and tags, then points the mirror's `HEAD` at upstream's
-    /// default branch, both within the sync's deadline and through one agent socket.
-    pub(super) async fn fetch(&self) -> Result<SyncReport> {
+    /// Fetches upstream's branches and tags and asks upstream's default branch, both within the
+    /// sync's deadline and through one agent socket; returns what moved and upstream's answer
+    /// for `HEAD` (followed by [`Self::follow_head`], local work).
+    pub(super) async fn fetch(&self) -> Result<(SyncReport, Vec<u8>)> {
         let shared = &self.shared;
         let repo = &self.repo;
         let started = Instant::now();
-        let access = self.reach_upstream()?;
+        let access = self.reach_upstream().await?;
         let upstream = repo.reach.url();
         let fetched = self
             .upstream_git(
@@ -55,8 +56,7 @@ impl MirrorGuard {
             )
             .await?;
         drop(access);
-        self.follow_head(&head).await;
-        Ok(parse_moves(&fetched))
+        Ok((parse_moves(&fetched), head))
     }
 
     /// Runs git against upstream through `access`, within `deadline`, keeping at most
@@ -79,8 +79,9 @@ impl MirrorGuard {
 
     /// Points the mirror's `HEAD` at upstream's default branch (from `ls-remote --symref`'s
     /// `ref: refs/heads/<name>\tHEAD`), so a clone checks it out. Only a branch the mirror
-    /// has; anything else leaves `HEAD` as it is (git refuses an invalid name itself).
-    async fn follow_head(&self, ls_remote: &[u8]) {
+    /// has; anything else leaves `HEAD` as it is (git refuses an invalid name itself). Before
+    /// `until`, the end of the sync's local work.
+    pub(super) async fn follow_head(&self, ls_remote: &[u8], until: Instant) {
         let text = String::from_utf8_lossy(ls_remote);
         let Some(target) = text.lines().find_map(|line| {
             line.strip_prefix("ref: ")
@@ -90,12 +91,14 @@ impl MirrorGuard {
             return;
         };
         let path = &self.repo.path;
-        // Under the mirror lock: each git bounded in time and output like the rest of the
-        // local work (the review after M5.5: a hung one would have held the lock for good).
+        // Under the mirror lock: bounded in time and output like the rest of the local work
+        // (the review after M5.5: a hung one would have held the lock for good), all of it
+        // together (the review after M7.6, M-9: each git had its own 10 minutes).
         let run = |args: &[&str]| {
             let mut cmd = git::command(&self.shared.config.git, Hooks::None);
             cmd.arg("--git-dir").arg(path).args(args);
-            process::run(cmd, None, LOCAL_WORK_DEADLINE, MAX_HEAD_OUTPUT)
+            let left = until.saturating_duration_since(Instant::now());
+            process::run(cmd, None, left, MAX_HEAD_OUTPUT)
         };
         let current = run(&["symbolic-ref", "-q", "HEAD"]).await;
         if matches!(&current, Ok(out) if out.stdout.trim_ascii() == target.as_bytes()) {
@@ -126,9 +129,9 @@ impl MirrorGuard {
         }
     }
 
-    /// Repacks the mirror once it holds more than [`MAX_PACKS`] packs. A failure only costs
-    /// speed: logged, never fatal.
-    pub(super) async fn repack_if_needed(&self) {
+    /// Repacks the mirror once it holds more than [`MAX_PACKS`] packs, before `until` (the
+    /// end of the sync's local work). A failure only costs speed: logged, never fatal.
+    pub(super) async fn repack_if_needed(&self, until: Instant) {
         let pack = self.repo.path.join("objects").join("pack");
         let packs = std::fs::read_dir(&pack)
             .map(|entries| {
@@ -145,7 +148,8 @@ impl MirrorGuard {
         cmd.arg("--git-dir")
             .arg(&self.repo.path)
             .args(["repack", "-a", "-d", "-q"]);
-        match process::run(cmd, None, LOCAL_WORK_DEADLINE, 0).await {
+        let left = until.saturating_duration_since(Instant::now());
+        match process::run(cmd, None, left, 0).await {
             Ok(done) if done.status.success() => {}
             Ok(done) => tracing::warn!(
                 repo = %self.repo.name,

@@ -29,7 +29,8 @@ use crate::{MirrorError, Result};
 /// Connections one proxy accepts in its life (git keeps one open, and opens another when
 /// upstream closes it).
 pub const MAX_CONNECTIONS: usize = 16;
-/// How long git may take to ask for its tunnel.
+/// How long git may take to ask for its tunnel (the SOCKS exchange alone: opening the tunnel
+/// is bounded by the repo's dialer, a proxy's `connect_timeout`).
 pub const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(30);
 
 const VERSION: u8 = 5;
@@ -170,18 +171,9 @@ async fn tunnel(mut client: UnixStream, shared: Arc<Shared>) {
     if *over.borrow_and_update() {
         return;
     }
-    let upstream =
-        match tokio::time::timeout(HANDSHAKE_DEADLINE, handshake(&mut client, &shared)).await {
-            Ok(Ok(upstream)) => upstream,
-            Ok(Err(e)) => {
-                tracing::debug!(error = %e, "upstream proxy handshake failed");
-                return;
-            }
-            Err(_) => {
-                tracing::debug!("upstream proxy handshake timed out");
-                return;
-            }
-        };
+    let Some(upstream) = open(&mut client, &shared).await else {
+        return;
+    };
     shared.tunnels.fetch_add(1, Ordering::AcqRel);
     let (client_read, client_write) = client.into_split();
     let (upstream_read, upstream_write) = upstream.into_split();
@@ -196,9 +188,41 @@ async fn tunnel(mut client: UnixStream, shared: Arc<Shared>) {
     }
 }
 
-/// Reads git's greeting and request, connects to upstream if it asks for upstream, and
-/// answers. An error ends the connection.
-async fn handshake(client: &mut UnixStream, shared: &Shared) -> std::io::Result<TcpStream> {
+/// git's SOCKS exchange within [`HANDSHAKE_DEADLINE`], then upstream through the dialer within
+/// the dialer's own deadline alone: a proxy's `connect_timeout` may be longer (up to 5 min, for
+/// Tor), and a dial cut short by the exchange's deadline lost its reason (the review after
+/// M7.6, M-2). `None`: refused or failed, the connection ended (a dial's failure is kept for
+/// the operation's error).
+async fn open<S: AsyncRead + AsyncWrite + Unpin>(
+    client: &mut S,
+    shared: &Shared,
+) -> Option<TcpStream> {
+    match tokio::time::timeout(HANDSHAKE_DEADLINE, request(client, shared)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "upstream proxy handshake failed");
+            return None;
+        }
+        Err(_) => {
+            tracing::debug!("upstream proxy handshake timed out");
+            return None;
+        }
+    }
+    match connect(client, shared).await {
+        Ok(upstream) => Some(upstream),
+        Err(e) => {
+            tracing::debug!(error = %e, "upstream proxy tunnel not opened");
+            None
+        }
+    }
+}
+
+/// Reads git's greeting and request, and checks it asks for upstream (anything else is
+/// answered and refused). An error ends the connection.
+async fn request<S: AsyncRead + AsyncWrite + Unpin>(
+    client: &mut S,
+    shared: &Shared,
+) -> std::io::Result<()> {
     greet(client).await?;
     let (command, asked, port) = read_request(client).await?;
     if command != CONNECT {
@@ -213,11 +237,11 @@ async fn handshake(client: &mut UnixStream, shared: &Shared) -> std::io::Result<
         reply(client, NOT_ALLOWED).await?;
         return Err(std::io::Error::other("not upstream"));
     }
-    connect(client, shared).await
+    Ok(())
 }
 
 /// The greeting: SOCKS5, and no authentication among the methods git offers.
-async fn greet(client: &mut UnixStream) -> std::io::Result<()> {
+async fn greet<S: AsyncRead + AsyncWrite + Unpin>(client: &mut S) -> std::io::Result<()> {
     let mut greeting = [0u8; 2];
     client.read_exact(&mut greeting).await?;
     let [version, count] = greeting;
@@ -235,7 +259,9 @@ async fn greet(client: &mut UnixStream) -> std::io::Result<()> {
 
 /// The request: its command, the destination and the port (an unknown address type is
 /// answered and refused).
-async fn read_request(client: &mut UnixStream) -> std::io::Result<(u8, Asked, u16)> {
+async fn read_request<S: AsyncRead + AsyncWrite + Unpin>(
+    client: &mut S,
+) -> std::io::Result<(u8, Asked, u16)> {
     let mut head = [0u8; 4];
     client.read_exact(&mut head).await?;
     let [version, command, _reserved, kind] = head;
@@ -271,9 +297,12 @@ async fn read_request(client: &mut UnixStream) -> std::io::Result<(u8, Asked, u1
 }
 
 /// Connects to upstream (by the host the URL names, never what git sent) through the
-/// dialer, within its deadline, and tells git how it went; a failure is kept, for the
-/// operation's error.
-async fn connect(client: &mut UnixStream, shared: &Shared) -> std::io::Result<TcpStream> {
+/// dialer, within its deadline (and no other), and tells git how it went; a failure is kept,
+/// for the operation's error.
+async fn connect<S: AsyncWrite + Unpin>(
+    client: &mut S,
+    shared: &Shared,
+) -> std::io::Result<TcpStream> {
     match shared.dialer.connect(&shared.host, shared.port).await {
         Ok(upstream) => {
             reply(client, SUCCEEDED).await?;
@@ -314,7 +343,7 @@ impl Asked {
 }
 
 /// A reply with `status` (the bound address left empty: git doesn't use it).
-async fn reply(client: &mut UnixStream, status: u8) -> std::io::Result<()> {
+async fn reply<S: AsyncWrite + Unpin>(client: &mut S, status: u8) -> std::io::Result<()> {
     client
         .write_all(&[VERSION, status, 0, IPV4, 0, 0, 0, 0, 0, 0])
         .await
@@ -500,6 +529,87 @@ mod tests {
         let _ = stream.write_all(&[VERSION, 1, NO_AUTHENTICATION]).await;
         let _ = stream.read_to_end(&mut rest).await;
         assert!(rest.is_empty(), "{rest:?}");
+    }
+
+    /// The review after M7.6 (M-2): the exchange's 30 s covered the dial through the repo's
+    /// proxy too, so a `connect_timeout` above it (Tor's, 2 min in the guide) was cut at 30 s
+    /// and its reason lost. The dial now gets the proxy's whole `connect_timeout` and says why
+    /// it failed; git's own exchange still gets 30 s. Paused clock: time runs ahead only while
+    /// everything waits.
+    #[tokio::test(start_paused = true)]
+    async fn a_dial_gets_its_proxy_s_whole_timeout_and_git_s_exchange_its_own_deadline() {
+        use crate::dial::{DialWhy, ProxyRoute};
+        // A proxy that takes the connection and never answers.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut kept = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                kept.push(stream);
+            }
+        });
+        let shared = |seconds: u64| Shared {
+            host: "abcdefghijklmnop.onion".to_owned(),
+            address: None,
+            port: 22,
+            max: 1 << 20,
+            received: AtomicU64::new(0),
+            tunnels: AtomicUsize::new(0),
+            over: watch::Sender::new(false),
+            dialer: Dialer::Proxy(Arc::new(ProxyRoute {
+                name: "tor".parse().unwrap(),
+                url: writ_core::config::ProxyUrl::parse(&format!("socks5://127.0.0.1:{port}"))
+                    .unwrap(),
+                credential: None,
+                password: None,
+                timeout: Duration::from_secs(seconds),
+            })),
+            failure: Mutex::new(None),
+        };
+        let mut asked = vec![
+            VERSION,
+            1,
+            NO_AUTHENTICATION,
+            VERSION,
+            CONNECT,
+            0,
+            DOMAIN,
+            22,
+        ];
+        asked.extend_from_slice(b"abcdefghijklmnop.onion");
+        asked.extend_from_slice(&22u16.to_be_bytes());
+
+        // A connect_timeout of 60 s: the dial waits all of it, not 30 s, and says why.
+        let shared60 = shared(60);
+        let (mut git, mut ours) = tokio::io::duplex(1024);
+        git.write_all(&asked).await.unwrap();
+        let started = tokio::time::Instant::now();
+        assert!(open(&mut ours, &shared60).await.is_none());
+        assert_eq!(started.elapsed(), Duration::from_secs(60));
+        assert_eq!(
+            shared60.failure.lock().unwrap().clone(),
+            Some(DialError::Proxy {
+                proxy: "tor".parse().unwrap(),
+                why: DialWhy::Timeout(60),
+            })
+        );
+        let mut answer = [0u8; 12];
+        git.read_exact(&mut answer).await.unwrap();
+        assert_eq!(answer[..2], [VERSION, NO_AUTHENTICATION]);
+        assert_eq!(
+            answer[3], HOST_UNREACHABLE,
+            "git is told, and the operation says why"
+        );
+
+        // git's own exchange is still bounded: a git that never asks is dropped at 30 s, and
+        // nothing is dialed.
+        let shared300 = shared(300);
+        let (mut git, mut ours) = tokio::io::duplex(1024);
+        git.write_all(&asked[..3]).await.unwrap();
+        let started = tokio::time::Instant::now();
+        assert!(open(&mut ours, &shared300).await.is_none());
+        assert_eq!(started.elapsed(), HANDSHAKE_DEADLINE);
+        assert_eq!(shared300.failure.lock().unwrap().clone(), None);
     }
 
     #[tokio::test]

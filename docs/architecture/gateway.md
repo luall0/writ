@@ -238,7 +238,8 @@ deleted goes). It runs on a fetch and on a push when the mirror is older than `f
 wait for one sync and find the mirror fresh; at most 4 syncs run at once, daemon-wide. A caller
 waits for the lock at most twice `mirrors.timeout` plus 10 minutes (what a holder doing its
 job takes: a wait for a sync slot, itself at most `mirrors.timeout`, one upstream operation,
-and a repack or the reading of a push); past it the fetch or push is refused, `the mirror is
+and its local work, a repack or the reading of a push, 10 minutes for all of it together;
+`writ admin repo check` takes the lock for each of its steps apart); past it the fetch or push is refused, `the mirror is
 busy`, never left waiting. A sync that fails, or is dropped, leaves the mirror's refs as they
 were, removes its partial pack, and marks the mirror stale; a mirror a start cut short while
 creating it (`.<name>.git.new-…`) is removed at the next start; the fetch or push that asked for it is refused with the reason (fail closed).
@@ -250,11 +251,11 @@ network that can be hostile), so what a sync takes from it is checked and bounde
 | What | Bound |
 |---|---|
 | Who it is | `ssh://`: the host key pinned in the signed policy's `upstream_hosts` (`StrictHostKeyChecking=yes`, nothing learned); `https://`: a certificate for its host from the system's CAs, or from those in `mirrors.ca_certs`, and no redirect |
-| What it sends | `mirrors.max_fetch` bytes (1 GiB) per sync, counted by the relay (`ssh://`) or the proxy (`https://`), git having no limit of its own on a fetch; `mirrors.timeout` (5 min) for the whole sync, then git, the relay and ssh are killed as a process group |
+| What it sends | `mirrors.max_fetch` bytes (1 GiB) per operation, every git of it together (a sync's fetch and `ls-remote`, a notes push's four), counted by the operation's proxy (`ssh://` and `https://`; the relay also bounds each `ssh://` git), git having no limit of its own on a fetch; `mirrors.timeout` (5 min) for the whole sync, then git, the relay and ssh are killed as a process group |
 | Its objects | `fsck`, with the checks above at error level; a pack lands whole or not at all |
 | Its refs | branches and tags only; all or none |
 | Its object format | the registry's: git refuses a remote in another (`mismatched algorithms`) |
-| What it says | an error's text cut to 2,000 characters, hidden characters dropped, one line, an HTTPS upstream's token taken out: it reaches the audit log and an agent's terminal |
+| What it says | an error's text cut to 2,000 characters, hidden characters dropped, one line, an HTTPS upstream's token taken out of the text as git prints it (each line break, `remote: ` prefix and hidden character gone) before any cut, the whole text withheld if a part of it still shows: it reaches the audit log and the daemon's log; an agent is told only the repo and what failed (`cannot sync from upstream: repo <name>: sync failed`), never upstream's URL, host, words, proxy or credential, and of a refused push the refused refs and the remote's own words (`remote: …` lines) |
 
 ## Upstream
 
@@ -273,7 +274,7 @@ serves that one operation.
   runs on its mirrors) runs the system's OpenSSH (`mirrors.ssh`, `/usr/bin/ssh` by default)
   with `-F /dev/null` and every option that matters stated: the pinned host keys only (as the
   daemon rewrote them: plain host names or `[host]:port`, no wildcard, hashed name or marker,
-  no DSA key), public key authentication only, no forwarding, proxy (but the daemon's own tunnel, [behind a proxy](#through-a-proxy)),
+  no DSA key), public key authentication only, no forwarding, proxy but the daemon's own tunnel (directly too: the operation's byte-capping socket, [below](#through-a-proxy)), no `%`, `$` or whitespace in the paths of its options (ssh expands and splits them; refused at start),
   control socket or local command, `BatchMode`.
 - The key never leaves the signer: for each operation the daemon serves an **ssh-agent
   socket** (`writ_mirror::agent`) in a private directory, offering only that repo's key,
@@ -281,7 +282,10 @@ serves that one operation.
   to 256 KiB within 30 s each, answers anything but "list keys" and "sign" with a failure, and
   is removed when the operation ends.
 - What upstream sends goes through the **relay** (`writd upstream-ssh <max bytes> <ssh> …`),
-  git's ssh program: it runs ssh and counts the bytes, killing it past the cap.
+  git's ssh program: it runs ssh and counts the bytes, killing it past the cap; and through
+  the operation's byte-capping SOCKS5 socket (ssh's `ProxyCommand`, `writd upstream-tunnel`,
+  also without a proxy), which holds the cap for every git of the operation together (the
+  review after M7.6, M-6: a relay per git had the whole cap each).
 - Its sockets live in `<state>/mirror/sockets/`, a private directory; leftovers are removed
   at startup.
 
@@ -353,14 +357,17 @@ upstream sends.
   <socket> <host> <port>` (by absolute path, like the relay), which asks the operation's socket
   for the registry's host by name and carries ssh's stream; the relay still wraps ssh, the
   pinned host key is still the only one taken, and `ConnectTimeout` is the proxy's
-  `connect_timeout` and 15 s. Without a proxy, ssh connects itself (`ProxyCommand=none`).
+  `connect_timeout` and 15 s. Without a proxy, the same tunnel, the socket dialing upstream
+  directly (15 s, `ConnectTimeout` 30 s).
 - **The scan** opens each handshake's connection through the dialer, then speaks SSH over it.
 - **The protocols:** SOCKS5 (RFC 1928; with a credential, RFC 1929 alone is offered) and HTTP
   `CONNECT` (with a credential, Basic `Proxy-Authorization`). The upstream's name goes to the
   proxy as a name (SOCKS5's domain address type, `CONNECT host:port`), an address as an
   address: the daemon resolves only the proxy's own host. Only tunnels: no plain HTTP
   forwarding.
-- **What the proxy answers** is read field by field within its `connect_timeout` (an HTTP head
+- **What the proxy answers** is read field by field within its `connect_timeout` and no
+  other deadline (the socket gives git 30 s for its own request, then the dial all of
+  `connect_timeout`, up to 5 min for Tor; the review after M7.6, M-2) (an HTTP head
   at most 8 KiB, byte by byte, so nothing of upstream's is taken with it; only `200` opens the
   tunnel); a failure is kept by the operation's socket and becomes the operation's error
   (`repo <name>: proxy <name>: …`), git only saying its proxy failed. What the proxy says is
@@ -429,8 +436,9 @@ separate ref, which names the commits it annotates by their ids and never contai
 6. **The reconcile** (`Gateway::reconcile_notes`), after each sync of a notes repo's mirror
    (`writd`: at start, then every `sync_every`; not after a failed sync): the ledger's commits
    for the repo with no note state (the newest 100,000), looked up in the mirror in one
-   `git cat-file --batch-check`; those it holds are upstream's (only upstream's objects and
-   those of pushes upstream took reach the mirror), recorded as waiting with the repo's
+   `git cat-file --batch-check` and one `rev-list`; those its branches and tags reach are
+   upstream's (refs move only on a sync or a push upstream took; a commit merely present, as
+   an accepted push's pack can bring one no ref reaches, is not), recorded as waiting with the repo's
    credential; then the notes job, for those and every note still waiting. It catches a push
    whose notes were never recorded (the daemon stopped between upstream taking it and the
    record), commits pushed before the repo asked for notes (a backfill: switching a repo to

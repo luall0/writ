@@ -188,9 +188,14 @@ tested on every OS against a fake helper (`writ-fake-se`, built with `testing` o
   the operation's, a point that isn't one, a code outside its alphabet, a public point other
   than the key's, or a signature that doesn't verify with the key's public half (checked on
   every signature, before it leaves) is refused and logged. A key just made signs a probe
-  before it is kept. A helper that dies, answers wrong or stays silent past its deadline is
-  killed and the job refused (`Failed`, `Timeout`); the next job starts a new helper. Its own
-  refusal keeps it. ([security inventory](../security.md#untrusted-inputs))
+  before it is kept. A helper that dies, answers wrong (another key's point included, at
+  start too) or stays silent past its deadline is killed and the job refused (`Failed`,
+  `Timeout`); the next job starts a new helper. One deadline covers a request's write and its
+  answer: a thread of the helper's writes the request, so a helper that stops reading its
+  stdin (a request past the pipe's buffer: a large commit to sign) costs that deadline, not
+  the caller for good (the review after M7.6, K-2). Its own refusal keeps it. Answers are held
+  in buffers wiped when dropped (a shared secret moved once into the one returned), and the
+  helper wipes its own once written (K-4). ([security inventory](../security.md#untrusted-inputs))
 - **No blob reaches the device unless it is the one the device made for that key.** A
   malformed blob does more than crash the helper: corrupted ones sent to the real Secure
   Enclave made its firmware panic and the Mac with it (2026-11-12). So what `create_key`

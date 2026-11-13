@@ -68,6 +68,8 @@ struct Refused {
     refs: Vec<String>,
     /// Already logged by the approval service (a lease decision).
     logged: bool,
+    /// What the audit line says when it is more than the agent is told (upstream's words).
+    detail: Option<String>,
 }
 
 impl Refused {
@@ -77,6 +79,7 @@ impl Refused {
             context: None,
             refs: Vec::new(),
             logged: false,
+            detail: None,
         }
     }
 }
@@ -170,6 +173,7 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
             context: Some(Box::new(context)),
             refs,
             logged: denied.logged,
+            detail: denied.detail,
         }),
     }
 }
@@ -179,6 +183,7 @@ async fn decide(gateway: &Gateway, input: &[u8]) -> Result<(), Refused> {
 struct Denied {
     reason: String,
     logged: bool,
+    detail: Option<String>,
 }
 
 impl Denied {
@@ -187,6 +192,7 @@ impl Denied {
         Self {
             reason: reason.into(),
             logged: false,
+            detail: None,
         }
     }
 
@@ -195,6 +201,17 @@ impl Denied {
         Self {
             reason: denial.to_string(),
             logged: true,
+            detail: None,
+        }
+    }
+
+    /// The upstream push failed: the agent is told no upstream detail, the audit line all of
+    /// it (the review after M7.6, M-5).
+    fn upstream(error: &writ_mirror::MirrorError) -> Self {
+        Self {
+            reason: error.for_agent(),
+            logged: false,
+            detail: Some(error.to_string()),
         }
     }
 }
@@ -350,7 +367,7 @@ async fn go_upstream(
     if let Ok(mut held) = context.held.lock() {
         *held = Some(guard);
     }
-    pushed.map_err(|e| Denied::new(e.to_string()))
+    pushed.map_err(|e| Denied::upstream(&e))
 }
 
 /// The facts of a push, read from the quarantine: the ref updates as the policy sees them,
@@ -487,7 +504,8 @@ async fn read_commits(
 
 /// Writes the refusal to the audit log (event `push`, denied), off the async threads.
 async fn log_refusal(gateway: &Gateway, refused: Refused) {
-    let mut denial = GatewayDenial::new(EventKind::Push, refused.reason).refs(refused.refs);
+    let reason = refused.detail.unwrap_or(refused.reason);
+    let mut denial = GatewayDenial::new(EventKind::Push, reason).refs(refused.refs);
     let caller = match &refused.context {
         Some(context) => {
             denial = denial.cert(&context.cert).repo(&context.repo);

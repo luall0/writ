@@ -174,6 +174,57 @@ fn every_way_a_helper_fails_to_sign_is_refused_and_the_next_job_served() {
     ));
 }
 
+/// The review after M7.6 (K-2): the request was written with no deadline, so a helper that
+/// stopped reading its stdin held the caller (and the helper's lock) for good once the
+/// request was larger than the pipe's buffer. One deadline now covers the write and the
+/// answer: the job times out, the helper is killed, the next job is served.
+#[test]
+fn a_helper_that_never_reads_a_large_request_costs_one_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("once");
+    let args = [
+        "--fault",
+        "sign:no-read",
+        "--once",
+        marker.to_str().unwrap(),
+    ];
+    let held = HelperSigner::new(config(&args, Duration::from_millis(300)), made(&["k"])).unwrap();
+    // Far past a pipe's buffer (64 KiB on macOS and Linux): the write itself blocks.
+    let data = vec![b'x'; 1 << 20];
+    assert!(matches!(
+        held.sign(&id("k"), &data, Some(Hash::Sha256)),
+        Err(SignerError::Timeout(k)) if k == id("k")
+    ));
+    // That helper was killed; a new one (the marker is there: no fault) signs the same data.
+    let signature = held.sign(&id("k"), &data, Some(Hash::Sha256)).unwrap();
+    let public = writ_signer::public_key(&held, &id("k")).unwrap();
+    writ_crypto::keypair::verify(&public, &data, &signature).unwrap();
+}
+
+/// The review after M7.6 (K-8): a helper that answered another key's point when the signer
+/// was built stayed running for the next key. It is ended: the next key's check runs on a new
+/// one (with `--once`, one without the fault), and is held usable.
+#[test]
+fn a_helper_that_answers_another_key_s_point_is_not_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("once");
+    let args = [
+        "--fault",
+        "public:other-key",
+        "--once",
+        marker.to_str().unwrap(),
+    ];
+    let held = HelperSigner::new(config(&args, PATIENT), made(&["a", "b"])).unwrap();
+    assert_eq!(
+        held.refused(),
+        [(
+            id("a"),
+            "the helper answers another key for its blob".to_owned()
+        )]
+    );
+    held.sign(&id("b"), b"data", Some(Hash::Sha256)).unwrap();
+}
+
 /// Stored bytes that aren't the frame made for the key, each with why it is refused.
 fn tampered(good: &Load, other: &Load) -> Vec<(&'static str, Vec<u8>, &'static str)> {
     let bytes = good.stored.as_bytes();

@@ -32,22 +32,22 @@ fn refs(count: usize) -> String {
 
 impl Mirrors {
     /// Checks `repo`'s upstream: read, sync, write, in order, until one fails. The mirror is
-    /// held throughout (no sync or push in between).
+    /// held for each step apart, as long as a sync or a push holds it (the review after M7.6,
+    /// M-9: held throughout, three upstream operations and a sync's local work, it kept
+    /// agents' fetches and pushes waiting past the lock's deadline); nothing a sync or a push
+    /// does between the steps changes what they check.
     pub async fn check(&self, repo: &RepoName) -> Result<Vec<CheckStep>> {
-        let mut guard = self.lock(repo).await?;
-        Ok(guard.check().await)
-    }
-}
-
-impl MirrorGuard {
-    async fn check(&mut self) -> Vec<CheckStep> {
         let mut steps = Vec::new();
         let failed = |what, error: crate::MirrorError| CheckStep {
             what,
             ok: false,
             said: error.to_string(),
         };
-        match self.read_refs().await {
+        let read = match self.lock(repo).await {
+            Ok(guard) => guard.read_refs().await,
+            Err(e) => Err(e),
+        };
+        match read {
             Ok(count) => steps.push(CheckStep {
                 what: "read",
                 ok: true,
@@ -55,17 +55,25 @@ impl MirrorGuard {
             }),
             Err(e) => {
                 steps.push(failed("read", e));
-                return steps;
+                return Ok(steps);
             }
         }
-        match self.sync().await {
+        let format = match self.shared.repos.get(repo) {
+            Some(found) => found.format.as_str().to_owned(),
+            None => return Err(crate::MirrorError::UnknownRepo(repo.clone())),
+        };
+        let synced = match self.lock(repo).await {
+            Ok(mut guard) => guard.sync().await,
+            Err(e) => Err(e),
+        };
+        match synced {
             Ok(SyncReport::Synced { moved, more }) => steps.push(CheckStep {
                 what: "sync",
                 ok: true,
                 said: format!(
                     "the mirror synced, {} moved, in its object format ({})",
                     refs(moved.len().saturating_add(more)),
-                    self.repo.format.as_str()
+                    format
                 ),
             }),
             Ok(SyncReport::Fresh) => steps.push(CheckStep {
@@ -75,10 +83,14 @@ impl MirrorGuard {
             }),
             Err(e) => {
                 steps.push(failed("sync", e));
-                return steps;
+                return Ok(steps);
             }
         }
-        match self.dry_push().await {
+        let written = match self.lock(repo).await {
+            Ok(guard) => guard.dry_push().await,
+            Err(e) => Err(e),
+        };
+        match written {
             Ok(()) => steps.push(CheckStep {
                 what: "write",
                 ok: true,
@@ -86,12 +98,14 @@ impl MirrorGuard {
             }),
             Err(e) => steps.push(failed("write", e)),
         }
-        steps
+        Ok(steps)
     }
+}
 
+impl MirrorGuard {
     /// `git ls-remote --heads --tags` against upstream: how many refs it lists.
     async fn read_refs(&self) -> Result<usize> {
-        let access = self.reach_upstream()?;
+        let access = self.reach_upstream().await?;
         let upstream = self.repo.reach.url().to_owned();
         let finished = self
             .run_upstream(
@@ -111,7 +125,7 @@ impl MirrorGuard {
     /// A push deleting [`PROBE_REF`], `--dry-run`: git reaches upstream's receive-pack (which
     /// refuses a key without write access), reads its refs and sends nothing.
     async fn dry_push(&self) -> Result<()> {
-        let access = self.reach_upstream()?;
+        let access = self.reach_upstream().await?;
         let upstream = self.repo.reach.url().to_owned();
         let finished = self
             .run_upstream(

@@ -981,6 +981,33 @@ fn a_notes_push_the_remote_refuses_is_an_error_with_its_words_then_goes_through(
     );
 }
 
+/// The review after M7.6 (M-6): for a direct `ssh://` upstream each git of an operation had
+/// its own relay and the whole `mirrors.max_fetch`, so a notes push (an `ls-remote`, then the
+/// push) took twice the cap. The cap now holds for the operation: each git here gets about
+/// 60 KB, under the 100 KB cap alone and over it together; at 30 KB each, the two pass it.
+#[test]
+fn the_byte_cap_holds_for_an_operation_s_gits_together() {
+    let f = Fixture::new();
+    let first = f.upstream_commit("main", "a");
+    let mut config = f.config();
+    config.max_fetch_bytes = 100_000;
+    let mirrors = f.open_with(config, "sha1").unwrap();
+    f.sync(&mirrors).unwrap();
+
+    f.remote.set_mode(Mode::Advertise(60_000));
+    match f.push_notes(&mirrors, "upstream-01", &[note(&first, "Writ: wrt_A\n")]) {
+        Err(MirrorError::TooLarge { max, .. }) => assert_eq!(max, 100_000),
+        other => panic!("expected TooLarge, got {other:?}"),
+    }
+    // Under the cap together: the push itself fails (this remote takes nothing), never as
+    // too large.
+    f.remote.set_mode(Mode::Advertise(30_000));
+    match f.push_notes(&mirrors, "upstream-01", &[note(&first, "Writ: wrt_A\n")]) {
+        Err(MirrorError::Rejected { .. } | MirrorError::Git { .. }) => {}
+        other => panic!("expected the push to fail on its own, got {other:?}"),
+    }
+}
+
 #[test]
 fn a_batch_with_the_wrong_credential_or_malformed_is_refused_before_any_git() {
     let f = Fixture::new();
@@ -1129,6 +1156,20 @@ fn the_mirror_says_which_commits_it_holds() {
     let mut both = vec![first.clone(), later.clone()];
     both.sort();
     assert_eq!(held(&[&later, &first]).unwrap(), both);
+    // The review after M7.6 (M-4): a commit in the mirror that no branch or tag reaches (an
+    // accepted push's pack can bring one, never pushed upstream) is not held, even on top of
+    // one that is; once a ref reaches it, it is.
+    let dangling = f.git_ok(
+        &f.mirror(),
+        &["commit-tree", "-p", &later, &tree, "-m", "in no ref"],
+    );
+    assert_eq!(
+        held(&[&dangling, &later]).unwrap(),
+        std::slice::from_ref(&later)
+    );
+    f.git_ok(&f.mirror(), &["tag", "reached", &dangling]);
+    assert_eq!(held(&[&dangling]).unwrap(), std::slice::from_ref(&dangling));
+    f.git_ok(&f.mirror(), &["tag", "-d", "reached"]);
     // At most MAX_LOOKUPS at once, on both sides.
     let many: Vec<String> = (0..=MAX_LOOKUPS).map(|n| format!("{n:040x}")).collect();
     let refs: Vec<&str> = many.iter().map(String::as_str).collect();

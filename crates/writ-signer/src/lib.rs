@@ -94,11 +94,11 @@ pub struct Capabilities {
     /// daemon checks each declared key against at start.
     pub pairs: Vec<(KeyAlgorithm, SignerHash)>,
     /// Whether its keys can be read out (software keys can, by whoever holds the daemon's
-    /// memory or keystore; a hardware key can't).
+    /// memory or keystore; a hardware key can't). Said by the backend, never decided on: no
+    /// check reads it (the guarantee rests on how the backend makes its keys), the tests hold
+    /// each backend to what it says. (A `needs_touch` beside it, read by nothing and reading
+    /// as a rule, went in the review after M7.6, K-8: an agent key always signs unattended.)
     pub exportable: bool,
-    /// Whether signing needs someone to touch the device (never for an agent key: signing
-    /// happens unattended).
-    pub needs_touch: bool,
     /// Whether [`Signer::add_key`] takes a key made outside the backend (a software backend
     /// does; a device that makes its own keys doesn't).
     pub takes_keys: bool,

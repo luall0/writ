@@ -206,6 +206,15 @@ async fn check_config(config: &MirrorConfig, repos: &BTreeMap<RepoName, RepoEntr
             )));
         }
     }
+    // ssh is given paths under `run_dir` in `-o` options, where it splits at whitespace and
+    // expands `%` and `$`: said at start, not at the first operation (the review after M7.6,
+    // M-7). The daemon's own names under it (sockets, key files) hold neither.
+    let ssh = repos
+        .values()
+        .any(|entry| matches!(Upstream::parse(&entry.upstream), Ok(Upstream::Ssh(_))));
+    if ssh {
+        crate::upstream::check_option_paths(&[&config.run_dir])?;
+    }
     check_program(&config.ssh, "ssh")?;
     check_program(&config.relay, "the relay")
 }

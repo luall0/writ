@@ -320,9 +320,12 @@ impl Mirrors {
         })
     }
 
-    /// How long [`Mirrors::lock`] waits: a holder doing its job keeps a mirror for one upstream
-    /// operation (`timeout`) and the local work around it ([`LOCAL_WORK_DEADLINE`]), a sync's
-    /// repack or the reading of a push.
+    /// How long [`Mirrors::lock`] waits: a holder doing its job keeps a mirror for a wait for a
+    /// sync slot (`timeout`), one upstream operation (`timeout`: a sync's gits, a notes push's,
+    /// an upstream push, share it) and the local work around it ([`LOCAL_WORK_DEADLINE`], all
+    /// of it together: a sync's `HEAD` and repack, a push's reading, a notes batch). `writ
+    /// admin repo check` takes the lock for each of its steps apart (the review after M7.6,
+    /// M-9: under one lock it held about four times `timeout`).
     pub fn lock_deadline(&self) -> Duration {
         // The holder's wait for a sync slot, its upstream operation, its local work.
         self.shared
@@ -383,9 +386,14 @@ impl MirrorGuard {
         let fetched = partial.guard.fetch().await;
         partial.done = fetched.is_ok();
         drop(partial);
-        let report = fetched?;
+        let (report, head) = fetched?;
         self.state.synced_at = Some(Instant::now());
-        self.repack_if_needed().await;
+        // The local work after it (HEAD followed, a repack) within one LOCAL_WORK_DEADLINE,
+        // all of it together: what `lock_deadline` counts (the review after M7.6, M-9).
+        let now = tokio::time::Instant::now();
+        let until = now.checked_add(LOCAL_WORK_DEADLINE).unwrap_or(now);
+        self.follow_head(&head, until).await;
+        self.repack_if_needed(until).await;
         Ok(report)
     }
 

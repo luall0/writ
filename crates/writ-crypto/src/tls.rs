@@ -36,13 +36,17 @@ fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// A freshly generated certificate and its private key, both PEM.
+/// A freshly generated certificate and its private key, both PEM. Test support: the daemon's
+/// TLS key lives in its `Signer` ([`TlsIdentity::with_key`]), never in memory as PEM (the
+/// review after M7.6, K-8).
+#[cfg(any(test, feature = "testing"))]
 pub struct SelfSigned {
     pub cert_pem: String,
     /// The private key: zeroized on drop, never printed.
     pub key_pem: Zeroizing<String>,
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl std::fmt::Debug for SelfSigned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SelfSigned")
@@ -52,14 +56,18 @@ impl std::fmt::Debug for SelfSigned {
     }
 }
 
-/// Generates a self-signed certificate (ECDSA P-256) for the approval API.
+/// Generates a self-signed certificate (ECDSA P-256), for tests. rcgen's key pair is wiped
+/// before returning, as `self_signed_reader` wipes its own.
+#[cfg(any(test, feature = "testing"))]
 pub fn generate_self_signed() -> Result<SelfSigned> {
-    let certified = rcgen::generate_simple_self_signed(vec!["writd".to_owned()])
+    let mut certified = rcgen::generate_simple_self_signed(vec!["writd".to_owned()])
         .map_err(CryptoError::CertificateGeneration)?;
-    Ok(SelfSigned {
+    let generated = SelfSigned {
         cert_pem: certified.cert.pem(),
         key_pem: Zeroizing::new(certified.signing_key.serialize_pem()),
-    })
+    };
+    certified.signing_key.zeroize();
+    Ok(generated)
 }
 
 /// The pin of a certificate: `SHA256:` and the unpadded base64 of the SHA-256 of its DER
@@ -88,9 +96,9 @@ pub fn fingerprint_pem(cert_pem: &str) -> Result<String> {
 
 /// The approval API's TLS certificate and key, and the fingerprint clients pin.
 ///
-/// The private key is moved straight into rustls when the identity is made: no other copy is
-/// kept (rustls holds it for the daemon's life, without zeroizing it: see the threat model's
-/// residual risks). It can be replaced while the daemon runs ([`TlsIdentity::replace`], M7.5:
+/// The private key lives in the daemon's `Signer` ([`TlsIdentity::with_key`], M7.5): rustls
+/// asks it for each handshake signature and never holds it ([`TlsIdentity::from_pem`], a key
+/// in memory, is test support). It can be replaced while the daemon runs ([`TlsIdentity::replace`], M7.5:
 /// `writ admin tls rotate`): every handshake from then on gets the new certificate, and
 /// connections already open keep theirs.
 pub struct TlsIdentity {
@@ -140,7 +148,9 @@ pub fn check_ca_certs(pem: &str) -> Result<usize> {
 }
 
 impl TlsIdentity {
-    /// Reads a PEM certificate and its PEM private key (which must be the certificate's).
+    /// Reads a PEM certificate and its PEM private key (which must be the certificate's), the
+    /// key moved into rustls (which doesn't wipe it). Test support.
+    #[cfg(any(test, feature = "testing"))]
     pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self> {
         let cert = CertificateDer::from_pem_slice(cert_pem.as_bytes())
             .map_err(|_| CryptoError::Pem("certificate"))?;
@@ -212,7 +222,37 @@ impl TlsIdentity {
             .with_client_cert_verifier(verifier)
             .with_cert_resolver(Arc::new(Live(self.current.clone())));
         config.alpn_protocols = vec![ALPN.to_vec()];
+        // No session resumption, stated rather than left to rustls's defaults (a cache of
+        // 256 sessions, 2 tickets a handshake): a resumed handshake restores the client's
+        // certificate from the cache and never asks `ReaderVerifier`, and `writ` (one process
+        // per command) gains nothing from it (the review after M7.6, K-7). No session stored,
+        // no ticket sent, none made.
+        config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+        config.send_tls13_tickets = 0;
+        config.ticketer = Arc::new(NoTickets);
         Ok(Arc::new(config))
+    }
+}
+
+/// A ticketer that makes no ticket (stateless resumption off, whatever rustls's default).
+#[derive(Debug)]
+struct NoTickets;
+
+impl rustls::server::ProducesTickets for NoTickets {
+    fn enabled(&self) -> bool {
+        false
+    }
+
+    fn lifetime(&self) -> u32 {
+        0
+    }
+
+    fn encrypt(&self, _plain: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn decrypt(&self, _cipher: &[u8]) -> Option<Vec<u8>> {
+        None
     }
 }
 
@@ -556,6 +596,74 @@ mod tests {
         Err(rustls::Error::General(
             "the handshake did not finish".to_owned(),
         ))
+    }
+
+    /// A handshake as [`handshake`], then what the server sends after it (a TLS 1.3 server's
+    /// tickets) read by the client; the server's kind of handshake.
+    fn session(
+        server: Arc<rustls::ServerConfig>,
+        client: &Arc<rustls::ClientConfig>,
+    ) -> Option<rustls::HandshakeKind> {
+        let mut server = rustls::ServerConnection::new(server).unwrap();
+        let name = ServerName::try_from("writd").unwrap();
+        let mut client = rustls::ClientConnection::new(client.clone(), name).unwrap();
+        for _ in 0..10 {
+            let mut buffer = Vec::new();
+            while client.wants_write() {
+                client.write_tls(&mut buffer).unwrap();
+            }
+            server.read_tls(&mut buffer.as_slice()).unwrap();
+            server.process_new_packets().unwrap();
+            let mut buffer = Vec::new();
+            while server.wants_write() {
+                server.write_tls(&mut buffer).unwrap();
+            }
+            client.read_tls(&mut buffer.as_slice()).unwrap();
+            client.process_new_packets().unwrap();
+            if !client.is_handshaking() && !server.is_handshaking() && !server.wants_write() {
+                break;
+            }
+        }
+        server.handshake_kind()
+    }
+
+    /// The review after M7.6 (K-7): resumption was rustls's default, and a resumed handshake
+    /// never asks the reader verifier. Off: a client that connected once gets a full
+    /// handshake again; the same client, with rustls's defaults on the server, would resume.
+    #[test]
+    fn the_approval_api_never_resumes_a_session() {
+        let generated = generate_self_signed().unwrap();
+        let identity = TlsIdentity::from_pem(&generated.cert_pem, &generated.key_pem).unwrap();
+        let reader = generate(KeyKind::Ed25519).unwrap();
+        let readers = crate::readers::parse(&format!(
+            "mac {}",
+            reader.public_key().to_openssh().unwrap()
+        ))
+        .unwrap();
+        let server = identity.server_config(ReaderSet::new(readers)).unwrap();
+        assert_eq!(server.send_tls13_tickets, 0);
+        assert!(!server.ticketer.enabled());
+        let client = Arc::new(pinned_client_config(&identity.fingerprint(), &reader).unwrap());
+        for _ in 0..2 {
+            assert_eq!(
+                session(server.clone(), &client),
+                Some(rustls::HandshakeKind::Full)
+            );
+        }
+        // The other side: rustls's defaults resume the same client's second handshake.
+        let mut defaults = (*server).clone();
+        defaults.session_storage = rustls::server::ServerSessionMemoryCache::new(256);
+        defaults.send_tls13_tickets = 2;
+        let defaults = Arc::new(defaults);
+        let client = Arc::new(pinned_client_config(&identity.fingerprint(), &reader).unwrap());
+        assert_eq!(
+            session(defaults.clone(), &client),
+            Some(rustls::HandshakeKind::Full)
+        );
+        assert_eq!(
+            session(defaults, &client),
+            Some(rustls::HandshakeKind::Resumed)
+        );
     }
 
     #[test]

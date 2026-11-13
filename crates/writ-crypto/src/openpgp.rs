@@ -297,6 +297,8 @@ impl ToSign {
         hashed.extend_from_slice(&all);
         let mut unhashed = Vec::new();
         subpacket(&mut unhashed, SUB_ISSUER, &key.key_id())?;
+        // A no-op when the caller sized it ([`detached`]): never a second copy of the data.
+        data.reserve_exact(hashed.len().saturating_add(6));
         data.extend_from_slice(&hashed);
         data.extend_from_slice(&[4, 0xFF]);
         let hashed_len = u32::try_from(hashed.len()).map_err(|_| too_large())?;
@@ -357,8 +359,17 @@ impl ToSign {
 pub fn detached(key: &OpenpgpKey, hash: Hash, data: &[u8], time: u32) -> Result<ToSign> {
     let mut subpackets = Vec::new();
     subpacket(&mut subpackets, SUB_CREATION_TIME, &time.to_be_bytes())?;
-    ToSign::new(key, hash, BINARY_DOCUMENT, &subpackets, data.to_vec())
+    // The preimage is the data and the signature's trailer: sized for both up front, so the
+    // data (a commit, up to 16 MiB) is copied once, never again as the buffer grows (the
+    // review after M7.6, K-5).
+    let mut preimage = Vec::with_capacity(data.len().saturating_add(TRAILER_ROOM));
+    preimage.extend_from_slice(data);
+    ToSign::new(key, hash, BINARY_DOCUMENT, &subpackets, preimage)
 }
+
+/// More than a detached signature's hashed part and trailer take (its creation time and issuer
+/// fingerprint subpackets, the version and length bytes).
+const TRAILER_ROOM: usize = 256;
 
 /// The self-signature certifying `uid` on `key`: made at the key's creation time, so a
 /// certificate depends only on the key, its creation time and its user ids. It says the key
@@ -533,6 +544,24 @@ mod tests {
             packet(2, &[0; 8384]).unwrap()[..6],
             [0xC2, 0xFF, 0, 0, 0x20, 0xC0]
         );
+    }
+
+    /// The review after M7.6 (K-5): the preimage was the data copied exactly, then grown by the
+    /// trailer, a second copy of a commit of up to 16 MiB. Sized up front, it never grows.
+    #[test]
+    fn a_detached_signature_s_preimage_is_the_data_copied_once() {
+        for algorithm in [KeyAlgorithm::P256, KeyAlgorithm::Ed25519] {
+            let key = KeyPair::generate(algorithm).unwrap();
+            let openpgp = OpenpgpKey::new(&key.public_key(), 1_700_000_000).unwrap();
+            let data = vec![b'x'; 1 << 20];
+            let signed = detached(&openpgp, Hash::Sha256, &data, 1_700_000_001).unwrap();
+            assert!(signed.preimage.starts_with(&data));
+            assert_eq!(
+                signed.preimage.capacity(),
+                data.len() + TRAILER_ROOM,
+                "{algorithm}: never reallocated"
+            );
+        }
     }
 
     #[test]

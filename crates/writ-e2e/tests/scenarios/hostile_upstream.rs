@@ -176,9 +176,19 @@ fn a_stopped_a_changed_and_a_closed_upstream_are_refused_with_their_reasons() {
     let out = agent.in_dir(&w, "writ git push origin HEAD");
     expect(&out, 128, "a push without the deploy key");
     let err = stderr(&out);
+    // The agent is told the sync failed, nothing of upstream's words or address (the review
+    // after M7.6, M-5); Forgejo's reason is in the audit line.
     assert!(
-        err.contains("cannot sync from upstream") && err.contains("Permission denied"),
-        "Forgejo's reason: {err}"
+        err.contains("cannot sync from upstream") && !err.contains("Permission denied"),
+        "no upstream detail for the agent: {err}"
+    );
+    assert!(
+        stack.audited(&lease, "push", "denied").iter().any(|line| {
+            line["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("Permission denied"))
+        }),
+        "Forgejo's reason, in the audit line"
     );
     assert_eq!(
         stack.forgejo.branch("hostile", "agent/hostile").as_deref(),

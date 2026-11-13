@@ -6,7 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# A software P-256 key-agreement key standing for hardware (`piv_p256::software`), for the
+# A software P-256 key-agreement key standing for hardware (`piv_p256::software`), and a TLS
+# identity from a software key (`tls::generate_self_signed`, `TlsIdentity::from_pem`), for the
 # tests of this crate and of others.
 testing = []
 

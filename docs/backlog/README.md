@@ -67,6 +67,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Developer ID signed binaries](#developer-id-signed-binaries) | Packaging | improvement | S | idea |
 | [Hardware-wrapped secrets](../history/m7.6-hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | done in [M7.6](../history/m7.6-hardware-wrapped-secrets.md) |
 | [SSH host key behind the `Signer`](#ssh-host-key-behind-the-signer) | Signers | hardening | M | idea; waits for a signer hook in russh (left out of M7.6) |
+| [A hardware-keyed MAC over stored blobs](#a-hardware-keyed-mac-over-stored-blobs) | Signers, Sealing | hardening | M | idea (the threat model named M7.6 for it, which shipped without it: the review after M7.6, K-6) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
 | [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
@@ -135,6 +136,19 @@ upstream; a patched copy carried in the tree was ruled out: a fork on the securi
 every upgrade must re-apply). Then: an adapter over the `Signer` (as `writ_signer::tls` does
 for rustls), `writd init --host-key-backend`, and a live rotation re-pinning `known_hosts` as
 `writ admin tls rotate` re-pins the TLS certificate.
+
+### A hardware-keyed MAC over stored blobs
+
+The Secure Enclave blobs the daemon keeps (each key's `writ-se-blob/1` frame, the boot tier's
+blob, each hardware recipient's `recipients/<name>.blob`) are framed with an unkeyed SHA-256
+over the header, the key's public point and the blob: it catches a corrupted or another key's
+blob, not one crafted to pass it by whoever can write the daemon's files, and a crafted blob
+can panic the Secure Enclave's firmware and the Mac with it
+([threat model](../threat-model.md#residual-risks-v1)). Proposal: a MAC over each frame keyed
+in that Mac's Secure Enclave (a key-agreement or symmetric key made there, the MAC checked by
+the helper's device before any blob is parsed), so a frame made elsewhere, or on another Mac
+(a restored backup), is refused before CryptoKit reads it. Open: whether CryptoKit can check
+a MAC without first loading a blob, and the key for that MAC's own bootstrap (it is a blob too).
 
 ### x509 commit signatures
 

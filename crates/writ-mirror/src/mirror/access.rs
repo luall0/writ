@@ -1,6 +1,6 @@
 //! How one operation reaches upstream ([`Access`]): for `ssh://`, an agent socket serving the
-//! repo's key and the ssh command that uses it through the relay (behind a proxy of the
-//! policy, with the byte-capping proxy as its tunnel); for `https://`, the byte-capping proxy,
+//! repo's key and the ssh command that uses it through the relay, with the byte-capping proxy
+//! as its tunnel (directly or behind a proxy of the policy); for `https://`, the byte-capping proxy,
 //! the credential socket serving the token to the daemon's helper, and git's HTTPS settings.
 //! The byte-capping proxy reaches upstream through the repo's dialer. Each socket goes when the
 //! operation ends. And git run through it.
@@ -52,8 +52,8 @@ impl Access {
         }
     }
 
-    /// Whether upstream sent more than the cap through the proxy (HTTPS; for ssh the relay
-    /// says so in git's stderr).
+    /// Whether upstream sent more than the cap through the operation's proxy, every git of it
+    /// together (for one git, ssh's relay also says so in git's stderr).
     pub(super) fn too_large(&self) -> bool {
         self.proxy.as_ref().is_some_and(UpstreamProxy::too_large)
     }
@@ -72,7 +72,7 @@ impl MirrorGuard {
     /// settings. Each socket goes when the operation ends. An `https://` repo whose token
     /// isn't in the keystore yet reaches nothing: refused with the command that adds it; so is
     /// a repo behind a proxy whose password isn't.
-    pub(super) fn reach_upstream(&self) -> Result<Access> {
+    pub(super) async fn reach_upstream(&self) -> Result<Access> {
         let running = self
             .shared
             .in_flight
@@ -110,13 +110,17 @@ impl MirrorGuard {
                 credential,
                 token: Some(token),
             } => {
-                // Unwrapped for this operation alone: the socket holds it, and it is wiped when
-                // the operation drops the access.
-                let token = token.unwrap().map_err(|why| MirrorError::TokenUnwrap {
-                    repo: self.repo.name.clone(),
-                    key: credential.clone(),
-                    why,
-                })?;
+                // Unwrapped for this operation alone (off the async threads): the socket holds
+                // it, and it is wiped when the operation drops the access.
+                let token =
+                    token
+                        .unwrap_off_async()
+                        .await
+                        .map_err(|why| MirrorError::TokenUnwrap {
+                            repo: self.repo.name.clone(),
+                            key: credential.clone(),
+                            why,
+                        })?;
                 https_access(&self.shared, url, dialer, Arc::new(token), running)
             }
             Reach::Https {
@@ -157,9 +161,9 @@ impl MirrorGuard {
 }
 
 /// An `ssh://` operation: an agent socket serving `credential` (whose public half is `public`,
-/// written at `identity`), and the ssh command, through the relay, that uses it. Behind a
-/// proxy, ssh's `ProxyCommand` is the daemon's tunnel to the byte-capping proxy, which reaches
-/// `url`'s host and port alone, through `dialer`.
+/// written at `identity`), and the ssh command, through the relay, that uses it. ssh's
+/// `ProxyCommand` is the daemon's tunnel to the operation's byte-capping proxy, which reaches
+/// `url`'s host and port alone, through `dialer` (directly, or through the repo's proxy).
 fn ssh_access(
     shared: &Shared,
     url: &SshUrl,
@@ -175,16 +179,16 @@ fn ssh_access(
         credential.clone(),
         public,
     )?;
-    let proxy = match dialer {
-        Dialer::Direct => None,
-        Dialer::Proxy(_) => Some(UpstreamProxy::start(
-            &shared.socket_dir,
-            url.host(),
-            url.port(),
-            shared.config.max_fetch_bytes,
-            dialer.clone(),
-        )?),
-    };
+    // Every connection of the operation, directly or behind a proxy, goes through its one
+    // byte-capping proxy: the cap holds for the operation, every git of it together (a sync's
+    // fetch and `ls-remote`, a notes push's four), not per git (the review after M7.6, M-6).
+    let proxy = UpstreamProxy::start(
+        &shared.socket_dir,
+        url.host(),
+        url.port(),
+        shared.config.max_fetch_bytes,
+        dialer.clone(),
+    )?;
     let ssh = SshCommand {
         relay: &shared.config.relay,
         ssh: &shared.config.ssh,
@@ -192,12 +196,12 @@ fn ssh_access(
         agent: agent.path(),
         identity,
         max_bytes: shared.config.max_fetch_bytes,
-        tunnel: proxy.as_ref().map(|proxy| SshTunnel {
+        tunnel: SshTunnel {
             socket: proxy.path(),
             host: url.host(),
             port: url.port(),
             connect_timeout: dialer.deadline(),
-        }),
+        },
     }
     .to_git_ssh_command()?;
     Ok(Access {
@@ -210,7 +214,7 @@ fn ssh_access(
         _agent: Some(agent),
         _credential: None,
         token: None,
-        proxy,
+        proxy: Some(proxy),
         _running: running,
     })
 }

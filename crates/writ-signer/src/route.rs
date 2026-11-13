@@ -149,7 +149,6 @@ impl Signer for Routed {
         let mut union = Capabilities {
             pairs: Vec::new(),
             exportable: false,
-            needs_touch: false,
             takes_keys: false,
             makes_keys: false,
         };
@@ -161,7 +160,6 @@ impl Signer for Routed {
                 }
             }
             union.exportable |= c.exportable;
-            union.needs_touch |= c.needs_touch;
             union.takes_keys |= c.takes_keys;
             union.makes_keys |= c.makes_keys;
         }

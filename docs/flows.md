@@ -180,8 +180,8 @@ refs.
 from the rate window, under one lock, logged as one `fetch` line, so `max_ops_per_minute`
 bounds fetches too (a fetch never uses up a lease). Then the daemon syncs its mirror from
 upstream unless it is fresh (`mirrors.fresh_for`), outside the state lock, and serves
-`upload-pack`; a sync that fails refuses the fetch with its reason (`cannot sync from
-upstream: …`), logged. Requires a lease with `fetch` (or a read-only template). Agents never
+`upload-pack`; a sync that fails refuses the fetch (`cannot sync from upstream: repo <name>:
+…`, what failed and never upstream's address or words), its whole reason logged. Requires a lease with `fetch` (or a read-only template). Agents never
 hold remote credentials, even read-only ones.
 
 ## 5. Revoke / expire

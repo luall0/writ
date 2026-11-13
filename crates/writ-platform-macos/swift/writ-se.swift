@@ -86,12 +86,29 @@ func fields(_ body: ArraySlice<UInt8>) throws -> [Data] {
 }
 
 func ok(_ answer: [Data]) -> [UInt8] {
-    var out: [UInt8] = [0]
+    // Sized up front and filled in place: a growing array, or a copy of each field, would
+    // leave copies of a shared secret behind (the review after M7.6, K-4).
+    var out: [UInt8] = []
+    out.reserveCapacity(answer.reduce(1) { $0 + 4 + $1.count })
+    out.append(0)
     for field in answer {
-        out += be32(field.count)
-        out += [UInt8](field)
+        out.append(contentsOf: be32(field.count))
+        out.append(contentsOf: field)
     }
     return out
+}
+
+// Zeroes the bytes in place (memset_s: never optimized away).
+func wipe(_ bytes: inout [UInt8]) {
+    bytes.withUnsafeMutableBytes { raw in
+        if let base = raw.baseAddress { _ = memset_s(base, raw.count, 0, raw.count) }
+    }
+}
+
+func wipe(_ data: inout Data) {
+    data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+        if let base = raw.baseAddress { _ = memset_s(base, raw.count, 0, raw.count) }
+    }
 }
 
 func refused(_ code: String) -> [UInt8] {
@@ -191,10 +208,12 @@ while true {
     guard let header = readExact(4) else { exit(0) }
     let len = readBe32(header[...])
     guard len >= 1, len <= maxRequest, let body = readExact(len) else { exit(1) }
-    let answer: [UInt8]
+    var answer: [UInt8]
+    var answered: [Data] = []
     if let op = Op(rawValue: body[0]) {
         do {
-            answer = ok(try handle(op, try fields(body.dropFirst())))
+            answered = try handle(op, try fields(body.dropFirst()))
+            answer = ok(answered)
         } catch let refusal as Refusal {
             answer = refused(refusal.code)
         } catch {
@@ -203,5 +222,11 @@ while true {
     } else {
         answer = refused("bad-request")
     }
-    guard writeAll(be32(answer.count) + answer) else { exit(1) }
+    // The length, then the answer: never joined into one more copy.
+    let written = writeAll(be32(answer.count)) && writeAll(answer)
+    // An agreement's answer is a shared secret: wiped once written, in this process that
+    // lives as long as its key (the review after M7.6, K-4).
+    wipe(&answer)
+    for index in answered.indices { wipe(&answered[index]) }
+    guard written else { exit(1) }
 }

@@ -43,6 +43,8 @@ const MAX_LOCAL_OUTPUT: usize = 64 * 1024;
 /// The most read of the notes a batch's commits have already (more: merged again, a line
 /// twice at worst).
 const MAX_NOTES_READ: usize = 16 * 1024 * 1024;
+/// The most read of the commits no ref of the mirror reaches (more: the lookup fails).
+const MAX_UNREACHED_OUTPUT: usize = 16 * 1024 * 1024;
 
 /// One note to write: the commit it annotates, and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +95,7 @@ impl MirrorGuard {
         check_batch(notes)?;
         let local_until = from_now(LOCAL_WORK_DEADLINE);
         let upstream_until = from_now(self.shared.config.timeout);
-        let access = self.reach_upstream()?;
+        let access = self.reach_upstream().await?;
         // A notes ref upstream doesn't have (deleted there, or another remote since a
         // registry change) is started afresh, from the batch alone: the mirror's own would
         // put back every note it ever held, a person's deleted ones too (the review after
@@ -120,17 +122,23 @@ impl MirrorGuard {
             .await?
         {
             Pushed::Yes => Ok(NotesPushed::Merged),
-            Pushed::Behind => Err(MirrorError::Rejected {
-                repo: self.repo.name.clone(),
-                reason: format!("{notes_ref} moved again while the notes were merged"),
-            }),
+            Pushed::Behind => {
+                let reason = format!("{notes_ref} moved again while the notes were merged");
+                Err(MirrorError::Rejected {
+                    repo: self.repo.name.clone(),
+                    refs: reason.clone(),
+                    reason,
+                })
+            }
         }
     }
 
-    /// Which of `commits` (at most [`MAX_LOOKUPS`]) the mirror holds as commits. Only
-    /// upstream's objects (a sync) and those of pushes upstream took (git moves a push's
-    /// objects out of its quarantine only after the daemon's yes, which comes after upstream's)
-    /// get there: a commit the mirror holds is one upstream has, or had. One `cat-file`.
+    /// Which of `commits` (at most [`MAX_LOOKUPS`]) the mirror holds: commits its branches or
+    /// tags reach. Those are upstream's (a sync) or those of pushes upstream took (git moves
+    /// a push's refs only after the daemon's yes, which comes after upstream's): a commit
+    /// held is one upstream has, or had. A commit merely present is not held (a push's pack
+    /// may bring commits no ref reaches, never pushed upstream). One `cat-file`, one
+    /// `rev-list`.
     pub async fn held_commits(&self, commits: &[CommitId]) -> Result<BTreeSet<CommitId>> {
         if commits.len() > MAX_LOOKUPS {
             return Err(MirrorError::Notes(format!(
@@ -168,9 +176,60 @@ impl MirrorGuard {
             });
         }
         let asked: BTreeSet<&CommitId> = commits.iter().collect();
-        Ok(held(&done.stdout)
+        let present: BTreeSet<CommitId> = held(&done.stdout)
             .into_iter()
             .filter(|id| asked.contains(id))
+            .collect();
+        if present.is_empty() {
+            return Ok(present);
+        }
+        // Present is not held: an accepted push moves its whole quarantine into the mirror,
+        // objects no ref reaches included, and those never went upstream (the review after
+        // M7.6, M-4). Held is reachable from the mirror's branches and tags: what
+        // `rev-list` lists here (the commits asked, then what only they reach) is not.
+        let mut input = String::new();
+        for commit in &present {
+            let _ = writeln!(input, "{commit}");
+        }
+        let mut cmd = git::command(&self.shared.config.git, Hooks::None);
+        cmd.arg("--git-dir").arg(&self.repo.path).args([
+            "rev-list",
+            "--stdin",
+            "--not",
+            "--branches",
+            "--tags",
+        ]);
+        let left = until.saturating_duration_since(Instant::now());
+        let done =
+            match process::run(cmd, Some(input.into_bytes()), left, MAX_UNREACHED_OUTPUT).await {
+                Ok(done) => done,
+                Err(RunError::Timeout) => {
+                    return Err(MirrorError::ReadTimeout {
+                        seconds: LOCAL_WORK_DEADLINE.as_secs(),
+                    });
+                }
+                Err(RunError::Spawn(e) | RunError::Wait(e)) => return Err(MirrorError::Spawn(e)),
+            };
+        if !done.status.success() {
+            return Err(MirrorError::Git {
+                repo: self.repo.name.clone(),
+                what: "rev-list",
+                stderr: crate::shown(&done.stderr),
+            });
+        }
+        // Cut at the cap, the list could leave out a commit no ref reaches: none is held then.
+        if done.stdout.len() >= MAX_UNREACHED_OUTPUT {
+            return Err(MirrorError::Notes(
+                "too many commits no ref reaches to tell which are held".to_owned(),
+            ));
+        }
+        let unreached: BTreeSet<CommitId> = String::from_utf8_lossy(&done.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect();
+        Ok(present
+            .into_iter()
+            .filter(|id| !unreached.contains(id))
             .collect())
     }
 
@@ -373,6 +432,10 @@ impl MirrorGuard {
                 MirrorError::Git { repo, .. } => MirrorError::Rejected {
                     repo,
                     reason: self.clean(access, &refused_lines(&finished.stdout, &finished.stderr)),
+                    refs: self.clean(
+                        access,
+                        &refused_for_agent(&finished.stdout, &finished.stderr),
+                    ),
                 },
                 other => other,
             },
@@ -493,12 +556,31 @@ fn is_behind(stdout: &[u8], notes_ref: &str) -> bool {
 }
 
 /// What upstream said about a refused push: the refused refs (porcelain), then its own words.
-fn refused_lines(stdout: &[u8], stderr: &[u8]) -> Vec<u8> {
+pub(super) fn refused_lines(stdout: &[u8], stderr: &[u8]) -> Vec<u8> {
     String::from_utf8_lossy(stdout)
         .lines()
         .filter(|line| line.starts_with('!'))
         .flat_map(|line| format!("{line}\n").into_bytes())
         .chain(stderr.iter().copied())
+        .collect()
+}
+
+/// What an agent is told of a refused push: the refused refs (porcelain), then the remote's
+/// own words (the lines git prints behind `remote: `), never git's lines around them, which
+/// name upstream's URL (`error: failed to push some refs to '<url>'`; the review after M7.6,
+/// M-5).
+pub(super) fn refused_for_agent(stdout: &[u8], stderr: &[u8]) -> Vec<u8> {
+    let remote = String::from_utf8_lossy(stderr);
+    let words = remote
+        .split(['\r', '\n'])
+        .filter(|line| line.starts_with("remote:"))
+        .map(|line| format!("{line}\n"));
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter(|line| line.starts_with('!'))
+        .map(|line| format!("{line}\n"))
+        .chain(words)
+        .flat_map(String::into_bytes)
         .collect()
 }
 
@@ -766,6 +848,22 @@ mod tests {
         assert_eq!(
             String::from_utf8(refused_lines(out, b"remote: no notes here\n")).unwrap(),
             "!\trefs/notes/writ:refs/notes/writ\t[remote rejected] (hook)\nremote: no notes here\n"
+        );
+    }
+
+    /// The review after M7.6 (M-5): what an agent is told of a refused push keeps the refused
+    /// refs and the remote's words, never git's own lines naming upstream's URL.
+    #[test]
+    fn an_agent_gets_the_refused_refs_and_the_remote_s_words_only() {
+        let out = b"To ssh://git@git.example.org:2222/team/demo.git\n\
+                    !\ta:refs/heads/x\t[remote rejected] (pre-receive hook declined)\nDone\n";
+        let err = b"remote: branch x is closed        \n\
+                    To ssh://git@git.example.org:2222/team/demo.git\n\
+                    error: failed to push some refs to 'ssh://git@git.example.org:2222/team/demo.git'\n";
+        assert_eq!(
+            String::from_utf8(refused_for_agent(out, err)).unwrap(),
+            "!\ta:refs/heads/x\t[remote rejected] (pre-receive hook declined)\n\
+             remote: branch x is closed        \n"
         );
     }
 }

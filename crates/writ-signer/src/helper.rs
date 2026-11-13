@@ -49,7 +49,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
@@ -59,6 +59,7 @@ use writ_crypto::algorithm::{Hash, KeyAlgorithm, SignerHash};
 use writ_crypto::keypair::RawSignature;
 use writ_crypto::ssh_key::PublicKey;
 use writ_crypto::ssh_key::public::{EcdsaPublicKey, KeyData};
+use zeroize::Zeroizing;
 
 use crate::{Capabilities, Created, KeyInfo, Signer, SignerError, Stored};
 
@@ -200,11 +201,18 @@ enum Op {
     Agree = 7,
 }
 
-/// A running helper: its stdin, and the answers its reader thread reads from its stdout.
+/// An answer's body, or one of its fields: wiped when dropped (an agreement's answer is a
+/// shared secret; the review after M7.6, K-4).
+type Bytes = Zeroizing<Vec<u8>>;
+
+/// A running helper: the requests its writer thread writes to its stdin, and the answers its
+/// reader thread reads from its stdout. Neither thread holds up a caller: a helper that stops
+/// reading its stdin (a request larger than the pipe's buffer, never drained) costs its caller
+/// the request's deadline, then it is killed (the review after M7.6, K-2).
 struct Process {
     child: Child,
-    stdin: ChildStdin,
-    answers: Receiver<Result<Vec<u8>, HelperError>>,
+    requests: SyncSender<Vec<u8>>,
+    answers: Receiver<Result<Bytes, HelperError>>,
 }
 
 impl Process {
@@ -221,19 +229,32 @@ impl Process {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| HelperError::Spawn(e.kind().to_string()))?;
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        // A helper that can't be served is ended and reaped, never left running (K-8).
+        let abandon = |mut child: Child, why: String| {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(HelperError::Spawn("no pipe".to_owned()));
+            HelperError::Spawn(why)
+        };
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err(abandon(child, "no pipe".to_owned()));
         };
         let (send, answers) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name(format!("{}-reader", config.backend))
             .spawn(move || read_answers(stdout, &send))
-            .map_err(|e| HelperError::Spawn(e.kind().to_string()))?;
+        {
+            return Err(abandon(child, e.kind().to_string()));
+        }
+        let (requests, to_write) = std::sync::mpsc::sync_channel(1);
+        if let Err(e) = std::thread::Builder::new()
+            .name(format!("{}-writer", config.backend))
+            .spawn(move || write_requests(stdin, &to_write))
+        {
+            return Err(abandon(child, e.kind().to_string()));
+        }
         Ok(Self {
             child,
-            stdin,
+            requests,
             answers,
         })
     }
@@ -244,11 +265,22 @@ impl Process {
     }
 }
 
+/// Writes each request to the helper's stdin, until the pipe breaks (the helper killed or
+/// gone) or the process is dropped.
+fn write_requests(mut stdin: ChildStdin, requests: &Receiver<Vec<u8>>) {
+    for frame in requests {
+        if stdin
+            .write_all(&frame)
+            .and_then(|()| stdin.flush())
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
 /// Reads frames until the helper's stdout ends or breaks; the last thing sent says why.
-fn read_answers(
-    mut stdout: ChildStdout,
-    send: &std::sync::mpsc::SyncSender<Result<Vec<u8>, HelperError>>,
-) {
+fn read_answers(mut stdout: ChildStdout, send: &SyncSender<Result<Bytes, HelperError>>) {
     loop {
         let frame = read_frame(&mut stdout);
         let stop = frame.is_err();
@@ -258,32 +290,39 @@ fn read_answers(
     }
 }
 
-fn read_frame(from: &mut impl Read) -> Result<Vec<u8>, HelperError> {
+fn read_frame(from: &mut impl Read) -> Result<Bytes, HelperError> {
     let mut len = [0u8; 4];
     from.read_exact(&mut len).map_err(|_| HelperError::Died)?;
     let len = usize::try_from(u32::from_be_bytes(len)).map_err(|_| HelperError::Oversized)?;
     if len > MAX_ANSWER {
         return Err(HelperError::Oversized);
     }
-    let mut body = vec![0u8; len];
+    let mut body = Zeroizing::new(vec![0u8; len]);
     from.read_exact(&mut body).map_err(|_| HelperError::Died)?;
     Ok(body)
 }
 
-/// A request's body: the operation, then each field with its length.
+/// A request's frame: its length, the operation, then each field with its length, built in
+/// one buffer sized up front (what is signed is copied once here; the review after M7.6, K-5).
 fn request(op: Op, fields: &[&[u8]]) -> Result<Vec<u8>, HelperError> {
-    let mut body = vec![op as u8];
-    for field in fields {
-        let len = u32::try_from(field.len()).map_err(|_| HelperError::TooLarge)?;
-        body.extend_from_slice(&len.to_be_bytes());
-        body.extend_from_slice(field);
-    }
-    if body.len() > MAX_REQUEST {
+    let body = fields
+        .iter()
+        .try_fold(1usize, |n, field| {
+            n.checked_add(4)?.checked_add(field.len())
+        })
+        .ok_or(HelperError::TooLarge)?;
+    if body > MAX_REQUEST {
         return Err(HelperError::TooLarge);
     }
-    let len = u32::try_from(body.len()).map_err(|_| HelperError::TooLarge)?;
-    let mut frame = len.to_be_bytes().to_vec();
-    frame.extend_from_slice(&body);
+    let len = u32::try_from(body).map_err(|_| HelperError::TooLarge)?;
+    let mut frame = Vec::with_capacity(body.checked_add(4).ok_or(HelperError::TooLarge)?);
+    frame.extend_from_slice(&len.to_be_bytes());
+    frame.push(op as u8);
+    for field in fields {
+        let len = u32::try_from(field.len()).map_err(|_| HelperError::TooLarge)?;
+        frame.extend_from_slice(&len.to_be_bytes());
+        frame.extend_from_slice(field);
+    }
     Ok(frame)
 }
 
@@ -358,9 +397,11 @@ impl Helper {
         }
     }
 
-    /// Sends one request and waits for its answer, until the deadline. Any failure but the
-    /// helper's own refusal ends the process: the next request starts a new one.
-    fn call(&self, op: Op, fields: &[&[u8]], count: usize) -> Result<Vec<Vec<u8>>, HelperError> {
+    /// Sends one request and waits for its answer, one deadline over both (the writer thread
+    /// writes it; a helper that never reads is as silent as one that never answers). Any
+    /// failure but the helper's own refusal ends the process: the next request starts a new
+    /// one. The fields come back in buffers wiped when dropped.
+    fn call(&self, op: Op, fields: &[&[u8]], count: usize) -> Result<Vec<Bytes>, HelperError> {
         let frame = request(op, fields)?;
         let mut held = self.process.lock().unwrap_or_else(PoisonError::into_inner);
         if held.is_none() {
@@ -370,17 +411,23 @@ impl Helper {
             return Err(HelperError::Died);
         };
         let answered = (|| {
+            // One request at a time (this lock): the writer is idle, its slot free. A full
+            // slot or a writer gone is a helper that can't be trusted to answer this one.
             process
-                .stdin
-                .write_all(&frame)
-                .and_then(|()| process.stdin.flush())
+                .requests
+                .try_send(frame)
                 .map_err(|_| HelperError::Died)?;
             let body = match process.answers.recv_timeout(self.config.deadline) {
                 Ok(body) => body?,
                 Err(RecvTimeoutError::Timeout) => return Err(HelperError::Silent),
                 Err(RecvTimeoutError::Disconnected) => return Err(HelperError::Died),
             };
-            answer(&body, count).map(|fields| fields.into_iter().map(<[u8]>::to_vec).collect())
+            answer(&body, count).map(|fields| {
+                fields
+                    .into_iter()
+                    .map(|field| Zeroizing::new(field.to_vec()))
+                    .collect()
+            })
         })();
         match &answered {
             Ok(_) | Err(HelperError::Refused(_)) => {}
@@ -502,7 +549,13 @@ impl HelperSigner {
                             });
                     match answered {
                         Ok(answered) if answered.key_data() == public.key_data() => Ok(blob),
-                        Ok(_) => Err("the helper answers another key for its blob".to_owned()),
+                        // A well-formed answer that is wrong: that helper is no more trusted
+                        // than a broken one, as on the agreement's side (the review after
+                        // M7.6, K-8).
+                        Ok(_) => {
+                            helper.end();
+                            Err("the helper answers another key for its blob".to_owned())
+                        }
                         Err(e @ HelperError::Malformed(_)) => {
                             helper.end();
                             Err(e.to_string())
@@ -585,7 +638,7 @@ impl HelperSigner {
         let [signature] = fields.as_slice() else {
             return Err(SignerError::Failed(id.clone()));
         };
-        let raw = RawSignature::new(PAIR.0, PAIR.1, signature.clone()).map_err(|_| {
+        let raw = RawSignature::new(PAIR.0, PAIR.1, signature.to_vec()).map_err(|_| {
             self.lied(
                 id,
                 "the helper did not sign",
@@ -636,7 +689,6 @@ impl Signer for HelperSigner {
         Capabilities {
             pairs: vec![PAIR],
             exportable: false,
-            needs_touch: false,
             takes_keys: false,
             makes_keys: true,
         }
@@ -666,7 +718,7 @@ impl Signer for HelperSigner {
                 &HelperError::Malformed("a blob's length out of bounds"),
             ));
         }
-        let blob = Stored::new(blob.clone());
+        let blob = Stored::new(blob.to_vec());
         let public =
             point(answered).map_err(|e| self.lied(&id, "the helper did not make a key", &e))?;
         // The key proves the point is its own before it is kept.
@@ -700,5 +752,26 @@ impl Signer for HelperSigner {
             .remove(id)
             .map(drop)
             .ok_or_else(|| SignerError::UnknownKey(id.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The review after M7.6 (K-5): a request was built as a body, then copied whole into its
+    /// frame, two copies of what is signed. One buffer now, sized exactly, never grown.
+    #[test]
+    fn a_request_is_one_buffer_sized_up_front() {
+        let data = vec![b'x'; 1 << 20];
+        let frame = request(Op::Sign, &[b"blob", &data]).unwrap();
+        assert_eq!(frame.capacity(), frame.len());
+        assert_eq!(frame.len(), 4 + 1 + 4 + 4 + 4 + data.len());
+        assert_eq!(frame.get(..5), Some(&[0, 0x10, 0, 0x0d, 4][..]));
+        // The bound on both sides: the largest request taken, one byte past it refused.
+        let fits = vec![0u8; MAX_REQUEST - 5];
+        assert_eq!(request(Op::Sign, &[&fits]).unwrap().len(), MAX_REQUEST + 4);
+        let past = vec![0u8; MAX_REQUEST - 4];
+        assert_eq!(request(Op::Sign, &[&past]), Err(HelperError::TooLarge));
     }
 }

@@ -6,7 +6,8 @@
 //! [--no-enclave]`: `op` is
 //! `hello`, `create`, `public`, `sign`, `create-agreement`, `public-agreement` or `agree`;
 //! `fault` is `crash` (exits mid-answer), `silent`
-//! (never answers), `oversize` (announces an answer past the bound), `bad-point`,
+//! (never answers), `no-read` (stops reading the request after its operation byte, and never
+//! answers), `oversize` (announces an answer past the bound), `bad-point`,
 //! `other-key` (another key's point), `bad-signature` (a signature of other bytes), `refuse`
 //! (refuses with a clean code), `dirty-code` (a code outside the alphabet), `extra-field`,
 //! `unknown-status`, and for an agreement `short-secret` (31 bytes) or `other-secret` (another
@@ -65,7 +66,16 @@ fn main() {
             return;
         }
         let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
-        stdin.read_exact(&mut body).unwrap();
+        // The operation first: a `no-read` fault stops reading there, the rest of the request
+        // left in the pipe (a writer to it blocks once the pipe's buffer is full).
+        stdin.read_exact(&mut body[..1]).unwrap();
+        let wanted = op_name(body[0]);
+        if faults.iter().any(|(o, f)| o == wanted && f == "no-read") {
+            loop {
+                std::thread::park();
+            }
+        }
+        stdin.read_exact(&mut body[1..]).unwrap();
         let (op, fields) = parse(&body);
         if let Some(record) = &record {
             let mut file = std::fs::OpenOptions::new()
@@ -117,8 +127,8 @@ fn main() {
     }
 }
 
-fn parse(body: &[u8]) -> (&'static str, Vec<Vec<u8>>) {
-    let op = match body[0] {
+fn op_name(op: u8) -> &'static str {
+    match op {
         1 => "hello",
         2 => "create",
         3 => "public",
@@ -127,7 +137,11 @@ fn parse(body: &[u8]) -> (&'static str, Vec<Vec<u8>>) {
         6 => "public-agreement",
         7 => "agree",
         other => panic!("unknown operation {other}"),
-    };
+    }
+}
+
+fn parse(body: &[u8]) -> (&'static str, Vec<Vec<u8>>) {
+    let op = op_name(body[0]);
     let mut fields = Vec::new();
     let mut rest = &body[1..];
     while !rest.is_empty() {

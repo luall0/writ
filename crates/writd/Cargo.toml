@@ -47,6 +47,9 @@ tempfile.workspace = true
 # A cheap scrypt work factor for the keystore's tests (`enroll_with_work_factor`), and a
 # fake way into it standing for hardware (`FakeUnwrap`).
 writ-platform = { workspace = true, features = ["testing"] }
+# A throwaway certificate (`tls::generate_self_signed`, test support since the TLS key moved
+# behind the `Signer`).
+writ-crypto = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

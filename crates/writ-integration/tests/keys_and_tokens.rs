@@ -306,13 +306,22 @@ fn a_token_added_from_the_mac_is_used_at_once_and_never_in_clear_on_disk() {
     let lease = daemon.lease("web", ticket);
     let out = ls_remote(&daemon, &lease, "web");
     assert_eq!(out.status.code(), Some(128), "{}", stdout(&out));
+    // The agent is told no credential's id (the review after M7.6, M-5); the daemon's log and
+    // the audit line name it, with the command that adds it.
     assert!(
         stderr(&out).contains(
+            "repo web: the daemon has no usable credential for upstream (its log and audit line \
+             say which, and why)"
+        ) && !stderr(&out).contains("token-01"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        daemon.audit().contains(
             "upstream credential token-01 has no token yet: an approver adds it with `writ \
              admin token token-01`"
         ),
-        "{}",
-        stderr(&out)
+        "the audit line names it"
     );
     // The other repo is not held up.
     let out = ls_remote(&daemon, &lease, "demo");

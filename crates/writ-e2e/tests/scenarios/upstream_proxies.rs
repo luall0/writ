@@ -211,20 +211,43 @@ fn proxies_are_managed_from_the_approver_s_machine_and_hosts_behind_them_scanned
     // proxy's reason. Then reached directly: its name resolves nowhere, refused, never a
     // fallback. Then back behind its own proxy: reached.
     let agent = stack.agent("behind-socks-moved");
-    let (_lease, w) = wired(&stack, &agent, SOCKS_REPO);
+    let (lease, w) = wired(&stack, &agent, SOCKS_REPO);
     approver.ok(&format!(
         "writ admin repo set {SOCKS_REPO} proxy=bare {FLAGS}"
     ));
     let out = agent.in_dir(&w, "writ git fetch origin");
     let (_, err) = expect(&out, 128, "a fetch through a proxy without its password");
+    // The agent is told upstream can't be reached, never the proxy's name or words (the
+    // review after M7.6, M-5); the proxy's reason is in the audit line.
     assert!(
-        err.contains("proxy bare: it asks for a password, and none is configured (credential)"),
+        err.contains("cannot sync from upstream")
+            && err.contains("upstream can't be reached as configured")
+            && !err.contains("proxy bare"),
         "{err}"
+    );
+    assert!(
+        stack.audited(&lease, "fetch", "denied").iter().any(|line| {
+            line["reason"].as_str().is_some_and(|r| {
+                r.contains(
+                    "proxy bare: it asks for a password, and none is configured (credential)",
+                )
+            })
+        }),
+        "the proxy's reason, in the audit line"
     );
     approver.ok(&format!("writ admin repo set {SOCKS_REPO} proxy! {FLAGS}"));
     let out = agent.in_dir(&w, "writ git fetch origin");
     let (_, err) = expect(&out, 128, "a fetch with no proxy");
-    assert!(err.contains("forgejo-behind"), "{err}");
+    // The name that resolves nowhere is in the audit line, not in what the agent is told.
+    assert!(!err.contains("forgejo-behind"), "{err}");
+    assert!(
+        stack.audited(&lease, "fetch", "denied").iter().any(|line| {
+            line["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("forgejo-behind"))
+        }),
+        "the failure, with upstream's name, in the audit line"
+    );
     approver.ok(&format!(
         "writ admin repo set {SOCKS_REPO} proxy=socks {FLAGS}"
     ));

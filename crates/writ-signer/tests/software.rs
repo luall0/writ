@@ -50,7 +50,6 @@ fn the_software_backend_passes_the_contract() {
         assert!(pairs.contains(&expected), "{expected:?}");
     }
     assert!(mixed.capabilities().exportable);
-    assert!(!mixed.capabilities().needs_touch);
     assert!(mixed.capabilities().takes_keys);
     assert!(!mixed.capabilities().makes_keys);
     add_key_contract(&mixed);

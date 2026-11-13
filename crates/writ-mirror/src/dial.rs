@@ -242,17 +242,18 @@ pub enum DialWhy {
 
 /// A tunnel to `host:port` through `route`'s proxy.
 async fn through(route: &ProxyRoute, host: &str, port: u16) -> Result<TcpStream, DialWhy> {
-    // Unwrapped for this connection alone, before anything reaches the proxy, and wiped once
-    // the proxy took it.
-    let password = match (route.url.user(), &route.password) {
-        (Some(_), Some(password)) => {
-            Some(password.unwrap().map_err(|why| DialWhy::PasswordUnwrap {
-                key: password.id().clone(),
-                why,
-            })?)
-        }
-        _ => None,
-    };
+    // Unwrapped for this connection alone (off the async threads), before anything reaches the
+    // proxy, and wiped once the proxy took it.
+    let password =
+        match (route.url.user(), &route.password) {
+            (Some(_), Some(password)) => Some(password.unwrap_off_async().await.map_err(
+                |why| DialWhy::PasswordUnwrap {
+                    key: password.id().clone(),
+                    why,
+                },
+            )?),
+            _ => None,
+        };
     let credential = match (route.url.user(), &password) {
         (Some(user), Some(password)) => Some((user, password.expose())),
         _ => None,

@@ -562,6 +562,22 @@ fn a_fetch_is_refused_when_upstream_refuses_the_sync() {
         "{}",
         stderr(&out)
     );
+    // Nothing of upstream's words or address for the agent (the review after M7.6, M-5: git's
+    // text names the URL, ssh the host and port); the audit line keeps them.
+    let upstream = gateway.remote.url("demo");
+    let host = upstream
+        .trim_start_matches("ssh://")
+        .split(['/', '@'])
+        .find(|part| part.contains(':') || part.contains('.'))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        !stderr(&out).contains("Permission denied")
+            && !stderr(&out).contains(&upstream)
+            && (host.is_empty() || !stderr(&out).contains(&host)),
+        "{}",
+        stderr(&out)
+    );
     let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
     let denied = audit_events(&audit, "fetch", "denied");
     assert_eq!(denied.len(), 1, "{denied:?}");

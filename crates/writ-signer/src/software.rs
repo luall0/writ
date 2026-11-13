@@ -117,7 +117,6 @@ impl Signer for SoftwareSigner {
         Capabilities {
             pairs: pairs(),
             exportable: true,
-            needs_touch: false,
             takes_keys: true,
             makes_keys: false,
         }

@@ -105,7 +105,7 @@ impl HelperAgreement {
         let point = checked_point(point).inspect_err(|_| helper.end())?;
         let agreement = Self {
             helper,
-            blob: Stored::new(blob.clone()),
+            blob: Stored::new(blob.to_vec()),
             point,
         };
         agreement.probe()?;
@@ -171,13 +171,14 @@ impl HelperAgreement {
                 "not the fields the operation answers",
             ));
         };
-        let shared = Zeroizing::new(shared.clone());
+        // Copied once, from the answer's field (wiped when `fields` drops, as the answer's body
+        // was), into the buffer that is returned: no other copy (the review after M7.6, K-4).
         let mut out = Zeroizing::new([0u8; SHARED]);
         if shared.len() != SHARED {
             self.helper.end();
             return Err(HelperError::Malformed("a shared secret of another length"));
         }
-        out.copy_from_slice(&shared);
+        out.copy_from_slice(shared);
         Ok(out)
     }
 

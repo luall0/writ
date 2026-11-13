@@ -331,7 +331,6 @@ impl Signer for FakeDevice {
                 Some(writ_crypto::algorithm::Hash::Sha256),
             )],
             exportable: false,
-            needs_touch: false,
             takes_keys: false,
             makes_keys: true,
         }

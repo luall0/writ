@@ -85,9 +85,20 @@ impl TokenRef {
         &self.version
     }
 
-    /// The token, unwrapped now, for one operation.
+    /// The token, unwrapped now, for one operation, on the calling thread: it may block (a
+    /// device call since M7.6), so never on an async thread ([`TokenRef::unwrap_off_async`]).
     pub fn unwrap(&self) -> std::result::Result<UpstreamToken, String> {
         self.source.unwrap(&self.id, &self.version)
+    }
+
+    /// [`TokenRef::unwrap`] off the async threads (a device call can wait seconds; the review
+    /// after M7.6, M-3), as the signer's calls are: what the mirrors use. A caller that gives
+    /// up leaves the unwrap to finish on its thread, its token dropped (wiped) there.
+    pub async fn unwrap_off_async(&self) -> std::result::Result<UpstreamToken, String> {
+        let (source, id, version) = (self.source.clone(), self.id.clone(), self.version.clone());
+        tokio::task::spawn_blocking(move || source.unwrap(&id, &version))
+            .await
+            .map_err(|_| "the unwrap's thread failed".to_owned())?
     }
 
     /// A token held in memory as it is, for tests: no keystore behind it.
@@ -252,10 +263,7 @@ async fn answer(mut stream: UnixStream, served: Arc<Served>) {
         return;
     }
     let user = served.upstream.user().unwrap_or(DEFAULT_USER);
-    let reply = Zeroizing::new(format!(
-        "username={user}\npassword={}\n",
-        served.token.expose()
-    ));
+    let reply = answer_text(user, served.token.expose());
     let written = tokio::time::timeout(DEADLINE, async {
         stream.write_all(reply.as_bytes()).await?;
         stream.shutdown().await
@@ -264,6 +272,21 @@ async fn answer(mut stream: UnixStream, served: Arc<Served>) {
     if !matches!(written, Ok(Ok(()))) {
         tracing::debug!("cannot answer the credential request");
     }
+}
+
+/// The answer to git, in a buffer sized up front: one growing as the token is added would
+/// leave copies of it behind (the review after M7.6, M-8).
+fn answer_text(user: &str, token: &str) -> Zeroizing<String> {
+    let parts = ["username=", user, "\npassword=", token, "\n"];
+    let capacity = parts
+        .iter()
+        .map(|part| part.len())
+        .fold(0usize, usize::saturating_add);
+    let mut reply = Zeroizing::new(String::with_capacity(capacity));
+    for part in parts {
+        reply.push_str(part);
+    }
+    reply
 }
 
 /// Whether git's request (`key=value` lines) is for this upstream: `protocol=https` and its
@@ -322,6 +345,60 @@ mod tests {
             let error = UpstreamToken::from_bytes(&bytes).map(|_| ()).unwrap_err();
             assert_eq!(error, why, "{bytes:?}");
         }
+    }
+
+    /// The review after M7.6 (M-3): a token's unwrap (a device call since M7.6) ran on the
+    /// async thread, so a device that waits held up everything else on it. On a runtime of one
+    /// thread, the source below waits until the runtime itself releases it: it is released
+    /// only if the unwrap runs elsewhere. Run on the runtime's thread, it would wait its 10 s
+    /// out and fail.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_token_is_unwrapped_off_the_async_threads() {
+        struct Gated {
+            entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+            release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl TokenSource for Gated {
+            fn unwrap(&self, _: &KeyId, _: &str) -> std::result::Result<UpstreamToken, String> {
+                if let Some(entered) = self.entered.lock().unwrap().take() {
+                    let _ = entered.send(());
+                }
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .map_err(|_| "never released: the unwrap held the runtime".to_owned())?;
+                UpstreamToken::from_bytes(TOKEN.as_bytes()).map_err(str::to_owned)
+            }
+        }
+        let (entered, is_in) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let token = Arc::new(TokenRef::new(
+            "token-01".parse().unwrap(),
+            "v1".to_owned(),
+            Arc::new(Gated {
+                entered: std::sync::Mutex::new(Some(entered)),
+                release: std::sync::Mutex::new(released),
+            }),
+        ));
+        let unwrapping = tokio::spawn({
+            let token = token.clone();
+            async move { token.unwrap_off_async().await }
+        });
+        // The runtime still runs this task while the unwrap waits.
+        is_in.await.unwrap();
+        release.send(()).unwrap();
+        let unwrapped = unwrapping.await.unwrap().unwrap();
+        assert_eq!(unwrapped.expose(), TOKEN);
+    }
+
+    /// The review after M7.6 (M-8): the answer was a `format!`, its buffer grown (and copied)
+    /// as the token went in. Sized up front: exactly what it holds, never reallocated.
+    #[test]
+    fn the_answer_holding_the_token_is_sized_up_front() {
+        let reply = answer_text("writ", TOKEN);
+        assert_eq!(reply.as_str(), format!("username=writ\npassword={TOKEN}\n"));
+        assert_eq!(reply.capacity(), reply.len());
     }
 
     #[test]

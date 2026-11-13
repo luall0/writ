@@ -143,8 +143,15 @@ pub enum MirrorError {
     NotTheCredential { repo: RepoName, key: KeyId },
     #[error("cannot write the notes: {0}")]
     Notes(String),
+    /// Upstream refused a push: its reason whole (the refused refs, then its words), and the
+    /// refused refs alone (git's porcelain lines, upstream's reason for each in them), which
+    /// is what an agent is told ([`MirrorError::for_agent`]).
     #[error("repo {repo}: upstream refused the push: {reason}")]
-    Rejected { repo: RepoName, reason: String },
+    Rejected {
+        repo: RepoName,
+        reason: String,
+        refs: String,
+    },
     #[error("repo {repo}: {what} failed: {stderr}")]
     Git {
         repo: RepoName,
@@ -173,6 +180,68 @@ pub enum MirrorError {
     ReadTimeout { seconds: u64 },
 }
 
+impl MirrorError {
+    /// What an agent is told of this error (a sync or an upstream push it asked for that
+    /// failed): never upstream's URL, host or words around them, a proxy's name, a credential's
+    /// id, a local path (the review after M7.6, M-5: git's own text names the URL, and `writ
+    /// policy` shows none of it). The whole error goes to the audit line and the daemon's log.
+    /// Said once per variant, no wildcard: a new one is decided here.
+    pub fn for_agent(&self) -> String {
+        match self {
+            Self::UnknownRepo(repo) => format!("unknown repo {repo}"),
+            Self::Upstream { repo, .. }
+            | Self::Proxy { repo, .. }
+            | Self::HostNotPinned { repo, .. }
+            | Self::NotAMirror { repo, .. } => {
+                format!("repo {repo}: upstream can't be reached as configured")
+            }
+            Self::UnknownCredential { repo, .. }
+            | Self::NoToken { repo, .. }
+            | Self::TokenUnwrap { repo, .. }
+            | Self::NoProxyPassword { repo, .. }
+            | Self::NotTheCredential { repo, .. } => {
+                format!(
+                    "repo {repo}: the daemon has no usable credential for upstream (its log \
+                     and audit line say which, and why)"
+                )
+            }
+            Self::ObjectFormat { repo, expected } => {
+                format!("repo {repo}: upstream's object format is not {expected} (the registry's)")
+            }
+            Self::HostKey { repo } => {
+                format!("repo {repo}: upstream's host key is not the pinned one")
+            }
+            Self::Certificate { repo, .. } => {
+                format!("repo {repo}: upstream's certificate does not verify")
+            }
+            Self::Rejected { repo, refs, .. } if refs.is_empty() => {
+                format!("repo {repo}: upstream refused the push")
+            }
+            Self::Rejected { repo, refs, .. } => {
+                format!("repo {repo}: upstream refused the push: {refs}")
+            }
+            Self::Git { repo, what, .. } => format!("repo {repo}: {what} failed"),
+            // Bounded, said in the daemon's own words: nothing of upstream's.
+            Self::TooLarge { .. }
+            | Self::Busy { .. }
+            | Self::Timeout { .. }
+            | Self::Stopping { .. }
+            | Self::GitTooOld { .. }
+            | Self::SyncSlotsClosed
+            | Self::TooManyCommits(_)
+            | Self::ReadTimeout { .. } => self.to_string(),
+            Self::Io { .. }
+            | Self::Config(_)
+            | Self::Notes(_)
+            | Self::Spawn(_)
+            | Self::NoRandomness { .. }
+            | Self::Agent(_)
+            | Self::NotAQuarantine(_)
+            | Self::Read(_) => "internal error".to_owned(),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, MirrorError>;
 
 /// How much of a text from git or upstream an error keeps.
@@ -195,6 +264,101 @@ pub(crate) fn shown(text: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The review after M7.6 (M-5): a sync's failure reached the agent whole, git's text with
+    /// upstream's URL, ssh's host and port, the proxy's name. The agent's reason names none;
+    /// the whole error (the audit line, the log) keeps them.
+    #[test]
+    fn an_agent_is_told_nothing_of_upstream_s_address_or_words() {
+        use crate::dial::{DialError, DialWhy};
+        let repo: RepoName = "demo".parse().unwrap();
+        let url = "https://writ@git.example.org:8443/team/demo.git";
+        let errors = [
+            MirrorError::Git {
+                repo: repo.clone(),
+                what: "sync",
+                stderr: format!("fatal: unable to access '{url}/': Could not resolve host"),
+            },
+            MirrorError::Git {
+                repo: repo.clone(),
+                what: "sync",
+                stderr: "ssh: connect to host git.example.org port 8443: Connection refused"
+                    .to_owned(),
+            },
+            MirrorError::Proxy {
+                repo: repo.clone(),
+                failure: DialError::Proxy {
+                    proxy: "corp-tor".parse().unwrap(),
+                    why: DialWhy::Unreachable("git.example.org: no route".to_owned()),
+                },
+            },
+            MirrorError::Certificate {
+                repo: repo.clone(),
+                why: "no alternative certificate subject name matches git.example.org".to_owned(),
+            },
+            MirrorError::Upstream {
+                repo: repo.clone(),
+                upstream: url.to_owned(),
+                why: "git.example.org".to_owned(),
+            },
+            MirrorError::HostNotPinned {
+                repo: repo.clone(),
+                host: "[git.example.org]:8443".to_owned(),
+            },
+            MirrorError::NoToken {
+                repo: repo.clone(),
+                key: "corp-token".parse().unwrap(),
+            },
+            MirrorError::NoProxyPassword {
+                repo: repo.clone(),
+                proxy: "corp-tor".parse().unwrap(),
+                key: "corp-token".parse().unwrap(),
+            },
+            MirrorError::Rejected {
+                repo: repo.clone(),
+                reason: format!(
+                    "! refs/heads/x [rejected] (stale info); error: failed to push some refs to '{url}'"
+                ),
+                refs: "! refs/heads/x [rejected] (stale info)".to_owned(),
+            },
+        ];
+        for error in errors {
+            let whole = error.to_string();
+            let told = error.for_agent();
+            assert!(
+                told.starts_with("repo demo: "),
+                "{told:?}: still says which repo"
+            );
+            for detail in [
+                "git.example.org",
+                "8443",
+                "corp-tor",
+                "corp-token",
+                "https://",
+            ] {
+                assert!(!told.contains(detail), "{detail} in {told:?}");
+            }
+            assert!(
+                ["git.example.org", "corp-tor", "corp-token"]
+                    .iter()
+                    .any(|detail| whole.contains(detail)),
+                "the whole error keeps the detail: {whole:?}"
+            );
+        }
+        // A refusal keeps the refused refs and why, for the agent to act on.
+        let rejected = MirrorError::Rejected {
+            repo: repo.clone(),
+            reason: "! a:refs/heads/x [rejected] (stale info); error: failed to push".to_owned(),
+            refs: "! a:refs/heads/x [rejected] (stale info)".to_owned(),
+        };
+        assert_eq!(
+            rejected.for_agent(),
+            "repo demo: upstream refused the push: ! a:refs/heads/x [rejected] (stale info)"
+        );
+        // The daemon's own words are said as they are.
+        let busy = MirrorError::Busy { repo, seconds: 5 };
+        assert_eq!(busy.for_agent(), busy.to_string());
+    }
 
     #[test]
     fn upstream_text_is_one_bounded_clean_line() {

@@ -70,7 +70,7 @@ Programs are named by absolute path, never looked up in `PATH`, and checked at s
 | `mirrors.fresh_for` | 0s to 1h | `10s` | A mirror synced this recently serves fetches and pushes without asking upstream again. `0s`: always ask |
 | `mirrors.sync_every` | 10s to 1d | `5m` | How often every mirror syncs in the background |
 | `mirrors.timeout` | 10s to 1h | `5m` | The longest one sync or push to upstream may take. Raise it for a first sync of a large repository |
-| `mirrors.max_fetch` | 1MiB to 64GiB | `1GiB` | The most one sync may download, over SSH or HTTPS. Past it, the sync fails and the mirror stays as it was |
+| `mirrors.max_fetch` | 1MiB to 64GiB | `1GiB` | The most one sync (or push, notes push or check) may download from upstream, over SSH or HTTPS, all its connections together. Past it, the operation fails and the mirror stays as it was |
 | `mirrors.scan_timeout` | 1s to 5m | `30s` | The longest one handshake of a host key scan (`writ admin host add`) may take: raise it for a host slow to answer. A scan makes up to three, one per key algorithm |
 
 ## Key backends

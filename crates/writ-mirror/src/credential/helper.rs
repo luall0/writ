@@ -53,7 +53,10 @@ fn helper(args: &[&str]) -> std::result::Result<(), String> {
         .write_all(&request)
         .and_then(|()| stream.shutdown(std::net::Shutdown::Write))
         .map_err(|e| format!("cannot ask the daemon: {e}"))?;
-    let mut reply = Zeroizing::new(Vec::new());
+    // The answer holds the token: sized up front too (the review after M7.6, M-8).
+    let mut reply = Zeroizing::new(Vec::with_capacity(
+        usize::try_from(READ_LIMIT).unwrap_or(usize::MAX),
+    ));
     (&mut stream)
         .take(READ_LIMIT)
         .read_to_end(&mut reply)
