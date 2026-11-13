@@ -1,10 +1,15 @@
 //! `writ run -- <program> [args…]`: runs an agent harness (Claude Code, Codex…) as this
-//! process's child, and makes this process the root of its session. Every `writ request` under
-//! it binds the lease to it ([`bind`]: `caller: { descends_from: { pid } }`, which the daemon
-//! completes from the kernel), so the lease is refused to anything outside the session and
-//! revoked when it ends: when the harness quits, `writ run` exits.
+//! process's child, and makes the harness the root of its session. Every `writ request` under
+//! it binds the lease to the harness ([`bind`]: `caller: { descends_from: { pid } }`, which
+//! the daemon completes from the kernel), so the lease is refused to anything outside the
+//! session and revoked when it ends. The daemon takes as a session's root only a process
+//! whose parent is the installed `writ` (the review after M7.6, C-1): the harness, this
+//! process's direct child.
 //!
-//! The harness gets the terminal and the environment, plus [`RUN_PID`]. SIGTERM and SIGHUP are
+//! The harness's pid is given to it in [`RUN_PID`] before it starts: the child is this same
+//! program first ([`RUN_PID`] set to [`STARTING`]), which puts its own pid there and becomes
+//! the harness (`exec`, the pid kept). The harness gets the terminal and the environment,
+//! plus [`RUN_PID`]. SIGTERM and SIGHUP are
 //! passed on to it; SIGINT and SIGQUIT come from the terminal to the whole foreground group
 //! already, so `writ run` only stays for them (passing them on would hit the harness twice).
 //! The exit status is the harness's, or 128 and the signal that ended it.
@@ -19,13 +24,37 @@ use tokio::signal::unix::{SignalKind, signal};
 /// The session root's pid, set by `writ run` for what runs under it.
 pub const RUN_PID: &str = "WRIT_RUN_PID";
 
+/// [`RUN_PID`]'s value in the child `writ run` starts, until it becomes the harness.
+pub const STARTING: &str = "starting";
+
 /// Runs `command` under this session: its exit status.
 pub fn run(command: &[OsString]) -> ExitCode {
+    if std::env::var_os(RUN_PID).is_some_and(|v| v == STARTING) {
+        // The child: becomes the harness, under its own pid. `exec` returns only on failure.
+        let Some((program, args)) = command.split_first() else {
+            eprintln!("writ: writ run needs the program to run: writ run -- <program> [args…]");
+            return ExitCode::from(crate::Exit::Error as u8);
+        };
+        let error = std::os::unix::process::CommandExt::exec(
+            std::process::Command::new(program)
+                .args(args)
+                .env(RUN_PID, std::process::id().to_string()),
+        );
+        eprintln!(
+            "writ: cannot run {}: {}",
+            crate::display::clean(&program.to_string_lossy()),
+            crate::display::clean(&error.to_string())
+        );
+        return ExitCode::from(crate::Exit::Error as u8);
+    }
     let outcome = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("cannot start")
-        .and_then(|runtime| runtime.block_on(supervise(command)));
+        .and_then(|runtime| {
+            let me = std::env::current_exe().context("cannot find writ's own path")?;
+            runtime.block_on(supervise(&me, command))
+        });
     match outcome {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
@@ -35,9 +64,10 @@ pub fn run(command: &[OsString]) -> ExitCode {
     }
 }
 
-/// Starts the harness and waits for it, passing SIGTERM and SIGHUP on.
-async fn supervise(command: &[OsString]) -> anyhow::Result<u8> {
-    let Some((program, args)) = command.split_first() else {
+/// Starts the harness through `me` (this program: `me run -- <command>`, which becomes the
+/// harness) and waits for it, passing SIGTERM and SIGHUP on.
+async fn supervise(me: &std::path::Path, command: &[OsString]) -> anyhow::Result<u8> {
+    let Some((program, _)) = command.split_first() else {
         bail!("writ run needs the program to run: writ run -- <program> [args…]");
     };
     // Taken before the harness starts: none of them ends this process meanwhile.
@@ -45,9 +75,12 @@ async fn supervise(command: &[OsString]) -> anyhow::Result<u8> {
     let mut hangup = signal(SignalKind::hangup())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut quit = signal(SignalKind::quit())?;
-    let mut child = tokio::process::Command::new(program)
-        .args(args)
-        .env(RUN_PID, std::process::id().to_string())
+    // This program again, as the child: it becomes the harness under its own pid.
+    let mut child = tokio::process::Command::new(me)
+        .arg("run")
+        .arg("--")
+        .args(command)
+        .env(RUN_PID, STARTING)
         .spawn()
         .with_context(|| format!("cannot run {}", program.to_string_lossy()))?;
     let pid = child
@@ -126,29 +159,38 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
+        // `writ` as its child: told it is starting, it becomes the program under its own pid.
+        let dir = tempfile::tempdir().unwrap();
+        let me = dir.path().join("writ");
+        std::fs::write(
+            &me,
+            format!(
+                "#!/bin/sh\ntest \"$1 $2 ${RUN_PID}\" = \"run -- {STARTING}\" || exit 99\nshift 2\n\
+                 {RUN_PID}=$$ exec \"$@\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&me, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let supervise = |command: &[OsString]| runtime.block_on(supervise(&me, command));
         let sh = |script: &str| -> Vec<OsString> {
             ["/bin/sh", "-c", script]
                 .iter()
                 .map(OsString::from)
                 .collect()
         };
-        assert_eq!(runtime.block_on(supervise(&sh("exit 7"))).unwrap(), 7);
+        assert_eq!(supervise(&sh("exit 7")).unwrap(), 7);
         // Ended by a signal: 128 and its number.
+        assert_eq!(supervise(&sh("kill -TERM $$")).unwrap(), 128 + 15);
+        // The session's pid, given to what runs: the harness's own, a child of this process.
         assert_eq!(
-            runtime.block_on(supervise(&sh("kill -TERM $$"))).unwrap(),
-            128 + 15
-        );
-        // The session's pid, given to what runs: this process's.
-        assert_eq!(
-            runtime
-                .block_on(supervise(&sh(&format!(
-                    "test \"${RUN_PID}\" = {} || exit 9",
-                    std::process::id()
-                ))))
-                .unwrap(),
+            supervise(&sh(&format!(
+                "test \"${RUN_PID}\" = $$ && test \"$PPID\" = {} || exit 9",
+                std::process::id()
+            )))
+            .unwrap(),
             0
         );
-        let error = crate::error_of(runtime.block_on(supervise(&[])));
+        let error = crate::error_of(supervise(&[]));
         assert_eq!(
             error,
             "writ run needs the program to run: writ run -- <program> [args…]"

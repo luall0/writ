@@ -40,6 +40,8 @@
 //!     https: [{ tcp: "127.0.0.1:8443" }]
 //! attestor: network
 //! session_watcher: none
+//! session_launcher: /opt/writ/bin/writ  # local mode: the writ a session root's parent runs
+//!                                        # (absolute; default: writ beside writd)
 //! notifiers:
 //!   - telegram: { token: { boot: data/boot/telegram }, chat_id: "123456789" }
 //! ```
@@ -92,6 +94,10 @@ pub struct Config {
     pub transports: Transports,
     pub attestor: AttestorConfig,
     pub session_watcher: WatcherConfig,
+    /// The session launcher (M7.7): the installed `writ`, by absolute path; left out, the
+    /// `writ` beside the running `writd`. A session binding's root must be its child.
+    #[serde(default)]
+    session_launcher: Option<PathBuf>,
     #[serde(default)]
     pub notifiers: Vec<NotifierConfig>,
 }
@@ -289,6 +295,36 @@ impl MirrorsConfig {
             ));
         }
         Ok(())
+    }
+}
+
+impl Config {
+    /// The session launcher's path (`session_launcher`): the one set, or `writ` beside the
+    /// running `writd`, links resolved (as the kernel names a process's executable).
+    pub fn session_launcher(&self) -> anyhow::Result<PathBuf> {
+        if let Some(launcher) = &self.session_launcher {
+            return Ok(launcher.clone());
+        }
+        let me = std::env::current_exe()
+            .and_then(std::fs::canonicalize)
+            .map_err(|e| anyhow::anyhow!("cannot find writd's own path for writ: {e}"))?;
+        let dir = me
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("writd's own path has no directory"))?;
+        Ok(dir.join("writ"))
+    }
+
+    /// The session launcher where a submission can carry a process chain (an agents'
+    /// listener on a Unix socket), checked as a program the daemon trusts by its path
+    /// ([`writ_platform::fs::check_trusted_program`]); `None` with no such listener: nothing
+    /// can be bound there, and the key is not read.
+    pub fn checked_session_launcher(&self) -> anyhow::Result<Option<PathBuf>> {
+        if !self.transports.agents.iter().any(|t| t.unix.is_some()) {
+            return Ok(None);
+        }
+        let launcher = self.session_launcher()?;
+        writ_platform::fs::check_trusted_program(&launcher, "session_launcher")?;
+        Ok(Some(launcher))
     }
 }
 

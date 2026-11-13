@@ -53,6 +53,8 @@ transports:
 
 attestor: network                  # network | macos_process_chain (local mode, M7) | linux_process_chain (M7.1)
 session_watcher: none              # none | macos (local mode, M7) | linux (M7.1)
+# session_launcher: /opt/writ/bin/writ  # local mode: the writ that starts sessions (writ run);
+#                                     # default: writ beside writd
 
 # Notifications (none by default): a Telegram bot.
 # notifiers:

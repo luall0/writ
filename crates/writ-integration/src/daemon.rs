@@ -261,16 +261,31 @@ impl Daemon {
     /// (macOS: kqueue; Linux: pidfds, `/proc` read by the daemon itself, which runs as the
     /// test's user). The TCP listeners stay (a TCP caller gets no process chain).
     pub fn start_local(policy: &str, approvals: Approvals) -> Self {
-        let local = match std::env::consts::OS {
-            "linux" => "attestor: linux_process_chain\nsession_watcher: linux",
-            _ => "attestor: macos_process_chain\nsession_watcher: macos",
-        };
+        Self::start_with(policy, approvals, local_yaml)
+    }
+
+    /// [`Daemon::start_local`], `writd.yaml` then edited by `edit` (which must change it).
+    pub fn start_local_with(
+        policy: &str,
+        approvals: Approvals,
+        edit: impl Fn(&str) -> String,
+    ) -> Self {
         Self::start_with(policy, approvals, move |yaml| {
-            yaml.replace(
-                "  agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }]",
-                "  agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }, { unix: run/agents.sock }]",
-            )
-            .replace("attestor: network\nsession_watcher: none", local)
+            let local = local_yaml(yaml);
+            let edited = edit(&local);
+            assert_ne!(edited, local, "the edit left writd.yaml as it was");
+            edited
+        })
+    }
+
+    /// The same directory as [`Daemon::start_local_with`], but `writd run` must refuse to
+    /// start: what it printed (its status checked: 1).
+    pub fn refused_local(policy: &str, edit: impl Fn(&str) -> String) -> String {
+        Self::refused(policy, move |yaml| {
+            let local = local_yaml(yaml);
+            let edited = edit(&local);
+            assert_ne!(edited, local, "the edit left writd.yaml as it was");
+            edited
         })
     }
 
@@ -642,6 +657,20 @@ impl Daemon {
             .unwrap();
         assert_eq!(changed, 1);
     }
+}
+
+/// The default `writd.yaml` in local mode: an agents' Unix socket beside the TCP listener,
+/// this OS's process chain attestor and session watcher.
+fn local_yaml(yaml: &str) -> String {
+    let local = match std::env::consts::OS {
+        "linux" => "attestor: linux_process_chain\nsession_watcher: linux",
+        _ => "attestor: macos_process_chain\nsession_watcher: macos",
+    };
+    yaml.replace(
+        "  agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }]",
+        "  agents: [{ tcp: \"127.0.0.1:0\", allow: [127.0.0.1] }, { unix: run/agents.sock }]",
+    )
+    .replace("attestor: network\nsession_watcher: none", local)
 }
 
 /// Pins the daemon's host key and TLS certificate on its ports, as `writd host-key` and

@@ -252,7 +252,7 @@ subject:                         # WHO
   session_key: SHA256:9fq...      # the certificate is issued for this key
   origin_hint: macbook-user     # advisory, shown in the approval prompt
   caller:                        # optional; checked against CallerFacts, missing facts deny
-    descends_from:               # local mode: a kernel-resolved process ancestor (or the caller itself), completed by the daemon from the submission's chain
+    descends_from:               # local mode: a kernel-resolved process ancestor (or the caller itself), completed by the daemon from the submission's chain; its parent must be the session launcher (the installed writ)
       executable: /Applications/Omega Code.app/Contents/MacOS/omega
       pid: 4242
       generation: 118            # pidversion: rejects a reused pid

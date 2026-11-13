@@ -205,6 +205,57 @@ pub fn check_private(path: &Path, metadata: &Metadata) -> Result<()> {
     Ok(())
 }
 
+/// Checks a program whose path the daemon trusts to name it (the session launcher, M7.7):
+/// an absolute path that is its own canonical form (the kernel names a process's executable
+/// with links resolved, so any other spelling would never match), a regular executable file
+/// owned by the daemon's user or root that nobody else can write, in directories up to the
+/// root that are owned and writable likewise (a sticky directory aside): whoever could put
+/// another program at that path could pass it for this one.
+pub fn check_trusted_program(path: &Path, what: &str) -> Result<()> {
+    let refuse = |why: String| PlatformError::Config(format!("{what} {}: {why}", path.display()));
+    if !path.is_absolute() {
+        return Err(refuse("must be an absolute path".to_owned()));
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|e| refuse(format!("{}", e.kind())))?;
+    if canonical != path {
+        return Err(refuse(format!(
+            "not its canonical path (links resolved, it is {}): name that one",
+            canonical.display()
+        )));
+    }
+    let (_, metadata) = open_owned(path, what, Owner::DaemonOrRoot)?;
+    let mode = metadata.permissions().mode();
+    if mode & 0o022 != 0 {
+        return Err(refuse(format!(
+            "can be written by group or others (mode {:o})",
+            mode & 0o777
+        )));
+    }
+    if mode & 0o111 == 0 {
+        return Err(refuse("is not executable".to_owned()));
+    }
+    for dir in path.ancestors().skip(1) {
+        let meta = std::fs::metadata(dir)
+            .map_err(|e| refuse(format!("cannot read {}: {}", dir.display(), e.kind())))?;
+        if meta.uid() != my_uid() && meta.uid() != 0 {
+            return Err(refuse(format!(
+                "its directory {} is owned by uid {}, neither root nor the daemon's user",
+                dir.display(),
+                meta.uid()
+            )));
+        }
+        let mode = meta.permissions().mode();
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            return Err(refuse(format!(
+                "its directory {} can be written by group or others (mode {:o})",
+                dir.display(),
+                mode & 0o777
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +274,67 @@ mod tests {
             Err(PlatformError::Config(message)) => message,
             other => panic!("expected a Config error, got {other:?}"),
         }
+    }
+
+    /// The review after M7.6 (C-1): the session launcher is trusted by its path, so the
+    /// file at it, and every directory above it, must be the daemon's or root's alone.
+    #[test]
+    fn a_trusted_program_is_a_canonical_executable_nobody_else_can_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        set_mode(&bin, 0o755);
+        let writ = bin.join("writ");
+        std::fs::write(&writ, "#!/bin/sh\n").unwrap();
+        set_mode(&writ, 0o755);
+        check_trusted_program(&writ, "session_launcher").unwrap();
+        let refused = |path: &Path| config_error(check_trusted_program(path, "session_launcher"));
+        assert_eq!(
+            refused(Path::new("bin/writ")),
+            "session_launcher bin/writ: must be an absolute path"
+        );
+        let link = bin.join("writ-link");
+        std::os::unix::fs::symlink(&writ, &link).unwrap();
+        assert_eq!(
+            refused(&link),
+            format!(
+                "session_launcher {}: not its canonical path (links resolved, it is {}): name \
+                 that one",
+                link.display(),
+                writ.display()
+            )
+        );
+        set_mode(&writ, 0o775);
+        assert_eq!(
+            refused(&writ),
+            format!(
+                "session_launcher {}: can be written by group or others (mode 775)",
+                writ.display()
+            )
+        );
+        set_mode(&writ, 0o644);
+        assert_eq!(
+            refused(&writ),
+            format!("session_launcher {}: is not executable", writ.display())
+        );
+        set_mode(&writ, 0o755);
+        set_mode(&bin, 0o775);
+        assert_eq!(
+            refused(&writ),
+            format!(
+                "session_launcher {}: its directory {} can be written by group or others (mode \
+                 775)",
+                writ.display(),
+                bin.display()
+            )
+        );
+        set_mode(&bin, 0o755);
+        check_trusted_program(&writ, "session_launcher").unwrap();
+        let missing = bin.join("gone");
+        assert!(
+            refused(&missing).starts_with(&format!("session_launcher {}: ", missing.display()))
+        );
     }
 
     #[test]

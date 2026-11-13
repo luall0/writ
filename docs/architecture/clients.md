@@ -187,8 +187,13 @@ in the [backlog](../backlog/README.md).
 
 ### Binding a lease to its session
 
-`writ run -- <program> [args…]` (`writ_cli::run`) starts an agent harness as its child and
-stays as the root of its session. It sets `WRIT_RUN_PID` to its own pid for the harness.
+`writ run -- <program> [args…]` (`writ_cli::run`) starts an agent harness as its child, the
+root of its session, and stays until it ends. The daemon takes as a session's root only a
+direct child of the installed `writ` (`session_launcher`, by its kernel-attested path; the
+review after M7.6, C-1), so the harness is `writ run`'s own child: `writ run` starts itself
+with `WRIT_RUN_PID=starting`, and that child puts its own pid in `WRIT_RUN_PID` and becomes
+the harness (`exec`: the pid is kept). What `writ exec` runs is a child of `writ` too, and
+may be a root as well: the lease then lives in that subtree and ends with it.
 SIGTERM and SIGHUP are passed on to the harness. SIGINT and SIGQUIT already reach the whole
 foreground group from the terminal, so they are not passed on again. Its exit status is the
 harness's, or 128 and the signal that ended it.
@@ -196,7 +201,8 @@ harness's, or 128 and the signal that ended it.
 Under it, `writ request` adds `caller: { descends_from: { pid } }` to a ticket that names no
 caller (after a leading `---`). The daemon completes the binding from the kernel's chain of
 the submission ([lease model](../lease-model.md#the-complete-ticket)) and refuses a pid the
-submission doesn't descend from. When the harness quits, `writ run` exits and the session
+submission doesn't descend from, or one whose parent isn't the session launcher (pid 1, a
+terminal, a shell, `writ run` itself: `session`, telling the agent to use `writ run`). When the harness quits, `writ run` exits and the session
 watcher revokes the lease. A `WRIT_RUN_PID` that isn't a pid is refused. A ticket that names
 its own caller is sent as written (the daemon still checks it).
 

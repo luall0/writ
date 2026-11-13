@@ -302,12 +302,26 @@ fn local_mode_on_linux_binds_a_lease_to_its_session_and_keeps_the_daemon_out_of_
     ));
     dev.write("ticket.yaml", TICKET, "0644");
     dev.write("harness.sh", HARNESS, "0644");
+    // A binding written by hand to pid 1, under `writ run`: refused with the session code
+    // (3): a session's root is a process `writ run` started (the review after M7.6, C-1).
+    dev.write(
+        "pid1.yaml",
+        &format!("caller:\n  descends_from: {{ pid: 1 }}\n{TICKET}"),
+        "0644",
+    );
+    let refused = dev.run("writ run -- writ request ~/pid1.yaml");
+    let (_, said) = expect(&refused, 3, "writ request bound to pid 1");
+    assert!(
+        said.contains("caller.descends_from.pid: 1 is not a process "),
+        "{said}"
+    );
     let session = dev.start("writ run -- sh ~/harness.sh");
     let lease = submitted_id(&session.first);
     let signed = approver.run(&format!("writ sign {lease} --yes"));
     let (shown, _) = expect(&signed, 0, "writ sign");
     assert!(
-        shown.contains("caller             descends from /usr/local/bin/writ (pid ")
+        // The harness `writ run` started (Debian's sh), quoted, by its pid.
+        shown.contains("caller             descends from \"/")
             // Linux has no code signature to show.
             && !shown.contains(", signed "),
         "{shown}"
@@ -321,7 +335,8 @@ fn local_mode_on_linux_binds_a_lease_to_its_session_and_keeps_the_daemon_out_of_
         Some(head.trim())
     );
     // Each operation's chain, read across users by the reader: the agent's tools, then the
-    // session's root (`writ run`, its executable /usr/local/bin/writ), then its ancestors.
+    // session's root (the harness), `writ run` (its executable /usr/local/bin/writ) that
+    // started it, then its ancestors.
     let pushes = audited(&root, &lease, "push", "allowed");
     assert_eq!(pushes.len(), 1, "{pushes:?}");
     let chain: Vec<&str> = pushes[0]["process_chain"]

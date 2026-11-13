@@ -597,6 +597,7 @@ fn start_service(
                 config::KeystoreConfig::Dev(_) => None,
             },
             signing_keys: declared::key_uses(declared),
+            session_launcher: config.checked_session_launcher()?,
         },
         writ_crypto::keys::random_array()?,
         store,

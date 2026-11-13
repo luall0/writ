@@ -90,7 +90,8 @@ fn facts() -> CallerFacts {
 }
 
 /// A submitter (`writ`, pid 9000) under two nested harness sessions, 4243 then 4242 (each
-/// generation 7), as the kernel resolves the chain on local mode's socket.
+/// generation 7), each started by its `writ run` (4101, 4100: the session launcher), as the
+/// kernel resolves the chain on local mode's socket.
 fn in_sessions() -> CallerFacts {
     let process = |pid, executable: &str| ProcessRef {
         pid,
@@ -102,9 +103,11 @@ fn in_sessions() -> CallerFacts {
     CallerFacts {
         source_addr: None,
         process_chain: Some(vec![
-            process(9000, "/opt/writ/bin/writ"),
-            process(4243, "/usr/local/bin/harness"),
+            process(9000, writ_approval::testing::LAUNCHER),
             process(4242, "/usr/local/bin/harness"),
+            process(4100, writ_approval::testing::LAUNCHER),
+            process(4243, "/usr/local/bin/harness"),
+            process(4101, writ_approval::testing::LAUNCHER),
             process(1, "/sbin/launchd"),
         ]),
     }
@@ -799,19 +802,32 @@ fn a_binding_is_completed_from_the_kernel_s_chain_and_nothing_else() {
             && one.ends_with("unknown field `executable`, expected one of pid")),
         "{reasons:?}"
     );
-    // A pid the submission doesn't descend from, and a submission with no chain (TCP).
+    // A pid the submission doesn't descend from, one no launcher started (launchd at the
+    // top, `writ run` itself), and a submission with no chain (TCP).
+    let not_started = |pid: u32| {
+        format!(
+            "caller.descends_from.pid: {pid} is not a process started by `writ run` (its parent \
+             isn't {}): start the agent with `writ run -- <agent>`",
+            writ_approval::testing::LAUNCHER
+        )
+    };
     for (pid, caller, expected) in [
         (
             4244,
             in_sessions(),
-            "caller.descends_from.pid: 4244 is not a process this submission descends from",
+            "caller.descends_from.pid: 4244 is not a process this submission descends from"
+                .to_owned(),
         ),
+        (1, in_sessions(), not_started(1)),
+        (4100, in_sessions(), not_started(4100)),
+        (9000, in_sessions(), not_started(9000)),
         (
             4242,
             facts(),
             "caller.descends_from.pid: a session binding needs local mode: the submission must \
              come over the daemon's Unix socket, where the kernel names the processes it \
-             descends from",
+             descends from"
+                .to_owned(),
         ),
     ] {
         let yaml = BOUND.replace("pid: 4242", &format!("pid: {pid}"));
@@ -828,10 +844,10 @@ fn a_binding_is_completed_from_the_kernel_s_chain_and_nothing_else() {
         };
         assert_eq!(
             (code, reasons.as_slice()),
-            (&RefusalCode::Session, &[expected.to_owned()][..])
+            (&RefusalCode::Session, &[expected][..])
         );
     }
-    assert_eq!(h.events("submit", "denied"), 3);
+    assert_eq!(h.events("submit", "denied"), 6);
 }
 
 #[test]

@@ -474,8 +474,8 @@ Acceptance:
       there changes nothing; a second `make install` upgrades the binaries and keeps the
       keystore, state and pins.
 - [ ] An agent under `writ run -- <agent>` works on a real repository through the local
-      daemon (the GitHub throwaway repository of the manual checks): its lease bound to
-      `/opt/writ/bin/writ` (signed `dev.writ.writ`), refused from outside the session, revoked
+      daemon (the GitHub throwaway repository of the manual checks): its lease bound to the
+      agent `/opt/writ/bin/writ` started (M7.7), refused from outside the session, revoked
       when the agent quits.
 - [ ] My user (so any agent) can't read the daemon's keystore or attach to the daemon
       (`cat` and `lldb -p` refused), and the daemon starts again after a reboot.
@@ -535,6 +535,10 @@ LAN or VPN.
   restarts the stack in order, the volumes kept. `make uninstall` takes the stack down and
   removes the image and the files it made, the volumes kept unless `delete` is typed at its
   question. Guided like the `local` setup ([conventions](conventions.md#installers-are-guided)).
+- **The `client` setup settles how an HTTPS client checks the daemon's name** (the gap the
+  [M7.7 review](#m77--review-after-m76) documented, `L-1`): over HTTPS `writ` authenticates
+  the TLS certificate, never the host key the daemon names itself by; settled before detached
+  approvers rely on HTTPS.
 - **The installer's `client` setup**, on each machine that uses a detached daemon (the
   approver's Mac, an agent VM): `writ` and `writ-sign` on the `PATH`, `~/.writ/` with the
   daemon's endpoints, its host key and TLS certificate pinned (asked at the prompt, each

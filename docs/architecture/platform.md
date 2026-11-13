@@ -122,7 +122,13 @@ difference between modes, as far as the policy is concerned. The constraint matc
 process in the chain (the caller included) has the same executable path, pid and generation,
 and the same code identity if the constraint names one (`writ_core::caller::check`); a process
 marked `unbindable` never matches, and a binding naming one is refused at submission
-(`session`).
+(`session`). So is a binding whose process's parent, the next process of the chain, isn't the
+session launcher (`writd.yaml`'s `session_launcher`, the installed `writ`, compared by the
+path the kernel names it with) on the host: a session's root is a process `writ` started,
+never one every process shares (pid 1, a terminal). The launcher is recognised by its path
+under a directory only root (or the daemon's user) can write, not by its code signature: an
+ad hoc signature names itself. The root's own code identity is recorded and matched as
+before.
 
 ```rust
 /// What a process does, first thing, so the secrets it will hold don't leave through the OS.

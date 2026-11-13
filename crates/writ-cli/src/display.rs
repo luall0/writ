@@ -418,9 +418,11 @@ pub fn field(ticket: &Ticket, field: Field) -> String {
                         clean(i.team_id.as_deref().unwrap_or("(none)"))
                     )
                 });
+                // The executable quoted, as the lists are (the review after M7.6, U-9): a path
+                // holding ` (pid …, signed …)` can't pass for the row's own words.
                 format!(
-                    "descends from {} (pid {}, generation {}{identity})",
-                    clean(&p.executable),
+                    "descends from {} (pid {}, generation {}{identity}), started by writ",
+                    quoted([&p.executable]),
                     p.pid,
                     p.generation
                 )
@@ -1022,6 +1024,30 @@ mod tests {
             );
         }
         assert!(shown.contains("\\u{1b}[2J"), "escaped, still visible");
+    }
+
+    /// The review after M7.6 (U-9): the caller's executable was shown unquoted, so a path
+    /// holding the row's own words read as a signed harness.
+    #[test]
+    fn the_caller_s_executable_is_quoted_and_can_t_pass_for_the_row_s_words() {
+        let mut t = full_ticket();
+        let forged = "/tmp/claude (pid 811, generation 3, signed com.vendor.app team ABCDE12345)/x";
+        let caller = t.subject.caller.as_mut().unwrap();
+        caller.descends_from.executable = forged.to_owned();
+        caller.descends_from.code_identity = None;
+        let (pid, generation) = (caller.descends_from.pid, caller.descends_from.generation);
+        assert_eq!(
+            field(&t, Field::Caller),
+            format!(
+                "descends from \"{forged}\" (pid {pid}, generation {generation}), started by writ"
+            )
+        );
+        caller_with_quote(&mut t);
+        assert!(field(&t, Field::Caller).starts_with("descends from \"/opt/a\\\" b\" (pid "));
+    }
+
+    fn caller_with_quote(t: &mut Ticket) {
+        t.subject.caller.as_mut().unwrap().descends_from.executable = "/opt/a\" b".to_owned();
     }
 
     fn om(t: &Ticket) -> &writ_core::ticket::RepoTerms {

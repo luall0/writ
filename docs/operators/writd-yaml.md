@@ -113,6 +113,14 @@ allow: [...] }`.
 |---|---|---|---|
 | `attestor` | `network`, `macos_process_chain` or `linux_process_chain` | **required** | How the daemon identifies a caller beyond its certificate ([platform](../architecture/platform.md)). `network`: its source address (detached mode). `macos_process_chain` (local mode, macOS builds only) and `linux_process_chain` (local mode, Linux builds only): for a caller on a Unix socket, the processes it descends from as the kernel knows them, checked against a lease's `caller`; for a TCP caller, its source address only, so a lease with a `caller` refuses it. `linux_process_chain` needs Linux 6.5 or later and a `/proc` without `hidepid` (else the daemon doesn't start, and says which), and `CAP_SYS_PTRACE` at start to read the processes of other users than its own: the systemd unit gives it, and only the daemon's process reader keeps it ([deployment](../architecture/deployment.md#local-linux)) |
 | `session_watcher` | `none`, `macos` or `linux` | **required** | Whether a lease is revoked when its agent's session ends. `macos` (macOS builds only) and `linux` (Linux builds only, Linux 5.3 or later): a lease with a `caller` is revoked when that process ends. `none`: such a lease is never granted |
+| `session_launcher` | Absolute path, written with links resolved | `writ` beside `writd` | Local mode: the `writ` that starts your agents (`writ run`). A lease binds only to a process this program started, as the kernel names it. Only root or the daemon's user may be able to change it or its directories, or the daemon doesn't start. Read only when an agents' listener is a Unix socket ([session binding](#session-binding)) |
+
+### Session binding
+
+- The daemon recognises the `writ` that starts a session by its path, not by its
+  signature: an ad hoc signature names itself, so it proves nothing.
+- `make install` puts `writ` beside `writd`, owned by root: the default fits it.
+- Set the key only if you install `writ` somewhere else.
 
 ## Notifications
 

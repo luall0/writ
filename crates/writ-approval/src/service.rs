@@ -115,6 +115,10 @@ pub struct ServiceConfig {
     /// (`keys.<id>`). A key without its entry signs nothing; a policy change brings its own
     /// ([`AdminParsed::Policy`]).
     pub signing_keys: KeyUses,
+    /// The session launcher (`writd.yaml`'s `session_launcher`, the installed `writ`), by
+    /// the path the kernel names it with: a session binding's root must be its child. `None`
+    /// where there is no process chain (the network attestor): nothing can be bound.
+    pub session_launcher: Option<std::path::PathBuf>,
 }
 
 /// How each signing key signs, by id.

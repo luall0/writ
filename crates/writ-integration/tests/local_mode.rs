@@ -124,12 +124,13 @@ struct SessionRoot {
 }
 
 impl SessionRoot {
-    /// The shell, with the environment `writ` gets from the fixture (the local endpoint).
+    /// The shell, with the environment `writ` gets from the fixture (the local endpoint): not
+    /// under `writ run`.
     fn start(daemon: &Daemon) -> Self {
         Self::start_as(daemon, &[])
     }
 
-    /// The shell under `writ run`: `writ run` is the session's root.
+    /// The shell under `writ run`: the shell, `writ run`'s child, is the session's root.
     fn under_writ_run(daemon: &Daemon) -> Self {
         let writ = writ_integration::binaries::bin("writ");
         Self::start_as(daemon, &[writ.to_str().unwrap(), "run", "--"])
@@ -175,8 +176,17 @@ impl SessionRoot {
         Self { child, lines }
     }
 
+    /// The pid of the process started: `writ run` when the shell runs under it.
     fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// The shell's own pid (`$$`): under `writ run`, the session's root.
+    fn shell_pid(&mut self) -> u32 {
+        self.send("echo $$");
+        let (said, status) = self.finish();
+        assert_eq!(status, 0, "{said:?}");
+        said[0].parse().unwrap()
     }
 
     /// Sends one line to run.
@@ -246,15 +256,72 @@ fn a_lease_bound_to_its_session_serves_inside_it_only_and_ends_with_it() {
         stderr(&out)
     );
 
-    // Bound to the session's root, submitted from inside it: completed from the kernel.
-    let mut root = SessionRoot::start(&daemon);
+    // A binding written by hand, submitted from inside a session: only a process `writ run`
+    // started can be its root (the review after M7.6, C-1). Not pid 1, nor `writ run` itself,
+    // nor this test (which started `writ run`): each refused with the session code (3).
+    let mut root = SessionRoot::under_writ_run(&daemon);
+    let shell = root.shell_pid();
+    let launcher = writ.canonicalize().unwrap();
+    for pid in [1, root.pid(), std::process::id()] {
+        let file = daemon.root().join(format!("refused-{pid}.yaml"));
+        std::fs::write(
+            &file,
+            format!("caller:\n  descends_from: {{ pid: {pid} }}\n{TICKET}"),
+        )
+        .unwrap();
+        root.send(&format!(
+            "'{}' request '{}' 2>&1",
+            writ.display(),
+            file.display()
+        ));
+        let (said, status) = root.finish();
+        assert_eq!(status, 3, "{pid}: {said:?}");
+        let said = said.join("\n");
+        // pid 1 is above what the daemon can read on Linux (another user's): not in the chain.
+        let expected = if pid == 1 {
+            format!("caller.descends_from.pid: {pid} is not a process ")
+        } else {
+            format!(
+                "caller.descends_from.pid: {pid} is not a process started by `writ run` (its \
+                 parent isn't {}): start the agent with `writ run -- <agent>`",
+                launcher.display()
+            )
+        };
+        assert!(said.contains(&expected), "{pid}: {said}");
+    }
+
+    // A shell this test started itself, binding to itself: not started by `writ run`.
+    let mut plain = SessionRoot::start(&daemon);
+    let own = plain.shell_pid();
+    let file = daemon.root().join("own-shell.yaml");
+    std::fs::write(
+        &file,
+        format!("caller:\n  descends_from: {{ pid: {own} }}\n{TICKET}"),
+    )
+    .unwrap();
+    plain.send(&format!(
+        "'{}' request '{}' 2>&1",
+        writ.display(),
+        file.display()
+    ));
+    let (said, status) = plain.finish();
+    assert_eq!(status, 3, "{said:?}");
+    assert!(
+        said.join("\n").contains(&format!(
+            "caller.descends_from.pid: {own} is not a process started by `writ run` (its parent \
+             isn't {}): start the agent with `writ run -- <agent>`",
+            launcher.display()
+        )),
+        "{said:?}"
+    );
+    plain.end();
+
+    // Bound to the session's root (the shell `writ run` started), submitted from inside it:
+    // completed from the kernel.
     let bound = daemon.root().join("bound.yaml");
     std::fs::write(
         &bound,
-        format!(
-            "caller:\n  descends_from: {{ pid: {} }}\n{TICKET}",
-            root.pid()
-        ),
+        format!("caller:\n  descends_from: {{ pid: {shell} }}\n{TICKET}"),
     )
     .unwrap();
     root.send(&format!(
@@ -275,8 +342,10 @@ fn a_lease_bound_to_its_session_serves_inside_it_only_and_ends_with_it() {
     assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
     let shown = format!("{}{}", stdout(&out), stderr(&out));
     assert!(
-        shown.contains("caller             descends from /")
-            && shown.contains(&format!("(pid {}, generation", root.pid()))
+        shown.contains("caller             descends from \"/")
+            && shown.contains(&format!("(pid {shell}, generation"))
+            // "started by writ", wherever the row wraps.
+            && shown.contains("started")
             && shown.contains("signed com.apple.") == on_the_mac(),
         "{shown}"
     );
@@ -342,6 +411,7 @@ fn the_agent_workflow_runs_under_writ_run_against_the_local_daemon() {
     // The harness: a shell under `writ run`. Its ticket names no caller: `writ request`
     // binds it to the session, as the skill's workflow asks nothing more of the agent.
     let mut harness = SessionRoot::under_writ_run(&daemon);
+    let shell = harness.shell_pid();
     harness.send(&format!("cd '{}'", repo.display()));
     assert_eq!(harness.finish().1, 0);
     harness.send(&format!(
@@ -358,11 +428,11 @@ fn the_agent_workflow_runs_under_writ_run_against_the_local_daemon() {
     let out = daemon.run(&["sign", &id, "--yes"], "");
     let shown = format!("{}{}", stdout(&out), stderr(&out));
     assert!(out.status.success(), "{shown}");
-    // Bound to `writ run` itself (its path wrapped on the approver's screen), by its pid.
+    // Bound to the harness `writ run` started (the shell), by its pid.
     assert!(
         shown.contains("caller             descends from")
             // Where the line wraps depends on the path's length.
-            && shown.contains(&format!("writ (pid {},", harness.pid())),
+            && shown.contains(&format!("(pid {shell},")),
         "{shown}"
     );
     let (said, status) = harness.finish();
@@ -414,4 +484,69 @@ fn the_agent_workflow_runs_under_writ_run_against_the_local_daemon() {
             .iter()
             .any(|e| e["lease"] == id.as_str())
     });
+}
+
+/// `session_launcher` (the review after M7.6, C-1): the `writ` whose children may be a
+/// session's root, by the path the kernel names it with. Set to another program, `writ run`'s
+/// harness is no session's root; a path someone else could replace stops the start, named.
+#[test]
+fn the_session_launcher_set_elsewhere_binds_nothing_and_a_replaceable_one_stops_the_start() {
+    if !local_mode_here() {
+        return;
+    }
+    let policy = POLICY.replacen(
+        REQUIRED,
+        "    max_push_size: 10MB\n    require_session: true\n",
+        1,
+    );
+    // Another program the daemon trusts, standing for an installed writ elsewhere.
+    let elsewhere = writ_integration::binaries::bin("writ-sign")
+        .canonicalize()
+        .unwrap();
+    let daemon = Daemon::start_local_with(&policy, Approvals::Ssh, |yaml| {
+        format!("{yaml}session_launcher: {}\n", elsewhere.display())
+    });
+    let writ = writ_integration::binaries::bin("writ");
+    let ticket = daemon.root().join("work.yaml");
+    std::fs::write(&ticket, TICKET).unwrap();
+    let mut harness = SessionRoot::under_writ_run(&daemon);
+    let shell = harness.shell_pid();
+    harness.send(&format!(
+        "'{}' request '{}' 2>&1",
+        writ.display(),
+        ticket.display()
+    ));
+    let (said, status) = harness.finish();
+    assert_eq!(status, 3, "{said:?}");
+    assert!(
+        said.join("\n").contains(&format!(
+            "caller.descends_from.pid: {shell} is not a process started by `writ run` (its \
+             parent isn't {}): start the agent with `writ run -- <agent>`",
+            elsewhere.display()
+        )),
+        "{said:?}"
+    );
+    harness.end();
+    // A launcher that is no canonical path, or that others could write: the start refuses.
+    let dir = tempfile::tempdir().unwrap();
+    let copy = std::fs::canonicalize(dir.path()).unwrap().join("writ");
+    std::fs::copy(&writ, &copy).unwrap();
+    std::fs::set_permissions(&copy, std::os::unix::fs::PermissionsExt::from_mode(0o777)).unwrap();
+    let said = Daemon::refused_local(&policy, |yaml| {
+        format!("{yaml}session_launcher: {}\n", copy.display())
+    });
+    assert!(
+        said.contains(&format!(
+            "session_launcher {}: can be written by group or others (mode 777)",
+            copy.display()
+        )),
+        "{said}"
+    );
+    let said = Daemon::refused_local(&policy, |yaml| {
+        format!("{yaml}session_launcher: bin/writ\n")
+    });
+    assert!(
+        said.contains("session_launcher bin/writ: must be an absolute path"),
+        "{said}"
+    );
 }

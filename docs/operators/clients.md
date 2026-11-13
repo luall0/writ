@@ -163,8 +163,9 @@ writ run -- claude
 Each ticket the agent then asks for is bound to that session. Its lease is refused to any
 program the session didn't start, and it is revoked when the agent quits. The agent writes
 nothing more in its ticket. `writ request` adds the binding, and `writ sign` shows you which
-process the lease is bound to. A template with `require_session` refuses a ticket asked for
-outside `writ run`.
+process the lease is bound to. The daemon binds a lease only to a program `writ run` started,
+never to your shell or terminal. A template with `require_session` refuses a ticket asked
+for outside `writ run`.
 
 `writ run` exits with the agent's status. A Ctrl-C reaches the agent as usual.
 

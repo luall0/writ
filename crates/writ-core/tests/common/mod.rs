@@ -144,6 +144,7 @@ pub fn submission(n: u64) -> Submission<'static> {
         revises: None,
         min_ttl: fit::DEFAULT_MIN_TTL,
         chain: None,
+        launcher: None,
     }
 }
 

@@ -581,10 +581,15 @@ pub fn check_request(request: &TicketRequest) -> Vec<String> {
 /// The binding a ticket asks for (`caller.descends_from.pid`), completed from the
 /// submitter's chain as the kernel gave it: that process's executable, generation and code
 /// identity. A pid the submission doesn't descend from (itself included), or no chain at all
-/// (a submission over TCP), can't be bound.
+/// (a submission over TCP), can't be bound. Nor can a process whose parent, as the kernel
+/// linked them, isn't the session launcher (`launcher`: the installed `writ`, by the path the
+/// kernel names it with), on the host: a session's root is a process `writ` started (`writ
+/// run`'s harness, or what `writ exec` runs), so a lease is never bound to what every process
+/// shares, pid 1, a terminal or a shell (the review after M7.6, C-1).
 fn bind(
     request: &TicketRequest,
     chain: Option<&[ProcessRef]>,
+    launcher: Option<&std::path::Path>,
 ) -> Result<Option<CallerConstraint>, Rejection> {
     let Some(asked) = &request.caller else {
         return Ok(None);
@@ -599,15 +604,34 @@ fn bind(
                 .to_owned(),
         ));
     };
-    let Some(process) = chain.iter().find(|p| p.pid == pid) else {
+    let Some(at) = chain.iter().position(|p| p.pid == pid) else {
         return Err(refused(format!(
             "{pid} is not a process this submission descends from"
         )));
     };
+    let process = chain
+        .get(at)
+        .ok_or_else(|| refused(format!("{pid} is not in the chain")))?;
     if let Some(why) = &process.unbindable {
         return Err(refused(format!(
             "{pid} can't be a session's root: {}",
             crate::text::shown(why, crate::caller::MAX_UNBINDABLE_CHARS)
+        )));
+    }
+    let Some(launcher) = launcher else {
+        return Err(refused(
+            "this daemon names no session launcher (session_launcher): no session can be bound"
+                .to_owned(),
+        ));
+    };
+    let started_by_writ = chain.get(at.saturating_add(1)).is_some_and(|parent| {
+        parent.unbindable.is_none() && parent.executable.as_path() == launcher
+    });
+    if !started_by_writ {
+        return Err(refused(format!(
+            "{pid} is not a process started by `writ run` (its parent isn't {}): start the \
+             agent with `writ run -- <agent>`",
+            launcher.display()
         )));
     }
     let executable = process
@@ -675,6 +699,10 @@ pub struct Submission<'a> {
     /// The submitter's process chain as the kernel gave it (local mode's attestor), the
     /// submitter first: what a `caller` binding is completed from. `None` over TCP.
     pub chain: Option<&'a [ProcessRef]>,
+    /// The session launcher (`writd.yaml`'s `session_launcher`: the installed `writ`), by the
+    /// path the kernel names it with: a binding's root must be its child. The daemon's, never
+    /// the ticket's.
+    pub launcher: Option<&'a std::path::Path>,
 }
 
 /// Completes a request into a ticket: each repository's terms fitting exactly one template
@@ -796,6 +824,17 @@ pub fn submit(
         reasons: e.reasons,
         session: false,
     })?;
+    // An amendment keeps its lease's subject, checked here as at signing (the review after
+    // M7.6, C-4): one that moves the binding or the origin hint never reaches the approver.
+    if let Some(lease) = submission.amends
+        && ticket.subject != lease.ticket.subject
+    {
+        return Err(Rejection::one(format!(
+            "an amendment keeps lease {}'s subject (session key, origin hint and process): \
+             submit it from the lease's session, with its caller and origin_hint",
+            lease.id
+        )));
+    }
     if let Some(renewed) = submission.renews {
         check_renewal(config, &ticket, renewed, submission.now).map_err(|reasons| Rejection {
             reasons,
@@ -939,7 +978,7 @@ fn build(
     revision: u32,
     previous_feedback: Option<String>,
 ) -> Result<Ticket, Rejection> {
-    let caller = bind(request, submission.chain)?;
+    let caller = bind(request, submission.chain, submission.launcher)?;
     let missing = unbound(config, &repos, caller.is_some());
     if !missing.is_empty() {
         return Err(Rejection::session(missing));

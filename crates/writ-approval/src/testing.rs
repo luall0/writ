@@ -42,6 +42,10 @@ use writ_store::{AuthorityHead, AuthorityHow, AuthorityVersion};
 
 use crate::{InForce, Opened, Service, ServiceConfig, ServicePlatform, SubmissionLimits};
 
+/// The test service's session launcher (`session_launcher`): a binding's root must be a
+/// child of a process with this executable.
+pub const LAUNCHER: &str = "/opt/writ/bin/writ";
+
 /// The boot nonce of every [`TestService`].
 pub const NONCE: [u8; 16] = [7; 16];
 
@@ -275,6 +279,7 @@ impl TestServiceBuilder {
                     .iter()
                     .map(|id| (id.parse().unwrap(), key_use))
                     .collect(),
+                session_launcher: Some(std::path::PathBuf::from(LAUNCHER)),
             },
             NONCE,
             store,

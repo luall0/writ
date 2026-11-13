@@ -128,13 +128,25 @@ static OMEGA_CHAIN: std::sync::LazyLock<Vec<ProcessRef>> = std::sync::LazyLock::
             code_identity: None,
             unbindable: None,
         },
+        // `writ run`, the session launcher: what started Omega.
+        ProcessRef {
+            pid: 4100,
+            generation: 117,
+            executable: PathBuf::from(LAUNCHER),
+            code_identity: None,
+            unbindable: None,
+        },
     ]
 });
+
+/// The session launcher the submissions name (`writd.yaml`'s `session_launcher`).
+const LAUNCHER: &str = "/opt/writ/bin/writ";
 
 /// A submission from inside the Omega session.
 fn submission_in_session(n: u64) -> fit::Submission<'static> {
     fit::Submission {
         chain: Some(OMEGA_CHAIN.as_slice()),
+        launcher: Some(std::path::Path::new(LAUNCHER)),
         ..submission(n)
     }
 }

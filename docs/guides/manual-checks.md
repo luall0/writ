@@ -297,7 +297,8 @@ shows `agent-01` as `signing ssh p256` once unsealed.
 **3. Unseal and use it.** In a new terminal: `writ unseal` (Touch ID), then add a repo from
 the [GitHub manual check](#a-throwaway-github-repo-m4)'s throwaway repository with
 `writ admin`, `writ init <repo>` in a clone, and run an agent under `writ run -- <agent>`:
-its ticket shows `caller descends from /opt/writ/bin/writ (pid …, signed dev.writ.writ)`; its
+its ticket shows `caller descends from "<the agent's program>" (pid …, signed …), started by
+writ` (the agent `writ run` started, M7.7); its
 commit and push work. From another terminal (outside the session), `writ git fetch` in the
 same clone is refused (`caller`). Quit the agent: `writ ls` shows the lease revoked.
 
@@ -400,7 +401,8 @@ make install    # an upgrade: its changes listed, y; the keystore kept
 **3. Unseal and use it.** Log in again (the `writ` group), then `writ unseal`, add a repo
 from the [GitHub manual check](#a-throwaway-github-repo-m4)'s throwaway repository with
 `writ admin`, `writ init <repo>` in a clone, and run an agent under `writ run -- <agent>`: its
-ticket shows `caller descends from /usr/local/bin/writ (pid …)`; its commit and push work.
+ticket shows `caller descends from "<the agent's program>" (pid …), started by writ`; its
+commit and push work.
 From another terminal, `writ git fetch` in the same clone is refused (`caller`). Under the
 session, a command in a bubblewrap sandbox is served
 (`bwrap --ro-bind / / --dev /dev --proc /proc --bind /run/writ /run/writ --unshare-pid writ git fetch`

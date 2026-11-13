@@ -218,6 +218,7 @@ impl Service {
             revises: revises.as_ref(),
             min_ttl: self.config.min_ttl,
             chain: caller.process_chain.as_deref(),
+            launcher: self.config.session_launcher.as_deref(),
         };
         let policy = self.policy();
         match fit::submit(&policy, &request, &submission) {

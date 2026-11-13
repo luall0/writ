@@ -97,7 +97,9 @@ through Writ.
   each could read the others' session files and use their leases
   ([threat model](../threat-model.md#1-agent--daemon-session-certificate)). Each gets its own
   `~/.writ` (0700). Set `max_active_per_source: 1` in `writd.yaml` to limit a host to one
-  active lease.
+  active lease. In local mode, `writ run` keeps a lease to the processes of its own
+  session. It doesn't stop an agent running as you from changing what another session runs:
+  that repository's files, your shell's files.
 - **Agents sharing one Writ home** each keep their own lease with `WRIT_SESSION` (the line
   `writ request` prints) or a clone pinned with `writ init --lease`: a convenience against
   mix-ups, not against an agent that wants another's lease

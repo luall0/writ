@@ -29,14 +29,155 @@ fn rejection(yaml: &str) -> String {
 
 // Submission and template fit.
 
-/// A submission whose kernel chain is `chain`.
-fn from_chain(chain: &[writ_core::caller::ProcessRef]) -> Result<Ticket, fit::Rejection> {
-    let yaml = format!("caller:\n  descends_from: {{ pid: 42 }}\n{REQUEST}");
+/// The session launcher of these submissions (`writd.yaml`'s `session_launcher`).
+const LAUNCHER: &str = "/opt/writ/bin/writ";
+
+/// The launcher's process: `writ run`, pid 41.
+fn launcher(pid: u32) -> writ_core::caller::ProcessRef {
+    writ_core::caller::ProcessRef {
+        pid,
+        generation: 3,
+        executable: LAUNCHER.into(),
+        code_identity: None,
+        unbindable: None,
+    }
+}
+
+/// A submission binding `pid` whose kernel chain is `chain`, the daemon's launcher
+/// [`LAUNCHER`].
+fn binding(pid: u32, chain: &[writ_core::caller::ProcessRef]) -> Result<Ticket, fit::Rejection> {
+    let yaml = format!("caller:\n  descends_from: {{ pid: {pid} }}\n{REQUEST}");
     let submission = fit::Submission {
         chain: Some(chain),
+        launcher: Some(std::path::Path::new(LAUNCHER)),
         ..submission(1)
     };
     fit::submit(&config(), &request(&yaml), &submission)
+}
+
+/// A submission binding pid 42 whose kernel chain is `chain`, then `writ run` (pid 41)
+/// that started 42.
+fn from_chain(chain: &[writ_core::caller::ProcessRef]) -> Result<Ticket, fit::Rejection> {
+    let mut chain = chain.to_vec();
+    chain.push(launcher(41));
+    binding(42, &chain)
+}
+
+/// The review after M7.6 (C-1): a session's root is a process the session launcher started
+/// (its parent as the kernel linked them is the installed `writ`), never what every process
+/// shares; each other case refused with its reason, so the agent knows to use `writ run`.
+#[test]
+fn a_session_s_root_must_be_a_child_of_the_session_launcher() {
+    use writ_core::caller::ProcessRef;
+    let process = |pid: u32, executable: &str| ProcessRef {
+        pid,
+        generation: 9,
+        executable: executable.into(),
+        code_identity: None,
+        unbindable: None,
+    };
+    let (submitter, harness) = (process(60, LAUNCHER), process(42, "/usr/local/bin/claude"));
+    let (shell, terminal, init) = (
+        process(30, "/bin/zsh"),
+        process(
+            20,
+            "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        ),
+        process(1, "/sbin/launchd"),
+    );
+    // The usual case: `writ request` (60) under the harness (42) `writ run` (41) started.
+    let usual = [
+        submitter.clone(),
+        process(50, "/usr/bin/git"),
+        harness.clone(),
+        launcher(41),
+        shell.clone(),
+        terminal.clone(),
+        init.clone(),
+    ];
+    let bound = binding(42, &usual)
+        .unwrap()
+        .subject
+        .caller
+        .unwrap()
+        .descends_from;
+    assert_eq!(
+        (bound.pid, bound.executable.as_str()),
+        (42, "/usr/local/bin/claude")
+    );
+    let not_started = |pid: u32| {
+        vec![format!(
+            "caller.descends_from.pid: {pid} is not a process started by `writ run` (its parent \
+             isn't {LAUNCHER}): start the agent with `writ run -- <agent>`"
+        )]
+    };
+    for (pid, chain, why) in [
+        // pid 1, the terminal, the shell: what every process shares.
+        (1, usual.to_vec(), "pid 1"),
+        (20, usual.to_vec(), "the terminal"),
+        (30, usual.to_vec(), "the shell"),
+        // `writ run` itself: its parent is the shell.
+        (41, usual.to_vec(), "the launcher itself"),
+        // The submitter itself, a child of the harness, not of a launcher.
+        (60, usual.to_vec(), "the submitter"),
+        // `writ run` exited: the harness was reparented to launchd.
+        (
+            42,
+            vec![submitter.clone(), harness.clone(), init.clone()],
+            "the launcher gone",
+        ),
+        // The chain cut short above the harness (an ancestor the daemon can't read).
+        (
+            42,
+            vec![submitter.clone(), harness.clone()],
+            "the chain cut short",
+        ),
+        // A parent at the launcher's path, but not on the host (another namespace, deleted).
+        (
+            42,
+            vec![
+                submitter.clone(),
+                harness.clone(),
+                ProcessRef {
+                    unbindable: Some("its executable was deleted".to_owned()),
+                    ..launcher(41)
+                },
+                init.clone(),
+            ],
+            "an unbindable launcher",
+        ),
+        // A parent named like the launcher elsewhere.
+        (
+            42,
+            vec![
+                submitter.clone(),
+                harness.clone(),
+                process(41, "/tmp/opt/writ/bin/writ"),
+                init.clone(),
+            ],
+            "another path",
+        ),
+    ] {
+        let rejection = binding(pid, &chain).unwrap_err();
+        assert!(rejection.session, "{why}");
+        assert_eq!(rejection.reasons, not_started(pid), "{why}");
+    }
+    // A daemon that names no launcher binds nothing.
+    let submission = fit::Submission {
+        chain: Some(&usual),
+        launcher: None,
+        ..submission(1)
+    };
+    let yaml = format!("caller:\n  descends_from: {{ pid: 42 }}\n{REQUEST}");
+    let rejection = fit::submit(&config(), &request(&yaml), &submission).unwrap_err();
+    assert_eq!(
+        rejection.reasons,
+        [
+            "caller.descends_from.pid: this daemon names no session launcher (session_launcher): \
+          no session can be bound"
+                .to_owned()
+        ]
+    );
 }
 
 #[test]
@@ -551,6 +692,54 @@ fn amendments_need_an_active_lease_from_the_same_session() {
         fit::submit(&config(), &request(&amendment), &not_found),
         "(amends) does not exist",
     );
+}
+
+/// The review after M7.6 (C-4): an amendment's subject was compared only at signing, so one
+/// that moved the binding or the origin hint reached the approver and failed after Touch ID.
+/// It is compared at submission, as a renewal's is.
+#[test]
+fn an_amendment_keeps_its_lease_s_subject_at_submission() {
+    let lease = lease();
+    let amendment = REQUEST.replace("ticket:\n", &format!("ticket:\n  amends: {}\n", lease.id));
+    let ok = Submission {
+        amends: Some(&lease),
+        now: later(60),
+        ..submission(2)
+    };
+    let kept = fit::submit(&config(), &request(&amendment), &ok).unwrap();
+    assert_eq!(kept.subject, lease.ticket.subject);
+    let expected = format!(
+        "an amendment keeps lease {}'s subject (session key, origin hint and process): submit \
+         it from the lease's session, with its caller and origin_hint",
+        lease.id
+    );
+    // Another origin hint, and a binding the lease doesn't have.
+    let hinted = format!("origin_hint: elsewhere\n{amendment}");
+    let chain = vec![
+        writ_core::caller::ProcessRef {
+            pid: 42,
+            generation: 9,
+            executable: "/usr/local/bin/claude".into(),
+            code_identity: None,
+            unbindable: None,
+        },
+        launcher(41),
+    ];
+    let bound = format!("caller:\n  descends_from: {{ pid: 42 }}\n{amendment}");
+    for (yaml, submission) in [
+        (hinted, ok.clone()),
+        (
+            bound,
+            Submission {
+                chain: Some(&chain),
+                launcher: Some(std::path::Path::new(LAUNCHER)),
+                ..ok.clone()
+            },
+        ),
+    ] {
+        let rejection = fit::submit(&config(), &request(&yaml), &submission).unwrap_err();
+        assert_eq!(rejection.reasons, std::slice::from_ref(&expected), "{yaml}");
+    }
 }
 
 // The state machine.

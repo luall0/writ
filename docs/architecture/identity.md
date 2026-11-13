@@ -29,7 +29,9 @@ lease scope and TTL.
 
 Borrowed from secrets-dispatcher. On the Unix socket, the daemon resolves the caller from the
 kernel and walks its ancestry, so a lease can require "caller descends from this Omega Code
-session".
+session". The session's root is a process the installed `writ` started (`writ run`'s
+harness), its parent as the kernel linked them: never pid 1 or a terminal, which every
+process descends from ([platform](platform.md#caller-facts-and-the-policy)).
 
 - Match on the **executable path** (and on macOS the code signature) only: it's resolved by
   the kernel. On Linux, a process whose path doesn't name its program in the daemon's view
