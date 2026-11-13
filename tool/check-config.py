@@ -27,6 +27,9 @@ TEST_DIRS = [ROOT / "crates/writ-integration/tests", ROOT / "crates/writ-e2e/tes
 SOURCES = [ROOT / "crates/writd/src", ROOT / "crates/writ-cli/src", ROOT / "crates/writ-sign/src"]
 # Set by the daemon for the pre-receive hook it starts, never by a person.
 INTERNAL = {"WRIT_HOOK_SOCKET", "WRIT_HOOK_TOKEN"}
+# Read only by a debug build with the dev-keystore feature, never a shipped one: the crash
+# hook of the data key's rotation (crates/writ-integration/tests/key_rotation.rs).
+INTERNAL |= {"WRIT_TEST_ROTATION_STOP"}
 FILES = ("writd.yaml", "policy.yaml", "ticket", "config", "env")
 
 errors = []

@@ -140,6 +140,11 @@ pub struct Info {
     /// one, never read) and the daemon's device opens it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unseal: Option<UnsealWay>,
+    /// Why the keystore's data key is to be rotated (the review after M7.6, S-8): a recipient
+    /// removed or replaced on a passphrase keystore, rotated at its next unseal, when the
+    /// passphrase is given. Empty when nothing is owed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rotation_owed: Vec<String>,
 }
 
 /// What opens a sealed keystore.
@@ -253,6 +258,10 @@ pub struct AdminApplied {
     /// applied, for good (declaring the id again makes a new key).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed: Vec<RemovedKey>,
+    /// What a change of the keystore's recipients did to its data key (S-8): rotated, or its
+    /// rotation owed until the next unseal (a passphrase keystore), one line each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keystore: Vec<String>,
 }
 
 /// A key a signed policy change took out of the keystore: what it was, and its public half

@@ -40,6 +40,9 @@ ureq.workspace = true
 [dev-dependencies]
 # Paused time: a deadline is tested without waiting for it.
 tokio = { workspace = true, features = ["test-util"] }
+# The recovery key read as the operator's `age` would (tests/key_rotation.rs): what an old
+# copy of the keystore opens after a rotation of its data key.
+age.workspace = true
 
 [lints]
 workspace = true

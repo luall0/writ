@@ -103,10 +103,19 @@ fn the_recovery_key_is_made_declared_checked_and_replaced_from_the_approver_s_ma
         "{err}"
     );
 
-    // Replaced: the new key checks, the old one no longer.
-    approver.ok(&format!(
+    // Replaced: the new key checks, the old one no longer. On this passphrase keystore the
+    // data key's rotation is owed (the review after M7.6, S-8), said by the answer and done
+    // by the next unseal.
+    let said = approver.ok(&format!(
         "writ admin recipient set recovery recipient={other_recipient} {FLAGS}"
     ));
+    assert!(
+        said.contains(&format!(
+            "Keystore: the keystore's data key is to be rotated (the recovery recipient \
+             {recipient} replaced): this passphrase keystore rotates it at its next unseal"
+        )),
+        "{said}"
+    );
     expect(
         &approver.run_with("writ recovery check", format!("{other}\n").as_bytes()),
         0,

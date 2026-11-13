@@ -7,6 +7,11 @@
 //! force), recorded as a new version under the keystore's MAC, logged (`admin`, no approver),
 //! and written to the file `writd.yaml` names. A policy's keys the keystore lacks are made
 //! first, as an admin change would make them (each logged, its public half printed).
+//!
+//! Every check runs and every question is asked before the keystore is touched (the review
+//! after M7.6, S-6): a refusal or a "no" changes nothing. A rotation of the data key the
+//! keystore owes, or the recovered policy calls for (a recipient taken out), is done here
+//! (S-8).
 
 use std::path::Path;
 
@@ -14,9 +19,14 @@ use std::io::Read as _;
 
 use anyhow::{Context, bail};
 use writ_core::authority::AdminTarget;
+use writ_core::config::PolicyConfig;
+use writ_core::names::KeyId;
+use writ_platform::unlock::x25519::X25519Unwrap;
+use writ_platform::{DataKey, Passphrase};
 use writ_store::{AuditEvent, AuditLog, EventKind, Outcome, Store};
 
-use crate::config::{Config, KeystoreConfig};
+use crate::config::{Config, KeystoreConfig, SealedConfig};
+use crate::keystore::{recipients, rotation};
 
 pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
     let config = Config::load(path)?;
@@ -31,66 +41,97 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
     }
     // Before the passphrase is asked: refused while the daemon runs.
     let _lock = crate::lock::hold(&config.state_dir, crate::lock::Holder::Recovery)?;
+    // A rotation of the data key cut short (S-8), settled from the keystore's own record
+    // before the identity is read.
+    if let KeystoreConfig::Sealed(sealed) = &config.keystore {
+        for line in rotation::settle(sealed)? {
+            println!("keystore: {line}");
+        }
+    }
     // The data key: from the passphrase, or the offline recovery key (M7.6). Never from the
     // hardware alone: host access must not replace a signed change.
-    let (key, data_key, how) = match &config.keystore {
+    let (key, unlocked) = match &config.keystore {
         KeystoreConfig::Sealed(sealed) => {
             let typed = writ_crypto::passphrase::read(
                 "Keystore passphrase, or the recovery key: ",
                 None,
                 false,
             )?;
-            let (data_key, how, recovery) = recovery_or_passphrase(sealed, typed.as_str())?;
+            let unlocked = recovery_or_passphrase(sealed, typed.as_str())?;
             drop(typed);
             (
-                crate::keystore::sealed_authority_key(sealed, data_key.way()?)?,
-                Some((data_key, recovery)),
-                how,
+                crate::keystore::sealed_authority_key(sealed, unlocked.key.way()?)?,
+                Some(unlocked),
             )
         }
-        KeystoreConfig::Dev(dir) => (
-            crate::keystore::dev_authority_key(dir)?,
-            None,
-            "the development keystore",
-        ),
+        KeystoreConfig::Dev(dir) => (crate::keystore::dev_authority_key(dir)?, None),
     };
-    // A policy: its keys checked against their backends, and those the keystore lacks made,
-    // before the version is recorded (a version naming keys the keystore lacks would never
-    // start).
-    let made = match target {
+    let how = unlocked
+        .as_ref()
+        .map_or("the development keystore", |u| u.how);
+    // Checked first: the file, the versions in force (and whether to trust them), the new set
+    // as a start would read it; then what the keystore will need (its recipients' devices, a
+    // new passphrase). Nothing is written before all of it answered.
+    let declared = match target {
         AdminTarget::Policy => {
             let policy = crate::authority::parse_policy(&text, config.min_ttl)
                 .with_context(|| file.display().to_string())?;
-            let declared = crate::declared::declarations(&policy)
-                .with_context(|| file.display().to_string())?;
-            crate::keystore::make_missing(
-                &config,
-                &declared,
-                &crate::platform::makers(&config)?,
-                data_key.as_ref().map(|(key, _)| key),
-            )?
+            Some(
+                crate::declared::declarations(&policy)
+                    .with_context(|| file.display().to_string())?,
+            )
         }
-        AdminTarget::Approvers | AdminTarget::Readers => Vec::new(),
+        AdminTarget::Approvers | AdminTarget::Readers => None,
     };
-    // A policy's recipients (M7.6): the hardware ones it declares made in their device, every
-    // file wrapped to them, and a passphrase set when no hardware one is left.
-    if let (AdminTarget::Policy, KeystoreConfig::Sealed(sealed), Some((data_key, recovery))) =
-        (target, &config.keystore, &data_key)
-    {
-        let policy = crate::authority::parse_policy(&text, config.min_ttl)?;
-        recipients(&config, sealed, &policy, data_key, recovery.as_ref())?;
-    }
     let store = Store::open(&db)?;
-    let (old, version, digest) = crate::authority::recover(
+    let prepared = crate::authority::prepare_recover(
         &store,
         &key,
         target,
         text.clone(),
-        crate::now()?,
         config.min_ttl,
         |others| trust_others(target, others),
     )?;
+    let policy = prepared.loaded.policy.clone();
+    let plan = match (&config.keystore, &unlocked) {
+        (KeystoreConfig::Sealed(sealed), Some(unlocked)) => Some(plan(
+            &config,
+            sealed,
+            &policy,
+            target == AdminTarget::Policy,
+            unlocked,
+        )?),
+        _ => None,
+    };
+
+    // Now the keystore. A policy's keys checked against their backends, and those the
+    // keystore lacks made, before the version is recorded (a version naming keys the
+    // keystore lacks would never start).
+    let made = match &declared {
+        Some(declared) => crate::keystore::make_missing(
+            &config,
+            declared,
+            &crate::platform::makers(&config)?,
+            unlocked.as_ref().map(|u| &u.key),
+        )?,
+        None => Vec::new(),
+    };
+    let rotated = match (plan, &config.keystore, &unlocked) {
+        (Some(plan), KeystoreConfig::Sealed(sealed), Some(unlocked)) => {
+            keystore(&config, sealed, &policy, unlocked, plan)?
+        }
+        _ => None,
+    };
+    let (old, version, digest) = prepared.record(&store, crate::now()?)?;
     let mut audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
+    if let Some(rotated) = rotated {
+        audit
+            .append(
+                &AuditEvent::new(crate::now()?, EventKind::Admin, Outcome::Allowed)
+                    .reason(format!("keystore: by writd recover, {rotated}")),
+            )
+            .context("the audit log can't be written: the data key is rotated all the same")?;
+    }
     for (id, role, public, _) in &made {
         audit
             .append(
@@ -123,96 +164,209 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What opened the keystore: its data key, how (for the audit line), and the recovery key's
-/// way when it was the recovery key (it opens what a hardware keystore wrapped to it).
-type Opened = (
-    writ_platform::DataKey,
-    &'static str,
-    Option<writ_platform::unlock::x25519::X25519Unwrap>,
-);
+/// What opened the keystore: its data key, how (for the audit line), the recovery key's way
+/// when it was the recovery key (it opens what a hardware keystore wrapped to it), the
+/// passphrase when it was the passphrase (a rotation wraps the new identity with it).
+struct Unlocked {
+    key: DataKey,
+    how: &'static str,
+    recovery: Option<X25519Unwrap>,
+    passphrase: Option<Passphrase>,
+}
 
 /// The data key from what was typed: an age secret key opens the recovery file
 /// (`identity.recovery.age`); anything else is the passphrase, on a keystore that has one.
-fn recovery_or_passphrase(
-    sealed: &crate::config::SealedConfig,
-    typed: &str,
-) -> anyhow::Result<Opened> {
-    use writ_platform::unlock::x25519::X25519Unwrap;
+fn recovery_or_passphrase(sealed: &SealedConfig, typed: &str) -> anyhow::Result<Unlocked> {
     if let Ok(identity) = typed.trim().parse::<age::x25519::Identity>() {
-        let paths = crate::keystore::recipients::Paths(sealed);
+        let paths = recipients::Paths(sealed);
         if !paths.recovery_identity().exists() {
             bail!("this keystore has no recovery recipient: give its passphrase");
         }
         let way = X25519Unwrap::new("recovery", identity);
         let key = writ_platform::unlock::data_key(&paths.recovery_identity(), &[&way])
             .map_err(|e| anyhow::anyhow!("the recovery key doesn't open this keystore: {e}"))?;
-        return Ok((key, "the recovery key", Some(way)));
+        return Ok(Unlocked {
+            key,
+            how: "the recovery key",
+            recovery: Some(way),
+            passphrase: None,
+        });
     }
     if crate::keystore::hardware_wrapped(sealed)? {
         bail!("this keystore has no passphrase (its hardware opens it): give the recovery key");
     }
-    let passphrase = writ_platform::Passphrase::new(typed.to_owned());
+    let passphrase = Passphrase::new(typed.to_owned());
     let key = crate::platform::data_key(
         sealed,
-        &writ_platform::UnsealRequest::with_passphrase(passphrase),
+        &writ_platform::UnsealRequest::with_passphrase(Passphrase::new(typed.to_owned())),
     )?;
-    Ok((key, "the keystore's passphrase", None))
+    Ok(Unlocked {
+        key,
+        how: "the keystore's passphrase",
+        recovery: None,
+        passphrase: Some(passphrase),
+    })
 }
 
-/// The keystore brought in line with `policy`'s recipients from the host (M7.6): its hardware
-/// ones made in their device and loaded, every file rewrapped (the recovery key and the
-/// identity open what is wrapped to the hardware), then, with no hardware recipient left on a
-/// keystore the hardware opened, a new passphrase asked twice and the identity wrapped to it.
-fn recipients(
+/// What the keystore needs, worked out (and asked) before anything is written.
+struct Plan {
+    /// Whether the policy's recipients are brought in force (a recovered policy).
+    recipients: bool,
+    /// Why the data key is rotated: none, no rotation.
+    rotate: Vec<String>,
+    /// What the new identity is wrapped with on a passphrase keystore (the one typed, or a
+    /// new one); none on a hardware keystore.
+    passphrase: Option<Passphrase>,
+    /// Whether that passphrase is a new one.
+    new_passphrase: bool,
+}
+
+/// The keystore's needs for `policy` (the one in force once recovered), checked and asked:
+/// a recipient its device no longer opens refused when the policy still declares it, a
+/// rotation owed or called for, and with it a new passphrase when the keystore goes back to
+/// one, or the recovery key opened a passphrase keystore.
+fn plan(
     config: &Config,
-    sealed: &crate::config::SealedConfig,
-    policy: &writ_core::config::PolicyConfig,
-    key: &writ_platform::DataKey,
-    recovery: Option<&writ_platform::unlock::x25519::X25519Unwrap>,
-) -> anyhow::Result<()> {
-    for (name, recipient) in crate::keystore::recipients::make_missing(config, sealed, policy)? {
-        println!("hardware recipient {name}: {recipient}");
-    }
-    // A recipient its device no longer opens (the device lost) is dropped, if the recovered
-    // policy no longer declares it; one it declares is refused.
-    let (hardware, refused) = crate::keystore::recipients::load_each(config, sealed)?;
-    for (name, why) in &refused {
-        if policy.recipients().contains_key(name) {
-            bail!("recipient {name}: {why:#}: take it out of the policy to recover without it");
+    sealed: &SealedConfig,
+    policy: &PolicyConfig,
+    recipients_too: bool,
+    unlocked: &Unlocked,
+) -> anyhow::Result<Plan> {
+    if recipients_too {
+        // A recipient its device no longer opens (the device lost) is dropped, if the
+        // recovered policy no longer declares it; one it declares is refused.
+        let (_, refused) = recipients::load_each(config, sealed)?;
+        for (name, why) in &refused {
+            if policy.recipients().contains_key(name) {
+                bail!("recipient {name}: {why:#}: take it out of the policy to recover without it");
+            }
         }
+    }
+    let mut rotate = rotation::owed(sealed, policy)?;
+    if recipients_too
+        && !policy.hardware_keystore()
+        && crate::keystore::hardware_wrapped(sealed)?
+        && rotate.is_empty()
+    {
+        rotate.push("the hardware recipients given up for a passphrase".to_owned());
+    }
+    let (passphrase, new_passphrase) = match (rotate.is_empty(), policy.hardware_keystore()) {
+        (true, _) | (false, true) => (None, false),
+        (false, false) => match (
+            &unlocked.passphrase,
+            crate::keystore::hardware_wrapped(sealed)?,
+        ) {
+            (Some(typed), false) => (Some(Passphrase::new(typed.expose().to_owned())), false),
+            (_, hardware) => {
+                let prompt = match hardware {
+                    true => "No hardware recipient is left: a new keystore passphrase: ",
+                    false => {
+                        "The data key is rotated, and the recovery key opened the keystore: a \
+                         new keystore passphrase: "
+                    }
+                };
+                let typed = writ_crypto::passphrase::read(
+                    prompt,
+                    Some("The same passphrase again: "),
+                    true,
+                )?;
+                let passphrase = Passphrase::new(typed.as_str().to_owned());
+                drop(typed);
+                (Some(passphrase), true)
+            }
+        },
+    };
+    Ok(Plan {
+        recipients: recipients_too,
+        rotate,
+        passphrase,
+        new_passphrase,
+    })
+}
+
+/// The keystore brought in line with `policy` from the host (M7.6): its hardware recipients
+/// made in their device and loaded, its data key rotated when the plan says (S-8), every file
+/// rewrapped (the recovery key and the identity open what is wrapped to the hardware). What
+/// a rotation did, for the audit log.
+fn keystore(
+    config: &Config,
+    sealed: &SealedConfig,
+    policy: &PolicyConfig,
+    unlocked: &Unlocked,
+    plan: Plan,
+) -> anyhow::Result<Option<String>> {
+    let rotated = (!plan.rotate.is_empty()).then(|| crate::keystore::rotated_said(&plan.rotate));
+    if plan.recipients {
+        for (name, recipient) in recipients::make_missing(config, sealed, policy)? {
+            println!("hardware recipient {name}: {recipient}");
+        }
+    }
+    let (hardware, refused) = recipients::load_each(config, sealed)?;
+    let dropped: Vec<KeyId> = match plan.recipients {
+        true => refused.iter().map(|(name, _)| name.clone()).collect(),
+        false => Vec::new(),
+    };
+    for (name, why) in refused.iter().filter(|_| plan.recipients) {
         println!("recipient {name}: its device doesn't open it ({why:#}): dropped");
     }
-    let identity = key.way()?;
-    let mut ways: Vec<&dyn writ_platform::KeystoreUnwrap> = vec![&identity];
-    if let Some(way) = recovery {
-        ways.push(way);
+    let ways_of = |key: &DataKey| -> anyhow::Result<X25519Unwrap> { Ok(key.way()?) };
+    let key = match plan.rotate.is_empty() {
+        true => DataKey::from_bytes(*unlocked.key.as_bytes()),
+        false => {
+            rotation::record_owed(sealed, &plan.rotate)?;
+            let identity = ways_of(&unlocked.key)?;
+            let mut ways: Vec<&dyn writ_platform::KeystoreUnwrap> = vec![&identity];
+            if let Some(way) = &unlocked.recovery {
+                ways.push(way);
+            }
+            ways.extend(
+                hardware
+                    .iter()
+                    .map(|h| &h.way as &dyn writ_platform::KeystoreUnwrap),
+            );
+            let wrap = match &plan.passphrase {
+                Some(passphrase) => rotation::Wrap::Passphrase(passphrase),
+                None => rotation::Wrap::Hardware,
+            };
+            let (new, lines) = rotation::Rotation {
+                sealed,
+                policy,
+                held: &hardware,
+                old: &unlocked.key,
+                ways: &ways,
+                wrap,
+            }
+            .run()?;
+            for line in lines {
+                println!("keystore: {line}");
+            }
+            println!("keystore: {}", crate::keystore::rotated_said(&plan.rotate));
+            if plan.new_passphrase {
+                println!("keystore: the identity wrapped to the new passphrase");
+            }
+            new
+        }
+    };
+    if plan.recipients {
+        let hardware = recipients::load(config, sealed)?;
+        let identity = ways_of(&key)?;
+        let mut ways: Vec<&dyn writ_platform::KeystoreUnwrap> = vec![&identity];
+        if let Some(way) = &unlocked.recovery {
+            ways.push(way);
+        }
+        ways.extend(
+            hardware
+                .iter()
+                .map(|h| &h.way as &dyn writ_platform::KeystoreUnwrap),
+        );
+        for line in recipients::reconcile(sealed, policy, &hardware, &key, &ways)? {
+            println!("keystore: {line}");
+        }
+        for name in &dropped {
+            recipients::forget(sealed, name)?;
+        }
     }
-    for h in &hardware {
-        ways.push(&h.way);
-    }
-    for line in crate::keystore::recipients::reconcile(sealed, policy, &hardware, key, &ways)? {
-        println!("keystore: {line}");
-    }
-    for (name, _) in &refused {
-        crate::keystore::recipients::forget(sealed, name)?;
-    }
-    if !policy.hardware_keystore() && crate::keystore::hardware_wrapped(sealed)? {
-        let typed = writ_crypto::passphrase::read(
-            "No hardware recipient is left: a new keystore passphrase: ",
-            Some("The same passphrase again: "),
-            true,
-        )?;
-        let passphrase = writ_platform::Passphrase::new(typed.as_str().to_owned());
-        drop(typed);
-        let path = crate::keystore::recipients::Paths(sealed).identity();
-        let fresh = path.with_file_name(".identity.age.recover");
-        let _ = std::fs::remove_file(&fresh);
-        crate::platform::enroll_at(&fresh, &passphrase, key)?;
-        std::fs::rename(&fresh, &path)
-            .with_context(|| format!("cannot move the new identity file to {}", path.display()))?;
-        println!("keystore: the identity wrapped to the new passphrase");
-    }
-    Ok(())
+    Ok(rotated)
 }
 
 /// The versions in force are altered (their MAC isn't this keystore's): shows the operator

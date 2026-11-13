@@ -11,6 +11,8 @@
 //!   signing/<id>.age .pub   the agent signing keys
 //!   upstream/<id>.age .pub  the ssh:// upstreams' credentials
 //!   tokens/<id>.age         the https:// upstreams' tokens, and the notifiers' kept sealed
+//!   identity.recovery.*, recovery-check.*, recipients/   the recipients' (`recipients`)
+//!   rotation/ rotation-owed a rotation of the data key under way, or owed (`rotation`)
 //! keystore.sealed.boot (0700): read at a sealed start
 //!   host                    the SSH host key (OpenSSH, 0600)
 //!   tls-01 tls-01.crt       the HTTPS approval API's key (P-256, OpenSSH, 0600), its
@@ -189,32 +191,15 @@ pub fn seal(
     plaintext: &[u8],
     recipients: &[&dyn age::Recipient],
 ) -> anyhow::Result<()> {
-    let encryptor = age::Encryptor::with_recipients(recipients.iter().copied())
-        .map_err(|_| anyhow::anyhow!("{}: no recipient to encrypt to", path.display()))?;
-    let mut sealed = Vec::new();
-    let mut writer = encryptor
-        .wrap_output(&mut sealed)
-        .with_context(|| format!("cannot encrypt {}", path.display()))?;
-    writer
-        .write_all(plaintext)
-        .and_then(|()| writer.finish().map(|_| ()))
-        .with_context(|| format!("cannot encrypt {}", path.display()))?;
+    let sealed =
+        seal_bytes(plaintext, recipients).with_context(|| format!("{}", path.display()))?;
     write_private(path, &sealed)
 }
 
 /// Writes a public file (a public key, the recipient), new, readable by others: it holds
 /// nothing secret.
 pub fn write_public(path: &Path, text: &str) -> anyhow::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all())
-        .with_context(|| format!("cannot write {}", path.display()))
+    super::write_whole(path, text.as_bytes(), 0o644, super::Whole::New)
 }
 
 /// The public key in the file at `path`, which `what` names. A missing one is a key the
@@ -426,14 +411,7 @@ pub fn token_in_force(
 pub fn write_token(sealed: &SealedConfig, id: &KeyId, bytes: &[u8]) -> anyhow::Result<()> {
     let layout = Layout(sealed);
     super::private_dir(&layout.tokens_dir())?;
-    let suffix = writ_crypto::keys::random_hex(8)?;
-    let temporary = layout.tokens_dir().join(format!(".{id}.age.new-{suffix}"));
-    write_private(&temporary, bytes)?;
-    let path = layout.token(id);
-    std::fs::rename(&temporary, &path).with_context(|| {
-        let _ = std::fs::remove_file(&temporary);
-        format!("cannot move the new token to {}", path.display())
-    })
+    super::write_whole(&layout.token(id), bytes, 0o600, super::Whole::Replace)
 }
 
 /// The public half of the declared key `id` and what its file says it is. A missing one is a

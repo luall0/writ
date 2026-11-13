@@ -417,6 +417,9 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let pinned = PinnedHosts::from_policy(loaded.policy.upstream_hosts())?;
     let ca_certs = load_ca_certs(&config)?;
     let declared = declared::declarations(&loaded.policy)?;
+    // A rotation of the data key cut short (the review after M7.6, S-8) is settled from the
+    // keystore's own record before anything below reads the keys directory.
+    keystore::settle(&config)?;
     platform::check_devices(&config, &declared)?;
     // Until the unseal checks their MAC (`keystore::open`), the versions in force are only
     // read and refused from, never acted on (the review after M7.6, S-1): what follows
@@ -475,6 +478,11 @@ fn run(path: &Path) -> anyhow::Result<()> {
             daemon,
             &platform,
         )?;
+        // What `writ info` says of a rotation of the data key owed (S-8), before the unseal.
+        service.set_keystore(
+            keystore::recipient(&config)?,
+            keystore::rotation_owed(&config)?,
+        );
         let opener = daemon::Opener::new(
             config.clone(),
             loaded.policy,

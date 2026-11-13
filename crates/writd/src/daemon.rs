@@ -270,7 +270,7 @@ impl Opener {
             .filter(|until| *until > inner.service.now_unix());
         let kept = keystore::ca::rotate(
             sealed,
-            recipient,
+            &recipient,
             &material,
             meta,
             &old,
@@ -417,6 +417,7 @@ impl Opener {
             authority,
             tokens,
             mut bot_tokens,
+            settled,
         } = keystore;
         let openpgp: std::collections::BTreeMap<KeyId, u32> = keys
             .signing
@@ -491,8 +492,18 @@ impl Opener {
                  admin key rotate replaces it"
             ));
         }
+        // A rotation of the data key the unseal did (S-8): one line each in the audit log.
+        for line in &settled {
+            tracing::warn!("keystore: {line}");
+            inner.service.admin_note(&format!("keystore: {line}"));
+        }
         gateway.set_mirrors(mirrors);
         inner.service.set_token_recipients(live.token_recipients());
+        inner.service.set_keystore(
+            live.sealed_parts()
+                .map(|(_, recipient)| recipient.to_string()),
+            live.rotation_owed(),
+        );
         let _ = inner.open.set(Open {
             live: Arc::new(live),
             signing: signer,
@@ -711,7 +722,7 @@ impl Opener {
         let (service, checked_owned, caller_owned) =
             (inner.service.clone(), checked.clone(), caller.clone());
         let shown: Vec<RemovedKey> = removed.iter().map(|(key, _)| key.clone()).collect();
-        let applied = tokio::task::spawn_blocking(move || {
+        let mut applied = tokio::task::spawn_blocking(move || {
             service.commit_admin(
                 &checked_owned,
                 parsed,
@@ -729,14 +740,26 @@ impl Opener {
                 gateway.set_mirrors(mirrors);
                 self.forget(&removed).await;
                 self.write_certificates();
-                if recipients_changed && let Err(e) = self.rewrap().await {
-                    let reason = format!(
-                        "the policy is in force, but the keystore isn't wrapped to its recipients \
-                         yet ({e:#}): the next unseal finishes it"
-                    );
-                    tracing::error!("{reason}");
-                    inner.service.admin_note(&reason);
-                    return Err(reason);
+                if recipients_changed {
+                    match self.rewrap().await {
+                        // What it did to the data key (S-8): in the answer and the audit log.
+                        Ok(said) => {
+                            for line in &said {
+                                tracing::warn!("keystore: {line}");
+                                inner.service.admin_note(&format!("keystore: {line}"));
+                            }
+                            applied.keystore = said;
+                        }
+                        Err(e) => {
+                            let reason = format!(
+                                "the policy is in force, but the keystore isn't wrapped to its \
+                                 recipients yet ({e:#}): the next unseal finishes it"
+                            );
+                            tracing::error!("{reason}");
+                            inner.service.admin_note(&reason);
+                            return Err(reason);
+                        }
+                    }
                 }
             }
             Ready::Readers(readers) => gateway.readers().replace(readers),
@@ -778,9 +801,11 @@ impl Opener {
         Ok(())
     }
 
-    /// The keystore rewrapped to the recipients of the policy in force (M7.6), then the tokens'
-    /// references and the mirrors that hold them renewed (a rewrapped file is another version).
-    async fn rewrap(&self) -> anyhow::Result<()> {
+    /// The keystore rewrapped to the recipients of the policy in force (M7.6), its data key
+    /// rotated when a way in was taken out (S-8: at once on a hardware keystore, owed until
+    /// the next unseal on a passphrase one), then the tokens' references and the mirrors that
+    /// hold them renewed (a rewrapped file is another version). What to tell the approver.
+    async fn rewrap(&self) -> anyhow::Result<Vec<String>> {
         let inner = self.0.clone();
         let open = inner.open.get().context("the daemon is not open")?;
         let (live, config, policy) = (
@@ -788,20 +813,26 @@ impl Opener {
             inner.config.clone(),
             inner.service.policy(),
         );
-        let (changed, tokens) = tokio::task::spawn_blocking(move || {
-            let changed = live.apply_recipients(&config, &policy)?;
+        let (applied, tokens) = tokio::task::spawn_blocking(move || {
+            let applied = live.apply_recipients(&config, &policy)?;
             let tokens = live.token_refs(&policy)?;
-            anyhow::Ok((changed, tokens))
+            anyhow::Ok((applied, tokens))
         })
         .await
         .context("the change stopped")??;
-        for line in &changed {
+        for line in &applied.changed {
             tracing::info!("keystore: {line}");
         }
         *open.tokens.write().unwrap_or_else(PoisonError::into_inner) = tokens;
         inner
             .service
             .set_token_recipients(open.live.token_recipients());
+        inner.service.set_keystore(
+            open.live
+                .sealed_parts()
+                .map(|(_, recipient)| recipient.to_string()),
+            open.live.rotation_owed(),
+        );
         let gateway = inner
             .gateway
             .get()
@@ -820,7 +851,7 @@ impl Opener {
             )
             .await?;
         gateway.set_mirrors(mirrors);
-        Ok(())
+        Ok(applied.said)
     }
 
     /// Hands the signers every key `declared` names that they don't hold yet: from the
@@ -1265,16 +1296,20 @@ impl Opener {
             // The hardware recipients' devices when they wrap the identity (M7.6), else the
             // passphrase.
             let (key, hardware) = keystore::unseal_key(&inner.config, &request)?;
-            drop(request);
             let declared = crate::declared::declarations(&inner.policy)?;
-            keystore::open(
+            // The passphrase kept until the keystore is open: a rotation of the data key it
+            // owes wraps the new identity with it (S-8). Wiped on drop.
+            let opened = keystore::open(
                 &inner.config,
                 &declared,
                 &inner.policy,
                 &inner.service.in_force(),
                 key,
                 hardware,
-            )
+                request.passphrase.as_ref(),
+            );
+            drop(request);
+            opened
         })
         .await
         .context("the unseal stopped")?

@@ -116,13 +116,16 @@ pub fn init(path: &Path, tls_backend: &str, ca_backend: &str) -> anyhow::Result<
         tls_backend,
         &makers,
     )?;
-    if ca_backend.is_device() {
-        super::sealed::make_ca(sealed, &made.data_key, ca_backend, &makers)?;
-    }
+    // From here every step can fail with the directories full: undone on any failure (the
+    // review after M7.6, S-10: the CA made on its device came before this, and a device that
+    // failed left a half-made keystore every later `writd init` refused).
     let mut undo = Undo {
         dirs: [&sealed.dir, &sealed.boot],
         done: false,
     };
+    if ca_backend.is_device() {
+        super::sealed::make_ca(sealed, &made.data_key, ca_backend, &makers)?;
+    }
     // The recipients (M7.6): each hardware one made in its device, then the identity wrapped
     // to them and to the recovery recipient.
     let recipients = super::recipients::make_missing(&config, sealed, &policy)?;

@@ -208,15 +208,18 @@ fn head(in_force: &InForce) -> AuthorityHead {
 /// recovery guide sends here), nobody vouches for the other two: `trust` is shown them and
 /// must say yes (the operator, who holds the passphrase), or nothing changes (the review
 /// after M5.5, S12: recovery used to refuse there, leaving only a backup).
-pub fn recover(
+///
+/// Nothing is written here: [`Prepared::record`] records it, once `writd recover` asked every
+/// question and checked everything, and made what the keystore needs (the review after M7.6,
+/// S-6).
+pub fn prepare_recover(
     store: &Store,
     key: &AuthorityKey,
     target: AdminTarget,
     text: String,
-    now: Timestamp,
     min_ttl: Duration,
     trust: impl FnOnce(&[(AdminTarget, &str)]) -> anyhow::Result<bool>,
-) -> anyhow::Result<(u64, u64, TextDigest)> {
+) -> anyhow::Result<Prepared> {
     let Some(loaded) = load(store, min_ttl)? else {
         bail!("no authority files in force: `writd init` records them");
     };
@@ -249,22 +252,49 @@ pub fn recover(
     in_force.versions.insert(target, (version, digest.clone()));
     in_force.mac = key.sign_head(&in_force.entries())?;
     // The new set must pass a start's checks.
-    parsed(texts, in_force.clone(), min_ttl)?;
-    store.record_authority(
-        &[AuthorityVersion {
-            target,
-            version,
-            text,
-            digest: digest.clone(),
-            how: AuthorityHow::Recover,
-            document: None,
-            signature: None,
-            approver: None,
-            applied_at: now,
-        }],
-        &head(&in_force),
-    )?;
-    Ok((old, version, digest))
+    let loaded = parsed(texts, in_force.clone(), min_ttl)?;
+    Ok(Prepared {
+        target,
+        text,
+        old,
+        version,
+        digest,
+        in_force,
+        loaded,
+    })
+}
+
+/// A recovery checked and agreed to, not recorded yet.
+pub struct Prepared {
+    target: AdminTarget,
+    text: String,
+    old: u64,
+    version: u64,
+    digest: TextDigest,
+    in_force: InForce,
+    /// The three files as they will be in force.
+    pub loaded: Loaded,
+}
+
+impl Prepared {
+    /// Records the new version: the version replaced, the new one, its digest.
+    pub fn record(self, store: &Store, now: Timestamp) -> anyhow::Result<(u64, u64, TextDigest)> {
+        store.record_authority(
+            &[AuthorityVersion {
+                target: self.target,
+                version: self.version,
+                text: self.text,
+                digest: self.digest.clone(),
+                how: AuthorityHow::Recover,
+                document: None,
+                signature: None,
+                approver: None,
+                applied_at: now,
+            }],
+            &head(&self.in_force),
+        )?;
+        Ok((self.old, self.version, self.digest))
+    }
 }
 
 /// What happened to a file at start: written back, or set aside (a hand edit).

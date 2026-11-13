@@ -434,6 +434,8 @@ impl Service {
             created,
             revoked,
             removed,
+            // The daemon's to say, once the keystore follows the new recipients.
+            keystore: Vec::new(),
         })
     }
 

@@ -427,6 +427,15 @@ pub async fn unseal(paths: &Paths, url: &str, signer: &Signer) -> anyhow::Result
                 boot.daemon,
                 boot.nonce.as_str()
             );
+            // A rotation of the data key the keystore owes (the review after M7.6, S-8): this
+            // unseal does it.
+            if !info.rotation_owed.is_empty() {
+                println!(
+                    "This unseal rotates the keystore's data key first ({}): until it does, \
+                     what was taken out still opens the keystore with a copy of its files.",
+                    display::clean(&info.rotation_owed.join("; "))
+                );
+            }
             // A keystore its hardware opens (M7.6) takes no passphrase: none is asked.
             let typed = match info.unseal {
                 Some(writ_proto::UnsealWay::Hardware) => {

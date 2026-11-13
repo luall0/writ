@@ -6,6 +6,7 @@ pub mod ca;
 mod dev;
 mod init;
 pub mod recipients;
+pub mod rotation;
 mod sealed;
 pub mod tls;
 
@@ -36,12 +37,24 @@ pub fn private_dir(path: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("cannot create {} as a private directory", path.display()))
 }
 
-/// Creates a new file only the daemon can read (0600); fails if it exists. Whole or not at
-/// all (the review after M5.5, L7: a write cut short left a truncated secret beside its
-/// public half, which every later unseal failed on): written to a private temporary file,
-/// synced, then linked into place (a link, unlike a rename, never replaces a file there) and
-/// the directory synced; the temporary file is removed whatever happens.
-fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+/// How [`write_whole`] meets a file already at its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Whole {
+    /// Refused: nothing is ever written over it (a secret is made once).
+    New,
+    /// Replaced, in one rename.
+    Replace,
+}
+
+/// Writes `bytes` at `path` whole or not at all, the one way every file of the keystore is
+/// written (the review after M7.6, S-11; the review after M5.5, L7: a write cut short left a
+/// truncated secret beside its public half, which every later unseal failed on): a
+/// temporary file beside it, created with `mode` (set exactly, whatever the umask), written
+/// and synced, then linked into place (`New`: a link, unlike a rename, never replaces a file
+/// there) or renamed over it (`Replace`), and the directory synced; the temporary file is
+/// removed whatever happens.
+pub fn write_whole(path: &Path, bytes: &[u8], mode: u32, how: Whole) -> anyhow::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
     let dir = path
         .parent()
         .with_context(|| format!("{} has no directory", path.display()))?;
@@ -51,19 +64,39 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .to_string_lossy();
     let temporary = dir.join(format!(".{name}.new-{}", writ_crypto::keys::random_hex(8)?));
     let written = (|| {
-        let mut file = writ_platform::fs::create_new_private_file(&temporary)
+        // `create_new`: never through a link, never over a file.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&temporary)
             .with_context(|| format!("cannot create {}", temporary.display()))?;
-        std::io::Write::write_all(&mut file, bytes)
+        file.set_permissions(std::fs::Permissions::from_mode(mode))
+            .and_then(|()| std::io::Write::write_all(&mut file, bytes))
             .and_then(|()| file.sync_all())
             .with_context(|| format!("cannot write {}", temporary.display()))?;
-        std::fs::hard_link(&temporary, path)
-            .with_context(|| format!("cannot create {}", path.display()))?;
-        std::fs::File::open(dir)
-            .and_then(|d| d.sync_all())
-            .with_context(|| format!("cannot sync {}", dir.display()))
+        match how {
+            Whole::New => std::fs::hard_link(&temporary, path)
+                .with_context(|| format!("cannot create {}", path.display()))?,
+            Whole::Replace => std::fs::rename(&temporary, path)
+                .with_context(|| format!("cannot move the new file to {}", path.display()))?,
+        }
+        sync_dir(dir)
     })();
     let _ = std::fs::remove_file(&temporary);
     written
+}
+
+/// Syncs the directory `dir` (what a rename or a removal in it changed).
+pub fn sync_dir(dir: &Path) -> anyhow::Result<()> {
+    std::fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .with_context(|| format!("cannot sync {}", dir.display()))
+}
+
+/// Creates a new file only the daemon can read (0600); fails if it exists ([`write_whole`]).
+fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    write_whole(path, bytes, 0o600, Whole::New)
 }
 
 /// A key the policy declares (a signing key or an `ssh` upstream credential), opened: its key
@@ -331,24 +364,12 @@ pub fn certificate_path(config: &Config, id: &KeyId) -> PathBuf {
 
 /// Writes the certificate of `id` (whole, then moved in place; readable by others).
 pub fn write_certificate(config: &Config, id: &KeyId, text: &str) -> anyhow::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let path = certificate_path(config, id);
-    let suffix = writ_crypto::keys::random_hex(8)?;
-    let temporary = path.with_extension(format!("asc.new-{suffix}"));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(&temporary)
-        .with_context(|| format!("cannot create {}", temporary.display()))?;
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all())
-        .with_context(|| format!("cannot write {}", temporary.display()))?;
-    std::fs::rename(&temporary, &path).with_context(|| {
-        let _ = std::fs::remove_file(&temporary);
-        format!("cannot move the certificate to {}", path.display())
-    })
+    write_whole(
+        &certificate_path(config, id),
+        text.as_bytes(),
+        0o644,
+        Whole::Replace,
+    )
 }
 
 /// The certificate of `id` the daemon last wrote, if any.
@@ -431,6 +452,9 @@ pub struct Opened {
     /// References to the tokens in force, each unwrapped only when an operation uses it.
     pub tokens: writ_mirror::credential::Tokens,
     pub bot_tokens: BTreeMap<KeyId, writ_platform::notify::telegram::BotToken>,
+    /// What the unseal did to the keystore before it opened it (a rotation of the data key
+    /// it owed, one cut short settled), one line each: for the audit log.
+    pub settled: Vec<String>,
 }
 
 /// The keystore as the running daemon keeps it once open: where the keys a signed policy
@@ -442,10 +466,10 @@ pub enum Live {
     Sealed {
         sealed: SealedConfig,
         /// The ways the keystore's files open by now: the identity on a passphrase keystore,
-        /// the hardware recipients on a hardware one (the identity wiped after unseal).
-        /// Replaced when the recipients change.
+        /// the hardware recipients on a hardware one (the identity wiped after unseal), and
+        /// what a key is sealed to. Replaced whole when the recipients change (a rotation of
+        /// the data key among them); every write that seals to it holds it.
         state: std::sync::RwLock<SealedState>,
-        recipient: age::x25519::Recipient,
     },
 }
 
@@ -457,6 +481,19 @@ pub struct SealedState {
     key: Option<writ_platform::DataKey>,
     /// The recipients secrets are sealed to now: `age1se1…` and `age1…` texts.
     pub token_recipients: Vec<String>,
+    /// The identity's recipient: what a key made from now on is sealed to (a rotation
+    /// replaces it).
+    recipient: age::x25519::Recipient,
+    /// Why the data key's rotation is owed (a passphrase keystore, until its next unseal):
+    /// none once it is done.
+    owed: Vec<String>,
+}
+
+impl SealedState {
+    /// What a key or the CA is sealed to now.
+    pub fn recipient(&self) -> &age::x25519::Recipient {
+        &self.recipient
+    }
 }
 
 /// The ways a keystore with `hardware` opens its files after unseal, and what tokens are
@@ -466,7 +503,9 @@ fn sealed_state(
     policy: &PolicyConfig,
     key: &writ_platform::DataKey,
     hardware: Vec<recipients::Hardware>,
+    owed: Vec<String>,
 ) -> anyhow::Result<SealedState> {
+    let recipient = key.recipient()?;
     let declared: Vec<recipients::Hardware> = hardware
         .into_iter()
         .filter(|h| {
@@ -483,6 +522,8 @@ fn sealed_state(
             files: Arc::new(sealed::SecretFiles::new(vec![Box::new(way)])),
             key: Some(writ_platform::DataKey::from_bytes(*key.as_bytes())),
             token_recipients: vec![text],
+            recipient,
+            owed,
         });
     }
     let mut texts: Vec<String> = declared.iter().map(|h| h.recipient.to_string()).collect();
@@ -497,11 +538,15 @@ fn sealed_state(
         files: Arc::new(sealed::SecretFiles::new(ways)),
         key: None,
         token_recipients: texts,
+        recipient,
+        owed,
     })
 }
 
 /// The data key and the hardware recipients of a sealed keystore at unseal: the hardware ones
-/// open `identity.age` when they wrap it, else the passphrase `request` brings.
+/// open `identity.age` when they wrap it, else the passphrase `request` brings. A rotation of
+/// the data key cut short is settled first (S-8: [`rotation::settle`], from the keystore's
+/// own record, no policy read), so the identity read is the one in force.
 pub fn unseal_key(
     config: &Config,
     request: &writ_platform::UnsealRequest,
@@ -509,6 +554,9 @@ pub fn unseal_key(
     let KeystoreConfig::Sealed(sealed) = &config.keystore else {
         bail!("only a sealed keystore is unsealed");
     };
+    for line in rotation::settle(sealed)? {
+        tracing::warn!("keystore: {line}");
+    }
     let hardware = recipients::load(config, sealed)?;
     if hardware_wrapped(sealed)? {
         let ways: Vec<&dyn writ_platform::KeystoreUnwrap> = hardware
@@ -541,22 +589,21 @@ impl Live {
     ) -> anyhow::Result<(StoredKey, bool)> {
         match self {
             Self::Dev(dir) => dev::key_or_make(dir, id, declared, makers),
-            Self::Sealed {
-                sealed,
-                state,
-                recipient,
-            } => {
+            Self::Sealed { sealed, state } => {
                 let layout = sealed::Layout(sealed);
+                // Held while the key is read or made: a rotation of the data key (which takes
+                // it to write) never runs between the recipient read and the file written.
+                let state = state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if layout.key(declared.role, id).exists() {
-                    let files = state
-                        .read()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .files
-                        .clone();
-                    return Ok((sealed::stored_key(&files, &layout, id, declared)?, false));
+                    return Ok((
+                        sealed::stored_key(&state.files, &layout, id, declared)?,
+                        false,
+                    ));
                 }
                 Ok((
-                    sealed::make_key(&layout, recipient, id, declared, makers)?,
+                    sealed::make_key(&layout, &state.recipient, id, declared, makers)?,
                     true,
                 ))
             }
@@ -651,14 +698,33 @@ impl Live {
         sealed::tokens(sealed, policy, &source)
     }
 
-    /// The sealed keystore's recipient (what a key is sealed to) and its configuration; none
-    /// for the development keystore.
-    pub fn sealed_parts(&self) -> Option<(&SealedConfig, &age::x25519::Recipient)> {
+    /// The sealed keystore's recipient (what a key is sealed to now) and its configuration;
+    /// none for the development keystore. A rotation of the data key replaces the recipient:
+    /// a write that seals to it holds [`Live::sealing`] instead, across the write.
+    pub fn sealed_parts(&self) -> Option<(&SealedConfig, age::x25519::Recipient)> {
+        let (sealed, state) = self.sealing()?;
+        Some((sealed, state.recipient().clone()))
+    }
+
+    /// The sealed keystore's configuration and its state, held (read) for as long as the
+    /// guard lives: a rotation of the data key waits for it.
+    pub fn sealing(&self) -> Option<(&SealedConfig, std::sync::RwLockReadGuard<'_, SealedState>)> {
         match self {
-            Self::Sealed {
-                sealed, recipient, ..
-            } => Some((sealed, recipient)),
+            Self::Sealed { sealed, state } => Some((
+                sealed,
+                state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )),
             Self::Dev(_) => None,
+        }
+    }
+
+    /// Why the data key's rotation is owed (none: done, or nothing to rotate).
+    pub fn rotation_owed(&self) -> Vec<String> {
+        match self.sealing() {
+            Some((_, state)) => state.owed.clone(),
+            None => Vec::new(),
         }
     }
 
@@ -676,16 +742,20 @@ impl Live {
 
     /// Brings the keystore in line with `policy`'s recipients, live (a policy change that
     /// changed them): every hardware recipient loaded, the data key from the passphrase kept
-    /// or from the hardware, every file rewrapped as needed, the ways open swapped. Answers
-    /// what changed.
+    /// or from the hardware, every file rewrapped as needed, the ways open swapped whole on
+    /// success. A change that takes a way in out rotates the data key (S-8): at once on a
+    /// hardware keystore (the new identity wrapped to the hardware recipients that remain);
+    /// recorded as owed on a passphrase keystore, whose passphrase the daemon doesn't hold,
+    /// and done at its next unseal. Answers what changed (for the log) and what to tell the
+    /// approver.
     pub fn apply_recipients(
         &self,
         config: &Config,
         policy: &PolicyConfig,
-    ) -> anyhow::Result<Vec<String>> {
-        let Self::Sealed { sealed, state, .. } = self else {
+    ) -> anyhow::Result<RecipientsApplied> {
+        let Self::Sealed { sealed, state } = self else {
             if policy.recipients().is_empty() {
-                return Ok(Vec::new());
+                return Ok(RecipientsApplied::default());
             }
             bail!("the development keystore takes no recipient");
         };
@@ -703,9 +773,34 @@ impl Live {
                 writ_platform::unlock::data_key(&recipients::Paths(sealed).identity(), &ways)?
             }
         };
-        let changed = reconcile_with(sealed, policy, &hardware, &key)?;
-        *state = sealed_state(policy, &key, recipients::load(config, sealed)?)?;
-        Ok(changed)
+        let mut applied = RecipientsApplied::default();
+        let removed = rotation::removed_ways(sealed, policy)?;
+        let key = if removed.is_empty() && state.owed.is_empty() {
+            key
+        } else {
+            // Recorded first: a rotation cut short, or one this keystore can't do now, is
+            // done at the next unseal.
+            let owed = rotation::record_owed(sealed, &removed)?;
+            match policy.hardware_keystore() {
+                true => {
+                    let (new, lines) =
+                        rotate_with(sealed, policy, &hardware, &key, rotation::Wrap::Hardware)?;
+                    applied.changed.extend(lines);
+                    applied.said.push(rotated_said(&owed));
+                    new
+                }
+                false => {
+                    applied.said.push(owed_said(&owed));
+                    key
+                }
+            }
+        };
+        let hardware = recipients::load(config, sealed)?;
+        applied
+            .changed
+            .extend(reconcile_with(sealed, policy, &hardware, &key)?);
+        *state = sealed_state(policy, &key, hardware, rotation::recorded(sealed)?)?;
+        Ok(applied)
     }
 
     /// The token file in force for `id`.
@@ -721,11 +816,78 @@ impl Live {
         files.open(file, &format!("the token sent for {id}"))
     }
 
-    /// Puts the age file `file` in force as the token of `id`.
+    /// Puts the age file `file` in force as the token of `id`: checked again, under the
+    /// state, to open with the ways in force (a rotation of the data key between the open and
+    /// the write would leave a token the new identity doesn't open).
     pub fn write_token(&self, id: &KeyId, file: &[u8]) -> anyhow::Result<()> {
-        let (sealed, _) = self.sealed()?;
+        let Some((sealed, state)) = self.sealing() else {
+            self.sealed()?;
+            bail!("the development keystore takes no token from writ admin token");
+        };
+        drop(
+            state
+                .files
+                .open(file, &format!("the token sent for {id}"))?,
+        );
         sealed::write_token(sealed, id, file)
     }
+}
+
+/// What a change of the recipients did to the keystore.
+#[derive(Debug, Default)]
+pub struct RecipientsApplied {
+    /// Each file rewritten, for the log.
+    pub changed: Vec<String>,
+    /// What the approver is told (the change's answer, the audit log): the data key
+    /// rotated, or its rotation owed.
+    pub said: Vec<String>,
+}
+
+/// What the approver is told of a rotation of the data key done for `why`.
+pub fn rotated_said(why: &[String]) -> String {
+    format!(
+        "the keystore's data key rotated ({}): a new identity, every key, token, the \
+         authority key and the recovery identity sealed to it; what was taken out opens no \
+         copy of the keystore made from now on",
+        why.join("; ")
+    )
+}
+
+/// What the approver is told of a rotation of the data key owed for `why`.
+pub fn owed_said(why: &[String]) -> String {
+    format!(
+        "the keystore's data key is to be rotated ({}): this passphrase keystore rotates it \
+         at its next unseal, when the passphrase is given; until then, what was taken out \
+         still opens the keystore with a copy of its files",
+        why.join("; ")
+    )
+}
+
+/// A rotation of the data key (S-8) from `key` to `policy`'s recipients, with every way the
+/// files may still be wrapped to: the identity and each hardware recipient held.
+fn rotate_with(
+    sealed: &SealedConfig,
+    policy: &PolicyConfig,
+    hardware: &[recipients::Hardware],
+    key: &writ_platform::DataKey,
+    wrap: rotation::Wrap<'_>,
+) -> anyhow::Result<(writ_platform::DataKey, Vec<String>)> {
+    let identity = key.way()?;
+    let mut ways: Vec<&dyn writ_platform::KeystoreUnwrap> = vec![&identity];
+    ways.extend(
+        hardware
+            .iter()
+            .map(|h| &h.way as &dyn writ_platform::KeystoreUnwrap),
+    );
+    rotation::Rotation {
+        sealed,
+        policy,
+        held: hardware,
+        old: key,
+        ways: &ways,
+        wrap,
+    }
+    .run()
 }
 
 /// [`recipients::reconcile`] with every way the files may still be wrapped to: the identity
@@ -800,6 +962,27 @@ pub fn recipient(config: &Config) -> anyhow::Result<Option<String>> {
     }
 }
 
+/// Settles the sealed keystore's keys directory before anything reads it: a rotation of the
+/// data key cut short finished or undone ([`rotation::settle`], from its own record). Nothing
+/// to do for the development keystore.
+pub fn settle(config: &Config) -> anyhow::Result<()> {
+    if let KeystoreConfig::Sealed(sealed) = &config.keystore {
+        for line in rotation::settle(sealed)? {
+            tracing::warn!("keystore: {line}");
+        }
+    }
+    Ok(())
+}
+
+/// Why the sealed keystore owes a rotation of its data key, from its own record (`writ
+/// info`, read with no unseal); none with the development keystore.
+pub fn rotation_owed(config: &Config) -> anyhow::Result<Vec<String>> {
+    match &config.keystore {
+        KeystoreConfig::Sealed(sealed) => rotation::recorded(sealed),
+        KeystoreConfig::Dev(_) => Ok(Vec::new()),
+    }
+}
+
 /// A notifier's token, from the plaintext of its sealed file.
 pub fn bot_token(
     id: &KeyId,
@@ -850,6 +1033,11 @@ pub fn start(
 ) -> anyhow::Result<Start> {
     match &config.keystore {
         KeystoreConfig::Sealed(sealed) => {
+            // A rotation of the data key cut short (S-8): finished or undone before anything
+            // is read from the keys directory (what `writ info` says opens it among them).
+            for line in rotation::settle(sealed)? {
+                tracing::warn!("keystore: {line}");
+            }
             // A CA rotation cut short (M7.6): finished or dropped before the CA is read.
             ca::finish(sealed)?;
             sealed::public(sealed, declared)?;
@@ -866,6 +1054,7 @@ pub fn start(
                     authority,
                     tokens: dev::tokens(dir, policy)?,
                     bot_tokens: dev::bot_tokens(dir, &sealed_bot_ids(config))?,
+                    settled: Vec::new(),
                 }),
             ))
         }
@@ -898,6 +1087,11 @@ pub fn checked_recipient(
 /// against the authority key as soon as it opens, before anything is read or written from
 /// them (the review after M7.6, S-1: the reconcile below rewrites keystore files from the
 /// policy's recipients, which an edit of the state at rest could have named).
+///
+/// A rotation of the data key the keystore owes (S-8: [`rotation::owed`], a recipient taken
+/// out on a passphrase keystore, or a rotation that didn't finish) is done right after that
+/// check, before anything else is read: with `passphrase` (the one that unwrapped the
+/// identity) on a passphrase keystore, with the hardware recipients on a hardware one.
 pub fn open(
     config: &Config,
     declared: &Declarations,
@@ -905,21 +1099,51 @@ pub fn open(
     in_force: &writ_approval::InForce,
     key: writ_platform::DataKey,
     hardware: Vec<recipients::Hardware>,
+    passphrase: Option<&writ_platform::Passphrase>,
 ) -> anyhow::Result<Opened> {
     let KeystoreConfig::Sealed(sealed) = &config.keystore else {
         bail!("only a sealed keystore is opened at unseal");
     };
-    let recipient = checked_recipient(sealed, &key)?;
-    let keys_files = sealed::SecretFiles::new(vec![Box::new(key.way()?)]);
-    let authority = sealed::authority_key(sealed, &keys_files)?;
+    checked_recipient(sealed, &key)?;
+    let authority = sealed::authority_key(
+        sealed,
+        &sealed::SecretFiles::new(vec![Box::new(key.way()?)]),
+    )?;
     in_force.check_mac(&authority)?;
+    let mut settled = Vec::new();
+    let owed = rotation::owed(sealed, policy)?;
+    let (key, hardware) = if owed.is_empty() {
+        (key, hardware)
+    } else {
+        let wrap = match (policy.hardware_keystore(), passphrase) {
+            (true, _) => rotation::Wrap::Hardware,
+            (false, Some(passphrase)) if !hardware_wrapped(sealed)? => {
+                rotation::Wrap::Passphrase(passphrase)
+            }
+            (false, _) => bail!(
+                "the keystore's data key is to be rotated ({}) back to a passphrase: that is \
+                 writd recover, on the daemon's host",
+                owed.join("; ")
+            ),
+        };
+        rotation::record_owed(sealed, &owed)?;
+        let (new, lines) = rotate_with(sealed, policy, &hardware, &key, wrap)?;
+        for line in &lines {
+            tracing::info!("keystore: {line}");
+        }
+        settled.push(format!("at unseal, {}", rotated_said(&owed)));
+        (new, recipients::load(config, sealed)?)
+    };
+    // The recipient file is the identity's (the rotation's own, when one ran).
+    checked_recipient(sealed, &key)?;
+    let keys_files = sealed::SecretFiles::new(vec![Box::new(key.way()?)]);
     let keys = sealed::keys(sealed, declared, &keys_files)?;
     drop(keys_files);
     // A change of the recipients cut short is finished before anything is used (M7.6).
     for line in reconcile_with(sealed, policy, &hardware, &key)? {
         tracing::info!("keystore: {line}");
     }
-    let state = sealed_state(policy, &key, hardware)?;
+    let state = sealed_state(policy, &key, hardware, rotation::recorded(sealed)?)?;
     drop(key);
     let source = Arc::new(sealed::SealedTokens::new(
         sealed.clone(),
@@ -930,9 +1154,9 @@ pub fn open(
         authority,
         tokens: sealed::tokens(sealed, policy, &source)?,
         bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &state.files)?,
+        settled,
         live: Live::Sealed {
             sealed: sealed.clone(),
-            recipient,
             state: std::sync::RwLock::new(state),
         },
     })

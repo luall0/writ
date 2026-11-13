@@ -200,6 +200,10 @@ pub struct Service {
     /// What a token is sealed to now (M7.6), set by the daemon at unseal and when the
     /// keystore's recipients change.
     token_recipients: Mutex<Vec<String>>,
+    /// The keystore's recipient now, and why its data key's rotation is owed (the review
+    /// after M7.6, S-8): set by the daemon at start, at unseal and when the recipients
+    /// change (a rotation gives a new recipient).
+    keystore_now: Mutex<(Option<String>, Vec<String>)>,
     dropped: Arc<AtomicU64>,
     watcher: Arc<dyn SessionWatcher>,
     clock: Arc<dyn Clock>,
@@ -382,6 +386,7 @@ impl Service {
         let policy = RwLock::new(Arc::new(config.policy.clone()));
         let key_uses = RwLock::new(Arc::new(config.signing_keys.clone()));
         let in_force = RwLock::new(config.in_force.clone());
+        let keystore_now = Mutex::new((config.recipient.clone(), Vec::new()));
         let (revocations, _) = broadcast::channel(256);
         let boot = SealedBoot {
             daemon: config.daemon.clone(),
@@ -416,6 +421,7 @@ impl Service {
             dropped,
             waiting: std::sync::atomic::AtomicUsize::new(0),
             token_recipients: Mutex::new(Vec::new()),
+            keystore_now,
             watcher: platform.watcher,
             clock: platform.clock,
             me: me.clone(),
@@ -707,10 +713,17 @@ impl Service {
 
     /// How this daemon takes decisions.
     pub fn info(&self) -> Info {
+        // poisoned: the pair is replaced whole.
+        let (recipient, rotation_owed) = self
+            .keystore_now
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         Info {
             decisions: self.config.decisions,
             sealed: self.is_sealed().then(|| self.boot.clone()),
-            recipient: self.config.recipient.clone(),
+            recipient,
+            rotation_owed,
             unseal: self.is_sealed().then_some(self.config.unseal).flatten(),
             token_recipients: match self.is_sealed() {
                 true => Vec::new(),
@@ -731,5 +744,15 @@ impl Service {
             .token_recipients
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = recipients;
+    }
+
+    /// What `writ info` says of the keystore (the review after M7.6, S-8): its recipient now
+    /// (a rotation of the data key replaces it) and why a rotation is owed; the daemon's to
+    /// set, at start, at unseal and when the recipients change.
+    pub fn set_keystore(&self, recipient: Option<String>, rotation_owed: Vec<String>) {
+        *self
+            .keystore_now
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (recipient, rotation_owed);
     }
 }

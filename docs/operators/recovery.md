@@ -12,7 +12,7 @@ be fixed afterwards.
 | A second reader key | A lost Mac takes its reader key, and without one nobody reaches the approval API | `writ reader <name>` on another machine, added with `writ admin apply readers` |
 | The passphrase, written down somewhere safe | Without it or the recovery key, nothing opens the keystore, not even `writd recover` | A password manager |
 | A recovery key, kept offline | It opens the keystore when the passphrase is lost, or the Mac's Secure Enclave is | `writ recovery new`, then `writ admin recipient add recovery recipient=<age1…>` ([how](sealing.md#the-recovery-key-and-the-secure-enclave)); check it now and then with `writ recovery check` |
-| Backups | A lost disk loses the leases, the ledger, the audit log and the keys | `state_dir` (copy `leases.db` with `sqlite3 leases.db .backup`), `keystore.sealed.dir` (encrypted: safe anywhere), the boot directory (secret: keep it safe) |
+| Backups | A lost disk loses the leases, the ledger, the audit log and the keys | `state_dir` (copy `leases.db` with `sqlite3 leases.db .backup`), `keystore.sealed.dir` (encrypted: it opens with the passphrase or a recovery key it held, even one you replaced since, so drop old copies when you [take one out](sealing.md#removing-or-replacing-a-way-in)), the boot directory (secret: keep it safe) |
 | A copy of the current files | Something to edit and recover from | `writ admin show policy > policy.yaml`, and the same for `approvers` and `readers` |
 
 ## What happened, and what to do
@@ -63,13 +63,17 @@ never enough: on a keystore it opens, `writd recover` takes the recovery key onl
    After "altered at rest", it also shows you the other two files as the daemon's state holds
    them, since nothing vouches for them any more, and asks `Trust them and seal all three
    with this keystore? [y/N]`. Read them. Answer `y` only if they are what you expect: all
-   three are then sealed again. Any other answer changes nothing. If one of them is wrong
-   too, answer no and recover that one first.
+   three are then sealed again. Any other answer changes nothing: every question comes
+   before the keystore is touched. If one of them is wrong too, answer no and recover that
+   one first.
 
    Recovering a `policy` also brings the keystore in line with its `recipients`. A Secure
    Enclave key the policy no longer names, and that the Mac no longer opens, is dropped. If no
    Secure Enclave key is left, it asks for a new passphrase, twice: from then on, `writ unseal`
-   asks for it.
+   asks for it. When the policy takes a way in out (a key dropped, the recovery key replaced
+   or removed), every secret is sealed to a new internal key, as a signed change does
+   ([what that takes back](sealing.md#removing-or-replacing-a-way-in)); if you gave the
+   recovery key on a keystore that has a passphrase, it asks for a new passphrase for it.
 4. **Start the daemon and unseal it** with the new key: `writ unseal --key <new key>.pub`.
 5. **Check** from your machine: `writ admin show approvers` shows the new version.
 
@@ -81,7 +85,8 @@ Without the passphrase, the keystore is lost:
 2. Register the new keys on the remotes: `writd upstream-keys`, `writd signing-keys`.
 3. Pin the daemon's new identity on every client ([setup, step 7](setup.md#on-the-daemon-host)).
 
-The leases are gone. From M7.6, an offline recovery identity will open the keystore instead.
+The leases are gone. With a [recovery key](sealing.md#the-recovery-key-and-the-secure-enclave)
+declared beforehand, you never get here: `writd recover` takes it instead of the passphrase.
 
 ## The daemon's user on each platform
 

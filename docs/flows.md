@@ -258,18 +258,19 @@ sequenceDiagram
   participant U as writ unseal (Mac)
   participant SC as Secretive
   actor Me
+  D->>D: settle the keys directory: a rotation of the data key cut short finished or undone, from its own record
   D->>D: start sealed: the boot tier only (host key, TLS key), a boot nonce drawn
   D-->>Me: notification "writd started, sealed" (token in the boot tier only)
   Me->>U: writ unseal
   U->>D: writ info (over the pinned SSH or HTTPS channel, reader key)
-  D-->>U: sealed: this daemon (host key fingerprint), this boot (nonce)
-  U->>Me: keystore passphrase prompt
+  D-->>U: sealed: this daemon (host key fingerprint), this boot (nonce), what opens the keystore, a rotation owed
+  U->>Me: keystore passphrase prompt (none when the hardware opens it)
   U->>SC: sign writ-unseal/1 {daemon, nonce} (namespace writ-approval)
   SC->>Me: Touch ID
   U->>D: writ unseal: passphrase + the document + its SSHSIG
   D->>D: check the document is this daemon's and this boot's, the SSHSIG an approver's
-  D->>D: unwrap the identity (scrypt), open the authority key, check the versions in force against its MAC
-  D->>D: then, and only then, open every secret, bring the keystore in line with the policy, start the signers and mirrors
+  D->>D: unwrap the identity (scrypt, or the hardware recipients' devices), open the authority key, check the versions in force against its MAC
+  D->>D: then, and only then, rotate the data key if the keystore owes it, open every secret, bring the keystore in line with the policy's recipients, start the signers and mirrors
   D->>D: the service gets the CA and the signer, logs UNSEAL; the active leases are served again
   D-->>Me: notification "writd unsealed"
 ```
@@ -283,8 +284,14 @@ sealed. The policy, approvers and readers the daemon started with were read from
 with no MAC checked (the key is sealed): nothing is done from them before the authority key
 opens and their MAC is checked, so versions altered at rest are refused ("altered at rest")
 with nothing written; an `unseal: auto` read from them lets the devices unwrap the identity at
-start, and the same check comes before anything else. The development keystore opens at start (its `unseal` line names it). Later,
-hardware recipients replace the passphrase (M7.6).
+start, and the same check comes before anything else. The development keystore opens at start (its `unseal` line names it). On a
+keystore its hardware recipients wrap (M7.6), `writ unseal` asks no passphrase and the
+devices unwrap the identity; `unseal: auto` does it at start with no one. Before anything
+reads the keys directory, a rotation of the data key cut short is finished or undone from the
+keystore's own record, never from the policy; one a passphrase keystore owes (a recipient
+removed or replaced while it ran) is done right after the MAC check, with the passphrase the
+unseal brought, and `writ unseal` says so first
+([signer](architecture/signer.md#startup-and-sealing)).
 
 ## 8. Daemon stop
 

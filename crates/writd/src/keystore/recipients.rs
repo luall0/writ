@@ -7,11 +7,13 @@
 //!   identity.age               the keystore's identity: the passphrase's (scrypt), or the
 //!                              hardware recipients' (piv-p256), never both
 //!   identity.recovery.age      the identity again, to the recovery recipient (X25519)
+//!   identity.recovery.pub      the recovery recipient it is sealed to (the marker; M7.6 kept
+//!                              it as recipients/recovery.pub, moved once: S-3)
 //!   recovery-check.age .sha256 the recovery challenge: a random value to the recovery
 //!                              recipient, and its SHA-256 (`writ recovery check`)
 //!   recipients/<name>.blob     a hardware recipient's key, framed (0600; usable only by its
 //!                              device)
-//!   recipients/<name>.pub      its public recipient (age1se1… or age1…) and its backend
+//!   recipients/<name>.pub      its public recipient (age1se1…) and its backend
 //! ```
 //!
 //! **Where each secret is wrapped:** the keys to the keystore's identity, always; the tokens to
@@ -19,7 +21,9 @@
 //! recipient on a hardware one (unwrapped by the device at each use). [`reconcile`] rewrites
 //! every file that isn't so (each written new, then moved over the old one), then deletes the
 //! files of recipients the policy no longer declares: run after every change of the
-//! recipients, and at each unseal, so a change cut short is finished.
+//! recipients, and at each unseal, so a change cut short is finished. A change that takes a
+//! way in out (a recipient removed or replaced, the passphrase given up for hardware) rotates
+//! the data key first ([`super::rotation`]).
 
 use std::path::{Path, PathBuf};
 
@@ -66,6 +70,87 @@ impl Paths<'_> {
     pub fn challenge_digest(&self) -> PathBuf {
         self.0.dir.join("recovery-check.sha256")
     }
+    /// The recovery recipient the recovery files are sealed to (the marker that it changed):
+    /// beside them, out of the hardware recipients' names (the review after M7.6, S-3).
+    pub fn marker(&self) -> PathBuf {
+        self.0.dir.join("identity.recovery.pub")
+    }
+    /// Where M7.6 kept the marker, moved once by [`super::rotation::settle`].
+    pub fn old_marker(&self) -> PathBuf {
+        self.dir().join("recovery.pub")
+    }
+}
+
+/// The recovery recipient the keystore's recovery files are sealed to (its marker), if any.
+pub fn marker(sealed: &SealedConfig) -> anyhow::Result<Option<String>> {
+    let path = Paths(sealed).marker();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let public = read_public(&path)?;
+    if public.backend.is_some() {
+        bail!(
+            "{}: names a backend: not the recovery marker",
+            path.display()
+        );
+    }
+    Ok(Some(public.recipient))
+}
+
+/// Moves M7.6's recovery marker (`recipients/recovery.pub`, a recipient line alone) to
+/// [`Paths::marker`], once: a hardware recipient may then be named `recovery` (S-3). A
+/// `recovery.pub` naming a backend is that hardware recipient's, and stays. Whether one moved.
+pub fn move_old_marker(sealed: &SealedConfig) -> anyhow::Result<bool> {
+    let paths = Paths(sealed);
+    let old = paths.old_marker();
+    if !old.exists() || read_public(&old)?.backend.is_some() {
+        return Ok(false);
+    }
+    match paths.marker().exists() {
+        // Both: the new one is in force (a move cut short after its rename can't be: one
+        // rename), the old one stale.
+        true => std::fs::remove_file(&old)
+            .with_context(|| format!("cannot remove {}", old.display()))?,
+        false => std::fs::rename(&old, paths.marker())
+            .with_context(|| format!("cannot move {} to its place", old.display()))?,
+    }
+    super::sync_dir(&paths.dir())?;
+    super::sync_dir(&sealed.dir)?;
+    Ok(true)
+}
+
+/// The names of the hardware recipients the keystore holds files of (their `.pub`), with no
+/// device asked: what a change may have taken out.
+pub fn held_names(sealed: &SealedConfig) -> anyhow::Result<Vec<KeyId>> {
+    let dir = Paths(sealed).dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for entry in
+        std::fs::read_dir(&dir).with_context(|| format!("cannot read {}", dir.display()))?
+    {
+        let entry = entry?;
+        let file = entry.file_name().to_string_lossy().into_owned();
+        if let Some(name) = file.strip_suffix(".pub") {
+            let name: KeyId = name.parse().map_err(|_| {
+                anyhow::anyhow!("{}: not a recipient's file", entry.path().display())
+            })?;
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// The hardware recipients `policy` declares, by name.
+pub fn declared_names(policy: &PolicyConfig) -> Vec<KeyId> {
+    policy
+        .recipients()
+        .iter()
+        .filter(|(_, r)| matches!(r, Recipient::Hardware { .. }))
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// A hardware recipient as the daemon holds it: its name, its public recipient, the way its
@@ -114,38 +199,9 @@ fn read_public(path: &Path) -> anyhow::Result<Public> {
     Ok(Public { recipient, backend })
 }
 
-/// Replaces `path` with `bytes`: written whole beside it (`mode`), then moved over it.
+/// Replaces `path` with `bytes`, whole ([`super::write_whole`]).
 fn replace(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
-    let dir = path
-        .parent()
-        .with_context(|| format!("{} has no directory", path.display()))?;
-    let name = path
-        .file_name()
-        .with_context(|| format!("{} has no file name", path.display()))?
-        .to_string_lossy();
-    let temporary = dir.join(format!(".{name}.new-{}", writ_crypto::keys::random_hex(8)?));
-    let written = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .open(&temporary)
-            .with_context(|| format!("cannot create {}", temporary.display()))?;
-        file.write_all(bytes)
-            .and_then(|()| file.sync_all())
-            .with_context(|| format!("cannot write {}", temporary.display()))?;
-        std::fs::rename(&temporary, path)
-            .with_context(|| format!("cannot move the new file to {}", path.display()))?;
-        std::fs::File::open(dir)
-            .and_then(|d| d.sync_all())
-            .with_context(|| format!("cannot sync {}", dir.display()))
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    written
+    super::write_whole(path, bytes, mode, super::Whole::Replace)
 }
 
 /// The recovery recipient the policy declares, read by age (its checksum checked).
@@ -167,7 +223,7 @@ pub fn recovery(policy: &PolicyConfig) -> anyhow::Result<Option<age::x25519::Rec
 
 /// The hardware recipients the policy declares, each with its backend (one this daemon has,
 /// and a device).
-fn declared_hardware(policy: &PolicyConfig) -> anyhow::Result<Vec<(KeyId, Backend)>> {
+pub(super) fn declared_hardware(policy: &PolicyConfig) -> anyhow::Result<Vec<(KeyId, Backend)>> {
     policy
         .recipients()
         .iter()
@@ -234,40 +290,25 @@ pub type Each = (Vec<Hardware>, Vec<(KeyId, anyhow::Error)>);
 /// recover` after a device was lost, whose policy no longer declares them).
 pub fn load_each(config: &Config, sealed: &SealedConfig) -> anyhow::Result<Each> {
     let paths = Paths(sealed);
-    let dir = paths.dir();
-    if !dir.exists() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let mut names = Vec::new();
-    for entry in
-        std::fs::read_dir(&dir).with_context(|| format!("cannot read {}", dir.display()))?
-    {
-        let entry = entry?;
-        let file = entry.file_name().to_string_lossy().into_owned();
-        if let Some(name) = file.strip_suffix(".pub") {
-            let name: KeyId = name.parse().map_err(|_| {
-                anyhow::anyhow!("{}: not a recipient's file", entry.path().display())
-            })?;
-            names.push(name);
-        }
-    }
-    names.sort();
     let (mut held, mut refused) = (Vec::new(), Vec::new());
-    for name in names {
+    for name in held_names(sealed)? {
         match load_one(config, &paths, &name) {
-            Ok(Some(hardware)) => held.push(hardware),
-            Ok(None) => {}
+            Ok(hardware) => held.push(hardware),
             Err(why) => refused.push((name, why)),
         }
     }
     Ok((held, refused))
 }
 
-/// The hardware recipient `name`, or none for the recovery recipient's file.
-fn load_one(config: &Config, paths: &Paths<'_>, name: &KeyId) -> anyhow::Result<Option<Hardware>> {
+/// The hardware recipient `name`. Only hardware recipients' files are in `recipients/` (the
+/// recovery marker moved out, S-3): one naming no backend is refused.
+fn load_one(config: &Config, paths: &Paths<'_>, name: &KeyId) -> anyhow::Result<Hardware> {
     let public = read_public(&paths.public(name))?;
     let Some(backend) = public.backend else {
-        return Ok(None); // the recovery recipient's file: no device.
+        bail!(
+            "{}: names no backend: not a hardware recipient's file",
+            paths.public(name).display()
+        );
     };
     let backend = Backend::of(
         &backend
@@ -289,24 +330,22 @@ fn load_one(config: &Config, paths: &Paths<'_>, name: &KeyId) -> anyhow::Result<
     if way.recipient() != &recipient {
         bail!("recipient {name}: its key is not the one its file names");
     }
-    Ok(Some(Hardware {
+    Ok(Hardware {
         name: name.clone(),
         recipient,
         way,
-    }))
+    })
 }
 
 /// Deletes the files of the hardware recipient `name` (`writd recover`: one its device no
 /// longer opens, which the recovered policy doesn't declare).
 pub fn forget(sealed: &SealedConfig, name: &KeyId) -> anyhow::Result<()> {
     let paths = Paths(sealed);
+    // The .pub first: a recipient is held while its .pub is there.
     for path in [paths.public(name), paths.blob(name)] {
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("cannot remove {}", path.display()))?;
-        }
+        super::remove_if_there(&path)?;
     }
-    Ok(())
+    super::sync_dir(&paths.dir())
 }
 
 /// The age header's stanzas, `(tag, first argument)` each: what a file is wrapped to, read
@@ -388,12 +427,8 @@ pub fn reconcile(
     // 1. The tokens: to the hardware recipients and the recovery recipient, or to the
     //    identity. The recovery recipient's file is the marker: one that changed rewrites
     //    every token wrapped to it.
-    let recovery_marker = paths.public(&"recovery".parse()?);
-    let recovery_changed = recovery_text.as_deref()
-        != read_public(&recovery_marker)
-            .ok()
-            .map(|p| p.recipient)
-            .as_deref();
+    let recovery_marker = paths.marker();
+    let recovery_changed = recovery_text != marker(sealed)?;
     let points: Vec<&P256Recipient> = declared.iter().map(|h| &h.recipient).collect();
     if layout.tokens_dir().exists() {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(layout.tokens_dir())?
@@ -441,25 +476,10 @@ pub fn reconcile(
     // 2. The recovery identity, its challenge, then its marker.
     match &recovery {
         Some(recipient) if recovery_changed || !paths.recovery_identity().exists() => {
-            replace(
-                &paths.recovery_identity(),
-                &seal_bytes(key.as_bytes(), &[recipient])?,
-                0o600,
-            )?;
-            let value = writ_crypto::keys::random_array::<32>()?;
-            replace(
-                &paths.challenge(),
-                &seal_bytes(&value, &[recipient])?,
-                0o600,
-            )?;
-            let digest = writ_core::authority::TextDigest::of_bytes(&value);
-            replace(
-                &paths.challenge_digest(),
-                format!("sha256:{digest}\n").as_bytes(),
-                0o644,
-            )?;
-            super::private_dir(&paths.dir())?;
-            replace(&recovery_marker, format!("{recipient}\n").as_bytes(), 0o644)?;
+            // The marker last: the files are the recipient's once it names it.
+            for (name, bytes, mode) in recovery_files(key, recipient)? {
+                replace(&sealed.dir.join(name), &bytes, mode)?;
+            }
             changed.push("the recovery identity wrapped to the recovery recipient".to_owned());
         }
         Some(_) => {}
@@ -476,6 +496,7 @@ pub fn reconcile(
                     changed.push(format!("{} removed", path.display()));
                 }
             }
+            super::sync_dir(&sealed.dir)?;
         }
     }
 
@@ -504,15 +525,43 @@ pub fn reconcile(
         if declared.iter().any(|h| h.name == held.name) {
             continue;
         }
-        for path in [paths.public(&held.name), paths.blob(&held.name)] {
-            if path.exists() {
-                std::fs::remove_file(&path)
-                    .with_context(|| format!("cannot remove {}", path.display()))?;
-            }
-        }
+        forget(sealed, &held.name)?;
         changed.push(format!("recipient {} removed", held.name));
     }
     Ok(changed)
+}
+
+/// The recovery files for `recipient`, each `(name in the keys directory, bytes, mode)`, in
+/// the order they are written: the identity `key` sealed to it, a new challenge and its
+/// digest, then the marker naming it.
+pub(super) fn recovery_files(
+    key: &DataKey,
+    recipient: &age::x25519::Recipient,
+) -> anyhow::Result<[(&'static str, Vec<u8>, u32); 4]> {
+    let value = writ_crypto::keys::random_array::<32>()?;
+    let digest = writ_core::authority::TextDigest::of_bytes(&value);
+    Ok([
+        (
+            "identity.recovery.age",
+            seal_bytes(key.as_bytes(), &[recipient])?,
+            0o600,
+        ),
+        (
+            "recovery-check.age",
+            seal_bytes(&value, &[recipient])?,
+            0o600,
+        ),
+        (
+            "recovery-check.sha256",
+            format!("sha256:{digest}\n").into_bytes(),
+            0o644,
+        ),
+        (
+            "identity.recovery.pub",
+            format!("{recipient}\n").into_bytes(),
+            0o644,
+        ),
+    ])
 }
 
 /// Whether `file` opens with the keystore's identity alone.

@@ -225,6 +225,7 @@ mod tests {
             recipient: None,
             token_recipients: Vec::new(),
             unseal: None,
+            rotation_owed: Vec::new(),
         });
         let bytes = encode_reply(&ok);
         assert_eq!(bytes, b"{\"ok\":{\"decisions\":\"open\"}}\n");
@@ -275,6 +276,7 @@ mod tests {
             ),
             token_recipients: vec!["age1se1example".to_owned()],
             unseal: Some(crate::UnsealWay::Hardware),
+            rotation_owed: vec!["the recovery recipient age1example replaced".to_owned()],
         };
         let bytes = encode_reply(&Ok::<_, ApiError>(info.clone()));
         assert_eq!(decode_reply::<Info>(&bytes), Ok(info));
@@ -284,7 +286,42 @@ mod tests {
             recipient: None,
             token_recipients: Vec::new(),
             unseal: None,
+            rotation_owed: Vec::new(),
         }));
         assert_eq!(open, b"{\"ok\":{\"decisions\":\"signed\"}}\n");
+        // The rotation owed (the review after M7.6, S-8) on the wire, under its name.
+        let bytes = String::from_utf8(bytes).unwrap();
+        assert!(
+            bytes.contains("\"rotation_owed\":[\"the recovery recipient age1example replaced\"]"),
+            "{bytes}"
+        );
+    }
+
+    #[test]
+    fn what_a_change_did_to_the_keystore_round_trips_and_is_left_out_when_nothing() {
+        let applied = AdminApplied {
+            target: writ_core::authority::AdminTarget::Policy,
+            version: 3,
+            digest: writ_core::authority::TextDigest::of("policy"),
+            signed_by: "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+                .parse()
+                .unwrap(),
+            created: Vec::new(),
+            revoked: Vec::new(),
+            removed: Vec::new(),
+            keystore: vec!["the keystore's data key rotated (x)".to_owned()],
+        };
+        let bytes = encode_reply(&Ok::<_, ApiError>(applied.clone()));
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(
+            text.contains("\"keystore\":[\"the keystore's data key rotated (x)\"]"),
+            "{text}"
+        );
+        assert_eq!(decode_reply::<AdminApplied>(&bytes), Ok(applied.clone()));
+        let none = encode_reply(&Ok::<_, ApiError>(AdminApplied {
+            keystore: Vec::new(),
+            ..applied
+        }));
+        assert!(!String::from_utf8_lossy(&none).contains("keystore"));
     }
 }

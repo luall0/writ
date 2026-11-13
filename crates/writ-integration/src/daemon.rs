@@ -221,12 +221,18 @@ impl Daemon {
     /// Stops the daemon and starts it again on the same directory (new ports, pinned again):
     /// a restart. Waits until it announced its listeners.
     pub fn restart(&mut self) {
+        self.restart_with_env(&[]);
+    }
+
+    /// [`Daemon::restart`] with `env` set for `writd run` (a test build's hook).
+    pub fn restart_with_env(&mut self, env: &[(&str, &str)]) {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let mut child = Command::new(bin("writd"))
             .arg("run")
             .arg(self.root().join("writd.yaml"))
             .env("WRIT_LOG", "info")
+            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -239,6 +245,29 @@ impl Daemon {
         self.child = child;
         self.log_lines = Mutex::new(lines);
         self.listening(ports);
+    }
+
+    /// Stops the daemon, and starts `writd run` again on the same directory, which must
+    /// refuse to start: what it printed (its status is checked: 1).
+    pub fn restart_refused(&mut self) -> String {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let mut child = Command::new(bin("writd"))
+            .arg("run")
+            .arg(self.root().join("writd.yaml"))
+            .env("WRIT_LOG", "info")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if !crate::process::ends_within(&mut child, WAIT_LIMIT) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("writd run started, it should have refused to");
+        }
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        stderr(&out)
     }
 
     /// Pins the daemon on the ports it announced, and points `writ` at them.

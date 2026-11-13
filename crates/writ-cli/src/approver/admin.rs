@@ -254,6 +254,10 @@ pub(super) async fn sign_applied(
     for lease in &applied.revoked {
         println!("Revoked lease {lease}: the approver key that signed it was removed.");
     }
+    // What the change did to the keystore's data key (the review after M7.6, S-8).
+    for line in &applied.keystore {
+        println!("Keystore: {}.", clean(line));
+    }
     for key in &applied.created {
         println!(
             "New {} {} (register it on the remote): {}",

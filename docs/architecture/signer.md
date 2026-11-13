@@ -369,11 +369,12 @@ unlocked ([Q17](../decisions.md)).
   hardware recipients unwrap the identity. `writd recover` takes the passphrase or the
   recovery key, never the hardware alone. Both travel over the authenticated channel; the daemon decrypts in
   memory only.
-- Later: the data key is wrapped to hardware recipients (age plugins for the Secure Enclave or
-  YubiKey), so unsealing needs no passphrase, and the tokens with it, each unwrapped only
-  when used ([M7.6](../roadmap.md#m76--hardware-wrapped-secrets)). M5 makes each secret its
-  own age file for this. Secretive can't do this part because SSH keys
-  only sign; they can't decrypt.
+- Since M7.6 the data key can be wrapped to hardware recipients (the Secure Enclave's
+  key-agreement keys, `piv-p256`), so unsealing needs no passphrase, and the tokens with
+  them, each unwrapped only when used
+  ([M7.6](../history/m7.6-hardware-wrapped-secrets.md)); each secret being its own age file
+  (M5) is what made that a matter of recipients. Secretive can't do this part because SSH
+  keys only sign; they can't decrypt.
 - **The keystore's recipients** (M7.6, the policy's `recipients`): a hardware recipient (the
   Secure Enclave's key-agreement key, made by the change that declares it, its framed blob in
   `recipients/<name>.blob`, its `age1se1…` in `<name>.pub`) wraps `identity.age` instead of
@@ -383,7 +384,43 @@ unlocked ([Q17](../decisions.md)).
   brings every file in line after each change and at each unseal (a change cut short is
   finished); age's own grease stanza is never read as a recipient. On a hardware keystore the
   identity is wiped once the unseal opened the keys: the tokens open through the devices, and
-  a key made later is sealed to the public recipient.
+  a key made later is sealed to the public recipient. The recovery recipient in force is
+  named by `identity.recovery.pub`, beside its files (M7.6 kept it as
+  `recipients/recovery.pub`, where a hardware recipient named `recovery` collided: moved
+  once at start, the review after M7.6, S-3).
+- **The data key rotated when a way in is taken out** (the review after M7.6, S-8,
+  `keystore::rotation`): a recovery recipient replaced or removed, a hardware recipient
+  removed, the passphrase given up for hardware or the hardware for a passphrase. A new
+  identity is made; the CA, `authority.age`, every signing and upstream key are opened with
+  the old one and sealed to the new one; every token is sealed again (to the new identity on
+  a passphrase keystore, to the hardware recipients and the recovery recipient on a hardware
+  one); `identity.age` wraps the new identity to the ways that remain, the recovery files
+  are made for the recovery recipient in force (or removed with it), `recipient` names the
+  new identity, the removed hardware recipients' files go. Crash-safe: everything is staged
+  in `rotation/` (each file whole, synced), then one record `rotation/commit` lists each file
+  with its digest and each file removed; then each file is moved into place, then the record
+  and `rotation/` go. A sealed start, an unseal and `writd recover` settle the keys directory
+  first, from that record alone (never from the policy): staging without a record is
+  removed, a record is finished (a file moved already is checked by its digest), so the
+  keystore is exactly the old one or the new one, and a second start changes nothing; a
+  `rotation` that isn't a directory, or a record that isn't well formed (its header, an entry
+  out of the keystore's own files, a digest neither file has), refuses the start by name.
+  On a hardware keystore the signed change rotates at once (the devices unwrap the old
+  identity, the new one is wrapped to the hardware recipients' public halves) and the
+  daemon's state is swapped whole on success. On a passphrase keystore the daemon holds no
+  passphrase after unseal, so it can't wrap a new identity: the change is recorded as owed
+  (`rotation-owed`, written before any attempt), the new recovery recipient takes its files
+  at once, `writ info` (`rotation_owed`) and the change's answer (`keystore`) say what is
+  owed, and the next unseal (or `writd recover`) rotates right after the MAC check, with the
+  passphrase it brought. Until then the removed recipient, with a copy of the keys
+  directory, still opens the keystore in force. **What it takes back:** after the rotation,
+  what was taken out opens no copy of the keystore made from then on. A copy made before
+  still opens what it held, with what was taken out: the keys that haven't changed since
+  (rotate them, `writ admin key rotate`, `writ admin ca rotate`, and add the tokens again, if
+  the recipient is thought compromised). The authority MAC's key is sealed again, not
+  replaced: whoever held a copy and the removed recipient knows it, and could write a state
+  the next unseal accepts (whole-state forgery needs the state's disk too); replacing it with
+  the rotation is a [backlog](../backlog/README.md) item.
 - Hardware signer backends (YubiKey, TPM) don't need the keystore; sealing then only gates the
   daemon.
 - How a keystore file is opened is a `KeystoreUnwrap`: one way to unwrap an age file's file

@@ -138,8 +138,9 @@ writ recovery check        # asks for the key, proves it opens the keystore
   never saved. `age-keygen` makes one too.
 - `writ recovery check` opens a challenge the daemon made for that key, on your machine.
   Nothing secret is sent. Run it from time to time: a key you can't find is no recovery.
-- To replace it: `writ admin recipient set recovery recipient=<new age1…>`. The old key stops
-  opening the keystore at once.
+- To replace it: `writ admin recipient set recovery recipient=<new age1…>`. The new key works
+  at once. The old one stops opening the keystore once its secrets are sealed to a new
+  internal key ([what that takes back](#removing-or-replacing-a-way-in)).
 
 **A key in the Mac's Secure Enclave** (local mode on a Mac): the keystore then opens with no
 passphrase, and tokens are unlocked by the Secure Enclave each time they are used.
@@ -152,6 +153,37 @@ writ admin recipient add se-01 backend=se-cryptokit
 - From the next restart, `writ unseal` asks for no passphrase: only your signature.
 - The last hardware key can't be removed. Going back to a passphrase is
   [`writd recover`](recovery.md), on the daemon's host.
+
+### Removing or replacing a way in
+
+Every secret is sealed to one internal key, which the passphrase, the Secure Enclave keys and
+the recovery key each unlock. When you remove or replace one of them (a recovery key
+replaced or removed, a Secure Enclave key removed, the passphrase given up for the Secure
+Enclave), the daemon makes a new internal key and seals every secret to it again: the CA,
+every signing and upstream key, the tokens, the recovery files. A crash in the middle is
+finished or undone at the next start: the keystore is always the old one or the new one,
+whole.
+
+- **With a Secure Enclave key**, it happens at once. The change's answer says
+  `Keystore: the keystore's data key rotated (…)`.
+- **With a passphrase**, the daemon doesn't keep the passphrase after the unseal, so it can't
+  do it yet. The answer says `the keystore's data key is to be rotated (…)`, and so does the
+  next `writ unseal`, which then does it with the passphrase you type. Until then, the key you
+  took out still opens the keystore, with a copy of its files. Restart and unseal soon:
+  `sudo launchctl kickstart -k system/dev.writ.writd`, then `writ unseal`.
+
+What it takes back, exactly:
+
+- Once it is done, the key you took out opens no copy of the keystore made from then on.
+- A copy made **before** (a backup of `keystore.sealed.dir`, a disk image) still opens, with
+  the key you took out, what that copy held: the keys that haven't changed since. If you think
+  that key is in someone else's hands, rotate the keys too (`writ admin key rotate <id>`,
+  `writ admin ca rotate`), add each token again (`writ admin token <id>`), and drop the old
+  backups.
+- The key that protects the daemon's copies of `policy.yaml`, `approvers` and `readers`
+  against edits at rest is sealed again, not replaced. Someone with an old copy, the key you
+  took out and write access to the daemon's state could still change those copies unseen.
+  Guard the state's backups like the state.
 
 ## The notification token: boot or sealed
 

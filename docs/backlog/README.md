@@ -68,6 +68,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Hardware-wrapped secrets](../history/m7.6-hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | done in [M7.6](../history/m7.6-hardware-wrapped-secrets.md) |
 | [SSH host key behind the `Signer`](#ssh-host-key-behind-the-signer) | Signers | hardening | M | idea; waits for a signer hook in russh (left out of M7.6) |
 | [A hardware-keyed MAC over stored blobs](#a-hardware-keyed-mac-over-stored-blobs) | Signers, Sealing | hardening | M | idea (the threat model named M7.6 for it, which shipped without it: the review after M7.6, K-6) |
+| [The authority MAC's key replaced with the data key](#the-authority-macs-key-replaced-with-the-data-key) | Sealing | hardening | M | idea (left out of M7.7) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
 | [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
@@ -149,6 +150,18 @@ in that Mac's Secure Enclave (a key-agreement or symmetric key made there, the M
 the helper's device before any blob is parsed), so a frame made elsewhere, or on another Mac
 (a restored backup), is refused before CryptoKit reads it. Open: whether CryptoKit can check
 a MAC without first loading a blob, and the key for that MAC's own bootstrap (it is a blob too).
+
+### The authority MAC's key replaced with the data key
+
+A rotation of the data key (M7.7, a recipient removed or replaced) seals `authority.age`
+again but keeps its key: whoever holds a copy of the keys directory from before and the
+recipient taken out still knows the key of the MAC over the authority files, and with write
+access to the state at rest could record versions the next unseal accepts (approvers, the
+policy). Replacing it with the rotation means a new key, the head of the versions in force
+signed again with it, and the store and the keystore changed together crash-safe (the head
+re-signed in the same commit as the rotation's record, or both recorded and the older one
+dropped at the next unseal). Worth it once the state and the keys can be copied apart (a
+backup kept elsewhere, M8's volumes).
 
 ### x509 commit signatures
 
