@@ -330,6 +330,47 @@ impl TlsRotation {
     }
 }
 
+/// Only `"writ-ca/1"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CaKind {
+    #[default]
+    #[serde(rename = "writ-ca/1")]
+    V1,
+}
+
+/// The approver asks one daemon (named by its SSH host key's fingerprint) to make a new key
+/// for its SSH certificate authority on `backend` (M7.6, `writ admin ca rotate`), in place of
+/// the CA whose key's fingerprint is `replaces`. New certificates come from the new CA; the
+/// old one stays trusted only until the last lease it certified ends. Once done, `replaces`
+/// names a CA no longer in force: the same document sent again is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaRotation {
+    pub kind: CaKind,
+    pub daemon: KeyFingerprint,
+    pub replaces: KeyFingerprint,
+    pub backend: crate::config::BackendName,
+}
+
+impl Canonical for CaRotation {
+    const KIND: &'static str = "writ-ca/1";
+}
+
+impl CaRotation {
+    pub fn new(
+        daemon: KeyFingerprint,
+        replaces: KeyFingerprint,
+        backend: crate::config::BackendName,
+    ) -> Self {
+        Self {
+            kind: CaKind::V1,
+            daemon,
+            replaces,
+            backend,
+        }
+    }
+}
+
 /// Only `"writ-admin/2"` (`writ-admin/1` named the version it replaced by its digest alone,
 /// so a change could be applied again once the text came back to that version).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -545,6 +586,60 @@ mod tests {
             ProofMessage::try_from("é".repeat(2049)).unwrap_err(),
             ProofMessageError(4098)
         );
+    }
+
+    #[test]
+    fn a_ca_rotation_is_pinned_strict_and_names_the_ca_it_replaces() {
+        let daemon: KeyFingerprint = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+            .parse()
+            .unwrap();
+        let replaces: KeyFingerprint = "SHA256:n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg"
+            .parse()
+            .unwrap();
+        let rotation = CaRotation::new(
+            daemon,
+            replaces,
+            "se-cryptokit".to_owned().try_into().unwrap(),
+        );
+        let bytes = rotation.canonical_bytes().unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            r#"{"kind":"writ-ca/1","daemon":"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU","replaces":"SHA256:n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg","backend":"se-cryptokit"}"#
+        );
+        assert_eq!(CaRotation::from_canonical(&bytes).unwrap(), rotation);
+        // Never a TLS rotation, nor the other way round.
+        assert!(matches!(
+            TlsRotation::from_canonical(&bytes),
+            Err(CanonicalError::Decode { .. })
+        ));
+        let tls = TlsRotation::new(
+            rotation.daemon.clone(),
+            "SHA256:n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg"
+                .parse()
+                .unwrap(),
+            "software".to_owned().try_into().unwrap(),
+        )
+        .canonical_bytes()
+        .unwrap();
+        assert!(matches!(
+            CaRotation::from_canonical(&tls),
+            Err(CanonicalError::Decode { .. })
+        ));
+        let text = String::from_utf8(bytes).unwrap();
+        for bad in [
+            text.replace("n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg", "short"),
+            text.replace("se-cryptokit", "SE"),
+            text.replace(r#","backend":"se-cryptokit""#, ""),
+            text.replace(r#""}"#, r#"","extra":1}"#),
+        ] {
+            assert!(
+                matches!(
+                    CaRotation::from_canonical(bad.as_bytes()),
+                    Err(CanonicalError::Decode { .. } | CanonicalError::NotCanonical { .. })
+                ),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

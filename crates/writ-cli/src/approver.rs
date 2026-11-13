@@ -13,8 +13,9 @@ mod prove;
 mod signer;
 
 pub use admin::{
-    apply as admin_apply, recovery_check, recovery_new, show as admin_show, target as admin_target,
-    tls_rotate as admin_tls_rotate, token as admin_token,
+    apply as admin_apply, ca_rotate as admin_ca_rotate, ca_show as admin_ca_show, recovery_check,
+    recovery_new, show as admin_show, target as admin_target, tls_rotate as admin_tls_rotate,
+    token as admin_token,
 };
 pub use guided::{
     add as guided_add, check as guided_check, edit_entry as guided_edit, rescan as guided_rescan,

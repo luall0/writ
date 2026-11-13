@@ -374,6 +374,58 @@ pub struct TlsRotated {
     pub backend: String,
 }
 
+/// Reply to [`Command::CaShow`](crate::Command::CaShow) (M7.6): the SSH CA in force, the one
+/// it replaced while still trusted, and what a `writ-ca/1` names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaShown {
+    /// The fingerprint of the daemon's SSH host key.
+    pub daemon: KeyFingerprint,
+    /// The CA key's fingerprint, what a `writ-ca/1` names as `replaces`.
+    pub fingerprint: KeyFingerprint,
+    /// Its public key (OpenSSH).
+    pub public_key: String,
+    /// The backend its key is on.
+    pub backend: String,
+    /// The CAs rotations replaced, each trusted until its last lease ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired: Vec<RetiredCa>,
+    /// The backends this daemon has.
+    pub backends: Vec<BackendShown>,
+}
+
+/// A CA no longer in force, still trusted for the leases it certified.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetiredCa {
+    pub fingerprint: KeyFingerprint,
+    /// Until when (seconds since the epoch): its last lease's end.
+    pub until: u64,
+}
+
+/// Body of [`Command::CaRotate`](crate::Command::CaRotate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaRequest {
+    /// The canonical bytes of the `writ-ca/1` document.
+    pub document: String,
+    /// The approver's SSHSIG over them (namespace `writ-approval`).
+    pub signature: String,
+}
+
+/// Reply to [`Command::CaRotate`](crate::Command::CaRotate): the new CA in force.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaRotated {
+    pub previous: KeyFingerprint,
+    pub fingerprint: KeyFingerprint,
+    pub public_key: String,
+    pub backend: String,
+    /// Until when the previous CA stays trusted (none: no lease it certified is active).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_until: Option<u64>,
+}
+
 /// Body of [`Command::Scan`](crate::Command::Scan).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -496,6 +496,11 @@ enum AdminCommand {
         #[command(subcommand)]
         command: TlsCommand,
     },
+    /// The daemon's SSH certificate authority (M7.6): it signs each lease's certificate.
+    Ca {
+        #[command(subcommand)]
+        command: CaCommand,
+    },
     /// Add or replace the token ID (a token the policy declares, or a notifier's sealed
     /// token): asked for with no echo (or one line of stdin), encrypted here to the daemon's
     /// keystore, then one signature with your approval key. It is used at once.
@@ -518,6 +523,30 @@ enum TlsCommand {
     /// A new key for the HTTPS approval API, on BACKEND (the current one by default: the
     /// same command rotates it), and its certificate, in force at once: one signature. Reached
     /// over HTTPS, your pin is replaced; every other approver re-pins.
+    Rotate {
+        /// The backend the new key is made on (software, se-cryptokit: the daemon's).
+        #[arg(long)]
+        backend: Option<String>,
+        /// Sign without asking (what is replaced is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum CaCommand {
+    /// The CA in force, its key's backend, and the CA it replaced while its leases last.
+    Show {
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
+    /// A new key for the CA, on BACKEND (the current one by default: the same command rotates
+    /// it), in force at once: one signature. Leases certified by the old CA keep working until
+    /// they end, and no longer.
     Rotate {
         /// The backend the new key is made on (software, se-cryptokit: the daemon's).
         #[arg(long)]
@@ -1401,6 +1430,33 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 },
         } => {
             approver::admin_tls_rotate(
+                &paths,
+                &url.get(&paths)?,
+                &signer(&paths, args),
+                backend.as_deref(),
+                *yes,
+            )
+            .await
+        }
+        Commands::Admin {
+            command:
+                AdminCommand::Ca {
+                    command: CaCommand::Show { url },
+                },
+        } => approver::admin_ca_show(&paths, &url.get(&paths)?).await,
+        Commands::Admin {
+            command:
+                AdminCommand::Ca {
+                    command:
+                        CaCommand::Rotate {
+                            backend,
+                            yes,
+                            url,
+                            signer: args,
+                        },
+                },
+        } => {
+            approver::admin_ca_rotate(
                 &paths,
                 &url.get(&paths)?,
                 &signer(&paths, args),

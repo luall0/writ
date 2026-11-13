@@ -3,7 +3,8 @@
 //! new`, saved nowhere), declared as the policy's recipient, checked against the daemon's
 //! challenge (`writ recovery check`: the right key, another), replaced, edited on a terminal,
 //! removed; every `writ admin recipient` verb and flag; a hardware recipient refused by name,
-//! the daemon having no such device. The policy put back.
+//! the daemon having no such device. The policy put back. Then the SSH CA shown and rotated
+//! live (`writ admin ca`), a backend the daemon lacks refused.
 
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
@@ -145,6 +146,30 @@ fn the_recovery_key_is_made_declared_checked_and_replaced_from_the_approver_s_ma
     );
     assert!(err.contains("declares no recovery recipient"), "{err}");
     approver.ok("writ admin apply policy policy-before-recipients.yaml --yes");
+
+    // The SSH CA (M7.6): shown, rotated live (the leases of every other scenario keep
+    // working: the old CA trusted until they end), a backend the daemon lacks refused.
+    let shown = approver.ok(&format!("writ admin ca show --approval-url {url}"));
+    assert!(shown.contains("backend: software"), "{shown}");
+    assert!(
+        shown.contains("no other CA is trusted") || shown.contains("a CA it replaced"),
+        "{shown}"
+    );
+    let said = approver.ok(&format!("writ admin ca rotate --backend software {FLAGS}"));
+    assert!(said.contains("SSH CA rotated: SHA256:"), "{said}");
+    let (_, err) = expect(
+        &approver.run(&format!(
+            "writ admin ca rotate --backend se-cryptokit {FLAGS}"
+        )),
+        1,
+        "a CA backend the daemon lacks",
+    );
+    assert!(
+        err.contains("the daemon has no backend se-cryptokit"),
+        "{err}"
+    );
+    let shown = approver.ok("writ admin ca show");
+    assert!(shown.contains("SSH CA of daemon"), "{shown}");
     assert_eq!(
         approver.ok("writ admin show policy"),
         approver.ok("cat policy-before-recipients.yaml")

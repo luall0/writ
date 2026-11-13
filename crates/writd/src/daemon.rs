@@ -51,6 +51,8 @@ struct Open {
     upstream: Arc<Routed>,
     /// The tokens in force, as references: each unwrapped only when an operation uses it.
     tokens: RwLock<Tokens>,
+    /// The backend the SSH CA's key is on (M7.6: a rotation moves it).
+    ca_backend: RwLock<crate::declared::Backend>,
 }
 
 impl Open {
@@ -135,6 +137,174 @@ impl Opener {
     }
 
     /// The certificate in force, its key's backend, and what a `writ-tls/1` names.
+    /// The SSH CA in force, its backend, and the CA it replaced while trusted (M7.6).
+    fn show_ca(&self) -> Result<writ_proto::CaShown, String> {
+        let inner = &self.0;
+        let open = inner.open.get().ok_or("the daemon is not open")?;
+        let public = inner.service.ca_in_force().map_err(|e| e.to_string())?;
+        let retired = match &inner.config.keystore {
+            KeystoreConfig::Sealed(sealed) => keystore::ca::retired(sealed)
+                .map_err(|e| format!("{e:#}"))?
+                .into_iter()
+                .filter(|(_, until)| *until > inner.service.now_unix())
+                .map(|(key, until)| {
+                    Ok::<_, String>(writ_proto::RetiredCa {
+                        fingerprint: fingerprint_of(&key)?,
+                        until,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            KeystoreConfig::Dev(_) => Vec::new(),
+        };
+        Ok(writ_proto::CaShown {
+            daemon: inner.service.daemon().clone(),
+            fingerprint: fingerprint_of(&public)?,
+            public_key: public.to_openssh().map_err(|e| e.to_string())?,
+            backend: open
+                .ca_backend
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .name()
+                .to_owned(),
+            retired,
+            backends: platform::backends_shown(),
+        })
+    }
+
+    /// A checked `writ-ca/1` done (see [`AdminApplier::rotate_ca`]): refused unless it names
+    /// the CA in force and a backend this daemon has; the new key made there, written beside
+    /// the old and moved over it, the old CA recorded as trusted until the last active lease
+    /// ends, the new one put in force for every certificate from now on.
+    fn rotate_ca_now(
+        &self,
+        checked: &writ_approval::CheckedCa,
+    ) -> Result<writ_proto::CaRotated, String> {
+        let inner = &self.0;
+        let rotation = checked.rotation();
+        let open = inner.open.get().ok_or("the daemon is not open")?;
+        let gateway = inner
+            .gateway
+            .get()
+            .ok_or("the gateway is not started yet")?;
+        let Some((sealed, recipient)) = open.live.sealed_parts() else {
+            return Err("the development keystore's CA is a file: it isn't rotated".to_owned());
+        };
+        let old = inner.service.ca_in_force().map_err(|e| e.to_string())?;
+        let previous = fingerprint_of(&old)?;
+        if rotation.replaces != previous {
+            return Err(format!(
+                "it replaces CA {}, but {previous} is in force (rotated meanwhile?): writ admin \
+                 ca rotate again",
+                rotation.replaces
+            ));
+        }
+        let backend = platform::BACKENDS
+            .iter()
+            .copied()
+            .find(|b| b.name() == rotation.backend.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "this daemon has no backend {} (it has: {})",
+                    rotation.backend,
+                    platform::BACKENDS
+                        .iter()
+                        .map(|b| b.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+        let fail = |e: anyhow::Error| format!("{e:#}");
+        let (material, meta) = match backend.is_device() {
+            false => (
+                keystore::Material::Software(
+                    writ_crypto::keypair::KeyPair::generate(
+                        writ_crypto::algorithm::KeyAlgorithm::Ed25519,
+                    )
+                    .map_err(|e| e.to_string())?,
+                ),
+                writ_crypto::keyfile::KeyMeta::SSH,
+            ),
+            true => platform::makers(&inner.config)
+                .and_then(|makers| {
+                    makers.make(
+                        &keystore::CA_ID.parse()?,
+                        &crate::declared::Declared {
+                            role: KeyRole::Signing,
+                            format: writ_crypto::algorithm::SignatureFormat::Ssh,
+                            algorithm: writ_crypto::algorithm::KeyAlgorithm::P256,
+                            hash: writ_crypto::algorithm::Hash::Sha256,
+                            backend,
+                        },
+                    )
+                })
+                .map_err(fail)?,
+        };
+        let public = material.public_key();
+        // The new CA signs before anything is written.
+        let (signer, refused) = platform::ca(
+            &inner.config,
+            keystore::StoredKey {
+                id: keystore::CA_ID
+                    .parse()
+                    .map_err(|e: writ_core::names::NameError| e.to_string())?,
+                // A second copy for the signer, read back from what the file will hold.
+                key: material
+                    .encode(meta)
+                    .and_then(|text| keystore::Material::decode(text.as_bytes(), public.clone()))
+                    .map(|(material, _)| material)
+                    .map_err(fail)?,
+                meta,
+            },
+        )
+        .map_err(fail)?;
+        if let Some((_, why)) = refused.first() {
+            return Err(format!("the new CA key was refused by its device: {why}"));
+        }
+        let until = inner
+            .service
+            .last_active_expiry()
+            .map_err(|e| e.to_string())?
+            .filter(|until| *until > inner.service.now_unix());
+        let kept = keystore::ca::rotate(
+            sealed,
+            recipient,
+            &material,
+            meta,
+            &old,
+            until,
+            inner.service.now_unix(),
+        )
+        .map_err(fail)?;
+        inner
+            .service
+            .replace_ca(signer)
+            .map_err(|e| e.to_string())?;
+        gateway.set_authorities(
+            public.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+            kept.iter()
+                .map(|(key, until)| {
+                    (
+                        key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+                        *until,
+                    )
+                })
+                .collect(),
+        );
+        *open
+            .ca_backend
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = backend;
+        let fingerprint = fingerprint_of(&public)?;
+        tracing::info!(previous = %previous, ca = %fingerprint, backend = backend.name(), "SSH CA rotated");
+        Ok(writ_proto::CaRotated {
+            previous,
+            fingerprint,
+            public_key: public.to_openssh().map_err(|e| e.to_string())?,
+            backend: backend.name().to_owned(),
+            previous_until: until,
+        })
+    }
+
     fn show_tls(&self) -> Result<writ_proto::TlsShown, String> {
         let fingerprint = self
             .tls()?
@@ -255,8 +425,31 @@ impl Opener {
         } = platform::signer(&inner.config, keys.signing)?;
         let upstream = platform::upstream_signer(&inner.config, keys.upstream)?;
         unusable.extend(upstream.refused);
+        let ca_backend = match &keys.ca.key {
+            keystore::Material::Device { backend, .. } => *backend,
+            keystore::Material::Software(_) => crate::declared::Backend::Software,
+        };
         let (ca, refused) = platform::ca(&inner.config, keys.ca)?;
         unusable.extend(refused);
+        // The CAs the gateway takes: this one, and one a rotation replaced, while its leases
+        // last (M7.6).
+        let ca_fingerprint = ca
+            .public_key()
+            .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256);
+        let retired = match &inner.config.keystore {
+            KeystoreConfig::Sealed(sealed) => keystore::ca::retired(sealed)?
+                .into_iter()
+                .map(|(key, until)| {
+                    (
+                        key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
+                        until,
+                    )
+                })
+                .collect(),
+            KeystoreConfig::Dev(_) => Vec::new(),
+        };
+        gateway.set_authorities(ca_fingerprint, retired);
+        let ca = writ_crypto::ca::CertificateAuthority::with_signer(ca);
         let upstream = upstream.signer;
         let mirrors = Mirrors::open(
             inner.mirrors.clone(),
@@ -295,6 +488,7 @@ impl Opener {
             signing: signer,
             upstream,
             tokens: RwLock::new(tokens),
+            ca_backend: RwLock::new(ca_backend),
         });
         self.sweep_keys().await;
         self.sync_files();
@@ -1100,6 +1294,29 @@ impl AdminApplier for Opener {
         })
     }
 
+    fn ca_show(&self) -> BoxFuture<'static, Result<writ_proto::CaShown, String>> {
+        let me = self.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || me.show_ca())
+                .await
+                .map_err(|_| "the read stopped".to_owned())?
+        })
+    }
+
+    fn rotate_ca(
+        &self,
+        checked: writ_approval::CheckedCa,
+        _caller: CallerFacts,
+    ) -> BoxFuture<'static, Result<writ_proto::CaRotated, String>> {
+        let me = self.clone();
+        // Files and a device: off the async threads; run to its end even if the client goes.
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || me.rotate_ca_now(&checked))
+                .await
+                .map_err(|_| "the rotation stopped".to_owned())?
+        })
+    }
+
     fn tls_show(&self) -> BoxFuture<'static, Result<writ_proto::TlsShown, String>> {
         let me = self.clone();
         Box::pin(async move {
@@ -1134,4 +1351,14 @@ fn role_of(key: &writ_core::config::Key) -> Option<KeyRole> {
         }
         writ_core::config::Key::Upstream(writ_core::config::UpstreamKey::Token { .. }) => None,
     }
+}
+
+/// A public key's fingerprint as the protocol names it.
+fn fingerprint_of(
+    key: &writ_crypto::ssh_key::PublicKey,
+) -> Result<writ_core::names::KeyFingerprint, String> {
+    key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
+        .to_string()
+        .parse()
+        .map_err(|e: writ_core::names::NameError| e.to_string())
 }

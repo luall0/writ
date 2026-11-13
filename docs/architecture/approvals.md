@@ -303,6 +303,36 @@ tls rotate [--backend <name>]`. The same command moves the key between backends 
 - `writd init --tls-backend <name>` makes the first key on that backend (the installer asks
   it on a Mac).
 
+## `writ admin ca rotate`
+
+The SSH certificate authority's key, which signs each lease's certificate, is replaced by an
+approver's signed change on a running, unsealed daemon (M7.6): `writ admin ca rotate
+[--backend <name>]`, which moves it between backends (`software`, `se-cryptokit` on a Mac) or
+rotates it on its own. `writ admin ca show` (`GET /v1/ca`, `CaShown`) gives the CA in force,
+its backend, the CAs it replaced still trusted, and the daemon's backends.
+
+- The approver signs `writ-ca/1` (`{daemon, replaces, backend}`, `replaces` the CA key's
+  fingerprint) in the `writ-approval` namespace (`ca rotate`, `POST /v1/ca`, `CaRequest`).
+  The service decodes it strictly, checks the signature against `approvers` and the daemon
+  (refused `ca` or `signature`), within the rotations' rate shared with the TLS key's (five a
+  minute); one admin change at a time.
+- The daemon refuses it unless `replaces` is the CA in force (a replay rotates nothing) and a
+  backend it has, makes the new key (software: Ed25519, generated; a device: P-256, by the
+  device), builds its signer (a key its device refuses: nothing written), then writes the
+  retired record, the new `ca.age` and `ca.pub` beside the old as `.new`, and moves them in.
+  A start finishing a cut rotation moves the public half after its key; one cut before the
+  key moved is dropped.
+- **The old CA stays trusted until the last lease it certified ends** (the latest
+  `expires_at` of the active leases at the rotation; none active: not kept). Every retired CA
+  is kept in `ca-retired.pub`, each with its deadline (at most 16, past ones dropped at the
+  next rotation): the gateway takes a certificate signed by the CA in force, or by a retired
+  one before its deadline, and no other. New leases (renewals and amendments too) are
+  certified by the new CA. Agents notice nothing.
+- One `admin` line (`SSH CA rotated: <old> replaced by <new>, its key on backend <name>`, or
+  `not rotated` with the reason).
+- `writd init --ca-backend <name>` makes the first CA key on that backend (the installer asks
+  it on a Mac).
+
 ## `writ unseal`
 
 A sealed daemon ([Flows § 7](../flows.md#7-daemon-startup-sealed)) answers only `writ info`

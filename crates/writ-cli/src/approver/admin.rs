@@ -300,6 +300,103 @@ pub async fn token(
 /// the backend the new key is made on (the current one by default), the new certificate's
 /// fingerprint. Reached over HTTPS, the pin is replaced in `tls_pins` (the old certificate
 /// vouched for the reply) and checked with a new connection; over SSH, the line to pin is
+/// `writ admin ca show` (M7.6).
+pub async fn ca_show(paths: &Paths, url: &str) -> anyhow::Result<Exit> {
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let shown: writ_proto::CaShown = session.call(&Command::CaShow, b"").await??;
+            println!("SSH CA of daemon {}: {}", shown.daemon, shown.fingerprint);
+            println!("public key: {}", clean(&shown.public_key));
+            println!("backend: {}", clean(&shown.backend));
+            if shown.retired.is_empty() {
+                println!("no other CA is trusted");
+            }
+            for retired in &shown.retired {
+                println!(
+                    "a CA it replaced, {}, is trusted until {} (its last lease's end)",
+                    retired.fingerprint,
+                    writ_core::units::Timestamp::from_unix(
+                        i64::try_from(retired.until).unwrap_or(i64::MAX)
+                    )
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|_| retired.until.to_string())
+                );
+            }
+            Ok(Exit::Ok)
+        })
+        .await
+}
+
+/// `writ admin ca rotate [--backend] [--yes]` (M7.6): the CA in force shown, then one
+/// signature over a `writ-ca/1` naming it.
+pub async fn ca_rotate(
+    paths: &Paths,
+    url: &str,
+    signer: &Signer,
+    backend: Option<&str>,
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let shown: writ_proto::CaShown = session.call(&Command::CaShow, b"").await??;
+            let backend = backend.unwrap_or(&shown.backend).to_owned();
+            if !shown.backends.iter().any(|b| b.name == backend) {
+                let names: Vec<String> = shown.backends.iter().map(|b| clean(&b.name)).collect();
+                bail!(
+                    "the daemon has no backend {} (it has: {})",
+                    clean(&backend),
+                    names.join(", ")
+                );
+            }
+            println!(
+                "The SSH CA of daemon {}: {}, its key on {}.",
+                shown.daemon,
+                shown.fingerprint,
+                clean(&shown.backend)
+            );
+            println!(
+                "A new key on {} replaces it at once: new leases are certified by it; leases the \
+                 old CA certified keep working until they end.",
+                clean(&backend)
+            );
+            if !yes {
+                print!("Sign this CA rotation? [y/N] ");
+                std::io::stdout().flush()?;
+                if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
+                    println!("Not signed.");
+                    return Ok(Exit::NotSigned);
+                }
+            }
+            let backend: writ_core::config::BackendName = backend
+                .clone()
+                .try_into()
+                .map_err(|e| anyhow::anyhow!("--backend: {e}"))?;
+            let document = writ_core::signed::CaRotation::new(
+                shown.daemon.clone(),
+                shown.fingerprint.clone(),
+                backend,
+            )
+            .canonical_bytes()?;
+            let request = writ_proto::CaRequest {
+                signature: signer.sign(&document)?,
+                document: String::from_utf8(document)?,
+            };
+            let rotated: writ_proto::CaRotated = session
+                .call(&Command::CaRotate, &writ_proto::encode_body(&request)?)
+                .await??;
+            println!(
+                "SSH CA rotated: {} (key on {}), replacing {}.",
+                rotated.fingerprint,
+                clean(&rotated.backend),
+                rotated.previous
+            );
+            Ok(Exit::Ok)
+        })
+        .await
+}
+
 /// printed.
 pub async fn tls_rotate(
     paths: &Paths,

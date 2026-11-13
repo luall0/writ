@@ -73,6 +73,11 @@ writ admin key remove <id>                 # refused while something uses it
   on the daemon's host. If you think someone copied the daemon's boot tier, rotate, then
   re-pin from that command on the host, not from what `writ` printed: a copy of the old key
   could have answered for the daemon.
+- `writ admin ca rotate` gives the daemon's SSH certificate authority a new key, in force at
+  once: it signs the certificates of every lease approved from then on. Add `--backend
+  se-cryptokit` to make the key in the Mac's Secure Enclave, or `--backend software` to come
+  back. Leases approved before keep working until they end. `writ admin ca show` says which
+  CA is in force and which older ones are still trusted, until when.
 - `writ admin host add <host>` and `writ admin host rescan <host>`: the daemon scans the
   host, you compare its keys with the ones the remote publishes, then a second signature
   pins them. For a host behind a [proxy](setup.md#a-remote-behind-a-proxy), add `proxy=<name>`

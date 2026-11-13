@@ -205,13 +205,13 @@ const CA_QUEUE: usize = 8;
 /// How long a certificate waits for the CA's backend.
 const CA_DEADLINE: Duration = Duration::from_secs(10);
 
+/// The CA's signer, and its key if its device refused it (why).
+pub type Ca = (Arc<dyn writ_crypto::ca::CaSigner>, Vec<(KeyId, String)>);
+
 /// The SSH CA behind a `Signer` (M7.6): its key in software or on a device, signing each
 /// certificate through its own queue. A key the device refused at unseal signs nothing (every
 /// grant refused, the daemon running), said in `refused`.
-pub fn ca(
-    config: &Config,
-    key: StoredKey,
-) -> anyhow::Result<(writ_crypto::ca::CertificateAuthority, Vec<(KeyId, String)>)> {
+pub fn ca(config: &Config, key: StoredKey) -> anyhow::Result<Ca> {
     let public = key.key.public_key();
     let algorithm = writ_crypto::algorithm::KeyAlgorithm::of_public(public.key_data())
         .ok_or_else(|| anyhow::anyhow!("the CA key's algorithm is not one Writ signs with"))?;
@@ -229,10 +229,7 @@ pub fn ca(
         public,
         hash,
     };
-    Ok((
-        writ_crypto::ca::CertificateAuthority::with_signer(Arc::new(signer)),
-        use_signer.refused,
-    ))
+    Ok((Arc::new(signer), use_signer.refused))
 }
 
 /// The CA's key in its signer, as the certificate authority signs with it.

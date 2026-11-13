@@ -154,6 +154,21 @@ pub trait AdminApplier: Send + Sync {
         &self,
     ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::KeysShown, String>>;
 
+    /// The SSH CA in force, its key's backend, and the CA it replaced while trusted (M7.6).
+    fn ca_show(
+        &self,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::CaShown, String>>;
+
+    /// A checked `writ-ca/1` done: refused unless it names the CA in force; a new key made on
+    /// its backend, written to the keystore, put in force for every certificate from now on,
+    /// the old CA trusted until its last lease ends. Logged by the gateway, from what this
+    /// answers.
+    fn rotate_ca(
+        &self,
+        checked: writ_approval::CheckedCa,
+        caller: CallerFacts,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::CaRotated, String>>;
+
     /// The HTTPS approval API's certificate in force and its key's backend (M7.5).
     fn tls_show(
         &self,
@@ -197,6 +212,27 @@ pub struct Gateway {
     shared: Arc<Shared>,
 }
 
+/// The CAs the gateway trusts (see [`Gateway::set_authorities`]).
+#[derive(Debug, Clone)]
+struct Authorities {
+    current: Fingerprint,
+    retired: Vec<(Fingerprint, u64)>,
+}
+
+impl Authorities {
+    /// Those trusted at `now`: each retired one only before its deadline.
+    fn at(&self, now: u64) -> Vec<Fingerprint> {
+        let mut trusted = vec![self.current];
+        trusted.extend(
+            self.retired
+                .iter()
+                .filter(|(_, until)| now < *until)
+                .map(|(retired, _)| *retired),
+        );
+        trusted
+    }
+}
+
 struct Shared {
     config: GatewayConfig,
     service: Arc<Service>,
@@ -206,7 +242,9 @@ struct Shared {
     unsealing: tokio::sync::Mutex<()>,
     /// One admin change at a time.
     administering: tokio::sync::Mutex<()>,
-    authorities: Vec<Fingerprint>,
+    /// The CAs a lease's certificate may be signed by: the one in force, and (M7.6, after a
+    /// rotation) the one it replaced, until its last lease ends.
+    authorities: std::sync::RwLock<Authorities>,
     ssh: Arc<russh::server::Config>,
     /// Pushes in progress, by the token handed to their pre-receive hook.
     pushes: Mutex<HashMap<String, hook::PushContext>>,
@@ -272,7 +310,10 @@ impl Gateway {
             inactivity_timeout: Some(limits::INACTIVITY_TIMEOUT),
             ..Default::default()
         });
-        let authorities = vec![service.ca_public_key().fingerprint(HashAlg::Sha256)];
+        let authorities = std::sync::RwLock::new(Authorities {
+            current: service.ca_public_key().fingerprint(HashAlg::Sha256),
+            retired: Vec::new(),
+        });
         let revocations = service.subscribe_revocations();
         let gateway = Self {
             shared: Arc::new(Shared {
@@ -322,6 +363,27 @@ impl Gateway {
     /// The approval service the gateway asks.
     pub fn service(&self) -> &Arc<Service> {
         &self.shared.service
+    }
+
+    /// The CAs whose certificates the gateway takes from now on (M7.6): `current`, and each
+    /// of `retired` (CAs rotations replaced) until its deadline (seconds since the epoch).
+    pub fn set_authorities(&self, current: Fingerprint, retired: Vec<(Fingerprint, u64)>) {
+        *self
+            .shared
+            .authorities
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Authorities { current, retired };
+    }
+
+    /// The CAs whose certificates are taken at `now` (seconds since the epoch).
+    pub(crate) fn authorities(&self, now: u64) -> Vec<Fingerprint> {
+        // poisoned: replaced whole.
+        let held = self
+            .shared
+            .authorities
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.at(now)
     }
 
     /// Hands the gateway its mirrors: at unseal, then whenever a registry change replaces
@@ -829,5 +891,36 @@ mod tests {
         assert!(!client_went_away(&GatewayError::Ssh(
             russh::Error::WrongServerSig
         )));
+    }
+
+    use super::Authorities;
+
+    fn fingerprint(seed: u8) -> ssh_key::Fingerprint {
+        let key =
+            ssh_key::PrivateKey::from(ssh_key::private::Ed25519Keypair::from_seed(&[seed; 32]));
+        key.public_key().fingerprint(ssh_key::HashAlg::Sha256)
+    }
+
+    /// M7.6: a CA a rotation replaced is trusted until its deadline, and not one second
+    /// after; the CA in force always.
+    #[test]
+    fn a_retired_ca_is_trusted_until_its_deadline_and_no_longer() {
+        let (current, retired) = (fingerprint(1), fingerprint(2));
+        let held = Authorities {
+            current,
+            retired: vec![(retired, 1000), (fingerprint(3), 2000)],
+        };
+        assert_eq!(held.at(999), vec![current, retired, fingerprint(3)]);
+        assert_eq!(
+            held.at(1000),
+            vec![current, fingerprint(3)],
+            "at its deadline: no longer"
+        );
+        assert_eq!(held.at(5000), vec![current]);
+        let alone = Authorities {
+            current,
+            retired: Vec::new(),
+        };
+        assert_eq!(alone.at(0), vec![current]);
     }
 }

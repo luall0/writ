@@ -114,6 +114,7 @@ pub(crate) fn approval_has_body(command: &Command) -> bool {
             | Command::TokenApply
             | Command::Scan
             | Command::TlsRotate
+            | Command::CaRotate
     )
 }
 
@@ -190,6 +191,14 @@ pub(crate) async fn approval_reply(
             None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
         },
         Command::TlsRotate => tls_rotate(gateway, facts, &body).await,
+        Command::CaShow => match gateway.shared.config.admin.clone() {
+            Some(applier) => match applier.ca_show().await {
+                Ok(shown) => encoded(Ok(shown)),
+                Err(reason) => encoded::<()>(Err(ApiError::new(reason))),
+            },
+            None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
+        },
+        Command::CaRotate => ca_rotate(gateway, facts, &body).await,
         Command::ScanNonce => encoded(blocking(move || service.scan_nonce()).await),
         Command::Scan => scan(gateway, facts, &body).await,
         Command::RepoCheck { repo } => check(gateway, facts, repo).await,
@@ -416,6 +425,40 @@ async fn tls_rotate(
         match &logged {
             Ok(rotated) => service.tls_logged(Some(&checked), Ok(&rotated.fingerprint), &facts),
             Err(why) => service.tls_logged(Some(&checked), Err(why), &facts),
+        }
+        Ok::<(), writ_approval::ServiceError>(())
+    })
+    .await
+    .ok();
+    match done {
+        Ok(rotated) => encoded(Ok(rotated)),
+        Err(reason) => encoded::<()>(Err(ApiError::new(format!("not rotated: {reason}")))),
+    }
+}
+
+/// `writ admin ca rotate` (M7.6): the service checks the document and the signature, the
+/// daemon rotates (one admin change at a time), the outcome logged once.
+async fn ca_rotate(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Option<String>) {
+    let request: writ_proto::CaRequest = match writ_proto::decode_body(body) {
+        Ok(request) => request,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let Some(applier) = gateway.shared.config.admin.clone() else {
+        return encoded::<()>(Err(ApiError::new("this daemon takes no admin change")));
+    };
+    let _one = gateway.shared.administering.lock().await;
+    let (service, caller) = (gateway.service().clone(), facts.clone());
+    let checked = match blocking(move || service.check_ca(&request, &caller)).await {
+        Ok(checked) => checked,
+        Err(e) => return encoded::<()>(Err(e)),
+    };
+    let done = applier.rotate_ca(checked.clone(), facts.clone()).await;
+    let service = gateway.service().clone();
+    let logged = done.clone();
+    blocking(move || {
+        match &logged {
+            Ok(rotated) => service.ca_logged(Some(&checked), Ok(&rotated.fingerprint), &facts),
+            Err(why) => service.ca_logged(Some(&checked), Err(why), &facts),
         }
         Ok::<(), writ_approval::ServiceError>(())
     })

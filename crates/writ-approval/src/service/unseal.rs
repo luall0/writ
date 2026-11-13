@@ -102,7 +102,7 @@ impl Service {
                 "the daemon is not sealed",
             ));
         }
-        if opened.ca.public_key() != &self.config.ca_public {
+        if opened.ca.public_key() != self.config.ca_public {
             return Err(refuse(
                 "the keystore's CA key is not the one the daemon started with".to_owned(),
             ));

@@ -8,6 +8,7 @@
 mod admin;
 mod agent;
 mod approver;
+mod ca;
 mod coalesced;
 mod gateway;
 mod notes;
@@ -25,6 +26,7 @@ mod token;
 mod unseal;
 
 pub use admin::{AdminParsed, CheckedAdmin, InForce};
+pub use ca::CheckedCa;
 pub use gateway::GatewayDenial;
 pub use push::Pushing;
 pub use scan::{CheckedScan, MAX_CHECKS_A_MINUTE, MAX_NONCES, MAX_SCANS_A_MINUTE, NONCE_SECONDS};

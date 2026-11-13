@@ -80,6 +80,12 @@ pub enum Command {
     /// `writ admin tls rotate`: an approver's signed `writ-tls/1` ([`TlsRequest`] on stdin):
     /// a new key and certificate, in force at once. Reply: [`TlsRotated`].
     TlsRotate,
+    /// `writ admin ca show` (M7.6): the SSH CA in force, and the one it replaced while still
+    /// trusted. Reply: [`CaShown`].
+    CaShow,
+    /// `writ admin ca rotate`: an approver's signed `writ-ca/1` ([`CaRequest`] on stdin): a
+    /// new CA key, in force at once. Reply: [`CaRotated`].
+    CaRotate,
 }
 
 impl Command {
@@ -128,6 +134,8 @@ impl Command {
                 }),
                 ("tls", Some("show")) => Some(Self::TlsShow),
                 ("tls", Some("rotate")) => Some(Self::TlsRotate),
+                ("ca", Some("show")) => Some(Self::CaShow),
+                ("ca", Some("rotate")) => Some(Self::CaRotate),
                 _ => None,
             };
         }
@@ -187,6 +195,8 @@ impl Command {
             Self::RepoCheck { repo } => format!("writ admin check {repo}"),
             Self::TlsShow => "writ admin tls show".to_owned(),
             Self::TlsRotate => "writ admin tls rotate".to_owned(),
+            Self::CaShow => "writ admin ca show".to_owned(),
+            Self::CaRotate => "writ admin ca rotate".to_owned(),
         }
     }
 
@@ -253,6 +263,8 @@ impl Command {
             Self::RepoCheck { repo } => Some(("POST", format!("/v1/repos/{repo}/check"))),
             Self::TlsShow => Some(("GET", "/v1/tls".to_owned())),
             Self::TlsRotate => Some(("POST", "/v1/tls".to_owned())),
+            Self::CaShow => Some(("GET", "/v1/ca".to_owned())),
+            Self::CaRotate => Some(("POST", "/v1/ca".to_owned())),
         }
     }
 
@@ -293,6 +305,8 @@ impl Command {
             },
             ("GET", ["tls"], None) => Self::TlsShow,
             ("POST", ["tls"], None) => Self::TlsRotate,
+            ("GET", ["ca"], None) => Self::CaShow,
+            ("POST", ["ca"], None) => Self::CaRotate,
             _ => return None,
         };
         Some(command)

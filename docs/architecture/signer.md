@@ -409,7 +409,7 @@ its own signer (`writ-ca`, a queue per backend), and the certificate authority s
 session certificate through it (`writ_crypto::ca::CaSigner`; ECDSA's hash for a P-256 key).
 `writd init --ca-backend se-cryptokit` makes it in the Secure Enclave (P-256); a blob the
 device refuses at unseal leaves every grant refused, the daemon running. Moving an existing
-daemon's CA is `writ admin ca rotate` (step 7b).
+daemon's CA is [`writ admin ca rotate`](approvals.md#writ-admin-ca-rotate).
 
 Secrets held in memory (decrypted keys, the data key, tokens: `UpstreamToken`, `BotToken`) are zeroized on drop and never
 printed through `Debug` or logs.

@@ -56,6 +56,10 @@ pub enum RefusalCode {
     /// daemon's, a certificate no longer in force, a backend the daemon lacks, too many
     /// rotations a minute, or the key or certificate not made.
     Tls,
+    /// An SSH CA rotation that can't be done (M7.6): not a `writ-ca/1` document, another
+    /// daemon's, a CA no longer in force, a backend the daemon lacks, too many rotations a
+    /// minute, or the key not made.
+    Ca,
 }
 
 /// Why a request to the service failed. What a client may see is its `Display`; an internal

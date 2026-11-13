@@ -2,6 +2,7 @@
 //! ([`sealed`]: one age file per secret, made by `writd init`, [`init`]) or the development
 //! keystore ([`dev`]: plain files, refused by release builds).
 
+pub mod ca;
 mod dev;
 mod init;
 pub mod recipients;
@@ -9,6 +10,7 @@ mod sealed;
 pub mod tls;
 
 pub use init::init;
+pub use sealed::CA_ID;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -640,6 +642,17 @@ impl Live {
         sealed::tokens(sealed, policy, &source)
     }
 
+    /// The sealed keystore's recipient (what a key is sealed to) and its configuration; none
+    /// for the development keystore.
+    pub fn sealed_parts(&self) -> Option<(&SealedConfig, &age::x25519::Recipient)> {
+        match self {
+            Self::Sealed {
+                sealed, recipient, ..
+            } => Some((sealed, recipient)),
+            Self::Dev(_) => None,
+        }
+    }
+
     /// What a token is sealed to now (`writ info`), none for the development keystore.
     pub fn token_recipients(&self) -> Vec<String> {
         match self {
@@ -824,6 +837,8 @@ pub fn start(
 ) -> anyhow::Result<Start> {
     match &config.keystore {
         KeystoreConfig::Sealed(sealed) => {
+            // A CA rotation cut short (M7.6): finished or dropped before the CA is read.
+            ca::finish(sealed)?;
             sealed::public(sealed, declared)?;
             Ok(Start::Sealed(sealed::boot(sealed)?))
         }

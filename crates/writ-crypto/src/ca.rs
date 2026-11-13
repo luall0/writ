@@ -94,9 +94,10 @@ impl From<&Through<'_>> for ssh_key::public::KeyData {
     }
 }
 
-/// Issues and checks session certificates.
+/// Issues and checks session certificates. Its key can be replaced in place (M7.6, a CA
+/// rotation): every certificate from then on is the new key's.
 pub struct CertificateAuthority {
-    key: std::sync::Arc<dyn CaSigner>,
+    key: std::sync::RwLock<std::sync::Arc<dyn CaSigner>>,
 }
 
 impl CertificateAuthority {
@@ -104,27 +105,42 @@ impl CertificateAuthority {
     pub fn new(key: PrivateKey) -> Self {
         let public = key.public_key().clone();
         match crate::keypair::KeyPair::from_ssh(key) {
-            Ok(key) => Self {
-                key: std::sync::Arc::new(Software { key, public }),
-            },
+            Ok(key) => Self::with_signer(std::sync::Arc::new(Software { key, public })),
             // A key ssh-key reads but Writ doesn't sign with: every certificate refused.
-            Err(_) => Self {
-                key: std::sync::Arc::new(Refusing(public)),
-            },
+            Err(_) => Self::with_signer(std::sync::Arc::new(Refusing(public))),
         }
     }
 
     /// The CA over `key`, a key a `Signer` backend holds.
     pub fn with_signer(key: std::sync::Arc<dyn CaSigner>) -> Self {
-        Self { key }
+        Self {
+            key: std::sync::RwLock::new(key),
+        }
     }
 
-    pub fn public_key(&self) -> &PublicKey {
-        self.key.public_key()
+    /// The key in force.
+    fn current(&self) -> std::sync::Arc<dyn CaSigner> {
+        // poisoned: replaced whole.
+        self.key
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Puts `key` in force for every certificate from now on.
+    pub fn replace(&self, key: std::sync::Arc<dyn CaSigner>) {
+        *self
+            .key
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = key;
+    }
+
+    pub fn public_key(&self) -> PublicKey {
+        self.current().public_key().clone()
     }
 
     pub fn fingerprint(&self) -> Fingerprint {
-        self.key.public_key().fingerprint(HashAlg::Sha256)
+        self.public_key().fingerprint(HashAlg::Sha256)
     }
 
     pub fn issue(&self, request: &CertificateRequest<'_>) -> Result<Certificate> {
@@ -142,7 +158,8 @@ impl CertificateAuthority {
         for principal in request.principals {
             builder.valid_principal(*principal)?;
         }
-        Ok(builder.sign(&Through(&*self.key))?)
+        let key = self.current();
+        Ok(builder.sign(&Through(&*key))?)
     }
 }
 

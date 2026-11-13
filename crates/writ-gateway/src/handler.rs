@@ -98,12 +98,13 @@ impl Connection {
         }
         let service = self.gateway.service();
         let serial = certificate.serial();
+        let now = service.now_unix();
         validate_user_certificate(
             certificate,
-            &self.gateway.shared.authorities,
+            &self.gateway.authorities(now),
             |serial| service.is_revoked(serial),
             user,
-            service.now_unix(),
+            now,
         )
         .map_err(|e| e.to_string())?;
         let session_key = certificate
