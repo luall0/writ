@@ -306,21 +306,30 @@ pub enum Synced {
 }
 
 /// Makes the file at `path` hold `text` (the version in force): a file that differs is moved
-/// aside to `<file>.unapplied-<now>` first (a hand edit, kept, never applied). The text is
-/// written whole (a temporary file renamed), 0644.
+/// aside to `<file>.unapplied-<now>` first (a hand edit, kept, never applied), and so is
+/// anything there that isn't an authority file the daemon would read (a link, a FIFO, one
+/// others can write, one past the bound: read as `read_authority` reads, the review after
+/// M7.6, S-11). The text is written whole, 0644 ([`write_back`]).
 pub fn sync_file(path: &Path, text: &str, now: Timestamp) -> anyhow::Result<Synced> {
-    let set_aside = match std::fs::read(path) {
-        Ok(bytes) if bytes == text.as_bytes() => return Ok(Synced::Same),
-        Ok(_) => {
-            let mut aside = path.as_os_str().to_owned();
-            aside.push(format!(".unapplied-{}", now.unix()));
-            let aside = PathBuf::from(aside);
-            std::fs::rename(path, &aside)
-                .with_context(|| format!("cannot set {} aside", path.display()))?;
-            Some(aside)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+    let there = match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let set_aside = match there {
+        false => None,
+        true => match writ_platform::fs::read_authority(path, "the file in force") {
+            Ok(read) if read == text => return Ok(Synced::Same),
+            // Differs, or isn't a file the daemon reads: kept aside, never applied.
+            Ok(_) | Err(_) => {
+                let mut aside = path.as_os_str().to_owned();
+                aside.push(format!(".unapplied-{}", now.unix()));
+                let aside = PathBuf::from(aside);
+                std::fs::rename(path, &aside)
+                    .with_context(|| format!("cannot set {} aside", path.display()))?;
+                Some(aside)
+            }
+        },
     };
     write_back(path, text)?;
     Ok(match set_aside {
@@ -329,24 +338,15 @@ pub fn sync_file(path: &Path, text: &str, now: Timestamp) -> anyhow::Result<Sync
     })
 }
 
-/// Writes `text` to `path` whole: a temporary file beside it, renamed over it.
+/// Writes `text` to `path` whole: a temporary file beside it, synced, renamed over it, the
+/// directory synced (`keystore::write_whole`, the one way the daemon writes a file whole).
 pub fn write_back(path: &Path, text: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".writing");
-    let temporary = PathBuf::from(temporary);
-    let _ = std::fs::remove_file(&temporary);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(&temporary)
-        .with_context(|| format!("cannot write {}", temporary.display()))?;
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all())
-        .with_context(|| format!("cannot write {}", temporary.display()))?;
-    std::fs::rename(&temporary, path).with_context(|| format!("cannot replace {}", path.display()))
+    crate::keystore::write_whole(
+        path,
+        text.as_bytes(),
+        0o644,
+        crate::keystore::Whole::Replace,
+    )
 }
 
 #[cfg(test)]
@@ -377,5 +377,61 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o644);
+    }
+
+    /// The review after M7.6 (S-11): `sync_file` read the file in place with a plain read
+    /// (a link followed, a FIFO blocked on, no bound). It reads as an authority file is read:
+    /// a link, a FIFO, a file others can write are set aside (never followed, never waited
+    /// on), the text in force written back in their place.
+    #[test]
+    fn whatever_stands_in_for_the_file_is_set_aside_never_followed_or_waited_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvers");
+        let aside = dir.path().join("approvers.unapplied-1800000000");
+        let check = |what: &str| {
+            assert_eq!(
+                sync_file(&path, "in force\n", now()).unwrap(),
+                Synced::SetAside(aside.clone()),
+                "{what}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "in force\n",
+                "{what}"
+            );
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            assert!(meta.is_file(), "{what}: a regular file now");
+            assert_eq!(meta.permissions().mode() & 0o777, 0o644, "{what}");
+        };
+        // A link to a file holding the very text: still not read through.
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, "in force\n").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        check("a link");
+        assert!(
+            std::fs::symlink_metadata(&aside)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "in force\n",
+            "untouched"
+        );
+        std::fs::remove_file(&aside).unwrap();
+        // A FIFO: never waited on.
+        std::fs::remove_file(&path).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        check("a FIFO");
+        std::fs::remove_file(&aside).unwrap();
+        // The text in force, in a file others can write.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        check("a file others can write");
     }
 }

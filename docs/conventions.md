@@ -190,7 +190,10 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   EOF); only the reply is lost. **A wait for a client ends with it**: raced against its
   channel (`writ wait`).
 - **A task that serves connections owns them**: in a `JoinSet` its abort ends, never spawned
-  loose (dropping a `JoinHandle` detaches the task, it doesn't stop it).
+  loose (dropping a `JoinHandle` detaches the task, it doesn't stop it). **A background task
+  is supervised** (`writd`'s `supervise`: the sweeper, the mirrors' sync): one that ends is
+  logged and started again, one that keeps ending stops the daemon in order, and the orderly
+  stop ends them first.
 - **Bounded everything** from untrusted peers: every read has a limit and refuses past it
   (`MAX_BODY`, `MAX_SIGN_INPUT`, `MAX_HOOK_INPUT`), handshakes and headers have timeouts, and a
   cut-short input is refused rather than decided on in part.

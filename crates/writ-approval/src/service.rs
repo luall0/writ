@@ -204,6 +204,10 @@ pub struct Service {
     /// after M7.6, S-8): set by the daemon at start, at unseal and when the recipients
     /// change (a rotation gives a new recipient).
     keystore_now: Mutex<(Option<String>, Vec<String>)>,
+    /// Sessions that ended, their certificates refused, their revocations still to record
+    /// (by the thread their notice started, or the next sweep): kept apart from the state
+    /// lock, which a notice may come under ([`sweep`]).
+    ended_sessions: Mutex<Vec<(TicketId, u64)>>,
     dropped: Arc<AtomicU64>,
     watcher: Arc<dyn SessionWatcher>,
     clock: Arc<dyn Clock>,
@@ -426,6 +430,7 @@ impl Service {
             waiting: std::sync::atomic::AtomicUsize::new(0),
             token_recipients: Mutex::new(Vec::new()),
             keystore_now,
+            ended_sessions: Mutex::new(Vec::new()),
             watcher: platform.watcher,
             clock: platform.clock,
             me: me.clone(),

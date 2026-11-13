@@ -51,7 +51,10 @@ pub trait CallerAttestor: Send + Sync {
 
 /// Calls back once when a process ends (kqueue `NOTE_EXIT` on macOS, a pidfd on Linux).
 /// Dropping the handle cancels the watch; an implementation that can't watch returns
-/// `Unsupported` for every call.
+/// `Unsupported` for every call. A notice is never lost: one that panics is caught and the
+/// watcher goes on (`watch::say_exit`), one said at once goes off the caller's thread, or in
+/// place when no thread can start (`watch::call_soon`), so it takes no lock the caller may
+/// hold (the review after M7.6, L-6).
 pub trait SessionWatcher: Send + Sync {
     fn watch(&self, process: &ProcessRef, on_exit: OnExit) -> Result<WatchHandle>;
 }

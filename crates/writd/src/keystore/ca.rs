@@ -42,20 +42,10 @@ fn retired_path(sealed: &SealedConfig) -> PathBuf {
     sealed.dir.join("ca-retired.pub")
 }
 
-/// Writes `bytes` whole at `path` (a new file, `mode`).
+/// Writes `bytes` whole at `path` (`mode`), over a file there (a `.new` left by a rotation
+/// cut short): the keystore's one way to write a file (the review after M7.6, S-11).
 fn write_new(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
-    let _ = std::fs::remove_file(path);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .open(path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .with_context(|| format!("cannot write {}", path.display()))
+    super::write_whole(path, bytes, mode, super::Whole::Replace)
 }
 
 /// What [`finish`] found at start.
@@ -85,9 +75,7 @@ fn backend_path(sealed: &SealedConfig) -> PathBuf {
 
 /// Syncs the keystore's directory: a rename is durable, and in order, only once it is.
 fn sync_dir(sealed: &SealedConfig) -> anyhow::Result<()> {
-    std::fs::File::open(&sealed.dir)
-        .and_then(|d| d.sync_all())
-        .with_context(|| format!("cannot sync {}", sealed.dir.display()))
+    super::sync_dir(&sealed.dir)
 }
 
 /// A rotation cut short: finished when its key was moved in already (the public half and the
@@ -110,11 +98,10 @@ pub fn finish(sealed: &SealedConfig) -> anyhow::Result<Finished> {
         if fresh.exists() {
             std::fs::rename(fresh, &path)
                 .with_context(|| format!("cannot finish the CA rotation ({})", fresh.display()))?;
+            // Each move durable before the next: never a marker in force before its half.
+            sync_dir(sealed)?;
             finished = Finished::Completed;
         }
-    }
-    if finished == Finished::Completed {
-        sync_dir(sealed)?;
     }
     Ok(finished)
 }
@@ -184,6 +171,7 @@ pub fn stage(
     let [age_new, pub_new, backend_new] = staged(sealed);
     let text = material.encode(meta)?;
     let sealed_key = seal_bytes(text.as_bytes(), &[recipient])?;
+    // Each written whole and its directory synced (`write_whole`).
     let written = write_new(&age_new, &sealed_key, 0o600)
         .and_then(|()| {
             write_new(
@@ -192,8 +180,7 @@ pub fn stage(
                 0o644,
             )
         })
-        .and_then(|()| write_new(&backend_new, format!("{backend}\n").as_bytes(), 0o644))
-        .and_then(|()| sync_dir(sealed));
+        .and_then(|()| write_new(&backend_new, format!("{backend}\n").as_bytes(), 0o644));
     if written.is_err() {
         unstage(sealed);
     }
@@ -252,13 +239,10 @@ pub fn retire(
     let path = retired_path(sealed);
     if kept.is_empty() {
         let _ = std::fs::remove_file(&path);
+        sync_dir(sealed)?;
         return Ok(kept);
     }
-    let fresh = with_suffix(&path, ".new");
-    write_new(&fresh, text.as_bytes(), 0o644)?;
-    std::fs::rename(&fresh, &path)
-        .with_context(|| format!("cannot move {} in place", fresh.display()))?;
-    sync_dir(sealed)?;
+    write_new(&path, text.as_bytes(), 0o644)?;
     Ok(kept)
 }
 
@@ -281,11 +265,7 @@ pub fn backend(sealed: &SealedConfig) -> anyhow::Result<String> {
 
 /// Records the backend the CA's key is on (`writd init`; a rotation stages it with the key).
 pub fn set_backend(sealed: &SealedConfig, name: &str) -> anyhow::Result<()> {
-    let path = backend_path(sealed);
-    let fresh = with_suffix(&path, ".new");
-    write_new(&fresh, format!("{name}\n").as_bytes(), 0o644)?;
-    std::fs::rename(&fresh, &path)
-        .with_context(|| format!("cannot move {} in place", fresh.display()))
+    write_new(&backend_path(sealed), format!("{name}\n").as_bytes(), 0o644)
 }
 
 #[cfg(test)]

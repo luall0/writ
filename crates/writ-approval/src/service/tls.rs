@@ -42,9 +42,9 @@ fn refused(reason: impl Into<String>) -> ServiceError {
 
 impl Service {
     /// Checks a rotation's document and signature: a `writ-tls/1` decoded strictly, signed by
-    /// an approver in force, naming this daemon, within the rotations' rate. A refusal is
-    /// logged (`admin`, denied). Whether it names the certificate in force is checked by the
-    /// daemon, which holds it, under the lock it rotates with.
+    /// an approver in force, naming this daemon. A refusal is logged (`admin`, denied).
+    /// Whether it names the certificate in force is checked by the daemon, which holds it,
+    /// under the lock it rotates with, then the rotation counted ([`Service::count_tls`]).
     pub fn check_tls(
         &self,
         request: &TlsRequest,
@@ -66,13 +66,34 @@ impl Service {
             "rotation",
             RefusalCode::Tls,
         )?;
-        let now = self.now()?;
-        if !within(&mut self.outbound().rotations, now, MAX_ROTATIONS_A_MINUTE) {
-            return Err(refused(format!(
-                "more than {MAX_ROTATIONS_A_MINUTE} TLS key rotations a minute: try again shortly"
-            )));
-        }
         Ok(CheckedTls { rotation, approver })
+    }
+
+    /// Counts a checked rotation the daemon found to name the certificate in force against
+    /// the rotations' rate ([`MAX_ROTATIONS_A_MINUTE`], shared with the CA's), before any key
+    /// is made: a replay, which names one no longer in force, never takes a rotation's place
+    /// (the review after M7.6).
+    pub fn count_tls(
+        &self,
+        // The proof the rotation was checked: nothing else of it is needed here.
+        _checked: &CheckedTls,
+    ) -> Result<(), ServiceError> {
+        match self.count_rotation()? {
+            true => Ok(()),
+            false => Err(refused(format!(
+                "more than {MAX_ROTATIONS_A_MINUTE} TLS key rotations a minute: try again shortly"
+            ))),
+        }
+    }
+
+    /// Whether the rate takes one more rotation in the last minute (then counted).
+    pub(super) fn count_rotation(&self) -> Result<bool, ServiceError> {
+        let now = self.now()?;
+        Ok(within(
+            &mut self.outbound().rotations,
+            now,
+            MAX_ROTATIONS_A_MINUTE,
+        ))
     }
 
     /// Tells the approvers a rotation is done, through the service's notification queue (the

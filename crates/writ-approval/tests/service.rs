@@ -334,7 +334,7 @@ fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
     );
     validate_user_certificate(
         &cert,
-        std::slice::from_ref(&h.ca_fingerprint),
+        std::slice::from_ref(h.ca_key.public_key().key_data()),
         |_| false,
         "git",
         START,

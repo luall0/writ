@@ -161,6 +161,59 @@ fn sigterm_stops_in_order_and_lets_an_upstream_push_in_flight_finish() {
     assert!(out.status.success(), "{}", stderr(&out));
 }
 
+/// The review after M7.6 (D-5): a second signal while the stop waits was swallowed. It is
+/// said, and the daemon exits at once (a failure: what was in flight is cut), never waiting
+/// for the push upstream holds.
+#[test]
+fn a_second_signal_while_stopping_exits_at_once_and_says_so() {
+    let mut daemon = started();
+    let repo = clone(&daemon, "work");
+    writ_ok(&daemon, &repo, &["init", "demo", "--agents", "none"], &[]);
+    committed(&daemon, &repo);
+    daemon.remote.set_mode(Mode::Held);
+    let before = daemon.remote.receive_packs();
+    let push = daemon
+        .writ(&["git", "push", "-q", "origin", "HEAD:refs/heads/agent/x"])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    eventually("the upstream push to reach the remote", || {
+        daemon.remote.receive_packs() > before
+    });
+    daemon.signal("TERM");
+    daemon.wait_for_log("stopping", writ_integration::WAIT_LIMIT);
+    daemon.signal("INT");
+    let said = daemon.wait_for_log(
+        "a second signal while stopping",
+        writ_integration::WAIT_LIMIT,
+    );
+    assert!(said.contains("signal=\"SIGINT\""), "{said}");
+    let status = daemon.exited();
+    assert_eq!(status.code(), Some(1), "{status:?}: {}", daemon.log());
+    assert!(
+        daemon.log().contains("stopped at once by a second SIGINT"),
+        "{}",
+        daemon.log()
+    );
+    assert!(
+        !daemon
+            .log()
+            .lines()
+            .any(|l| l.trim_end().ends_with(" stopped")),
+        "never stopped in order: {}",
+        daemon.log()
+    );
+    daemon.remote.release();
+    let pushed = finish(push);
+    // The daemon's exit cut the push's connection: git's fatal error.
+    assert_eq!(pushed.status.code(), Some(128), "{}", stderr(&pushed));
+}
+
 #[test]
 fn sigint_stops_the_same_way() {
     let mut daemon = started();
@@ -207,7 +260,8 @@ fn once_stopping_the_gateway_refuses_a_new_git_operation_and_logs_it() {
     let work = gateway.clone("work");
     let fetched = gateway.remote.upload_packs();
     // Nothing in flight: the stop's wait ends at once, and nothing new starts after it.
-    assert_eq!(gateway.runtime.block_on(gateway.gateway.stop()), 0);
+    let limit = std::time::Duration::from_secs(60);
+    assert_eq!(gateway.runtime.block_on(gateway.gateway.stop(limit)), 0);
     let out = gateway.git(&work, &["fetch", "origin"]);
     assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
     let reason = "the daemon is stopping: try again once it is back";

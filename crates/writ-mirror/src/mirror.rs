@@ -273,6 +273,19 @@ impl Mirrors {
         self.shared.in_flight.stop(self.stop_wait()).await
     }
 
+    /// Refuses every upstream operation from now on ([`MirrorError::Stopping`]), with every
+    /// `Mirrors` a registry change made; those in flight run on (the orderly stop closes the
+    /// intake when it begins, then waits once: [`Mirrors::wait_until`]).
+    pub fn close(&self) {
+        self.shared.in_flight.close();
+    }
+
+    /// Waits for the upstream operations in flight, at most until `deadline`: how many still
+    /// ran then.
+    pub async fn wait_until(&self, deadline: tokio::time::Instant) -> usize {
+        self.shared.in_flight.wait_until(deadline).await
+    }
+
     /// The longest a stop waits for operations in flight: one upstream operation's deadline
     /// (`mirrors.timeout`) and [`STOP_MARGIN`].
     pub fn stop_wait(&self) -> Duration {

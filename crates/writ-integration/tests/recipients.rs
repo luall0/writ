@@ -251,6 +251,67 @@ fn a_recovery_key_on_a_passphrase_keystore_opens_it_and_is_checked_from_the_appr
     );
 }
 
+/// The review after M7.6 (D-7): a policy change whose rewrap failed returned before its file
+/// was written back, so the next start took the old file for a hand edit and set it aside. A
+/// rewrap that can't write (the keys directory made read-only for it) now leaves the change in
+/// force and said so, its file written back; the next unseal finishes the rewrap, and nothing
+/// is set aside.
+#[test]
+fn a_change_whose_rewrap_fails_is_written_back_and_finished_at_the_next_unseal() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    ok(&daemon.unseal());
+    let (_, recipient) = new_recovery_key(&daemon);
+    let dir = keys(&daemon);
+    let mode = |bits| fs::set_permissions(&dir, fs::Permissions::from_mode(bits)).unwrap();
+    mode(0o500);
+    let given = format!("recipient={recipient}");
+    let out = daemon.run(
+        &["admin", "recipient", "add", "recovery", &given, "--yes"],
+        "",
+    );
+    mode(0o700);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains(
+            "the policy is in force, but the keystore isn't wrapped to its recipients yet"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !dir.join("identity.recovery.age").exists(),
+        "the rewrap failed"
+    );
+    let file = fs::read_to_string(daemon.root().join("policy.yaml")).unwrap();
+    assert!(file.contains(&recipient), "written back: {file}");
+    let shown = daemon.run(&["admin", "show", "policy"], "");
+    ok(&shown);
+    assert_eq!(stdout(&shown), file, "the file is the version in force");
+
+    daemon.restart();
+    ok(&daemon.unseal());
+    assert!(
+        dir.join("identity.recovery.age").exists(),
+        "finished at the unseal"
+    );
+    assert!(
+        !daemon
+            .audit()
+            .contains("differed from the version in force"),
+        "{}",
+        daemon.audit()
+    );
+    assert!(
+        fs::read_dir(daemon.root()).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("unapplied")),
+        "nothing set aside"
+    );
+}
+
 fn on_the_mac() -> bool {
     std::env::consts::OS == "macos"
 }

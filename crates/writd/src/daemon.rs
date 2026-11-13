@@ -102,6 +102,8 @@ struct Inner {
     tls: OnceLock<Arc<writ_crypto::tls::TlsIdentity>>,
     /// Set when the daemon opens itself (M7.6, `unseal: auto`): the unseal is logged so.
     automatic: std::sync::atomic::AtomicBool,
+    /// Where the background tasks it starts go (the mirrors' sync): supervised by `writd run`.
+    spawner: crate::supervise::Spawner,
 }
 
 impl Opener {
@@ -112,6 +114,7 @@ impl Opener {
         mirrors: MirrorConfig,
         service: Arc<Service>,
         notifiers: Arc<LateNotifiers>,
+        spawner: crate::supervise::Spawner,
     ) -> Self {
         Self(Arc::new(Inner {
             config,
@@ -124,6 +127,7 @@ impl Opener {
             gateway: OnceLock::new(),
             tls: OnceLock::new(),
             automatic: std::sync::atomic::AtomicBool::new(false),
+            spawner,
         }))
     }
 
@@ -210,6 +214,8 @@ impl Opener {
                 rotation.replaces
             ));
         }
+        // Counted only now: a replay, naming a CA no longer in force, takes no rotation's place.
+        inner.service.count_ca(checked).map_err(|e| e.to_string())?;
         let backend = platform::BACKENDS
             .iter()
             .copied()
@@ -295,17 +301,9 @@ impl Opener {
         let now = inner.service.now_unix();
         let still = keystore::ca::retired(sealed, now).unwrap_or_default();
         let trusted = |old_until: u64, kept: &[(writ_crypto::ssh_key::PublicKey, u64)]| {
-            std::iter::once((
-                old.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
-                old_until,
-            ))
-            .chain(kept.iter().map(|(key, until)| {
-                (
-                    key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
-                    *until,
-                )
-            }))
-            .collect::<Vec<_>>()
+            std::iter::once((old.clone(), old_until))
+                .chain(kept.iter().cloned())
+                .collect::<Vec<_>>()
         };
         let mut but = Vec::new();
         match keystore::ca::commit(sealed) {
@@ -318,10 +316,7 @@ impl Opener {
                 "its public half and marker aren't moved in yet ({why}): the next start does it"
             )),
         }
-        gateway.set_authorities(
-            public.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
-            trusted(u64::MAX, &still),
-        );
+        gateway.set_authorities(&public, &trusted(u64::MAX, &still));
         if let Err(e) = inner.service.replace_ca(checked, signer) {
             but.push(format!(
                 "the running daemon still signs with the old CA ({e}): restart it"
@@ -365,17 +360,7 @@ impl Opener {
                     .collect()
             }
         };
-        gateway.set_authorities(
-            public.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
-            kept.iter()
-                .map(|(key, until)| {
-                    (
-                        key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
-                        *until,
-                    )
-                })
-                .collect(),
-        );
+        gateway.set_authorities(&public, &kept);
         for why in &but {
             let reason = format!("SSH CA rotated to {fingerprint}, but {why}");
             tracing::error!("{reason}");
@@ -429,6 +414,12 @@ impl Opener {
                 rotation.replaces
             ));
         }
+        // Counted only now: a replay, naming a certificate no longer in force, takes no
+        // rotation's place.
+        inner
+            .service
+            .count_tls(checked)
+            .map_err(|e| e.to_string())?;
         let backend = platform::BACKENDS
             .iter()
             .copied()
@@ -548,24 +539,13 @@ impl Opener {
         unusable.extend(refused);
         // The CAs the gateway takes: this one, and one a rotation replaced, while its leases
         // last (M7.6).
-        let ca_fingerprint = ca
-            .public_key()
-            .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256);
         let retired = match &inner.config.keystore {
             KeystoreConfig::Sealed(sealed) => {
                 keystore::ca::retired(sealed, inner.service.now_unix())?
-                    .into_iter()
-                    .map(|(key, until)| {
-                        (
-                            key.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
-                            until,
-                        )
-                    })
-                    .collect()
             }
             KeystoreConfig::Dev(_) => Vec::new(),
         };
-        gateway.set_authorities(ca_fingerprint, retired);
+        gateway.set_authorities(ca.public_key(), &retired);
         let ca = writ_crypto::ca::CertificateAuthority::with_signer(ca);
         let upstream = upstream.signer;
         let mirrors = Mirrors::open(
@@ -645,9 +625,13 @@ impl Opener {
                 }
             }
         }
-        crate::spawn_mirror_sync(
+        let (gateway, every) = (
             gateway.clone(),
             Duration::from_secs(inner.config.mirrors.sync_every.seconds()),
+        );
+        inner.spawner.spawn(
+            "mirror sync",
+            Box::new(move || Box::pin(crate::mirror_sync(gateway.clone(), every))),
         );
         Ok(())
     }

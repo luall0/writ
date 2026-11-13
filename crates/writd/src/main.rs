@@ -36,6 +36,7 @@ mod keystore;
 mod lock;
 mod platform;
 mod recover;
+mod supervise;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -68,6 +69,15 @@ static ALLOCATOR: writ_alloc::Wiping = writ_alloc::Wiping::system();
 
 /// How often pending tickets and leases are checked for expiry.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How long the service managers wait for the orderly stop before they kill `writd`: the
+/// units' `ExitTimeOut` (launchd) and `TimeoutStopSec` (systemd), in `deploy/setups/`.
+const UNIT_STOP_TIMEOUT: Duration = Duration::from_secs(330);
+
+/// The longest the orderly stop waits for what is in flight (the review after M7.6, D-5):
+/// one upstream operation's deadline (`mirrors.timeout`) and its margin, never past this, so
+/// it ends, its lines written, before the service manager kills the daemon.
+const STOP_LIMIT: Duration = UNIT_STOP_TIMEOUT.saturating_sub(Duration::from_secs(10));
 
 /// Every command `main` dispatches, with its arguments: the usage text, and the list the
 /// end-to-end coverage registry is checked against (docs/end-to-end.md).
@@ -103,9 +113,33 @@ fn usage() -> String {
         .join("\n")
 }
 
+/// How each command hardens itself before it reads anything secret (docs/operators/
+/// hardening.md); `None` for the three that read none (git's hook, ssh's relay and tunnel:
+/// each forwards bytes). `run` hardens itself once its process reader started (Linux).
+/// The commands that print a public key decode the keys whose halves they print (the host
+/// key, every key of the development keystore): hardened too (the review after M7.6, D-10).
+fn hardening_of(command: &str) -> Option<hardening::Say> {
+    match command {
+        "hook" | "upstream-ssh" | "upstream-tunnel" => None,
+        "run" => Some(hardening::Say::Log),
+        "init" | "recover" => Some(hardening::Say::Stderr),
+        _ => Some(hardening::Say::Refusals),
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Before anything is read: a refused step stops the command here.
+    if let Some(command) = args.first().copied()
+        && command != "run"
+        && COMMANDS.iter().any(|(name, _)| *name == command)
+        && let Some(say) = hardening_of(command)
+        && let Err(e) = hardening::harden(say)
+    {
+        eprintln!("writd: {e:#}");
+        return ExitCode::FAILURE;
+    }
     let result = match args.as_slice() {
         ["hook", "pre-receive"] => {
             return u8::try_from(writ_gateway::run_pre_receive())
@@ -122,25 +156,19 @@ fn main() -> ExitCode {
                 .map(ExitCode::from)
                 .unwrap_or(ExitCode::FAILURE);
         }
+        // It receives a token: hardened first, quietly (once per git operation).
         ["upstream-credential", rest @ ..] => {
-            // It receives a token: hardened first, quietly (once per git operation).
-            if let Err(e) = hardening::harden(hardening::Say::Refusals) {
-                eprintln!("writd: {e:#}");
-                return ExitCode::FAILURE;
-            }
             return u8::try_from(writ_mirror::credential::helper::run(rest))
                 .map(ExitCode::from)
                 .unwrap_or(ExitCode::FAILURE);
         }
         // The process reader `writd run` starts on Linux: hardened first, quietly.
-        ["proc-reader"] => hardening::harden(hardening::Say::Refusals)
-            .and_then(|()| platform::serve_process_reader()),
-        ["init", config, rest @ ..] => {
-            hardening::harden(hardening::Say::Stderr).and_then(|()| init(Path::new(config), rest))
-        }
+        ["proc-reader"] => platform::serve_process_reader(),
+        ["init", config, rest @ ..] => init(Path::new(config), rest),
         ["run", config] => run(Path::new(config)),
-        ["recover", config, target, file] => hardening::harden(hardening::Say::Stderr)
-            .and_then(|()| recover::recover(Path::new(config), target, Path::new(file))),
+        ["recover", config, target, file] => {
+            recover::recover(Path::new(config), target, Path::new(file))
+        }
         ["upstream-keys", config] => upstream_keys(Path::new(config)),
         ["host-key", config] => host_key(Path::new(config)),
         ["tls-fingerprint", config] => tls_fingerprint(Path::new(config)),
@@ -322,49 +350,50 @@ fn spawn_listeners(
     servers
 }
 
-/// Expires pending tickets and leases every [`SWEEP_INTERVAL`], off the async threads.
-fn spawn_sweeper(service: Arc<Service>) {
-    tokio::spawn(async move {
-        let mut ticks = tokio::time::interval(SWEEP_INTERVAL);
-        loop {
-            ticks.tick().await;
-            let service = service.clone();
-            let _ = tokio::task::spawn_blocking(move || service.sweep()).await;
+/// Expires pending tickets and leases every [`SWEEP_INTERVAL`], off the async threads, until
+/// a sweep fails (a panic): said, and the task ends, for its supervisor to start it again
+/// ([`supervise`]).
+async fn sweeper(service: Arc<Service>) {
+    let mut ticks = tokio::time::interval(SWEEP_INTERVAL);
+    loop {
+        ticks.tick().await;
+        let service = service.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || service.sweep()).await {
+            tracing::error!(error = %e, "the sweep failed");
+            return;
         }
-    });
+    }
 }
 
 /// Syncs every mirror from upstream every `every` (the first right away), one after the other,
 /// unless a fetch or a push synced it more recently. A failure is logged and the mirror stays
 /// stale: fetches and pushes then try again, and are refused if they fail too. After a mirror
 /// synced (or was fresh), its notes are brought up to date (`Gateway::reconcile_notes`): at
-/// start, and every `every`.
-pub(crate) fn spawn_mirror_sync(gateway: Gateway, every: Duration) {
-    tokio::spawn(async move {
-        let mut ticks = tokio::time::interval(every);
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            ticks.tick().await;
-            // The mirrors in force at each round: a registry change replaces them.
-            let Ok(mirrors) = gateway.mirrors() else {
-                continue;
-            };
-            let repos: Vec<_> = mirrors.repos().cloned().collect();
-            for repo in repos {
-                match mirrors.sync_if_stale(&repo).await {
-                    Ok(SyncReport::Synced { moved, more }) if !moved.is_empty() => {
-                        tracing::info!(%repo, moved = moved.len().saturating_add(more), "mirror synced");
-                    }
-                    Ok(_) => tracing::debug!(%repo, "mirror up to date"),
-                    Err(e) => {
-                        tracing::warn!(%repo, error = %e, "mirror sync failed");
-                        continue;
-                    }
+/// start, and every `every`. Supervised ([`supervise`]), ended first by the orderly stop.
+pub(crate) async fn mirror_sync(gateway: Gateway, every: Duration) {
+    let mut ticks = tokio::time::interval(every);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticks.tick().await;
+        // The mirrors in force at each round: a registry change replaces them.
+        let Ok(mirrors) = gateway.mirrors() else {
+            continue;
+        };
+        let repos: Vec<_> = mirrors.repos().cloned().collect();
+        for repo in repos {
+            match mirrors.sync_if_stale(&repo).await {
+                Ok(SyncReport::Synced { moved, more }) if !moved.is_empty() => {
+                    tracing::info!(%repo, moved = moved.len().saturating_add(more), "mirror synced");
                 }
-                gateway.reconcile_notes(&repo).await;
+                Ok(_) => tracing::debug!(%repo, "mirror up to date"),
+                Err(e) => {
+                    tracing::warn!(%repo, error = %e, "mirror sync failed");
+                    continue;
+                }
             }
+            gateway.reconcile_notes(&repo).await;
         }
-    });
+    }
 }
 
 /// Now, by the system clock, to the second.
@@ -475,7 +504,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("cannot create {}", repos.display()))?;
 
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async move {
+    let ended = runtime.block_on(async move {
         let mut signals = StopSignals::take()?;
         let mirror_config = mirror_config(&config, repos, pinned, ca_certs)?;
         let platform = platform::build(&config, &process_reader).await?;
@@ -510,6 +539,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
             keystore::recipient(&config)?,
             keystore::rotation_owed(&config)?,
         );
+        let (spawner, mut supervisor) = supervise::Supervisor::new();
         let opener = daemon::Opener::new(
             config.clone(),
             loaded.policy,
@@ -517,6 +547,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
             mirror_config,
             service.clone(),
             platform.notifier.clone(),
+            spawner.clone(),
         );
         let unsealer: Option<Arc<dyn writ_gateway::Unsealer>> = match open {
             Some(_) => None,
@@ -538,40 +569,152 @@ fn run(path: &Path) -> anyhow::Result<()> {
         .await?;
         opener.set_gateway(gateway.clone());
         opener.set_tls(tls.clone());
-        let sealed = open.is_none();
-        match open {
+        // From here on every way out goes through the orderly stop (the review after M7.6,
+        // D-6): an open that fails, a listener that ends, a background task that keeps ending,
+        // as much as a signal.
+        let mut servers = tokio::task::JoinSet::new();
+        let opened = match open {
             Some(opened) => {
                 opener
                     .open(opened, None, &writ_core::caller::CallerFacts::default())
-                    .await?;
+                    .await
             }
-            None if automatic => opener.unseal_automatically().await?,
-            None => service.announce_sealed(),
+            None if automatic => opener.unseal_automatically().await,
+            None => {
+                service.announce_sealed();
+                Ok(())
+            }
+        };
+        let stop = match opened.and_then(|()| Ok(host_public.to_openssh()?)) {
+            Ok(host_key) => {
+                tracing::info!(
+                    %host_key,
+                    tls_fingerprint = %tls.fingerprint(),
+                    sealed = service.is_sealed(),
+                    "started"
+                );
+                tracing::info!(decisions = ?config.decisions, "decisions");
+                let wait = Duration::from_secs(config.mirrors.timeout.seconds())
+                    .saturating_add(writ_mirror::STOP_MARGIN);
+                if wait > STOP_LIMIT {
+                    tracing::warn!(
+                        limit_seconds = STOP_LIMIT.as_secs(),
+                        "mirrors.timeout and its margin outlast the orderly stop's limit: an \
+                         upstream operation in flight when the daemon stops is cut at it"
+                    );
+                }
+                servers = spawn_listeners(&gateway, &platform, &tls);
+                let sweeping = service.clone();
+                spawner.spawn(
+                    "sweeper",
+                    Box::new(move || Box::pin(sweeper(sweeping.clone()))),
+                );
+                until_stopped(&mut signals, &mut servers, &mut supervisor).await
+            }
+            Err(e) => Stop::Failed(format!("{e:#}")),
+        };
+        let reason = match &stop {
+            Stop::Signal(signal) => {
+                tracing::info!(signal, "stopping");
+                None
+            }
+            Stop::Failed(why) => {
+                tracing::error!(reason = %why, "stopping");
+                Some(why.clone())
+            }
+        };
+        let stopped = stop_in_order(
+            &mut signals,
+            Stopping {
+                supervisor: &mut supervisor,
+                servers: &mut servers,
+                platform,
+                gateway: &gateway,
+                limit: STOP_LIMIT,
+            },
+        )
+        .await;
+        anyhow::Ok((stopped, reason))
+    });
+    match ended {
+        Ok((Stopped::InOrder, None)) => Ok(()),
+        Ok((Stopped::InOrder, Some(why))) => bail!("stopped: {why}"),
+        // Cut by a second signal: what still runs isn't waited for, not even the blocking
+        // threads a runtime's drop would wait on.
+        Ok((Stopped::AtOnce(signal), _)) => {
+            runtime.shutdown_background();
+            bail!("stopped at once by a second {signal}")
         }
+        Err(e) => Err(e),
+    }
+}
 
-        tracing::info!(
-            host_key = %host_public.to_openssh()?,
-            tls_fingerprint = %tls.fingerprint(),
-            sealed,
-            "started"
-        );
-        tracing::info!(decisions = ?config.decisions, "decisions");
-        let mut servers = spawn_listeners(&gateway, &platform, &tls);
-        spawn_sweeper(service);
-        let stop = until_stopped(&mut signals, &mut servers).await?;
-        tracing::info!(signal = stop, "stopping");
+/// Why `writd run` stops.
+enum Stop {
+    /// SIGINT or SIGTERM.
+    Signal(&'static str),
+    /// Something it can't run without ended or failed: it stops in order, then exits with
+    /// the reason (a service manager restarts it).
+    Failed(String),
+}
+
+/// How the orderly stop ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Stopped {
+    /// Everything it waits for was waited for (or cut at its limit).
+    InOrder,
+    /// A second signal came while it waited: the daemon exits at once.
+    AtOnce(&'static str),
+}
+
+/// What the orderly stop ends, in its order.
+struct Stopping<'a> {
+    supervisor: &'a mut supervise::Supervisor,
+    servers: &'a mut tokio::task::JoinSet<writ_gateway::Result<()>>,
+    platform: platform::Platform,
+    gateway: &'a Gateway,
+    limit: Duration,
+}
+
+/// The orderly stop, the same on every way out (the review after M7.6, D-5, D-6): the
+/// background tasks end (no sync or notes push starts after this), the listeners close, then
+/// the gateway refuses new work and closes upstream's intake at once, and waits once for what
+/// is in flight, at most one upstream operation's deadline and never past `limit`. A second
+/// SIGINT or SIGTERM meanwhile is said, and the daemon exits at once.
+async fn stop_in_order(signals: &mut StopSignals, stopping: Stopping<'_>) -> Stopped {
+    let Stopping {
+        supervisor,
+        servers,
+        platform,
+        gateway,
+        limit,
+    } = stopping;
+    let work = async move {
+        supervisor.shutdown().await;
         // The listeners closed: their tasks ended, then the transports dropped.
         servers.shutdown().await;
         drop(platform);
-        match gateway.stop().await {
-            0 => tracing::info!("stopped"),
-            cut => tracing::warn!(
-                cut,
-                "stopped with operations still running past their deadline"
-            ),
+        gateway.stop(limit).await
+    };
+    let second = tokio::select! {
+        cut = work => {
+            match cut {
+                0 => tracing::info!("stopped"),
+                cut => tracing::warn!(
+                    cut,
+                    "stopped with operations still running past their deadline"
+                ),
+            }
+            return Stopped::InOrder;
         }
-        Ok(())
-    })
+        _ = signals.interrupt.recv() => "SIGINT",
+        _ = signals.terminate.recv() => "SIGTERM",
+    };
+    tracing::warn!(
+        signal = second,
+        "a second signal while stopping: writd exits at once, what is in flight cut"
+    );
+    Stopped::AtOnce(second)
 }
 
 /// The signals that stop the daemon in order, the same way for each: SIGINT (Ctrl-C) and
@@ -685,20 +828,22 @@ fn log_access(approvers: &[AllowedSigner], readers: &[Reader]) {
     }
 }
 
-/// Runs until SIGINT or SIGTERM (the signal's name returned: an orderly stop follows), or
-/// until a listener ends (an error: the daemon stops with it).
+/// Runs until SIGINT or SIGTERM (an orderly stop follows), a listener ends, or a background
+/// task keeps ending (the daemon stops in order with it).
 async fn until_stopped(
     signals: &mut StopSignals,
     servers: &mut tokio::task::JoinSet<writ_gateway::Result<()>>,
-) -> anyhow::Result<&'static str> {
+    supervisor: &mut supervise::Supervisor,
+) -> Stop {
     tokio::select! {
-        _ = signals.interrupt.recv() => Ok("SIGINT"),
-        _ = signals.terminate.recv() => Ok("SIGTERM"),
-        Some(result) = servers.join_next() => match result {
-            Ok(Ok(())) => Err(anyhow::anyhow!("a listener ended")),
-            Ok(Err(e)) => Err(anyhow::anyhow!("a listener failed: {e}")),
-            Err(e) => Err(anyhow::anyhow!("a listener stopped: {e}")),
-        },
+        _ = signals.interrupt.recv() => Stop::Signal("SIGINT"),
+        _ = signals.terminate.recv() => Stop::Signal("SIGTERM"),
+        Some(result) = servers.join_next() => Stop::Failed(match result {
+            Ok(Ok(())) => "a listener ended".to_owned(),
+            Ok(Err(e)) => format!("a listener failed: {e}"),
+            Err(e) => format!("a listener stopped: {e}"),
+        }),
+        why = supervisor.until_failed() => Stop::Failed(why),
     }
 }
 
@@ -866,6 +1011,44 @@ mod tests {
             dispatched, listed,
             "main dispatches exactly the commands COMMANDS lists"
         );
+    }
+
+    /// The review after M7.6 (D-5): the orderly stop's limit is under the service managers'
+    /// stop timeout, the one the units in `deploy/setups/` set.
+    #[test]
+    fn the_orderly_stop_ends_before_the_units_stop_timeout() {
+        let seconds = UNIT_STOP_TIMEOUT.as_secs();
+        assert!(STOP_LIMIT < UNIT_STOP_TIMEOUT);
+        let setups = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/setups");
+        for (file, setting) in [
+            (
+                "local-macos.sh",
+                format!("<key>ExitTimeOut</key><integer>{seconds}</integer>"),
+            ),
+            ("local-linux.sh", format!("TimeoutStopSec={seconds}")),
+        ] {
+            let text = std::fs::read_to_string(format!("{setups}/{file}")).unwrap();
+            assert!(text.contains(&setting), "{file} doesn't say {setting}");
+        }
+    }
+
+    /// The review after M7.6 (D-10): every command hardens itself before it reads anything,
+    /// those that print a public key included; only the three that forward bytes don't.
+    #[test]
+    fn every_command_but_the_byte_forwarders_hardens_itself() {
+        for (name, _) in COMMANDS {
+            let hardened = hardening_of(name).is_some();
+            let forwards = matches!(*name, "hook" | "upstream-ssh" | "upstream-tunnel");
+            assert_eq!(hardened, !forwards, "{name}");
+        }
+        for name in [
+            "host-key",
+            "tls-fingerprint",
+            "upstream-keys",
+            "signing-keys",
+        ] {
+            assert_eq!(hardening_of(name), Some(hardening::Say::Refusals), "{name}");
+        }
     }
 
     #[test]

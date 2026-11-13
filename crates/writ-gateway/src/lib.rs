@@ -64,7 +64,8 @@ use writ_core::lease::Lease;
 use writ_core::net::Sources;
 use writ_core::policy::{CertIdentity, Denial};
 use writ_crypto::readers::ReaderSet;
-use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
+use writ_crypto::ssh_key::public::KeyData;
+use writ_crypto::ssh_key::{PrivateKey, PublicKey};
 use writ_platform::{CallerAttestor, Connection, PeerInfo, Transport};
 
 pub use hook::run_pre_receive;
@@ -217,22 +218,23 @@ pub struct Gateway {
     shared: Arc<Shared>,
 }
 
-/// The CAs the gateway trusts (see [`Gateway::set_authorities`]).
+/// The CAs the gateway trusts (see [`Gateway::set_authorities`]), each by its whole key (the
+/// review after M7.6, K-8: never a fingerprint where the key is at hand).
 #[derive(Debug, Clone)]
 struct Authorities {
-    current: Fingerprint,
-    retired: Vec<(Fingerprint, u64)>,
+    current: KeyData,
+    retired: Vec<(KeyData, u64)>,
 }
 
 impl Authorities {
     /// Those trusted at `now`: each retired one only before its deadline.
-    fn at(&self, now: u64) -> Vec<Fingerprint> {
-        let mut trusted = vec![self.current];
+    fn at(&self, now: u64) -> Vec<KeyData> {
+        let mut trusted = vec![self.current.clone()];
         trusted.extend(
             self.retired
                 .iter()
                 .filter(|(_, until)| now < *until)
-                .map(|(retired, _)| *retired),
+                .map(|(retired, _)| retired.clone()),
         );
         trusted
     }
@@ -316,7 +318,7 @@ impl Gateway {
             ..Default::default()
         });
         let authorities = std::sync::RwLock::new(Authorities {
-            current: service.ca_public_key().fingerprint(HashAlg::Sha256),
+            current: service.ca_public_key().key_data().clone(),
             retired: Vec::new(),
         });
         let revocations = service.subscribe_revocations();
@@ -371,8 +373,14 @@ impl Gateway {
     }
 
     /// The CAs whose certificates the gateway takes from now on (M7.6): `current`, and each
-    /// of `retired` (CAs rotations replaced) until its deadline (seconds since the epoch).
-    pub fn set_authorities(&self, current: Fingerprint, retired: Vec<(Fingerprint, u64)>) {
+    /// of `retired` (CAs rotations replaced) until its deadline (seconds since the epoch),
+    /// each by its whole key.
+    pub fn set_authorities(&self, current: &PublicKey, retired: &[(PublicKey, u64)]) {
+        let current = current.key_data().clone();
+        let retired = retired
+            .iter()
+            .map(|(key, until)| (key.key_data().clone(), *until))
+            .collect();
         *self
             .shared
             .authorities
@@ -381,7 +389,7 @@ impl Gateway {
     }
 
     /// The CAs whose certificates are taken at `now` (seconds since the epoch).
-    pub(crate) fn authorities(&self, now: u64) -> Vec<Fingerprint> {
+    pub(crate) fn authorities(&self, now: u64) -> Vec<KeyData> {
         // poisoned: replaced whole.
         let held = self
             .shared
@@ -413,19 +421,27 @@ impl Gateway {
     }
 
     /// The orderly stop's wait, once the listeners are closed: from now on a lease holder's
-    /// git operation or signature is refused, and those in flight are waited for (each git
-    /// operation's answer reaching its client), then nothing more is sent upstream and the
-    /// upstream operations still in flight (the notes) are waited for
-    /// ([`writ_mirror::Mirrors::stop`]). Each wait lasts at most one upstream operation's
-    /// deadline ([`writ_mirror::Mirrors::stop_wait`]). How many still ran then.
-    pub async fn stop(&self) -> usize {
+    /// git operation or signature is refused, and nothing more is sent upstream, both closed
+    /// at once (the review after M7.6, D-5); then those in flight are waited for (each git
+    /// operation's answer reaching its client, the upstream operations: the notes), once, at
+    /// most one upstream operation's deadline ([`writ_mirror::Mirrors::stop_wait`]) and never
+    /// past `limit` (what the service manager allows). How many still ran then.
+    pub async fn stop(&self, limit: Duration) -> usize {
         let mirrors = self.mirrors().ok();
         let wait = mirrors
             .as_ref()
-            .map_or(writ_mirror::STOP_MARGIN, writ_mirror::Mirrors::stop_wait);
-        let operations = self.shared.operations.stop(wait).await;
+            .map_or(writ_mirror::STOP_MARGIN, writ_mirror::Mirrors::stop_wait)
+            .min(limit);
+        self.shared.operations.close();
+        if let Some(mirrors) = &mirrors {
+            mirrors.close();
+        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(wait)
+            .unwrap_or_else(writ_mirror::in_flight::far_future);
+        let operations = self.shared.operations.wait_until(deadline).await;
         let upstream = match mirrors {
-            Some(mirrors) => mirrors.stop().await,
+            Some(mirrors) => mirrors.wait_until(deadline).await,
             None => 0,
         };
         operations.saturating_add(upstream)
@@ -960,30 +976,30 @@ mod tests {
 
     use super::Authorities;
 
-    fn fingerprint(seed: u8) -> ssh_key::Fingerprint {
+    fn key(seed: u8) -> ssh_key::public::KeyData {
         let key =
             ssh_key::PrivateKey::from(ssh_key::private::Ed25519Keypair::from_seed(&[seed; 32]));
-        key.public_key().fingerprint(ssh_key::HashAlg::Sha256)
+        key.public_key().key_data().clone()
     }
 
     /// M7.6: a CA a rotation replaced is trusted until its deadline, and not one second
     /// after; the CA in force always.
     #[test]
     fn a_retired_ca_is_trusted_until_its_deadline_and_no_longer() {
-        let (current, retired) = (fingerprint(1), fingerprint(2));
+        let (current, retired) = (key(1), key(2));
         let held = Authorities {
-            current,
-            retired: vec![(retired, 1000), (fingerprint(3), 2000)],
+            current: current.clone(),
+            retired: vec![(retired.clone(), 1000), (key(3), 2000)],
         };
-        assert_eq!(held.at(999), vec![current, retired, fingerprint(3)]);
+        assert_eq!(held.at(999), vec![current.clone(), retired, key(3)]);
         assert_eq!(
             held.at(1000),
-            vec![current, fingerprint(3)],
+            vec![current.clone(), key(3)],
             "at its deadline: no longer"
         );
-        assert_eq!(held.at(5000), vec![current]);
+        assert_eq!(held.at(5000), vec![current.clone()]);
         let alone = Authorities {
-            current,
+            current: current.clone(),
             retired: Vec::new(),
         };
         assert_eq!(alone.at(0), vec![current]);

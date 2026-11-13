@@ -417,7 +417,8 @@ pub enum WatcherKind<'a> {
 /// - a prompt callback for a process that already ended, and for a wrong generation (a
 ///   reused pid is another process);
 /// - only the watch of the process that ended fires;
-/// - dropping a handle after its callback ran is harmless.
+/// - dropping a handle after its callback ran is harmless;
+/// - a callback that panics doesn't keep the next exits from being said.
 pub fn session_watcher<W: SessionWatcher + ?Sized>(watcher: &W, kind: WatcherKind<'_>) {
     match kind {
         WatcherKind::Unsupported => session_watcher_unsupported(watcher),
@@ -560,6 +561,24 @@ fn session_watcher_supported<W: SessionWatcher + ?Sized>(
     assert_fires_once(&rx_second, "the second process");
     drop(first_handle);
     drop(second_handle);
+
+    // A notice that panics: the watcher goes on saying the others (the review after M7.6,
+    // L-6: one panic on the watcher's thread lost every later exit).
+    let panicking = driver.start();
+    let after = driver.start();
+    let panicking_handle = watcher
+        .watch(
+            &panicking,
+            Box::new(|| panic!("an exit notice that panics (the contract's)")),
+        )
+        .expect("watch");
+    let (on_after, rx_after) = counting_callback();
+    let after_handle = watcher.watch(&after, on_after).expect("watch");
+    driver.end(&panicking);
+    driver.end(&after);
+    assert_fires_once(&rx_after, "an exit after a notice that panicked");
+    drop(panicking_handle);
+    drop(after_handle);
 }
 
 // ----- KeystoreUnwrap -----

@@ -23,6 +23,8 @@ impl Service {
     /// the operations no rate window counts any more. Called by the daemon's timer; every
     /// request also sweeps first ([`Service::begin`]), without the pruning.
     pub fn sweep(&self) {
+        // Ended sessions whose notice couldn't record them (before the lock: it takes it).
+        self.record_ended_sessions();
         let Ok(now) = self.now() else { return };
         let Ok(mut inner) = self.lock() else { return };
         // Lines kept while the log was down are retried even when no request comes.
@@ -99,6 +101,23 @@ impl Service {
             changed = true;
         }
         Ok(changed)
+    }
+
+    /// The sessions kept as ended ([`Service::watch_session`]'s notices): a reduction of
+    /// privilege, so a poisoned list is taken all the same.
+    pub(super) fn ended_sessions(&self) -> std::sync::MutexGuard<'_, Vec<(TicketId, u64)>> {
+        self.ended_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Records the revocation of every session kept as ended (each certificate refused
+    /// already). Never called under the state lock.
+    pub(super) fn record_ended_sessions(&self) {
+        let ended = std::mem::take(&mut *self.ended_sessions());
+        for (lease, serial) in ended {
+            self.session_ended(&lease, serial);
+        }
     }
 
     /// The session process of a lease ended: the lease is revoked. Its certificate goes on the
@@ -229,5 +248,57 @@ impl Service {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use writ_core::caller::CallerFacts;
+    use writ_core::canonical::Canonical;
+    use writ_core::lease::State;
+    use writ_core::ticket::Ticket;
+
+    use crate::testing::TestServiceBuilder;
+
+    const POLICY: &str = include_str!("../../../writ-core/tests/fixtures/policy.yaml");
+
+    /// The review after M7.6 (L-6): an ended session's notice whose thread couldn't start was
+    /// lost. Kept instead, its certificate refused at once: the next sweep records it.
+    #[test]
+    fn an_ended_session_kept_unrecorded_is_revoked_by_the_next_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = TestServiceBuilder::new(POLICY).build(dir.path());
+        let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+        let yaml = "repos:\n  omega-code:\n    template: feature-branch\n    operations: \
+                    [fetch]\n    branches: [\"agent/x\"]\nticket:\n  title: T\n  task: T\n";
+        let submitted = h
+            .service
+            .submit(key.public_key(), yaml.as_bytes(), &CallerFacts::default())
+            .unwrap();
+        let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+        h.service
+            .approve(&ticket.id, &h.approval(&ticket), &CallerFacts::default())
+            .unwrap();
+        let serial = h
+            .service
+            .inner
+            .lock()
+            .unwrap()
+            .store
+            .lease(&ticket.id)
+            .unwrap()
+            .unwrap()
+            .cert_serial;
+        // What a notice does when no thread can start: the certificate refused, the end kept.
+        h.service.bar_serial(serial);
+        h.service.ended_sessions().push((ticket.id.clone(), serial));
+        assert!(h.service.is_revoked(serial));
+        assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Active);
+        h.service.sweep();
+        assert_eq!(h.service.show(&ticket.id).unwrap().state, State::Revoked);
+        assert!(h.service.ended_sessions().is_empty());
+        let revoked = h.events("revoke", "done");
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked[0]["reason"], "the session's process ended");
     }
 }

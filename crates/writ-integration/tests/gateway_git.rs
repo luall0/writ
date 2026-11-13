@@ -623,15 +623,15 @@ fn a_retired_ca_is_trusted_at_the_gateway_until_its_deadline_and_no_later() {
     };
     // Before its deadline: the CA is taken, the certificate refused for its lease alone.
     gateway.gateway.set_authorities(
-        gateway.ca.fingerprint(),
-        vec![(retired.fingerprint(), now() + 3600)],
+        &gateway.ca.public_key(),
+        &[(retired.public_key(), now() + 3600)],
     );
     assert_eq!(ls_remote().status.code(), Some(128));
     assert_eq!(unknown(), 0);
     // Its deadline past: an unknown authority.
     gateway.gateway.set_authorities(
-        gateway.ca.fingerprint(),
-        vec![(retired.fingerprint(), now() - 1)],
+        &gateway.ca.public_key(),
+        &[(retired.public_key(), now() - 1)],
     );
     assert_eq!(ls_remote().status.code(), Some(128));
     writ_integration::eventually("the unknown authority's line", || unknown() == 1);

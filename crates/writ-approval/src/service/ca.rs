@@ -10,7 +10,6 @@ use writ_proto::CaRequest;
 use writ_store::{AuditEvent, EventKind, Outcome};
 
 use super::Service;
-use super::scan::within;
 use super::tls::MAX_ROTATIONS_A_MINUTE;
 use crate::{RefusalCode, ServiceError};
 
@@ -39,9 +38,9 @@ fn refused(reason: impl Into<String>) -> ServiceError {
 
 impl Service {
     /// Checks a CA rotation's document and signature: a `writ-ca/1` decoded strictly, signed
-    /// by an approver in force, naming this daemon, within the rate. A refusal is logged
-    /// (`admin`, denied). Whether it names the CA in force is the daemon's to check, under the
-    /// lock it rotates with.
+    /// by an approver in force, naming this daemon. A refusal is logged (`admin`, denied).
+    /// Whether it names the CA in force is the daemon's to check, under the lock it rotates
+    /// with, then the rotation counted ([`Service::count_ca`]).
     pub fn check_ca(
         &self,
         request: &CaRequest,
@@ -63,13 +62,23 @@ impl Service {
             "rotation",
             RefusalCode::Ca,
         )?;
-        let now = self.now()?;
-        if !within(&mut self.outbound().rotations, now, MAX_ROTATIONS_A_MINUTE) {
-            return Err(refused(format!(
-                "more than {MAX_ROTATIONS_A_MINUTE} key rotations a minute: try again shortly"
-            )));
-        }
         Ok(CheckedCa { rotation, approver })
+    }
+
+    /// Counts a checked rotation the daemon found to name the CA in force against the
+    /// rotations' rate (shared with the TLS key's), before any key is made: a replay, which
+    /// names a CA no longer in force, never takes a rotation's place (the review after M7.6).
+    pub fn count_ca(
+        &self,
+        // The proof the rotation was checked: nothing else of it is needed here.
+        _checked: &CheckedCa,
+    ) -> Result<(), ServiceError> {
+        match self.count_rotation()? {
+            true => Ok(()),
+            false => Err(refused(format!(
+                "more than {MAX_ROTATIONS_A_MINUTE} key rotations a minute: try again shortly"
+            ))),
+        }
     }
 
     /// The line of a rotation about to be put in force (the review after M7.6, S-2): written

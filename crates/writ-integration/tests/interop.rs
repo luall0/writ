@@ -194,7 +194,7 @@ fn certificates_are_issued_and_checked() {
             })
             .unwrap()
     };
-    let trusted = [authority.fingerprint()];
+    let trusted = [authority.public_key().key_data().clone()];
     let revoked: HashSet<u64> = [7].into_iter().collect();
     let check = |cert, user, now| {
         ca::validate_user_certificate(cert, &trusted, |s| revoked.contains(&s), user, now)

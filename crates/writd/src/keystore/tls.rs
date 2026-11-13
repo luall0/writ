@@ -52,19 +52,10 @@ fn remove_if_there(path: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// A file written whole and synced, readable by others (a certificate, a public half).
+/// A file written whole and synced, readable by others (a certificate, a public half), never
+/// over one there: the keystore's one way to write a file (the review after M7.6, S-11).
 fn write_public_file(path: &Path, text: &str) -> anyhow::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all())
-        .with_context(|| format!("cannot write {}", path.display()))
+    super::write_whole(path, text.as_bytes(), 0o644, super::Whole::New)
 }
 
 impl TlsFiles {
@@ -84,6 +75,11 @@ impl TlsFiles {
                     std::fs::rename(&pending, part).with_context(|| {
                         format!("cannot finish the TLS rotation: {}", pending.display())
                     })?;
+                    // Each move durable before the next (the certificate, moved last, says a
+                    // rotation is still to finish).
+                    if let Some(dir) = part.parent() {
+                        super::sync_dir(dir)?;
+                    }
                 }
             }
             tracing::warn!("a TLS key rotation cut short was finished at start");

@@ -54,7 +54,7 @@ implementations plugged in. Installed by the [installer](#installing-and-uninsta
 | The daemon's directory: `writd.yaml` (root's), `policy.yaml`, `approvers`, `readers`, `keys/`, `boot/`, `state/` | `/var/db/writ` | `_writd` 0700 |
 | The sockets (agents', approvals') | `/Library/Application Support/Writ/run` | `_writd:_writ` 0750 |
 | The log (stdout and stderr) | `/Library/Logs/Writ/writd.log` | `_writd:_writ` 0640 |
-| The LaunchDaemon | `/Library/LaunchDaemons/dev.writ.writd.plist`: `UserName _writd`, `RunAtLoad`, `KeepAlive` on an unsuccessful exit only (an orderly stop stays stopped), `ExitTimeOut` 330 s (the orderly stop's waits: `mirrors.timeout` and its margin), `Umask` 077 | root:wheel 0644 |
+| The LaunchDaemon | `/Library/LaunchDaemons/dev.writ.writd.plist`: `UserName _writd`, `RunAtLoad`, `KeepAlive` on an unsuccessful exit only (an orderly stop stays stopped), `ExitTimeOut` 330 s (the orderly stop waits once, at most `mirrors.timeout` and 5 s, never past 320 s: [flows § 8](../flows.md#8-daemon-stop); a `mirrors.timeout` over 315 s is cut there, said at start), `Umask` 077 | root:wheel 0644 |
 | The installer's manifest | `/Library/Application Support/Writ/install.manifest` | root:wheel 0644 |
 | Your client | `~/.writ`: `known_hosts` (`writ-local <host key>`), `config` (the two sockets), `reader`, `approver.pub` | yours |
 
@@ -94,7 +94,7 @@ call filter, and the reader installs a stricter one of its own (its socket, `rea
 memory, its exit: [platform](platform.md#the-linux-process-chain-and-session-watcher)). Never `ProtectProc=invisible` or
 `PrivatePIDs`: the daemon must see the agents' processes. `LimitMEMLOCK=infinity` (the memory
 lock), `LimitCORE=0`. `Restart=on-failure` (an orderly stop stays stopped), `TimeoutStopSec`
-330 s (the orderly stop's waits), `KillMode=mixed` (SIGTERM to `writd` alone, so its reader
+330 s (the orderly stop's one wait, never past 320 s, as on the Mac), `KillMode=mixed` (SIGTERM to `writd` alone, so its reader
 outlives the stop's waits).
 
 Built in [M7.1](../history/m7.1-local-mode-on-linux.md).

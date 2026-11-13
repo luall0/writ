@@ -309,9 +309,11 @@ tls rotate [--backend <name>]`. The same command moves the key between backends 
 - The approver signs `writ-tls/1` (`{daemon, replaces, backend}`) in the `writ-approval`
   namespace; `writ` sends it (`tls rotate`, `POST /v1/tls`, `TlsRequest`). The service decodes
   it strictly, checks the signature against `approvers` and the daemon (refused `tls` or
-  `signature`), five a minute daemon-wide; one admin change at a time.
+  `signature`); one admin change at a time.
 - The daemon refuses it unless `replaces` is the certificate in force (so the same document
-  sent again rotates nothing), makes the new key on the backend (software: generated; a
+  sent again rotates nothing), then counts it against the rotations' rate (five a minute
+  daemon-wide, shared with the CA's: a replay, refused before, takes no rotation's place),
+  makes the new key on the backend (software: generated; a
   device: `create_key` on a helper signer of its own), signs its certificate through it, and
   writes the key, its public half (a device's) and the certificate beside the old ones as
   `.new`, the certificate last. It builds the new identity from them (a failure drops them and
@@ -340,10 +342,10 @@ its backend, the CAs it replaced still trusted, and the daemon's backends.
 - The approver signs `writ-ca/1` (`{daemon, replaces, backend}`, `replaces` the CA key's
   fingerprint) in the `writ-approval` namespace (`ca rotate`, `POST /v1/ca`, `CaRequest`).
   The service decodes it strictly, checks the signature against `approvers` and the daemon
-  (refused `ca` or `signature`), within the rotations' rate shared with the TLS key's (five a
-  minute); one admin change at a time.
-- The daemon refuses it unless `replaces` is the CA in force (a replay rotates nothing) and a
-  backend it has, and refuses a software backend while `unseal: auto` is in force (the next
+  (refused `ca` or `signature`); one admin change at a time.
+- The daemon refuses it unless `replaces` is the CA in force (a replay rotates nothing, and,
+  refused before the rotations' rate counts it, takes no rotation's place: five a minute,
+  shared with the TLS key's) and a backend it has, and refuses a software backend while `unseal: auto` is in force (the next
   start would refuse itself; the review after M7.6, D-2). It makes the new key (software:
   Ed25519, generated; a device: P-256, by the device), builds its signer (a key its device
   refuses: nothing written), stages `ca.age`, `ca.pub` and `ca.backend` beside the old as

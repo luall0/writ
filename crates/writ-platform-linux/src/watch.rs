@@ -72,17 +72,6 @@ impl Shared {
     }
 }
 
-/// Calls `on_exit` off the caller's thread: a watch is often set under the state lock that
-/// the callback (a revocation) takes.
-fn call_soon(on_exit: OnExit) {
-    if let Err(e) = std::thread::Builder::new()
-        .name("writ-session-exit".to_owned())
-        .spawn(on_exit)
-    {
-        tracing::error!(error = %e, "cannot start a thread to say a session ended");
-    }
-}
-
 impl PidfdWatcher {
     /// A watcher with its epoll set and its thread.
     pub fn new() -> Result<Self> {
@@ -142,7 +131,7 @@ fn wait_for_exits(shared: &Shared) {
                         .flat_map(|(_, (_, list))| list.into_iter().map(|(_, on_exit)| on_exit))
                         .collect()
                 };
-                all.into_iter().for_each(|on_exit| on_exit());
+                all.into_iter().for_each(writ_platform::watch::say_exit);
                 return;
             }
         }
@@ -163,7 +152,7 @@ fn wait_for_exits(shared: &Shared) {
                 watches.keys.retain(|_, k| *k != key);
                 list.into_iter().map(|(_, on_exit)| on_exit).collect()
             };
-            ended.into_iter().for_each(|on_exit| on_exit());
+            ended.into_iter().for_each(writ_platform::watch::say_exit);
         }
     }
 }
@@ -176,7 +165,7 @@ impl SessionWatcher for PidfdWatcher {
         let pidfd = match procfs::hold(pid) {
             Ok(pidfd) => pidfd,
             Err(procfs::ReadError::Gone(_)) => {
-                call_soon(on_exit);
+                writ_platform::watch::call_soon(on_exit);
                 return Ok(WatchHandle::new(|| {}));
             }
             Err(procfs::ReadError::Unreadable(why)) => {
@@ -192,7 +181,7 @@ impl SessionWatcher for PidfdWatcher {
         };
         if !same || !procfs::running(&pidfd)? {
             // Ended, or the pid is another process's: said at once.
-            call_soon(on_exit);
+            writ_platform::watch::call_soon(on_exit);
             return Ok(WatchHandle::new(|| {}));
         }
         let identity = (pid, generation);
@@ -223,7 +212,7 @@ impl SessionWatcher for PidfdWatcher {
                 // Never: a key and its entry go together, under this lock. Said, not lost.
                 None => {
                     drop(watches);
-                    call_soon(on_exit);
+                    writ_platform::watch::call_soon(on_exit);
                     return Ok(WatchHandle::new(|| {}));
                 }
             }

@@ -952,3 +952,66 @@ fn a_rotation_s_line_comes_first_and_none_means_no_rotation() {
         ]
     );
 }
+
+/// A rotation is counted against the rotations' rate only once the daemon found it names
+/// what is in force (`count_ca`, `count_tls`): a replayed, validly signed one, which names a
+/// CA or a certificate no longer in force, never takes a rotation's place. The rate is shared,
+/// and holds on both sides.
+#[test]
+fn a_replayed_rotation_takes_no_place_in_the_rate_which_holds_on_both_sides() {
+    use writ_core::signed::{CaRotation, CertFingerprint, TlsRotation};
+    let dir = tempfile::tempdir().unwrap();
+    let clock = std::sync::Arc::new(writ_platform::testing::FakeClock::at_unix(
+        writ_approval::testing::START,
+    ));
+    let h = TestServiceBuilder::new(POLICY)
+        .clock(clock.clone())
+        .build(dir.path());
+    let backend: writ_core::config::BackendName = "software".to_owned().try_into().unwrap();
+    let ca: KeyFingerprint = writ_crypto::keys::fingerprint(h.ca_key.public_key())
+        .parse()
+        .unwrap();
+    let document = CaRotation::new(h.daemon.clone(), ca, backend.clone())
+        .canonical_bytes()
+        .unwrap();
+    let ca_request = writ_proto::CaRequest {
+        signature: sshsig::sign(&h.approver, APPROVAL_NAMESPACE, &document).unwrap(),
+        document: String::from_utf8(document).unwrap(),
+    };
+    let pin: CertFingerprint = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+        .parse()
+        .unwrap();
+    let document = TlsRotation::new(h.daemon.clone(), pin, backend)
+        .canonical_bytes()
+        .unwrap();
+    let tls_request = writ_proto::TlsRequest {
+        signature: sshsig::sign(&h.approver, APPROVAL_NAMESPACE, &document).unwrap(),
+        document: String::from_utf8(document).unwrap(),
+    };
+    // Checked (and replayed) as often as anyone likes: none counted.
+    for _ in 0..2 * writ_approval::MAX_ROTATIONS_A_MINUTE {
+        h.service.check_ca(&ca_request, &facts()).unwrap();
+        h.service.check_tls(&tls_request, &facts()).unwrap();
+    }
+    let ca_checked = h.service.check_ca(&ca_request, &facts()).unwrap();
+    let tls_checked = h.service.check_tls(&tls_request, &facts()).unwrap();
+    // Counted: one below the rate taken, at it refused, the CA's and the TLS key's together.
+    for n in 0..writ_approval::MAX_ROTATIONS_A_MINUTE {
+        match n % 2 {
+            0 => h.service.count_ca(&ca_checked).unwrap(),
+            _ => h.service.count_tls(&tls_checked).unwrap(),
+        }
+    }
+    let message = refused(h.service.count_ca(&ca_checked), RefusalCode::Ca);
+    assert_eq!(
+        message,
+        "more than 5 key rotations a minute: try again shortly"
+    );
+    let message = refused(h.service.count_tls(&tls_checked), RefusalCode::Tls);
+    assert_eq!(
+        message,
+        "more than 5 TLS key rotations a minute: try again shortly"
+    );
+    clock.advance(60);
+    h.service.count_tls(&tls_checked).unwrap();
+}

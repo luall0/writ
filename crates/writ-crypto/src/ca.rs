@@ -1,6 +1,7 @@
 //! The daemon's SSH certificate authority: one user certificate per approved lease.
 
 use ssh_key::certificate::{Builder, CertType};
+use ssh_key::public::KeyData;
 use ssh_key::{Certificate, Fingerprint, HashAlg, PrivateKey, PublicKey};
 
 use crate::Result;
@@ -177,10 +178,11 @@ impl CaSigner for Refusing {
 }
 
 /// Checks a user certificate presented to the gateway. Every check must pass; `is_revoked`
-/// says whether a serial is on the deny list.
+/// says whether a serial is on the deny list. The CA that signed it is matched by its whole
+/// key against `authorities`, never by a fingerprint (the review after M7.6, K-8).
 pub fn validate_user_certificate(
     cert: &Certificate,
-    authorities: &[Fingerprint],
+    authorities: &[KeyData],
     is_revoked: impl Fn(u64) -> bool,
     user: &str,
     now: u64,
@@ -188,9 +190,11 @@ pub fn validate_user_certificate(
     if cert.cert_type() != CertType::User {
         return Err(CertificateError::NotUserCertificate);
     }
-    let authority = cert.signature_key().fingerprint(HashAlg::Sha256);
-    if !authorities.contains(&authority) {
-        return Err(CertificateError::UnknownAuthority(authority.to_string()));
+    let authority = cert.signature_key();
+    if !authorities.contains(authority) {
+        return Err(CertificateError::UnknownAuthority(
+            authority.fingerprint(HashAlg::Sha256).to_string(),
+        ));
     }
     cert.verify_signature()
         .map_err(|_| CertificateError::BadSignature)?;
@@ -244,7 +248,7 @@ mod tests {
             }
             builder.sign(&ca).unwrap()
         };
-        let authorities = [ca.public_key().fingerprint(HashAlg::Sha256)];
+        let authorities = [ca.public_key().key_data().clone()];
         let check = |cert: &Certificate| {
             validate_user_certificate(cert, &authorities, |_| false, "git", 50)
         };

@@ -276,7 +276,7 @@ impl FakeWatcher {
                 .collect()
         };
         for on_exit in callbacks {
-            on_exit();
+            crate::watch::say_exit(on_exit);
         }
     }
 
@@ -302,7 +302,7 @@ impl SessionWatcher for FakeWatcher {
                 .is_some_and(|&generation| generation != process.generation);
         if gone {
             drop(guard);
-            std::thread::spawn(on_exit);
+            crate::watch::call_soon(on_exit);
             return Ok(WatchHandle::new(|| {}));
         }
         let id = guard.next_id;

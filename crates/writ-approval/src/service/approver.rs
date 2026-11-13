@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use writ_core::caller::{CallerFacts, ProcessRef};
 use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, Renewed, State, TicketRecord};
@@ -709,13 +710,29 @@ impl Service {
         let me = self.me.clone();
         let (lease_id, serial) = (lease.id.clone(), lease.cert_serial);
         let on_exit = Box::new(move || {
-            // Possibly called right away, while the caller holds the state lock: revoke from
-            // another thread.
-            std::thread::spawn(move || {
-                if let Some(service) = me.upgrade() {
-                    service.session_ended(&lease_id, serial);
-                }
-            });
+            let Some(service) = me.upgrade() else {
+                return;
+            };
+            // Possibly called right away, while the caller holds the state lock: nothing here
+            // takes it. The certificate is refused at once and the end kept; it is recorded
+            // from a thread of its own, or by the next sweep if none can start (the review
+            // after M7.6, L-6: a thread that couldn't start lost the notice for good).
+            service.bar_serial(serial);
+            service.ended_sessions().push((lease_id, serial));
+            let me = Arc::downgrade(&service);
+            let recording = std::thread::Builder::new()
+                .name("writ-session-ended".to_owned())
+                .spawn(move || {
+                    if let Some(service) = me.upgrade() {
+                        service.record_ended_sessions();
+                    }
+                });
+            if let Err(e) = recording {
+                tracing::error!(
+                    error = %e,
+                    "cannot start a thread to record an ended session: the next sweep does"
+                );
+            }
         });
         self.watcher
             .watch(&process, on_exit)

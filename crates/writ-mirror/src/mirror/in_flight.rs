@@ -54,14 +54,33 @@ impl InFlight {
     /// Refuses every operation from now on, and waits until none is in flight, at most
     /// `wait`: how many still were then.
     pub async fn stop(&self, wait: Duration) -> usize {
+        self.close();
+        let deadline = tokio::time::Instant::now()
+            .checked_add(wait)
+            .unwrap_or_else(far_future);
+        self.wait_until(deadline).await
+    }
+
+    /// Refuses every operation from now on (those in flight run on).
+    pub fn close(&self) {
         self.count.send_modify(|count| count.stopping = true);
+    }
+
+    /// Waits until none is in flight, at most until `deadline`: how many still were then.
+    pub async fn wait_until(&self, deadline: tokio::time::Instant) -> usize {
         let mut seen = self.count.subscribe();
-        match tokio::time::timeout(wait, seen.wait_for(|count| count.running == 0)).await {
+        match tokio::time::timeout_at(deadline, seen.wait_for(|count| count.running == 0)).await {
             Ok(Ok(_)) => 0,
             // The deadline passed (the sender lives in `self`, so the wait can't fail).
             Ok(Err(_)) | Err(_) => self.count.borrow().running,
         }
     }
+}
+
+/// A deadline no wait reaches (a day from now, or now if even that overflows).
+pub fn far_future() -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(Duration::from_secs(86_400)).unwrap_or(now)
 }
 
 /// One operation in flight, until dropped.
@@ -102,6 +121,26 @@ mod tests {
         assert!(!stopping.is_finished());
         drop(second);
         assert_eq!(stopping.await.unwrap(), 0);
+    }
+
+    /// The review after M7.6 (D-5): the orderly stop closes two counts at once (the gateway's
+    /// and upstream's), then waits once for both: one deadline for the two, never one after
+    /// the other.
+    #[tokio::test(start_paused = true)]
+    async fn two_counts_closed_at_once_are_waited_for_against_one_deadline() {
+        let (operations, upstream) = (InFlight::new(), InFlight::new());
+        let _git = operations.start().unwrap();
+        let _push = upstream.start().unwrap();
+        operations.close();
+        upstream.close();
+        // Both refuse at once, before any wait.
+        assert!(operations.start().is_none() && upstream.start().is_none());
+        let wait = Duration::from_secs(30);
+        let started = tokio::time::Instant::now();
+        let deadline = started.checked_add(wait).unwrap();
+        assert_eq!(operations.wait_until(deadline).await, 1);
+        assert_eq!(upstream.wait_until(deadline).await, 1);
+        assert_eq!(started.elapsed(), wait, "one deadline for both, not two");
     }
 
     #[tokio::test(start_paused = true)]
