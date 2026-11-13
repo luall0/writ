@@ -216,3 +216,91 @@ fn on_the_mac_a_daemon_with_everything_in_hardware_opens_itself_at_each_start() 
         stderr(&out)
     );
 }
+
+/// The review after M7.6 (S-1), on the Mac against the fake `writ-se`: a hardware keystore's
+/// policy altered at rest (text and digest rewritten in `leases.db`, no passphrase, no
+/// approver) to say `unseal: auto` and to name another recovery recipient. The start reads
+/// that `unseal: auto` unchecked: the devices may unwrap the identity, but the MAC is checked
+/// before anything is written, so the start is refused with the reason, logged, and the keys
+/// directory is as it was (no identity sealed to their recovery key).
+#[test]
+fn on_the_mac_an_unseal_auto_altered_at_rest_opens_nothing_and_writes_nothing() {
+    if std::env::consts::OS != "macos" {
+        return;
+    }
+    let (_, recovery) = writ_crypto::recovery::new_key();
+    let policy = POLICY
+        .replace(
+            "    algorithm: ed25519\n  upstream-01:",
+            "    algorithm: p256\n    backend: se-cryptokit\n  upstream-01:",
+        )
+        .replace(
+            "    kind: ssh\n    algorithm: ed25519\n",
+            "    kind: ssh\n    algorithm: p256\n    backend: se-cryptokit\n",
+        )
+        .replace(
+            "repos:\n",
+            &format!(
+                "recipients:\n  recovery: {{ recipient: {recovery} }}\n  se-01: {{ backend: \
+                 se-cryptokit }}\nrepos:\n"
+            ),
+        );
+    let helper = bin("writ-fake-se");
+    let mut daemon = Daemon::start_sealed_init(
+        &policy,
+        Approvals::Ssh,
+        &["--ca-backend", "se-cryptokit"],
+        |yaml| {
+            format!(
+                "{yaml}signers:\n  se_cryptokit:\n    helper: {}\n",
+                helper.display()
+            )
+        },
+    );
+    let out = daemon.unseal();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let said = stdout(&daemon.run(&["admin", "auto-unseal", "status"], ""));
+    assert!(
+        said.contains("Everything is in hardware: the daemon can open itself"),
+        "{said}"
+    );
+    daemon.stop();
+    let (_, theirs) = writ_crypto::recovery::new_key();
+    daemon.alter_at_rest("policy", |text| {
+        assert!(!text.contains("unseal:"), "{text}");
+        format!("{}unseal: auto\n", text.replace(&recovery, &theirs))
+    });
+    let keys = daemon.root().join("s/keys");
+    let before = writ_integration::files_under(&keys);
+    let audit = daemon.audit();
+    let out = Command::new(bin("writd"))
+        .args(["run"])
+        .arg(daemon.root().join("writd.yaml"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(
+            "the policy, approvers and readers in force were altered at rest: their MAC is not \
+             this keystore's (put them back with writd recover)"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    let changed = writ_integration::changed_files(&before, &writ_integration::files_under(&keys));
+    assert!(
+        changed.is_empty(),
+        "the keys directory changed: {changed:?}"
+    );
+    let after = daemon.audit();
+    let added = after.strip_prefix(audit.as_str()).unwrap();
+    assert_eq!(audit_events(added, "unseal", "allowed").len(), 0, "{added}");
+    let denied = audit_events(added, "unseal", "denied");
+    assert_eq!(denied.len(), 1, "{added}");
+    assert!(
+        denied[0]["reason"].as_str().unwrap().starts_with(
+            "automatic: the policy, approvers and readers in force were altered at rest"
+        ),
+        "{denied:?}"
+    );
+}

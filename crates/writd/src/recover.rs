@@ -63,7 +63,12 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
                 .with_context(|| file.display().to_string())?;
             let declared = crate::declared::declarations(&policy)
                 .with_context(|| file.display().to_string())?;
-            crate::keystore::make_missing(&config, &declared, &crate::platform::makers(&config)?)?
+            crate::keystore::make_missing(
+                &config,
+                &declared,
+                &crate::platform::makers(&config)?,
+                data_key.as_ref().map(|(key, _)| key),
+            )?
         }
         AdminTarget::Approvers | AdminTarget::Readers => Vec::new(),
     };

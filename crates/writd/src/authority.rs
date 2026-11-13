@@ -220,7 +220,7 @@ pub fn recover(
     let Some(loaded) = load(store, min_ttl)? else {
         bail!("no authority files in force: `writd init` records them");
     };
-    if !key.verify_head(&loaded.in_force.entries(), &loaded.in_force.mac) {
+    if loaded.in_force.check_mac(key).is_err() {
         let others: Vec<(AdminTarget, &str)> = loaded
             .texts
             .iter()

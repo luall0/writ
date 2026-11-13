@@ -137,16 +137,11 @@ impl Service {
         let created = opened.openpgp.clone();
         // The authority files the daemon started with are the keystore's: their head carries
         // its MAC, and the store still holds exactly them.
+        // The keystore checked it already, before writing anything from the policy (the
+        // review after M7.6, S-1): checked again here, by the same function, whatever opened it.
         let in_force = self.in_force();
-        if !opened
-            .authority
-            .verify_head(&in_force.entries(), &in_force.mac)
-        {
-            return Err(refuse(
-                "the policy, approvers and readers in force were altered at rest: their MAC is \
-                 not this keystore's (put them back with writd recover)"
-                    .to_owned(),
-            ));
+        if let Err(altered) = in_force.check_mac(&opened.authority) {
+            return Err(refuse(altered.to_string()));
         }
         let held = self.lock()?.store.authority_in_force().map_err(|e| {
             refuse(format!(

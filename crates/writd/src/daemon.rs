@@ -1230,15 +1230,25 @@ impl Opener {
     /// The daemon opens itself through its hardware (M7.6, `unseal: auto`): its keystore's
     /// identity unwrapped by its devices, the service opened with no approver, logged as
     /// automatic and notified. The start checked first that everything is in hardware.
+    /// A refusal (the versions in force altered at rest among them) is one `unseal` line,
+    /// denied, and stops the start.
     pub async fn unseal_automatically(&self) -> anyhow::Result<()> {
         self.0
             .automatic
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let opened = self
-            .open_keystore(PassphraseText::new(String::new()))
-            .await?;
-        self.open(opened, None, &writ_core::caller::CallerFacts::default())
-            .await?;
+        let caller = writ_core::caller::CallerFacts::default();
+        let opened = match self.open_keystore(PassphraseText::new(String::new())).await {
+            Ok(opened) => self.open(opened, None, &caller).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = opened {
+            let (service, reason) = (self.0.service.clone(), format!("automatic: {e:#}"));
+            let _ = tokio::task::spawn_blocking(move || {
+                service.unseal_failed(None, &reason, &caller);
+            })
+            .await;
+            return Err(e);
+        }
         tracing::info!("unsealed automatically");
         Ok(())
     }
@@ -1257,7 +1267,14 @@ impl Opener {
             let (key, hardware) = keystore::unseal_key(&inner.config, &request)?;
             drop(request);
             let declared = crate::declared::declarations(&inner.policy)?;
-            keystore::open(&inner.config, &declared, &inner.policy, key, hardware)
+            keystore::open(
+                &inner.config,
+                &declared,
+                &inner.policy,
+                &inner.service.in_force(),
+                key,
+                hardware,
+            )
         })
         .await
         .context("the unseal stopped")?

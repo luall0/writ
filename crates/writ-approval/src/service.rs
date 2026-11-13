@@ -25,7 +25,7 @@ mod tls;
 mod token;
 mod unseal;
 
-pub use admin::{AdminParsed, CheckedAdmin, InForce};
+pub use admin::{AdminParsed, AlteredAtRest, CheckedAdmin, InForce};
 pub use ca::CheckedCa;
 pub use gateway::GatewayDenial;
 pub use push::Pushing;

@@ -55,6 +55,50 @@ pub fn write_secret(path: &Path, bytes: &[u8]) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// Every file under `dir` (followed down its directories, never through a link), by its path
+/// relative to `dir`, with its bytes: what a test compares to say nothing in it changed.
+pub fn files_under(dir: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        files: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let kind = entry.file_type().unwrap();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            if kind.is_dir() {
+                files.insert(relative, b"(a directory)".to_vec());
+                walk(root, &path, files);
+            } else if kind.is_symlink() {
+                let target = std::fs::read_link(&path).unwrap();
+                files.insert(relative, target.into_os_string().into_encoded_bytes());
+            } else {
+                files.insert(relative, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    walk(dir, dir, &mut files);
+    files
+}
+
+/// The paths whose bytes differ between two [`files_under`], or that only one of them has.
+pub fn changed_files(
+    before: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    after: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+) -> Vec<std::path::PathBuf> {
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|path| before.get(*path) != after.get(*path))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// A command's stdout, as text.
 pub fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()

@@ -364,13 +364,23 @@ pub fn read_certificate(config: &Config, id: &KeyId) -> anyhow::Result<Option<St
 }
 
 /// Makes every key `declared` names that the keystore lacks (`writd recover`, on the host:
-/// a sealed key is encrypted to the keystore's public recipient, with no unseal), and checks
-/// each one it holds against its declaration. The keys made, with their public halves.
+/// a sealed key is encrypted to the keystore's public recipient, checked first to be the
+/// identity `key` opens), and checks each one it holds against its declaration. The keys
+/// made, with their public halves. A sealed keystore needs its data key; the development
+/// keystore has none.
 pub fn make_missing(
     config: &Config,
     declared: &Declarations,
     makers: &Makers,
+    key: Option<&writ_platform::DataKey>,
 ) -> anyhow::Result<Vec<(KeyId, KeyRole, PublicKey, KeyMeta)>> {
+    let recipient = match (&config.keystore, key) {
+        (KeystoreConfig::Sealed(sealed), Some(key)) => Some(checked_recipient(sealed, key)?),
+        (KeystoreConfig::Sealed(_), None) => {
+            bail!("a sealed keystore's keys are made with its data key")
+        }
+        (KeystoreConfig::Dev(_), _) => None,
+    };
     let mut made = Vec::new();
     for (id, key) in declared {
         let (stored, new) = match &config.keystore {
@@ -382,11 +392,10 @@ pub fn make_missing(
                     sealed::check_public(&layout, id, key)?;
                     continue;
                 }
-                let recipient = sealed::recipient(sealed)?;
-                (
-                    sealed::make_key(&layout, &recipient, id, key, makers)?,
-                    true,
-                )
+                let recipient = recipient
+                    .as_ref()
+                    .context("the keystore's recipient was not checked")?;
+                (sealed::make_key(&layout, recipient, id, key, makers)?, true)
             }
         };
         if new {
@@ -828,11 +837,15 @@ pub fn dev_authority_key(dir: &Path) -> anyhow::Result<writ_crypto::authority::A
 
 /// What the daemon starts with, from the configured keystore. A sealed start reads the boot
 /// tier, and checks every declared key's public half: a key missing or held as something
-/// else than declared stops the start before anything is served.
+/// else than declared stops the start before anything is served; nothing it does is read from
+/// the policy but those checks (its MAC is checked at unseal, [`open`]). The development
+/// keystore opens at start: `in_force` is checked against its authority key before its keys
+/// are made from the policy.
 pub fn start(
     config: &Config,
     declared: &Declarations,
     policy: &PolicyConfig,
+    in_force: &writ_approval::InForce,
     makers: &Makers,
 ) -> anyhow::Result<Start> {
     match &config.keystore {
@@ -842,46 +855,65 @@ pub fn start(
             sealed::public(sealed, declared)?;
             Ok(Start::Sealed(sealed::boot(sealed)?))
         }
-        KeystoreConfig::Dev(dir) => Ok(Start::Open(
-            dev::boot(dir)?,
-            Box::new(Opened {
-                keys: dev::keys(dir, declared, makers)?,
-                live: Live::Dev(dir.clone()),
-                authority: dev::authority_key(dir)?,
-                tokens: dev::tokens(dir, policy)?,
-                bot_tokens: dev::bot_tokens(dir, &sealed_bot_ids(config))?,
-            }),
-        )),
+        KeystoreConfig::Dev(dir) => {
+            let authority = dev::authority_key(dir)?;
+            in_force.check_mac(&authority)?;
+            Ok(Start::Open(
+                dev::boot(dir)?,
+                Box::new(Opened {
+                    keys: dev::keys(dir, declared, makers)?,
+                    live: Live::Dev(dir.clone()),
+                    authority,
+                    tokens: dev::tokens(dir, policy)?,
+                    bot_tokens: dev::bot_tokens(dir, &sealed_bot_ids(config))?,
+                }),
+            ))
+        }
     }
 }
 
-/// Opens the sealed keystore with the identity a passphrase unwrapped: every key and token
-/// the configuration names.
-pub fn open(
-    config: &Config,
-    declared: &Declarations,
-    policy: &PolicyConfig,
-    key: writ_platform::DataKey,
-    hardware: Vec<recipients::Hardware>,
-) -> anyhow::Result<Opened> {
-    let KeystoreConfig::Sealed(sealed) = &config.keystore else {
-        bail!("only a sealed keystore is opened at unseal");
-    };
-    let identity = key.way()?;
-    // The recipient file is what every key and token sealed from now on is encrypted to (and
-    // what `writ info` gives approvers): it must be this identity's, or someone who could
-    // write it would receive them (the review after M5.5, L6).
+/// The sealed keystore's recipient file, checked to be the identity `key` opens: it is what
+/// every key and token sealed from now on is encrypted to (and what `writ info` gives
+/// approvers), so someone who could write it would receive them (the review after M5.5, L6).
+/// Every path that seals to it reads it here (`open`, and `writd recover`'s [`make_missing`]:
+/// the review after M7.6, S-7).
+pub fn checked_recipient(
+    sealed: &SealedConfig,
+    key: &writ_platform::DataKey,
+) -> anyhow::Result<age::x25519::Recipient> {
     let recipient = sealed::recipient(sealed)?;
-    if recipient.to_string() != identity.recipient().to_string() {
+    if recipient.to_string() != key.way()?.recipient().to_string() {
         bail!(
             "{}: not this keystore's recipient (replaced?): refused, nothing would be sealed to \
              it",
             sealed::Layout(sealed).recipient().display()
         );
     }
-    let keys_files = sealed::SecretFiles::new(vec![Box::new(identity)]);
-    let keys = sealed::keys(sealed, declared, &keys_files)?;
+    Ok(recipient)
+}
+
+/// Opens the sealed keystore with the data key the passphrase or the hardware unwrapped:
+/// every key and token the configuration names. `policy` and `declared` are the start's,
+/// read from the state with no MAC checked (its key is sealed): `in_force` is checked
+/// against the authority key as soon as it opens, before anything is read or written from
+/// them (the review after M7.6, S-1: the reconcile below rewrites keystore files from the
+/// policy's recipients, which an edit of the state at rest could have named).
+pub fn open(
+    config: &Config,
+    declared: &Declarations,
+    policy: &PolicyConfig,
+    in_force: &writ_approval::InForce,
+    key: writ_platform::DataKey,
+    hardware: Vec<recipients::Hardware>,
+) -> anyhow::Result<Opened> {
+    let KeystoreConfig::Sealed(sealed) = &config.keystore else {
+        bail!("only a sealed keystore is opened at unseal");
+    };
+    let recipient = checked_recipient(sealed, &key)?;
+    let keys_files = sealed::SecretFiles::new(vec![Box::new(key.way()?)]);
     let authority = sealed::authority_key(sealed, &keys_files)?;
+    in_force.check_mac(&authority)?;
+    let keys = sealed::keys(sealed, declared, &keys_files)?;
     drop(keys_files);
     // A change of the recipients cut short is finished before anything is used (M7.6).
     for line in reconcile_with(sealed, policy, &hardware, &key)? {

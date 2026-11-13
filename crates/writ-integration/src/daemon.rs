@@ -611,6 +611,37 @@ impl Daemon {
     pub fn audited(&self, event: &str, result: &str) -> usize {
         crate::audit_events(&self.audit(), event, result).len()
     }
+
+    /// Rewrites the version of `target` (`policy`, `approvers`, `readers`) in force in the
+    /// state, text and digest, as someone who can write `leases.db` but has no passphrase
+    /// would: its head and MAC are left as they were. Run with the daemon stopped.
+    pub fn alter_at_rest(&self, target: &str, edit: impl FnOnce(&str) -> String) {
+        let conn = rusqlite::Connection::open(self.root().join("s/leases.db")).unwrap();
+        let version: i64 = conn
+            .query_row(
+                &format!("SELECT {target} FROM authority_head WHERE id = 1"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let text: String = conn
+            .query_row(
+                "SELECT text FROM authority WHERE target = ?1 AND version = ?2",
+                rusqlite::params![target, version],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let altered = edit(&text);
+        assert_ne!(altered, text, "the edit must change the {target} in force");
+        let digest = writ_core::authority::TextDigest::of(&altered);
+        let changed = conn
+            .execute(
+                "UPDATE authority SET text = ?1, digest = ?2 WHERE target = ?3 AND version = ?4",
+                rusqlite::params![altered, digest.as_str(), target, version],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
 }
 
 /// Pins the daemon's host key and TLS certificate on its ports, as `writd host-key` and

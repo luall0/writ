@@ -396,10 +396,14 @@ signer) and the gateway without mirrors; `writ info` names the boot to unseal (t
 fingerprint and a nonce drawn at start). `writ unseal` sends the passphrase with an approver's
 SSHSIG over `writ-unseal/1` (`{daemon, nonce}`); the service checks it
 (`Service::check_unseal`), then the daemon's `Unsealer` (`writd`'s `daemon::Opener`) unwraps
-the identity through the ways the request brings (`KeystoreUnwrap`: the passphrase), opens every secret through the one seam, starts the
-signers and the mirrors (`Gateway::set_mirrors`), and hands the service its keys
-(`Service::unseal`, which checks the CA is the one whose public half the daemon started with
-and that the signer holds every template's key, and logs `unseal` before anything is
+the identity through the ways the request brings (`KeystoreUnwrap`: the passphrase), opens the authority key and checks the versions in force
+against its MAC (`InForce::check_mac`, in `keystore::open`) before anything is read or
+written from the policy the daemon started with (read from the state, unchecked: the review
+after M7.6, S-1), then opens every secret through the one seam, brings the keystore's files
+in line with the policy's recipients, starts the signers and the mirrors (`Gateway::set_mirrors`), and hands the service its keys
+(`Service::unseal`, which checks the CA is the one whose public half the daemon started with,
+that the signer holds every template's key, and the MAC again with the same function, the
+store still holding those versions, and logs `unseal` before anything is
 served). The notifiers whose token is sealed (`notifiers[].telegram.token.sealed`) start
 then; those whose token is in the boot tier (`token.boot`) were told of the sealed start.
 

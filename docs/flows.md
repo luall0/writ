@@ -266,7 +266,8 @@ sequenceDiagram
   SC->>Me: Touch ID
   U->>D: writ unseal: passphrase + the document + its SSHSIG
   D->>D: check the document is this daemon's and this boot's, the SSHSIG an approver's
-  D->>D: unwrap the identity (scrypt), open every secret, start the signers and mirrors
+  D->>D: unwrap the identity (scrypt), open the authority key, check the versions in force against its MAC
+  D->>D: then, and only then, open every secret, bring the keystore in line with the policy, start the signers and mirrors
   D->>D: the service gets the CA and the signer, logs UNSEAL; the active leases are served again
   D-->>Me: notification "writd unsealed"
 ```
@@ -276,7 +277,11 @@ sealed" (`sealed`), logged and coalesced per source; the sealed start is one `se
 signature is checked before the passphrase is tried, so only an approver can make the daemon
 spend scrypt's second; one unseal runs at a time. A wrong passphrase, a signature for another
 boot or another daemon, a key not in `approvers`: each refused, logged, the daemon still
-sealed. The development keystore opens at start (its `unseal` line names it). Later,
+sealed. The policy, approvers and readers the daemon started with were read from its state
+with no MAC checked (the key is sealed): nothing is done from them before the authority key
+opens and their MAC is checked, so versions altered at rest are refused ("altered at rest")
+with nothing written; an `unseal: auto` read from them lets the devices unwrap the identity at
+start, and the same check comes before anything else. The development keystore opens at start (its `unseal` line names it). Later,
 hardware recipients replace the passphrase (M7.6).
 
 ## 8. Daemon stop

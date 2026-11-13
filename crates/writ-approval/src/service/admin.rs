@@ -16,7 +16,7 @@ use writ_core::lease::Lease;
 use writ_core::names::{KeyFingerprint, TicketId};
 use writ_core::signed::Admin;
 use writ_crypto::allowed_signers::AllowedSigner;
-use writ_crypto::authority::HeadEntry;
+use writ_crypto::authority::{AuthorityKey, HeadEntry};
 use writ_proto::{AdminApplied, AdminRequest, AdminShown, CreatedKey, RemovedKey};
 use writ_store::{AuditEvent, AuthorityHead, AuthorityHow, AuthorityVersion, EventKind, Outcome};
 
@@ -43,7 +43,28 @@ impl InForce {
             })
             .collect()
     }
+
+    /// Whether these versions carry `key`'s MAC: the one check of the authority files at
+    /// rest, made by the keystore as soon as its authority key opens (before anything is
+    /// written from the policy, the review after M7.6, S-1) and by the service when it
+    /// opens.
+    pub fn check_mac(&self, key: &AuthorityKey) -> Result<(), AlteredAtRest> {
+        if key.verify_head(&self.entries(), &self.mac) {
+            Ok(())
+        } else {
+            Err(AlteredAtRest)
+        }
+    }
 }
+
+/// The versions in force don't carry the keystore's MAC: altered at rest (or another
+/// keystore's state). One reason, whichever check finds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the policy, approvers and readers in force were altered at rest: their MAC is not this \
+     keystore's (put them back with writd recover)"
+)]
+pub struct AlteredAtRest;
 
 /// An admin change whose document and signature passed: what the daemon checks the new text
 /// of before [`Service::commit_admin`]. Only [`Service::check_admin`] makes one (its fields

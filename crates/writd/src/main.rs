@@ -418,8 +418,13 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let ca_certs = load_ca_certs(&config)?;
     let declared = declared::declarations(&loaded.policy)?;
     platform::check_devices(&config, &declared)?;
+    // Until the unseal checks their MAC (`keystore::open`), the versions in force are only
+    // read and refused from, never acted on (the review after M7.6, S-1): what follows
+    // checks the policy and reads the keystore's public files, and writes nothing from them.
     // Auto-unseal (M7.6): the daemon opens itself only with every key and secret in hardware;
-    // anything else refuses the start, naming each one (never adjusted).
+    // anything else refuses the start, naming each one (never adjusted). An `unseal: auto`
+    // read here is the state's, unchecked: it lets the devices unwrap the keystore's identity
+    // and nothing more, the MAC checked before anything is written, as at a `writ unseal`.
     let automatic = loaded.policy.unseal() == writ_core::config::Unseal::Auto;
     if automatic {
         let missing = autounseal::missing(&config, &loaded.policy)?;
@@ -436,6 +441,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
         &config,
         &declared,
         &loaded.policy,
+        &loaded.in_force,
         &platform::makers(&config)?,
     )?;
     let repos = config.state_dir.join("repos");

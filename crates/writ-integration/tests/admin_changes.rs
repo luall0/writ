@@ -462,6 +462,100 @@ fn a_recipient_file_that_isn_t_the_keystore_s_stops_the_unseal() {
     assert!(stderr(&daemon.run(&["ls"], "")).contains("daemon sealed"));
 }
 
+/// The review after M7.6 (S-1): the unseal used to bring the keystore in line with the policy's
+/// recipients before checking the policy's MAC, so a policy altered at rest (text and digest
+/// rewritten in `leases.db`, with no passphrase) that names a recovery recipient got the data
+/// key sealed to it in `identity.recovery.age`, and only then was refused. The MAC is checked
+/// as soon as the authority key opens: refused with the one reason, nothing in the keys
+/// directory changed, the daemon still sealed, the refusal logged.
+#[test]
+fn a_policy_altered_at_rest_is_refused_at_unseal_before_anything_is_written() {
+    let mut daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    assert_eq!(daemon.unseal().status.code(), Some(0));
+    daemon.stop();
+    let (_, theirs) = writ_crypto::recovery::new_key();
+    daemon.alter_at_rest("policy", |text| {
+        assert!(!text.contains("recipients:"), "{text}");
+        format!("{text}recipients:\n  recovery: {{ recipient: {theirs} }}\n")
+    });
+    let keys = daemon.root().join("s/keys");
+    let before = writ_integration::files_under(&keys);
+    assert!(!before.contains_key(std::path::Path::new("identity.recovery.age")));
+    daemon.restart();
+    let out = daemon.unseal();
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains(
+            "not unsealed: the policy, approvers and readers in force were altered at rest: \
+             their MAC is not this keystore's (put them back with writd recover)"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    let changed = writ_integration::changed_files(&before, &writ_integration::files_under(&keys));
+    assert!(
+        changed.is_empty(),
+        "the keys directory changed: {changed:?}"
+    );
+    assert!(stderr(&daemon.run(&["ls"], "")).contains("daemon sealed"));
+    let denied = audit_events(&daemon.audit(), "unseal", "denied");
+    assert!(
+        denied.last().unwrap()["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("the policy, approvers and readers in force were altered at rest"),
+        "{denied:?}"
+    );
+}
+
+/// The review after M7.6 (S-7): `writd recover` made the keys a recovered policy declares
+/// sealed to the `recipient` file as it found it, unchecked (the check `open` has since the
+/// review after M5.5, L6): whoever replaced it received them. Refused now, before anything is
+/// sealed or recorded.
+#[test]
+fn writd_recover_refuses_a_recipient_file_that_isn_t_the_keystore_s_before_sealing_anything() {
+    let mut daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    assert_eq!(daemon.unseal().status.code(), Some(0));
+    daemon.stop();
+    let recipient = daemon.root().join("s/keys/recipient");
+    let theirs = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+    assert_ne!(fs::read_to_string(&recipient).unwrap().trim(), theirs);
+    fs::write(&recipient, format!("{theirs}\n")).unwrap();
+    // A policy declaring a key the keystore lacks: recovering it would make that key.
+    let in_force = fs::read_to_string(daemon.root().join("policy.yaml")).unwrap();
+    let file = daemon.root().join("recovered-policy.yaml");
+    let recovered = in_force.replacen(
+        "keys:\n",
+        "keys:\n  agent-02:\n    use: signing\n    format: ssh\n    algorithm: ed25519\n",
+        1,
+    );
+    assert_ne!(recovered, in_force);
+    fs::write(&file, &recovered).unwrap();
+    let keys = daemon.root().join("s/keys");
+    let before = writ_integration::files_under(&keys);
+    let audit = daemon.audit();
+    let out = daemon.writd_with(
+        &["recover", "writd.yaml", "policy", file.to_str().unwrap()],
+        &format!("{PASSPHRASE}\n"),
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("recipient: not this keystore's recipient (replaced?): refused"),
+        "{}",
+        stderr(&out)
+    );
+    let changed = writ_integration::changed_files(&before, &writ_integration::files_under(&keys));
+    assert!(
+        changed.is_empty(),
+        "the keys directory changed: {changed:?}"
+    );
+    assert_eq!(daemon.audit(), audit, "nothing recorded");
+    assert_eq!(
+        fs::read_to_string(daemon.root().join("policy.yaml")).unwrap(),
+        in_force
+    );
+}
+
 #[test]
 fn the_old_policy_fields_are_refused_everywhere_naming_their_new_place() {
     // Writ isn't deployed: the shape from before M6.2 is never converted, only refused, at
