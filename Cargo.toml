@@ -64,7 +64,7 @@ hyper-util = { version = "0.1.21", features = ["tokio"] }
 # `zeroize`: rcgen's copy of a key pair can be wiped (the reader's client certificate).
 # P-256 points checked on the curve (a helper's answer, writ_signer::helper): already in the
 # tree through ssh-key, with the same features.
-p256 = { version = "=0.14.0", default-features = false, features = ["arithmetic"] }
+p256 = { version = "=0.14.0", default-features = false, features = ["arithmetic", "ecdh"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem", "crypto", "zeroize"] }
 # Parses the client certificate of a reader key (the HTTPS approval API); already rustls's.
 rustls-webpki = { version = "0.103.16", default-features = false, features = ["alloc"] }

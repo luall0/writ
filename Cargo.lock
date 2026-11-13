@@ -3935,9 +3935,12 @@ name = "writ-crypto"
 version = "0.0.0"
 dependencies = [
  "age",
+ "age-core",
  "aws-lc-rs",
  "base64ct",
+ "bech32",
  "hmac 0.12.1",
+ "p256",
  "rcgen",
  "rustix",
  "rustls",
@@ -3948,6 +3951,7 @@ dependencies = [
  "ssh-key",
  "tempfile",
  "thiserror 2.0.21",
+ "writ-crypto",
  "zeroize",
 ]
 

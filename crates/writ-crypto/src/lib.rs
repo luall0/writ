@@ -21,6 +21,7 @@ pub mod keypair;
 pub mod keys;
 pub mod openpgp;
 pub mod passphrase;
+pub mod piv_p256;
 pub mod readers;
 pub mod sealed;
 pub mod sshsig;

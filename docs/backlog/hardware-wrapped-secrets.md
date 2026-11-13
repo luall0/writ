@@ -180,15 +180,15 @@ the same commit.
    operation through `SecretFiles` and wiped after (`writ-mirror` takes a token source, not a
    token); a token that can't be unwrapped denies that operation with its reason; `writ admin
    token` checks the new token the same way.
-3. **`piv-p256` and the recovery identity:** the stanza in `writ-crypto` (wrap to a point;
-   unwrap from any ECDH), against the plugins' vectors and hostile stanzas; `writ recovery
-   new` and `writ recovery check`.
+3. **`piv-p256`:** the stanza in `writ-crypto` (wrap to a point; unwrap from any ECDH),
+   against age-plugin-yubikey's own code both ways and hostile stanzas.
 4. **The Secure Enclave recipient:** `create-agreement` and `agree` in `writ-se/1` and the
    fake helper (every fault), the framed agreement blob, `KeystoreUnwrap` over the helper in
    `writ-platform-macos`, the contract on the real Secure Enclave. The graft test.
 5. **The recipients by signed admin change:** `writ admin keystore show | recipient add |
    recipient remove`, `writ-keystore/1`, the live re-encryption and its recovery at start, the
-   recovery challenge, `writd init --recipients`, the identity wiped after unseal.
+   recovery challenge with `writ recovery new` and `writ recovery check`, `writd init
+   --recipients`, the identity wiped after unseal.
 6. **Unseal with no passphrase:** `writ info`'s unseal way, `writ unseal` asking only what the
    keystore needs, `writd recover` with the recovery identity.
 7. **The CA behind the `Signer`:** the adapter, the CA key file naming its backend, `writd
