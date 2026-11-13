@@ -4,6 +4,7 @@
 
 mod dev;
 mod init;
+pub mod recipients;
 mod sealed;
 pub mod tls;
 
@@ -428,9 +429,93 @@ pub enum Live {
     Dev(PathBuf),
     Sealed {
         sealed: SealedConfig,
-        files: Arc<sealed::SecretFiles>,
+        /// The ways the keystore's files open by now: the identity on a passphrase keystore,
+        /// the hardware recipients on a hardware one (the identity wiped after unseal).
+        /// Replaced when the recipients change.
+        state: std::sync::RwLock<SealedState>,
         recipient: age::x25519::Recipient,
     },
+}
+
+/// What a sealed keystore holds open, by its recipients.
+pub struct SealedState {
+    pub files: Arc<sealed::SecretFiles>,
+    /// A passphrase keystore's data key, kept to wrap its identity again when the recipients
+    /// change; none on a hardware keystore (its devices unwrap it again then).
+    key: Option<writ_platform::DataKey>,
+    /// The recipients secrets are sealed to now: `age1se1…` and `age1…` texts.
+    pub token_recipients: Vec<String>,
+}
+
+/// The ways a keystore with `hardware` opens its files after unseal, and what tokens are
+/// sealed to: the hardware recipients the policy declares (and the recovery recipient), or
+/// the identity.
+fn sealed_state(
+    policy: &PolicyConfig,
+    key: &writ_platform::DataKey,
+    hardware: Vec<recipients::Hardware>,
+) -> anyhow::Result<SealedState> {
+    let declared: Vec<recipients::Hardware> = hardware
+        .into_iter()
+        .filter(|h| {
+            matches!(
+                policy.recipients().get(&h.name),
+                Some(writ_core::config::Recipient::Hardware { .. })
+            )
+        })
+        .collect();
+    if declared.is_empty() {
+        let way = key.way()?;
+        let text = way.recipient().to_string();
+        return Ok(SealedState {
+            files: Arc::new(sealed::SecretFiles::new(vec![Box::new(way)])),
+            key: Some(writ_platform::DataKey::from_bytes(*key.as_bytes())),
+            token_recipients: vec![text],
+        });
+    }
+    let mut texts: Vec<String> = declared.iter().map(|h| h.recipient.to_string()).collect();
+    if let Some(recovery) = recipients::recovery(policy)? {
+        texts.push(recovery.to_string());
+    }
+    let ways: Vec<sealed::SecretIdentity> = declared
+        .into_iter()
+        .map(|h| Box::new(h.way) as sealed::SecretIdentity)
+        .collect();
+    Ok(SealedState {
+        files: Arc::new(sealed::SecretFiles::new(ways)),
+        key: None,
+        token_recipients: texts,
+    })
+}
+
+/// The data key and the hardware recipients of a sealed keystore at unseal: the hardware ones
+/// open `identity.age` when they wrap it, else the passphrase `request` brings.
+pub fn unseal_key(
+    config: &Config,
+    request: &writ_platform::UnsealRequest,
+) -> anyhow::Result<(writ_platform::DataKey, Vec<recipients::Hardware>)> {
+    let KeystoreConfig::Sealed(sealed) = &config.keystore else {
+        bail!("only a sealed keystore is unsealed");
+    };
+    let hardware = recipients::load(config, sealed)?;
+    if hardware_wrapped(sealed)? {
+        let ways: Vec<&dyn writ_platform::KeystoreUnwrap> = hardware
+            .iter()
+            .map(|h| &h.way as &dyn writ_platform::KeystoreUnwrap)
+            .collect();
+        let key = writ_platform::unlock::data_key(&recipients::Paths(sealed).identity(), &ways)?;
+        return Ok((key, hardware));
+    }
+    Ok((crate::platform::data_key(sealed, request)?, hardware))
+}
+
+/// Whether the keystore's identity is wrapped to hardware (no passphrase), from its header.
+pub fn hardware_wrapped(sealed: &SealedConfig) -> anyhow::Result<bool> {
+    let path = recipients::Paths(sealed).identity();
+    let bytes = writ_platform::fs::read_secret(&path, "the wrapped key", 64 * 1024)?;
+    let decryptor = age::Decryptor::new_buffered(&bytes[..])
+        .map_err(|_| anyhow::anyhow!("{} is not a valid wrapped key", path.display()))?;
+    Ok(!decryptor.is_scrypt())
 }
 
 impl Live {
@@ -446,12 +531,17 @@ impl Live {
             Self::Dev(dir) => dev::key_or_make(dir, id, declared, makers),
             Self::Sealed {
                 sealed,
-                files,
+                state,
                 recipient,
             } => {
                 let layout = sealed::Layout(sealed);
                 if layout.key(declared.role, id).exists() {
-                    return Ok((sealed::stored_key(files, &layout, id, declared)?, false));
+                    let files = state
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .files
+                        .clone();
+                    return Ok((sealed::stored_key(&files, &layout, id, declared)?, false));
                 }
                 Ok((
                     sealed::make_key(&layout, recipient, id, declared, makers)?,
@@ -501,9 +591,17 @@ impl Live {
     }
 
     /// The sealed keystore's parts, or why the development keystore takes no token this way.
-    fn sealed(&self) -> anyhow::Result<(&SealedConfig, &sealed::SecretFiles)> {
+    fn sealed(&self) -> anyhow::Result<(&SealedConfig, Arc<sealed::SecretFiles>)> {
         match self {
-            Self::Sealed { sealed, files, .. } => Ok((sealed, files)),
+            // poisoned: the state is replaced whole, never left half made.
+            Self::Sealed { sealed, state, .. } => Ok((
+                sealed,
+                state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .files
+                    .clone(),
+            )),
             Self::Dev(dir) => bail!(
                 "the development keystore takes no token from writ admin token: write it alone \
                  to {} (mode 0600) and restart the daemon",
@@ -518,11 +616,73 @@ impl Live {
         &self,
         id: &KeyId,
     ) -> anyhow::Result<Option<writ_mirror::credential::TokenRef>> {
-        let Self::Sealed { sealed, files, .. } = self else {
+        let Self::Sealed { sealed, .. } = self else {
             return Ok(None);
         };
-        let source = Arc::new(sealed::SealedTokens::new(sealed.clone(), files.clone()));
+        let (_, files) = self.sealed()?;
+        let source = Arc::new(sealed::SealedTokens::new(sealed.clone(), files));
         sealed::token_ref(sealed, id, &source)
+    }
+
+    /// The tokens in force, each a reference unwrapped through the ways open now: what the
+    /// mirrors get again once the recipients changed (each token file rewrapped is another
+    /// version).
+    pub fn token_refs(
+        &self,
+        policy: &PolicyConfig,
+    ) -> anyhow::Result<writ_mirror::credential::Tokens> {
+        let Self::Sealed { sealed, .. } = self else {
+            bail!("the development keystore's tokens are read at start");
+        };
+        let (_, files) = self.sealed()?;
+        let source = Arc::new(sealed::SealedTokens::new(sealed.clone(), files));
+        sealed::tokens(sealed, policy, &source)
+    }
+
+    /// What a token is sealed to now (`writ info`), none for the development keystore.
+    pub fn token_recipients(&self) -> Vec<String> {
+        match self {
+            Self::Dev(_) => Vec::new(),
+            Self::Sealed { state, .. } => state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .token_recipients
+                .clone(),
+        }
+    }
+
+    /// Brings the keystore in line with `policy`'s recipients, live (a policy change that
+    /// changed them): every hardware recipient loaded, the data key from the passphrase kept
+    /// or from the hardware, every file rewrapped as needed, the ways open swapped. Answers
+    /// what changed.
+    pub fn apply_recipients(
+        &self,
+        config: &Config,
+        policy: &PolicyConfig,
+    ) -> anyhow::Result<Vec<String>> {
+        let Self::Sealed { sealed, state, .. } = self else {
+            if policy.recipients().is_empty() {
+                return Ok(Vec::new());
+            }
+            bail!("the development keystore takes no recipient");
+        };
+        let mut state = state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hardware = recipients::load(config, sealed)?;
+        let key = match &state.key {
+            Some(key) => writ_platform::DataKey::from_bytes(*key.as_bytes()),
+            None => {
+                let ways: Vec<&dyn writ_platform::KeystoreUnwrap> = hardware
+                    .iter()
+                    .map(|h| &h.way as &dyn writ_platform::KeystoreUnwrap)
+                    .collect();
+                writ_platform::unlock::data_key(&recipients::Paths(sealed).identity(), &ways)?
+            }
+        };
+        let changed = reconcile_with(sealed, policy, &hardware, &key)?;
+        *state = sealed_state(policy, &key, recipients::load(config, sealed)?)?;
+        Ok(changed)
     }
 
     /// The token file in force for `id`.
@@ -543,6 +703,38 @@ impl Live {
         let (sealed, _) = self.sealed()?;
         sealed::write_token(sealed, id, file)
     }
+}
+
+/// [`recipients::reconcile`] with every way the files may still be wrapped to: the identity
+/// and each hardware recipient held.
+fn reconcile_with(
+    sealed: &SealedConfig,
+    policy: &PolicyConfig,
+    hardware: &[recipients::Hardware],
+    key: &writ_platform::DataKey,
+) -> anyhow::Result<Vec<String>> {
+    struct Shared<'a>(&'a writ_platform::unlock::piv::PivUnwrap);
+    impl writ_platform::KeystoreUnwrap for Shared<'_> {
+        fn name(&self) -> &str {
+            writ_platform::KeystoreUnwrap::name(self.0)
+        }
+        fn unwrap(
+            &self,
+            stanzas: &[writ_platform::unlock::Stanza],
+        ) -> writ_platform::Result<Option<writ_platform::unlock::FileKey>> {
+            self.0.unwrap(stanzas)
+        }
+    }
+    let ways: Vec<Box<dyn writ_platform::KeystoreUnwrap + '_>> =
+        std::iter::once(Box::new(key.way()?) as Box<dyn writ_platform::KeystoreUnwrap>)
+            .chain(
+                hardware
+                    .iter()
+                    .map(|h| Box::new(Shared(&h.way)) as Box<dyn writ_platform::KeystoreUnwrap>),
+            )
+            .collect();
+    let refs: Vec<&dyn writ_platform::KeystoreUnwrap> = ways.iter().map(AsRef::as_ref).collect();
+    recipients::reconcile(sealed, policy, hardware, key, &refs)
 }
 
 /// Removes `path` if it is there (never following a link: the entry itself goes).
@@ -653,11 +845,13 @@ pub fn open(
     config: &Config,
     declared: &Declarations,
     policy: &PolicyConfig,
-    identity: X25519Unwrap,
+    key: writ_platform::DataKey,
+    hardware: Vec<recipients::Hardware>,
 ) -> anyhow::Result<Opened> {
     let KeystoreConfig::Sealed(sealed) = &config.keystore else {
         bail!("only a sealed keystore is opened at unseal");
     };
+    let identity = key.way()?;
     // The recipient file is what every key and token sealed from now on is encrypted to (and
     // what `writ info` gives approvers): it must be this identity's, or someone who could
     // write it would receive them (the review after M5.5, L6).
@@ -669,17 +863,29 @@ pub fn open(
             sealed::Layout(sealed).recipient().display()
         );
     }
-    let files = Arc::new(sealed::SecretFiles::new(vec![Box::new(identity)]));
-    let source = Arc::new(sealed::SealedTokens::new(sealed.clone(), files.clone()));
+    let keys_files = sealed::SecretFiles::new(vec![Box::new(identity)]);
+    let keys = sealed::keys(sealed, declared, &keys_files)?;
+    let authority = sealed::authority_key(sealed, &keys_files)?;
+    drop(keys_files);
+    // A change of the recipients cut short is finished before anything is used (M7.6).
+    for line in reconcile_with(sealed, policy, &hardware, &key)? {
+        tracing::info!("keystore: {line}");
+    }
+    let state = sealed_state(policy, &key, hardware)?;
+    drop(key);
+    let source = Arc::new(sealed::SealedTokens::new(
+        sealed.clone(),
+        state.files.clone(),
+    ));
     Ok(Opened {
-        keys: sealed::keys(sealed, declared, &files)?,
-        authority: sealed::authority_key(sealed, &files)?,
+        keys,
+        authority,
         tokens: sealed::tokens(sealed, policy, &source)?,
-        bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &files)?,
+        bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &state.files)?,
         live: Live::Sealed {
             sealed: sealed.clone(),
             recipient,
-            files,
+            state: std::sync::RwLock::new(state),
         },
     })
 }

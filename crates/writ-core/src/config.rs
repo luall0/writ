@@ -8,6 +8,7 @@
 //! - [`keys`]: `keys.<id>`, every key the policy names, declared with its use.
 //! - [`hosts`]: `upstream_hosts`, the pinned upstream host keys.
 //! - [`proxies`]: `proxies.<name>`, the proxies a repo's upstream may be reached through.
+//! - [`recipients`]: `recipients.<name>`, what the keystore is wrapped to (M7.6).
 //! - [`edit`]: one entry's fields edited, as `writ admin <noun> set` and `remove` do.
 //! - `write`: the canonical layout.
 
@@ -15,6 +16,7 @@ pub mod edit;
 pub mod hosts;
 pub mod keys;
 pub mod proxies;
+pub mod recipients;
 mod write;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,6 +30,7 @@ pub use keys::{
     UpstreamKey, UpstreamKind,
 };
 pub use proxies::{Proxy, ProxyScheme, ProxyUrl};
+pub use recipients::{Recipient, RecoveryRecipient};
 
 use crate::names::{CommitterName, Email, KeyId, ProxyName, RepoName, TemplateName, Uid};
 use crate::pattern::{BranchPattern, RefPattern};
@@ -284,6 +287,8 @@ struct RawPolicyConfig {
     upstream_hosts: BTreeMap<UpstreamHost, Vec<HostKey>>,
     #[serde(default)]
     proxies: BTreeMap<ProxyName, Proxy>,
+    #[serde(default)]
+    recipients: BTreeMap<KeyId, recipients::RawRecipient>,
     repos: BTreeMap<RepoName, RepoEntry>,
     templates: BTreeMap<TemplateName, Template>,
     /// Before M6.2, the OpenPGP user ids: refused, naming `keys.<id>.uids`.
@@ -299,6 +304,7 @@ pub struct PolicyConfig {
     keys: BTreeMap<KeyId, Key>,
     upstream_hosts: BTreeMap<UpstreamHost, Vec<HostKey>>,
     proxies: BTreeMap<ProxyName, Proxy>,
+    recipients: BTreeMap<KeyId, Recipient>,
     repos: BTreeMap<RepoName, RepoEntry>,
     templates: BTreeMap<TemplateName, Template>,
 }
@@ -309,15 +315,17 @@ pub enum Section {
     Keys,
     UpstreamHosts,
     Proxies,
+    Recipients,
     Repos,
     Templates,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [
+    pub const ALL: [Section; 6] = [
         Section::Keys,
         Section::UpstreamHosts,
         Section::Proxies,
+        Section::Recipients,
         Section::Repos,
         Section::Templates,
     ];
@@ -328,6 +336,7 @@ impl Section {
             Section::Keys => "keys",
             Section::UpstreamHosts => "upstream_hosts",
             Section::Proxies => "proxies",
+            Section::Recipients => "recipients",
             Section::Repos => "repos",
             Section::Templates => "templates",
         }
@@ -340,6 +349,7 @@ impl Section {
             Section::Keys => "key",
             Section::UpstreamHosts => "host",
             Section::Proxies => "proxy",
+            Section::Recipients => "recipient",
             Section::Repos => "repo",
             Section::Templates => "template",
         }
@@ -476,6 +486,7 @@ impl PolicyConfig {
         for (name, proxy) in &raw.proxies {
             validate_proxy(name, proxy, &keys)?;
         }
+        let recipients = recipients::check(raw.recipients)?;
         for (name, repo) in &raw.repos {
             validate_repo(
                 name,
@@ -493,6 +504,7 @@ impl PolicyConfig {
             keys,
             upstream_hosts: raw.upstream_hosts,
             proxies: raw.proxies,
+            recipients,
             repos: raw.repos,
             templates: raw.templates,
         })
@@ -516,6 +528,7 @@ impl PolicyConfig {
             Section::Keys => self.keys.keys().map(|k| k.to_string()).collect(),
             Section::UpstreamHosts => self.upstream_hosts.keys().map(|h| h.to_string()).collect(),
             Section::Proxies => self.proxies.keys().map(|p| p.to_string()).collect(),
+            Section::Recipients => self.recipients.keys().map(|r| r.to_string()).collect(),
             Section::Repos => self.repos.keys().map(|r| r.to_string()).collect(),
             Section::Templates => self.templates.keys().map(|t| t.to_string()).collect(),
         }
@@ -593,6 +606,24 @@ impl PolicyConfig {
             })
             .map(|(name, _)| name.clone())
             .collect()
+    }
+
+    /// The keystore's recipients (M7.6).
+    pub fn recipients(&self) -> &BTreeMap<KeyId, Recipient> {
+        &self.recipients
+    }
+
+    /// Whether the keystore unseals with hardware (a hardware recipient is declared).
+    pub fn hardware_keystore(&self) -> bool {
+        self.recipients.values().any(Recipient::is_hardware)
+    }
+
+    /// The recovery recipient, if one is declared.
+    pub fn recovery_recipient(&self) -> Option<(&KeyId, &RecoveryRecipient)> {
+        self.recipients.iter().find_map(|(name, r)| match r {
+            Recipient::Recovery { recipient } => Some((name, recipient)),
+            Recipient::Hardware { .. } => None,
+        })
     }
 
     /// The declared proxies.

@@ -1,4 +1,5 @@
-# policy.yaml: the keys, the upstream host keys, the proxies, the repo registry and the templates
+# policy.yaml: the keys, the upstream host keys, the proxies, the keystore's recipients, the repo
+# registry and the templates
 # (docs/operators/policy-yaml.md has every key). Required keys are set; every optional key is
 # commented out at its default value. `writd init` puts it in force and makes its keys; after
 # that, `writ admin` changes it, one signed change at a time.
@@ -38,6 +39,12 @@ upstream_hosts:                    # each ssh:// upstream's host keys: `writ adm
 #     url: "http://writ@proxy.example.org:3128"   # socks5://[user@]host:port | http://[user@]host:port
 #     credential: proxy_password   # only with a user in the URL: the key holding its password
 #     connect_timeout: 30s         # 1s to 5m
+
+# recipients:                      # what the keystore is locked to besides the passphrase (M7.6)
+#   secure_enclave:                # a key in the Mac's Secure Enclave: no passphrase at unseal
+#     backend: se-cryptokit
+#   recovery:                      # required beside a hardware key: writ recovery new prints one
+#     recipient: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
 
 repos:
   my-repo:                         # the name agents use; unique ignoring case

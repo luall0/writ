@@ -23,6 +23,7 @@ pub mod openpgp;
 pub mod passphrase;
 pub mod piv_p256;
 pub mod readers;
+pub mod recovery;
 pub mod sealed;
 pub mod sshsig;
 pub mod tls;

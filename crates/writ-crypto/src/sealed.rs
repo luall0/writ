@@ -36,6 +36,46 @@ pub fn seal(recipient: &str, plaintext: &[u8]) -> Result<String, SealError> {
     Ok(Base64::encode_string(&sealed))
 }
 
+/// Encrypts `plaintext` to each of `recipients` (M7.6): an age X25519 recipient (`age1…`) or a
+/// hardware one (`age1se1…`, a `piv-p256` stanza); the age file in standard base64.
+pub fn seal_to(recipients: &[String], plaintext: &[u8]) -> Result<String, SealError> {
+    let mut x25519 = Vec::new();
+    let mut hardware = Vec::new();
+    for text in recipients {
+        let text = text.trim();
+        if text.starts_with("age1se1") {
+            hardware.push(
+                crate::piv_p256::P256Recipient::parse(text, "age1se")
+                    .map_err(|_| SealError::Recipient)?,
+            );
+        } else {
+            x25519.push(
+                text.parse::<age::x25519::Recipient>()
+                    .map_err(|_| SealError::Recipient)?,
+            );
+        }
+    }
+    let all = x25519
+        .iter()
+        .map(|r| r as &dyn age::Recipient)
+        .chain(hardware.iter().map(|r| r as &dyn age::Recipient));
+    let encryptor = age::Encryptor::with_recipients(all).map_err(|_| SealError::Encrypt)?;
+    let mut sealed = Vec::new();
+    let mut writer = encryptor
+        .wrap_output(&mut sealed)
+        .map_err(|_| SealError::Encrypt)?;
+    writer
+        .write_all(plaintext)
+        .and_then(|()| writer.finish().map(|_| ()))
+        .map_err(|_| SealError::Encrypt)?;
+    Ok(Base64::encode_string(&sealed))
+}
+
+/// An age file as standard base64, as a sealed secret travels.
+pub fn encode(file: &[u8]) -> String {
+    Base64::encode_string(file)
+}
+
 /// The age file a sealed secret's base64 carries (still encrypted).
 pub fn decode(text: &str) -> Result<Vec<u8>, SealError> {
     Base64::decode_vec(text).map_err(|_| SealError::Base64)

@@ -46,6 +46,55 @@ pub async fn show(paths: &Paths, url: &str, target: AdminTarget) -> anyhow::Resu
         .await
 }
 
+/// `writ recovery new` (M7.6): a new recovery key, printed once, saved nowhere.
+pub fn recovery_new() -> anyhow::Result<Exit> {
+    let (secret, recipient) = writ_crypto::recovery::new_key();
+    println!("Recovery key (write it down, then clear this screen; it is saved nowhere):");
+    println!();
+    println!("    {}", secret.as_str());
+    println!();
+    println!("Its recipient, to declare on the daemon:");
+    println!();
+    println!("    writ admin recipient add recovery recipient={recipient}");
+    println!();
+    println!("Then check it with `writ recovery check`.");
+    drop(secret);
+    Ok(Exit::Ok)
+}
+
+/// `writ recovery check` (M7.6): the recovery key read here opens the daemon's challenge.
+pub async fn recovery_check(paths: &Paths, url: &str) -> anyhow::Result<Exit> {
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let shown: writ_proto::RecoveryShown =
+                session.call(&Command::RecoveryShow, b"").await??;
+            let challenge = writ_crypto::sealed::decode(&shown.challenge)
+                .map_err(|e| anyhow::anyhow!("the daemon's challenge: {e}"))?;
+            let typed = writ_crypto::passphrase::read("Recovery key: ", None, false)?;
+            let checked = writ_crypto::recovery::check(
+                typed.as_str(),
+                &shown.recipient,
+                &challenge,
+                &shown.digest,
+            );
+            drop(typed);
+            match checked {
+                Ok(()) => {
+                    println!(
+                        "Recovery key checked: it is recipient {} ({}), and it opens the daemon's \
+                         keystore.",
+                        clean(&shown.name),
+                        clean(&shown.recipient)
+                    );
+                    Ok(Exit::Ok)
+                }
+                Err(e) => bail!("not the daemon's recovery key: {}", clean(&e.to_string())),
+            }
+        })
+        .await
+}
+
 /// `writ admin apply <target> <file>`.
 pub async fn apply(
     paths: &Paths,
@@ -192,12 +241,29 @@ pub async fn token(
                 if typed.trim().is_empty() {
                     bail!("no token: the line was empty");
                 }
-                writ_crypto::sealed::seal(&recipient, typed.trim().as_bytes())?
+                // A hardware keystore's tokens go to its devices and the recovery key (M7.6).
+                match info.token_recipients.is_empty() {
+                    true => writ_crypto::sealed::seal(&recipient, typed.trim().as_bytes())?,
+                    false => writ_crypto::sealed::seal_to(
+                        &info.token_recipients,
+                        typed.trim().as_bytes(),
+                    )?,
+                }
             };
             let sealed = SealedToken::try_from(sealed)?;
+            let to = match info.token_recipients.is_empty() {
+                true => format!("the daemon's recipient {}", clean(recipient.trim())),
+                false => format!(
+                    "the daemon's recipients {}",
+                    info.token_recipients
+                        .iter()
+                        .map(|r| clean(r.trim()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
             println!(
-                "Token {id}: encrypted to the daemon's recipient {}; it replaces {}.",
-                clean(recipient.trim()),
+                "Token {id}: encrypted to {to}; it replaces {}.",
                 match &shown.previous {
                     writ_core::authority::PreviousToken::None => "no token".to_owned(),
                     other => format!("the token file sha256 {other}"),

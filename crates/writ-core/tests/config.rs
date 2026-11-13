@@ -1630,3 +1630,191 @@ fn a_proxy_is_edited_field_by_field_and_a_repo_names_it() {
         "repos.omega-code.proxy: tor is not declared in proxies",
     );
 }
+
+/// A recovery recipient of the right form (age1 and 58 bech32 characters).
+const RECOVERY: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+
+/// The test policy with `recipients` (each line one entry).
+fn with_recipients(recipients: &str) -> String {
+    POLICY.replacen(
+        "\nrepos:\n",
+        &format!("\nrecipients:\n{recipients}\nrepos:\n"),
+        1,
+    )
+}
+
+#[test]
+fn the_keystore_s_recipients_are_a_hardware_key_and_the_recovery_key_beside_it() {
+    use writ_core::config::{Recipient, Section};
+    let text = with_recipients(&format!(
+        "  se-01: {{ backend: se-cryptokit }}\n  recovery: {{ recipient: {RECOVERY} }}\n"
+    ));
+    let policy = PolicyConfig::from_yaml(&text).unwrap();
+    assert!(policy.hardware_keystore());
+    let (name, recovery) = policy.recovery_recipient().unwrap();
+    assert_eq!((name.as_str(), recovery.as_str()), ("recovery", RECOVERY));
+    assert!(matches!(
+        policy.recipients().get(&"se-01".parse().unwrap()),
+        Some(Recipient::Hardware { backend }) if backend.as_str() == "se-cryptokit"
+    ));
+    assert_eq!(
+        policy.entry_names(Section::Recipients),
+        vec!["recovery".to_owned(), "se-01".to_owned()]
+    );
+    // The canonical layout reads back to itself, the section between the proxies and the
+    // repos.
+    let written = policy.to_yaml();
+    assert_eq!(PolicyConfig::from_yaml(&written).unwrap(), policy);
+    let recipients = written.find("\nrecipients:\n").unwrap();
+    assert!(
+        recipients < written.find("\nrepos:\n").unwrap(),
+        "{written}"
+    );
+    assert_eq!(
+        policy.entry_yaml(Section::Recipients, "se-01").unwrap(),
+        "se-01:\n  backend: se-cryptokit\n"
+    );
+    assert_eq!(
+        policy.entry_yaml(Section::Recipients, "recovery").unwrap(),
+        format!("recovery:\n  recipient: {RECOVERY}\n")
+    );
+    // A passphrase keystore may have the recovery recipient alone; none at all is the default.
+    let alone = PolicyConfig::from_yaml(&with_recipients(&format!(
+        "  recovery: {{ recipient: {RECOVERY} }}\n"
+    )))
+    .unwrap();
+    assert!(!alone.hardware_keystore());
+    assert!(alone.recovery_recipient().is_some());
+    let none = PolicyConfig::from_yaml(POLICY).unwrap();
+    assert!(!none.hardware_keystore() && none.recovery_recipient().is_none());
+    assert!(!none.to_yaml().contains("recipients:"));
+}
+
+#[test]
+fn a_recipient_the_policy_cant_hold_is_refused_naming_it() {
+    let recovery = format!("  recovery: {{ recipient: {RECOVERY} }}\n");
+    let mut nine = recovery.clone();
+    for i in 0..8 {
+        nine.push_str(&format!("  se-{i}: {{ backend: se-cryptokit }}\n"));
+    }
+    let mut eight = recovery.clone();
+    for i in 0..7 {
+        eight.push_str(&format!("  se-{i}: {{ backend: se-cryptokit }}\n"));
+    }
+    assert!(
+        PolicyConfig::from_yaml(&with_recipients(&eight)).is_ok(),
+        "eight recipients"
+    );
+    let cases: Vec<(String, &str)> = vec![
+        (
+            "  se-01: { backend: se-cryptokit }\n".to_owned(),
+            "recipients: a hardware recipient needs the recovery recipient beside it",
+        ),
+        (
+            format!("{recovery}  second: {{ recipient: {RECOVERY} }}\n"),
+            "recipients: at most one recovery recipient",
+        ),
+        (nine, "recipients: at most 8 recipients are declared"),
+        (
+            format!("{recovery}  se-01: {{ backend: software }}\n"),
+            "recipients.se-01.backend: a recipient is a hardware device's key",
+        ),
+        (
+            format!("  both: {{ backend: se-cryptokit, recipient: {RECOVERY} }}\n"),
+            "recipients.both: a recipient is a hardware key (backend) or the recovery key",
+        ),
+        ("  empty: {}\n".to_owned(), "recipients.empty: a recipient takes backend"),
+        (
+            "  bad: { recipient: AGE1QL3Z7HJY54PW3HYWW5AYYFG7ZQGVC7W3J2ELW8ZMRJ2KG5SFN9AQMCAC8P }\n"
+                .to_owned(),
+            "recipients.bad.recipient: an age X25519 recipient starts with age1",
+        ),
+        (
+            "  bad: { recipient: age1se1qgg9h7ylml6v }\n".to_owned(),
+            "recipients.bad.recipient: an age X25519 recipient is age1 and 58 characters",
+        ),
+        (
+            format!("  bad: {{ recipient: {} }}\n", RECOVERY.replace('q', "b")),
+            "recipients.bad.recipient: an age X25519 recipient is lower-case bech32",
+        ),
+        (
+            format!("{recovery}  se-01: {{ backend: se-cryptokit, host: x }}\n"),
+            "recipients.se-01.host: unknown field `host`, expected one of backend, recipient",
+        ),
+    ];
+    for (recipients, expected) in cases {
+        assert_error(&error_of(&with_recipients(&recipients)), expected);
+    }
+}
+
+#[test]
+fn recipients_are_added_set_and_removed_as_entries_and_the_rules_hold() {
+    use writ_core::config::Section;
+    use writ_core::config::edit;
+    let min = writ_core::fit::DEFAULT_MIN_TTL;
+    let start = PolicyConfig::from_yaml(POLICY).unwrap();
+    // The recovery key first, then a hardware key beside it.
+    let recovery = format!("recipient={RECOVERY}");
+    let with_recovery = edit::add(
+        &start,
+        Section::Recipients,
+        "recovery",
+        &edits(&[&recovery]),
+        min,
+    )
+    .unwrap();
+    let hardware = edit::add(
+        &with_recovery,
+        Section::Recipients,
+        "se-01",
+        &edits(&["backend=se-cryptokit"]),
+        min,
+    )
+    .unwrap();
+    assert!(hardware.hardware_keystore());
+    // A hardware key first: refused, the recovery key missing.
+    let error = edit::add(
+        &start,
+        Section::Recipients,
+        "se-01",
+        &edits(&["backend=se-cryptokit"]),
+        min,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.starts_with("recipients: a hardware recipient needs the recovery recipient"),
+        "{error}"
+    );
+    // The recovery key replaced in place; its backend never set.
+    let other = RECOVERY.replace("ql3z", "qq3z");
+    let replaced = edit::edit(
+        &hardware,
+        Section::Recipients,
+        "recovery",
+        &edits(&[&format!("recipient={other}")]),
+        min,
+    )
+    .unwrap();
+    assert_eq!(replaced.recovery_recipient().unwrap().1.as_str(), other);
+    let error = edit::edit(
+        &hardware,
+        Section::Recipients,
+        "se-01",
+        &edits(&["backend=yubikey"]),
+        min,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("backend"), "{error}");
+    // The recovery key can't go while a hardware key needs it; the hardware key can.
+    let error = edit::remove(&hardware, Section::Recipients, "recovery", min)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.starts_with("recipients: a hardware recipient needs the recovery recipient"),
+        "{error}"
+    );
+    let back = edit::remove(&hardware, Section::Recipients, "se-01", min).unwrap();
+    assert_eq!(back, with_recovery);
+}

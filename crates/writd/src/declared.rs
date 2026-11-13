@@ -54,7 +54,7 @@ impl Backend {
 
     /// The backend a declaration names, at `at` (`keys.<id>.backend`), or why this daemon
     /// has none by that name.
-    fn of(name: &BackendName, at: &str) -> anyhow::Result<Self> {
+    pub(crate) fn of(name: &BackendName, at: &str) -> anyhow::Result<Self> {
         let have = crate::platform::BACKENDS;
         have.iter()
             .copied()
@@ -112,6 +112,19 @@ where
 /// The keys `policy` declares that the daemon makes (its signing keys and `ssh` upstream
 /// credentials), each checked against its backend; a token's backend is checked too.
 pub fn declarations(policy: &PolicyConfig) -> anyhow::Result<Declarations> {
+    // The keystore's recipients (M7.6): each hardware one on a device this daemon has.
+    for (name, recipient) in policy.recipients() {
+        if let writ_core::config::Recipient::Hardware { backend } = recipient {
+            let at = format!("recipients.{name}.backend");
+            let backend = Backend::of(backend, &at)?;
+            if !backend.is_device() {
+                bail!(
+                    "{at}: a recipient is a device's key, not {}",
+                    backend.name()
+                );
+            }
+        }
+    }
     let mut declared = Declarations::new();
     for (id, key) in policy.keys() {
         let at = format!("keys.{id}");
@@ -368,6 +381,28 @@ mod tests {
 
     fn policy(keys: &str) -> PolicyConfig {
         PolicyConfig::from_yaml(&format!("keys:\n{keys}\nrepos: {{}}\ntemplates: {{}}\n")).unwrap()
+    }
+
+    #[test]
+    fn a_hardware_recipient_names_a_device_this_daemon_has() {
+        let recovery = "recovery: { recipient: \
+             age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p }";
+        let text = |backend: &str| {
+            format!(
+                "keys: {{}}\nrecipients:\n  {recovery}\n  hw: {{ backend: {backend} }}\nrepos: {{}}\n\
+                 templates: {{}}\n"
+            )
+        };
+        let error = format!(
+            "{:#}",
+            declarations(&PolicyConfig::from_yaml(&text("yubikey-piv")).unwrap()).unwrap_err()
+        );
+        assert!(error.starts_with("recipients.hw.backend: "), "{error}");
+        let on_this_os = declarations(&PolicyConfig::from_yaml(&text("se-cryptokit")).unwrap());
+        let has_it = crate::platform::BACKENDS
+            .iter()
+            .any(|b| b.name() == "se-cryptokit");
+        assert_eq!(on_this_os.is_ok(), has_it, "{on_this_os:?}");
     }
 
     #[test]

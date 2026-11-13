@@ -1,6 +1,6 @@
 //! The policy in Writ's canonical layout: what `writ admin repo|template|key|host` signs once
 //! it changed a field. One layout, whatever the text it started from: the sections in the
-//! order `keys`, `upstream_hosts`, `proxies`, `repos`, `templates`, each entry's fields in the operator
+//! order `keys`, `upstream_hosts`, `proxies`, `recipients`, `repos`, `templates`, each entry's fields in the operator
 //! reference's order, a field left out when it holds its default, lists in flow style (host
 //! keys one per line), and a scalar quoted unless it reads back as the same string. Read back,
 //! the text is the policy it was written from (the tests and a property test check it).
@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::{
-    DirectSsh, Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, Proxy, PushMode, RepoEntry,
-    Section, Template, TicketLink, UpstreamKey,
+    DirectSsh, Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, Proxy, PushMode, Recipient,
+    RepoEntry, Section, Template, TicketLink, UpstreamKey,
 };
 use crate::units::ByteSize;
 
@@ -36,6 +36,13 @@ pub(super) fn policy(policy: &PolicyConfig) -> String {
         for (name, proxy) in &policy.proxies {
             entry(&mut out, name.as_str());
             write_proxy(&mut out, proxy);
+        }
+    }
+    if !policy.recipients.is_empty() {
+        out.push_str("\nrecipients:\n");
+        for (name, recipient) in &policy.recipients {
+            entry(&mut out, name.as_str());
+            write_recipient(&mut out, recipient);
         }
     }
     out.push('\n');
@@ -80,6 +87,14 @@ pub(super) fn one_entry(policy: &PolicyConfig, section: Section, name: &str) -> 
                 .find(|(proxy, _)| proxy.as_str() == name)?;
             entry(&mut out, proxy.as_str());
             write_proxy(&mut out, body);
+        }
+        Section::Recipients => {
+            let (recipient, body) = policy
+                .recipients
+                .iter()
+                .find(|(recipient, _)| recipient.as_str() == name)?;
+            entry(&mut out, recipient.as_str());
+            write_recipient(&mut out, body);
         }
         Section::Repos => {
             let (repo, body) = policy
@@ -170,6 +185,13 @@ fn write_proxy(out: &mut String, proxy: &Proxy) {
     }
     if let Some(timeout) = proxy.connect_timeout {
         field(out, "connect_timeout", &timeout.to_string());
+    }
+}
+
+fn write_recipient(out: &mut String, recipient: &Recipient) {
+    match recipient {
+        Recipient::Hardware { backend } => field(out, "backend", &scalar(backend.as_str())),
+        Recipient::Recovery { recipient } => field(out, "recipient", &scalar(recipient.as_str())),
     }
 }
 

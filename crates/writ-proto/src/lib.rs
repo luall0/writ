@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::DryRun`], [`Command::Policy`], [`Command::Wait`], [`Command::Close`] |
-//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::AdminKeys`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`] |
 //!
 //! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
 //! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed".
@@ -34,10 +34,11 @@ pub use messages::{
     Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, BackendShown, ChainLink,
     CheckStep, Checked, CloseRequest, Count, CreatedKey, Decision, Decisions, DenialCount, Info,
     KeyRole, KeyShown, KeysShown, Listing, OpenpgpShown, OtherLease, Others, PassphraseText,
-    Phases, Previous, ProveRequest, Proved, RefuseRequest, Relation, RemovedKey, Renewal,
-    RepoPolicy, Report, ReportCommit, ReportPush, RevokeRequest, ScanNonce, ScanRequest, Scanned,
-    ScannedKey, SealedBoot, Shown, Submitted, Summary, TemplateView, TlsRequest, TlsRotated,
-    TlsShown, TokenApplied, TokenRequest, TokenShown, UnsealRequest, Unsealed, UpstreamChecked,
+    Phases, Previous, ProveRequest, Proved, RecoveryShown, RefuseRequest, Relation, RemovedKey,
+    Renewal, RepoPolicy, Report, ReportCommit, ReportPush, RevokeRequest, ScanNonce, ScanRequest,
+    Scanned, ScannedKey, SealedBoot, Shown, Submitted, Summary, TemplateView, TlsRequest,
+    TlsRotated, TlsShown, TokenApplied, TokenRequest, TokenShown, UnsealRequest, Unsealed,
+    UpstreamChecked,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -222,6 +223,7 @@ mod tests {
             decisions: Decisions::Open,
             sealed: None,
             recipient: None,
+            token_recipients: Vec::new(),
         });
         let bytes = encode_reply(&ok);
         assert_eq!(bytes, b"{\"ok\":{\"decisions\":\"open\"}}\n");
@@ -270,6 +272,7 @@ mod tests {
             recipient: Some(
                 "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p".to_owned(),
             ),
+            token_recipients: vec!["age1se1example".to_owned()],
         };
         let bytes = encode_reply(&Ok::<_, ApiError>(info.clone()));
         assert_eq!(decode_reply::<Info>(&bytes), Ok(info));
@@ -277,6 +280,7 @@ mod tests {
             decisions: Decisions::Signed,
             sealed: None,
             recipient: None,
+            token_recipients: Vec::new(),
         }));
         assert_eq!(open, b"{\"ok\":{\"decisions\":\"signed\"}}\n");
     }

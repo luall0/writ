@@ -59,6 +59,7 @@ fn policy_keys() -> BTreeSet<String> {
             "keys",
             "upstream_hosts",
             "proxies",
+            "recipients",
             "repos",
             "templates",
             "signing_keys"
@@ -75,6 +76,11 @@ fn policy_keys() -> BTreeSet<String> {
     keys.extend(keys_of(
         &policy_error("keys: {}\nproxies:\n  p:\n    __probe__: 0\nrepos: {}\ntemplates: {}"),
         "proxies.<name>.",
+        &[],
+    ));
+    keys.extend(keys_of(
+        &policy_error("keys: {}\nrecipients:\n  r:\n    __probe__: 0\nrepos: {}\ntemplates: {}"),
+        "recipients.<name>.",
         &[],
     ));
     keys.extend(keys_of(
@@ -280,6 +286,7 @@ fn the_probe_reads_every_list_the_parser_writes() {
             "keys",
             "upstream_hosts",
             "proxies",
+            "recipients",
             "repos",
             "templates",
             "signing_keys"
@@ -345,8 +352,9 @@ fn the_policy_template_parses_as_is_and_with_every_default_taken_in() {
             || line.contains("github_token:")
             || line.contains("proxy_password:")
             || line.starts_with("  #   ")
-            // The proxies section is an example: none by default.
+            // The proxies and recipients sections are examples: none by default.
             || line.contains("proxies:")
+            || line.contains("recipients:")
             || line.starts_with("#   ")
             || line.contains("hash:")
     });

@@ -138,6 +138,19 @@ const PROXY_FIELDS: &[Field] = &[
     ),
 ];
 
+const RECIPIENT_FIELDS: &[Field] = &[
+    fixed(
+        "backend",
+        false,
+        "a hardware key the daemon makes: se-cryptokit (the Mac's Secure Enclave)",
+    ),
+    field(
+        "recipient",
+        Text,
+        "the recovery key, age1… (writ recovery new, or age-keygen): with backend left out",
+    ),
+];
+
 const REPO_FIELDS: &[Field] = &[
     required(
         "upstream",
@@ -278,6 +291,7 @@ pub fn fields(section: Section) -> &'static [Field] {
         Section::Keys => KEY_FIELDS,
         Section::UpstreamHosts => HOST_FIELDS,
         Section::Proxies => PROXY_FIELDS,
+        Section::Recipients => RECIPIENT_FIELDS,
         Section::Repos => REPO_FIELDS,
         Section::Templates => TEMPLATE_FIELDS,
     }

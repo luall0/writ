@@ -288,6 +288,7 @@ impl Opener {
             ));
         }
         gateway.set_mirrors(mirrors);
+        inner.service.set_token_recipients(live.token_recipients());
         let _ = inner.open.set(Open {
             live: Arc::new(live),
             signing: signer,
@@ -415,6 +416,7 @@ impl Opener {
         }
         let (mut created, mut openpgp_created) = (Vec::new(), Created::new());
         let mut removed: Vec<(RemovedKey, Forget)> = Vec::new();
+        let mut recipients_changed = false;
         let (parsed, ready) = match target {
             AdminTarget::Policy => {
                 let (policy, declared) =
@@ -430,6 +432,22 @@ impl Opener {
                     .open
                     .get()
                     .ok_or_else(|| refuse("the daemon is not open".to_owned()))?;
+                // The keystore's recipients (M7.6): the last hardware one never goes, and a new
+                // one is made in its device before the change is recorded.
+                let in_force = inner.service.policy();
+                if in_force.hardware_keystore() && !policy.hardware_keystore() {
+                    return Err(refuse(
+                        "recipients: the last hardware recipient can't be removed: going back to \
+                         a passphrase is writd recover, on the daemon's host"
+                            .to_owned(),
+                    ));
+                }
+                recipients_changed = in_force.recipients() != policy.recipients();
+                if recipients_changed {
+                    self.make_recipients(&policy)
+                        .await
+                        .map_err(|e| refuse(format!("{e:#}")))?;
+                }
                 (created, openpgp_created) = self
                     .keys_for(&declared)
                     .await
@@ -495,6 +513,15 @@ impl Opener {
                 gateway.set_mirrors(mirrors);
                 self.forget(&removed).await;
                 self.write_certificates();
+                if recipients_changed && let Err(e) = self.rewrap().await {
+                    let reason = format!(
+                        "the policy is in force, but the keystore isn't wrapped to its recipients \
+                         yet ({e:#}): the next unseal finishes it"
+                    );
+                    tracing::error!("{reason}");
+                    inner.service.admin_note(&reason);
+                    return Err(reason);
+                }
             }
             Ready::Readers(readers) => gateway.readers().replace(readers),
             Ready::Approvers => {}
@@ -508,6 +535,76 @@ impl Opener {
             tracing::info!(id = %key.id, role = key.role.as_str(), public_key = %key.public_key, "key created");
         }
         Ok(applied)
+    }
+
+    /// Makes, in its device, each hardware recipient `policy` declares that the keystore
+    /// doesn't hold yet (M7.6), each logged with its recipient.
+    async fn make_recipients(
+        &self,
+        policy: &writ_core::config::PolicyConfig,
+    ) -> anyhow::Result<()> {
+        let inner = self.0.clone();
+        let policy = policy.clone();
+        let made = tokio::task::spawn_blocking(move || {
+            let KeystoreConfig::Sealed(sealed) = &inner.config.keystore else {
+                bail!("the development keystore takes no recipient");
+            };
+            keystore::recipients::make_missing(&inner.config, sealed, &policy)
+        })
+        .await
+        .context("the change stopped")??;
+        for (name, recipient) in made {
+            tracing::info!(recipient = %name, public = %recipient, "hardware recipient created");
+            self.0.service.admin_note(&format!(
+                "recipient {name} created in its device: {recipient}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The keystore rewrapped to the recipients of the policy in force (M7.6), then the tokens'
+    /// references and the mirrors that hold them renewed (a rewrapped file is another version).
+    async fn rewrap(&self) -> anyhow::Result<()> {
+        let inner = self.0.clone();
+        let open = inner.open.get().context("the daemon is not open")?;
+        let (live, config, policy) = (
+            open.live.clone(),
+            inner.config.clone(),
+            inner.service.policy(),
+        );
+        let (changed, tokens) = tokio::task::spawn_blocking(move || {
+            let changed = live.apply_recipients(&config, &policy)?;
+            let tokens = live.token_refs(&policy)?;
+            anyhow::Ok((changed, tokens))
+        })
+        .await
+        .context("the change stopped")??;
+        for line in &changed {
+            tracing::info!("keystore: {line}");
+        }
+        *open.tokens.write().unwrap_or_else(PoisonError::into_inner) = tokens;
+        inner
+            .service
+            .set_token_recipients(open.live.token_recipients());
+        let gateway = inner
+            .gateway
+            .get()
+            .context("the gateway is not started yet")?;
+        let policy = inner.service.policy();
+        let pinned = PinnedHosts::from_policy(policy.upstream_hosts())?;
+        let mirrors = gateway
+            .mirrors()
+            .map_err(|e| anyhow::anyhow!(e))?
+            .with_registry(
+                policy.repos(),
+                policy.proxies(),
+                pinned,
+                open.upstream.clone(),
+                &open.tokens(),
+            )
+            .await?;
+        gateway.set_mirrors(mirrors);
+        Ok(())
     }
 
     /// Hands the signers every key `declared` names that they don't hold yet: from the
@@ -917,16 +1014,18 @@ impl Opener {
     async fn open_keystore(&self, passphrase: PassphraseText) -> anyhow::Result<Keystore> {
         let inner = self.0.clone();
         tokio::task::spawn_blocking(move || {
-            let KeystoreConfig::Sealed(sealed) = &inner.config.keystore else {
+            if !matches!(&inner.config.keystore, KeystoreConfig::Sealed(_)) {
                 bail!("this daemon's keystore is not sealed");
-            };
+            }
             let request =
                 UnsealRequest::with_passphrase(Passphrase::new(passphrase.expose().to_owned()));
             drop(passphrase);
-            let key = platform::data_key(sealed, &request)?;
+            // The hardware recipients' devices when they wrap the identity (M7.6), else the
+            // passphrase.
+            let (key, hardware) = keystore::unseal_key(&inner.config, &request)?;
             drop(request);
             let declared = crate::declared::declarations(&inner.policy)?;
-            keystore::open(&inner.config, &declared, &inner.policy, key.way()?)
+            keystore::open(&inner.config, &declared, &inner.policy, key, hardware)
         })
         .await
         .context("the unseal stopped")?
@@ -968,6 +1067,17 @@ impl AdminApplier for Opener {
     fn token_show(&self, id: KeyId) -> BoxFuture<'static, Result<TokenShown, String>> {
         let me = self.clone();
         Box::pin(async move { me.show_token(&id) })
+    }
+
+    fn recovery_show(&self) -> BoxFuture<'static, Result<writ_proto::RecoveryShown, String>> {
+        let me = self.clone();
+        Box::pin(async move {
+            let KeystoreConfig::Sealed(sealed) = &me.0.config.keystore else {
+                return Err("the development keystore has no recovery recipient".to_owned());
+            };
+            keystore::recipients::recovery_shown(sealed, &me.0.service.policy())
+                .map_err(|e| format!("{e:#}"))
+        })
     }
 
     fn apply_token(

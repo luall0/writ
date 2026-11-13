@@ -137,6 +137,11 @@ pub trait AdminApplier: Send + Sync {
         id: writ_core::names::KeyId,
     ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::TokenShown, String>>;
 
+    /// The keystore's recovery recipient and its challenge (M7.6), or why there is none.
+    fn recovery_show(
+        &self,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::RecoveryShown, String>>;
+
     fn apply_token(
         &self,
         checked: writ_approval::CheckedToken,

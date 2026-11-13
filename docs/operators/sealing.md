@@ -114,6 +114,39 @@ writ admin token <id>      # asks for the token (no echo), then one signature
 The token is encrypted on your machine before it is sent. The daemon stores it as
 `tokens/<id>.age` and uses it at once. Run the command again to rotate it.
 
+## The recovery key and the Secure Enclave
+
+The passphrase opens the keystore. Two more ways in can be added, as entries of the policy's
+`recipients` ([reference](policy-yaml.md#recipients-recipientsname)):
+
+**A recovery key**, kept offline, opens everything if the passphrase or the Mac is lost.
+
+```sh
+writ recovery new          # prints the key once: write it down, then clear the screen
+writ admin recipient add recovery recipient=<age1…>   # the line it printed, one signature
+writ recovery check        # asks for the key, proves it opens the keystore
+```
+
+- Run `writ recovery new` on a machine that isn't online if you can: the key is printed,
+  never saved. `age-keygen` makes one too.
+- `writ recovery check` opens a challenge the daemon made for that key, on your machine.
+  Nothing secret is sent. Run it from time to time: a key you can't find is no recovery.
+- To replace it: `writ admin recipient set recovery recipient=<new age1…>`. The old key stops
+  opening the keystore at once.
+
+**A key in the Mac's Secure Enclave** (local mode on a Mac): the keystore then opens with no
+passphrase, and tokens are unlocked by the Secure Enclave each time they are used.
+
+```text
+writ admin recipient add se-01 backend=se-cryptokit
+```
+
+- The recovery key must be declared first: one lost Mac must not lose every secret.
+- From the next restart, `writ unseal` still needs your signature, but the passphrase you
+  type is no longer used.
+- The last hardware key can't be removed. Going back to a passphrase is
+  [`writd recover`](recovery.md), on the daemon's host.
+
 ## The notification token: boot or sealed
 
 A Telegram notifier's token (`notifiers[].telegram.token`) has no default: you choose where it

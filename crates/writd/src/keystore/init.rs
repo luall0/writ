@@ -75,13 +75,21 @@ pub fn init(path: &Path, tls_backend: &str) -> anyhow::Result<()> {
             config.state_dir.display()
         );
     }
-    let typed = writ_crypto::passphrase::read(
-        "Keystore passphrase (it opens every secret: keep it in a password manager): ",
-        Some("The same passphrase again: "),
-        true,
-    )?;
-    let passphrase = Passphrase::new(typed.as_str().to_owned());
-    drop(typed);
+    // A keystore whose identity is wrapped to hardware (M7.6, a hardware recipient in the
+    // policy) has no passphrase: none is asked.
+    let passphrase = match policy.hardware_keystore() {
+        true => None,
+        false => {
+            let typed = writ_crypto::passphrase::read(
+                "Keystore passphrase (it opens every secret: keep it in a password manager): ",
+                Some("The same passphrase again: "),
+                true,
+            )?;
+            let passphrase = Passphrase::new(typed.as_str().to_owned());
+            drop(typed);
+            Some(passphrase)
+        }
+    };
     // Nothing is written before here.
     crate::keystore::private_dir(&config.state_dir)?;
     let store = writ_store::Store::open(&db)?;
@@ -95,18 +103,23 @@ pub fn init(path: &Path, tls_backend: &str) -> anyhow::Result<()> {
         sealed,
         &declared,
         &policy,
-        &passphrase,
+        passphrase.as_ref(),
         &crate::platform::enroll,
         tls_backend,
         &makers,
     )?;
-    // The keystore and the state are made together or not at all: a state that can't take
-    // the files' first versions leaves the directories empty again, so `writd init` can run
-    // once more (the review after M5.5, L7: they stayed full, and every later init refused).
     let mut undo = Undo {
         dirs: [&sealed.dir, &sealed.boot],
         done: false,
     };
+    // The recipients (M7.6): each hardware one made in its device, then the identity wrapped
+    // to them and to the recovery recipient.
+    let recipients = super::recipients::make_missing(&config, sealed, &policy)?;
+    let hardware = super::recipients::load(&config, sealed)?;
+    super::recipients::reconcile(sealed, &policy, &hardware, &made.data_key, &[])?;
+    // The keystore and the state are made together or not at all: a state that can't take
+    // the files' first versions leaves the directories empty again, so `writd init` can run
+    // once more (the review after M5.5, L7: they stayed full, and every later init refused).
     crate::authority::seed(
         &store,
         &made.authority,
@@ -116,6 +129,15 @@ pub fn init(path: &Path, tls_backend: &str) -> anyhow::Result<()> {
     )?;
     undo.done = true;
     print(sealed, &policy, &made);
+    for (name, recipient) in &recipients {
+        println!("hardware recipient {name}: {recipient} (no passphrase: the device unseals)");
+    }
+    if let Some((name, _)) = policy.recovery_recipient() {
+        println!(
+            "recovery recipient {name}: the keystore opens with it too (writ recovery check \
+             proves you hold it)"
+        );
+    }
     Ok(())
 }
 
@@ -125,6 +147,8 @@ pub struct Made {
     pub authority: writ_crypto::authority::AuthorityKey,
     pub recipient: String,
     pub keys: PublicKeys,
+    /// The keystore's data key (wiped on drop): its identity wrapped to the recipients next.
+    pub data_key: DataKey,
 }
 
 /// Refuses unless both directories are missing or empty: a keystore is never made over
@@ -183,7 +207,7 @@ pub fn make(
     sealed: &SealedConfig,
     declared: &Declarations,
     policy: &PolicyConfig,
-    passphrase: &Passphrase,
+    passphrase: Option<&Passphrase>,
     enroll: Enroll<'_>,
     tls_backend: crate::declared::Backend,
     makers: &super::Makers,
@@ -199,8 +223,10 @@ pub fn make(
 
     let data_key = DataKey::generate()?;
     let recipient = data_key.recipient()?;
-    enroll(sealed, passphrase, &data_key)?;
-    drop(data_key);
+    // No passphrase: a hardware keystore, its identity wrapped to its recipients next.
+    if let Some(passphrase) = passphrase {
+        enroll(sealed, passphrase, &data_key)?;
+    }
     let recipient_text = recipient.to_string();
     write_public(&layout.recipient(), &format!("{recipient_text}\n"))?;
     let to: [&dyn age::Recipient; 1] = [&recipient];
@@ -247,6 +273,7 @@ pub fn make(
     undo.done = true;
     Ok(Made {
         authority,
+        data_key,
         recipient: recipient_text,
         keys: PublicKeys {
             host: host.public_key().clone(),

@@ -111,6 +111,16 @@ impl P256Recipient {
         compressed(&self.point)
     }
 
+    /// The uncompressed SEC1 point (what a device answers for its key).
+    pub fn uncompressed(&self) -> [u8; UNCOMPRESSED_BYTES] {
+        let encoded = self.point.to_sec1_point(false);
+        let mut out = [0u8; UNCOMPRESSED_BYTES];
+        for (o, b) in out.iter_mut().zip(encoded.as_bytes()) {
+            *o = *b;
+        }
+        out
+    }
+
     /// The first 4 bytes of SHA-256 over the compressed point, as in the stanza.
     pub fn tag(&self) -> [u8; TAG_BYTES] {
         let digest = Sha256::digest(self.compressed());
@@ -119,6 +129,11 @@ impl P256Recipient {
             *out = *byte;
         }
         tag
+    }
+
+    /// [`Self::tag`] as the stanza writes it (unpadded base64).
+    pub fn tag_text(&self) -> String {
+        Base64Unpadded::encode_string(&self.tag())
     }
 
     /// Wraps `file_key` with a fresh ephemeral key: the stanza.

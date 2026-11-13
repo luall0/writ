@@ -20,6 +20,7 @@ mod daemon_management;
 mod hardening_limits;
 mod hostile_upstream;
 mod https_upstream;
+mod keystore_recipients;
 mod local_mode;
 mod narrowing;
 mod notes;

@@ -253,7 +253,7 @@ implementation, as it brings its `Signer`.
   key wrapped the same way, so unsealing needs the approver's signature and no passphrase.
   **The passphrase is replaced, not kept:** a keystore unseals with the passphrase (no
   hardware) or with hardware + recovery, never both.
-- **The keystore's recipients in the signed policy** (`keystore.recipients`, settled with the
+- **The keystore's recipients in the signed policy** (`recipients`, settled with the
   user while building it): a hardware key made by the change that declares it, or the
   recovery recipient (`age1…`; on a passphrase keystore too), managed as a noun of its own,
   `writ admin recipient list | show | add | remove`, applied live (the identity and every

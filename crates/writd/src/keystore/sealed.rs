@@ -167,6 +167,21 @@ impl SecretFiles {
     }
 }
 
+/// `plaintext` as an age file encrypted to `recipients`, in memory.
+pub fn seal_bytes(plaintext: &[u8], recipients: &[&dyn age::Recipient]) -> anyhow::Result<Vec<u8>> {
+    let encryptor = age::Encryptor::with_recipients(recipients.iter().copied())
+        .map_err(|_| anyhow::anyhow!("no recipient to encrypt to"))?;
+    let mut sealed = Vec::new();
+    let mut writer = encryptor
+        .wrap_output(&mut sealed)
+        .context("cannot encrypt a secret")?;
+    writer
+        .write_all(plaintext)
+        .and_then(|()| writer.finish().map(|_| ()))
+        .context("cannot encrypt a secret")?;
+    Ok(sealed)
+}
+
 /// Writes `plaintext` as a new secret file at `path`, encrypted to `recipients` (the
 /// keystore's), private to the daemon (0600). Refuses an existing file.
 pub fn seal(
@@ -643,7 +658,7 @@ mod tests {
             &sealed,
             &declared(),
             &policy(),
-            &Passphrase::new(PASSPHRASE.to_owned()),
+            Some(&Passphrase::new(PASSPHRASE.to_owned())),
             &cheap,
             crate::declared::Backend::Software,
             &crate::keystore::Makers::default(),
@@ -1187,7 +1202,7 @@ templates:
             &sealed,
             &declared(),
             &policy(),
-            &Passphrase::new(PASSPHRASE.to_owned()),
+            Some(&Passphrase::new(PASSPHRASE.to_owned())),
             &cheap,
             crate::declared::Backend::Software,
             &crate::keystore::Makers::default(),
@@ -1213,7 +1228,7 @@ templates:
             &fresh,
             &declared(),
             &policy(),
-            &Passphrase::new(PASSPHRASE.to_owned()),
+            Some(&Passphrase::new(PASSPHRASE.to_owned())),
             &failing,
             crate::declared::Backend::Software,
             &crate::keystore::Makers::default(),
@@ -1225,7 +1240,7 @@ templates:
                 &fresh,
                 &declared(),
                 &policy(),
-                &Passphrase::new(PASSPHRASE.to_owned()),
+                Some(&Passphrase::new(PASSPHRASE.to_owned())),
                 &cheap,
                 crate::declared::Backend::Software,
                 &crate::keystore::Makers::default(),

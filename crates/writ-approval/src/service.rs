@@ -187,6 +187,9 @@ pub struct Service {
     notifications: Mutex<std::sync::mpsc::SyncSender<Notification>>,
     /// `writ wait` calls in progress: each one ends with its answer, or with its client.
     waiting: std::sync::atomic::AtomicUsize,
+    /// What a token is sealed to now (M7.6), set by the daemon at unseal and when the
+    /// keystore's recipients change.
+    token_recipients: Mutex<Vec<String>>,
     dropped: Arc<AtomicU64>,
     watcher: Arc<dyn SessionWatcher>,
     clock: Arc<dyn Clock>,
@@ -402,6 +405,7 @@ impl Service {
             notifications: Mutex::new(outbox),
             dropped,
             waiting: std::sync::atomic::AtomicUsize::new(0),
+            token_recipients: Mutex::new(Vec::new()),
             watcher: platform.watcher,
             clock: platform.clock,
             me: me.clone(),
@@ -697,6 +701,24 @@ impl Service {
             decisions: self.config.decisions,
             sealed: self.is_sealed().then(|| self.boot.clone()),
             recipient: self.config.recipient.clone(),
+            token_recipients: match self.is_sealed() {
+                true => Vec::new(),
+                // poisoned: the list is replaced whole.
+                false => self
+                    .token_recipients
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            },
         }
+    }
+
+    /// What `writ info` says a token is sealed to (M7.6): the daemon's to set, at unseal and
+    /// when the keystore's recipients change.
+    pub fn set_token_recipients(&self, recipients: Vec<String>) {
+        *self
+            .token_recipients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = recipients;
     }
 }

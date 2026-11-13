@@ -405,6 +405,12 @@ enum Commands {
         #[command(subcommand)]
         command: AdminCommand,
     },
+    /// The daemon keystore's offline recovery key (M7.6): it opens every secret when the
+    /// daemon's hardware is lost.
+    Recovery {
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
     /// Unseal a daemon that started sealed: the keystore's passphrase (asked for, or one
     /// line of stdin), and one signature with your approval key over this start of this
     /// daemon.
@@ -413,6 +419,20 @@ enum Commands {
         url: ApprovalUrl,
         #[command(flatten)]
         signer: SignerArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecoveryCommand {
+    /// Make a recovery key, best on a machine that isn't online: its secret is printed once
+    /// (write it down; nothing is saved) with its recipient, to declare with `writ admin
+    /// recipient add <name> recipient=<age1…>`.
+    New,
+    /// Check that you hold the daemon's recovery key: it is read (no echo, or one line of
+    /// stdin) and opens the daemon's challenge here; nothing secret is sent.
+    Check {
+        #[command(flatten)]
+        url: ApprovalUrl,
     },
 }
 
@@ -462,6 +482,12 @@ enum AdminCommand {
     /// The proxies in the policy in force, which repos reach their upstream through (SOCKS5,
     /// Tor included, or HTTP CONNECT).
     Proxy {
+        #[command(subcommand)]
+        command: EntryCommand,
+    },
+    /// The keystore's recipients in the policy in force (M7.6): a hardware key the daemon
+    /// makes (the Secure Enclave), and the offline recovery key.
+    Recipient {
         #[command(subcommand)]
         command: EntryCommand,
     },
@@ -1150,6 +1176,12 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             url,
             signer: args,
         } => approver::revoke(&paths, &url.get(&paths)?, &signer(&paths, args), id).await,
+        Commands::Recovery {
+            command: RecoveryCommand::New,
+        } => approver::recovery_new(),
+        Commands::Recovery {
+            command: RecoveryCommand::Check { url },
+        } => approver::recovery_check(&paths, &url.get(&paths)?).await,
         Commands::Admin {
             command: AdminCommand::Show { target, url },
         } => approver::admin_show(&paths, &url.get(&paths)?, approver::admin_target(target)?).await,
@@ -1197,6 +1229,17 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         Commands::Admin {
             command: AdminCommand::Proxy { command },
         } => entry_command(&paths, writ_core::config::Section::Proxies, command, None).await,
+        Commands::Admin {
+            command: AdminCommand::Recipient { command },
+        } => {
+            entry_command(
+                &paths,
+                writ_core::config::Section::Recipients,
+                command,
+                None,
+            )
+            .await
+        }
         Commands::Admin {
             command: AdminCommand::Template { command },
         } => {

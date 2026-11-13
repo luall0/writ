@@ -1,12 +1,14 @@
 # `policy.yaml`
 
-Five sections:
+Six sections:
 
 - **`keys`**: every key the policy names, each declared with what it is for. Signing keys sign
   commits under a template; upstream credentials reach a repo's upstream.
 - **`upstream_hosts`**: the host keys the daemon accepts from each `ssh://` upstream.
 - **`proxies`**: the proxies a repo's upstream can be reached through, for remotes that only
   answer from some addresses, or only inside a network such as Tor.
+- **`recipients`**: what the daemon's keystore is locked to besides its passphrase: a key in
+  the Mac's Secure Enclave, and an offline recovery key.
 - **`repos`**, the repo registry: each repo agents may use, its hard limits, and the
   templates its tickets may use.
 - **`templates`**: the most a ticket may ask in a repo that names the template.
@@ -16,7 +18,7 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
 (`make run`) and the [end-to-end one](../../e2e/config/policy.yaml).
 
 - **Changing it:** after `writd init`, only by a signed change from your machine:
-  [`writ admin repo|template|key|host|proxy`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
+  [`writ admin repo|template|key|host|proxy|recipient`](sealing.md#changing-the-policy-the-approvers-or-the-readers)
   entry by entry (`add`, `edit`, `set <name> <field>=<value>`, `remove`), or `writ admin
   apply policy` for the whole file ([`writd recover`](recovery.md) on the host, as a last
   resort). Editing the file on the host does nothing.
@@ -27,7 +29,7 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
 - **Unknown keys are refused**, and every error names its key:
   `templates.quick-fix.max_ttl: invalid duration "1 hour"`. The fields that moved in M6.2
   (`templates.<name>.repos`, a top-level `signing_keys`) are refused naming their new place.
-- **Names** are the map keys (`keys.<id>`, `proxies.<name>`, `repos.<name>`,
+- **Names** are the map keys (`keys.<id>`, `proxies.<name>`, `recipients.<name>`, `repos.<name>`,
   `templates.<name>`). Repo names must be unique ignoring case.
 - **Patterns, durations, sizes:** [patterns and units](../lease-model.md#patterns-and-units).
 
@@ -88,6 +90,32 @@ a Tor onion service ([example](setup.md#a-remote-behind-a-proxy)).
 | `proxies.<name>.connect_timeout` | Duration, 1s to 5m | `30s` | The longest reaching upstream through the proxy may take, its answer and the tunnel's opening. Raise it for Tor (`2m`) |
 
 At most 64 proxies. A proxy a repo names can't be removed.
+
+## Recipients: `recipients.<name>`
+
+The keystore holds every secret the daemon has. Without recipients, the passphrase you type
+at `writ unseal` opens it. Recipients add other ways in:
+
+- **A hardware key** (`backend: se-cryptokit`): the daemon makes a key in the Mac's Secure
+  Enclave when the change that declares it applies, and prints its `age1se1…` recipient. From
+  then on the keystore opens with that key: `writ unseal` asks for no passphrase, only your
+  signature. Tokens are unlocked by the device each time they are used, and never sit in the
+  daemon's memory. The key can't be copied off the Mac.
+- **The recovery key** (`recipient: age1…`): an age key you keep offline, on paper or a spare
+  device. It opens everything if the Mac or its Secure Enclave is lost
+  ([recovery](recovery.md)). Make one with `writ recovery new`, ideally on a machine that
+  isn't online, or with `age-keygen`; check you can still open it with `writ recovery check`.
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `recipients.<name>.backend` | `se-cryptokit` | one of `backend` or `recipient` **required** | A hardware key, made by the daemon in that device. Never changes: to replace one, add another and remove the old one |
+| `recipients.<name>.recipient` | An age X25519 recipient, `age1…` | one of `backend` or `recipient` **required** | The recovery key's public half. Change it to replace the recovery key: everything is locked to the new one at once |
+
+- At most 8 recipients, and at most one recovery key.
+- A hardware key needs the recovery key beside it: one lost device must not lose everything.
+- The last hardware key can't be removed: going back to a passphrase is [`writd recover`](recovery.md).
+- Without a hardware key, the recovery key is optional: it lets you recover a keystore whose
+  passphrase was lost.
 
 ## The repo registry: `repos.<name>`
 

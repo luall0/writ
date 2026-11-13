@@ -56,6 +56,9 @@ pub enum Command {
     /// `writ admin token <id>`: an approver's signed `writ-token/2` ([`TokenRequest`] on
     /// stdin). Reply: [`TokenApplied`].
     TokenApply,
+    /// `writ recovery check` (M7.6): the keystore's recovery recipient and its challenge, to
+    /// open on the approver's machine. Reply: [`RecoveryShown`].
+    RecoveryShow,
     /// `writ admin key list|show`: every key the policy in force declares, each with its
     /// public half (or, for a token, whether it was added) and what uses it. Reply:
     /// [`KeysShown`].
@@ -90,6 +93,12 @@ impl Command {
         if verb == "admin" {
             let what = words.next()?;
             let arg = words.next();
+            if what == "recovery" {
+                return match (arg, words.next()) {
+                    (Some("show"), None) => Some(Self::RecoveryShow),
+                    _ => None,
+                };
+            }
             if what == "token" {
                 let third = words.next();
                 if words.next().is_some() {
@@ -171,6 +180,7 @@ impl Command {
             Self::AdminApply => "writ admin apply".to_owned(),
             Self::TokenShow { id } => format!("writ admin token show {id}"),
             Self::TokenApply => "writ admin token apply".to_owned(),
+            Self::RecoveryShow => "writ admin recovery show".to_owned(),
             Self::AdminKeys => "writ admin keys".to_owned(),
             Self::ScanNonce => "writ admin scan-nonce".to_owned(),
             Self::Scan => "writ admin scan".to_owned(),
@@ -236,6 +246,7 @@ impl Command {
             Self::AdminApply => Some(("POST", "/v1/admin".to_owned())),
             Self::TokenShow { id } => Some(("GET", format!("/v1/tokens/{id}"))),
             Self::TokenApply => Some(("POST", "/v1/tokens".to_owned())),
+            Self::RecoveryShow => Some(("GET", "/v1/recovery".to_owned())),
             Self::AdminKeys => Some(("GET", "/v1/keys".to_owned())),
             Self::ScanNonce => Some(("GET", "/v1/scan".to_owned())),
             Self::Scan => Some(("POST", "/v1/scan".to_owned())),
@@ -273,6 +284,7 @@ impl Command {
                 id: id.parse().ok()?,
             },
             ("POST", ["tokens"], None) => Self::TokenApply,
+            ("GET", ["recovery"], None) => Self::RecoveryShow,
             ("GET", ["keys"], None) => Self::AdminKeys,
             ("GET", ["scan"], None) => Self::ScanNonce,
             ("POST", ["scan"], None) => Self::Scan,

@@ -333,3 +333,14 @@ with credentials. `writ init` also writes the [URL rewrite](gateway.md#url-rewri
 clone's `origin` so it keeps working (in wrapper mode, passed the same way: `writ git push
 origin` goes through the daemon, the operator's `git push origin` doesn't; in whole-repo mode,
 every push to `origin` in that clone does, and `writ init` says so).
+
+## The recovery key (M7.6)
+
+`writ recovery new` prints a fresh age X25519 key and its recipient, saving nothing (the
+operator writes it down; best on an offline machine). `writ recovery check` reads the key (no
+echo, or one line of stdin), asks the daemon for its recovery recipient and challenge
+(`RecoveryShow`, a reader key), and opens the challenge locally: the key's recipient must be
+the daemon's, and the challenge must open to what its digest names. Nothing secret is sent.
+`writ admin token` seals a token to what `writ info` names (`token_recipients`: the hardware
+recipients and the recovery recipient on a hardware keystore), else to the keystore's
+recipient.

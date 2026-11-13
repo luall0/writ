@@ -92,6 +92,12 @@ fn relevant(
         // A password goes with a user: asked only when the URL names one.
         Section::Proxies => name != "credential" || value("url").contains('@'),
         Section::UpstreamHosts => true,
+        // A hardware key (backend) or the recovery key (recipient): one or the other.
+        Section::Recipients => match name {
+            "backend" => value("recipient").is_empty(),
+            "recipient" => value("backend").is_empty(),
+            _ => true,
+        },
     }
 }
 

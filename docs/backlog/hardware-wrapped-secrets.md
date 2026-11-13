@@ -78,7 +78,7 @@ Settled with the user at M7.6's start ([decision log](../decisions.md), 2026-11-
     a file of its own, `identity.recovery.age`, so it opens every key; on a hardware keystore
     it opens the tokens directly too.
 - **The recipients in the signed policy** (decided with the user while building step 5,
-  instead of a `writ-keystore/1` of their own): a `keystore.recipients` section, each entry a
+  instead of a `writ-keystore/1` of their own): a top-level `recipients` section, each entry a
   hardware key (`backend: se-cryptokit`, made by the change that declares it, like a key, its
   `age1se1…` printed) or the recovery recipient (`recipient: age1…`), managed as the policy's
   sixth noun, `writ admin recipient list | show | add | remove`, with the same diff, signature,
@@ -192,7 +192,7 @@ the same commit.
 4. **The Secure Enclave recipient:** `create-agreement` and `agree` in `writ-se/1` and the
    fake helper (every fault), the framed agreement blob, `KeystoreUnwrap` over the helper in
    `writ-platform-macos`, the contract on the real Secure Enclave. The graft test.
-5. **The recipients in the signed policy:** `keystore.recipients` in `writ-core` and its
+5. **The recipients in the signed policy:** `recipients` in `writ-core` and its
    checks; the daemon making a hardware recipient, re-encrypting live, finishing a half-done
    change at unseal; `identity.recovery.age` and the recovery challenge; `writ admin
    recipient`, `writ recovery new` and `writ recovery check`; `writd init` from the policy;

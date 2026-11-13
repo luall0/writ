@@ -175,6 +175,22 @@ fn lines(policy: &PolicyConfig, section: Section, keys: Option<&KeysShown>) -> V
                 )
             })
             .collect(),
+        Section::Recipients => policy
+            .recipients()
+            .iter()
+            .map(|(name, recipient)| match recipient {
+                writ_core::config::Recipient::Hardware { backend } => format!(
+                    "{}  hardware ({})",
+                    clean(name.as_str()),
+                    clean(backend.as_str())
+                ),
+                writ_core::config::Recipient::Recovery { recipient } => format!(
+                    "{}  recovery {}",
+                    clean(name.as_str()),
+                    clean(recipient.as_str())
+                ),
+            })
+            .collect(),
         Section::Keys => keys
             .map(|keys| keys.keys.iter().map(key_line).collect())
             .unwrap_or_default(),
@@ -374,6 +390,22 @@ fn details(policy: &PolicyConfig, section: Section, name: &str, key: Option<&Key
                 out.push_str(&format!("repos: {}\n", names(&policy.proxy_users(proxy))));
             }
         }
+        Section::Recipients => {
+            if let Some((_, recipient)) =
+                policy.recipients().iter().find(|(r, _)| r.as_str() == name)
+            {
+                out.push_str(match recipient {
+                    writ_core::config::Recipient::Hardware { .. } => {
+                        "unwraps: the keystore's identity (the unseal, no passphrase) and every \
+                         token, on the daemon's host only\n"
+                    }
+                    writ_core::config::Recipient::Recovery { .. } => {
+                        "unwraps: everything, off the daemon's host (writd recover; check it \
+                         with writ recovery check)\n"
+                    }
+                });
+            }
+        }
         Section::Templates => {
             if let Some((template, _)) = policy.templates().iter().find(|(t, _)| t.as_str() == name)
             {
@@ -539,7 +571,10 @@ pub async fn remove(
                         }
                     }
                 }
-                Section::Templates | Section::UpstreamHosts | Section::Proxies => {}
+                Section::Templates
+                | Section::UpstreamHosts
+                | Section::Proxies
+                | Section::Recipients => {}
             }
             let next = writ_core::config::edit::remove(
                 &policy,
@@ -580,6 +615,9 @@ fn users(policy: &PolicyConfig, section: Section, name: &str) -> Option<String> 
             let repos = policy.proxy_users(&proxy);
             (!repos.is_empty()).then(|| format!("repos {}", names(&repos)))
         }
+        // What a recipient's removal may break is the policy's to refuse (the recovery
+        // recipient beside a hardware one) and the daemon's (the last hardware one).
+        Section::Recipients => None,
     }
 }
 

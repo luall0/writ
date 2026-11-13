@@ -147,6 +147,58 @@ pub fn makers(config: &Config) -> anyhow::Result<Makers> {
     Ok(Makers::lazy(builds))
 }
 
+/// The keystore's hardware recipient `backend` as a key-agreement device (M7.6): the helper's
+/// ECDH, glued to `writ-platform`'s `piv-p256` way.
+struct HelperDevice(writ_signer::helper::agreement::HelperAgreement);
+
+impl writ_platform::unlock::piv::KeyAgreement for HelperDevice {
+    fn agree(
+        &self,
+        peer: &[u8; writ_crypto::piv_p256::UNCOMPRESSED_BYTES],
+    ) -> writ_platform::Result<zeroize::Zeroizing<[u8; writ_crypto::piv_p256::SHARED_BYTES]>> {
+        self.0
+            .agree(peer)
+            .map_err(|e| writ_platform::PlatformError::Unlock(e.to_string()))
+    }
+}
+
+/// A new key-agreement key in the device `backend`, for a hardware recipient: what the daemon
+/// keeps (the framed blob) and its point. Refused for a backend that isn't a device.
+pub fn create_agreement(
+    config: &Config,
+    backend: Backend,
+) -> anyhow::Result<writ_signer::helper::agreement::MadeAgreement> {
+    if !backend.is_device() {
+        bail!("backend {}: a recipient is a device's key", backend.name());
+    }
+    let helper = check_device(config, backend)?;
+    let (_, made) = writ_signer::helper::agreement::HelperAgreement::create(&helper)
+        .map_err(|e| anyhow::anyhow!("backend {}: {e}", backend.name()))?;
+    Ok(made)
+}
+
+/// The hardware recipient `name` on `backend` from what the daemon kept: the way into the
+/// keystore its device unwraps. Its frame, point and a probe agreement checked first.
+pub fn agreement_way(
+    config: &Config,
+    backend: Backend,
+    name: &str,
+    stored: &writ_signer::Stored,
+    point: &[u8; writ_signer::helper::agreement::POINT],
+) -> anyhow::Result<writ_platform::unlock::piv::PivUnwrap> {
+    let helper = check_device(config, backend)?;
+    let agreement =
+        writ_signer::helper::agreement::HelperAgreement::load(&helper, stored, point)
+            .map_err(|why| anyhow::anyhow!("recipient {name}: its key was refused: {why}"))?;
+    let recipient = writ_crypto::piv_p256::P256Recipient::from_sec1(point, "age1se")
+        .map_err(|e| anyhow::anyhow!("recipient {name}: {e}"))?;
+    Ok(writ_platform::unlock::piv::PivUnwrap::new(
+        name,
+        recipient,
+        Arc::new(HelperDevice(agreement)),
+    ))
+}
+
 /// Commit signatures that may wait for one of the agent keys' backends while it signs one.
 const AGENT_KEYS_QUEUE: usize = 16;
 

@@ -365,7 +365,16 @@ unlocked ([Q17](../decisions.md)).
   when used ([M7.6](../roadmap.md#m76--hardware-wrapped-secrets)). M5 makes each secret its
   own age file for this. Secretive can't do this part because SSH keys
   only sign; they can't decrypt.
-- A recovery recipient (offline YubiKey or paper key) avoids losing everything with one device.
+- **The keystore's recipients** (M7.6, the policy's `recipients`): a hardware recipient (the
+  Secure Enclave's key-agreement key, made by the change that declares it, its framed blob in
+  `recipients/<name>.blob`, its `age1se1…` in `<name>.pub`) wraps `identity.age` instead of
+  the passphrase (`piv-p256`), and the tokens with the recovery recipient; the recovery
+  recipient (`age1…`) wraps the identity in `identity.recovery.age`, beside a challenge
+  (`recovery-check.age`, `.sha256`) that `writ recovery check` opens. `keystore::recipients::reconcile`
+  brings every file in line after each change and at each unseal (a change cut short is
+  finished); age's own grease stanza is never read as a recipient. On a hardware keystore the
+  identity is wiped once the unseal opened the keys: the tokens open through the devices, and
+  a key made later is sealed to the public recipient.
 - Hardware signer backends (YubiKey, TPM) don't need the keystore; sealing then only gates the
   daemon.
 - How a keystore file is opened is a `KeystoreUnwrap`: one way to unwrap an age file's file

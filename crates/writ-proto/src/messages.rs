@@ -130,6 +130,11 @@ pub struct Info {
     /// token to. None with the development keystore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipient: Option<String>,
+    /// What a token is sealed to now (M7.6): the hardware recipients (`age1se1…`) and the
+    /// recovery recipient on a hardware keystore, else the keystore's recipient alone. Empty
+    /// while sealed, and with the development keystore: [`Info::recipient`] then.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_recipients: Vec<String>,
 }
 
 /// A sealed daemon's boot, as a `writ-unseal/1` document names it.
@@ -278,6 +283,22 @@ impl KeyRole {
             Self::Upstream => "upstream credential",
         }
     }
+}
+
+/// Reply to [`Command::RecoveryShow`](crate::Command::RecoveryShow) (M7.6): the recovery
+/// recipient in force, and a random value sealed to it with its SHA-256, which the holder of
+/// the recovery identity opens on their own machine (nothing secret goes back).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryShown {
+    /// The recovery recipient's name in the policy.
+    pub name: String,
+    /// The recovery recipient (`age1…`).
+    pub recipient: String,
+    /// The challenge: an age file in standard base64, sealed to the recipient.
+    pub challenge: String,
+    /// The SHA-256 of what it holds, `sha256:<hex>`.
+    pub digest: String,
 }
 
 /// Reply to [`Command::TokenShow`](crate::Command::TokenShow): the token file in force for a
