@@ -65,7 +65,8 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |
 | [x509 commit signatures](#x509-commit-signatures) | Signers | feature | M | idea |
 | [Developer ID signed binaries](#developer-id-signed-binaries) | Packaging | improvement | S | idea |
-| [Hardware-wrapped secrets](hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | specified; picked as [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) |
+| [Hardware-wrapped secrets](hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | in progress as [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) |
+| [SSH host key behind the `Signer`](#ssh-host-key-behind-the-signer) | Signers | hardening | M | idea; waits for a signer hook in russh (left out of M7.6) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
 | [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
@@ -121,6 +122,18 @@ HSM, the daemon only asks it for signatures ([Signer](../architecture/signer.md)
   `Signer` contract suite (against the provider's emulator or a local Vault where one exists);
   no provider SDK in the core. The threat model gains a trusted third party (the provider and
   the account holding the keys).
+
+### SSH host key behind the `Signer`
+
+The gateway's SSH host key (the boot tier's `host`) on a hardware backend like the TLS key
+(M7.5), so a copy of the boot tier reveals no key at all. Left out of
+[M7.6](../roadmap.md#m76--hardware-wrapped-secrets) with the user: russh 0.65 signs its host
+key proofs in the key exchange with an in-memory `PrivateKey` (`server::Config::keys`) and has
+no hook for an external signer. Reopens when russh grows one (an issue or a pull request
+upstream; a patched copy carried in the tree was ruled out: a fork on the security path that
+every upgrade must re-apply). Then: an adapter over the `Signer` (as `writ_signer::tls` does
+for rustls), `writd init --host-key-backend`, and a live rotation re-pinning `known_hosts` as
+`writ admin tls rotate` re-pins the TLS certificate.
 
 ### x509 commit signatures
 

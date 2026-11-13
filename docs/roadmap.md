@@ -44,7 +44,7 @@ picked.
 | M7.1 | [Local mode on Linux](history/m7.1-local-mode-on-linux.md) ✅ | Linux implementations plugged in the same way: the peer's pidfd and a `/proc` process chain read by a capped helper, a pidfd watcher, a systemd service under its own user, the installer's Linux local setup, local mode in `make e2e` |
 | M7.2 | [Upstream proxies](history/m7.2-upstream-proxies.md) ✅ | A repo's upstream reached through a named proxy (SOCKS5, Tor included, or HTTP CONNECT, with an optional password from the keystore), for remotes reachable only from some addresses; `writ admin proxy`, host scans through it |
 | M7.5 | [Secure Enclave signer](history/m7.5-secure-enclave-signer.md) ✅ | The non-exportable local-mode signer the M0 spike picked: keys made in the Secure Enclave through a helper process, the TLS key rotated live, every key's backend from the CLI, the installer guided |
-| M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, unsealing with no passphrase |
+| M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, a recovery identity, unsealing with no passphrase, the CA behind the `Signer`, auto-unseal |
 | M7.7 | [Local mode checked on the Mac](#m77--local-mode-checked-on-the-mac) | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
@@ -230,66 +230,93 @@ guided. Its real-install items run with M7.7.
 
 ## M7.6 — Hardware-wrapped secrets
 
-[The backlog page](backlog/hardware-wrapped-secrets.md) holds the design. Every secret the
-daemon holds but can't keep in a signer (the HTTPS upstreams' tokens, later the HTTP credential
-proxy's, the keystore's data key) is wrapped to a hardware key that alone can unwrap it, and
-unwrapped only when used. The interface is the common one: a YubiKey, a TPM or a cloud KMS
-backend later brings its recipient as one more implementation, as it brings its `Signer`.
+[The backlog page](backlog/hardware-wrapped-secrets.md) holds the design and the plan (the
+forks settled with the user at its start: [decision log](decisions.md), 2026-11-13). Every
+secret the daemon holds but can't keep in a signer (the HTTPS upstreams' tokens, the proxies'
+passwords, later the HTTP credential proxy's, the keystore's data key) is wrapped to a
+hardware key that alone can unwrap it, and unwrapped only when used. The interface is the
+common one: a YubiKey, a TPM or a cloud KMS backend later brings its recipient as one more
+implementation, as it brings its `Signer`.
 
-- The unwrap interface first (hard rule 4): `KeystoreUnlock` generalized into a recipient that
-  unwraps one secret's file key, its contract suite, a fake, and
+- The unwrap interface first (hard rule 4): `KeystoreUnlock` generalized into
+  `KeystoreUnwrap`, which unwraps one secret's file key, its contract suite, a fake, and
   [platform.md](architecture/platform.md) updated. M5's passphrase-unlocked identity becomes
   its first implementation.
 - The Secure Enclave recipient in `writ-platform-macos`: P-256 key agreement through M7.5's
-  Swift component, no prompt, the key under `_writd`.
+  `writ-se` (a `KeyAgreement` key, `create-agreement` and `agree`), no prompt, the key under
+  `_writd`. The stanza is `piv-p256`, as age-plugin-yubikey and age-plugin-se write it,
+  implemented in Writ's Rust (no plugin binary run); the recipient prints as `age1se1…`.
 - A recovery recipient (an age X25519 identity kept offline, on paper or a spare device), so
-  one lost device doesn't lose every secret.
+  one lost device doesn't lose every secret: `writ recovery new` prints one (or `age-keygen`
+  makes it), `writ recovery check` proves it opens the daemon's recovery challenge.
 - Secrets unwrapped per use, zeroized after (no cache in this milestone); the keystore's data
   key wrapped the same way, so unsealing needs the approver's signature and no passphrase.
-- How the operator adds or rotates a secret: encrypted to the printed public recipient, from
+  **The passphrase is replaced, not kept:** a keystore unseals with the passphrase (no
+  hardware) or with hardware + recovery, never both.
+- **The keystore's recipients by signed admin change:** `writ admin keystore show`,
+  `recipient add se`, `recipient add recovery <age1…>`, `recipient remove`, each a
+  `writ-keystore/1` bound to the set in force, applied live (the identity and every token
+  re-encrypted); a hardware recipient without a recovery recipient refused; `writd init
+  --recipients` for a new keystore.
+- How the operator adds or rotates a secret: encrypted to the printed public recipients, from
   any machine, through the signed admin change of M5 (`writ admin token`, which then
-  encrypts to the daemon host's hardware recipient: the secret lives on the daemon host,
-  unwrapped there only when used, instead of being decrypted at unseal).
+  encrypts to the daemon host's hardware recipient and the recovery recipient: the secret
+  lives on the daemon host, unwrapped there only when used, instead of being decrypted at
+  unseal).
 - **Auto-unseal, opt-in** (`unseal: auto`, never the default): the daemon starts open, with
   no passphrase and no approver, only when nothing on the host opens a secret without a
   human. Every signing key in a hardware backend (the agent signing keys, the `ssh://`
-  upstream credentials, and the CA key, moved behind the `Signer` for this), and every secret
-  wrapped only to hardware recipients or the offline recovery identity (the tokens, the
-  authority MAC key, the keystore's identity). Exempt: the notification token and the boot
-  tier's transport keys, which may stay software. Anything else still software: the daemon
-  refuses to start, naming each one (refused, never adjusted). The start is logged (`unseal`,
-  "automatic") and notified. With the sealed start of M5 and software keys, there is no way
-  to start unsealed.
+  upstream credentials, and the CA key, moved behind the `Signer` for this: `writd init
+  --ca-backend`, and `writ admin ca rotate [--backend]` live, the old CA trusted until the
+  last lease it certified ends), and every secret wrapped only to hardware recipients or the
+  offline recovery identity (the tokens, the authority MAC key, the keystore's identity).
+  Exempt: the notification token and the boot tier's transport keys, which may stay
+  software. Anything else still software: the daemon refuses to start, naming each one
+  (refused, never adjusted). The start is logged (`unseal`, "automatic") and notified. With
+  the sealed start of M5 and software keys, there is no way to start unsealed.
 - **The boot tier in hardware, as an option:** the TLS key on the Secure Enclave (done in
-  M7.5: `writ admin tls rotate --backend se-cryptokit`), and the SSH host key behind the
-  `Signer` (an adapter so the gateway signs its host key proofs through it), so a copy of the
-  boot tier reveals no key either.
-- `writd recover` with auto-unseal takes the offline recovery identity (or the passphrase if
-  one is kept), never the hardware alone: host access must not replace signed admin changes.
+  M7.5: `writ admin tls rotate --backend se-cryptokit`). The SSH host key behind the
+  `Signer` is **not** in M7.6 (settled with the user): russh signs its host key proofs with
+  an in-memory key and has no hook for another signer; the idea waits for one
+  ([backlog](backlog/README.md#ssh-host-key-behind-the-signer)).
+- `writd recover` with a hardware keystore takes the offline recovery identity (the
+  passphrase on a passphrase keystore), never the hardware alone: host access must not
+  replace signed admin changes.
 - **The operator guide** gets a step-by-step section for auto-unseal ([sealing](operators/sealing.md#starting-without-a-human-auto-unseal-m76)):
   moving each key and secret to hardware, making and checking the recovery identity, the
   `writd.yaml` change, checking the daemon took it, and the refusal when something is still
-  software; its commands run in the end-to-end pipeline.
+  software; its commands that need no hardware run in the end-to-end pipeline, the Secure
+  Enclave ones in an integration scenario on the Mac.
 
 Acceptance:
 - [ ] **The graft test:** the Secure Enclave recipient is a new implementation, `writd`'s
       wiring and config; the keystore, the gateway and the mirrors don't change.
 - [ ] Every recipient passes the unwrap contract suite (the passphrase identity, the recovery
       identity, the Secure Enclave).
+- [ ] `piv-p256` matches the plugins' test vectors both ways, and a hostile stanza (a point
+      off the curve, the identity point, a wrong tag, a cut or long body) is refused with its
+      exact error before any device is asked.
 - [ ] With the real daemon: an HTTPS push unwraps its token with no prompt, after a reboot
       and with the screen locked; another process, and my user, can't unwrap it.
-- [ ] A copy of the keys volume, with the passphrase, unwraps nothing that was wrapped to the
-      Secure Enclave; the recovery identity alone unwraps everything.
+- [ ] A copy of the keys volume unwraps nothing that was wrapped to the Secure Enclave; the
+      recovery identity alone unwraps everything (with stock `age` too).
 - [ ] Removing the Secure Enclave key makes every secret wrapped only to it unreadable: the
       operation that needs one is refused with a reason, the daemon keeps running.
 - [ ] A secret's plaintext is not in the daemon's memory between operations (checked on a
       memory dump of the idle daemon).
+- [ ] `writ admin keystore`: a recipient added and removed live, every file re-encrypted, a
+      half-done change finished at the next start; a replay, a stale change, a non-approver,
+      a hardware set without a recovery recipient each refused and logged; `writ recovery
+      check` passes with the right identity and fails with another.
+- [ ] Unsealing a hardware keystore asks no passphrase; `writd recover` takes the recovery
+      identity and refuses the passphrase and the hardware alone.
+- [ ] `writ admin ca rotate`: leases certified by the old CA keep working until they end and
+      no longer, new leases get the new CA; a replay, a stale `replaces`, a non-approver
+      refused; the CA on the Secure Enclave issues certificates the gateway accepts.
 - [ ] `unseal: auto` starts the daemon open with every key and secret in hardware (the
       notification token and the transport keys aside), logged and notified; with any one
       still software it refuses to start, naming it; `writd recover` then needs the recovery
       identity, never the hardware alone.
-- [ ] The boot tier in hardware: the TLS key on the Secure Enclave and the SSH host key behind
-      the `Signer` work as the software ones, pinned the same way.
 - [ ] The operator guide's auto-unseal section, followed as written, reaches a daemon that
       starts open, and its refusal when one secret is left in software.
 
