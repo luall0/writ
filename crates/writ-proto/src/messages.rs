@@ -403,6 +403,16 @@ pub struct RetiredCa {
     pub until: u64,
 }
 
+/// Reply to [`Command::AutoUnsealShow`](crate::Command::AutoUnsealShow) (M7.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoUnsealShown {
+    /// The policy's `unseal`: `approver` or `auto`.
+    pub unseal: String,
+    /// What keeps the daemon from opening itself, each with its fix (empty: nothing).
+    pub missing: Vec<String>,
+}
+
 /// Body of [`Command::CaRotate`](crate::Command::CaRotate).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

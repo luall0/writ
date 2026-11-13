@@ -374,8 +374,8 @@ fn the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_
     // On a terminal, the setup is asked.
     let mut asked = fake.command("install", &[("DRY_RUN", "1")]);
     asked.env("APPROVER", &fake.approver);
-    // The setup, then this setup's three questions (Enter: software).
-    let (status, shown) = on_terminal(asked, &["local", "", "", ""]);
+    // The setup, then this setup's four questions (Enter: software, a passphrase).
+    let (status, shown) = on_terminal(asked, &["local", "", "", "", ""]);
     assert!(status.success(), "{shown}");
     assert!(
         shown.contains("Which setup? Offered on Darwin: local"),
@@ -903,6 +903,7 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
             "",
             "",
             "",
+            "",
             "n",
         ],
     );
@@ -921,11 +922,15 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         "  yubikey: one of software se-cryptokit",
         "SSH CA key [software]: ",
         "Agent signing key [software]: ",
+        "Keystore opened by [passphrase]: ",
+        "not offered with these answers",
         "Your answers:",
         "  Setup: local (the daemon on this Mac",
         &format!("  Approval key: {approver}"),
         "  TLS key: software",
         "  SSH CA key: software",
+        "  Keystore opened by: a passphrase",
+        "  Auto-unseal: no",
         "  Agent signing key agent-01: Ed25519, in software",
         "The changes, in order (none is made yet):",
         "    (root) dscl . -create /Users/_writd UniqueID 450",
@@ -945,6 +950,7 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         &[
             "",
             &approver,
+            "",
             "",
             "",
             "",
@@ -996,6 +1002,9 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
     );
 }
 
+/// A recovery key's recipient (age1 and 58 bech32 characters), for the installer's variables.
+const RECOVERY: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+
 #[test]
 fn without_a_terminal_each_answer_is_a_variable_checked_like_a_typed_one() {
     let fake = Fake::new();
@@ -1016,24 +1025,58 @@ fn without_a_terminal_each_answer_is_a_variable_checked_like_a_typed_one() {
             "yubikey",
             "CA_BACKEND=yubikey: one of software se-cryptokit",
         ),
+        (
+            "UNSEAL",
+            "touchid",
+            "UNSEAL=touchid: one of passphrase se-cryptokit",
+        ),
     ] {
         refused(&fake.install(&[(name, value)]), why);
         assert_eq!(fake.tree(), before, "{name}: nothing made");
+    }
+    // The Secure Enclave keystore needs its recovery key; auto-unseal needs everything there.
+    for (env, why) in [
+        (
+            vec![("UNSEAL", "se-cryptokit")],
+            "RECOVERY=: the recovery key's age1... recipient (writ recovery new)",
+        ),
+        (
+            vec![("RECOVERY", RECOVERY)],
+            "RECOVERY is for UNSEAL=se-cryptokit",
+        ),
+        (
+            vec![
+                ("UNSEAL", "se-cryptokit"),
+                ("RECOVERY", RECOVERY),
+                ("AUTO_UNSEAL", "yes"),
+            ],
+            "AUTO_UNSEAL=yes needs CA_BACKEND, AGENT_BACKEND and UNSEAL all se-cryptokit",
+        ),
+    ] {
+        refused(&fake.install(&env), why);
+        assert_eq!(fake.tree(), before, "{env:?}: nothing made");
     }
     refused(
         &fake.install(&[("APPROVER", "/nonexistent/key.pub")]),
         "APPROVER=/nonexistent/key.pub: not a readable file",
     );
-    // The Secure Enclave for both, as a dry run shows it.
+    // The Secure Enclave for everything, auto-unseal on, as a dry run shows it.
     let said = fake.shown(&ok(&fake.install(&[
         ("DRY_RUN", "1"),
         ("TLS_BACKEND", "se-cryptokit"),
         ("CA_BACKEND", "se-cryptokit"),
         ("AGENT_BACKEND", "se-cryptokit"),
+        ("UNSEAL", "se-cryptokit"),
+        ("RECOVERY", RECOVERY),
+        ("AUTO_UNSEAL", "yes"),
     ])));
     for change in [
         "agent-01: { use: signing, format: ssh, algorithm: p256, backend: se-cryptokit }",
         "/opt/writ/bin/writd init /var/db/writ/writd.yaml --tls-backend se-cryptokit --ca-backend se-cryptokit",
+        &format!("recovery: {{ recipient: {RECOVERY} }}"),
+        "se-01: { backend: se-cryptokit }",
+        "unseal: auto",
+        "opened by the Secure Enclave, no passphrase",
     ] {
         assert!(said.contains(change), "{change:?} not in:\n{said}");
     }

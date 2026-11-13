@@ -95,6 +95,22 @@ impl Service {
         approver: Option<&KeyFingerprint>,
         caller: &CallerFacts,
     ) -> Result<(), ServiceError> {
+        let by = match approver {
+            Some(approver) => UnsealedBy::Approver(approver),
+            None => UnsealedBy::DevKeystore,
+        };
+        self.unseal_by(opened, by, caller)
+    }
+
+    /// [`Service::unseal`], saying who opened it: an approver, the development keystore, or
+    /// the daemon itself through its hardware (M7.6, `unseal: auto`): logged as automatic
+    /// and notified.
+    pub fn unseal_by(
+        &self,
+        opened: Opened,
+        by: UnsealedBy<'_>,
+        caller: &CallerFacts,
+    ) -> Result<(), ServiceError> {
         let refuse = |reason: String| ServiceError::refused(RefusalCode::Unseal, reason);
         if !self.is_sealed() {
             return Err(ServiceError::refused(
@@ -155,9 +171,12 @@ impl Service {
             let mut inner = self.lock()?;
             let mut event =
                 AuditEvent::new(now, EventKind::Unseal, Outcome::Allowed).caller(caller);
-            event = match approver {
-                Some(approver) => event.approver(approver),
-                None => event.reason("the development keystore, open at start"),
+            event = match by {
+                UnsealedBy::Approver(approver) => event.approver(approver),
+                UnsealedBy::DevKeystore => event.reason("the development keystore, open at start"),
+                UnsealedBy::Automatic => event.reason(
+                    "automatic: the daemon opened itself through its hardware (unseal: auto)",
+                ),
             };
             Self::log(&mut inner, &event)?;
             if self.opened.set(opened).is_err() {
@@ -169,13 +188,28 @@ impl Service {
             self.set_openpgp(super::openpgp::OpenpgpKeys { created, certified });
         }
         self.changed.notify_waiters();
-        if approver.is_some() {
-            self.notify(Notification {
+        match by {
+            UnsealedBy::Approver(_) => self.notify(Notification {
                 title: "writd unsealed".to_owned(),
                 message: format!("Daemon {} is open.", self.boot.daemon),
                 priority: Priority::Default,
                 tags: vec!["writ".to_owned(), "unsealed".to_owned()],
-            });
+            }),
+            UnsealedBy::Automatic => self.notify(Notification {
+                title: "writd unsealed automatically".to_owned(),
+                message: format!(
+                    "Daemon {} started and opened itself through its hardware, with no one \
+                     (unseal: auto).",
+                    self.boot.daemon
+                ),
+                priority: Priority::High,
+                tags: vec![
+                    "writ".to_owned(),
+                    "unsealed".to_owned(),
+                    "automatic".to_owned(),
+                ],
+            }),
+            UnsealedBy::DevKeystore => {}
         }
         Ok(())
     }
@@ -199,4 +233,15 @@ impl Service {
         }
         Self::write_best_effort(&mut inner, &event);
     }
+}
+
+/// Who opened the service ([`Service::unseal_by`]).
+#[derive(Debug, Clone, Copy)]
+pub enum UnsealedBy<'a> {
+    /// An approver's checked `writ unseal`.
+    Approver(&'a KeyFingerprint),
+    /// The development keystore, open at start.
+    DevKeystore,
+    /// The daemon itself, through its hardware (M7.6, `unseal: auto`).
+    Automatic,
 }

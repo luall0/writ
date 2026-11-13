@@ -86,6 +86,9 @@ pub enum Command {
     /// `writ admin ca rotate`: an approver's signed `writ-ca/1` ([`CaRequest`] on stdin): a
     /// new CA key, in force at once. Reply: [`CaRotated`].
     CaRotate,
+    /// `writ admin auto-unseal status|on|off` (M7.6): how the daemon unseals at start, and what
+    /// keeps it from opening itself. Reply: [`AutoUnsealShown`].
+    AutoUnsealShow,
 }
 
 impl Command {
@@ -136,6 +139,7 @@ impl Command {
                 ("tls", Some("rotate")) => Some(Self::TlsRotate),
                 ("ca", Some("show")) => Some(Self::CaShow),
                 ("ca", Some("rotate")) => Some(Self::CaRotate),
+                ("auto-unseal", Some("show")) => Some(Self::AutoUnsealShow),
                 _ => None,
             };
         }
@@ -197,6 +201,7 @@ impl Command {
             Self::TlsRotate => "writ admin tls rotate".to_owned(),
             Self::CaShow => "writ admin ca show".to_owned(),
             Self::CaRotate => "writ admin ca rotate".to_owned(),
+            Self::AutoUnsealShow => "writ admin auto-unseal show".to_owned(),
         }
     }
 
@@ -265,6 +270,7 @@ impl Command {
             Self::TlsRotate => Some(("POST", "/v1/tls".to_owned())),
             Self::CaShow => Some(("GET", "/v1/ca".to_owned())),
             Self::CaRotate => Some(("POST", "/v1/ca".to_owned())),
+            Self::AutoUnsealShow => Some(("GET", "/v1/auto-unseal".to_owned())),
         }
     }
 
@@ -307,6 +313,7 @@ impl Command {
             ("POST", ["tls"], None) => Self::TlsRotate,
             ("GET", ["ca"], None) => Self::CaShow,
             ("POST", ["ca"], None) => Self::CaRotate,
+            ("GET", ["auto-unseal"], None) => Self::AutoUnsealShow,
             _ => return None,
         };
         Some(command)

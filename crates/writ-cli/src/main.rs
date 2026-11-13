@@ -501,6 +501,13 @@ enum AdminCommand {
         #[command(subcommand)]
         command: CaCommand,
     },
+    /// Whether the daemon opens itself at start, with no one (M7.6): only with every key and
+    /// secret in hardware. `status` says what is missing.
+    #[command(name = "auto-unseal")]
+    AutoUnseal {
+        #[command(subcommand)]
+        command: AutoUnsealCommand,
+    },
     /// Add or replace the token ID (a token the policy declares, or a notifier's sealed
     /// token): asked for with no echo (or one line of stdin), encrypted here to the daemon's
     /// keystore, then one signature with your approval key. It is used at once.
@@ -528,6 +535,37 @@ enum TlsCommand {
         #[arg(long)]
         backend: Option<String>,
         /// Sign without asking (what is replaced is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum AutoUnsealCommand {
+    /// How the daemon unseals at start, and what keeps it from opening itself, each with the
+    /// command that fixes it.
+    Status {
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
+    /// The daemon opens itself after every start, through its hardware: refused, with what is
+    /// missing, until every key and secret is in hardware. One signature.
+    On {
+        /// Sign without asking (what changes is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
+    /// The daemon waits for `writ unseal` after every start again. One signature.
+    Off {
+        /// Sign without asking (what changes is still shown first).
         #[arg(long)]
         yes: bool,
         #[command(flatten)]
@@ -1461,6 +1499,46 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
                 &url.get(&paths)?,
                 &signer(&paths, args),
                 backend.as_deref(),
+                *yes,
+            )
+            .await
+        }
+        Commands::Admin {
+            command:
+                AdminCommand::AutoUnseal {
+                    command: AutoUnsealCommand::Status { url },
+                },
+        } => approver::auto_unseal_status(&paths, &url.get(&paths)?).await,
+        Commands::Admin {
+            command:
+                AdminCommand::AutoUnseal {
+                    command:
+                        AutoUnsealCommand::On {
+                            yes,
+                            url,
+                            signer: args,
+                        },
+                },
+        } => {
+            approver::auto_unseal_set(&paths, &url.get(&paths)?, &signer(&paths, args), true, *yes)
+                .await
+        }
+        Commands::Admin {
+            command:
+                AdminCommand::AutoUnseal {
+                    command:
+                        AutoUnsealCommand::Off {
+                            yes,
+                            url,
+                            signer: args,
+                        },
+                },
+        } => {
+            approver::auto_unseal_set(
+                &paths,
+                &url.get(&paths)?,
+                &signer(&paths, args),
+                false,
                 *yes,
             )
             .await

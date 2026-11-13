@@ -1,6 +1,6 @@
 # `policy.yaml`
 
-Six sections:
+Six sections, and one setting:
 
 - **`keys`**: every key the policy names, each declared with what it is for. Signing keys sign
   commits under a template; upstream credentials reach a repo's upstream.
@@ -12,6 +12,8 @@ Six sections:
 - **`repos`**, the repo registry: each repo agents may use, its hard limits, and the
   templates its tickets may use.
 - **`templates`**: the most a ticket may ask in a repo that names the template.
+- **`unseal`**: whether the daemon waits for you after a start (the default), or opens itself
+  ([starting without a human](sealing.md#starting-without-a-human-auto-unseal-m76)).
 
 How they combine with tickets: [lease model](../lease-model.md). Start from the
 [template](templates/policy.yaml). Examples: the [development policy](../../dev/policy.yaml)
@@ -205,3 +207,9 @@ compared. Each repo's commits are compared with that repo's paths.
 - **off**: no comparison.
 - **warn** (default): the commit is signed, and the `sign` audit line records a warning.
 - **deny**: the commit isn't signed (`paths`). Also when the touched paths can't be computed.
+
+## Starting on its own: `unseal`
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `unseal` | `approver` or `auto` | `approver` | `approver`: after every start the daemon waits for `writ unseal`. `auto`: it opens itself with no one, through the Mac's Secure Enclave. Only taken when every key and secret is in hardware: change it with `writ admin auto-unseal on`, which says what is missing first ([how](sealing.md#starting-without-a-human-auto-unseal-m76)) |

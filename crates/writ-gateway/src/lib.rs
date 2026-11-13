@@ -154,6 +154,11 @@ pub trait AdminApplier: Send + Sync {
         &self,
     ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::KeysShown, String>>;
 
+    /// How the daemon unseals at start and what keeps it from opening itself (M7.6).
+    fn auto_unseal_show(
+        &self,
+    ) -> writ_platform::BoxFuture<'static, std::result::Result<writ_proto::AutoUnsealShown, String>>;
+
     /// The SSH CA in force, its key's backend, and the CA it replaced while trusted (M7.6).
     fn ca_show(
         &self,

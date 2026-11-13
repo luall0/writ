@@ -199,6 +199,13 @@ pub(crate) async fn approval_reply(
             None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
         },
         Command::CaRotate => ca_rotate(gateway, facts, &body).await,
+        Command::AutoUnsealShow => match gateway.shared.config.admin.clone() {
+            Some(applier) => match applier.auto_unseal_show().await {
+                Ok(shown) => encoded(Ok(shown)),
+                Err(reason) => encoded::<()>(Err(ApiError::new(reason))),
+            },
+            None => encoded::<()>(Err(ApiError::new("this daemon takes no admin change"))),
+        },
         Command::ScanNonce => encoded(blocking(move || service.scan_nonce()).await),
         Command::Scan => scan(gateway, facts, &body).await,
         Command::RepoCheck { repo } => check(gateway, facts, repo).await,

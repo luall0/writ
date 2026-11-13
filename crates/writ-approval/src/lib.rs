@@ -31,6 +31,7 @@ pub use service::{
     KeyUses, MAX_CHECKS_A_MINUTE, MAX_NONCES, MAX_ROTATIONS_A_MINUTE, MAX_SCANS_A_MINUTE,
     MAX_SUBMISSIONS_IN_ALL, MAX_SUBMISSIONS_PER_SOURCE, NONCE_SECONDS, Opened, Pushing, Service,
     ServiceConfig, ServicePlatform, SignObject, SignedCommit, Signing, SubmissionLimits,
+    UnsealedBy,
 };
 pub use writ_store::{EventKind, PendingNote};
 

@@ -135,6 +135,9 @@ give every one.
 | `APPROVER=<path to the .pub>` | Your approval key |
 | `TLS_BACKEND=software\|se-cryptokit` | Where the HTTPS key is made (the Mac; `software` when left out) |
 | `CA_BACKEND=software\|se-cryptokit` | Where the SSH CA's key is made, the one that signs each lease's certificate (the Mac; `software` when left out) |
+| `UNSEAL=passphrase\|se-cryptokit` | What opens the keystore: a passphrase, or the Mac's Secure Enclave with no passphrase (`passphrase` when left out) |
+| `RECOVERY=<age1…>` | With `UNSEAL=se-cryptokit`: the recovery key's recipient, from `writ recovery new` (required then; on a terminal, Enter makes one) |
+| `AUTO_UNSEAL=no\|yes` | Whether the daemon opens itself at each start: only with `CA_BACKEND`, `AGENT_BACKEND` and `UNSEAL` all `se-cryptokit` (`no` when left out) |
 | `AGENT_BACKEND=software\|se-cryptokit` | Where `agent-01` is made (the Mac; `software` when left out) |
 | `DRY_RUN=1` | Only list the changes, make none |
 | `REPOS=undo\|keep` | The uninstall's question about the repositories `writ init` set up |

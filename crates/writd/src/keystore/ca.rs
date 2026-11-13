@@ -5,6 +5,8 @@
 //! keystore.sealed.dir
 //!   ca.age  ca.pub          the CA in force (its key sealed; its public half)
 //!   ca.age.new ca.pub.new   a rotation under way: written whole, then moved over the two
+//!   ca.backend              the backend the CA's key is on (none: software), readable
+//!                           while sealed (auto-unseal's check)
 //!   ca-retired.pub          the CAs rotations replaced: one line each, the time (seconds
 //!                           since the epoch) until which it stays trusted, then its public
 //!                           half; those past their time dropped at the next rotation
@@ -158,4 +160,30 @@ pub fn rotate(
     std::fs::rename(&pub_new, layout.ca_public())
         .with_context(|| "cannot put the new CA's public half in force")?;
     Ok(kept)
+}
+
+/// The backend the CA's key is on, as its marker says (none: software). Readable sealed.
+pub fn backend(sealed: &SealedConfig) -> anyhow::Result<String> {
+    let path = sealed.dir.join("ca.backend");
+    if !path.exists() {
+        return Ok("software".to_owned());
+    }
+    let text = writ_platform::fs::read_authority(&path, "the CA's backend")?;
+    let name = text.trim();
+    if name.is_empty()
+        || name.len() > 64
+        || !name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+    {
+        bail!("{}: not a backend name", path.display());
+    }
+    Ok(name.to_owned())
+}
+
+/// Records the backend the CA's key is on.
+pub fn set_backend(sealed: &SealedConfig, name: &str) -> anyhow::Result<()> {
+    let path = sealed.dir.join("ca.backend");
+    let fresh = with_suffix(&path, ".new");
+    write_new(&fresh, format!("{name}\n").as_bytes(), 0o644)?;
+    std::fs::rename(&fresh, &path)
+        .with_context(|| format!("cannot move {} in place", fresh.display()))
 }

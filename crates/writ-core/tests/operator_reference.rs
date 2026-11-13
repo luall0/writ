@@ -62,6 +62,7 @@ fn policy_keys() -> BTreeSet<String> {
             "recipients",
             "repos",
             "templates",
+            "unseal",
             "signing_keys"
         ],
         "a new top-level section: probe it"
@@ -73,6 +74,8 @@ fn policy_keys() -> BTreeSet<String> {
     ));
     // A map of hosts, each to a list of keys: one row.
     keys.insert("upstream_hosts.<host>".to_owned());
+    // A top-level scalar (M7.6): one row.
+    keys.insert("unseal".to_owned());
     keys.extend(keys_of(
         &policy_error("keys: {}\nproxies:\n  p:\n    __probe__: 0\nrepos: {}\ntemplates: {}"),
         "proxies.<name>.",
@@ -289,6 +292,7 @@ fn the_probe_reads_every_list_the_parser_writes() {
             "recipients",
             "repos",
             "templates",
+            "unseal",
             "signing_keys"
         ]
     );

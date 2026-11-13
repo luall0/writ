@@ -1818,3 +1818,31 @@ fn recipients_are_added_set_and_removed_as_entries_and_the_rules_hold() {
     let back = edit::remove(&hardware, Section::Recipients, "se-01", min).unwrap();
     assert_eq!(back, with_recovery);
 }
+
+#[test]
+fn the_daemon_unseals_by_an_approver_unless_the_policy_says_auto() {
+    use writ_core::config::Unseal;
+    let policy = PolicyConfig::from_yaml(POLICY).unwrap();
+    assert_eq!(policy.unseal(), Unseal::Approver);
+    assert!(
+        !policy.to_yaml().contains("unseal:"),
+        "the default is left out"
+    );
+    let auto = PolicyConfig::from_yaml(&format!("{POLICY}\nunseal: auto\n")).unwrap();
+    assert_eq!(auto.unseal(), Unseal::Auto);
+    let written = auto.to_yaml();
+    assert!(written.ends_with("\nunseal: auto\n"), "{written}");
+    assert_eq!(PolicyConfig::from_yaml(&written).unwrap(), auto);
+    assert_eq!(policy.with_unseal(Unseal::Auto), auto);
+    assert_eq!(auto.with_unseal(Unseal::Approver), policy);
+    assert_eq!(
+        PolicyConfig::from_yaml(&format!("{POLICY}\nunseal: approver\n")).unwrap(),
+        policy
+    );
+    for bad in ["yes", "Auto", "passphrase", "\"\""] {
+        assert_error(
+            &error_of(&format!("{POLICY}\nunseal: {bad}\n")),
+            "unseal: unknown variant",
+        );
+    }
+}

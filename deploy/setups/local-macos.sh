@@ -89,13 +89,18 @@ check_prefix() {
 }
 
 # The setup's own questions, after the frame's (the setup, the approval key): where the TLS
-# key, the SSH CA's key and the first agent signing key live. With the daemon's data kept from before, its
+# key, the SSH CA's key and the first agent signing key live; what opens the keystore (a
+# passphrase, or the Secure Enclave with an offline recovery key); and, with everything on the
+# Secure Enclave, whether the daemon starts without you (auto-unseal). With the daemon's data kept from before, its
 # keystore and policy are kept: nothing more to ask.
 setup_questions() {
     choose_approver
     TLS_BACKEND=${TLS_BACKEND:-}
     CA_BACKEND=${CA_BACKEND:-}
     AGENT_BACKEND=${AGENT_BACKEND:-}
+    UNSEAL=${UNSEAL:-}
+    RECOVERY=${RECOVERY:-}
+    AUTO_UNSEAL=${AUTO_UNSEAL:-}
     [ -d "$DATA" ] && return 0
     if [ -z "$TLS_BACKEND" ] && terminal; then
         say ""
@@ -124,6 +129,59 @@ setup_questions() {
         say "writ admin key rotate --backend moves it later; writ admin key add makes more."
     fi
     AGENT_BACKEND=$(choose_one AGENT_BACKEND "$AGENT_BACKEND" "Agent signing key" software software se-cryptokit)
+    keystore_questions
+}
+
+# What opens the keystore, the recovery key, and auto-unseal (M7.6).
+keystore_questions() {
+    if [ -z "$UNSEAL" ] && terminal; then
+        say ""
+        say "What opens the daemon's keystore, which holds every secret, after each start:"
+        say "  passphrase: one you choose now, typed at writ unseal with Touch ID"
+        say "  se-cryptokit: this Mac's Secure Enclave: writ unseal is Touch ID alone. It needs a"
+        say "  recovery key, kept offline, that opens everything if this Mac is lost"
+    fi
+    UNSEAL=$(choose_one UNSEAL "$UNSEAL" "Keystore opened by" passphrase passphrase se-cryptokit)
+    if [ "$UNSEAL" = se-cryptokit ]; then
+        if [ -z "$RECOVERY" ] && terminal; then
+            say ""
+            say "The recovery key: paste the age1... line writ recovery new printed (best run on a"
+            say "machine that isn't online), or press Enter to make one now, shown once."
+            RECOVERY=$(ask "Recovery key's recipient (age1...)" "")
+            if [ -z "$RECOVERY" ]; then
+                made=$("$BINARIES/writ" recovery new) || fail "writ recovery new failed"
+                say "$made"
+                RECOVERY=$(printf '%s\n' "$made" | sed -n 's/^ *writ admin recipient add recovery recipient=//p')
+                confirm "Is the recovery key written down, somewhere safe and offline?" ||
+                    fail "write the recovery key down first (nothing was changed): run the install again"
+            fi
+        fi
+        case $RECOVERY in
+            age1*) ;;
+            *) fail "RECOVERY=$RECOVERY: the recovery key's age1... recipient (writ recovery new)" ;;
+        esac
+    else
+        [ -z "$RECOVERY" ] || fail "RECOVERY is for UNSEAL=se-cryptokit (a passphrase keystore adds one later: writ admin recipient add)"
+    fi
+    if [ "$UNSEAL" = se-cryptokit ] && [ "$CA_BACKEND" = se-cryptokit ] && [ "$AGENT_BACKEND" = se-cryptokit ]; then
+        if [ -z "$AUTO_UNSEAL" ] && terminal; then
+            say ""
+            say "Auto-unseal: the daemon opens itself after every start, with no one. Anyone who can"
+            say "restart it, or takes this Mac, gets it running. Leases still need your signature,"
+            say "and every automatic start is logged and notified. writ admin auto-unseal off undoes it."
+        fi
+        AUTO_UNSEAL=$(choose_one AUTO_UNSEAL "$AUTO_UNSEAL" "Start without you (auto-unseal)" no no yes)
+    else
+        [ "${AUTO_UNSEAL:-no}" = no ] ||
+            fail "AUTO_UNSEAL=yes needs CA_BACKEND, AGENT_BACKEND and UNSEAL all se-cryptokit"
+        AUTO_UNSEAL=no
+        if terminal; then
+            say ""
+            say "Auto-unseal (the daemon starting without you) needs the SSH CA, agent-01 and the"
+            say "keystore on the Secure Enclave: not offered with these answers. Later, writ admin"
+            say "auto-unseal status says what is missing."
+        fi
+    fi
 }
 
 # The setup's answers, for the summary before the go.
@@ -134,6 +192,11 @@ setup_answers() {
     fi
     say "  TLS key: $TLS_BACKEND"
     say "  SSH CA key: $CA_BACKEND"
+    case $UNSEAL in
+        se-cryptokit) say "  Keystore opened by: the Secure Enclave, no passphrase; recovery key $RECOVERY" ;;
+        *) say "  Keystore opened by: a passphrase" ;;
+    esac
+    say "  Auto-unseal: $AUTO_UNSEAL"
     say "  Agent signing key agent-01: $(agent_key_said)"
 }
 
@@ -206,9 +269,23 @@ policy_yaml() {
 keys:
   agent-01: $(agent_key_yaml)
 upstream_hosts: {}
+$(recipients_yaml)
 repos: {}
 templates: {}
+$(unseal_yaml)
 EOF
+}
+
+# The keystore's recipients in the starting policy, for UNSEAL=se-cryptokit.
+recipients_yaml() {
+    [ "$UNSEAL" = se-cryptokit ] || return 0
+    printf 'recipients:\n  recovery: { recipient: %s }\n  se-01: { backend: se-cryptokit }\n' "$RECOVERY"
+}
+
+# Auto-unseal in the starting policy, for AUTO_UNSEAL=yes.
+unseal_yaml() {
+    [ "$AUTO_UNSEAL" = yes ] || return 0
+    printf 'unseal: auto\n'
 }
 
 plist() {
@@ -334,7 +411,10 @@ setup_install() {
         put_root "$DATA/policy.yaml" 0644 "$DAEMON_USER:$DAEMON_USER" "$(policy_yaml)"
         put_root "$DATA/approvers" 0644 "$DAEMON_USER:$DAEMON_USER" "approver $(head -n 1 "$APPROVER")"
         put_root "$DATA/readers" 0644 "$DAEMON_USER:$DAEMON_USER" "$reader_line"
-        step "The keystore (writd init, as $DAEMON_USER): choose its passphrase"
+        case $UNSEAL in
+            se-cryptokit) step "The keystore (writd init, as $DAEMON_USER): opened by the Secure Enclave, no passphrase" ;;
+            *) step "The keystore (writd init, as $DAEMON_USER): choose its passphrase" ;;
+        esac
         as_daemon "$DAEMON_USER" "$BIN/writd" init "$CONFIG" --tls-backend "$TLS_BACKEND" --ca-backend "$CA_BACKEND"
     fi
 
@@ -384,7 +464,11 @@ approval_url = unix:$RUN/approvals.sock"
     say ""
     say "Installed. What is left:"
     say "  1. Open a new terminal (for /opt/writ/bin on your PATH)."
-    say "  2. writ unseal (the passphrase you chose, then Touch ID)."
+    case $AUTO_UNSEAL:$UNSEAL in
+        yes:*) say "  2. Nothing to unseal: the daemon opened itself (auto-unseal), and will at each start." ;;
+        *:se-cryptokit) say "  2. writ unseal (Touch ID: the Secure Enclave opens the keystore)." ;;
+        *) say "  2. writ unseal (the passphrase you chose, then Touch ID)." ;;
+    esac
     say "  3. writ admin key/host/repo/template add, then writ init <repo> in a clone."
     say "  4. Start each agent with writ run -- <agent>."
 }

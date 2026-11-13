@@ -24,6 +24,7 @@
 //! (docs/architecture/overview.md).
 
 mod authority;
+mod autounseal;
 mod config;
 mod daemon;
 mod declared;
@@ -417,6 +418,20 @@ fn run(path: &Path) -> anyhow::Result<()> {
     let ca_certs = load_ca_certs(&config)?;
     let declared = declared::declarations(&loaded.policy)?;
     platform::check_devices(&config, &declared)?;
+    // Auto-unseal (M7.6): the daemon opens itself only with every key and secret in hardware;
+    // anything else refuses the start, naming each one (never adjusted).
+    let automatic = loaded.policy.unseal() == writ_core::config::Unseal::Auto;
+    if automatic {
+        let missing = autounseal::missing(&config, &loaded.policy)?;
+        if !missing.is_empty() {
+            bail!(
+                "unseal: auto, and not everything is in hardware, so the daemon won't start on \
+                 its own: {} (to start it by hand instead, put in force a policy with `unseal: \
+                 approver` with writd recover, on this host)",
+                missing.join("; ")
+            );
+        }
+    }
     let start = keystore::start(
         &config,
         &declared,
@@ -490,6 +505,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
                     .open(opened, None, &writ_core::caller::CallerFacts::default())
                     .await?;
             }
+            None if automatic => opener.unseal_automatically().await?,
             None => service.announce_sealed(),
         }
 

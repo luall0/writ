@@ -3,7 +3,8 @@
 # `make install` and `make uninstall`:
 #
 #   deploy/install.sh install     (guided on a terminal; without one: SETUP, APPROVER, DRY_RUN,
-#                                 and on the Mac TLS_BACKEND, CA_BACKEND, AGENT_BACKEND)
+#                                 and on the Mac TLS_BACKEND, CA_BACKEND, AGENT_BACKEND, UNSEAL,
+#                                 RECOVERY, AUTO_UNSEAL)
 #   deploy/install.sh uninstall   (guided; without a terminal: DRY_RUN, REPOS)
 #
 # One frame for every setup (frame.sh: the choice of setup, the dry run, the manifest, the

@@ -57,6 +57,9 @@ pub(super) fn policy(policy: &PolicyConfig) -> String {
         entry(&mut out, name.as_str());
         write_template(&mut out, template);
     }
+    if policy.unseal != super::Unseal::default() {
+        let _ = writeln!(out, "\nunseal: {}", policy.unseal.as_str());
+    }
     out
 }
 

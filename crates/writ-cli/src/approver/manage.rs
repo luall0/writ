@@ -488,6 +488,93 @@ pub async fn set(
         .await
 }
 
+/// `writ admin auto-unseal status` (M7.6): how the daemon unseals, and what is missing for it
+/// to open itself.
+pub async fn auto_unseal_status(paths: &Paths, url: &str) -> anyhow::Result<Exit> {
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let shown: writ_proto::AutoUnsealShown =
+                session.call(&Command::AutoUnsealShow, b"").await??;
+            match shown.unseal.as_str() {
+                "auto" => println!("Auto-unseal is on: the daemon opens itself after every start."),
+                _ => println!(
+                    "Auto-unseal is off: after every start the daemon waits for writ unseal."
+                ),
+            }
+            print_missing(&shown.missing);
+            Ok(Exit::Ok)
+        })
+        .await
+}
+
+/// What keeps the daemon from opening itself, said so the operator knows what to do.
+fn print_missing(missing: &[String]) {
+    if missing.is_empty() {
+        println!(
+            "Everything is in hardware: the daemon can open itself (writ admin auto-unseal on)."
+        );
+        return;
+    }
+    println!(
+        "The daemon can open itself only when nothing on its host opens a secret without you. \
+         Still missing:"
+    );
+    for line in missing {
+        println!("  - {}", clean(line));
+    }
+}
+
+/// `writ admin auto-unseal on|off` (M7.6): the policy's `unseal` changed, one signature. On
+/// is refused here, with what is missing, until every key and secret is in hardware (the
+/// daemon refuses it too).
+pub async fn auto_unseal_set(
+    paths: &Paths,
+    url: &str,
+    signer: &Signer,
+    on: bool,
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    use writ_core::config::Unseal;
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            if on {
+                let shown: writ_proto::AutoUnsealShown =
+                    session.call(&Command::AutoUnsealShow, b"").await??;
+                if !shown.missing.is_empty() {
+                    print_missing(&shown.missing);
+                    bail!("auto-unseal not turned on: not everything is in hardware yet");
+                }
+            }
+            let (shown, policy) = policy_in_force(session).await?;
+            let mode = match on {
+                true => Unseal::Auto,
+                false => Unseal::Approver,
+            };
+            if policy.unseal() == mode {
+                println!(
+                    "Auto-unseal is {} already: nothing to sign.",
+                    if on { "on" } else { "off" }
+                );
+                return Ok(Exit::Ok);
+            }
+            if on {
+                println!(
+                    "With auto-unseal on, the daemon opens itself after every start, with no one: \
+                     anyone who can restart it, or takes the whole Mac, gets it running. Leases \
+                     still need your signature; every automatic start is logged and notified."
+                );
+            }
+            let next = policy.with_unseal(mode);
+            let text = AdminText::try_from(next.to_yaml())?;
+            layout_note(&shown, &policy);
+            let what = format!("with unseal: {}", mode.as_str());
+            sign_change(session, signer, &shown, &text, &what, yes).await
+        })
+        .await
+}
+
 /// `writ admin <noun> remove <name>`: what it affects shown first (refused while something
 /// uses it, naming what), confirmed, then signed. A key's id is typed again first: its removal
 /// deletes it for good. Without a terminal, only `--yes` answers these questions (never the

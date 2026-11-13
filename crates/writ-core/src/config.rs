@@ -291,6 +291,9 @@ struct RawPolicyConfig {
     recipients: BTreeMap<KeyId, recipients::RawRecipient>,
     repos: BTreeMap<RepoName, RepoEntry>,
     templates: BTreeMap<TemplateName, Template>,
+    /// How the daemon unseals at start (M7.6): by an approver (the default), or by itself.
+    #[serde(default)]
+    unseal: Unseal,
     /// Before M6.2, the OpenPGP user ids: refused, naming `keys.<id>.uids`.
     #[serde(default)]
     signing_keys: Option<Moved>,
@@ -307,6 +310,28 @@ pub struct PolicyConfig {
     recipients: BTreeMap<KeyId, Recipient>,
     repos: BTreeMap<RepoName, RepoEntry>,
     templates: BTreeMap<TemplateName, Template>,
+    unseal: Unseal,
+}
+
+/// How the daemon unseals at start (`unseal`, M7.6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Unseal {
+    /// An approver's `writ unseal` (and, on a passphrase keystore, the passphrase).
+    #[default]
+    Approver,
+    /// The daemon opens itself through its hardware, with no human: only when every key and
+    /// secret is in hardware (the daemon checks it, at the change and at each start).
+    Auto,
+}
+
+impl Unseal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Unseal::Approver => "approver",
+            Unseal::Auto => "auto",
+        }
+    }
 }
 
 /// A section of the policy, as `writ admin <noun>` names it.
@@ -505,6 +530,7 @@ impl PolicyConfig {
             upstream_hosts: raw.upstream_hosts,
             proxies: raw.proxies,
             recipients,
+            unseal: raw.unseal,
             repos: raw.repos,
             templates: raw.templates,
         })
@@ -606,6 +632,19 @@ impl PolicyConfig {
             })
             .map(|(name, _)| name.clone())
             .collect()
+    }
+
+    /// How the daemon unseals at start (M7.6).
+    pub fn unseal(&self) -> Unseal {
+        self.unseal
+    }
+
+    /// This policy with `unseal` set to `mode` (`writ admin auto-unseal on|off`).
+    pub fn with_unseal(&self, mode: Unseal) -> Self {
+        Self {
+            unseal: mode,
+            ..self.clone()
+        }
     }
 
     /// The keystore's recipients (M7.6).

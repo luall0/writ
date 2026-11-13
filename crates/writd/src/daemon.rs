@@ -100,6 +100,8 @@ struct Inner {
     gateway: OnceLock<Gateway>,
     /// The HTTPS approval API's identity the listeners serve, replaced by a rotation (M7.5).
     tls: OnceLock<Arc<writ_crypto::tls::TlsIdentity>>,
+    /// Set when the daemon opens itself (M7.6, `unseal: auto`): the unseal is logged so.
+    automatic: std::sync::atomic::AtomicBool,
 }
 
 impl Opener {
@@ -121,6 +123,7 @@ impl Opener {
             notifiers,
             gateway: OnceLock::new(),
             tls: OnceLock::new(),
+            automatic: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
@@ -279,6 +282,7 @@ impl Opener {
             .service
             .replace_ca(signer)
             .map_err(|e| e.to_string())?;
+        keystore::ca::set_backend(sealed, backend.name()).map_err(fail)?;
         gateway.set_authorities(
             public.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
             kept.iter()
@@ -467,8 +471,14 @@ impl Opener {
         };
         let (service, approver_owned, caller_owned) =
             (inner.service.clone(), approver.cloned(), caller.clone());
+        let automatic = inner.automatic.load(std::sync::atomic::Ordering::SeqCst);
         tokio::task::spawn_blocking(move || {
-            service.unseal(opened, approver_owned.as_ref(), &caller_owned)
+            let by = match (&approver_owned, automatic) {
+                (Some(approver), _) => writ_approval::UnsealedBy::Approver(approver),
+                (None, true) => writ_approval::UnsealedBy::Automatic,
+                (None, false) => writ_approval::UnsealedBy::DevKeystore,
+            };
+            service.unseal_by(opened, by, &caller_owned)
         })
         .await
         .context("the unseal stopped")?
@@ -638,6 +648,17 @@ impl Opener {
                     ));
                 }
                 recipients_changed = in_force.recipients() != policy.recipients();
+                // Auto-unseal (M7.6): only with every key and secret in hardware.
+                if policy.unseal() == writ_core::config::Unseal::Auto {
+                    let missing = crate::autounseal::missing(&inner.config, &policy)
+                        .map_err(|e| refuse(format!("{e:#}")))?;
+                    if !missing.is_empty() {
+                        return Err(refuse(format!(
+                            "unseal: auto: not everything is in hardware yet: {}",
+                            missing.join("; ")
+                        )));
+                    }
+                }
                 if recipients_changed {
                     self.make_recipients(&policy)
                         .await
@@ -1206,6 +1227,22 @@ impl Opener {
 
     /// Opens the sealed keystore with `passphrase` (scrypt: off the async threads): every key
     /// and token the configuration names. Its errors name what failed, never a secret.
+    /// The daemon opens itself through its hardware (M7.6, `unseal: auto`): its keystore's
+    /// identity unwrapped by its devices, the service opened with no approver, logged as
+    /// automatic and notified. The start checked first that everything is in hardware.
+    pub async fn unseal_automatically(&self) -> anyhow::Result<()> {
+        self.0
+            .automatic
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let opened = self
+            .open_keystore(PassphraseText::new(String::new()))
+            .await?;
+        self.open(opened, None, &writ_core::caller::CallerFacts::default())
+            .await?;
+        tracing::info!("unsealed automatically");
+        Ok(())
+    }
+
     async fn open_keystore(&self, passphrase: PassphraseText) -> anyhow::Result<Keystore> {
         let inner = self.0.clone();
         tokio::task::spawn_blocking(move || {
@@ -1291,6 +1328,23 @@ impl AdminApplier for Opener {
             tokio::task::spawn_blocking(move || me.show_keys())
                 .await
                 .map_err(|_| "the read stopped".to_owned())?
+        })
+    }
+
+    fn auto_unseal_show(&self) -> BoxFuture<'static, Result<writ_proto::AutoUnsealShown, String>> {
+        let me = self.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let policy = me.0.service.policy();
+                let missing = crate::autounseal::missing(&me.0.config, &policy)
+                    .map_err(|e| format!("{e:#}"))?;
+                Ok(writ_proto::AutoUnsealShown {
+                    unseal: policy.unseal().as_str().to_owned(),
+                    missing,
+                })
+            })
+            .await
+            .map_err(|_| "the read stopped".to_owned())?
         })
     }
 

@@ -563,6 +563,7 @@ pub fn make_ca(
         &layout.ca_public(),
         &format!("{}\n", material.public_key().to_openssh()?),
     )?;
+    super::ca::set_backend(sealed, backend.name())?;
     Ok(())
 }
 

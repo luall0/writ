@@ -134,7 +134,7 @@ Settled with the user at M7.6's start ([decision log](../decisions.md), 2026-11-
   `writ-ca/1` bound to the CA in force, live: new certificates come from the new CA, and the
   gateway keeps trusting the old CA's public key only until the last lease it certified ends
   (bounded by the longest TTL), then drops it, one `admin` line each way.
-- **Auto-unseal:** `unseal: auto` in `writd.yaml` (default `approver`). At start, the daemon
+- **Auto-unseal:** `unseal: auto` in the signed policy (default `approver`; decided with the user while building it, switched by `writ admin auto-unseal status | on | off`). At start, the daemon
   checks the keystore unseals by hardware + recovery, the CA and every declared key on a
   hardware backend, and no token encrypted to anything else; anything else refuses the start
   naming each one. The start is logged (`unseal`, "automatic") and notified.

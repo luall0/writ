@@ -4,7 +4,8 @@
 //! challenge (`writ recovery check`: the right key, another), replaced, edited on a terminal,
 //! removed; every `writ admin recipient` verb and flag; a hardware recipient refused by name,
 //! the daemon having no such device. The policy put back. Then the SSH CA shown and rotated
-//! live (`writ admin ca`), a backend the daemon lacks refused.
+//! live (`writ admin ca`), a backend the daemon lacks refused; auto-unseal's status (what is
+//! missing for it), on refused, off.
 
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
@@ -170,6 +171,39 @@ fn the_recovery_key_is_made_declared_checked_and_replaced_from_the_approver_s_ma
     );
     let shown = approver.ok("writ admin ca show");
     assert!(shown.contains("SSH CA of daemon"), "{shown}");
+
+    // Auto-unseal (M7.6): off, and what is missing for it said; on refused, nothing signed.
+    let status = approver.ok(&format!(
+        "writ admin auto-unseal status --approval-url {url}"
+    ));
+    assert!(status.contains("Auto-unseal is off"), "{status}");
+    assert!(
+        status.contains("the keystore opens with a passphrase"),
+        "{status}"
+    );
+    assert!(
+        status.contains("the SSH CA's key is in software"),
+        "{status}"
+    );
+    let (_, err) = expect(
+        &approver.run(&format!("writ admin auto-unseal on {FLAGS}")),
+        1,
+        "auto-unseal with software keys",
+    );
+    assert!(
+        err.contains("auto-unseal not turned on: not everything is in hardware yet"),
+        "{err}"
+    );
+    let said = approver.ok(&format!("writ admin auto-unseal off {FLAGS}"));
+    assert!(
+        said.contains("Auto-unseal is off already: nothing to sign."),
+        "{said}"
+    );
+    assert!(
+        approver
+            .ok("writ admin auto-unseal status")
+            .contains("Still missing:")
+    );
     assert_eq!(
         approver.ok("writ admin show policy"),
         approver.ok("cat policy-before-recipients.yaml")

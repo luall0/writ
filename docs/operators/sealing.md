@@ -172,20 +172,58 @@ lives.
 
 ## Starting without a human: auto-unseal (M7.6)
 
-Not built yet: [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) brings it. What it will
-require, so you can plan:
+With auto-unseal, the daemon opens itself after every start, with no one: no `writ unseal`.
+It is off unless you turn it on, and it can be turned on only when nothing on the daemon's
+Mac opens a secret without you:
 
-- **Opt-in:** `unseal: auto` in `writd.yaml`. Never the default.
-- **Hardware for every secret:** every signing key (agent keys, `ssh://` credentials, the CA
-  key) in a hardware backend, and every stored secret (tokens, the keystore's own identity)
-  wrapped to hardware only: Secure Enclave, TPM, YubiKey or a cloud KMS. Only the notification
-  token and the boot directory's host and TLS keys may stay software files.
-- **An offline recovery identity**, made first and kept on paper or a spare device. It
-  recovers the keystore if the hardware is lost, and `writd recover` takes it instead of the
-  passphrase. The hardware alone never replaces a signed change.
-- **No silent downgrade:** if anything is still software, the daemon refuses to start and
-  names it.
+- every signing key, every `ssh://` upstream key and the SSH CA in the Secure Enclave;
+- the keystore opened by the Secure Enclave, with a recovery key kept offline (no passphrase);
+- the tokens, which then are locked to the Secure Enclave and the recovery key.
 
-The trade-off: anyone who can restart the daemon, or steal the whole machine, gets a running
-daemon without asking you. Leases still need your signature, and every automatic start is
-logged and notified.
+The SSH host key, the TLS key and a notifier's token kept in the boot directory may stay
+software: they only identify the daemon.
+
+**The trade-off:** anyone who can restart the daemon, or takes the whole Mac, gets it
+running without asking you. Leases still need your signature and fit their templates, and
+every automatic start is logged and notified ("writd unsealed automatically").
+
+### Turning it on, step by step
+
+1. **See what is missing.** It says each thing, and the command that fixes it:
+
+   ```text
+   writ admin auto-unseal status
+   ```
+
+2. **The recovery key,** if you have none yet ([above](#the-recovery-key-and-the-secure-enclave)):
+   `writ recovery new` on a machine that isn't online, written down, then
+   `writ admin recipient add recovery recipient=<age1…>` and `writ recovery check`.
+3. **The keystore on the Secure Enclave:** `writ admin recipient add se-01
+   backend=se-cryptokit`. Unseal once by hand after it (`writ unseal`): from then on it asks
+   for no passphrase.
+4. **The CA and each key on the Secure Enclave:** `writ admin ca rotate --backend
+   se-cryptokit`, and `writ admin key rotate <id> --backend se-cryptokit` for each key
+   `status` names (register each new public half where the old one was: your remote's
+   signing keys, its deploy keys).
+5. **Check, then turn it on:**
+
+   ```text
+   writ admin auto-unseal status      # "Everything is in hardware"
+   writ admin auto-unseal on          # one Touch ID
+   ```
+
+6. **Check the daemon took it:** restart it (`sudo launchctl kickstart -k system/dev.writ.writd`);
+   its log says `unsealed automatically`, and `writ admin key list` answers with no
+   `writ unseal`.
+
+`writ admin auto-unseal on` is refused while anything is still in software, naming each one,
+and so is a policy change that sets `unseal: auto` by hand. If something becomes software
+again behind the daemon's back, it refuses to start and says what. To start it by hand
+instead, put in force a policy with `unseal: approver` with [`writd recover`](recovery.md),
+which takes the recovery key, never the Secure Enclave alone.
+
+`writ admin auto-unseal off` turns it off: after the next start, the daemon waits for
+`writ unseal` again.
+
+The installer asks all this on a Mac (`make install`): what opens the keystore, the recovery
+key, and auto-unseal when the CA and `agent-01` are on the Secure Enclave.

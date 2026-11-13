@@ -31,13 +31,13 @@ pub mod sign;
 pub use command::Command;
 pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
 pub use messages::{
-    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, BackendShown, CaRequest,
-    CaRotated, CaShown, ChainLink, CheckStep, Checked, CloseRequest, Count, CreatedKey, Decision,
-    Decisions, DenialCount, Info, KeyRole, KeyShown, KeysShown, Listing, OpenpgpShown, OtherLease,
-    Others, PassphraseText, Phases, Previous, ProveRequest, Proved, RecoveryShown, RefuseRequest,
-    Relation, RemovedKey, Renewal, RepoPolicy, Report, ReportCommit, ReportPush, RetiredCa,
-    RevokeRequest, ScanNonce, ScanRequest, Scanned, ScannedKey, SealedBoot, Shown, Submitted,
-    Summary, TemplateView, TlsRequest, TlsRotated, TlsShown, TokenApplied, TokenRequest,
+    Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, AutoUnsealShown, BackendShown,
+    CaRequest, CaRotated, CaShown, ChainLink, CheckStep, Checked, CloseRequest, Count, CreatedKey,
+    Decision, Decisions, DenialCount, Info, KeyRole, KeyShown, KeysShown, Listing, OpenpgpShown,
+    OtherLease, Others, PassphraseText, Phases, Previous, ProveRequest, Proved, RecoveryShown,
+    RefuseRequest, Relation, RemovedKey, Renewal, RepoPolicy, Report, ReportCommit, ReportPush,
+    RetiredCa, RevokeRequest, ScanNonce, ScanRequest, Scanned, ScannedKey, SealedBoot, Shown,
+    Submitted, Summary, TemplateView, TlsRequest, TlsRotated, TlsShown, TokenApplied, TokenRequest,
     TokenShown, UnsealRequest, UnsealWay, Unsealed, UpstreamChecked,
 };
 

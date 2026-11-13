@@ -22,7 +22,8 @@ pub use guided::{
     rotate as guided_rotate,
 };
 pub use manage::{
-    list as manage_list, remove as manage_remove, set as manage_set, show as manage_show,
+    auto_unseal_set, auto_unseal_status, list as manage_list, remove as manage_remove,
+    set as manage_set, show as manage_show,
 };
 pub use narrowing::Narrowing;
 pub use prove::{ProveKey, prove_key};
