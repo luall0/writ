@@ -31,7 +31,9 @@ means and what Enter keeps:
 
 1. **The setup**: the ones this machine can have, each said in a line (today, `local`).
 2. **Your approval key**: the path to its public half, the `.pub`. A path that isn't one is
-   asked again. The installer reads that file and nothing else of yours.
+   asked again. The installer reads that file once, and nothing else of yours. Your answers
+   show the key by its fingerprint: check it is your key's. When the daemon's data is kept
+   from an earlier install, this isn't asked: the approval keys kept with it stay.
 3. On the Mac, **where the key of the HTTPS approval API is made**: `software`, or
    `se-cryptokit`, the Mac's Secure Enclave, which makes the key and never lets it out. HTTPS
    is off in this setup; the key serves it if you turn it on later.
@@ -42,6 +44,7 @@ means and what Enter keeps:
 Then it shows your answers and **every change it will make, in order**, and asks `Install?`.
 Nothing is done before you answer `y`; anything else leaves the machine as it was. It then
 asks `sudo` for each step that needs root, and asks you to choose the keystore's passphrase.
+Root's files are handed to `sudo` directly, never through a file of yours.
 Write the passphrase down somewhere safe: nothing opens the keystore without it.
 
 Both choices can be changed later from your machine: `writ admin tls rotate --backend` moves
@@ -99,16 +102,22 @@ You add repositories from your machine with `writ admin`.
 ## Upgrade
 
 Run `make install` again. It says what an upgrade does and lists its changes, then asks
-`Upgrade?`. Yes stops the daemon cleanly, replaces the binaries and starts it again. The
+`Upgrade?`. Yes stops the daemon cleanly, replaces the binaries, writes the LaunchDaemon's
+plist (the systemd unit on Linux) again with this version's settings, and starts it again. The
 keystore, the state, the configuration and your pins are kept. Unseal again afterwards. If
-`writ` changed, it says so: run `writ skill update --all` to update the agent skill in every
-repository `writ init` set up.
+`writ` changed, it says so:
+
+- Agents started with `writ run` before the upgrade are bound to the old `writ`. Their leases
+  are refused from then on. Start each agent again, then request a new lease.
+- Run `writ skill update --all` to update the agent skill in every repository `writ init` set
+  up.
 
 ## If the install stops
 
 It says which step failed. What it had done is in its manifest
 (`/Library/Application Support/Writ/install.manifest` on the Mac, `/etc/writ/install.manifest`
-on Linux): `make uninstall` takes it back.
+on Linux): `make uninstall` takes it back. A keystore that failed to be made goes too, whatever
+you answer about the daemon's data: the next install makes a new one.
 
 ## Uninstall
 

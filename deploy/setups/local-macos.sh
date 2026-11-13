@@ -94,14 +94,17 @@ check_prefix() {
 # Secure Enclave, whether the daemon starts without you (auto-unseal). With the daemon's data kept from before, its
 # keystore and policy are kept: nothing more to ask.
 setup_questions() {
-    choose_approver
     TLS_BACKEND=${TLS_BACKEND:-}
     CA_BACKEND=${CA_BACKEND:-}
     AGENT_BACKEND=${AGENT_BACKEND:-}
     UNSEAL=${UNSEAL:-}
     RECOVERY=${RECOVERY:-}
     AUTO_UNSEAL=${AUTO_UNSEAL:-}
-    [ -d "$DATA" ] && return 0
+    if [ -d "$DATA" ]; then
+        approver_kept
+        return 0
+    fi
+    choose_approver
     if [ -z "$TLS_BACKEND" ] && terminal; then
         say ""
         say "The HTTPS approval API's key. This setup approves over a local socket, so HTTPS is"
@@ -405,17 +408,20 @@ setup_install() {
     else
         step "The daemon's directory $DATA (${DAEMON_USER}, 0700): its configuration and the starting policy"
         as_root install -d -m 0700 "$DATA"
-        record "data $DATA"
+        # Half made until writd init has made the keystore: an uninstall takes it back whole.
+        record "newdata $DATA"
         as_root chown "$DAEMON_USER:$DAEMON_USER" "$DATA"
         put_root "$CONFIG" 0644 root:wheel "$(writd_yaml)"
         put_root "$DATA/policy.yaml" 0644 "$DAEMON_USER:$DAEMON_USER" "$(policy_yaml)"
-        put_root "$DATA/approvers" 0644 "$DAEMON_USER:$DAEMON_USER" "approver $(head -n 1 "$APPROVER")"
+        put_root "$DATA/approvers" 0644 "$DAEMON_USER:$DAEMON_USER" "approver $APPROVER_KEY"
         put_root "$DATA/readers" 0644 "$DAEMON_USER:$DAEMON_USER" "$reader_line"
         case $UNSEAL in
             se-cryptokit) step "The keystore (writd init, as $DAEMON_USER): opened by the Secure Enclave, no passphrase" ;;
             *) step "The keystore (writd init, as $DAEMON_USER): choose its passphrase" ;;
         esac
         as_daemon "$DAEMON_USER" "$BIN/writd" init "$CONFIG" --tls-backend "$TLS_BACKEND" --ca-backend "$CA_BACKEND"
+        # Made: an uninstall keeps it from now on (PURGE=1 deletes it).
+        record "data $DATA"
     fi
 
     step "The LaunchDaemon $LABEL ($PLIST), started"
@@ -451,14 +457,7 @@ url = unix:$RUN/agents.sock
 approval_url = unix:$RUN/approvals.sock"
         record "userfile $WHOME/config"
     fi
-    if [ ! -e "$WHOME/approver.pub" ]; then
-        if [ "$DRY_RUN" = 1 ]; then
-            say "    (you) copy $APPROVER to $WHOME/approver.pub"
-        else
-            cp "$APPROVER" "$WHOME/approver.pub"
-        fi
-        record "userfile $WHOME/approver.pub"
-    fi
+    put_approver_pub
     CURRENT=
     [ "$DRY_RUN" = 1 ] && return 0
     say ""
@@ -479,11 +478,13 @@ setup_upgrade() {
     step "The daemon stopped in order (SIGTERM: what is in flight finishes)"
     as_root launchctl bootout "system/$LABEL" || say "  (it was not running)"
     install_binaries
+    step "The LaunchDaemon's plist written again ($PLIST): this version's settings"
+    put_root "$PLIST" 0644 root:wheel "$(plist)"
     step "The daemon started again: the keystore, state, configuration and pins kept"
     as_root launchctl bootstrap system "$PLIST"
     CURRENT=
     [ "$DRY_RUN" = 1 ] && return 0
     say "Upgraded. writ unseal opens it again."
     new=$(cksum <"$BIN/writ")
-    [ "$old" = "$new" ] || say "writ changed: writ skill update --all rewrites the agent skill in every repository it wired."
+    [ "$old" = "$new" ] || upgraded_writ
 }

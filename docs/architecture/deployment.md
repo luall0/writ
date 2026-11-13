@@ -122,14 +122,25 @@ its own in `deploy/setups/`, whose header names it, its OS and its manifest's pa
   lists the changes and makes none.
 - The installer runs as my user and asks `sudo` only for the steps that need root; secrets
   (the keystore's passphrase) are asked on the terminal, never stored or passed as an
-  argument.
+  argument. A root-owned file is written from the installer's stdin through `sudo tee`
+  beside its place, then given its mode and owner and renamed over it (`put_root`): never
+  through a temporary file of mine, which an agent running as me could change while `sudo`
+  waits for the password. The approval key's `.pub` is read once: the line `approvers` and
+  `~/.writ/approver.pub` get, and the fingerprint the summary shows, come from that read.
 - It writes a manifest as it goes, each change recorded as soon as it is made, so a failed
   install stops and says what was done, and the uninstall removes exactly what was made,
   newest first, nothing else. The uninstall reads the manifest as root, so it trusts it only
   root-owned and written by root alone, and acts on a path only if it is one of the setup's
   own (anything else is named and left as it is).
-- Run again, it upgrades: new binaries (or image), the daemon restarted in order, the
-  keystore, state, configuration and pins kept.
+- The daemon's data directory is recorded `newdata` when made and `data` once `writd init`
+  has made the keystore: the uninstall of an install stopped between the two removes it
+  whole, so a later install never takes a half-made one for kept data. A reinstall on kept
+  data asks no approval key (the kept `approvers` stand).
+- Run again, it upgrades: new binaries (or image), the LaunchDaemon's plist or the systemd
+  unit written again (a hardening change reaches existing installs), the daemon restarted in
+  order, the keystore, state, configuration and pins kept. When `writ` changed, it says that
+  sessions bound under the old one (`writ run`) must be started again: their root's
+  executable is no longer the one their leases were bound to.
 - `make uninstall` asks whether to delete the daemon's data (keystore, state, ledger, audit
   log, or the Docker volumes): kept on Enter, deleted once `delete` is typed (`PURGE=1`
   without a terminal is refused: a deletion needs a person); then lists what it takes back

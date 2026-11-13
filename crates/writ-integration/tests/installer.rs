@@ -388,7 +388,15 @@ fn the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_
 fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
     let fake = Fake::new();
     let before = fake.tree();
-    let said = fake.shown(&ok(&fake.install(&[])));
+    // Root's files go to sudo on its standard input: no temporary file of yours (an agent
+    // could change one while sudo asks for the password), so a TMPDIR nobody can write is
+    // no matter.
+    let closed = fake.root.parent().unwrap().join("closed-tmp");
+    fs::create_dir_all(&closed).unwrap();
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o500)).unwrap();
+    let closed_tmp = closed.display().to_string();
+    let said = fake.shown(&ok(&fake.install(&[("TMPDIR", closed_tmp.as_str())])));
+    assert_eq!(listing(&closed), Vec::<String>::new());
     assert!(said.contains("keystore made: /var/db/writ/keys"), "{said}");
     assert!(said.contains("Installed. What is left:"), "{said}");
     let manifest = fs::read_to_string(fake.manifest()).unwrap();
@@ -400,7 +408,7 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
                file /opt/writ/bin/writ\nfile /opt/writ/bin/writ-sign\nfile /opt/writ/bin/writ-se\n\
                file /etc/paths.d/writ\n\
                tree /Library/Application Support/Writ/run\ntree /Library/Logs/Writ\n\
-               userdir ~/.writ\nuserdata ~/.writ/reader\ndata /var/db/writ\n\
+               userdir ~/.writ\nuserdata ~/.writ/reader\nnewdata /var/db/writ\ndata /var/db/writ\n\
                file /Library/LaunchDaemons/dev.writ.writd.plist\ndaemon dev.writ.writd\n\
                userfile ~/.writ/known_hosts\nuserfile ~/.writ/config\nuserfile ~/.writ/approver.pub\n"
     );
@@ -449,13 +457,37 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
         assert!(calls.contains(call), "{call} not in {calls}");
     }
     let identity = fs::read(fake.at("/var/db/writ/keys/identity.age")).unwrap();
+    // The approval key: what was read once, in the daemon's approvers and your approver.pub.
+    let key = fs::read_to_string(&fake.approver).unwrap();
+    assert_eq!(
+        fs::read_to_string(fake.at("/var/db/writ/approvers")).unwrap(),
+        format!("approver {key}")
+    );
+    assert_eq!(
+        fs::read_to_string(fake.home.join(".writ/approver.pub")).unwrap(),
+        key
+    );
 
     // Run again: an upgrade. The daemon stopped in order and started again, the binaries
-    // replaced, the keystore, state, configuration and pins kept.
+    // replaced, the plist written again (an older install's settings don't stay), the
+    // keystore, state, configuration and pins kept; a new writ says the sessions bound
+    // under the old one are to be started again.
     fs::write(fake.root.join(".calls"), "").unwrap();
+    let plist_path = fake.at("/Library/LaunchDaemons/dev.writ.writd.plist");
+    fs::write(&plist_path, "<plist>an older install's</plist>\n").unwrap();
+    fs::write(fake.at("/opt/writ/bin/writ"), "an older writ").unwrap();
     let said = ok(&fake.run("install", &[], ""));
     assert!(said.contains("Upgrading the installed setup"), "{said}");
     assert!(!said.contains("keystore made"), "{said}");
+    assert_eq!(fs::read_to_string(&plist_path).unwrap(), plist);
+    assert!(
+        said.contains("writ changed: agents started with writ run before the upgrade are bound to the old writ,"),
+        "{said}"
+    );
+    assert!(
+        said.contains("Start each again (writ run -- <agent>)"),
+        "{said}"
+    );
     assert_eq!(
         fake.shown(&fake.calls())
             .lines()
@@ -466,6 +498,8 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
             "launchctl bootstrap system /Library/LaunchDaemons/dev.writ.writd.plist",
         ]
     );
+    let again = ok(&fake.run("install", &[], ""));
+    assert!(!again.contains("writ changed"), "the same writ: {again}");
     assert_eq!(
         fs::read(fake.at("/var/db/writ/keys/identity.age")).unwrap(),
         identity
@@ -531,13 +565,24 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
         !fake.home.join(".writ/config").exists() && !fake.home.join(".writ/known_hosts").exists()
     );
 
-    // Installed again: the data picked up (no new keystore), the same uid for _writd.
-    let said = ok(&fake.install(&[]));
+    // Installed again: the data picked up (no new keystore), the same uid for _writd; no
+    // approval key needed (the kept approvers stand), one given not used.
+    let said = ok(&fake.run("install", &[("SETUP", "local")], ""));
     assert!(
         said.contains("The daemon's data from before is kept"),
         "{said}"
     );
     assert!(!said.contains("keystore made"), "{said}");
+    assert!(
+        said.contains("approver.pub is not there: copy your approval key's .pub to it"),
+        "{said}"
+    );
+    assert!(!fake.home.join(".writ/approver.pub").exists());
+    assert_eq!(
+        fs::read_to_string(fake.at("/var/db/writ/approvers")).unwrap(),
+        format!("approver {key}"),
+        "the kept approvers"
+    );
     assert_eq!(
         fs::read(fake.at("/var/db/writ/keys/identity.age")).unwrap(),
         identity
@@ -591,6 +636,78 @@ fn a_failed_install_stops_saying_where_and_the_uninstall_takes_back_what_was_mad
     assert_eq!(fake.tree(), before);
     assert_eq!(fake.directory(), "");
     assert_eq!(fake.home(), Vec::<String>::new());
+}
+
+/// The approval key's fingerprint, as `ssh-keygen -l` says it.
+fn fingerprint(key: &Path) -> String {
+    let out = Command::new("ssh-keygen")
+        .args(["-l", "-f"])
+        .arg(key)
+        .output()
+        .unwrap();
+    stdout(&out).split(' ').nth(1).unwrap().to_owned()
+}
+
+#[test]
+fn a_keystore_that_failed_to_be_made_is_taken_back_and_never_taken_for_kept_data() {
+    for os in [Os::Mac, Os::Linux] {
+        let fake = Fake::of(os);
+        let before = fake.tree();
+        let data = match os {
+            Os::Mac => "/var/db/writ",
+            Os::Linux => "/var/lib/writ",
+        };
+        // writd init refuses a passphrase too short: the install stops at the keystore.
+        let approver = fake.approver.display().to_string();
+        let out = fake.run(
+            "install",
+            &[("SETUP", "local"), ("APPROVER", approver.as_str())],
+            "short\nshort\n",
+        );
+        refused(&out, "install: stopped at: The keystore (writd init");
+        let manifest = fake.shown(&fs::read_to_string(fake.manifest()).unwrap());
+        assert!(
+            manifest.contains(&format!("newdata {data}\n")),
+            "{manifest}"
+        );
+        assert!(
+            !manifest.contains(&format!("\ndata {data}\n")),
+            "{manifest}"
+        );
+        // The uninstall takes the half-made data back whole, kept data or not.
+        let said = ok(&fake.run("uninstall", &[("REPOS", "keep")], ""));
+        assert!(said.contains("Uninstalled."), "{said}");
+        assert_eq!(fake.tree(), before, "{os:?}");
+        // So the next install makes a keystore, never "kept from before".
+        let said = fake.shown(&ok(&fake.install(&[])));
+        assert!(
+            said.contains(&format!("keystore made: {data}/keys")),
+            "{said}"
+        );
+        assert!(!said.contains("kept"), "{said}");
+    }
+}
+
+#[test]
+fn the_approval_key_is_read_once_and_must_be_one() {
+    let fake = Fake::new();
+    let before = fake.tree();
+    let bad = fake.root.parent().unwrap().join("bad.pub");
+    // The private half given by mistake: a throwaway key made here, never one of the user's.
+    let private = generate(KeyKind::Ed25519)
+        .unwrap()
+        .to_openssh(writ_crypto::ssh_key::LineEnding::LF)
+        .unwrap();
+    for (text, why) in [
+        ("ssh-ed25519 not-base64\n", "is not an SSH public key"),
+        ("hello\n", "is not an SSH public key"),
+        (private.as_str(), "is a private key: give its .pub"),
+    ] {
+        fs::write(&bad, text).unwrap();
+        let path = bad.display().to_string();
+        refused(&fake.install(&[("APPROVER", path.as_str())]), why);
+        assert_eq!(fake.tree(), before);
+    }
 }
 
 #[test]
@@ -719,7 +836,7 @@ fn on_linux_an_install_upgrades_and_uninstalls_leaving_the_machine_as_before() {
             "setup local-linux\nuser writd\ngroup writ\nmember writ {me}\n\
              file /usr/local/bin/writd\nfile /usr/local/bin/writ\nfile /usr/local/bin/writ-sign\n\
              userdir ~/.writ\nuserdata ~/.writ/reader\nfile /etc/writ/writd.yaml\n\
-             data /var/lib/writ\nfile /etc/systemd/system/writd.service\ndaemon writd\n\
+             newdata /var/lib/writ\ndata /var/lib/writ\nfile /etc/systemd/system/writd.service\ndaemon writd\n\
              userfile ~/.writ/known_hosts\nuserfile ~/.writ/config\nuserfile ~/.writ/approver.pub\n"
         )
     );
@@ -766,10 +883,23 @@ fn on_linux_an_install_upgrades_and_uninstalls_leaving_the_machine_as_before() {
     assert!(pins.starts_with("writ-local ssh-ed25519 "), "{pins}");
     let identity = fs::read(fake.at("/var/lib/writ/keys/identity.age")).unwrap();
 
-    // Run again: an upgrade, the daemon stopped and started through systemd, the rest kept.
+    // Run again: an upgrade, the daemon stopped and started through systemd, the unit
+    // written again and reloaded (an older install's settings don't stay), the rest kept.
     fs::write(fake.root.join(".calls"), "").unwrap();
+    let unit_path = fake.at("/etc/systemd/system/writd.service");
+    fs::write(
+        &unit_path,
+        "[Service]\nExecStart=/usr/local/bin/writd run old\n",
+    )
+    .unwrap();
+    fs::write(fake.at("/usr/local/bin/writ"), "an older writ").unwrap();
     let said = ok(&fake.run("install", &[], ""));
     assert!(said.contains("Upgrading the installed setup"), "{said}");
+    assert_eq!(fs::read_to_string(&unit_path).unwrap(), unit);
+    assert!(
+        said.contains("Start each again (writ run -- <agent>)"),
+        "{said}"
+    );
     assert_eq!(
         fake.calls()
             .lines()
@@ -777,6 +907,7 @@ fn on_linux_an_install_upgrades_and_uninstalls_leaving_the_machine_as_before() {
             .collect::<Vec<_>>(),
         [
             "systemctl stop writd.service",
+            "systemctl daemon-reload",
             "systemctl start writd.service"
         ]
     );
@@ -811,8 +942,9 @@ fn on_linux_an_install_upgrades_and_uninstalls_leaving_the_machine_as_before() {
     assert_eq!(fake.directory(), "");
     assert!(fake.home().contains(&".writ/reader".to_owned()));
 
-    // Installed again: the data picked up, the user made with the data's uid.
-    let said = ok(&fake.install(&[]));
+    // Installed again: the data picked up, the user made with the data's uid, no approval
+    // key asked.
+    let said = ok(&fake.run("install", &[("SETUP", "local")], ""));
     assert!(
         said.contains("The daemon's data from before is kept"),
         "{said}"
@@ -926,7 +1058,10 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         "not offered with these answers",
         "Your answers:",
         "  Setup: local (the daemon on this Mac",
-        &format!("  Approval key: {approver}"),
+        &format!(
+            "  Approval key: {} ({approver})",
+            fingerprint(&fake.approver)
+        ),
         "  TLS key: software",
         "  SSH CA key: software",
         "  Keystore opened by: a passphrase",

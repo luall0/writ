@@ -102,23 +102,45 @@ expand_home() {
     esac
 }
 
-# What is wrong with <path> as an approval key's public half, or nothing.
-approver_problem() {
+# Reads the approval key's public half at <path> once: APPROVER_KEY (its line, what the
+# daemon's `approvers` and your approver.pub get) and APPROVER_FP (its fingerprint, what the
+# summary shows) both come from that one read, so a file changed after you saw it changes
+# nothing; or APPROVER_PROBLEM says what is wrong with it.
+load_approver() {
+    APPROVER_KEY='' APPROVER_FP='' APPROVER_PROBLEM=''
     if [ -z "$1" ]; then
-        printf 'no path given'
-    elif [ ! -r "$1" ]; then
-        printf '%s: not a readable file' "$1"
-    elif grep -q 'PRIVATE KEY' "$1"; then
-        printf '%s is a private key: give its .pub' "$1"
-    else
-        case $(head -n 1 "$1") in
-            ssh-* | ecdsa-* | sk-*) ;;
-            *) printf '%s is not an SSH public key' "$1" ;;
-        esac
+        APPROVER_PROBLEM='no path given'
+        return 0
     fi
+    if [ ! -f "$1" ] || [ ! -r "$1" ]; then
+        APPROVER_PROBLEM="$1: not a readable file"
+        return 0
+    fi
+    approver_text=$(head -c 16384 "$1" 2>/dev/null) || approver_text=
+    case $approver_text in
+        *"PRIVATE KEY"*)
+            APPROVER_PROBLEM="$1 is a private key: give its .pub"
+            return 0
+            ;;
+    esac
+    approver_line=$(printf '%s\n' "$approver_text" | head -n 1)
+    case $approver_line in
+        ssh-* | ecdsa-* | sk-*) ;;
+        *)
+            APPROVER_PROBLEM="$1 is not an SSH public key"
+            return 0
+            ;;
+    esac
+    approver_fp=$(printf '%s\n' "$approver_line" | ssh-keygen -l -f - 2>/dev/null) || {
+        APPROVER_PROBLEM="$1 is not an SSH public key"
+        return 0
+    }
+    APPROVER_KEY=$approver_line
+    APPROVER_FP=$(printf '%s' "$approver_fp" | awk '{print $2}')
 }
 
-# APPROVER: asked on a terminal (again until it is an SSH public key), else the variable.
+# APPROVER: asked on a terminal (again until it is an SSH public key), else the variable;
+# read once (load_approver).
 choose_approver() {
     if [ -z "${APPROVER:-}" ] && terminal; then
         say "Your approval key: the key whose signature turns an agent's ticket into a lease (a" >&2
@@ -126,14 +148,44 @@ choose_approver() {
         say "installer reads that file alone, and Writ never uses your other keys." >&2
         while :; do
             APPROVER=$(expand_home "$(ask "Approval key (.pub)" "")")
-            problem=$(approver_problem "$APPROVER")
-            [ -z "$problem" ] && break
-            say "  $problem" >&2
+            load_approver "$APPROVER"
+            [ -z "$APPROVER_PROBLEM" ] && break
+            say "  $APPROVER_PROBLEM" >&2
         done
     fi
     [ -n "${APPROVER:-}" ] || fail "APPROVER=<your approval key's .pub> is needed without a terminal (its public half: who may sign)"
-    problem=$(approver_problem "$APPROVER")
-    [ -z "$problem" ] || fail "APPROVER=$problem"
+    load_approver "$APPROVER"
+    [ -z "$APPROVER_PROBLEM" ] || fail "APPROVER=$APPROVER_PROBLEM"
+}
+
+# With the daemon's data kept from before, its `approvers` stands: no approval key is asked,
+# and one given is not used.
+approver_kept() {
+    APPROVER_KEY=
+    [ -z "${APPROVER:-}" ] ||
+        say "  APPROVER is not used: the approvers of the data kept from before stand (writ admin changes them)."
+}
+
+# Your approver.pub (what writ sign and writ admin sign with), from the key read once; with
+# the data kept from before, left to you when it isn't there.
+put_approver_pub() {
+    if [ -e "$WHOME/approver.pub" ]; then
+        return 0
+    fi
+    if [ -z "${APPROVER_KEY:-}" ]; then
+        say "  $WHOME/approver.pub is not there: copy your approval key's .pub to it (the data kept from before names that key)"
+        return 0
+    fi
+    put_user "$WHOME/approver.pub" "$APPROVER_KEY"
+    record "userfile $WHOME/approver.pub"
+}
+
+# What an upgrade that replaced writ says: the sessions bound under the old one are cut.
+upgraded_writ() {
+    say "writ changed: agents started with writ run before the upgrade are bound to the old writ,"
+    say "and their leases are refused from now on. Start each again (writ run -- <agent>), then"
+    say "request a new lease. writ skill update --all rewrites the agent skill in every"
+    say "repository it wired."
 }
 
 # One command as root (through sudo), as you, or as the daemon's user.
@@ -188,19 +240,22 @@ record() {
     printf '%s\n' "$*" | as_root tee -a "$MANIFEST" >/dev/null
 }
 
-# put_root <path> <mode> <owner> <content>: a file written whole as root (through a
-# temporary file of yours), with its mode and owner.
+# put_root <path> <mode> <owner> <content>: a file written whole as root. The content goes
+# to sudo on its standard input, never through a file of yours (an agent running as you could
+# change one while sudo asks for your password): written beside its place in root's
+# directory, given its mode and owner, then renamed over it.
 put_root() {
     if [ "$DRY_RUN" = 1 ]; then
         printf '    (root) write %s (%s, %s):\n' "$1" "$2" "$3"
         printf '%s\n' "$4" | sed 's/^/        /'
         return 0
     fi
-    put_tmp=$(mktemp)
-    printf '%s\n' "$4" >"$put_tmp"
-    as_root install -m "$2" "$put_tmp" "$1"
-    as_root chown "$3" "$1"
-    rm -f "$put_tmp"
+    put_new=$1.writ-install
+    as_root rm -f "$put_new"
+    printf '%s\n' "$4" | as_root tee "$put_new" >/dev/null
+    as_root chmod "$2" "$put_new"
+    as_root chown "$3" "$put_new"
+    as_root mv -f "$put_new" "$1"
 }
 
 # A file of yours written whole, only you reading it.
@@ -323,7 +378,7 @@ do_install() {
         say ""
         say "Your answers:"
         say "  Setup: $(name_of "$file") ($(about_of "$file"))"
-        say "  Approval key: $APPROVER"
+        [ -z "${APPROVER_KEY:-}" ] || say "  Approval key: $APPROVER_FP ($APPROVER)"
         setup_answers
         say "The changes, in order (none is made yet):"
         planned setup_install
@@ -476,6 +531,9 @@ undo_line() {
         file) as_root rm -f "$path" ;;
         dir) [ ! -d "$path" ] || as_root rmdir "$path" || say "  kept (not empty): $path" ;;
         tree) as_root rm -rf "$path" ;;
+        # The daemon's data being made: a `data` line follows once `writd init` made it.
+        # Without one (the install stopped before), it is half made and goes whole.
+        newdata) grep -qxF -- "data $path" "$MANIFEST" || as_root rm -rf "$path" ;;
         data)
             if [ "$2" = yes ]; then
                 as_root rm -rf "$path"

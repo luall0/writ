@@ -69,6 +69,10 @@ check_prefix() {
 # The setup's own questions, after the frame's (the setup, the approval key). Software is
 # the only key backend on Linux: nothing more to choose.
 setup_questions() {
+    if [ -d "$DATA" ]; then
+        approver_kept
+        return 0
+    fi
     choose_approver
 }
 
@@ -264,13 +268,16 @@ setup_install() {
     else
         step "The daemon's directory $DATA (${DAEMON_USER}, 0700): the starting policy"
         as_root install -d -m 0700 "$DATA"
-        record "data $DATA"
+        # Half made until writd init has made the keystore: an uninstall takes it back whole.
+        record "newdata $DATA"
         as_root chown "$DAEMON_USER:$DAEMON_USER" "$DATA"
         put_root "$DATA/policy.yaml" 0644 "$DAEMON_USER:$DAEMON_USER" "$(policy_yaml)"
-        put_root "$DATA/approvers" 0644 "$DAEMON_USER:$DAEMON_USER" "approver $(head -n 1 "$APPROVER")"
+        put_root "$DATA/approvers" 0644 "$DAEMON_USER:$DAEMON_USER" "approver $APPROVER_KEY"
         put_root "$DATA/readers" 0644 "$DAEMON_USER:$DAEMON_USER" "$reader_line"
         step "The keystore (writd init, as $DAEMON_USER): choose its passphrase"
         as_daemon "$DAEMON_USER" "$BIN/writd" init "$CONFIG"
+        # Made: an uninstall keeps it from now on (PURGE=1 deletes it).
+        record "data $DATA"
     fi
 
     step "The systemd unit $UNIT ($UNIT_FILE), enabled and started"
@@ -307,14 +314,7 @@ url = unix:$RUN/agents.sock
 approval_url = unix:$RUN/approvals.sock"
         record "userfile $WHOME/config"
     fi
-    if [ ! -e "$WHOME/approver.pub" ]; then
-        if [ "$DRY_RUN" = 1 ]; then
-            say "    (you) copy $APPROVER to $WHOME/approver.pub"
-        else
-            cp "$APPROVER" "$WHOME/approver.pub"
-        fi
-        record "userfile $WHOME/approver.pub"
-    fi
+    put_approver_pub
     CURRENT=
     [ "$DRY_RUN" = 1 ] && return 0
     say ""
@@ -333,11 +333,14 @@ setup_upgrade() {
     step "The daemon stopped in order (SIGTERM: what is in flight finishes)"
     as_root systemctl stop "$UNIT.service" || say "  (it was not running)"
     install_binaries
+    step "The systemd unit written again ($UNIT_FILE): this version's settings"
+    put_root "$UNIT_FILE" 0644 root:root "$(unit)"
+    as_root systemctl daemon-reload
     step "The daemon started again: the keystore, state, configuration and pins kept"
     as_root systemctl start "$UNIT.service"
     CURRENT=
     [ "$DRY_RUN" = 1 ] && return 0
     say "Upgraded. writ unseal opens it again."
     new=$(cksum <"$BIN/writ")
-    [ "$old" = "$new" ] || say "writ changed: writ skill update --all rewrites the agent skill in every repository it wired."
+    [ "$old" = "$new" ] || upgraded_writ
 }
