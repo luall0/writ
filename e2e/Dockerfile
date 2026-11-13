@@ -24,8 +24,17 @@
 
 ARG RUST_IMAGE=rust:1.99.1-slim-trixie@sha256:b8e062b1c3a80183df83d9ba187cadd2b5ab84bc78d453dbfeb2fccd5f982247
 ARG DEBIAN_IMAGE=debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+# The apt packages, pinned too: every stage installs from Debian's archive as it was on this
+# date (snapshot.debian.org), never from whatever the mirrors hold the day the image builds.
+# Moved with the base images (docs/guides/dependency-upgrades.md).
+ARG DEBIAN_SNAPSHOT=20261101T000000Z
 
 FROM ${RUST_IMAGE} AS build
+ARG DEBIAN_SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+    && rm -f /etc/apt/sources.list \
+    && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99writ-snapshot
 # The toolchain the image ships (the one rust-toolchain.toml pins), without its extra
 # components: nothing is downloaded here.
 ENV RUSTUP_TOOLCHAIN=1.99.1 CARGO_TERM_COLOR=never
@@ -54,6 +63,11 @@ RUN --mount=type=cache,id=writ-e2e-cargo,target=/usr/local/cargo/registry \
     python3 -I tool/target-cache.py prune
 
 FROM ${DEBIAN_IMAGE} AS runtime
+ARG DEBIAN_SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+    && rm -f /etc/apt/sources.list \
+    && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99writ-snapshot
 # git ≥ 2.45 (the daemon's mirrors; Debian 13 has 2.47) and OpenSSH (Debian 13: 10.0).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
@@ -108,6 +122,11 @@ COPY --from=build /out/scenarios /usr/local/bin/scenarios
 ENTRYPOINT ["/usr/local/bin/scenarios", "--ignored"]
 
 FROM ${DEBIAN_IMAGE} AS socks-proxy
+ARG DEBIAN_SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+    && rm -f /etc/apt/sources.list \
+    && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99writ-snapshot
 # microsocks: SOCKS5 with a user and a password (RFC 1929), CONNECT only, names resolved by
 # it. The password is a throwaway stack's, the one the setup adds with `writ admin token`
 # (crates/writ-e2e/src/setup.rs).
@@ -119,6 +138,11 @@ USER socks
 CMD ["microsocks", "-i", "0.0.0.0", "-p", "1080", "-u", "writ", "-P", "e2e-socks-proxy-password"]
 
 FROM ${DEBIAN_IMAGE} AS http-proxy
+ARG DEBIAN_SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+    && rm -f /etc/apt/sources.list \
+    && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99writ-snapshot
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tinyproxy \
     && rm -rf /var/lib/apt/lists/*
@@ -127,6 +151,11 @@ USER tinyproxy
 CMD ["tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]
 
 FROM ${DEBIAN_IMAGE} AS tls-front
+ARG DEBIAN_SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list.d/debian.sources \
+    && rm -f /etc/apt/sources.list \
+    && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99writ-snapshot
 # The name the certificate is made for (and the compose service's), and every name it holds.
 ARG TLS_NAME=forgejo-https
 ARG TLS_SAN=DNS:${TLS_NAME}

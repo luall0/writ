@@ -16,6 +16,8 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 dbg_macro = "deny"
+# Every `unsafe` block says why it is sound, on the line above (`// SAFETY: …`).
+undocumented_unsafe_blocks = "deny"
 # A panic on hostile input is a denial of service: index, slice and cast only where the
 # bound is checked, with `.get()`, or with an `#[allow]` that says why it can't fail.
 indexing_slicing = "deny"
@@ -109,5 +111,5 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "env-filter"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "sync", "time", "fs", "signal"] }
-ureq = "3.5.0"
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 zeroize = { version = "1.9.1", features = ["zeroize_derive"] }

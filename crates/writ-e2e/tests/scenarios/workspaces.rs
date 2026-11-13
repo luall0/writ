@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 
 use writ_e2e::Stack;
 use writ_e2e::agent::{expect, ticket};
+use writ_e2e::setup::doc_step;
 
 /// The folder's files, git's own left out.
 const FILES: &str = "find . -path '*/.git' -prune -o -print";
@@ -158,22 +159,19 @@ fn one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease() {
     let (_, err) = expect(&out, 1, "writ init --undo in a workspace repository");
     assert!(err.contains("run `writ init --undo` there"), "{err}");
     // What writ init wired on this host (M7's list): the workspace, its two repositories.
-    let listed = agent.ok("writ init --list");
+    // As the clients page shows them.
+    let listed = doc_step(&agent, "writ init --list", &[]);
     assert!(
         listed.starts_with("workspace /") && listed.ends_with("/ws (2 repositories)\n"),
         "{listed}"
     );
-    let updated = agent.ok("writ skill update --all");
+    let updated = doc_step(&agent, "writ skill update --all", &[]);
     assert!(
         updated.contains("The writ-workspace skill, from this writ:"),
         "{updated}"
     );
     // Taken back from anywhere with --all, as `writ init --undo` at the folder would.
-    let (out, _) = expect(
-        &agent.run("writ init --undo --all"),
-        0,
-        "writ init --undo --all",
-    );
+    let out = doc_step(&agent, "writ init --undo --all", &[]);
     assert_eq!(agent.ok("writ init --list"), "", "nothing left on the list");
     assert!(
         out.contains("  api: wiring removed (wrapper mode)."),

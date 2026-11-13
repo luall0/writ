@@ -494,7 +494,8 @@ fn a_hook_git_cannot_run_refuses_every_push() {
         &work,
         &["push", "origin", "HEAD:refs/heads/agent/a"],
     );
-    assert_ne!(out.status.code(), Some(0), "{}", stderr(&out));
+    // git's own exit when the remote ends the push before it starts.
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("internal error: the push hook is missing or can't be run"),
         "{}",

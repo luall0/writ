@@ -30,6 +30,24 @@ fn an_agent_works_through_writ_git_beside_the_operator_s_own_git() {
     let fill = [("<lease id>", lease.as_str())];
     let main = stack.forgejo.branch("demo", "main").unwrap();
 
+    // The good practice page's checks of the agent's host, as it shows them: no credential
+    // helper a push could fall back on, no ssh-agent, no token in the environment.
+    let helpers = doc_step_fails(
+        &agent,
+        "git config --show-origin --get-all credential.helper",
+        &[],
+        1,
+    );
+    assert_eq!(writ_e2e::stdout(&helpers), "", "no helper");
+    let keys = doc_step_fails(&agent, "ssh-add -l", &[], 2);
+    assert!(
+        stderr(&keys).contains("Could not open a connection to your authentication agent"),
+        "{}",
+        stderr(&keys)
+    );
+    let secrets = doc_step_fails(&agent, "env | grep -iE 'token|secret'", &[], 1);
+    assert_eq!(writ_e2e::stdout(&secrets), "", "nothing a remote accepts");
+
     // Step 5: wired, fetched through the daemon, a signed commit pushed.
     let out = doc_step(&work, "writ init demo --agents claude", &[]);
     assert!(out.contains("`writ git push origin`"), "{out}");

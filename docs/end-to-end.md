@@ -462,6 +462,15 @@ not checked).
 | Page | Run by |
 |---|---|
 | [Setup](operators/setup.md) | `crates/writ-e2e/src/setup.rs`, `crates/writ-e2e/tests/scenarios/notes.rs` |
+| [Clients](operators/clients.md) | `crates/writ-e2e/tests/scenarios/workspaces.rs` |
+| [Hardening](operators/hardening.md) | `crates/writ-e2e/tests/scenarios/local_mode.rs` |
+| [Good practice](operators/good-practice.md) | `crates/writ-e2e/tests/scenarios/wrapper_mode.rs` |
+| [Sealing](operators/sealing.md) | owed by M7.7 (its closing step: the review's `X-4`) |
+| [Recovery](operators/recovery.md) | owed by M8 (the detached deployment it shows) |
+| [Install](operators/install.md) | owed by M7.9 (the real install, run by hand) |
+
+`make check` refuses an operator page that shows an `sh` block and has no row here, run
+whole or owed by a milestone still to come (`tool/check-e2e.py`).
 
 **Developer guides, where only some blocks are run**, mark each run block with the file that
 runs it, on the line before:

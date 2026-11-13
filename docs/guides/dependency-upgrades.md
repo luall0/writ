@@ -173,13 +173,25 @@ build: upgrade russh 0.65 → 0.66 and ssh-key to its pin
 ## The Rust toolchain
 
 - Change `channel` in `rust-toolchain.toml` to the new exact version (never `stable`), then
-  `rustup toolchain install` (it reads the file).
+  `rustup toolchain install` (it reads the file). The same version is pinned in two more
+  places, moved in the same commit (`make check` compares the three, `tool/check-rules.py`):
+  `e2e/Dockerfile` (the `RUST_IMAGE` tag, with its digest, and `RUSTUP_TOOLCHAIN`, which
+  overrides the file inside the image) and `tool/bench-alloc.py` (its Linux container's
+  `RUSTUP_TOOLCHAIN`).
 - New lints: `make check` shows them. Fix them, or allow with the reason; a new lint the
   workspace should deny goes in `[workspace.lints]`.
 - New `std` APIs may replace a workaround (`split_at_checked`, `is_none_or` were such): fine in
   the same commit if small.
 - Update [stack.md](../stack.md) (the Language row), and run `make ci`. CI picks up the version
   from `rust-toolchain.toml` itself.
+
+## The end-to-end images
+
+`e2e/Dockerfile` pins its base images by digest (`RUST_IMAGE`, `DEBIAN_IMAGE`: multi-arch
+indexes) and its apt packages by a Debian snapshot date (`DEBIAN_SNAPSHOT`: every stage built
+from a base image installs from `snapshot.debian.org` as it was then). Move them together:
+the new digests (`docker buildx imagetools inspect <image>:<tag>`), a snapshot date on or after
+the images' (a later date takes the security updates), then `make e2e`.
 
 ## Tools outside Cargo
 

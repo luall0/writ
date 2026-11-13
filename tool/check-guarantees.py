@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Checks the guarantee registry (docs/threat-model.md § What Writ guarantees): every
 guarantee names tests that try to break it, or the milestone that brings them
-(`planned: M<n>`); every named test exists as a test function in the workspace and is not
-`#[ignore]`d.
+(`planned: M<n>`, a milestone the roadmap still lists as to come); every named test exists
+as a test function in the workspace and is not `#[ignore]`d.
 """
 
 import pathlib
@@ -42,6 +42,13 @@ for path in (ROOT / "crates").rglob("*.rs"):
         if TEST_ATTR.search(attrs) or in_proptest:
             tests[match.group(2)] = "#[ignore" in attrs
 
+# Milestones still to come: the roadmap's table rows not marked done.
+pending = set()
+for line in (ROOT / "docs/roadmap.md").read_text().splitlines():
+    found = re.match(r"\| (M[0-9.]+) \|", line)
+    if found and "✅" not in line:
+        pending.add(found.group(1))
+
 errors = []
 rows = [l for l in section.splitlines() if l.startswith("| ") and not l.startswith("| Guarantee")]
 if not rows:
@@ -54,8 +61,13 @@ for row in rows:
     guarantee, cell = cells
     names = re.findall(r"`([a-z0-9_]+)`", cell)
     if not names:
-        if not re.fullmatch(r"planned: M\d+(\.\d+)?", cell):
+        planned = re.fullmatch(r"planned: (M\d+(?:\.\d+)?)", cell)
+        if not planned:
             errors.append(f"{guarantee}: no test, and no `planned: M<n>`")
+        elif planned.group(1) not in pending:
+            errors.append(
+                f"{guarantee}: planned for {planned.group(1)}, which the roadmap doesn't list as to come"
+            )
         continue
     for name in names:
         if name not in tests:

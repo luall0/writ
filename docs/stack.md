@@ -14,7 +14,7 @@ later approver apps.
 | Leases + ledger | SQLite | Decided |
 | Audit log | JSONL, append-only | Decided |
 | Keystore | age format | Decided |
-| Notifications | Behind the `Notifier` trait; v1: Telegram Bot API (`sendMessage`, plain text) over `ureq` 3, with no proxy (ureq's default would take one from the environment) and no redirects | Decided (M2) |
+| Notifications | Behind the `Notifier` trait; v1: Telegram Bot API (`sendMessage`, plain text) over `ureq` 3, with no proxy (ureq's default would take one from the environment) and no redirects; its features `default-features = false, features = ["rustls"]` only: no gzip (`flate2` stays out of `writd`, as M2.6 decided), and the TLS roots it trusts are its bundled Mozilla set (`webpki-roots`), never the system's: the Bot API is reached on the web PKI wherever the daemon runs | Decided (M2) |
 | Async runtime | `tokio` | Decided (M0) |
 | SQLite access | `rusqlite` 0.41 (bundled SQLite) | Decided (M1) |
 | age | `age` 0.11 (0.12 pulls `ml-kem` 0.2, whose `kem` pre-release conflicts with russh 0.65's); `bech32` 0.9 (age's own encoding of the keystore's X25519 identity from the 32-byte data key) and `age-core` 0.11 (the stanza and file key types of the keystore's ways, `writ-platform`; age's HKDF and ChaCha20-Poly1305 for the `piv-p256` stanza, `writ-crypto`, M7.6), both already in the tree through `age`; `p256` =0.14.0 with `ecdh` for `piv-p256` (in the tree through `ssh-key`) | Decided (M2; M5; M7.6) |

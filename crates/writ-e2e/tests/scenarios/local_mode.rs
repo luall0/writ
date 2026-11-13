@@ -20,7 +20,7 @@ use serde_json::Value;
 use writ_e2e::agent::{expect, submitted_id};
 use writ_e2e::docker::eventually;
 use writ_e2e::forgejo::{BASE, OWNER};
-use writ_e2e::setup::split_key_line;
+use writ_e2e::setup::{doc_step, doc_step_fails, split_key_line};
 use writ_e2e::{Host, Stack, stdout};
 
 const REPO: &str = "local";
@@ -255,17 +255,41 @@ fn local_mode_on_linux_binds_a_lease_to_its_session_and_keeps_the_daemon_out_of_
         ["Seccomp:", "2"]
     );
 
+    // The hardening page's checks, as it shows them, with the daemon's pid.
+    let pid = [("$pid", writd.as_str())];
+    assert_eq!(
+        doc_step(&root, "stat -c %U /proc/$pid/status", &pid).trim(),
+        "root",
+        "not dumpable: its /proc files are root's"
+    );
+    let core = doc_step(&root, "grep 'Max core file size' /proc/$pid/limits", &pid);
+    assert_eq!(
+        core.split_whitespace().skip(4).take(2).collect::<Vec<_>>(),
+        ["0", "0"],
+        "{core}"
+    );
+    let locked = doc_step(&root, "grep VmLck /proc/$pid/status", &pid);
+    assert!(locked.starts_with("VmLck:"), "{locked}");
+    let out = doc_step_fails(&daemon, "head -c1 /proc/$pid/mem", &pid, 1);
+    assert!(
+        writ_e2e::stderr(&out).contains("Permission denied"),
+        "{}",
+        writ_e2e::stderr(&out)
+    );
+
     // `dev` (so any agent) can't read the daemon's files, nor attach to it or its reader.
-    for (what, script) in [
-        ("its directory", "ls /var/lib/writ".to_owned()),
+    // GNU ls exits 2 on a directory it can't read, cat 1 on a file.
+    for (what, script, code) in [
+        ("its directory", "ls /var/lib/writ".to_owned(), 2),
         (
             "the keystore",
             "cat /var/lib/writ/keys/identity.age".to_owned(),
+            1,
         ),
-        ("its memory", format!("cat /proc/{writd}/mem")),
+        ("its memory", format!("cat /proc/{writd}/mem"), 1),
     ] {
         let out = dev.run(&script);
-        assert_ne!(out.status.code(), Some(0), "{what}: {}", stdout(&out));
+        assert_eq!(out.status.code(), Some(code), "{what}: {}", stdout(&out));
         assert!(
             writ_e2e::stderr(&out).contains("Permission denied"),
             "{what}: {}",
@@ -274,7 +298,8 @@ fn local_mode_on_linux_binds_a_lease_to_its_session_and_keeps_the_daemon_out_of_
     }
     for pid in [&writd, &reader] {
         let traced = dev.run(&format!("timeout 10 strace -p {pid} -e trace=none"));
-        assert_ne!(traced.status.code(), Some(0));
+        // strace exits 1 when it can't attach (timeout's 124 would be a strace that did).
+        assert_eq!(traced.status.code(), Some(1));
         assert!(
             writ_e2e::stderr(&traced).contains("Operation not permitted"),
             "{}",

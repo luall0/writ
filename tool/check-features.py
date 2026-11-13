@@ -5,10 +5,24 @@ wiped), writd's `dev-keystore` and `system-allocator` (the benchmark's baseline,
 wiping) must never be in the dependency graph of writd, writ or writ-sign as they ship.
 """
 
+import pathlib
 import subprocess
 import sys
 
 BINARIES = ["writd", "writ-cli", "writ-sign"]
+# Every crate with a src/main.rs is a shipped binary (the test crates aside): a new one is
+# listed here, or this check fails (the review after M7.6, X-2).
+_MAINS = sorted(
+    p.parent.parent.name
+    for p in (pathlib.Path(__file__).resolve().parent.parent / "crates").glob("*/src/main.rs")
+    if p.parent.parent.name not in ("writ-integration", "writ-e2e")
+)
+if _MAINS != sorted(BINARIES):
+    print(
+        f"check-features: BINARIES is {sorted(BINARIES)}, the crates with a src/main.rs are {_MAINS}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 FORBIDDEN = {"testing", "dev-keystore", "system-allocator"}
 
 

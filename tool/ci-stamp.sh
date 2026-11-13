@@ -4,7 +4,9 @@
 # connection open: a hook as long as `make ci` made the remote close it.
 #
 #   tree            prints HEAD's tree if the working tree is clean (no change, no untracked
-#                   file), nothing otherwise: what `make ci` is about to test
+#                   file, no file git doesn't compare: ignored outside the build cache and
+#                   the dev daemon's data, assume-unchanged, skip-worktree), nothing
+#                   otherwise: what `make ci` is about to test
 #   record <tree>   once `make ci` passed: stamps <tree> if the working tree is still clean
 #                   on that same tree
 #   require-clean   exit 1 with the reason if the working tree is not clean
@@ -23,10 +25,23 @@ cd "$(git rev-parse --show-toplevel)"
 stamp=$(git rev-parse --git-path writ-ci-ok)
 
 # HEAD's tree if nothing differs from it, failing otherwise. The status is read first, on its
-# own: a failing `git status` must not read as an empty, clean one.
+# own: a failing `git status` must not read as an empty, clean one. git's status doesn't show
+# what it doesn't compare, which the build may still read (an ignored `.rs` a tracked `mod`
+# names, a file marked assume-unchanged or skip-worktree): each refuses too.
 clean_tree() {
     status=$(git status --porcelain --untracked-files=all) || return 1
     [ -z "$status" ] || return 1
+    # `git ls-files -v`: a lowercase tag is assume-unchanged, `S` skip-worktree.
+    listed=$(git ls-files -v) || return 1
+    hidden=$(printf '%s\n' "$listed" | grep -E '^([a-z]|S) ') || hidden=
+    [ -z "$hidden" ] || return 1
+    # Ignored files, a directory whole: only the build cache, the dev daemon's data and the
+    # editors' and the OS's own files may be.
+    ignored=$(git status --porcelain --ignored=traditional --untracked-files=normal) || return 1
+    others=$(printf '%s\n' "$ignored" | sed -n 's/^!! //p' |
+        grep -vE '^(target/|dev/data/|dev/approvers$|dev/readers$|dev/telegram-token$|\.claude/settings\.local\.json$|\.idea/|\.vscode/)' |
+        grep -vE '(^|/)(\.DS_Store|\.build/|xcuserdata/)') || others=
+    [ -z "$others" ] || return 1
     git rev-parse --verify -q 'HEAD^{tree}'
 }
 
@@ -41,7 +56,7 @@ tree)
     if t=$(clean_tree); then
         printf '%s\n' "$t"
     else
-        echo "make ci: uncommitted changes or untracked files: the result won't be stamped for git push" >&2
+        echo "make ci: uncommitted changes, untracked files, or files git doesn't compare (ignored, assume-unchanged, skip-worktree): the result won't be stamped for git push" >&2
     fi
     ;;
 record)
@@ -57,7 +72,7 @@ record)
     ;;
 require-clean)
     if ! clean_tree > /dev/null; then
-        echo "uncommitted changes or untracked files: commit or stash them first (make ci stamps only a clean tree)" >&2
+        echo "uncommitted changes, untracked files, or files git doesn't compare (ignored outside target/, assume-unchanged, skip-worktree): commit, remove or unmark them first (make ci stamps only a clean tree)" >&2
         exit 1
     fi
     ;;

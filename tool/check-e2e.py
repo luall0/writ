@@ -15,7 +15,9 @@
   - elsewhere (a developer guide where only some blocks are run): each command line of a
     fenced block right after a `<!-- e2e: <file> -->` marker is run by that file;
   - every `doc_step*` literal in the e2e crate is a line its file is shown with, by a listed
-    page or a marked block.
+    page or a marked block;
+  - every operator page (docs/operators/*.md) holding an `sh` block is listed, or owed by a
+    milestone the roadmap still lists as to come (a row `| [page](…) | owed by M<n> |`).
 """
 
 import pathlib
@@ -110,10 +112,33 @@ def command(line: str) -> str:
 
 shown: dict[str, set[str]] = {}
 
-# Pages run whole: the table's rows, `[page](path) | `file`, `file``.
+# Milestones still to come: the roadmap's table rows not marked done.
+pending = set()
+for line in (ROOT / "docs/roadmap.md").read_text().splitlines():
+    match = re.match(r"\| (M[0-9.]+) \|", line)
+    if match and "✅" not in line:
+        pending.add(match.group(1))
+
+# Pages run whole: the table's rows, `[page](path) | `file`, `file``; pages owed by a
+# milestone to come: `[page](path) | owed by M<n>`.
 listed_pages = 0
+listed_paths: set[pathlib.Path] = set()
+owed_paths: dict[pathlib.Path, str] = {}
 for cells in table_rows(section("Commands the docs show")):
+    if cells and cells[0] == "Page":
+        continue  # the owed table's header
     link = re.search(r"\]\(([^)#]+)\)", cells[0]) if cells else None
+    owed = re.fullmatch(r"owed by (M[0-9.]+)(?: .*)?", cells[1]) if len(cells) == 2 else None
+    if link and owed:
+        page = (DOC.parent / link.group(1)).resolve()
+        if not page.is_file():
+            errors.append(f"owed row: {link.group(1)} does not exist")
+        elif owed.group(1) not in pending:
+            errors.append(
+                f"{link.group(1)} is owed by {owed.group(1)}, which the roadmap doesn't list as to come"
+            )
+        owed_paths[page] = owed.group(1)
+        continue
     files = re.findall(r"`([^`]+)`", cells[1]) if len(cells) == 2 else []
     if not link or not files:
         errors.append(f"malformed commands row: {cells}")
@@ -126,6 +151,7 @@ for cells in table_rows(section("Commands the docs show")):
         if not (ROOT / target).is_file():
             errors.append(f"commands row for {link.group(1)}: {target} does not exist")
     listed_pages += 1
+    listed_paths.add(page)
     lines = page.read_text().splitlines()
     commands = set()
     j = 0
@@ -151,6 +177,18 @@ for cells in table_rows(section("Commands the docs show")):
         shown[target] |= commands
 if not listed_pages:
     errors.append("no commands rows: the table moved or changed shape")
+
+# Every operator page that shows an `sh` block is run whole, or owed (rule 18).
+for page in sorted((ROOT / "docs/operators").glob("*.md")):
+    shows = any(re.fullmatch(r"```sh", l.strip()) for l in page.read_text().splitlines())
+    resolved = page.resolve()
+    if resolved in listed_paths and resolved in owed_paths:
+        errors.append(f"{page.relative_to(ROOT)} is both listed and owed")
+    if shows and resolved not in listed_paths and resolved not in owed_paths:
+        errors.append(
+            f"{page.relative_to(ROOT)} shows an sh block, and docs/end-to-end.md#commands-the-docs-show "
+            "neither lists it nor names the milestone that owes it (or make a block that isn't a step `text`)"
+        )
 
 # Marked blocks, in developer guides only: each line run by the file its marker names.
 marked: dict[str, set[str]] = {}

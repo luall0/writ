@@ -84,7 +84,8 @@ fn while_sealed_every_request_fails_closed_with_daemon_sealed_and_is_logged() {
     let file = daemon.root().join("ticket.yaml");
     fs::write(&file, TICKET).unwrap();
     let out = daemon.run(&["request", file.to_str().unwrap(), "--no-wait"], "");
-    assert_ne!(out.status.code(), Some(0));
+    // `writ request`'s exit for a ticket the daemon refuses (Exit::Rejected).
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert!(stderr(&out).contains(SEALED), "{}", stderr(&out));
 
     // Logged, coalesced per source: one line, the others counted later.

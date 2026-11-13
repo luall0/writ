@@ -58,9 +58,9 @@ grep VmLck /proc/$pid/status             # more than 0 kB: memory locked (with a
 head -c1 /proc/$pid/mem                  # as the daemon's user: Permission denied
 ```
 
-**macOS**:
+**macOS** (the pipeline runs on Linux, so this one is yours to run):
 
-```sh
+```text
 lldb -p "$(pgrep -n writd)" --batch -o detach    # attach failed: lost connection
 ```
 
