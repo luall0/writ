@@ -285,7 +285,8 @@ ls -la ~/.writ >> ~/writ-before.txt 2>&1
 
 ```sh
 make install    # Enter (local), a wrong path then ~/.ssh/writ-approval.pub, se-cryptokit for
-                # the TLS key and for agent-01; the summary lists every change: answer n
+                # the TLS key, the SSH CA and agent-01; the keystore: passphrase (Enter);
+                # the summary lists every change: answer n
 make install    # the same answers, then y: the passphrase asked, the keystore made
 make install    # an upgrade: its changes listed, y; the keystore kept
 ```
@@ -313,6 +314,36 @@ writ admin key list                                  # ends with: backends: soft
 
 A template switched to `agent-pgp` signs a commit that `gpg --verify` accepts once its
 certificate (`writ admin key show agent-pgp --public`) is imported.
+
+**3c. Hardware-wrapped secrets and auto-unseal (M7.6).** On this Mac's real Secure Enclave
+(the integration tests ran it against a fake helper):
+
+```text
+writ recovery new                                   # on a machine that isn't online if you can; write it down
+writ admin recipient add recovery recipient=<age1…> --yes
+writ recovery check                                 # paste the key: "Recovery key checked"
+writ admin recipient add se-01 backend=se-cryptokit --yes
+writ admin token <id>                               # an https:// repo's token: encrypted to se-01 and the recovery key
+```
+
+- Restart the daemon (`sudo launchctl kickstart -k system/dev.writ.writd`), then `writ
+  unseal`: it says the hardware opens the keystore and asks no passphrase, only Touch ID.
+- An agent's HTTPS push works with no prompt; lock the screen (Ctrl-Cmd-Q) and push again:
+  it still works. `sudo cat /var/db/writ/keys/tokens/<id>.age` shows only `piv-p256` and
+  `X25519` stanzas; as your user, `cat /var/db/writ/keys/recipients/se-01.blob` is refused.
+- The idle daemon holds no token: with the agent stopped, `sudo vmmap -wide "$(pgrep -n
+  writd)"` runs, and `sudo lldb -p` is refused (`PT_DENY_ATTACH`); the per-use unwrap is
+  what the integration tests prove (`the_token_is_unwrapped_for_each_operation_…`).
+- Follow [the sealing guide's auto-unseal section](../operators/sealing.md#starting-without-a-human-auto-unseal-m76)
+  as written: `writ admin auto-unseal status` lists what is missing; rotate the CA and each
+  key it names with `--backend se-cryptokit`; `on`; restart the daemon: its log says
+  `unsealed automatically`, Telegram says "writd unsealed automatically", and `writ admin key
+  list` answers with no `writ unseal`. Reboot the Mac: after login the daemon is open.
+- `writ admin auto-unseal off`, restart: it waits for `writ unseal` again.
+
+A fresh `make install` can ask all this up front: `se-cryptokit` for the CA key and
+`agent-01`, the keystore opened by `se-cryptokit` (Enter at the recovery key makes one, shown
+once), and `yes` to auto-unseal: the install ends with the daemon open, no `writ unseal`.
 
 **4. The daemon is out of your reach:**
 

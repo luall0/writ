@@ -195,7 +195,7 @@ Switching plans changes only the configured backend, not the daemon.
 **The keystore's hardware recipient (M7.6)** is the same Secure Enclave through the same
 helper, with a key of another kind: a `SecureEnclave.P256.KeyAgreement` key (no prompt, the
 same access control), whose ECDH unwraps the `piv-p256` stanzas the keystore's tokens and
-identity are wrapped to ([hardware-wrapped secrets](../backlog/hardware-wrapped-secrets.md)).
+identity are wrapped to ([hardware-wrapped secrets](../history/m7.6-hardware-wrapped-secrets.md)).
 Its blob is framed under its own header, so a signing key's blob never reaches CryptoKit as an
 agreement key's, nor the other way round; it lives under `_writd` like every other blob.
 

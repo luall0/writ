@@ -65,7 +65,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |
 | [x509 commit signatures](#x509-commit-signatures) | Signers | feature | M | idea |
 | [Developer ID signed binaries](#developer-id-signed-binaries) | Packaging | improvement | S | idea |
-| [Hardware-wrapped secrets](hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | in progress as [M7.6](../roadmap.md#m76--hardware-wrapped-secrets) |
+| [Hardware-wrapped secrets](../history/m7.6-hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | done in [M7.6](../history/m7.6-hardware-wrapped-secrets.md) |
 | [SSH host key behind the `Signer`](#ssh-host-key-behind-the-signer) | Signers | hardening | M | idea; waits for a signer hook in russh (left out of M7.6) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
@@ -117,7 +117,7 @@ HSM, the daemon only asks it for signatures ([Signer](../architecture/signer.md)
   timeout; no fallback to a software key.
 - **Signs only:** an `https://` repo's token still lives in the keystore, and unsealing is
   unchanged (a KMS that can decrypt is one more recipient of
-  [hardware-wrapped secrets](hardware-wrapped-secrets.md)).
+  [hardware-wrapped secrets](../history/m7.6-hardware-wrapped-secrets.md)).
 - One implementation per provider behind a Cargo feature in `writ-signer`, each passing the
   `Signer` contract suite (against the provider's emulator or a local Vault where one exists);
   no provider SDK in the core. The threat model gains a trusted third party (the provider and
