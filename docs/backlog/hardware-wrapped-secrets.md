@@ -62,26 +62,33 @@ Settled with the user at M7.6's start ([decision log](../decisions.md), 2026-11-
 
 - **Keystore format (M5):** one age file per secret. M7.6 changes which recipients a file is
   encrypted to, never the format, and never a file's plaintext.
-- **Two ways a keystore unseals, never both:**
+- **Two ways a keystore unseals, never both:** `identity.age` is what unseals, and what it is
+  wrapped to says how.
   - **Passphrase** (M5, the only way without hardware: detached mode today): `identity.age`
     wrapped with the passphrase (age scrypt); every secret, tokens included, encrypted to the
     keystore identity's recipient.
-  - **Hardware + recovery:** `identity.age` wrapped to the keystore's **recipients** (at least
-    one hardware recipient and exactly one recovery recipient); the keys (the CA, the agent
-    signing keys and their blobs, the upstream keys, the authority MAC key) encrypted to the
-    keystore identity as before; the **tokens** encrypted to the recipients directly, never to
-    the identity. No passphrase exists: moving to hardware removes the scrypt file, and the
-    recovery identity takes its place wherever a passphrase was asked off the hardware path.
-- **The recipients by signed admin change:** `writ admin keystore show` (the way in force, each
-  recipient, `age1…`), `writ admin keystore recipient add se` (the daemon makes the Secure
-  Enclave key itself, under its own user, and answers its recipient), `recipient add recovery
-  <age1…>`, `recipient remove <name>`. Each change is a signed `writ-keystore/1` bound to the
-  set in force (a replay or a stale change refused), applied live: the daemon re-encrypts
-  `identity.age` and every token file to the new set (each written new, then moved over the
-  old one; a start finishes a half-done change), one `admin` line. A set with a hardware
-  recipient and no recovery recipient is refused (one lost device must not lose everything);
-  removing the last hardware recipient goes back to a passphrase, typed with the change.
-  `writd init --recipients se,recovery=<age1…>` makes a keystore that way from the start.
+  - **Hardware:** `identity.age` wrapped to the keystore's hardware **recipients**; the keys
+    (the CA, the agent signing keys and their blobs, the upstream keys, the authority MAC key)
+    encrypted to the keystore identity as before; the **tokens** encrypted to the hardware
+    recipients and the recovery recipient directly, never to the identity. No passphrase
+    exists: moving to hardware removes the scrypt wrapping, and the recovery identity takes its
+    place wherever a passphrase was asked off the hardware path.
+  - **The recovery recipient** (at most one; required beside a hardware recipient, optional on
+    a passphrase keystore: decided with the user while building step 5) wraps the identity in
+    a file of its own, `identity.recovery.age`, so it opens every key; on a hardware keystore
+    it opens the tokens directly too.
+- **The recipients in the signed policy** (decided with the user while building step 5,
+  instead of a `writ-keystore/1` of their own): a `keystore.recipients` section, each entry a
+  hardware key (`backend: se-cryptokit`, made by the change that declares it, like a key, its
+  `age1se1…` printed) or the recovery recipient (`recipient: age1…`), managed as the policy's
+  sixth noun, `writ admin recipient list | show | add | remove`, with the same diff, signature,
+  stale-version refusal, MAC at rest and audit as the others. Applied live: the daemon
+  re-encrypts `identity.age`, `identity.recovery.age` and every token file to the new set
+  (each written new, then moved over the old one; the unseal finishes a half-done change).
+  Refused: a hardware recipient without the recovery recipient (one lost device must not lose
+  everything), a backend the daemon lacks, and removing the last hardware recipient (back to a
+  passphrase is `writd recover`, which sets one). `writd init` makes the keystore as the
+  policy declares it.
 - **The interface:** `KeystoreUnlock` becomes `KeystoreUnwrap` in `writ-platform`: one
   implementation unwraps one file key from an age file's stanzas (or says it has no stanza
   there), with its contract suite and a fake ([platform interfaces](../architecture/platform.md)).
@@ -185,10 +192,11 @@ the same commit.
 4. **The Secure Enclave recipient:** `create-agreement` and `agree` in `writ-se/1` and the
    fake helper (every fault), the framed agreement blob, `KeystoreUnwrap` over the helper in
    `writ-platform-macos`, the contract on the real Secure Enclave. The graft test.
-5. **The recipients by signed admin change:** `writ admin keystore show | recipient add |
-   recipient remove`, `writ-keystore/1`, the live re-encryption and its recovery at start, the
-   recovery challenge with `writ recovery new` and `writ recovery check`, `writd init
-   --recipients`, the identity wiped after unseal.
+5. **The recipients in the signed policy:** `keystore.recipients` in `writ-core` and its
+   checks; the daemon making a hardware recipient, re-encrypting live, finishing a half-done
+   change at unseal; `identity.recovery.age` and the recovery challenge; `writ admin
+   recipient`, `writ recovery new` and `writ recovery check`; `writd init` from the policy;
+   the identity wiped after unseal on a hardware keystore.
 6. **Unseal with no passphrase:** `writ info`'s unseal way, `writ unseal` asking only what the
    keystore needs, `writd recover` with the recovery identity.
 7. **The CA behind the `Signer`:** the adapter, the CA key file naming its backend, `writd
@@ -197,7 +205,7 @@ the same commit.
 8. **Auto-unseal:** `unseal: auto`, the start check naming each software key or secret, the
    start logged and notified, `writd recover` needing the recovery identity.
 9. **The operator guide and the checks:** the auto-unseal section; its commands that need no
-   hardware (the recovery identity, `keystore show`, the refusal with a software key left) run
+   hardware (the recovery identity, `recipient list`, the refusal with a software key left) run
    in `make e2e` on Linux, those that need the Secure Enclave by an integration scenario on
    the Mac's real one, the whole section followed in the [manual checks](../guides/manual-checks.md)
    (for M7.7); the threat model and the security inventory gone over once more.
