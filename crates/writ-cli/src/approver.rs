@@ -11,6 +11,7 @@
 //! about to sign (the review after M7.6, U-8).
 
 mod admin;
+pub(crate) mod dispatch;
 mod guided;
 mod manage;
 mod narrowing;

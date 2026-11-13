@@ -54,6 +54,21 @@ pub const BACKENDS: &[Backend] = &[Backend::Software, Backend::SeCryptokit];
 #[cfg(not(target_os = "macos"))]
 pub const BACKENDS: &[Backend] = &[Backend::Software];
 
+/// The backend this build has under `name`, if it has one: the one lookup a rotation and
+/// `writd init` make (each says its own refusal; the review after M7.6, D-13).
+pub fn backend_named(name: &str) -> Option<Backend> {
+    BACKENDS.iter().copied().find(|b| b.name() == name)
+}
+
+/// The names of the backends this build has, joined for a refusal.
+pub fn backend_names() -> String {
+    BACKENDS
+        .iter()
+        .map(|b| b.name())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The backends this daemon has, each with the algorithms it makes, as replies show them.
 pub fn backends_shown() -> Vec<writ_proto::BackendShown> {
     BACKENDS

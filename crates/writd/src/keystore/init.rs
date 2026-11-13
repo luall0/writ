@@ -33,17 +33,12 @@ pub fn init(path: &Path, tls_backend: &str, ca_backend: &str) -> anyhow::Result<
     // Enclave on a Mac, from the installer): ones this daemon has, checked before anything is
     // asked.
     let backend = |flag: &str, name: &str| {
-        crate::platform::BACKENDS
-            .iter()
-            .copied()
-            .find(|b| b.name() == name)
-            .ok_or_else(|| {
-                let names: Vec<&str> = crate::platform::BACKENDS.iter().map(|b| b.name()).collect();
-                anyhow::anyhow!(
-                    "{flag} {name}: this daemon has no such backend (it has: {})",
-                    names.join(", ")
-                )
-            })
+        crate::platform::backend_named(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{flag} {name}: this daemon has no such backend (it has: {})",
+                crate::platform::backend_names()
+            )
+        })
     };
     let tls_backend = backend("--tls-backend", tls_backend)?;
     let ca_backend = backend("--ca-backend", ca_backend)?;
