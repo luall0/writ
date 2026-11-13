@@ -152,6 +152,12 @@ To settle with the user before the plan.
    submission names its user (checked against the template), and per-user submission rates.
 8. **Configuration:** users as a new file or a section of `policy.yaml`, and how the
    `approvers` and `readers` files name their user.
+9. **A separate admin key:** whether an admin signs admin changes and unseals with a key
+   distinct from the one that approves leases. A Touch ID prompt naming the admin key outside
+   an admin task is then the alarm, where today one key's prompt looks the same for a lease
+   and for a change to the templates themselves (found by the
+   [M7.7 review](../roadmap.md#m77--review-after-m76), H2: in local mode an agent running
+   as the approver's user can get an admin change signed that was never shown).
 
 ## Acceptance
 

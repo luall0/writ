@@ -270,9 +270,9 @@ own page: [manual checks with a real agent](manual-checks-e2e.md).
 
 The installer's frame and its `local` setup run in `make test` against a fake root; this is
 the real thing, on your Mac, with `sudo` and Touch ID. It changes your system: run it on a
-Mac where you can reboot. It is [M7.7](../roadmap.md#m77--local-mode-checked-on-the-mac),
+Mac where you can reboot. It is [M7.9](../roadmap.md#m79--local-mode-checked-on-the-mac),
 run once M7.5 and M7.6 are in place (they add their own steps here): when every step passes,
-tick M7.7's acceptance items.
+tick M7.9's acceptance items.
 
 **1. Before.** Keep what is there now, to compare with after the uninstall:
 

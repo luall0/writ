@@ -12,8 +12,11 @@ takes it all back.
   YubiKey) is best: your agents run as you, and could use a key that doesn't ask.
 - The repository checked out, with Rust installed (the build uses the version the repository
   pins).
-- `sudo` that asks for your password. It must ask: that password is what keeps your agents,
-  which run as you, away from the daemon's keys.
+- `sudo` that asks for your password. It must ask, or your agents, which run as you, could
+  use it too. The password alone doesn't keep them away: an agent that can change your
+  shell's files can wrap the commands you type, and one that can write the checkout can change
+  what gets installed. So install and upgrade from a checkout your agents don't work in, with
+  no agent running.
 - On Linux: systemd, and Linux 6.5 or later (Debian 13, Ubuntu 24.04 and their successors have
   it). The daemon checks this when it starts and says what is missing.
 

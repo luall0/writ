@@ -72,6 +72,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
 | [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | picked as [M7.1](../history/m7.1-local-mode-on-linux.md) |
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
+| [Per-session submission rates](#per-session-submission-rates) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
 | [A TLS link to an upstream proxy](#a-tls-link-to-an-upstream-proxy) | Upstream | hardening | S | idea |
 | [A proxy program](#a-proxy-program) | Upstream | feature | M | idea |
@@ -181,6 +182,14 @@ work for agents on a Linux workstation too. Only implementations and a config pr
 
 Bind a session certificate to the source address it was requested from (SSH certificate
 `source-address` option): a stolen session key is useless from another host.
+
+### Per-session submission rates
+
+In local mode every caller on the Unix socket is one source, so all local agents share one
+submission rate (`submissions.per_source`): a runaway agent uses up the others'. The
+attestor's facts (the caller's session root, its process chain) could key the rate per
+session instead. M7 closed without it (found by the
+[M7.7 review](../roadmap.md#m77--review-after-m76), `L-9`).
 
 ## Upstream
 
