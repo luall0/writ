@@ -300,10 +300,25 @@ its ticket shows `caller descends from /opt/writ/bin/writ (pid …, signed dev.w
 commit and push work. From another terminal (outside the session), `writ git fetch` in the
 same clone is refused (`caller`). Quit the agent: `writ ls` shows the lease revoked.
 
+**3b. The Secure Enclave (M7.5).** The template signs with `agent-01`, made in the Secure
+Enclave at step 2: its commit verifies with `git verify-commit` against `writ admin key show
+agent-01 --public`, with no prompt. Lock the screen (Ctrl-Cmd-Q) with an agent working: its
+commits still sign. Then from your machine:
+
+```sh
+writ admin key add agent-pgp use=signing format=openpgp algorithm=p256 backend=se-cryptokit "uids=Agent <agent@example.com>" --yes
+writ admin tls rotate --backend se-cryptokit --yes   # over SSH here: the pin line printed
+writ admin key list                                  # ends with: backends: software (…); se-cryptokit (p256)
+```
+
+A template switched to `agent-pgp` signs a commit that `gpg --verify` accepts once its
+certificate (`writ admin key show agent-pgp --public`) is imported.
+
 **4. The daemon is out of your reach:**
 
 ```sh
 cat /var/db/writ/keys/identity.age            # Permission denied
+cat /var/db/writ/keys/signing/agent-01        # Permission denied (its blob: _writd's alone)
 lldb -p "$(pgrep -n writd)" --batch -o detach # attach failed
 ```
 
@@ -311,7 +326,8 @@ lldb -p "$(pgrep -n writd)" --batch -o detach # attach failed
 (`/Library/Logs/Writ/writd.log`) says `stopping signal="SIGTERM"`, then `stopped`, and the
 daemon stays stopped. While it runs, `writd recover` is refused naming its pid; stopped, the
 [recovery guide's macOS steps](../operators/recovery.md#macos-local-mode-m7) run as written.
-Reboot the Mac: after logging in, the daemon is running again (sealed): `writ unseal`.
+Reboot the Mac: after logging in, the daemon is running again (sealed): `writ unseal`; an
+agent's commit signs again in the Secure Enclave, with no prompt.
 
 **6. Uninstall** and compare:
 

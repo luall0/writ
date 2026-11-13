@@ -2,7 +2,8 @@
 
 Status: **tested in the [M0 spike](../roadmap.md#m0--protocol-spike-gono-go) on 2026-10-31.
 Plan B is the local-mode signer**: a CryptoKit Secure Enclave key under a dedicated `_writd`
-user, built in [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac); the `_writd`
+user, built in [M7.5](../history/m7.5-secure-enclave-signer.md) (`se-cryptokit`, through the
+`writ-se` helper: [signer](signer.md#a-helper-process)); the `_writd`
 LaunchDaemon is set up in [M7](../history/m7-local-mode-on-the-mac.md). Plan A works but
 doesn't isolate the key from my user; Plan D wasn't needed. Every check and number is in
 [the M0 spike's results](../history/m0-protocol-spike.md#secure-enclave-results);

@@ -43,7 +43,7 @@ picked.
 | M7 | [Local mode on the Mac](history/m7-local-mode-on-the-mac.md) ✅ | macOS implementations plugged in: Unix socket, process chain, `writ run` binding a lease to the harness it starts, revoke on exit, a daemon isolated from my user, launchd, the installer (a setup to pick, `local` first) and an uninstall as easy that offers to take Writ out of the wired repos |
 | M7.1 | [Local mode on Linux](history/m7.1-local-mode-on-linux.md) ✅ | Linux implementations plugged in the same way: the peer's pidfd and a `/proc` process chain read by a capped helper, a pidfd watcher, a systemd service under its own user, the installer's Linux local setup, local mode in `make e2e` |
 | M7.2 | [Upstream proxies](history/m7.2-upstream-proxies.md) ✅ | A repo's upstream reached through a named proxy (SOCKS5, Tor included, or HTTP CONNECT, with an optional password from the keystore), for remotes reachable only from some addresses; `writ admin proxy`, host scans through it |
-| M7.5 | [Secure Enclave signer](#m75--secure-enclave-signer-on-the-mac) | The non-exportable local-mode signer the M0 spike picked |
+| M7.5 | [Secure Enclave signer](history/m7.5-secure-enclave-signer.md) ✅ | The non-exportable local-mode signer the M0 spike picked: keys made in the Secure Enclave through a helper process, the TLS key rotated live, every key's backend from the CLI, the installer guided |
 | M7.6 | [Hardware-wrapped secrets](#m76--hardware-wrapped-secrets) | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, unsealing with no passphrase |
 | M7.7 | [Local mode checked on the Mac](#m77--local-mode-checked-on-the-mac) | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
@@ -222,154 +222,11 @@ key scans through a proxy, scenario 25 with real proxies.
 
 ## M7.5 — Secure Enclave signer on the Mac
 
-Non-exportable keys in local mode: `se-cryptokit`, the backend the M0 spike picked
-([macOS Secure Enclave](architecture/macos-secure-enclave.md#m0-results)), a CryptoKit
-Secure Enclave key (P-256) whose blob only this Mac's Secure Enclave can use, held by the
-daemon under `_writd`. A `Signer` implementation and a backend name; the policy's
-`keys.<id>.backend` already chooses where each key lives. The forks were settled with the
-user at its start ([decision log](decisions.md), 2026-11-12, M7.5).
-
-- **The interface first** (hard rule 4; settled with the user): `create_key` beside M5's
-  `add_key`. `Signer::create_key(id, algorithm) -> Created { info, stored }`: the backend
-  makes the key itself and answers its public half and `stored`, the opaque bytes the daemon
-  keeps to give the key back at the next start (a Secure Enclave key's blob), wiped on drop,
-  never printed. A backend that makes its own keys answers `CannotTakeKeys` to `add_key`; one
-  that takes keys from outside (software) answers `Unsupported` to `create_key`; the daemon
-  picks by the backend's `Capabilities` (`takes_keys`, a new `makes_keys`). The software
-  path is unchanged. The contract suite gains its section (a key made is listed, signs and
-  verifies; an id held is refused by name; an algorithm the backend doesn't make is
-  `Unsupported`; a removed key's id makes a new key), run by a fake device backend in
-  `writ_signer::testing`, and the [signer page](architecture/signer.md) changes in the same
-  step. The graft test counts from the interface as this step leaves it.
-- **Several backends per use:** a role's keys (the agent keys, the upstream credentials) may
-  now live on two backends at once, so the daemon's signer for a role becomes a router
-  (`writ_signer::route`, itself a `Signer`) sending each key's jobs to the backend that
-  holds it, each backend behind its own queue: a stuck Secure Enclave never holds up a
-  software key, nor the other way round. A key id on two backends is refused at start.
-- **A helper process** (settled with the user; CryptoKit has no C or Rust API, and a corrupted
-  blob crashes the process inside CryptoKit, M0): a small Swift program, `writ-se`, built by
-  the `Makefile` with `swiftc` on macOS, installed and signed with the hardened runtime beside
-  `writd`, started by `writd` as `_writd` and talking over its stdin and stdout. The Rust side
-  is generic (`writ_signer::helper`: a `Signer` over a helper process), so it is tested on
-  every OS with a fake helper; `se-cryptokit` in `writ-platform-macos` is that signer and the
-  Swift program.
-  - The protocol (`writ-se/1`): length-prefixed frames, at most 64 KiB each way, one request
-    at a time: `create` (a new key: its blob and public point), `public <blob>` (the blob's
-    public point), `sign <blob> <data>` (P-256 with SHA-256, `r ‖ s`). The helper keeps no
-    state: each request carries its blob, so a new helper answers like the old one.
-  - In Swift: `SecureEnclave.P256.Signing.PrivateKey` with the access control
-    `.privateKeyUsage` only and `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (no
-    prompt, the screen locked or not), no `try!`, every CryptoKit error answered by its code.
-  - **What the helper answers is untrusted:** a frame past its bound, a public point that
-    isn't one, a signature of the wrong length, or one that doesn't verify with the key's
-    public half (checked by the daemon on every signature, before it leaves) is refused with
-    its reason; a helper that dies (CryptoKit's crash) or stays silent past the queue's
-    deadline is killed, the job refused, the next job starts a new helper, each one logged.
-    It never takes the daemon down. Joins the [security inventory](security.md).
-  - Its path: `signers.se_cryptokit.helper` in `writd.yaml`, `writ-se` beside `writd` by
-    default, checked at start (it runs and answers, and the Secure Enclave is there) when a
-    key or the TLS key is on `se-cryptokit`.
-- **No blob reaches the Secure Enclave unless it is the one it made for that key** (found
-  while building it, 2026-11-12: corrupted blobs sent to the real device made its firmware
-  panic and crashed the Mac). What the backend hands the daemon to keep is the blob framed
-  with a SHA-256 over the key's public point and the blob, checked before the helper sees it,
-  wherever it is kept (the keystore, the boot tier); no test sends the real device a
-  malformed blob.
-- **The blob is sealed in the keystore** (settled with the user), like a software key: one age
-  file (`signing/<id>`, `upstream/<id>`) sealed to the keystore's recipient, its public half
-  beside it, its `writ-key/1` header naming the backend; so nothing signs before unseal, and
-  sweeping, removing and `writd recover` keep their code. At unseal each blob is checked by
-  the helper against its public half. **A blob refused** (corrupted, another Mac's, or one
-  the helper dies on) leaves the key listed from its public half and refusing every signature
-  with the reason ("its Secure Enclave blob was refused at unseal"), said once in the
-  daemon's log and the audit log: the daemon keeps running and every other key signs; the
-  leases on that key are denied by name, and `writ admin key rotate` replaces it.
-- **What may live there:** agent signing keys (`format: ssh` or `openpgp`, `algorithm: p256`)
-  and `ssh` upstream credentials (`algorithm: p256`; GitHub, Codeberg and Forgejo take ECDSA
-  keys), declared `backend: se-cryptokit` in the policy, made by the change that declares
-  them. Going back to software is a policy change: a key declared on `software` (`writ admin
-  key rotate`'s new key, then the switch of what used the old one). A daemon built for
-  another OS refuses `se-cryptokit` by name, as any backend it lacks.
-- **All of it from the CLI** (asked by the user): making a key on the backend wanted, and
-  giving it to what uses it, needs no host access, like the rest of M6.2.
-  - The daemon says which backends it has (`writ admin key list` and the reply `writ`'s
-    guided flows read, `GET /v1/keys`), so `writ` offers only those.
-  - `writ admin key add <id> backend=<name>`: `backend` becomes a field the guided flow asks
-    (`software` by default, the daemon's others offered, with the algorithms each makes:
-    `se-cryptokit` only `p256`), still never changed once declared (`set` refuses it, naming
-    `key rotate`).
-  - `writ admin key rotate <id> [--backend <name>] [--name <new>]`: the new key on the backend
-    named (the old key's by default), so moving a key between software and the Secure Enclave
-    is one command; then, as today, the switch of every repo and template that used the old
-    key, and the offer to remove it.
-  - Giving a key to its uses stays `writ admin template set <t> signing_key=<id>` and `writ
-    admin repo set <r> upstream_credential=<id>`; the guided `repo add` and `template add`
-    that declare a new key in the same change ask its backend too.
-  - The TLS key: `writ admin tls rotate [--backend <name>]` (below).
-- **The TLS key, moved by a signed admin change, live** (settled with the user):
-  `writ admin tls rotate [--backend <name>]` makes a new HTTPS approval API key on the
-  backend named (the current one by default: the same command rotates it), on a running,
-  unsealed daemon.
-  - The approver signs `writ-tls/1` (`{daemon, replaces, backend}`: the daemon's host key
-    fingerprint, the fingerprint of the certificate it replaces, the backend) in the
-    `writ-approval` namespace; binding it to the certificate it replaces makes a replay
-    refused once it is done. Sent over either approval transport (`POST /v1/tls`, SSH
-    `tls-rotate`), checked strictly against `approvers`.
-  - The daemon makes the key (software: generated; Secure Enclave: `create_key`), its
-    self-signed certificate through the `Signer`, writes both to the boot tier at once (a
-    stop in between leaves the old pair or the new, never a mismatch; the next start finishes
-    a pair cut short), swaps the HTTPS identity live (new handshakes get the new certificate;
-    open connections end on theirs), wipes the old key's file, writes one `admin` audit line
-    (old and new fingerprints, the backend), notifies, and answers the new fingerprint. The
-    key's backend is in its file's `writ-key/1` header; `writ init`'s keystore keeps making
-    it in software.
-  - **The pin:** `writ` replaces the line for the daemon in `~/.writ/tls_pins` when the change
-    went over HTTPS (the old certificate vouched for the reply), says so, and checks the new
-    pin with `writ info`; over SSH it prints the line to add. Other approvers' machines are
-    refused until they re-pin (the old pin is refused: that is the point), from the line
-    printed or `writd tls-fingerprint` on the host. After a suspected copy of the boot tier,
-    the advice is to re-pin from the host, not from the reply (a copy of the old key could
-    answer for the daemon): recorded in the [threat model](threat-model.md).
-- **The installer guided** (asked by the user while building it): `make install` asks every
-  choice on the terminal (the setup, the approval key, and on a Mac where the TLS key and a
-  first agent signing key `agent-01` are made), each said in plain words, a wrong answer asked
-  again; then the answers and every change, and nothing done before `Install?`. The upgrade
-  and the uninstall ask the same way (the data's deletion typed out). The variables stay for
-  scripts and tests, listed apart in the guide. A rule of the
-  [conventions](conventions.md#installers-are-guided).
-- `make ci` on the Mac builds `writ-se` and runs the contract suite on the real Secure
-  Enclave (a Mac without one fails it, naming why); Linux CI runs the helper signer against
-  the fake helper. The local macOS setup of the installer installs `writ-se`.
-
-Acceptance:
-- [ ] **The graft test:** from the interface step on, only the new `Signer` implementation
-      (the helper signer and `se-cryptokit`), `writd`'s wiring and config change.
-- [ ] It passes the `Signer` contract suite (and the queued one), like the software backend,
-      on the real Secure Enclave.
-- [ ] The helper signer against hostile fake helpers: a crash on each request, silence past
-      the deadline, a frame past its bound, a bad point, a signature that doesn't verify;
-      each refused with its exact error, the daemon's process alive, the next job served.
-- [ ] A corrupted, cut, bare or foreign blob is refused with a reason **before it reaches the
-      helper or the Secure Enclave** (checked against the fake helper, which records every
-      request), the key listed and refusing, every other key signing, the daemon running.
-- [ ] Commits signed with it verify with `git verify-commit`, as in M3 (both formats), and an
-      upstream credential on it pushes.
-- [ ] With the TLS key in the Secure Enclave, HTTPS approvals work after re-pinning, and the
-      old pin is refused; `writ admin tls rotate` refused on a replay, on a stale
-      `replaces`, by a non-approver; scenario in `make e2e` (software to software, on Linux).
-- [ ] Going back to the software backend is a policy change only.
-- [ ] The guided installer: with no variable, every question asked (a wrong approval key and
-      an unknown backend asked again), the summary listing every change, `n` leaving the
-      machine as it was, `y` installing with the answers; the uninstall asked the same way;
-      without a terminal each variable checked like a typed answer.
-- [ ] From the CLI alone: `writ admin key add … backend=se-cryptokit` (and its guided flow
-      offering the daemon's backends), `writ admin key rotate --backend` both ways, the key
-      given to a template and a repo; `backend` refused by `set`; a backend the daemon lacks
-      refused by name; every new flag in `make e2e`'s registry.
-- [ ] With the real daemon under `_writd`: signing needs no prompt, works after a reboot and
-      with the screen locked; another process, and my user, can't find or use the key. Run
-      with M7.7's real install (the [manual check](guides/manual-checks.md)), where the user
-      moved the real install's checks.
+**Done.** Moved to [history/m7.5-secure-enclave-signer.md](history/m7.5-secure-enclave-signer.md):
+`se-cryptokit` through the `writ-se` helper (each blob framed and checked before the device
+sees it), keys made by the device and sealed as blobs, a router over backends per use, every
+key's backend from the CLI, the TLS key rotated live (`writ admin tls rotate`), the installer
+guided. Its real-install items run with M7.7.
 
 ## M7.6 — Hardware-wrapped secrets
 
