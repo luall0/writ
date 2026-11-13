@@ -14,7 +14,6 @@
     clippy::cast_possible_truncation
 )]
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -29,7 +28,7 @@ use writ_integration::binaries::bin;
 use writ_integration::https_remote::HttpsRemote;
 use writ_integration::proxy::{ProxyKind, ProxyMode, TestProxy};
 use writ_integration::remote::TestRemote;
-use writ_mirror::credential::UpstreamToken;
+use writ_mirror::credential::{TokenRef, Tokens, UpstreamToken};
 use writ_mirror::dial::{DialError, DialWhy, Dialer, ProxyRoute};
 use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{MirrorConfig, MirrorError, Mirrors, SyncReport};
@@ -256,12 +255,16 @@ const TEMPLATES: &str = "templates:\n  t:\n    operations: [fetch]\n    branches
      max_pushes: 1\n    max_ops_per_minute: 10\n    max_push_size: 1MB\n";
 
 /// The keystore's tokens: the proxy's password when given.
-fn tokens(password: Option<&str>) -> BTreeMap<KeyId, Arc<UpstreamToken>> {
+fn tokens(password: Option<&str>) -> Tokens {
     password
         .map(|p| {
+            let id = "proxy-pass".parse::<KeyId>().unwrap();
             (
-                "proxy-pass".parse::<KeyId>().unwrap(),
-                Arc::new(UpstreamToken::from_bytes(p.as_bytes()).unwrap()),
+                id.clone(),
+                Arc::new(TokenRef::held(
+                    id,
+                    UpstreamToken::from_bytes(p.as_bytes()).unwrap(),
+                )),
             )
         })
         .into_iter()
@@ -391,7 +394,10 @@ fn an_https_upstream_behind_a_proxy_is_synced_through_it() {
         let mut tokens = tokens(Some(PASSWORD));
         tokens.insert(
             "token-01".parse().unwrap(),
-            Arc::new(UpstreamToken::from_bytes(TOKEN.as_bytes()).unwrap()),
+            Arc::new(TokenRef::held(
+                "token-01".parse().unwrap(),
+                UpstreamToken::from_bytes(TOKEN.as_bytes()).unwrap(),
+            )),
         );
         let config = MirrorConfig {
             root: dir.path().join("repos"),

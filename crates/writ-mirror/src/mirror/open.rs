@@ -13,7 +13,6 @@ use writ_core::names::{KeyId, ProxyName, RepoName};
 use writ_signer::Signer;
 
 use super::{CaCerts, MAX_SYNCS, MirrorConfig, Mirrors, Reach, Repo, Shared, SyncState};
-use crate::credential::UpstreamToken;
 use crate::dial::Dialer;
 use crate::git::{self, Hooks};
 use crate::known_hosts::PinnedHosts;
@@ -34,7 +33,7 @@ impl Mirrors {
         repos: &BTreeMap<RepoName, RepoEntry>,
         proxies: &BTreeMap<ProxyName, Proxy>,
         signer: Arc<dyn Signer>,
-        tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+        tokens: &crate::credential::Tokens,
     ) -> Result<Self> {
         check_config(&config, repos).await?;
         let files = RunFiles::write(&config)?;
@@ -86,7 +85,7 @@ impl Mirrors {
         proxies: &BTreeMap<ProxyName, Proxy>,
         pinned: PinnedHosts,
         signer: Arc<dyn Signer>,
-        tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+        tokens: &crate::credential::Tokens,
     ) -> Result<Self> {
         let shared = &self.shared;
         let mut config = shared.config.clone();
@@ -148,7 +147,7 @@ fn dialer(
     name: &RepoName,
     entry: &RepoEntry,
     proxies: &BTreeMap<ProxyName, Proxy>,
-    tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+    tokens: &crate::credential::Tokens,
 ) -> Result<Dialer> {
     let dialer = Dialer::for_repo(entry.proxy.as_ref(), proxies, tokens)
         .map_err(|why| MirrorError::Config(format!("repo {name}: {why}")))?;
@@ -165,7 +164,7 @@ fn dialer(
 /// Each proxy of the policy as a dialer, with its password from `tokens`.
 fn routes(
     proxies: &BTreeMap<ProxyName, Proxy>,
-    tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+    tokens: &crate::credential::Tokens,
 ) -> BTreeMap<ProxyName, Dialer> {
     proxies
         .iter()
@@ -177,7 +176,7 @@ fn routes(
 }
 
 /// Whether `reach` holds the token `tokens` has for its credential (an `ssh://` one: always).
-fn same_token(reach: &Reach, tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>) -> bool {
+fn same_token(reach: &Reach, tokens: &crate::credential::Tokens) -> bool {
     match reach {
         Reach::Ssh { .. } => true,
         Reach::Https {
@@ -320,7 +319,7 @@ async fn open_repo(
     config: &MirrorConfig,
     keys_dir: &Path,
     signer: &dyn Signer,
-    tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+    tokens: &crate::credential::Tokens,
     name: &RepoName,
     entry: &RepoEntry,
     dialer: Dialer,
@@ -357,7 +356,7 @@ fn reach(
     config: &MirrorConfig,
     keys_dir: &Path,
     signer: &dyn Signer,
-    tokens: &BTreeMap<KeyId, Arc<UpstreamToken>>,
+    tokens: &crate::credential::Tokens,
     name: &RepoName,
     entry: &RepoEntry,
 ) -> Result<Reach> {

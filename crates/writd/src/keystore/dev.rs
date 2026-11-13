@@ -10,7 +10,7 @@ use writ_core::config::PolicyConfig;
 use writ_core::names::KeyId;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{LineEnding, PrivateKey};
-use writ_mirror::credential::{MAX_TOKEN_FILE, UpstreamToken};
+use writ_mirror::credential::{MAX_TOKEN_FILE, TokenRef, TokenSource, Tokens, UpstreamToken};
 use writ_platform::notify::telegram::BotToken;
 use writ_proto::KeyRole;
 
@@ -186,13 +186,11 @@ fn dev_keys_of(
 
 /// The tokens of `https://` repos, from `<dir>/tokens/<id>`: written by the operator (the
 /// token alone, mode 0600), never generated. A missing or malformed one stops the daemon.
-fn dev_tokens(
-    dir: &Path,
-    policy: &PolicyConfig,
-) -> anyhow::Result<std::collections::BTreeMap<KeyId, Arc<UpstreamToken>>> {
+fn dev_tokens(dir: &Path, policy: &PolicyConfig) -> anyhow::Result<Tokens> {
     let ids = tokens_declared(policy);
     let dir = dir.join("tokens");
     private_dir(&dir)?;
+    let source: Arc<dyn TokenSource> = Arc::new(DevTokens { dir: dir.clone() });
     ids.into_iter()
         .map(|id| {
             let path = dir.join(id.as_str());
@@ -207,11 +205,40 @@ fn dev_tokens(
             }
             let bytes = writ_platform::fs::read_secret(&path, "the upstream token", MAX_TOKEN_FILE)
                 .with_context(missing)?;
-            let token = UpstreamToken::from_bytes(&bytes)
+            // Checked now (the operator wrote it by hand), read again at each use.
+            UpstreamToken::from_bytes(&bytes)
                 .map_err(|why| anyhow::anyhow!("{}: not a token: {why}", path.display()))?;
-            Ok((id.clone(), Arc::new(token)))
+            let version = writ_core::authority::TextDigest::of_bytes(&bytes);
+            Ok((
+                id.clone(),
+                Arc::new(TokenRef::new(
+                    id.clone(),
+                    version.as_str().to_owned(),
+                    source.clone(),
+                )),
+            ))
         })
         .collect()
+}
+
+/// The development keystore's tokens, read from their files at each use.
+struct DevTokens {
+    dir: std::path::PathBuf,
+}
+
+impl TokenSource for DevTokens {
+    fn unwrap(&self, id: &KeyId, version: &str) -> std::result::Result<UpstreamToken, String> {
+        let path = self.dir.join(id.as_str());
+        let bytes = writ_platform::fs::read_secret(&path, "the upstream token", MAX_TOKEN_FILE)
+            .map_err(|e| format!("{e}"))?;
+        if writ_core::authority::TextDigest::of_bytes(&bytes).as_str() != version {
+            return Err(format!(
+                "{}: changed since the daemon started: restart it to use the new token",
+                path.display()
+            ));
+        }
+        UpstreamToken::from_bytes(&bytes).map_err(|why| format!("not a token: {why}"))
+    }
 }
 
 /// The development keystore's authority MAC key, `<dir>/authority-key` (32 bytes, 0600),
@@ -292,10 +319,7 @@ pub fn boot(dir: &Path) -> anyhow::Result<Boot> {
 }
 
 /// The `https://` repos' tokens, from the development keystore in `dir`.
-pub fn tokens(
-    dir: &Path,
-    policy: &PolicyConfig,
-) -> anyhow::Result<std::collections::BTreeMap<KeyId, Arc<UpstreamToken>>> {
+pub fn tokens(dir: &Path, policy: &PolicyConfig) -> anyhow::Result<Tokens> {
     // `keys` refused a build without the dev keystore already; checked again, never assumed.
     allowed()?;
     dev_tokens(dir, policy)
@@ -419,10 +443,24 @@ templates: {{}}
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let tokens = dev_tokens(dir.path(), &policy).unwrap();
         assert_eq!(tokens.len(), 1, "one id, two repos");
+        let held = tokens.values().next().unwrap();
+        assert!(
+            !format!("{held:?}").contains(token),
+            "a reference holds no secret"
+        );
+        // Read again at each use; a file changed since the start is refused until a restart.
         assert_eq!(
-            format!("{:?}", tokens.values().next().unwrap()),
+            format!("{:?}", held.unwrap().unwrap()),
             "UpstreamToken(<redacted>)"
         );
+        std::fs::write(&path, "another-token\n").unwrap();
+        let why = held.unwrap().unwrap_err();
+        assert!(
+            why.ends_with("changed since the daemon started: restart it to use the new token"),
+            "{why}"
+        );
+        std::fs::write(&path, format!("{token}\n")).unwrap();
+        assert!(held.unwrap().is_ok());
         // Malformed: refused, the token never in the error.
         std::fs::write(&path, format!("{token} and more\n")).unwrap();
         let error = format!("{:#}", dev_tokens(dir.path(), &policy).unwrap_err());

@@ -348,7 +348,9 @@ unlocked ([Q17](../decisions.md)).
 - **After unseal the identity stays open**, in memory wiped on drop, behind the same seam:
   a key a signed policy change creates is sealed to the recipient, and a token
   [`writ admin token`](approvals.md#writ-admin-token) brings is opened through it, as a
-  start would. Every secret it opens is already in memory once unsealed; what holding it adds
+  start would, and the `https://` tokens and proxy passwords are unwrapped through it at each
+  use (M7.6: the mirrors hold only a reference, [gateway](gateway.md#https-with-a-token)).
+  Every key it opens is already in memory once unsealed; what holding it adds
   (a memory read opens the secrets added afterwards too) is a
   [residual risk](../threat-model.md#residual-risks-v1), closed by hardware recipients
   (M7.6).

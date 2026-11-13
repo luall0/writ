@@ -33,7 +33,6 @@ use writ_core::config::ObjectFormat;
 use writ_core::names::{KeyId, RepoName};
 use writ_signer::Signer;
 
-use crate::credential::UpstreamToken;
 use crate::known_hosts::PinnedHosts;
 
 use crate::upstream::{HttpsUrl, SshUrl};
@@ -185,7 +184,7 @@ enum Reach {
     Https {
         url: HttpsUrl,
         credential: KeyId,
-        token: Option<Arc<UpstreamToken>>,
+        token: Option<Arc<crate::credential::TokenRef>>,
     },
 }
 

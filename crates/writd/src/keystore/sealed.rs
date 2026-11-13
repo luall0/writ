@@ -24,10 +24,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use std::sync::Arc;
 use writ_core::config::PolicyConfig;
 use writ_core::names::KeyId;
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
-use writ_mirror::credential::UpstreamToken;
+use writ_mirror::credential::{TokenRef, TokenSource, Tokens, UpstreamToken};
 use writ_platform::notify::telegram::BotToken;
 use zeroize::Zeroizing;
 
@@ -285,23 +286,77 @@ pub fn authority_key(
     Ok(writ_crypto::authority::AuthorityKey::from_bytes(&bytes)?)
 }
 
-/// The tokens of `https://` repos, opened by `files`; one not added yet is left out (its
-/// repos reach nothing upstream until it is).
+/// The `https://` upstreams' tokens of the sealed keystore, unwrapped when an operation needs
+/// one, through the one seam a secret is read by ([`SecretFiles`]), and wiped once it is done.
+pub struct SealedTokens {
+    sealed: SealedConfig,
+    files: Arc<SecretFiles>,
+}
+
+impl SealedTokens {
+    pub fn new(sealed: SealedConfig, files: Arc<SecretFiles>) -> Self {
+        Self { sealed, files }
+    }
+}
+
+impl TokenSource for SealedTokens {
+    fn unwrap(&self, id: &KeyId, version: &str) -> std::result::Result<UpstreamToken, String> {
+        let path = Layout(&self.sealed).token(id);
+        let sealed = writ_platform::fs::read_secret(&path, "the token file", MAX_SECRET_FILE)
+            .map_err(|e| format!("{e}"))?;
+        // The file the daemon put in force, never one written beside it since.
+        if writ_core::authority::TextDigest::of_bytes(&sealed).as_str() != version {
+            return Err(format!(
+                "{}: not the file put in force (changed outside the daemon): refused",
+                path.display()
+            ));
+        }
+        let plaintext = self
+            .files
+            .open(&sealed, &path.display().to_string())
+            .map_err(|e| format!("{e:#}"))?;
+        UpstreamToken::from_bytes(&plaintext).map_err(|why| format!("not a token: {why}"))
+    }
+}
+
+/// The tokens of `https://` repos in the keystore, each a reference unwrapped from `source`
+/// when used; one not added yet is left out (its repos reach nothing upstream until it is).
+/// Nothing is unwrapped here.
 pub fn tokens(
     sealed: &SealedConfig,
     policy: &PolicyConfig,
-    files: &SecretFiles,
-) -> anyhow::Result<std::collections::BTreeMap<KeyId, std::sync::Arc<UpstreamToken>>> {
-    let ids = tokens_declared(policy);
-    let mut tokens = std::collections::BTreeMap::new();
-    for id in ids {
-        if let Some(bytes) = sealed_token(files, sealed, id, "upstream token")? {
-            let token = UpstreamToken::from_bytes(&bytes)
-                .map_err(|why| anyhow::anyhow!("upstream token {id}: not a token: {why}"))?;
-            tokens.insert(id.clone(), std::sync::Arc::new(token));
+    source: &Arc<SealedTokens>,
+) -> anyhow::Result<Tokens> {
+    let mut tokens = Tokens::new();
+    for id in tokens_declared(policy) {
+        if let Some(token) = token_ref(sealed, id, source)? {
+            tokens.insert(id.clone(), Arc::new(token));
         }
     }
     Ok(tokens)
+}
+
+/// The reference to the token file in force for `id`, or none (not added yet, said in the
+/// log).
+pub fn token_ref(
+    sealed: &SealedConfig,
+    id: &KeyId,
+    source: &Arc<SealedTokens>,
+) -> anyhow::Result<Option<TokenRef>> {
+    match token_in_force(sealed, id)? {
+        writ_core::authority::PreviousToken::None => {
+            tracing::warn!(
+                "upstream token {id} is not in the keystore: an approver adds it with `writ \
+                 admin token {id}`"
+            );
+            Ok(None)
+        }
+        writ_core::authority::PreviousToken::File(digest) => Ok(Some(TokenRef::new(
+            id.clone(),
+            digest.as_str().to_owned(),
+            source.clone(),
+        ))),
+    }
 }
 
 /// A notifier's token, from the plaintext of its sealed file.
@@ -1025,11 +1080,12 @@ templates:
     fn a_token_is_put_in_force_whole_named_by_its_digest_and_a_missing_one_left_out() {
         use writ_core::authority::{PreviousToken, TextDigest};
         let (_root, sealed, _made) = setup();
-        let files = opened(&sealed, PASSPHRASE).unwrap();
+        let files = Arc::new(opened(&sealed, PASSPHRASE).unwrap());
+        let source = Arc::new(SealedTokens::new(sealed.clone(), files.clone()));
         let id: KeyId = "token-01".parse().unwrap();
         // Not added yet: no file in force, and the open leaves it out (the unseal goes on).
         assert_eq!(token_in_force(&sealed, &id).unwrap(), PreviousToken::None);
-        assert!(tokens(&sealed, &policy(), &files).unwrap().is_empty());
+        assert!(tokens(&sealed, &policy(), &source).unwrap().is_empty());
         // As `writ admin token` seals it, on the approver's machine.
         let token = "writ-test-token-0123456789abcdefghij";
         let text = writ_crypto::sealed::seal(&recipient_of(&sealed).to_string(), token.as_bytes())
@@ -1047,12 +1103,43 @@ templates:
             token_in_force(&sealed, &id).unwrap(),
             PreviousToken::File(TextDigest::of_bytes(&file))
         );
-        let opened = tokens(&sealed, &policy(), &files).unwrap();
+        let refs = tokens(&sealed, &policy(), &source).unwrap();
+        let held = refs.get(&id).unwrap();
+        // A reference holds no secret: its id and its file's digest.
+        let version = TextDigest::of_bytes(&file);
+        assert_eq!(held.version(), version.as_str());
         assert_eq!(
-            opened.get(&id).map(|t| format!("{t:?}")).as_deref(),
-            Some("UpstreamToken(<redacted>)"),
-            "opened: the token itself goes only to git (its file was read back above)"
+            format!("{held:?}"),
+            format!(
+                "TokenRef {{ id: KeyId(\"token-01\"), version: {:?}, .. }}",
+                version.as_str()
+            )
         );
+        // Unwrapped at each use, afresh.
+        for _ in 0..2 {
+            assert_eq!(
+                format!("{:?}", held.unwrap().unwrap()),
+                "UpstreamToken(<redacted>)"
+            );
+        }
+        // A file put beside the daemon's back is refused: not the one in force.
+        let other_text =
+            writ_crypto::sealed::seal(&recipient_of(&sealed).to_string(), b"another-token")
+                .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        write_private(&path, &writ_crypto::sealed::decode(&other_text).unwrap()).unwrap();
+        let why = held.unwrap().unwrap_err();
+        assert_eq!(
+            why,
+            format!(
+                "{}: not the file put in force (changed outside the daemon): refused",
+                path.display()
+            )
+        );
+        // Gone: refused with the reason, never a token.
+        std::fs::remove_file(&path).unwrap();
+        let why = held.unwrap().unwrap_err();
+        assert!(why.contains("token file"), "{why}");
         // Replaced whole, nothing left beside it.
         write_token(&sealed, &id, &file).unwrap();
         let left: Vec<String> = std::fs::read_dir(Layout(&sealed).tokens_dir())

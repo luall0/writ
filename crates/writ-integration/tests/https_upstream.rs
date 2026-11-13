@@ -24,7 +24,7 @@ use writ_core::config::PolicyConfig;
 use writ_core::names::{KeyId, RepoName};
 use writ_integration::binaries::bin;
 use writ_integration::https_remote::{HttpsMode, HttpsRemote};
-use writ_mirror::credential::UpstreamToken;
+use writ_mirror::credential::{TokenRef, TokenSource, UpstreamToken};
 use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{MirrorConfig, MirrorError, Mirrors, SyncReport};
 use writ_signer::software::SoftwareSigner;
@@ -41,6 +41,32 @@ struct Fixture {
     runtime: tokio::runtime::Runtime,
     remote: HttpsRemote,
     main: String,
+    tokens: Arc<Keystore>,
+}
+
+/// The keystore as the mirrors see it: each use unwraps the token afresh (counted), or is
+/// refused once `refusing` is set (a hardware key removed, a device refusing).
+#[derive(Default)]
+struct Keystore {
+    uses: std::sync::atomic::AtomicUsize,
+    refusing: std::sync::atomic::AtomicBool,
+}
+
+impl TokenSource for Keystore {
+    fn unwrap(&self, id: &KeyId, version: &str) -> Result<UpstreamToken, String> {
+        assert_eq!((id.as_str(), version), ("token-01", "v1"));
+        self.uses.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("the device refuses".to_owned());
+        }
+        UpstreamToken::from_bytes(TOKEN.as_bytes()).map_err(str::to_owned)
+    }
+}
+
+impl Keystore {
+    fn uses(&self) -> usize {
+        self.uses.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl Fixture {
@@ -54,6 +80,7 @@ impl Fixture {
             runtime,
             remote,
             main: String::new(),
+            tokens: Arc::default(),
         };
         let upstream = fixture.upstream();
         fixture.git_ok(
@@ -95,9 +122,11 @@ impl Fixture {
     fn open_at(&self, config: MirrorConfig, url: &str) -> Result<Mirrors, MirrorError> {
         let policy = PolicyConfig::from_yaml(&policy_yaml(url)).unwrap();
         let signer = Arc::new(SoftwareSigner::empty());
+        let id: KeyId = "token-01".parse().unwrap();
+        let source: Arc<dyn TokenSource> = self.tokens.clone();
         let tokens = BTreeMap::from([(
-            "token-01".parse::<KeyId>().unwrap(),
-            Arc::new(UpstreamToken::from_bytes(TOKEN.as_bytes()).unwrap()),
+            id.clone(),
+            Arc::new(TokenRef::new(id, "v1".to_owned(), source)),
         )]);
         self.runtime.block_on(Mirrors::open(
             config,
@@ -256,6 +285,43 @@ fn an_https_upstream_syncs_with_the_token_which_nothing_else_holds() {
     assert_eq!(f.sockets(), Vec::<String>::new());
 
     // Upstream moves on: the next sync follows.
+    let next = f.upstream_commit("main", "b", "b\n");
+    f.sync(&mirrors).unwrap();
+    assert_eq!(f.refs(), [format!("refs/heads/main {next}")]);
+}
+
+/// M7.6: the mirrors hold no token, only where to unwrap it: each operation unwraps it once,
+/// and one whose unwrap is refused fails alone, before reaching upstream, the mirror still
+/// open.
+#[test]
+fn the_token_is_unwrapped_for_each_operation_and_a_refused_unwrap_fails_that_one_alone() {
+    let f = Fixture::new();
+    let mirrors = f.open();
+    assert_eq!(f.tokens.uses(), 0, "opening the mirrors unwraps nothing");
+    f.sync(&mirrors).unwrap();
+    assert_eq!(f.tokens.uses(), 1);
+    f.sync(&mirrors).unwrap();
+    assert_eq!(f.tokens.uses(), 2, "once per operation");
+    let requests = f.remote.requests();
+
+    f.tokens
+        .refusing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    match f.sync(&mirrors) {
+        Err(MirrorError::TokenUnwrap { repo, key, why }) => {
+            assert_eq!(repo, demo());
+            assert_eq!(key.as_str(), "token-01");
+            assert_eq!(why, "the device refuses");
+        }
+        other => panic!("expected TokenUnwrap, got {other:?}"),
+    }
+    assert_eq!(f.remote.requests(), requests, "nothing reached upstream");
+    assert_eq!(f.sockets(), Vec::<String>::new());
+
+    // The device answers again: the next operation works, on the same mirrors.
+    f.tokens
+        .refusing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let next = f.upstream_commit("main", "b", "b\n");
     f.sync(&mirrors).unwrap();
     assert_eq!(f.refs(), [format!("refs/heads/main {next}")]);

@@ -7,6 +7,10 @@
 //! and port), a few times at most, and then removes the socket. The token reaches git through
 //! pipes: never a command line, an environment variable, a URL or a file. The helper writes
 //! nothing but the answer to git, and never the token to its stderr.
+//!
+//! The mirrors never hold a token: they hold a [`TokenRef`] (its id, the version of its file
+//! in force, where it is unwrapped), unwrapped when an operation starts, dropped and wiped when
+//! it ends ([`TokenSource`]: the daemon's keystore, M7.6).
 
 pub mod helper;
 
@@ -19,6 +23,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinSet;
 use zeroize::Zeroizing;
+
+use writ_core::names::KeyId;
 
 use crate::upstream::HttpsUrl;
 use crate::{MirrorError, Result};
@@ -42,6 +48,69 @@ pub const DEADLINE: Duration = Duration::from_secs(30);
 /// Gitea take any name with a token; a remote that wants a given one has it in the URL
 /// (`https://x-token-auth@bitbucket.org/…`).
 pub const DEFAULT_USER: &str = "writ";
+
+/// Where a token is unwrapped when an operation needs it: the daemon's keystore. Each call
+/// unwraps it afresh; the caller drops it, wiped, once the operation is done.
+pub trait TokenSource: Send + Sync {
+    /// The token `id` whose file in force is `version` (a file changed since is refused).
+    /// Why not, never the token.
+    fn unwrap(&self, id: &KeyId, version: &str) -> std::result::Result<UpstreamToken, String>;
+}
+
+/// A token in force, as the mirrors hold it: its id, the version of its file (a token added or
+/// replaced is another [`TokenRef`]), and its source. Holds no secret.
+pub struct TokenRef {
+    id: KeyId,
+    version: String,
+    source: Arc<dyn TokenSource>,
+}
+
+/// The tokens in force by id.
+pub type Tokens = std::collections::BTreeMap<KeyId, Arc<TokenRef>>;
+
+impl TokenRef {
+    pub fn new(id: KeyId, version: String, source: Arc<dyn TokenSource>) -> Self {
+        Self {
+            id,
+            version,
+            source,
+        }
+    }
+
+    pub fn id(&self) -> &KeyId {
+        &self.id
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// The token, unwrapped now, for one operation.
+    pub fn unwrap(&self) -> std::result::Result<UpstreamToken, String> {
+        self.source.unwrap(&self.id, &self.version)
+    }
+
+    /// A token held in memory as it is, for tests: no keystore behind it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn held(id: KeyId, token: UpstreamToken) -> Self {
+        struct Held(UpstreamToken);
+        impl TokenSource for Held {
+            fn unwrap(&self, _: &KeyId, _: &str) -> std::result::Result<UpstreamToken, String> {
+                UpstreamToken::from_bytes(self.0.expose().as_bytes()).map_err(str::to_owned)
+            }
+        }
+        Self::new(id, "held".to_owned(), Arc::new(Held(token)))
+    }
+}
+
+impl std::fmt::Debug for TokenRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenRef")
+            .field("id", &self.id)
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
 
 /// An upstream token, wiped from memory when dropped, never printed.
 pub struct UpstreamToken(Zeroizing<String>);

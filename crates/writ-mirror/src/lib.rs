@@ -90,6 +90,14 @@ pub enum MirrorError {
          `writ admin token {key}`"
     )]
     NoToken { repo: RepoName, key: KeyId },
+    /// An `https://` repo whose token didn't unwrap for this operation (its key removed, the
+    /// device refusing, its file damaged): this operation is refused, the next one tries again.
+    #[error("repo {repo}: upstream token {key} can't be unwrapped: {why}")]
+    TokenUnwrap {
+        repo: RepoName,
+        key: KeyId,
+        why: String,
+    },
     /// A repo behind a proxy whose password isn't in the keystore yet: nothing reaches
     /// upstream.
     #[error(

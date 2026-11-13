@@ -208,7 +208,10 @@ impl GitGateway {
                     let token =
                         writ_mirror::credential::UpstreamToken::from_bytes(HTTPS_TOKEN.as_bytes())
                             .unwrap();
-                    (id.clone(), Arc::new(token))
+                    (
+                        id.clone(),
+                        Arc::new(writ_mirror::credential::TokenRef::held(id.clone(), token)),
+                    )
                 })
                 .collect(),
             None => std::collections::BTreeMap::new(),

@@ -282,8 +282,16 @@ host ([operator guide](../operators/setup.md#https-upstreams-and-tokens)).
 - The token (1 to 1,024 printable ASCII characters, no space) is in the keystore: sealed
   (`tokens/<id>.age`, added from the Mac with [`writ admin token <id>`](approvals.md#writ-admin-token),
   used at once), or, in the development keystore, alone in `<keys>/tokens/<id>` (0600,
-  written by the operator). It is read into memory wiped on drop, never printed. In the
-  sealed keystore a missing one doesn't stop the unseal: the repo's syncs and pushes are
+  written by the operator). **The mirrors never hold it** (M7.6): they hold a reference (its
+  id and the digest of its file in force, `writ_mirror::credential::TokenRef`), and each
+  operation unwraps it from the keystore when it starts (`TokenSource`, through the one seam
+  every secret is opened by), hands it to its credential socket, and drops it, wiped, when it
+  ends; a proxy's password is unwrapped the same way for each connection. A file changed
+  outside the daemon since it was put in force is refused. A token that can't be unwrapped
+  (its file gone or damaged, a hardware key removed or refusing) fails that operation alone,
+  naming why (`upstream token <id> can't be unwrapped: …`), before anything reaches upstream;
+  the next operation tries again. In the sealed keystore a missing one doesn't stop the
+  unseal: the repo's syncs and pushes are
   refused with "add it with `writ admin token <id>`" until it is added; a malformed one is
   refused when it is added. (The development keystore still stops on a missing one.) One
   credential id is a key or a token, never both.

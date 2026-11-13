@@ -372,7 +372,7 @@ impl MirrorGuard {
             match self.classify(access, &finished.stderr, "notes push") {
                 MirrorError::Git { repo, .. } => MirrorError::Rejected {
                     repo,
-                    reason: self.clean(&refused_lines(&finished.stdout, &finished.stderr)),
+                    reason: self.clean(access, &refused_lines(&finished.stdout, &finished.stderr)),
                 },
                 other => other,
             },

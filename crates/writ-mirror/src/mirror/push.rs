@@ -56,8 +56,7 @@ impl MirrorGuard {
             return Ok(());
         }
         let classified = self.classify(&access, &finished.stderr, "upstream push");
-        drop(access);
-        Err(match classified {
+        let error = match classified {
             MirrorError::Git { repo, .. } => {
                 // What upstream said: the refused refs (porcelain), then its own words.
                 let refused: Vec<u8> = String::from_utf8_lossy(&finished.stdout)
@@ -68,10 +67,13 @@ impl MirrorGuard {
                     .collect();
                 MirrorError::Rejected {
                     repo,
-                    reason: self.clean(&refused),
+                    reason: self.clean(&access, &refused),
                 }
             }
             other => other,
-        })
+        };
+        // The operation ends here: its sockets, and the token it unwrapped, go.
+        drop(access);
+        Err(error)
     }
 }

@@ -20,7 +20,6 @@ use writ_core::names::KeyId;
 use writ_crypto::keyfile::KeyMeta;
 use writ_crypto::keypair::KeyPair;
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
-use writ_mirror::credential::UpstreamToken;
 use writ_platform::unlock::x25519::X25519Unwrap;
 use writ_proto::KeyRole;
 use zeroize::Zeroizing;
@@ -416,7 +415,8 @@ pub struct Opened {
     pub live: Live,
     /// The key of the MAC over the authority files in force.
     pub authority: writ_crypto::authority::AuthorityKey,
-    pub tokens: BTreeMap<KeyId, Arc<UpstreamToken>>,
+    /// References to the tokens in force, each unwrapped only when an operation uses it.
+    pub tokens: writ_mirror::credential::Tokens,
     pub bot_tokens: BTreeMap<KeyId, writ_platform::notify::telegram::BotToken>,
 }
 
@@ -428,7 +428,7 @@ pub enum Live {
     Dev(PathBuf),
     Sealed {
         sealed: SealedConfig,
-        files: sealed::SecretFiles,
+        files: Arc<sealed::SecretFiles>,
         recipient: age::x25519::Recipient,
     },
 }
@@ -510,6 +510,19 @@ impl Live {
                 dir.join("tokens").join("<id>").display()
             ),
         }
+    }
+
+    /// The reference to the token in force for `id` (an `https://` upstream's), once it is
+    /// written: none in the development keystore, whose tokens are read at start.
+    pub fn token_ref(
+        &self,
+        id: &KeyId,
+    ) -> anyhow::Result<Option<writ_mirror::credential::TokenRef>> {
+        let Self::Sealed { sealed, files, .. } = self else {
+            return Ok(None);
+        };
+        let source = Arc::new(sealed::SealedTokens::new(sealed.clone(), files.clone()));
+        sealed::token_ref(sealed, id, &source)
     }
 
     /// The token file in force for `id`.
@@ -656,11 +669,12 @@ pub fn open(
             sealed::Layout(sealed).recipient().display()
         );
     }
-    let files = sealed::SecretFiles::new(vec![Box::new(identity)]);
+    let files = Arc::new(sealed::SecretFiles::new(vec![Box::new(identity)]));
+    let source = Arc::new(sealed::SealedTokens::new(sealed.clone(), files.clone()));
     Ok(Opened {
         keys: sealed::keys(sealed, declared, &files)?,
         authority: sealed::authority_key(sealed, &files)?,
-        tokens: sealed::tokens(sealed, policy, &files)?,
+        tokens: sealed::tokens(sealed, policy, &source)?,
         bot_tokens: sealed::bot_tokens(sealed, &sealed_bot_ids(config), &files)?,
         live: Live::Sealed {
             sealed: sealed.clone(),

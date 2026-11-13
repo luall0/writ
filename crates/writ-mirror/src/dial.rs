@@ -21,6 +21,7 @@ use writ_core::config::{Proxy, ProxyScheme, ProxyUrl};
 use writ_core::names::{KeyId, ProxyName};
 use zeroize::Zeroizing;
 
+#[cfg(test)]
 use crate::credential::UpstreamToken;
 
 /// How long connecting to upstream directly may take.
@@ -58,7 +59,7 @@ pub struct ProxyRoute {
     pub(crate) credential: Option<KeyId>,
     /// The credential's password: none until an approver adds it (`writ admin token`), and
     /// until then nothing goes through the proxy.
-    pub(crate) password: Option<Arc<UpstreamToken>>,
+    pub(crate) password: Option<Arc<crate::credential::TokenRef>>,
     pub(crate) timeout: Duration,
 }
 
@@ -77,11 +78,7 @@ impl std::fmt::Debug for ProxyRoute {
 impl ProxyRoute {
     /// The route through `proxy` (named `name`), with its password from `tokens` when it has a
     /// credential.
-    pub fn new(
-        name: &ProxyName,
-        proxy: &Proxy,
-        tokens: &std::collections::BTreeMap<KeyId, Arc<UpstreamToken>>,
-    ) -> Self {
+    pub fn new(name: &ProxyName, proxy: &Proxy, tokens: &crate::credential::Tokens) -> Self {
         Self {
             name: name.clone(),
             url: proxy.url.clone(),
@@ -128,7 +125,7 @@ impl Dialer {
     pub fn for_repo(
         proxy: Option<&ProxyName>,
         proxies: &std::collections::BTreeMap<ProxyName, Proxy>,
-        tokens: &std::collections::BTreeMap<KeyId, Arc<UpstreamToken>>,
+        tokens: &crate::credential::Tokens,
     ) -> Result<Self, String> {
         match proxy {
             None => Ok(Self::Direct),
@@ -221,6 +218,9 @@ pub enum DialWhy {
          {0}`"
     )]
     NoPassword(KeyId),
+    /// The password didn't unwrap for this connection (its key removed, the device refusing).
+    #[error("its password ({key}) can't be unwrapped: {why}")]
+    PasswordUnwrap { key: KeyId, why: String },
     #[error("the password is longer than SOCKS5's {MAX_SOCKS_PASSWORD} bytes")]
     PasswordTooLong,
     #[error("it refused the credential")]
@@ -242,14 +242,25 @@ pub enum DialWhy {
 
 /// A tunnel to `host:port` through `route`'s proxy.
 async fn through(route: &ProxyRoute, host: &str, port: u16) -> Result<TcpStream, DialWhy> {
+    // Unwrapped for this connection alone, before anything reaches the proxy, and wiped once
+    // the proxy took it.
+    let password = match (route.url.user(), &route.password) {
+        (Some(_), Some(password)) => {
+            Some(password.unwrap().map_err(|why| DialWhy::PasswordUnwrap {
+                key: password.id().clone(),
+                why,
+            })?)
+        }
+        _ => None,
+    };
+    let credential = match (route.url.user(), &password) {
+        (Some(user), Some(password)) => Some((user, password.expose())),
+        _ => None,
+    };
     let mut stream = TcpStream::connect((route.url.host(), route.url.port()))
         .await
         // What the system said (a name it can't resolve, a refusal), not only its kind.
         .map_err(|e| DialWhy::Unreachable(crate::shown(e.to_string().as_bytes())))?;
-    let credential = match (route.url.user(), &route.password) {
-        (Some(user), Some(password)) => Some((user, password.expose())),
-        _ => None,
-    };
     match route.url.scheme() {
         ProxyScheme::Socks5 => socks5(&mut stream, credential, host, port).await?,
         ProxyScheme::Http => http_connect(&mut stream, credential, host, port).await?,
@@ -822,11 +833,51 @@ mod tests {
             name: "p".parse().unwrap(),
             url: ProxyUrl::parse("socks5://u@127.0.0.1:1").unwrap(),
             credential: Some("k".parse().unwrap()),
-            password: Some(Arc::new(
+            password: Some(Arc::new(crate::credential::TokenRef::held(
+                "k".parse().unwrap(),
                 UpstreamToken::from_bytes(password.as_bytes()).unwrap(),
-            )),
+            ))),
             timeout: Duration::from_secs(1),
         };
         assert!(!format!("{route:?}").contains(password));
+    }
+    /// The password is unwrapped for each connection, before the proxy is reached: one refused
+    /// fails that connection with the reason, never a connection without it.
+    #[tokio::test]
+    async fn a_password_that_does_not_unwrap_fails_the_connection_before_the_proxy_is_reached() {
+        struct Refusing(std::sync::atomic::AtomicUsize);
+        impl crate::credential::TokenSource for Refusing {
+            fn unwrap(&self, _: &KeyId, _: &str) -> std::result::Result<UpstreamToken, String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err("the device refuses".to_owned())
+            }
+        }
+        let source = Arc::new(Refusing(std::sync::atomic::AtomicUsize::new(0)));
+        let route = ProxyRoute {
+            name: "p".parse().unwrap(),
+            // Nothing listens there: reaching it would fail as Unreachable.
+            url: ProxyUrl::parse("socks5://u@127.0.0.1:1").unwrap(),
+            credential: Some("k".parse().unwrap()),
+            password: Some(Arc::new(crate::credential::TokenRef::new(
+                "k".parse().unwrap(),
+                "v1".to_owned(),
+                source.clone(),
+            ))),
+            timeout: Duration::from_secs(1),
+        };
+        for attempt in 1..=2 {
+            match through(&route, "example.org", 443).await {
+                Err(DialWhy::PasswordUnwrap { key, why }) => {
+                    assert_eq!(key.as_str(), "k");
+                    assert_eq!(why, "the device refuses");
+                }
+                other => panic!("expected PasswordUnwrap, got {:?}", other.map(|_| ())),
+            }
+            assert_eq!(
+                source.0.load(std::sync::atomic::Ordering::SeqCst),
+                attempt,
+                "unwrapped once per connection"
+            );
+        }
     }
 }

@@ -31,7 +31,7 @@ impl MirrorGuard {
         } else if access.transport == Transport::Https && is_certificate_failure(&text) {
             MirrorError::Certificate {
                 repo,
-                why: self.clean(stderr),
+                why: self.clean(access, stderr),
             }
         } else if text.contains("mismatched algorithms") {
             MirrorError::ObjectFormat {
@@ -42,7 +42,7 @@ impl MirrorGuard {
             MirrorError::Git {
                 repo,
                 what,
-                stderr: self.clean(stderr),
+                stderr: self.clean(access, stderr),
             }
         }
     }
@@ -52,18 +52,15 @@ impl MirrorGuard {
     /// agent's terminal. Taken out before and after the hidden characters go, so one hidden
     /// inside the token (`ghp_ab\u{200B}cd…`) can't rebuild it once stripped (the review
     /// after M5.5, S9); its Basic-auth form (`base64(user:token)`) too.
-    pub(super) fn clean(&self, text: &[u8]) -> String {
-        match &self.repo.reach {
-            Reach::Https {
-                token: Some(token),
-                url,
-                ..
-            } => redacted(
+    /// The token is the one `access` unwrapped for this operation.
+    pub(super) fn clean(&self, access: &Access, text: &[u8]) -> String {
+        match (&self.repo.reach, &access.token) {
+            (Reach::Https { url, .. }, Some(token)) => redacted(
                 text,
                 token.expose(),
                 url.user().unwrap_or(crate::credential::DEFAULT_USER),
             ),
-            Reach::Https { token: None, .. } | Reach::Ssh { .. } => shown(text),
+            (Reach::Https { .. } | Reach::Ssh { .. }, _) => shown(text),
         }
     }
 }

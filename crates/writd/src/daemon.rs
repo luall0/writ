@@ -26,7 +26,7 @@ use writ_approval::{AdminParsed, CheckedAdmin, CheckedToken};
 use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::names::KeyId;
 use writ_gateway::{AdminApplier, Gateway, Unsealer};
-use writ_mirror::credential::UpstreamToken;
+use writ_mirror::credential::{Tokens, UpstreamToken};
 use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{MirrorConfig, Mirrors};
 use writ_platform::{BoxFuture, Passphrase, UnsealRequest};
@@ -50,11 +50,12 @@ struct Open {
     signing: Arc<Routed>,
     /// The `ssh://` upstream credentials' signer, over each backend (the mirrors hold it too).
     upstream: Arc<Routed>,
-    tokens: RwLock<BTreeMap<KeyId, Arc<UpstreamToken>>>,
+    /// The tokens in force, as references: each unwrapped only when an operation uses it.
+    tokens: RwLock<Tokens>,
 }
 
 impl Open {
-    fn tokens(&self) -> BTreeMap<KeyId, Arc<UpstreamToken>> {
+    fn tokens(&self) -> Tokens {
         // poisoned: the map is replaced one entry at a time; what is there stands.
         self.tokens
             .read()
@@ -813,13 +814,11 @@ impl Opener {
             .live
             .open_token(&id, &file)
             .map_err(|e| refuse(format!("{e:#} (is it sealed to this daemon's recipient?)")))?;
-        let upstream_token = match used.upstream {
-            true => Some(Arc::new(
-                UpstreamToken::from_bytes(&plaintext)
-                    .map_err(|why| refuse(format!("not a token: {why}")))?,
-            )),
-            false => None,
-        };
+        // Checked as a token now, then dropped: the mirrors unwrap it again at each use.
+        if used.upstream {
+            UpstreamToken::from_bytes(&plaintext)
+                .map_err(|why| refuse(format!("not a token: {why}")))?;
+        }
         let bot_token = match used.notifier {
             Some(_) => {
                 Some(keystore::bot_token(&id, &plaintext).map_err(|e| refuse(format!("{e:#}")))?)
@@ -851,6 +850,14 @@ impl Opener {
         if let (Some(token), Some(telegram)) = (bot_token, used.notifier) {
             self.start_notifier(&id, token, telegram);
         }
+        let upstream_token = match used.upstream {
+            true => match open.live.token_ref(&id) {
+                Ok(Some(token)) => Some(Arc::new(token)),
+                Ok(None) => None,
+                Err(e) => return Err(refuse(format!("written but not read back: {e:#}"))),
+            },
+            false => None,
+        };
         if let Some(token) = upstream_token {
             open.tokens
                 .write()

@@ -15,7 +15,7 @@ use writ_core::names::KeyId;
 use super::in_flight::Running;
 use super::{MirrorGuard, Reach, Shared};
 use crate::agent::AgentSocket;
-use crate::credential::{CredentialSocket, UpstreamToken};
+use crate::credential::CredentialSocket;
 use crate::dial::{DialError, Dialer};
 use crate::git::{self, Hooks, Transport};
 use crate::process::{self, RunError};
@@ -32,6 +32,9 @@ pub(super) struct Access {
     pub(super) env: Vec<(&'static str, String)>,
     _agent: Option<AgentSocket>,
     _credential: Option<CredentialSocket>,
+    /// The token this operation unwrapped, to take it out of what upstream says
+    /// (`MirrorGuard::clean`); wiped when the operation drops the access.
+    pub(super) token: Option<Arc<crate::credential::UpstreamToken>>,
     pub(super) proxy: Option<UpstreamProxy>,
     /// Counted in flight until the operation ends: a daemon stopping waits for it.
     _running: Running,
@@ -104,9 +107,18 @@ impl MirrorGuard {
             ),
             Reach::Https {
                 url,
+                credential,
                 token: Some(token),
-                ..
-            } => https_access(&self.shared, url, dialer, token, running),
+            } => {
+                // Unwrapped for this operation alone: the socket holds it, and it is wiped when
+                // the operation drops the access.
+                let token = token.unwrap().map_err(|why| MirrorError::TokenUnwrap {
+                    repo: self.repo.name.clone(),
+                    key: credential.clone(),
+                    why,
+                })?;
+                https_access(&self.shared, url, dialer, Arc::new(token), running)
+            }
             Reach::Https {
                 credential,
                 token: None,
@@ -197,6 +209,7 @@ fn ssh_access(
         ],
         _agent: Some(agent),
         _credential: None,
+        token: None,
         proxy,
         _running: running,
     })
@@ -209,7 +222,7 @@ fn https_access(
     shared: &Shared,
     url: &HttpsUrl,
     dialer: &Dialer,
-    token: &Arc<UpstreamToken>,
+    token: Arc<crate::credential::UpstreamToken>,
     running: Running,
 ) -> Result<Access> {
     let proxy = UpstreamProxy::start(
@@ -245,6 +258,7 @@ fn https_access(
         env: vec![("HOME", home.to_owned())],
         _agent: None,
         _credential: Some(credential),
+        token: Some(token),
         proxy: Some(proxy),
         _running: running,
     })
