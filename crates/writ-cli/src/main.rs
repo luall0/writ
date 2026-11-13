@@ -61,7 +61,8 @@ pub enum Exit {
     Refused = 4,
     /// The ticket expired or was withdrawn, or the lease ended, before a decision.
     Ended = 5,
-    /// `writ sign`: the approver answered no.
+    /// The approver answered no to a "Sign …?" question (`writ sign`, `writ prove-key`, every
+    /// `writ admin` change, a scan's keys not matching): nothing was signed.
     NotSigned = 6,
 }
 
@@ -291,6 +292,10 @@ enum Commands {
         /// What was done, what is left (shown to the approver as written).
         #[arg(long, short = 'm')]
         summary: String,
+        /// Show every line of the report's agent text and warnings (by default, 40 lines
+        /// each).
+        #[arg(long)]
+        full: bool,
         #[command(flatten)]
         url: AgentUrl,
     },
@@ -331,6 +336,10 @@ enum Commands {
     /// A lease's activity report (commits, pushes, denials, time used).
     Report {
         id: TicketId,
+        /// Show every line of the agent's text and of the warnings (by default, 40 lines
+        /// each).
+        #[arg(long)]
+        full: bool,
         #[command(flatten)]
         url: ApprovalUrl,
     },
@@ -1168,8 +1177,9 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         Commands::Close {
             lease,
             summary,
+            full,
             url,
-        } => close::close(&paths, &url.get(&paths)?, lease.as_ref(), summary).await,
+        } => close::close(&paths, &url.get(&paths)?, lease.as_ref(), summary, *full).await,
         Commands::Mark { phase } => close::mark(&paths, *phase),
         Commands::Check { file } => close::check(file),
         Commands::Timings {
@@ -1183,7 +1193,9 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             ("keep_runs", *keep_runs),
             ("max_notes", *max_notes),
         ]),
-        Commands::Report { id, url } => approver::report(&paths, &url.get(&paths)?, id).await,
+        Commands::Report { id, full, url } => {
+            approver::report(&paths, &url.get(&paths)?, id, *full).await
+        }
         Commands::Git { args } => wrap::git(&paths, args),
         Commands::Exec { dir, command } => wrap::exec(&paths, dir.as_deref(), command),
         // Handled by `main` before any runtime starts.

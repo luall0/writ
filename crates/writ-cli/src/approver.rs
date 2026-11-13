@@ -3,7 +3,12 @@
 //!
 //! Signatures are made by the approver's agent ([`signer`]): only the dedicated approval key
 //! is ever used, and the private key never leaves the agent. Connections to the approval API
-//! authenticate with a throwaway key: the connection grants nothing, signatures do.
+//! authenticate with the reader key (`~/.writ/reader`): it lets this machine read and ask,
+//! and grants nothing; signatures do.
+//!
+//! Every "Sign …?" question goes through [`confirm`] (the same answers sign everywhere), and
+//! a command the approver answered no to ends with [`Exit::NotSigned`] (6), whatever it was
+//! about to sign (the review after M7.6, U-8).
 
 mod admin;
 mod guided;
@@ -81,6 +86,33 @@ fn read_line() -> anyhow::Result<String> {
         .read_line(&mut line)
         .context("cannot read the answer")?;
     Ok(line.trim().to_owned())
+}
+
+/// Whether an answer to a "Sign …?" question signs: `y` or `yes`, in any case, the spaces
+/// around it ignored. Anything else, an empty line or the end of the input, signs nothing.
+fn signs(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Asks `question` (`Sign this change?`) on `output` and reads the answer on `input`: whether
+/// it signs ([`signs`]). The one way every "Sign …?" is asked.
+fn confirm_on(
+    question: &str,
+    mut input: impl BufRead,
+    mut output: impl std::io::Write,
+) -> anyhow::Result<bool> {
+    write!(output, "{question} [y/N] ").context("cannot write to the terminal")?;
+    output.flush().context("cannot write to the terminal")?;
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .context("cannot read the answer")?;
+    Ok(signs(&answer))
+}
+
+/// [`confirm_on`] on the standard streams.
+pub(crate) fn confirm(question: &str) -> anyhow::Result<bool> {
+    confirm_on(question, std::io::stdin().lock(), std::io::stdout())
 }
 
 /// Feedback typed by the approver, ended by an empty line or end of input.
@@ -214,10 +246,10 @@ fn follows(submitted: &Ticket, relation: Relation, previous: &Ticket) -> anyhow:
 
 /// The trusted display of what is about to be signed: the ticket (narrowed), what changed
 /// since the ticket it follows, and what the approver narrowed.
-fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, full: bool) -> String {
-    let mut out = display::ticket(signed, reviewed.state, now, full);
+fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, shown: display::Rows) -> String {
+    let mut out = display::ticket(signed, reviewed.state, now, shown);
     if let Some((view, original)) = &reviewed.renewal {
-        out.push_str(&display::renewal_section(view, original, full));
+        out.push_str(&display::renewal_section(view, original, shown));
     }
     if let Some((relation, previous)) = &reviewed.previous {
         let title = match relation {
@@ -231,6 +263,7 @@ fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, full: bool) -> S
         out.push_str(&display::changes(
             &title,
             &display::diff(previous, &reviewed.submitted),
+            shown,
         ));
     }
     out.push_str(&display::others(&reviewed.others, now));
@@ -239,6 +272,7 @@ fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, full: bool) -> S
         out.push_str(&display::changes(
             "Narrowed by you (this is what gets signed)",
             &narrowed,
+            display::Rows::All,
         ));
     }
     // Last, right above the prompt: the terms that get signed, whatever the agent wrote.
@@ -298,7 +332,9 @@ pub async fn sign(
             let id = pick_pending(session, id).await?;
             let reviewed = fetch_reviewed(session, &id).await?;
             let signed = narrowing.apply(&reviewed.submitted)?;
-            println!("{}", render(&reviewed, &signed, now()?, review.full));
+            let command = format!("writ sign {id} --full");
+            let shown = display::Rows::new(review.full, &command);
+            println!("{}", render(&reviewed, &signed, now()?, shown));
             let answer = if review.yes {
                 "y".to_owned()
             } else {
@@ -314,10 +350,11 @@ pub async fn sign(
                 std::io::stdout()
                     .flush()
                     .context("cannot write to the terminal")?;
-                read_line()?.to_ascii_lowercase()
+                read_line()?
             };
-            match answer.as_str() {
-                "y" | "yes" => approve(session, signer, &id, &signed).await,
+            // `y` signs as at every other "Sign …?" ([`signs`]); `r` is this one's own.
+            match answer.to_ascii_lowercase().as_str() {
+                _ if signs(&answer) => approve(session, signer, &id, &signed).await,
                 "r" | "refuse" => refuse_with(session, signer, &id, read_feedback()?).await,
                 _ => {
                     println!("Nothing signed.");
@@ -415,15 +452,20 @@ pub async fn unseal(paths: &Paths, url: &str, signer: &Signer) -> anyhow::Result
         .await
 }
 
-/// `writ report`: a lease's activity report, as the daemon builds it.
-pub async fn report(paths: &Paths, url: &str, id: &TicketId) -> anyhow::Result<Exit> {
+/// `writ report`: a lease's activity report, as the daemon builds it (`full`: every line of
+/// the agent's text and of the warnings).
+pub async fn report(paths: &Paths, url: &str, id: &TicketId, full: bool) -> anyhow::Result<Exit> {
     connect(paths, url)
         .await?
         .run(async |session| {
             let report: writ_proto::Report = session
                 .call(&Command::Report { id: id.clone() }, b"")
                 .await??;
-            print!("{}", display::report(&report, &[], false));
+            let command = format!("writ report {id} --full");
+            print!(
+                "{}",
+                display::report(&report, &[], display::Rows::new(full, &command))
+            );
             Ok(Exit::Ok)
         })
         .await
@@ -517,5 +559,169 @@ mod tests {
                 "{relation:?}"
             );
         }
+    }
+
+    /// The review after M7.6 (U-2): the diff sections printed the agent's task, plan and
+    /// paths whole on both sides, the enforced changes first, so an amendment's widening
+    /// scrolled far above the prompt. An amendment that adds a branch and rewrites task, plan
+    /// and paths at their largest: the agent's words cut on each side, the paths and the
+    /// branches whole and last in the section, every row within the width, and the display
+    /// still ending on the summary.
+    #[test]
+    fn an_amendment_s_widening_comes_last_and_whole_after_the_agent_s_words_cut() {
+        const LEASE: &str = "wrt_01JD8X0000000000000000000A";
+        const NEW: &str = "wrt_01JD8X0000000000000000000C";
+        let lease = ticket(LEASE, None, None, None);
+        let mut amendment = ticket(NEW, Some(LEASE), None, None);
+        let forged = format!("{}  branches           main", " ".repeat(57));
+        amendment.text.task = forged.repeat(46);
+        amendment.text.plan = vec![forged.repeat(5); 50];
+        let terms = amendment
+            .repos
+            .get_mut(&"omega-code".parse().unwrap())
+            .unwrap();
+        terms.branches.insert("release/*".parse().unwrap());
+        terms.expected_paths = (0..100)
+            .map(|i| {
+                format!("src/{i:02}/{}.rs", "p".repeat(150))
+                    .parse()
+                    .unwrap()
+            })
+            .collect();
+        let reviewed = Reviewed {
+            submitted: amendment.clone(),
+            state: State::Pending,
+            previous: Some((Relation::Amends, lease)),
+            renewal: None,
+            others: writ_proto::Others {
+                shown: Vec::new(),
+                more: 0,
+            },
+        };
+        let command = format!("writ sign {NEW} --full");
+        let shown = render(
+            &reviewed,
+            &amendment,
+            amendment.created_at,
+            display::Rows::new(false, &command),
+        );
+        let section = shown
+            .split(&format!(
+                "Changes from the terms in force of lease {LEASE}\n"
+            ))
+            .nth(1)
+            .unwrap();
+        let section = format!(
+            "\n{}",
+            section.split("\nOther active leases").next().unwrap()
+        );
+        let at = |label: &str| {
+            section
+                .find(&format!("\n  {label}\n"))
+                .unwrap_or_else(|| panic!("{label}: {section}"))
+        };
+        // The agent's words first, the enforced terms last, nearest the prompt.
+        assert!(at("task") < at("plan"), "{section}");
+        assert!(at("plan") < at("branches"), "{section}");
+        assert!(at("plan") < at("expected paths"), "{section}");
+        assert!(
+            section.contains("    + agent/oauth-*, release/*\n"),
+            "{section}"
+        );
+        // The task's and the plan's new sides cut, saying how to see the rest.
+        assert_eq!(
+            section
+                .matches(&format!(
+                    " more lines not shown\n      ({command} shows them)\n"
+                ))
+                .count(),
+            2,
+            "{section}"
+        );
+        // The paths' new side whole.
+        let paths = section.split("\n  expected paths\n").nth(1).unwrap();
+        let added: String = paths
+            .lines()
+            .skip_while(|l| !l.starts_with("    + "))
+            .take_while(|l| l.starts_with("    + ") || l.starts_with("    │ "))
+            .map(|l| {
+                l.strip_prefix("    + ")
+                    .or_else(|| l.strip_prefix("    │ "))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            added.replace(' ', ""),
+            display::field(
+                &amendment,
+                display::Field::Repo(display::RepoField::ExpectedPaths)
+            )
+            .replace(' ', "")
+        );
+        for line in shown.lines() {
+            assert!(
+                display::width(line) <= display::WIDTH,
+                "{} columns: {line:?}",
+                display::width(line)
+            );
+            assert!(
+                !(line.starts_with("  branches") && line.contains("main")),
+                "a forged row at column 0: {line:?}"
+            );
+        }
+        let lines: Vec<&str> = shown.lines().collect();
+        let start = lines
+            .iter()
+            .rposition(|l| *l == "You are signing (enforced):")
+            .unwrap();
+        assert_eq!(lines.len() - start, 14, "{:#?}", &lines[start..]);
+        // With --full, every row of the agent's words too.
+        let full = render(
+            &reviewed,
+            &amendment,
+            amendment.created_at,
+            display::Rows::All,
+        );
+        assert!(!full.contains("more lines not shown"));
+        // A title with the largest revision fits the width too.
+        let title = format!(
+            "Changes since revision {} (the refused ticket {LEASE})",
+            u32::MAX
+        );
+        for line in display::changes(&title, &[], display::Rows::All).lines() {
+            assert!(display::width(line) <= display::WIDTH, "{line:?}");
+        }
+    }
+
+    /// The review after M7.6 (U-8): each "Sign …?" took its own answers (`Yes` signed a
+    /// ticket, not an admin change). One rule now: `y` or `yes` in any case signs, nothing
+    /// else does, the end of the input included.
+    #[test]
+    fn every_sign_question_takes_the_same_answers() {
+        for yes in ["y", "Y", "yes", "YES", "Yes", " y ", "yes\n"] {
+            assert!(signs(yes), "{yes:?}");
+        }
+        for no in [
+            "",
+            "n",
+            "N",
+            "no",
+            "ye",
+            "yess",
+            "y es",
+            "yes please",
+            "\u{1b}y",
+            "oui",
+            "1",
+        ] {
+            assert!(!signs(no), "{no:?}");
+        }
+        let mut asked = Vec::new();
+        assert!(confirm_on("Sign this change?", &b"Yes\n"[..], &mut asked).unwrap());
+        assert_eq!(asked, b"Sign this change? [y/N] ");
+        let mut asked = Vec::new();
+        assert!(!confirm_on("Sign this change?", &b""[..], &mut asked).unwrap());
+        assert!(!confirm_on("Sign this change?", &b"n\n"[..], &mut asked).unwrap());
+        assert_eq!(crate::Exit::NotSigned as i32, 6);
     }
 }

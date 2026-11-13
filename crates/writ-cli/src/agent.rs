@@ -289,7 +289,7 @@ async fn decide(
                      may not be the approver's words."
                 ),
             }
-            print!("{}", display::block(&feedback, "  ", true));
+            print!("{}", display::block(&feedback, "  ", display::Rows::All));
             println!("Revise the ticket and submit it again with `ticket.revises: {id}`.");
             Ok(Exit::Refused)
         }
@@ -365,7 +365,11 @@ fn print_narrowing(submitted: Option<&Ticket>, terms: &Ticket) {
     if !changes.is_empty() {
         print!(
             "{}",
-            display::changes("The approver narrowed the ticket:", &changes)
+            display::changes(
+                "The approver narrowed the ticket:",
+                &changes,
+                display::Rows::All
+            )
         );
     }
 }

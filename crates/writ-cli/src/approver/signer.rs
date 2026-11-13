@@ -3,10 +3,17 @@
 //! key is ever used, only its public half is ever handed to ssh-keygen, and `-U` makes
 //! ssh-keygen sign with the agent only, never a private key file (hard rule 8). ssh-keygen is
 //! run by its absolute path, never looked up in `PATH`.
+//!
+//! The bytes to sign (a whole ticket, a whole new policy) reach ssh-keygen on its standard
+//! input and the signature comes back on its standard output (no file named: `-Y sign` reads
+//! the data from stdin): they are never written to a file, which a Ctrl-C at the Touch ID
+//! prompt would leave behind (the review after M7.6, U-10). Only the approval key's public
+//! half goes through a private temporary directory.
 
+use std::io::Write as _;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::process::Command as Process;
+use std::process::{Command as Process, Stdio};
 
 use anyhow::{Context, bail};
 use writ_core::lease::APPROVAL_NAMESPACE;
@@ -24,6 +31,11 @@ pub struct Signer {
 impl Signer {
     /// An SSHSIG over `message` in the `writ-approval` namespace, made by the agent.
     pub fn sign(&self, message: &[u8]) -> anyhow::Result<String> {
+        self.sign_with(&ssh_keygen()?, message)
+    }
+
+    /// [`Signer::sign`] with the ssh-keygen at `program`.
+    fn sign_with(&self, program: &Path, message: &[u8]) -> anyhow::Result<String> {
         let dir = std::env::temp_dir().join(format!("writ-sign-{}", random_hex(8)?));
         // Made 0700 as it is created: no window where another user could enter it, and it
         // fails if anything already sits at that path.
@@ -39,15 +51,12 @@ impl Signer {
             let key = dir.join("approval.pub");
             std::fs::write(&key, public)
                 .with_context(|| format!("cannot write {}", key.display()))?;
-            let file = dir.join("message");
-            std::fs::write(&file, message)
-                .with_context(|| format!("cannot write {}", file.display()))?;
-            let mut command = Process::new(ssh_keygen()?);
+            // No file named: the message on stdin, the signature on stdout.
+            let mut command = Process::new(program);
             command
                 .env_clear()
                 .args(["-Y", "sign", "-U", "-n", APPROVAL_NAMESPACE, "-f"])
-                .arg(&key)
-                .arg(&file);
+                .arg(&key);
             // A clean environment: only the agent socket, the approver's or SSH_AUTH_SOCK.
             let agent = self
                 .agent
@@ -61,10 +70,21 @@ impl Signer {
             command.env("SSH_AUTH_SOCK", agent);
             // Its chatter ("Signing file …") would clutter the trusted display: shown only on
             // failure. Touch ID is Secretive's own prompt, not a terminal one.
-            let output = command
-                .stdin(std::process::Stdio::null())
-                .output()
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
                 .context("cannot run ssh-keygen")?;
+            // Written from a thread while the output is read here: neither side waits on the
+            // other's pipe. Closed once written, so ssh-keygen sees the end of the message.
+            let mut stdin = child.stdin.take().context("ssh-keygen has no input")?;
+            let owned = message.to_vec();
+            let writer = std::thread::spawn(move || stdin.write_all(&owned));
+            let output = child.wait_with_output().context("cannot run ssh-keygen")?;
+            let written = writer
+                .join()
+                .map_err(|_| anyhow::anyhow!("cannot hand the message to ssh-keygen"))?;
             if !output.status.success() {
                 eprintln!(
                     "{}",
@@ -72,8 +92,12 @@ impl Signer {
                 );
                 bail!("ssh-keygen could not sign (is the approval key in the agent?)");
             }
-            let signature = std::fs::read_to_string(dir.join("message.sig"))
-                .context("ssh-keygen wrote no signature")?;
+            written.context("cannot hand the message to ssh-keygen")?;
+            let signature =
+                String::from_utf8(output.stdout).context("ssh-keygen wrote no signature")?;
+            if signature.trim().is_empty() {
+                bail!("ssh-keygen wrote no signature");
+            }
             Ok(signature)
         })();
         let _ = std::fs::remove_dir_all(&dir);
@@ -136,6 +160,56 @@ mod tests {
     use writ_crypto::ssh_key::LineEnding;
 
     use super::*;
+
+    /// The review after M7.6 (U-10): the bytes to sign went through `$TMPDIR/writ-sign-…/
+    /// message`, left behind by a Ctrl-C at the Touch ID prompt. A fake ssh-keygen (never the
+    /// real one, nor an agent) sees no file named after the key, the message on its stdin and
+    /// nothing but the public key beside it; what it prints is the signature; the directory
+    /// is gone after.
+    #[test]
+    fn the_message_reaches_ssh_keygen_on_stdin_and_is_never_written_to_a_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let key = generate(KeyKind::Ed25519).unwrap();
+        let public = dir.path().join("approval.pub");
+        std::fs::write(&public, key.public_key().to_openssh().unwrap()).unwrap();
+        // Prints its arguments' count, the files beside the key, then what it read.
+        let fake = dir.path().join("ssh-keygen");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nfor last; do :; done\necho \"args $#\"\nls \"$(dirname \"$last\")\"\n\
+             printf 'read '\ncat\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let signer = Signer {
+            key: public,
+            agent: Some(dir.path().join("agent.sock")),
+        };
+        let message = "writ-ticket/3 {\"x\":1}\n".repeat(10_000);
+        let signature = signer.sign_with(&fake, message.as_bytes()).unwrap();
+        // `-Y sign -U -n writ-approval -f <key>`: no message file after the key.
+        assert_eq!(signature, format!("args 7\napproval.pub\nread {message}"));
+        let left: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with("writ-sign-"))
+            .filter(|e| e.path().join("message").exists())
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        // A failing ssh-keygen, which reads nothing: refused, its words shown escaped.
+        std::fs::write(&fake, "#!/bin/sh\necho 'agent refused' >&2\nexit 1\n").unwrap();
+        assert_eq!(
+            crate::error_of(signer.sign_with(&fake, message.as_bytes())),
+            "ssh-keygen could not sign (is the approval key in the agent?)"
+        );
+        // One that signs nothing.
+        std::fs::write(&fake, "#!/bin/sh\ncat >/dev/null\n").unwrap();
+        assert_eq!(
+            crate::error_of(signer.sign_with(&fake, b"x")),
+            "ssh-keygen wrote no signature"
+        );
+    }
 
     #[test]
     fn the_approval_key_must_be_a_public_key() {

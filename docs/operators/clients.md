@@ -16,7 +16,7 @@ lists them.
 | `--tls-pins` | `WRIT_TLS_PINS` | `<home>/tls_pins` | The daemon's pinned TLS certificate, for an `https://` approval URL |
 | `--reader` | `WRIT_READER` | `<home>/reader` | Your reader key. `writ reader <name>` creates it and prints the line for the daemon's `readers` |
 | `--url` | `WRIT_URL` | none | The agents' listener: `ssh://host:port`, or `unix:<path>` for a daemon on this Mac (local mode). Used by `request`, `wait`, `close`, `policy`, `init` |
-| `--approval-url` | `WRIT_APPROVAL_URL` | none | The approval listener, `https://host:port` or `ssh://host:port`. Used by `ls`, `sign`, `refuse`, `revoke`, `report`, `prove-key` |
+| `--approval-url` | `WRIT_APPROVAL_URL` | none | The approval listener, `https://host:port`, `ssh://host:port`, or `unix:<path>` for a daemon on this Mac (local mode). Used by `ls`, `sign`, `refuse`, `revoke`, `report`, `prove-key`, `unseal`, `recovery check` and every `admin` command |
 | none | `WRIT_SESSION` | none | The lease an agent works under: `writ git`, `writ exec`, `writ close`, `writ mark` and `writ-sign` use its session, whatever `current` points at. Set it to the line `writ request` prints. A lease this host doesn't have, or that ended, is refused, never replaced by `current`. [Several agents](#several-agents-on-one-host) |
 | `--key` | `WRIT_APPROVAL_KEY` | `<home>/approver.pub` | Your approval key's **public** half (a private key file is refused) |
 | `--agent` | `WRIT_APPROVAL_AGENT` | `$SSH_AUTH_SOCK` | The ssh-agent holding your approval key: Secretive's socket |
@@ -51,6 +51,15 @@ narrowing flags: [approvals](../architecture/approvals.md).
 Approve from a terminal at least 80 columns wide. `writ sign` keeps every row within that
 width, so the terminal never wraps one; a narrower terminal would wrap rows again, and a
 wrapped row loses the `│` mark that shows text the agent wrote.
+
+`writ sign` shows at most 40 rows of each thing the agent wrote (its title, task and plan),
+then how many more there are and the command that shows them all (`writ sign <id> --full`).
+What the lease enforces is always shown whole, the expected paths included. A report works
+the same way: `writ report <id> --full`, or `writ close --full` for the agent.
+
+Every "Sign …?" question signs only on `y` or `yes`. Answer anything else and nothing is
+signed: `writ` then exits with status 6, whatever the command, so a script can tell a change
+you declined from one that was applied.
 
 ## Files
 

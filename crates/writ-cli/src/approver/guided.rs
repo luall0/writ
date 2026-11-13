@@ -20,9 +20,9 @@ use writ_core::signed::Scan;
 use writ_core::upstream::Upstream;
 use writ_proto::{BackendShown, Command, ScanNonce, ScanRequest, Scanned, UpstreamChecked};
 
-use super::admin::sign_applied;
+use super::admin::{Signing, sign_applied};
 use super::manage::policy_in_force;
-use super::{Signer, connect, read_line};
+use super::{Signer, confirm, connect, read_line};
 use crate::display::clean;
 use crate::{Exit, Paths};
 
@@ -418,9 +418,7 @@ async fn scanned(
             clean(gone.split(' ').next().unwrap_or_default())
         );
     }
-    print!("Do they match what the remote publishes? [y/N] ");
-    std::io::stdout().flush()?;
-    if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
+    if !confirm("Do they match what the remote publishes?")? {
         println!("Nothing pinned.");
         return Ok(None);
     }
@@ -551,7 +549,7 @@ pub async fn rescan(
             let Some(mut keys) =
                 scanned(session, signer, &host, port, proxy.as_ref(), &pinned).await?
             else {
-                return Ok(Exit::Ok);
+                return Ok(Exit::NotSigned);
             };
             for kept in pinned.iter().filter(|p| !scannable(p)) {
                 let kind = clean(kept.split(' ').next().unwrap_or_default());
@@ -580,8 +578,9 @@ pub async fn rescan(
             .map_err(|e| anyhow::anyhow!("not changed: {}", clean(&e.to_string())))?;
             let text = AdminText::try_from(next.to_yaml())?;
             let what = format!("with host {} rescanned", clean(&entry));
-            sign_applied(session, signer, &shown, &text, &what, yes).await?;
-            Ok(Exit::Ok)
+            Ok(sign_applied(session, signer, &shown, &text, &what, yes)
+                .await?
+                .exit())
         })
         .await
 }
@@ -625,8 +624,7 @@ fn next_steps(policy: &PolicyConfig, keys: &[String]) {
         };
         match key {
             Key::Upstream(UpstreamKey::Token { host, .. }) => println!(
-                "Next: add the token for {} from {}: writ admin token {}",
-                clean(host.as_str()),
+                "Next: add a token made on {}: writ admin token {}",
                 clean(host.as_str()),
                 clean(id)
             ),
@@ -738,7 +736,7 @@ pub async fn add(
             {
                 match pin_edit(session, signer, host, *port, proxy.as_ref()).await? {
                     Some(keys) => edits.push(keys),
-                    None => return Ok(None),
+                    None => return Ok(Err(Exit::NotSigned)),
                 }
             }
             if interactive && section != Section::UpstreamHosts {
@@ -780,7 +778,7 @@ pub async fn add(
                             let (host, port, entry) = host_and_port(&wanted)?;
                             match pin_edit(session, signer, &host, port, proxy.as_ref()).await? {
                                 Some(keys) => pin = Some((entry, keys)),
-                                None => return Ok(None),
+                                None => return Ok(Err(Exit::NotSigned)),
                             }
                         }
                     }
@@ -826,18 +824,20 @@ pub async fn add(
             }
             let text = AdminText::try_from(next.to_yaml())?;
             let what = format!("with {} {} added", section.noun(), clean(name));
-            if sign_applied(session, signer, &shown, &text, &what, yes)
-                .await?
-                .is_none()
-            {
-                return Ok(None);
+            match sign_applied(session, signer, &shown, &text, &what, yes).await? {
+                Signing::Applied => {}
+                other => return Ok(Err(other.exit())),
             }
             next_steps(&next, &made);
-            Ok((section == Section::Repos).then_some(()))
+            Ok(Ok(section == Section::Repos))
         })
         .await?;
+    let checked_repo = match checked_repo {
+        Ok(checked) => checked,
+        Err(exit) => return Ok(exit),
+    };
     // A repo added: its upstream checked once its credential is registered.
-    if checked_repo.is_some() {
+    if checked_repo {
         let repo: writ_core::names::RepoName = name.parse()?;
         if !interactive {
             println!("Once its credential is registered: writ admin repo check {repo}");
@@ -905,8 +905,9 @@ pub async fn edit_entry(
                 clean(name),
                 typed.join(" ")
             );
-            sign_applied(session, signer, &shown, &text, &what, yes).await?;
-            Ok(Exit::Ok)
+            Ok(sign_applied(session, signer, &shown, &text, &what, yes)
+                .await?
+                .exit())
         })
         .await
 }
@@ -939,9 +940,11 @@ pub fn next_id(policy: &PolicyConfig, id: &str) -> String {
 /// `writ admin key rotate <id> [--backend <name>] [--name <new>]`: a new key declared like the
 /// old one, on the backend named (the old one's by default: moving a key between software and
 /// the Secure Enclave is a rotation) (one signed change: its public half printed, to
-/// register); once it is registered, every repo and template that used the old one switched
-/// to it (a second signed change); then the old one offered for removal. Without a terminal,
-/// `--yes` answers the question between the two (the old key is then left declared, unused).
+/// register); once it is registered, every repo, proxy and template that used the old one
+/// switched to it (a second signed change); then, if nothing uses the old one any more, it is
+/// offered for removal. `--yes` answers the question between the two, on a terminal or not
+/// (the old key is then left declared, unused). The closing words come from what still uses
+/// the old key, never assumed.
 pub async fn rotate(
     paths: &Paths,
     url: &str,
@@ -998,16 +1001,17 @@ pub async fn rotate(
                 ),
                 None => format!("with key {} declared like {}", clean(&fresh), clean(id)),
             };
-            let applied = sign_applied(session, signer, &shown, &text, &what, yes).await?;
-            if applied.is_none() {
-                return Ok(None);
+            match sign_applied(session, signer, &shown, &text, &what, yes).await? {
+                Signing::Applied => {}
+                other => return Ok(Err(other.exit())),
             }
             next_steps(&next, std::slice::from_ref(&fresh));
-            Ok(Some(fresh))
+            Ok(Ok(fresh))
         })
         .await?;
-    let Some(fresh) = fresh else {
-        return Ok(Exit::Ok);
+    let fresh = match fresh {
+        Ok(fresh) => fresh,
+        Err(exit) => return Ok(exit),
     };
     if interactive && !yes {
         print!(
@@ -1020,32 +1024,13 @@ pub async fn rotate(
         std::io::stdout().flush()?;
         read_line()?;
     }
+    let old: writ_core::names::KeyId = id.parse()?;
     let session = connect(paths, url).await?;
-    session
+    let (exit, still) = session
         .run(async |session| {
             let (shown, policy) = policy_in_force(session).await?;
-            let old: writ_core::names::KeyId = id.parse()?;
-            let users = policy.key_users(&old);
-            let mut next = policy.clone();
-            for repo in &users.repos {
-                let set = FieldEdit::parse(&format!("upstream_credential={fresh}"))
-                    .map_err(anyhow::Error::msg)?;
-                next = edit::edit(&next, Section::Repos, repo.as_str(), &[set], MIN_TTL)
-                    .map_err(|e| anyhow::anyhow!("not switched: {}", clean(&e.to_string())))?;
-            }
-            for template in &users.templates {
-                let set = FieldEdit::parse(&format!("signing_key={fresh}"))
-                    .map_err(anyhow::Error::msg)?;
-                next = edit::edit(
-                    &next,
-                    Section::Templates,
-                    template.as_str(),
-                    &[set],
-                    MIN_TTL,
-                )
-                .map_err(|e| anyhow::anyhow!("not switched: {}", clean(&e.to_string())))?;
-            }
-            if !users.templates.is_empty() {
+            let next = switched(&policy, &old, &fresh)?;
+            if !policy.key_users(&old).templates.is_empty() {
                 println!(
                     "The leases signing with {} stop fitting their template once it switches: \
                      their agents amend them. Keep {}'s public key registered on the remote, \
@@ -1056,23 +1041,75 @@ pub async fn rotate(
             }
             let text = AdminText::try_from(next.to_yaml())?;
             let what = format!("with what used {} switched to {}", clean(id), clean(&fresh));
-            sign_applied(session, signer, &shown, &text, &what, yes).await?;
-            Ok(())
+            let signing = sign_applied(session, signer, &shown, &text, &what, yes).await?;
+            // What uses the old key now: the policy signed, or the one still in force.
+            let still = match signing {
+                Signing::Applied | Signing::Unchanged => next.key_users(&old),
+                Signing::NotSigned => policy.key_users(&old),
+            };
+            Ok((signing.exit(), still))
         })
         .await?;
-    if interactive && !yes {
-        print!("Remove {} now? It is deleted for good. [y/N] ", clean(id));
-        std::io::stdout().flush()?;
-        if matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
-            return super::manage::remove(paths, url, signer, Section::Keys, id, false).await;
-        }
+    if !still.is_empty() {
+        println!("{}", still_used(id, &fresh, &still));
+        return Ok(exit);
+    }
+    if interactive
+        && !yes
+        && confirm(&format!(
+            "Remove {} now? It is deleted for good.",
+            clean(id)
+        ))?
+    {
+        return super::manage::remove(paths, url, signer, Section::Keys, id, false).await;
     }
     println!(
         "{} stays declared, unused: writ admin key remove {} deletes it.",
         clean(id),
         clean(id)
     );
-    Ok(Exit::Ok)
+    Ok(exit)
+}
+
+/// `policy` with every repo, proxy and template that uses the key `old` switched to `fresh`
+/// (the review after M7.6, U-3: the proxies were forgotten, a proxy's password left on the old
+/// token and the new one used by nothing).
+fn switched(
+    policy: &PolicyConfig,
+    old: &writ_core::names::KeyId,
+    fresh: &str,
+) -> anyhow::Result<PolicyConfig> {
+    let users = policy.key_users(old);
+    let mut next = policy.clone();
+    let mut switch = |section: Section, name: &str, field: &str| -> anyhow::Result<()> {
+        let set = FieldEdit::parse(&format!("{field}={fresh}")).map_err(anyhow::Error::msg)?;
+        next = edit::edit(&next, section, name, &[set], MIN_TTL)
+            .map_err(|e| anyhow::anyhow!("not switched: {}", clean(&e.to_string())))?;
+        Ok(())
+    };
+    for repo in &users.repos {
+        switch(Section::Repos, repo.as_str(), "upstream_credential")?;
+    }
+    for proxy in &users.proxies {
+        switch(Section::Proxies, proxy.as_str(), "credential")?;
+    }
+    for template in &users.templates {
+        switch(Section::Templates, template.as_str(), "signing_key")?;
+    }
+    Ok(next)
+}
+
+/// The closing words of a rotation the old key `id` is still used after: by whom, and what to
+/// do.
+fn still_used(id: &str, fresh: &str, users: &writ_core::config::KeyUsers) -> String {
+    format!(
+        "{} is still used by {}: point them at {} (writ admin <noun> set), then writ admin \
+         key remove {} deletes it.",
+        clean(id),
+        clean(&users.to_string()),
+        clean(fresh),
+        clean(id)
+    )
 }
 
 /// Refuses `--backend <backend>` for the key `id` of `algorithm` unless the daemon has it and
@@ -1208,6 +1245,48 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(!error.contains('\u{1b}'), "{error:?}");
+    }
+
+    /// The review after M7.6 (U-3): rotating a proxy's password switched nothing (proxies
+    /// were forgotten), then said the old key was unused. Every repo, proxy and template that
+    /// used the old key is switched, and what still uses it is said from the policy.
+    #[test]
+    fn a_rotation_switches_every_repo_proxy_and_template_that_used_the_key() {
+        let policy = PolicyConfig::from_yaml(
+            "keys:\n  proxy-pass: { use: upstream, kind: token, host: \"127.0.0.1\" }\n  \
+             proxy-pass-2: { use: upstream, kind: token, host: \"127.0.0.1\" }\n  \
+             token-01: { use: upstream, kind: token, host: localhost }\n  \
+             token-01-2: { use: upstream, kind: token, host: localhost }\n\
+             proxies:\n  p: { url: \"http://u@127.0.0.1:3128\", credential: proxy-pass }\n  \
+             q: { url: \"http://u@127.0.0.1:3129\", credential: proxy-pass }\n\
+             repos:\n  demo:\n    upstream: https://localhost/demo.git\n    \
+             upstream_credential: token-01\n    proxy: p\n    templates: [t]\n\
+             templates:\n  t:\n    operations: [fetch]\n    branches: [\"*\"]\n    \
+             committer_emails: [\"a@b\"]\n    max_ttl: 1h\n    max_signatures: 1\n    \
+             max_pushes: 1\n    max_ops_per_minute: 10\n    max_push_size: 1MB\n",
+        )
+        .unwrap();
+        let old: writ_core::names::KeyId = "proxy-pass".parse().unwrap();
+        let fresh: writ_core::names::KeyId = "proxy-pass-2".parse().unwrap();
+        assert_eq!(policy.key_users(&old).proxies.len(), 2);
+        let next = switched(&policy, &old, fresh.as_str()).unwrap();
+        assert!(next.key_users(&old).is_empty(), "{}", next.key_users(&old));
+        assert_eq!(
+            next.key_users(&fresh).to_string(),
+            "proxies p, q",
+            "both proxies' password is the new token"
+        );
+        // A repo's credential the same way, the proxies untouched.
+        let token: writ_core::names::KeyId = "token-01".parse().unwrap();
+        let next = switched(&policy, &token, "token-01-2").unwrap();
+        assert!(next.key_users(&token).is_empty());
+        assert_eq!(next.key_users(&old).to_string(), "proxies p, q");
+        // Still used (the switch not signed): said, with whom.
+        assert_eq!(
+            still_used("proxy-pass", "proxy-pass-2", &policy.key_users(&old)),
+            "proxy-pass is still used by proxies p, q: point them at proxy-pass-2 (writ admin \
+             <noun> set), then writ admin key remove proxy-pass deletes it."
+        );
     }
 
     #[test]

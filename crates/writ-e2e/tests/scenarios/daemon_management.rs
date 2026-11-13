@@ -390,7 +390,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
         "a token has no algorithm: {shown}"
     );
     assert!(
-        shown.contains("Next: add the token for forgejo-https from forgejo-https: writ admin token guided-token"),
+        shown.contains("Next: add a token made on forgejo-https: writ admin token guided-token"),
         "{shown}"
     );
     assert!(approver.ok("writ admin key list").contains(

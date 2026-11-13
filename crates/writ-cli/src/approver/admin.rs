@@ -6,7 +6,6 @@
 //! here to the daemon keystore's recipient, and signed as a `writ-token/2` naming the token
 //! file it replaces: the daemon host never sees it in clear on its disk.
 
-use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, bail};
@@ -20,13 +19,13 @@ use writ_proto::{
     TokenApplied, TokenRequest, TokenShown,
 };
 
-use super::{Signer, connect, read_line};
+use super::{Signer, confirm, connect};
 use crate::client::Approvals;
 use crate::display::clean;
 use crate::{Exit, Paths};
 
-/// The most cells the line diff computes (lines before × lines after); past it, the new text
-/// is shown whole instead.
+/// The most cells the line diff computes (lines before × lines after, once the lines both texts
+/// share at their start and end are set aside); past it, the change is refused, to be split.
 const MAX_DIFF_CELLS: usize = 4_000_000;
 
 /// A file in force as the daemon showed it, checked against what the connection
@@ -180,11 +179,30 @@ pub(super) async fn sign_change(
 ) -> anyhow::Result<Exit> {
     sign_applied(session, signer, shown, text, what, yes)
         .await
-        .map(|_| Exit::Ok)
+        .map(|signing| signing.exit())
 }
 
-/// [`sign_change`], answering what the daemon applied (none: nothing to change, or not
-/// signed).
+/// What became of a change [`sign_applied`] was asked to sign.
+pub(super) enum Signing {
+    /// Signed, and the daemon applied it (what it did, printed).
+    Applied,
+    /// The file in force holds the text already: nothing to sign.
+    Unchanged,
+    /// The approver answered no.
+    NotSigned,
+}
+
+impl Signing {
+    /// How the command ends: an answered no is [`Exit::NotSigned`], on every command.
+    pub(super) fn exit(&self) -> Exit {
+        match self {
+            Self::Applied | Self::Unchanged => Exit::Ok,
+            Self::NotSigned => Exit::NotSigned,
+        }
+    }
+}
+
+/// [`sign_change`], answering what became of the change.
 pub(super) async fn sign_applied(
     session: &Approvals,
     signer: &Signer,
@@ -192,31 +210,29 @@ pub(super) async fn sign_applied(
     text: &AdminText,
     what: &str,
     yes: bool,
-) -> anyhow::Result<Option<AdminApplied>> {
+) -> anyhow::Result<Signing> {
     let target = shown.target;
     if shown.text == text.as_str() {
         println!(
             "{target} version {} already holds this text: nothing to change.",
             shown.version
         );
-        return Ok(None);
+        return Ok(Signing::Unchanged);
     }
+    // Before anything is printed: a change too large to show is refused whole.
+    let lines = diff(&shown.text, text.as_str())?;
     println!(
         "Change of {target}: version {} (sha256 {}) {what}",
         shown.version, shown.digest
     );
-    print!("{}", diff(&shown.text, text.as_str()));
+    print!("{lines}");
     println!(
         "Signing replaces {target} for every lease, at once (sha256 {}).",
         text.digest()
     );
-    if !yes {
-        print!("Sign this change? [y/N] ");
-        std::io::stdout().flush()?;
-        if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
-            println!("Not signed.");
-            return Ok(None);
-        }
+    if !yes && !confirm("Sign this change?")? {
+        println!("Not signed.");
+        return Ok(Signing::NotSigned);
     }
     let replaced = Replaced {
         version: shown.version,
@@ -258,7 +274,7 @@ pub(super) async fn sign_applied(
             _ => println!("Deleted {} {}.", clean(&key.description), key.id),
         }
     }
-    Ok(Some(applied))
+    Ok(Signing::Applied)
 }
 
 /// `writ admin token <id>`: the keystore's recipient from `writ info`, the token file in force
@@ -326,13 +342,9 @@ pub async fn token(
                     other => format!("the token file sha256 {other}"),
                 }
             );
-            if !yes {
-                print!("Sign this token change? [y/N] ");
-                std::io::stdout().flush()?;
-                if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
-                    println!("Not signed.");
-                    return Ok(Exit::Ok);
-                }
+            if !yes && !confirm("Sign this token change?")? {
+                println!("Not signed.");
+                return Ok(Exit::NotSigned);
             }
             let document =
                 Token::new(shown.daemon, id.clone(), shown.previous, sealed).canonical_bytes()?;
@@ -413,13 +425,9 @@ pub async fn ca_rotate(
                  old CA certified keep working until they end.",
                 clean(&backend)
             );
-            if !yes {
-                print!("Sign this CA rotation? [y/N] ");
-                std::io::stdout().flush()?;
-                if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
-                    println!("Not signed.");
-                    return Ok(Exit::NotSigned);
-                }
+            if !yes && !confirm("Sign this CA rotation?")? {
+                println!("Not signed.");
+                return Ok(Exit::NotSigned);
             }
             let backend: writ_core::config::BackendName = backend
                 .clone()
@@ -514,13 +522,10 @@ pub async fn tls_rotate(
                  re-pins it (writ does it here when it reaches the daemon over HTTPS).",
                 clean(&backend)
             );
-            if !yes {
-                print!("Sign this TLS key rotation? [y/N] ");
-                std::io::stdout().flush()?;
-                if !matches!(read_line()?.as_str(), "y" | "Y" | "yes") {
-                    println!("Not signed.");
-                    return Ok(None);
-                }
+            // None: not signed.
+            if !yes && !confirm("Sign this TLS key rotation?")? {
+                println!("Not signed.");
+                return Ok(None);
             }
             let backend: writ_core::config::BackendName = backend
                 .clone()
@@ -549,7 +554,7 @@ pub async fn tls_rotate(
         })
         .await?;
     let Some(rotated) = rotated else {
-        return Ok(Exit::Ok);
+        return Ok(Exit::NotSigned);
     };
     let name = endpoint.known_hosts_name();
     match &endpoint {
@@ -598,29 +603,63 @@ fn token_error(error: PassphraseError) -> anyhow::Error {
     }
 }
 
+/// A line of the diff: `' '` kept, `'-'` removed, `'+'` added, and where it is (its text,
+/// before or after, and its index there).
+struct Op<'a> {
+    op: char,
+    line: &'a str,
+    after: bool,
+    at: usize,
+}
+
 /// The lines that change from `before` to `after`: `-` removed, `+` added, two lines of
-/// context around each change, every line [`clean`]ed. Past [`MAX_DIFF_CELLS`], the new
-/// text whole.
-pub fn diff(before: &str, after: &str) -> String {
+/// context around each change, each run of changes under the lines that enclose it (`@@
+/// templates: / feature:`: the section and the entry, by indentation), every line [`clean`]ed
+/// and cut into rows that fit the display's width (a continuation behind its mark and the
+/// gutter). The lines both texts share at their start and end are set aside first; what is
+/// left past [`MAX_DIFF_CELLS`] is refused, never shown as the whole new text (the review after
+/// M7.6, U-6: a removed line was then invisible): the change is to be split.
+pub fn diff(before: &str, after: &str) -> anyhow::Result<String> {
     let (a, b): (Vec<&str>, Vec<&str>) = (before.lines().collect(), after.lines().collect());
-    let cells = a
+    let head = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let (rest_a, rest_b) = (
+        a.get(head..).unwrap_or_default(),
+        b.get(head..).unwrap_or_default(),
+    );
+    let tail = rest_a
+        .iter()
+        .rev()
+        .zip(rest_b.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (mid_a, mid_b) = (
+        rest_a
+            .get(..rest_a.len().saturating_sub(tail))
+            .unwrap_or_default(),
+        rest_b
+            .get(..rest_b.len().saturating_sub(tail))
+            .unwrap_or_default(),
+    );
+    let cells = mid_a
         .len()
         .saturating_add(1)
-        .saturating_mul(b.len().saturating_add(1));
+        .saturating_mul(mid_b.len().saturating_add(1));
     if cells > MAX_DIFF_CELLS {
-        let mut out = String::from("  (too long to compare: the new text whole)\n");
-        for line in &b {
-            out.push_str(&format!("+ {}\n", clean(line)));
-        }
-        return out;
+        bail!(
+            "the change is too large to show line by line ({} lines replaced by {}): nothing was \
+             signed; split it into smaller changes, each signed on its own",
+            mid_a.len(),
+            mid_b.len()
+        );
     }
-    // The longest common subsequence, from the end: lcs[i][j] for a[i..] and b[j..].
-    let width = b.len().saturating_add(1);
+    // The longest common subsequence of the middles, from the end: lcs[i][j] for mid_a[i..]
+    // and mid_b[j..].
+    let width = mid_b.len().saturating_add(1);
     let mut lcs = vec![0u32; cells];
-    for i in (0..a.len()).rev() {
-        for j in (0..b.len()).rev() {
+    for i in (0..mid_a.len()).rev() {
+        for j in (0..mid_b.len()).rev() {
             let here = i.saturating_mul(width).saturating_add(j);
-            let value = if a.get(i) == b.get(j) {
+            let value = if mid_a.get(i) == mid_b.get(j) {
                 lcs.get(here.saturating_add(width).saturating_add(1))
                     .copied()
                     .unwrap_or(0)
@@ -640,51 +679,124 @@ pub fn diff(before: &str, after: &str) -> String {
             .copied()
             .unwrap_or(0)
     };
-    let mut ops: Vec<(char, &str)> = Vec::new();
+    let kept = |i: usize| Op {
+        op: ' ',
+        line: b.get(i).copied().unwrap_or_default(),
+        after: true,
+        at: i,
+    };
+    let mut ops: Vec<Op> = (0..head).map(kept).collect();
     let (mut i, mut j) = (0, 0);
-    while i < a.len() || j < b.len() {
-        match (a.get(i), b.get(j)) {
+    let removed = |i: usize| Op {
+        op: '-',
+        line: mid_a.get(i).copied().unwrap_or_default(),
+        after: false,
+        at: head.saturating_add(i),
+    };
+    let added = |j: usize, op: char| Op {
+        op,
+        line: mid_b.get(j).copied().unwrap_or_default(),
+        after: true,
+        at: head.saturating_add(j),
+    };
+    while i < mid_a.len() || j < mid_b.len() {
+        match (mid_a.get(i), mid_b.get(j)) {
             (Some(x), Some(y)) if x == y => {
-                ops.push((' ', x));
+                ops.push(added(j, ' '));
                 i = i.saturating_add(1);
                 j = j.saturating_add(1);
             }
-            (Some(x), Some(_)) if at(i.saturating_add(1), j) >= at(i, j.saturating_add(1)) => {
-                ops.push(('-', x));
+            (Some(_), Some(_)) if at(i.saturating_add(1), j) >= at(i, j.saturating_add(1)) => {
+                ops.push(removed(i));
                 i = i.saturating_add(1);
             }
-            (_, Some(y)) => {
-                ops.push(('+', y));
+            (_, Some(_)) => {
+                ops.push(added(j, '+'));
                 j = j.saturating_add(1);
             }
-            (Some(x), None) => {
-                ops.push(('-', x));
+            (Some(_), None) => {
+                ops.push(removed(i));
                 i = i.saturating_add(1);
             }
             (None, None) => break,
         }
     }
+    let from = head.saturating_add(mid_b.len());
+    ops.extend((from..from.saturating_add(tail)).map(kept));
     // Two lines of context around each change.
     let near = |k: usize| {
         let from = k.saturating_sub(2);
         let to = k.saturating_add(3).min(ops.len());
         ops.get(from..to)
-            .is_some_and(|window| window.iter().any(|(op, _)| *op != ' '))
+            .is_some_and(|window| window.iter().any(|o| o.op != ' '))
     };
+    // A row: the mark, the gutter on a continuation, within the display's width.
+    let room = crate::display::WIDTH.saturating_sub(4);
     let mut out = String::new();
     let mut skipped = false;
-    for (k, (op, line)) in ops.iter().enumerate() {
-        if *op == ' ' && !near(k) {
+    let mut in_hunk = false;
+    for (k, op) in ops.iter().enumerate() {
+        if op.op == ' ' && !near(k) {
             skipped = true;
+            in_hunk = false;
             continue;
         }
         if skipped {
             out.push_str("  …\n");
             skipped = false;
         }
-        out.push_str(&format!("{op} {}\n", clean(line)));
+        if !in_hunk {
+            in_hunk = true;
+            // The lines enclosing the hunk's first change, in the text it is in.
+            if let Some(first) = ops.iter().skip(k).find(|o| o.op != ' ') {
+                let text = if first.after { &b } else { &a };
+                let enclosing = enclosing(text, first.at);
+                if !enclosing.is_empty() {
+                    let header: Vec<String> = enclosing.iter().map(|l| clean(l)).collect();
+                    out.push_str(&crate::display::one_row(
+                        &format!("@@ {}", header.join(" / ")),
+                        crate::display::WIDTH,
+                        "",
+                    ));
+                    out.push('\n');
+                }
+            }
+        }
+        for (n, row) in crate::display::cut(&clean(op.line), room)
+            .iter()
+            .enumerate()
+        {
+            match n {
+                0 => out.push_str(&format!("{} {row}\n", op.op)),
+                _ => out.push_str(&format!("{}{}{row}\n", op.op, crate::display::GUTTER)),
+            }
+        }
     }
-    out
+    Ok(out)
+}
+
+/// The lines that enclose line `at` of `lines` by indentation, outermost first: each the
+/// nearest line above with less indentation than the last (blank and comment lines skipped),
+/// up to one at the left margin (`templates:`, then `feature:`). None for a line at the margin.
+fn enclosing<'a>(lines: &[&'a str], at: usize) -> Vec<&'a str> {
+    let indent = |line: &str| line.len().saturating_sub(line.trim_start().len());
+    let mut level = lines.get(at).map_or(0, |line| indent(line));
+    let mut found = Vec::new();
+    for line in lines.get(..at).unwrap_or_default().iter().rev() {
+        if level == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if indent(line) < level {
+            found.push(trimmed);
+            level = indent(line);
+        }
+    }
+    found.reverse();
+    found
 }
 
 /// Refuses a target that isn't one, with the three it may be.
@@ -759,17 +871,124 @@ mod tests {
         let before = "a\nb\nc\nd\ne\nf\ng\n";
         let after = "a\nb\nc\nD\ne\nf\ng\nh\n";
         assert_eq!(
-            diff(before, after),
+            diff(before, after).unwrap(),
             "  …\n  b\n  c\n- d\n+ D\n  e\n  f\n  g\n+ h\n"
         );
         // A hostile line: shown escaped, never acted on.
-        let shown = diff("", "x\u{1b}[2Jy\n");
+        let shown = diff("", "x\u{1b}[2Jy\n").unwrap();
         assert_eq!(shown, "+ x\\u{1b}[2Jy\n");
         // Far apart: the unchanged middle is cut.
         let long: String = (0..20).map(|n| format!("{n}\n")).collect();
         let changed = long.replace("0\n", "zero\n").replace("19\n", "nineteen\n");
-        let shown = diff(&long, &changed);
+        let shown = diff(&long, &changed).unwrap();
         assert!(shown.contains("  …\n"), "{shown}");
         assert!(shown.starts_with("- 0\n+ zero\n  1\n  2\n"), "{shown}");
+    }
+
+    /// The review after M7.6 (U-6 a): past its bound the diff showed the whole new text as
+    /// additions, so a removed line was nowhere. The lines both texts share are set aside
+    /// first; what is left past the bound is refused, never shown otherwise.
+    #[test]
+    fn a_long_text_with_one_change_shows_that_change_and_a_change_past_the_bound_is_refused() {
+        let lines = |prefix: &str, n: usize| -> String {
+            (0..n).map(|i| format!("{prefix}{i}\n")).collect()
+        };
+        // 3,000 lines each side (9 million cells compared whole): one entry removed.
+        let before = format!(
+            "{}  - refs/heads/main\n{}",
+            lines("a", 1500),
+            lines("z", 1500)
+        );
+        let after = format!("{}{}", lines("a", 1500), lines("z", 1500));
+        let shown = diff(&before, &after).unwrap();
+        assert_eq!(
+            shown,
+            "  …\n@@ a1499\n  a1498\n  a1499\n-   - refs/heads/main\n  z0\n  z1\n"
+        );
+        // The bound on both sides: 1,999 × 1,999 changed lines (4,000,000 cells) compared,
+        // 1,999 × 2,000 refused.
+        let at = diff(&lines("b", 1999), &lines("c", 1999)).unwrap();
+        assert_eq!(at.lines().filter(|l| l.starts_with("- ")).count(), 1999);
+        assert_eq!(at.lines().filter(|l| l.starts_with("+ ")).count(), 1999);
+        let shared = lines("same", 100);
+        assert_eq!(
+            crate::error_of(diff(
+                &format!("{shared}{}{shared}", lines("b", 1999)),
+                &format!("{shared}{}{shared}", lines("c", 2000))
+            )),
+            "the change is too large to show line by line (1999 lines replaced by 2000): \
+             nothing was signed; split it into smaller changes, each signed on its own"
+        );
+    }
+
+    /// The review after M7.6 (U-6 b): `- max_pushes: 5 / + max_pushes: 500` didn't say whose.
+    /// Each hunk names the lines that enclose its first change, the section and the entry.
+    #[test]
+    fn a_hunk_names_the_section_and_the_entry_it_changes() {
+        let entry = |name: &str, pushes: u32| {
+            format!(
+                "  {name}:\n    operations: [fetch, push]\n    branches: [\"agent/*\"]\n    \
+                 max_ttl: 4h\n    max_pushes: {pushes}\n    max_signatures: 5\n"
+            )
+        };
+        let policy = |second: u32| {
+            format!(
+                "keys:\n  k: {{ use: signing }}\n\nrepos: {{}}\n\ntemplates:\n{}{}",
+                entry("first", 5),
+                entry("second", second)
+            )
+        };
+        let shown = diff(&policy(5), &policy(500)).unwrap();
+        assert_eq!(
+            shown,
+            "  …\n@@ templates: / second:\n      branches: [\"agent/*\"]\n      max_ttl: 4h\n-     \
+             max_pushes: 5\n+     max_pushes: 500\n      max_signatures: 5\n"
+        );
+        // A change at the margin has nothing around it: no header (approvers and readers are
+        // one line an entry).
+        assert_eq!(diff("a\n", "b\n").unwrap(), "- a\n+ b\n");
+        // A comment or a blank line above is no enclosing line.
+        let shown = diff(
+            "templates:\n  t:\n\n    # the count\n    max_pushes: 1\n",
+            "templates:\n  t:\n\n    # the count\n    max_pushes: 2\n",
+        )
+        .unwrap();
+        assert!(shown.contains("@@ templates: / t:\n"), "{shown}");
+    }
+
+    /// The review after M7.6 (U-6 c): a long line wrapped to column 0. Each row fits the
+    /// display, a continuation behind its mark and the gutter.
+    #[test]
+    fn every_row_of_a_diff_fits_the_display_and_a_continuation_keeps_its_mark() {
+        let long = format!("protected_refs: [{}]", "\"refs/heads/x\", ".repeat(60));
+        let shown = diff("a: 1\n", &format!("a: 1\n{long}\n")).unwrap();
+        let rows: Vec<&str> = shown.lines().collect();
+        assert!(rows.len() > 10, "{shown}");
+        for row in &rows {
+            assert!(
+                crate::display::width(row) <= crate::display::WIDTH,
+                "{row:?}"
+            );
+        }
+        assert!(rows.iter().skip(2).all(|r| r.starts_with("+│ ")), "{shown}");
+        let kept: String = rows
+            .iter()
+            .skip(1)
+            .map(|r| r.trim_start_matches("+ ").trim_start_matches("+│ "))
+            .collect();
+        assert_eq!(kept.replace(' ', ""), long.replace(' ', ""));
+        // The header is cut to the width too.
+        let name = "n".repeat(200);
+        let shown = diff(
+            &format!("templates:\n  {name}:\n    a: 1\n"),
+            &format!("templates:\n  {name}:\n    a: 2\n"),
+        )
+        .unwrap();
+        for row in shown.lines() {
+            assert!(
+                crate::display::width(row) <= crate::display::WIDTH,
+                "{row:?}"
+            );
+        }
     }
 }

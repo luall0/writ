@@ -12,14 +12,23 @@
 //! line is cut into rows here, each continuation behind the gutter, and a row the terminal
 //! wrapped can't start with agent text that reads like a line of `writ sign`'s (the review
 //! after M5.5, S2). Each agent field shows at most [`MAX_BLOCK_LINES`] rows (runs of blank
-//! lines collapsed) unless `--full` is asked, the expected paths too, and the enforced terms
-//! are repeated in a summary of one row each right before the prompt ([`summary`]), so no
+//! lines collapsed) unless `--full` is asked, then how many more and the command that shows
+//! them ([`Rows`]); an enforced term is never cut, the expected paths included (the review
+//! after M7.6, U-1: the agent chose which paths fell past row 40). The enforced terms are
+//! repeated in a summary of one row each right before the prompt ([`summary`]), so no
 //! amount of agent text can push what gets signed off the screen.
+//!
+//! Every field of a ticket is displayed: [`ticket`] and [`summary`] destructure its types
+//! with no `..` and [`Field`]'s matches have no catch-all arm, so a field added to the ticket
+//! doesn't compile until it is placed, and a test changes every leaf of a ticket's canonical
+//! JSON and checks the display changes (the review after M7.6, U-4).
 
 use std::fmt::Write as _;
 
 use writ_core::lease::State;
-use writ_core::ticket::{OnViolation, RepoTerms, Ticket};
+use writ_core::ticket::{
+    Common, Limits, OnViolation, RepoLimits, RepoTerms, Subject, Ticket, TicketText,
+};
 use writ_core::units::Timestamp;
 
 /// The gutter in front of every line of agent-written text.
@@ -83,7 +92,7 @@ pub(crate) fn cut(text: &str, width: usize) -> Vec<String> {
 
 /// `text` (already [`clean`]ed) as one row of at most `width` columns: cut, with `…` and
 /// `more` when it doesn't fit.
-fn one_row(text: &str, width: usize, more: &str) -> String {
+pub(crate) fn one_row(text: &str, width: usize, more: &str) -> String {
     if self::width(text) <= width {
         return text.to_owned();
     }
@@ -128,10 +137,59 @@ pub fn clean_lines(text: &str) -> String {
     text.lines().map(clean).collect::<Vec<_>>().join("\n")
 }
 
+/// How many rows of agent text a field shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rows<'a> {
+    /// Every row (`--full`).
+    All,
+    /// At most [`MAX_BLOCK_LINES`], then how many more and `full`, the command that shows
+    /// them all (`writ sign wrt_… --full`): never a command that can't.
+    Cut { full: &'a str },
+}
+
+impl<'a> Rows<'a> {
+    /// Every row when `full`, else cut, `command` showing the rest.
+    pub fn new(full: bool, command: &'a str) -> Self {
+        if full {
+            Self::All
+        } else {
+            Self::Cut { full: command }
+        }
+    }
+
+    /// How many of `rows` rows are shown.
+    fn limit(self, rows: usize) -> usize {
+        match self {
+            Self::All => rows,
+            Self::Cut { .. } => rows.min(MAX_BLOCK_LINES),
+        }
+    }
+
+    /// After a field cut at `shown` of `rows` rows: how many more, and the command that shows
+    /// them, each on a row of its own within [`WIDTH`] (the command takes a row of its own:
+    /// with a ticket id, it doesn't fit beside the count).
+    fn more(self, out: &mut String, indent: &str, shown: usize, rows: usize) {
+        if let Self::Cut { full } = self
+            && shown < rows
+        {
+            let _ = writeln!(
+                out,
+                "{indent}… {} more lines not shown",
+                rows.saturating_sub(shown)
+            );
+            let _ = writeln!(
+                out,
+                "{}",
+                one_row(&format!("{indent}  ({full} shows them)"), WIDTH, "")
+            );
+        }
+    }
+}
+
 /// Agent text over several lines, each behind the gutter and indented, cut into rows that
 /// fit [`WIDTH`] (each row behind the gutter too): runs of blank lines shown as one, and,
-/// unless `full`, at most [`MAX_BLOCK_LINES`] rows, then how many more.
-pub fn block(text: &str, indent: &str, full: bool) -> String {
+/// unless every row is asked, at most [`MAX_BLOCK_LINES`] rows, then how many more.
+pub fn block(text: &str, indent: &str, shown: Rows) -> String {
     let mut lines: Vec<&str> = Vec::new();
     for line in text.split('\n') {
         let blank = line.trim().is_empty();
@@ -145,28 +203,17 @@ pub fn block(text: &str, indent: &str, full: bool) -> String {
         .iter()
         .flat_map(|line| cut(&clean(line), room))
         .collect();
-    gutter_rows(&rows, indent, full)
+    gutter_rows(&rows, indent, shown)
 }
 
-/// `rows` behind `indent` and the gutter: at most [`MAX_BLOCK_LINES`] unless `full`, then
-/// how many more.
-fn gutter_rows(rows: &[String], indent: &str, full: bool) -> String {
-    let shown = if full {
-        rows.len()
-    } else {
-        rows.len().min(MAX_BLOCK_LINES)
-    };
+/// `rows` behind `indent` and the gutter, as many as `shown` says, then how many more.
+fn gutter_rows(rows: &[String], indent: &str, shown: Rows) -> String {
+    let limit = shown.limit(rows.len());
     let mut out = String::new();
-    for row in rows.iter().take(shown) {
+    for row in rows.iter().take(limit) {
         let _ = writeln!(out, "{indent}{GUTTER}{row}");
     }
-    if shown < rows.len() {
-        let _ = writeln!(
-            out,
-            "{indent}… {} more lines not shown (writ sign --full shows them)",
-            rows.len() - shown
-        );
-    }
+    shown.more(&mut out, indent, limit, rows.len());
     out
 }
 
@@ -212,21 +259,23 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
         } else {
             String::new()
         };
-        let line = format!(
-            "{}  {:<9} r{}  {:<14} {left}",
-            t.id,
-            // `as_str`: `State`'s `Display` doesn't pad.
-            t.state.as_str(),
-            t.revision,
-            clean(
-                &t.templates
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
+        // `as_str`: `State`'s `Display` doesn't pad.
+        let head = format!("{}  {:<9} r{}  ", t.id, t.state.as_str(), t.revision);
+        let templates = clean(
+            &t.templates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
         );
-        let _ = writeln!(out, "{}", one_row(line.trim_end(), WIDTH, "(writ show)"));
+        // Every template shown, the rows past the first behind the gutter: nothing cut, so
+        // no hint names a command (the review after M7.6, U-5: it named `writ show`, which
+        // isn't one).
+        rows_after(
+            &mut out,
+            &head,
+            format!("{templates:<14} {left}").trim_end(),
+        );
         let repos = t
             .repos
             .iter()
@@ -234,7 +283,7 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         rows_after(&mut out, "    repos ", &clean(&format!("{repos}{lease}")));
-        out.push_str(&block(&t.title, "    ", true));
+        out.push_str(&block(&t.title, "    ", Rows::All));
     }
     out
 }
@@ -252,97 +301,138 @@ pub fn duration(seconds: i64) -> String {
     }
 }
 
-/// A field of a ticket, as `writ sign` shows it and diffs compare it.
+/// A field of a ticket, as `writ sign` shows it and diffs compare it: the lease's, or one
+/// repository's ([`RepoField`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
-    Template,
     ExpiresAt,
     SessionKey,
     OriginHint,
     Caller,
     Repos,
-    Operations,
-    Branches,
-    ForcePush,
     CommitterEmails,
     CommitterName,
     SigningKey,
-    MaxSignatures,
-    MaxPushes,
     MaxOpsPerMinute,
-    MaxPushSize,
     OnViolation,
     Title,
     Task,
     Plan,
     Estimate,
-    ExpectedPaths,
+    /// One repository's term, over every repository.
+    Repo(RepoField),
 }
 
-impl Field {
+/// A field of one repository's terms (`repos.<repo>.…`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoField {
+    Template,
+    Operations,
+    Branches,
+    ForcePush,
+    ExpectedPaths,
+    MaxSignatures,
+    MaxPushes,
+    MaxPushSize,
+}
+
+impl RepoField {
+    /// Every one, in the order a repository's block shows them.
+    pub const ALL: [Self; 8] = [
+        Self::Template,
+        Self::Operations,
+        Self::Branches,
+        Self::ForcePush,
+        Self::MaxSignatures,
+        Self::MaxPushes,
+        Self::MaxPushSize,
+        Self::ExpectedPaths,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Template => "template",
-            Self::ExpiresAt => "expires at",
-            Self::SessionKey => "session key",
-            Self::OriginHint => "origin hint",
-            Self::Caller => "caller",
-            Self::Repos => "repos",
             Self::Operations => "operations",
             Self::Branches => "branches",
             Self::ForcePush => "force push",
-            Self::CommitterEmails => "committer emails",
-            Self::CommitterName => "committer name",
-            Self::SigningKey => "signing key",
+            Self::ExpectedPaths => "expected paths",
             Self::MaxSignatures => "max signatures",
             Self::MaxPushes => "max pushes",
-            Self::MaxOpsPerMinute => "max ops per minute",
             Self::MaxPushSize => "max push size",
-            Self::OnViolation => "on violation",
-            Self::Title => "title",
-            Self::Task => "task",
-            Self::Plan => "plan",
-            Self::Estimate => "estimate",
-            Self::ExpectedPaths => "expected paths",
         }
     }
 }
 
 impl Field {
-    /// Whether the field is one repository's (`repos.<repo>.…`), not the lease's.
-    pub fn per_repo(self) -> bool {
-        matches!(
-            self,
-            Self::Template
-                | Self::Operations
-                | Self::Branches
-                | Self::ForcePush
-                | Self::ExpectedPaths
-                | Self::MaxSignatures
-                | Self::MaxPushes
-                | Self::MaxPushSize
-        )
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ExpiresAt => "expires at",
+            Self::SessionKey => "session key",
+            Self::OriginHint => "origin hint",
+            Self::Caller => "caller",
+            Self::Repos => "repos",
+            Self::CommitterEmails => "committer emails",
+            Self::CommitterName => "committer name",
+            Self::SigningKey => "signing key",
+            Self::MaxOpsPerMinute => "max ops per minute",
+            Self::OnViolation => "on violation",
+            Self::Title => "title",
+            Self::Task => "task",
+            Self::Plan => "plan",
+            Self::Estimate => "estimate",
+            Self::Repo(field) => field.label(),
+        }
+    }
+
+    /// Whether the field is the agent's words (its prose, its claims), which the display
+    /// bounds in rows; every other field is an enforced term, never cut.
+    pub fn agent_written(self) -> bool {
+        match self {
+            Self::OriginHint | Self::Title | Self::Task | Self::Plan | Self::Estimate => true,
+            Self::ExpiresAt
+            | Self::SessionKey
+            | Self::Caller
+            | Self::Repos
+            | Self::CommitterEmails
+            | Self::CommitterName
+            | Self::SigningKey
+            | Self::MaxOpsPerMinute
+            | Self::OnViolation
+            | Self::Repo(_) => false,
+        }
     }
 }
 
-/// One repository's value of a per-repository field, already [`clean`]ed (one line).
-pub fn repo_field(terms: &RepoTerms, field: Field) -> String {
+/// One repository's value of a field, already [`clean`]ed (one line).
+pub fn repo_field(terms: &RepoTerms, field: RepoField) -> String {
+    let RepoTerms {
+        template,
+        operations,
+        branches,
+        force_push,
+        expected_paths,
+        limits:
+            RepoLimits {
+                max_signatures,
+                max_pushes,
+                max_push_size,
+            },
+    } = terms;
     match field {
-        Field::Template => clean(terms.template.as_str()),
-        Field::Operations => list(&terms.operations),
-        Field::Branches => list(&terms.branches),
-        Field::ForcePush => if terms.force_push { "yes" } else { "no" }.to_owned(),
-        Field::ExpectedPaths => quoted(terms.expected_paths.iter().map(|p| p.as_str())),
-        Field::MaxSignatures => terms.limits.max_signatures.to_string(),
-        Field::MaxPushes => terms.limits.max_pushes.to_string(),
-        Field::MaxPushSize => terms.limits.max_push_size.to_string(),
-        _ => String::new(),
+        RepoField::Template => clean(template.as_str()),
+        RepoField::Operations => list(operations),
+        RepoField::Branches => list(branches),
+        RepoField::ForcePush => if *force_push { "yes" } else { "no" }.to_owned(),
+        RepoField::ExpectedPaths => quoted(expected_paths.iter().map(|p| p.as_str())),
+        RepoField::MaxSignatures => max_signatures.to_string(),
+        RepoField::MaxPushes => max_pushes.to_string(),
+        RepoField::MaxPushSize => max_push_size.to_string(),
     }
 }
 
 /// A per-repository field over the whole ticket, in one line: the value alone for one
 /// repository, `api: …; web: …` for several.
-fn every_repo(ticket: &Ticket, field: Field) -> String {
+fn every_repo(ticket: &Ticket, field: RepoField) -> String {
     if ticket.repos.len() == 1 {
         return ticket
             .repos
@@ -400,9 +490,6 @@ pub fn field(ticket: &Ticket, field: Field) -> String {
     let common = &ticket.common;
     let limits = &ticket.limits;
     let text = &ticket.text;
-    if field.per_repo() {
-        return every_repo(ticket, field);
-    }
     match field {
         Field::ExpiresAt => limits.expires_at.to_string(),
         Field::SessionKey => clean(ticket.subject.session_key.as_str()),
@@ -448,8 +535,7 @@ pub fn field(ticket: &Ticket, field: Field) -> String {
         Field::Task => clean(&text.task),
         Field::Plan => quoted(&text.plan),
         Field::Estimate => estimate(text.estimate.as_ref()),
-        // Per repository: answered above.
-        _ => every_repo(ticket, field),
+        Field::Repo(field) => every_repo(ticket, field),
     }
 }
 
@@ -459,83 +545,132 @@ pub fn estimate(estimate: Option<&writ_core::ticket::Estimate>) -> String {
     let Some(e) = estimate else {
         return "(none)".to_owned();
     };
+    let writ_core::ticket::Estimate { coding, checks, ci } = e;
     let phase =
-        |d: Option<writ_core::units::Duration>| d.map_or("—".to_owned(), |d| d.to_string());
+        |d: &Option<writ_core::units::Duration>| d.map_or("—".to_owned(), |d| d.to_string());
     let total = e.total().map_or("—".to_owned(), |d| {
         duration(i64::try_from(d.seconds()).unwrap_or(i64::MAX))
     });
     format!(
         "{total} in all (coding {}, checks {}, ci {})",
-        phase(e.coding),
-        phase(e.checks),
-        phase(e.ci)
+        phase(coding),
+        phase(checks),
+        phase(ci)
     )
 }
 
-/// Every field, in display order.
+/// Every field, in the order a diff lists them (the agent's words then printed first, the
+/// enforced terms last: [`changes`]).
 pub const FIELDS: [Field; 22] = [
-    Field::Template,
+    Field::Repo(RepoField::Template),
     Field::ExpiresAt,
     Field::SessionKey,
     Field::OriginHint,
     Field::Caller,
     Field::Repos,
-    Field::Operations,
-    Field::Branches,
-    Field::ForcePush,
+    Field::Repo(RepoField::Operations),
+    Field::Repo(RepoField::Branches),
+    Field::Repo(RepoField::ForcePush),
     Field::CommitterEmails,
     Field::CommitterName,
     Field::SigningKey,
-    Field::MaxSignatures,
-    Field::MaxPushes,
+    Field::Repo(RepoField::MaxSignatures),
+    Field::Repo(RepoField::MaxPushes),
     Field::MaxOpsPerMinute,
-    Field::MaxPushSize,
+    Field::Repo(RepoField::MaxPushSize),
     Field::OnViolation,
     Field::Title,
     Field::Task,
     Field::Plan,
     Field::Estimate,
-    Field::ExpectedPaths,
+    Field::Repo(RepoField::ExpectedPaths),
 ];
 
-/// The fields that differ between two tickets: `(label, before, after)`.
-pub fn diff(before: &Ticket, after: &Ticket) -> Vec<(&'static str, String, String)> {
+/// A field that differs between two tickets, each side as [`field`] shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Changed {
+    pub field: Field,
+    pub before: String,
+    pub after: String,
+}
+
+/// The fields that differ between two tickets.
+pub fn diff(before: &Ticket, after: &Ticket) -> Vec<Changed> {
     FIELDS
         .into_iter()
         .filter_map(|f| {
             let (a, b) = (field(before, f), field(after, f));
-            (a != b).then(|| (f.label(), a, b))
+            (a != b).then_some(Changed {
+                field: f,
+                before: a,
+                after: b,
+            })
         })
         .collect()
 }
 
-/// The full display of a ticket waiting for a signature (`full`: every line of agent text).
-pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> String {
+/// The full display of a ticket waiting for a signature, its agent text as `shown` says.
+pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, shown: Rows) -> String {
+    // Every field placed (the review after M7.6, U-4): one added to the ticket doesn't compile
+    // until it is shown. The ones bound to `_` are shown through [`field`].
+    let Ticket {
+        // One kind, `writ-ticket/3`: nothing to show.
+        kind: _,
+        id,
+        created_at,
+        subject:
+            Subject {
+                session_key: _,
+                origin_hint,
+                caller: _,
+            },
+        common:
+            Common {
+                committer_emails: _,
+                committer_name: _,
+                signing_key: _,
+            },
+        repos,
+        text:
+            TicketText {
+                title,
+                task,
+                plan,
+                estimate: _,
+                amends,
+                renews,
+                revises,
+                revision,
+                previous_feedback,
+            },
+        limits: Limits {
+            expires_at,
+            max_ops_per_minute: _,
+        },
+        on_violation: _,
+    } = ticket;
     let mut out = String::new();
-    let t = &ticket.text;
-    let kind = if t.amends.is_some() {
+    let kind = if amends.is_some() {
         "Amendment"
-    } else if t.renews.is_some() {
+    } else if renews.is_some() {
         "Renewal"
     } else {
         "Ticket"
     };
-    let _ = writeln!(out, "{kind} {}", ticket.id);
-    let _ = writeln!(out, "  revision {} · {state}", t.revision);
+    let _ = writeln!(out, "{kind} {id}");
+    let _ = writeln!(out, "  revision {revision} · {state}");
     let _ = writeln!(
         out,
-        "  created {}, expires {} (in {})",
-        ticket.created_at,
-        ticket.limits.expires_at,
-        duration(now.seconds_until(ticket.limits.expires_at))
+        "  created {created_at}, expires {expires_at} (in {})",
+        duration(now.seconds_until(*expires_at))
     );
-    if let Some(lease) = &t.amends {
+    if let Some(lease) = amends {
         let _ = writeln!(out, "  amends lease {lease}");
     }
-    if let Some(lease) = &t.renews {
+    if let Some(lease) = renews {
         let _ = writeln!(out, "  renews lease {lease}");
     }
-    if let Some(revised) = &t.revises {
+    if let Some(revised) = revises {
         let _ = writeln!(out, "  revises ticket {revised}");
     }
     let row = |out: &mut String, f: Field| labelled(out, f.label(), &field(ticket, f));
@@ -545,9 +680,9 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     }
     let _ = writeln!(out, "  origin hint (the agent's claim, not checked):");
     out.push_str(&block(
-        ticket.subject.origin_hint.as_deref().unwrap_or("(none)"),
+        origin_hint.as_deref().unwrap_or("(none)"),
         "    ",
-        full,
+        shown,
     ));
     out.push_str("\nThe lease (enforced, for every repository)\n");
     for f in [
@@ -560,23 +695,19 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
     ] {
         row(&mut out, f);
     }
-    for (repo, terms) in &ticket.repos {
+    for (repo, terms) in repos {
         // A registry name: up to 100 characters, cut like any value.
         let title = format!("Repository {repo} (enforced)");
         let _ = writeln!(out, "\n{}", one_row(&clean(&title), WIDTH, "…"));
-        for f in [
-            Field::Template,
-            Field::Operations,
-            Field::Branches,
-            Field::ForcePush,
-            Field::MaxSignatures,
-            Field::MaxPushes,
-            Field::MaxPushSize,
-        ] {
-            labelled(&mut out, f.label(), &repo_field(terms, f));
+        for f in RepoField::ALL {
+            if f != RepoField::ExpectedPaths {
+                labelled(&mut out, f.label(), &repo_field(terms, f));
+            }
         }
-        // Chosen by the agent but enforced by the path check: one quoted item per line.
-        let _ = writeln!(out, "  {}", Field::ExpectedPaths.label());
+        // Chosen by the agent but enforced by the path check: one quoted item per line, and
+        // never cut (the review after M7.6, U-1: the agent chose which paths fell past row
+        // 40). The ticket's bounds keep it displayable: 100 paths, 16 KiB, per repository.
+        let _ = writeln!(out, "  {}", RepoField::ExpectedPaths.label());
         if terms.expected_paths.is_empty() {
             let _ = writeln!(out, "    (none: not checked)");
         }
@@ -586,28 +717,27 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
             .iter()
             .flat_map(|path| cut(&quoted([path.as_str()]), room))
             .collect();
-        out.push_str(&gutter_rows(&rows, "    ", full));
+        out.push_str(&gutter_rows(&rows, "    ", Rows::All));
     }
     out.push_str("\nWritten by the agent (untrusted, shown as written)\n");
     out.push_str("  title\n");
-    out.push_str(&block(&t.title, "    ", full));
+    out.push_str(&block(title, "    ", shown));
     out.push_str("  task\n");
-    out.push_str(&block(&t.task, "    ", full));
+    out.push_str(&block(task, "    ", shown));
     out.push_str("  plan\n");
-    if t.plan.is_empty() {
-        out.push_str(&block("(none)", "    ", full));
+    if plan.is_empty() {
+        out.push_str(&block("(none)", "    ", shown));
     }
-    let plan = t
-        .plan
+    let plan = plan
         .iter()
         .enumerate()
         .map(|(i, step)| format!("{}. {step}", i + 1))
         .collect::<Vec<_>>()
         .join("\n");
     if !plan.is_empty() {
-        out.push_str(&block(&plan, "    ", full));
+        out.push_str(&block(&plan, "    ", shown));
     }
-    let asked = ticket.created_at.seconds_until(ticket.limits.expires_at);
+    let asked = created_at.seconds_until(*expires_at);
     labelled(
         &mut out,
         "estimate",
@@ -617,13 +747,13 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
             duration(asked)
         ),
     );
-    if let Some(feedback) = &t.previous_feedback {
+    if let Some(feedback) = previous_feedback {
         let _ = writeln!(
             out,
             "\nFeedback on revision {} (as recorded by the daemon)",
-            t.revision.saturating_sub(1)
+            revision.saturating_sub(1)
         );
-        out.push_str(&block(feedback, "    ", full));
+        out.push_str(&block(feedback, "    ", shown));
     }
     out
 }
@@ -631,27 +761,67 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, full: bool) -> Stri
 /// The enforced terms in a few lines, shown last, right before the prompt: whatever the agent
 /// wrote above, this is what gets signed.
 pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
+    // Every field placed (the review after M7.6, U-4): a term added to the ticket doesn't
+    // compile until it is in the summary, or said here why not. The ones bound to `_` are
+    // repeated through [`field`], or only in the full display above.
+    let Ticket {
+        kind: _,
+        id,
+        // Who may use the lease, and the agent's own words: above only.
+        created_at: _,
+        subject:
+            Subject {
+                session_key: _,
+                origin_hint: _,
+                caller: _,
+            },
+        common:
+            Common {
+                committer_emails: _,
+                committer_name: _,
+                // One key for the lease, from its templates: above only.
+                signing_key: _,
+            },
+        repos,
+        text:
+            TicketText {
+                title: _,
+                task: _,
+                plan: _,
+                estimate: _,
+                amends: _,
+                renews: _,
+                revises: _,
+                revision: _,
+                previous_feedback: _,
+            },
+        limits: Limits {
+            expires_at,
+            max_ops_per_minute,
+        },
+        on_violation: _,
+    } = ticket;
     let mut out = String::from("\nYou are signing (enforced):\n");
-    let _ = writeln!(out, "  {}", ticket.id);
-    // One row each: what doesn't fit says so, and is shown whole above.
+    let _ = writeln!(out, "  {id}");
+    // One row each: what doesn't fit says so, and is shown whole above (every enforced term
+    // is: none is cut there).
     let room = WIDTH.saturating_sub(21);
     let _ = writeln!(
         out,
         "  {:<18} {}",
         "templates",
-        one_row(&field(ticket, Field::Template), room, "(see above)")
+        one_row(
+            &field(ticket, Field::Repo(RepoField::Template)),
+            room,
+            "(see above)"
+        )
     );
-    let _ = writeln!(
-        out,
-        "  {:<18} {}",
-        Field::ExpiresAt.label(),
-        ticket.limits.expires_at
-    );
+    let _ = writeln!(out, "  {:<18} {expires_at}", Field::ExpiresAt.label());
     for f in [
         Field::Repos,
-        Field::Operations,
-        Field::Branches,
-        Field::ForcePush,
+        Field::Repo(RepoField::Operations),
+        Field::Repo(RepoField::Branches),
+        Field::Repo(RepoField::ForcePush),
         Field::CommitterEmails,
         Field::CommitterName,
     ] {
@@ -662,32 +832,38 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
             one_row(&field(ticket, f), room, "(see above)")
         );
     }
-    let paths: usize = ticket.repos.values().map(|t| t.expected_paths.len()).sum();
+    let paths: usize = repos.values().map(|t| t.expected_paths.len()).sum();
     let shown = if paths == 0 {
         "(none: not checked)".to_owned()
     } else {
         one_row(
-            &format!("{paths}: {}", field(ticket, Field::ExpectedPaths)),
+            &format!(
+                "{paths}: {}",
+                field(ticket, Field::Repo(RepoField::ExpectedPaths))
+            ),
             room,
             "(see above)",
         )
     };
-    let _ = writeln!(out, "  {:<18} {shown}", Field::ExpectedPaths.label());
+    let _ = writeln!(out, "  {:<18} {shown}", RepoField::ExpectedPaths.label());
     // Rows within [`WIDTH`] whatever the numbers: the totals over every repository (`u32`
     // sums, saturating), each repository's counts above.
     let _ = writeln!(
         out,
-        "  {:<18} {} signatures, {} pushes, {}/min",
+        "  {:<18} {} signatures, {} pushes, {max_ops_per_minute}/min",
         "limits",
         ticket.max_signatures(),
         ticket.max_pushes(),
-        ticket.limits.max_ops_per_minute,
     );
     let _ = writeln!(
         out,
         "  {:<18} {}",
-        Field::MaxPushSize.label(),
-        one_row(&field(ticket, Field::MaxPushSize), room, "(see above)")
+        RepoField::MaxPushSize.label(),
+        one_row(
+            &field(ticket, Field::Repo(RepoField::MaxPushSize)),
+            room,
+            "(see above)"
+        )
     );
     let _ = writeln!(
         out,
@@ -704,7 +880,7 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
 /// The chain a renewal continues: the original ticket (the task as first signed: agent text,
 /// behind the gutter), which renewal this is, the time used so far, and what the renewed
 /// lease used.
-pub fn renewal_section(view: &writ_proto::Renewal, original: &Ticket, full: bool) -> String {
+pub fn renewal_section(view: &writ_proto::Renewal, original: &Ticket, shown: Rows) -> String {
     let mut out = format!(
         "\nRenewal {} of the work started as lease {}\n",
         view.number, original.id
@@ -731,9 +907,9 @@ pub fn renewal_section(view: &writ_proto::Renewal, original: &Ticket, full: bool
     );
     out.push_str("  The original ticket, as you signed it (written by the agent):\n");
     out.push_str("  title\n");
-    out.push_str(&block(&original.text.title, "    ", full));
+    out.push_str(&block(&original.text.title, "    ", shown));
     out.push_str("  task\n");
-    out.push_str(&block(&original.text.task, "    ", full));
+    out.push_str(&block(&original.text.task, "    ", shown));
     if !original.text.plan.is_empty() {
         let plan = original
             .text
@@ -744,10 +920,14 @@ pub fn renewal_section(view: &writ_proto::Renewal, original: &Ticket, full: bool
             .collect::<Vec<_>>()
             .join("\n");
         out.push_str("  plan\n");
-        out.push_str(&block(&plan, "    ", full));
+        out.push_str(&block(&plan, "    ", shown));
     }
     labelled(&mut out, "repos", &field(original, Field::Repos));
-    labelled(&mut out, "branches", &field(original, Field::Branches));
+    labelled(
+        &mut out,
+        "branches",
+        &field(original, Field::Repo(RepoField::Branches)),
+    );
     labelled(
         &mut out,
         "expires at",
@@ -802,7 +982,7 @@ pub fn others(others: &writ_proto::Others, now: Timestamp) -> String {
 pub fn report(
     report: &writ_proto::Report,
     marks: &[(crate::timings::Phase, u64)],
-    full: bool,
+    shown: Rows,
 ) -> String {
     let secs = |s: u64| duration(i64::try_from(s).unwrap_or(i64::MAX));
     let mut out = format!(
@@ -810,7 +990,7 @@ pub fn report(
         report.lease, report.state
     );
     out.push_str("  title\n");
-    out.push_str(&block(&report.title, "    ", full));
+    out.push_str(&block(&report.title, "    ", shown));
     labelled(
         &mut out,
         "templates",
@@ -926,15 +1106,15 @@ pub fn report(
             report.expected_paths.join("\n")
         },
         "    ",
-        full,
+        shown,
     ));
     if !report.warnings.is_empty() {
         out.push_str("  warnings (files outside expected_paths)\n");
-        out.push_str(&block(&report.warnings.join("\n"), "    ", full));
+        out.push_str(&block(&report.warnings.join("\n"), "    ", shown));
     }
     if let Some(summary) = &report.summary {
         out.push_str("\nSummary (written by the agent, untrusted)\n");
-        out.push_str(&block(summary, "    ", full));
+        out.push_str(&block(summary, "    ", shown));
     }
     if report.truncated {
         out.push_str("\n(the audit log held more lines for this lease than a report reads)\n");
@@ -942,21 +1122,37 @@ pub fn report(
     out
 }
 
-/// A diff section: `title`, then `label: before → after` per changed field.
-pub fn changes(title: &str, changes: &[(&'static str, String, String)]) -> String {
-    let mut out = format!("\n{title}\n");
+/// A diff section: `title`, then each changed field's label, its value before (`-`) and after
+/// (`+`). The agent's words come first, each side bounded in rows as `shown` says (like a
+/// [`block`]); the enforced terms come last, nearest the prompt, and are never cut (the review
+/// after M7.6, U-2: an amendment's flood of task and plan pushed what it widened far above).
+pub fn changes(title: &str, changes: &[Changed], shown: Rows) -> String {
+    let mut out = String::from("\n");
+    // Writ's own words, ids in them: cut to fit like any row.
+    for row in cut(title, WIDTH) {
+        let _ = writeln!(out, "{row}");
+    }
     if changes.is_empty() {
         out.push_str("  (no change)\n");
     }
     // `    - ` or `    │ ` in front: 7 columns at most (`│` counted two).
     let room = WIDTH.saturating_sub(4 + width("│ "));
-    for (label, before, after) in changes {
-        let _ = writeln!(out, "  {label}");
-        for (sign, value) in [("-", before), ("+", after)] {
-            for (i, row) in cut(value, room).into_iter().enumerate() {
+    let agent = changes.iter().filter(|c| c.field.agent_written());
+    let enforced = changes.iter().filter(|c| !c.field.agent_written());
+    for change in agent.chain(enforced) {
+        let _ = writeln!(out, "  {}", change.field.label());
+        let side = match change.field.agent_written() {
+            true => shown,
+            false => Rows::All,
+        };
+        for (sign, value) in [("-", &change.before), ("+", &change.after)] {
+            let rows = cut(value, room);
+            let limit = side.limit(rows.len());
+            for (i, row) in rows.iter().take(limit).enumerate() {
                 let mark = if i == 0 { sign } else { "│" };
                 let _ = writeln!(out, "    {mark} {row}");
             }
+            side.more(&mut out, "    ", limit, rows.len());
         }
     }
     out
@@ -999,11 +1195,12 @@ mod tests {
             caller.descends_from.executable = hostile.to_owned();
         }
         let now = t.created_at;
-        let mut shown = ticket(&t, State::Pending, now, true);
+        let mut shown = ticket(&t, State::Pending, now, Rows::All);
         shown.push_str(&summary(&t, false));
         shown.push_str(&changes(
             "diff",
             &diff(&Ticket::from_canonical(FULL).unwrap(), &t),
+            Rows::All,
         ));
         for c in shown.chars() {
             assert!(
@@ -1287,13 +1484,15 @@ mod tests {
             (crate::timings::Phase::Checks, u64::MAX),
             (crate::timings::Phase::Ci, u64::MAX),
         ];
+        let command = format!("writ sign {} --full", t.id);
         for full in [false, true] {
-            let mut shown = ticket(&t, State::Pending, t.created_at, full);
-            shown.push_str(&renewal_section(&renewal, &t, full));
+            let rows = Rows::new(full, &command);
+            let mut shown = ticket(&t, State::Pending, t.created_at, rows);
+            shown.push_str(&renewal_section(&renewal, &t, rows));
             shown.push_str(&self::others(&others, t.created_at));
-            shown.push_str(&self::report(&report, &marks, full));
+            shown.push_str(&self::report(&report, &marks, rows));
             shown.push_str(&summary(&t, true));
-            shown.push_str(&changes("Changed", &diff(&full_ticket(), &t)));
+            shown.push_str(&changes("Changed", &diff(&full_ticket(), &t), rows));
             for line in shown.lines() {
                 assert!(width(line) <= WIDTH, "{} columns: {line:?}", width(line));
                 // No row of agent text reads like a row of the display's own.
@@ -1336,14 +1535,38 @@ mod tests {
                 "{summary:#?}"
             );
         }
-        // Without --full, the expected paths are bounded like any agent field.
-        let shown = ticket(&t, State::Pending, t.created_at, false);
-        assert!(
-            shown.lines().count() < 400,
-            "{} rows",
-            shown.lines().count()
-        );
-        assert!(shown.contains("more lines not shown (writ sign --full shows them)"));
+        // Without --full, the agent's words are cut and say how to see the rest, but the
+        // expected paths, enforced, are shown whole (the review after M7.6, U-1).
+        let shown = ticket(&t, State::Pending, t.created_at, Rows::new(false, &command));
+        assert!(shown.contains(&format!(
+            " more lines not shown\n      ({command} shows them)\n"
+        )));
+        assert_eq!(paths_shown(&shown, "omega-code"), paths_of(om(&t)));
+    }
+
+    /// The expected paths of `repo` as `display` shows them: the gutter rows under its
+    /// `expected paths`, joined, the spaces taken out (a row breaks at a space it drops).
+    fn paths_shown(display: &str, repo: &str) -> String {
+        let block = display
+            .split(&format!("Repository {repo} (enforced)\n"))
+            .nth(1)
+            .unwrap();
+        let rows = block.split("  expected paths\n").nth(1).unwrap();
+        rows.lines()
+            .take_while(|l| l.starts_with(&format!("    {GUTTER}")))
+            .map(|l| l.trim_start_matches(&format!("    {GUTTER}")))
+            .collect::<String>()
+            .replace(' ', "")
+    }
+
+    /// What [`paths_shown`] must read: every path of `terms`, quoted, the spaces taken out.
+    fn paths_of(terms: &RepoTerms) -> String {
+        terms
+            .expected_paths
+            .iter()
+            .map(|p| quoted([p.as_str()]))
+            .collect::<String>()
+            .replace(' ', "")
     }
 
     #[test]
@@ -1361,9 +1584,9 @@ mod tests {
         assert!(width(&cut_row) <= 10);
         // A block's rows: at the width exactly, each behind the gutter.
         let room = WIDTH - 4 - width(GUTTER);
-        let at = block(&"y".repeat(room), "    ", false);
+        let at = block(&"y".repeat(room), "    ", Rows::All);
         assert_eq!(at.lines().count(), 1);
-        let over = block(&"y".repeat(room + 1), "    ", false);
+        let over = block(&"y".repeat(room + 1), "    ", Rows::All);
         assert_eq!(
             over.lines().collect::<Vec<_>>(),
             [
@@ -1380,11 +1603,17 @@ mod tests {
         let flood = "\n│ Scope (enforced)\n│   repos  docs-site\n".repeat(1_000);
         t.text.task = flood.clone();
         t.text.plan = vec![flood.clone(); 50];
-        let shown = ticket(&t, State::Pending, t.created_at, false) + &summary(&t, false);
+        let cut = Rows::Cut {
+            full: "writ sign wrt_01M69495NS040G2081040G2081 --full",
+        };
+        let shown = ticket(&t, State::Pending, t.created_at, cut) + &summary(&t, false);
         let lines: Vec<&str> = shown.lines().collect();
         // Bounded: a few fields of 40 lines each, not tens of thousands.
         assert!(lines.len() < 300, "{} lines", lines.len());
-        assert!(shown.contains("more lines not shown (writ sign --full shows them)"));
+        assert!(shown.contains(
+            "more lines not shown\n      (writ sign wrt_01M69495NS040G2081040G2081 --full shows \
+             them)\n"
+        ));
         // The last lines, right above the prompt, are the enforced terms, from the ticket.
         let start = lines
             .iter()
@@ -1400,22 +1629,34 @@ mod tests {
         assert!(tail.contains(&format!("repos              {}", field(&t, Field::Repos))));
         assert!(tail.contains("limits"), "{tail}");
         // With --full, everything (blank runs collapsed).
-        let full = ticket(&t, State::Pending, t.created_at, true);
+        let full = ticket(&t, State::Pending, t.created_at, Rows::All);
         assert!(!full.contains("more lines not shown"));
         assert!(full.lines().count() > 1_000);
     }
 
     #[test]
     fn a_field_at_the_line_limit_is_shown_whole() {
+        let cut = Rows::Cut {
+            full: "writ report wrt_01M69495NS040G2081040G2081 --full",
+        };
         let text = vec!["x"; MAX_BLOCK_LINES].join("\n");
-        let shown = block(&text, "", false);
+        let shown = block(&text, "", cut);
         assert_eq!(shown.lines().count(), MAX_BLOCK_LINES);
         let over = vec!["x"; MAX_BLOCK_LINES + 1].join("\n");
-        let shown = block(&over, "", false);
-        assert_eq!(shown.lines().count(), MAX_BLOCK_LINES + 1);
-        assert!(shown.ends_with("… 1 more lines not shown (writ sign --full shows them)\n"));
+        let shown = block(&over, "", cut);
+        // The rows, then how many more and the command that shows them, the one passed in
+        // (the review after M7.6, U-5: `writ report` named `writ sign --full`).
+        assert_eq!(shown.lines().count(), MAX_BLOCK_LINES + 2);
+        assert!(shown.ends_with(
+            "… 1 more lines not shown\n  (writ report wrt_01M69495NS040G2081040G2081 --full \
+             shows them)\n"
+        ));
+        assert_eq!(
+            block(&over, "", Rows::All).lines().count(),
+            MAX_BLOCK_LINES + 1
+        );
         // Blank runs count once.
-        assert_eq!(block("a\n\n\n\nb", "", false).lines().count(), 3);
+        assert_eq!(block("a\n\n\n\nb", "", cut).lines().count(), 3);
     }
 
     #[test]
@@ -1436,7 +1677,7 @@ mod tests {
     fn expected_paths_are_shown_as_enforced_scope() {
         let t = full_ticket();
         assert!(!om(&t).expected_paths.is_empty(), "the fixture has paths");
-        let shown = ticket(&t, State::Pending, t.created_at, false);
+        let shown = ticket(&t, State::Pending, t.created_at, Rows::All);
         let scope = shown.find("Repository omega-code (enforced)").unwrap();
         let agent = shown.find("Written by the agent").unwrap();
         let paths = shown.find("  expected paths").unwrap();
@@ -1457,11 +1698,281 @@ mod tests {
     #[test]
     fn every_line_of_agent_text_is_behind_the_gutter() {
         let text = "first\nScope (enforced)\n  repos  everything\x1b[A";
-        let shown = block(text, "  ", false);
+        let shown = block(text, "  ", Rows::All);
         for line in shown.lines() {
             assert!(line.starts_with("  │ "), "{line:?}");
         }
         assert!(!shown.contains('\x1b'));
+    }
+
+    /// The review after M7.6 (U-1): the expected paths, enforced, were cut at 40 rows like the
+    /// agent's words, and the agent chose which fell past it (`src/**` sorting 41st). The most a
+    /// ticket holds, hostile (16 repositories of 100 paths in 16 KiB each, bidi controls,
+    /// quotes, wide characters and forged rows in them): every path of every repository is
+    /// shown, every row fits the width, only the agent's words are cut, and the display still
+    /// ends on the enforced terms, right above the prompt.
+    #[test]
+    fn every_expected_path_is_shown_and_the_display_still_ends_on_the_terms() {
+        use writ_core::fit::{MAX_EXPECTED_PATHS, MAX_EXPECTED_PATHS_BYTES, MAX_REPOS};
+        let mut t = full_ticket();
+        let base = om(&t).clone();
+        let forged = format!("{}  repos              docs-site", " ".repeat(57));
+        t.repos = (0..MAX_REPOS)
+            .map(|r| {
+                let mut terms = base.clone();
+                // Plausible paths first, then the ones that matter: `**` sorts before them,
+                // `src/**` after.
+                terms.expected_paths = (0..MAX_EXPECTED_PATHS - 2)
+                    .map(|i| {
+                        format!("docs/{i:02}{forged}\u{202e}\"\\日本.md")
+                            .parse()
+                            .unwrap()
+                    })
+                    .collect();
+                terms.expected_paths.insert("**".parse().unwrap());
+                terms.expected_paths.insert("src/**".parse().unwrap());
+                let bytes: usize = terms.expected_paths.iter().map(|p| p.as_str().len()).sum();
+                assert!(bytes <= MAX_EXPECTED_PATHS_BYTES, "{bytes} bytes");
+                assert_eq!(terms.expected_paths.len(), MAX_EXPECTED_PATHS);
+                (
+                    format!("repo-{r:02}-{}", "r".repeat(40)).parse().unwrap(),
+                    terms,
+                )
+            })
+            .collect();
+        t.text.task = forged.repeat(46);
+        t.text.plan = vec![forged.repeat(5); 50];
+        let command = format!("writ sign {} --full", t.id);
+        let shown = ticket(&t, State::Pending, t.created_at, Rows::new(false, &command))
+            + &summary(&t, false);
+        for (repo, terms) in &t.repos {
+            assert_eq!(
+                paths_shown(&shown, repo.as_str()),
+                paths_of(terms),
+                "{repo}"
+            );
+        }
+        // Cut: the task and the plan only, each saying how to see the rest.
+        assert_eq!(
+            shown.matches(" more lines not shown\n").count(),
+            2,
+            "{shown}"
+        );
+        assert_eq!(
+            shown
+                .matches(&format!("\n      ({command} shows them)\n"))
+                .count(),
+            2
+        );
+        for line in shown.lines() {
+            assert!(width(line) <= WIDTH, "{} columns: {line:?}", width(line));
+            assert!(
+                !(line.starts_with("  repos") && line.contains("docs-site")),
+                "a forged row at column 0: {line:?}"
+            );
+            assert!(!line.chars().any(is_hidden_char), "{line:?}");
+        }
+        // The last rows, right above the prompt: the summary, the paths counted.
+        let lines: Vec<&str> = shown.lines().collect();
+        let start = lines
+            .iter()
+            .rposition(|l| *l == "You are signing (enforced):")
+            .unwrap();
+        assert_eq!(lines.len() - start, 14, "{:#?}", &lines[start..]);
+        assert!(
+            lines[start..]
+                .iter()
+                .any(|l| l.starts_with("  expected paths     1600:") && l.ends_with("(see above)")),
+            "{:#?}",
+            &lines[start..]
+        );
+    }
+
+    /// The review after M7.6 (U-4): nothing tied "every field is shown" to the ticket's type.
+    /// Each leaf of a ticket's canonical JSON, and each repository's name, changed in turn to a
+    /// value that still decodes: what `writ sign` shows changes each time. A field added to the
+    /// ticket and not shown fails here (or doesn't compile: [`ticket`] and [`summary`]
+    /// destructure every type, [`Field`] has no catch-all arm).
+    #[test]
+    fn every_leaf_of_a_ticket_changes_what_writ_sign_shows() {
+        use serde_json::Value;
+        const FULL: &[u8] = include_bytes!("../../writ-core/tests/fixtures/ticket-full.json");
+        let root: Value = serde_json::from_slice(FULL).unwrap();
+        let fixture = full_ticket();
+        let now = fixture.created_at;
+        let show = |t: &Ticket| ticket(t, State::Pending, now, Rows::All) + &summary(t, false);
+        let original = show(&fixture);
+
+        /// Every leaf under `value`, as a JSON pointer.
+        fn leaves(value: &Value, at: String, out: &mut Vec<String>) {
+            match value {
+                Value::Object(map) => {
+                    for (key, value) in map {
+                        leaves(value, format!("{at}/{key}"), out);
+                    }
+                }
+                Value::Array(items) => {
+                    for (i, value) in items.iter().enumerate() {
+                        leaves(value, format!("{at}/{i}"), out);
+                    }
+                }
+                _ => out.push(at),
+            }
+        }
+        /// Other values a leaf may take, some of which decode where it is.
+        fn alternatives(value: &Value) -> Vec<Value> {
+            const NAMES: [&str; 5] = [
+                "fetch",
+                "commit_sign",
+                "push",
+                "deny_and_notify",
+                "revoke_lease",
+            ];
+            match value {
+                Value::Bool(b) => vec![Value::Bool(!b)],
+                Value::Number(n) => {
+                    let n = n.as_u64().unwrap();
+                    vec![Value::from(n + 1), Value::from(n.saturating_sub(1))]
+                }
+                Value::Null => vec![
+                    Value::from("10m"),
+                    Value::from("x"),
+                    Value::from("wrt_01M69495P21850M2GA1850M2GB"),
+                ],
+                Value::String(s) => {
+                    let mut out = vec![format!("x{s}"), format!("{s}x")];
+                    // The last digit one more (a timestamp, an id, a duration).
+                    if let Some(at) = s.rfind(|c: char| c.is_ascii_digit()) {
+                        let mut bumped = s.clone();
+                        let d = s.as_bytes()[at] - b'0';
+                        bumped.replace_range(at..=at, &((d + 1) % 10).to_string());
+                        out.push(bumped);
+                    }
+                    // The last character another letter (a fingerprint).
+                    let mut other = s.clone();
+                    if let Some(last) = other.pop() {
+                        other.push(if last == 'T' { 'U' } else { 'T' });
+                        out.push(other);
+                    }
+                    out.extend(NAMES.iter().map(|n| (*n).to_owned()));
+                    out.into_iter().map(Value::from).collect()
+                }
+                Value::Array(_) | Value::Object(_) => Vec::new(),
+            }
+        }
+
+        let mut found = Vec::new();
+        leaves(&root, String::new(), &mut found);
+        assert!(found.len() > 35, "{found:?}");
+        for leaf in &found {
+            let decoded: Vec<Ticket> = alternatives(root.pointer(leaf).unwrap())
+                .into_iter()
+                .filter_map(|value| {
+                    let mut changed = root.clone();
+                    *changed.pointer_mut(leaf).unwrap() = value;
+                    serde_json::from_value::<Ticket>(changed).ok()
+                })
+                .filter(|t| *t != fixture)
+                .collect();
+            if leaf == "/kind" {
+                assert!(decoded.is_empty(), "one kind of ticket: {decoded:?}");
+                continue;
+            }
+            assert!(
+                !decoded.is_empty(),
+                "no other value of {leaf} decodes: give the test one"
+            );
+            for t in &decoded {
+                assert_ne!(show(t), original, "{leaf} changed, what is shown didn't");
+            }
+        }
+        // A repository's name, a key of `repos`.
+        let mut renamed = root.clone();
+        let repos = renamed["repos"].as_object_mut().unwrap();
+        let terms = repos.remove("omega-code").unwrap();
+        repos.insert("omega-code-x".to_owned(), terms);
+        let t = serde_json::from_value::<Ticket>(renamed).unwrap();
+        assert_ne!(show(&t), original, "the repository's name changed");
+    }
+
+    /// The review after M7.6 (U-5): each command's hint names the command that shows the rest
+    /// (`writ report` said `writ sign --full`), and `writ ls` cuts nothing (it named `writ
+    /// show`, which isn't a command).
+    #[test]
+    fn a_cut_says_which_command_shows_the_rest_and_a_listing_cuts_nothing() {
+        let t = full_ticket();
+        let warnings: Vec<String> = (0..50).map(|i| format!("src/file-{i}.rs")).collect();
+        let report = writ_proto::Report {
+            lease: t.id.clone(),
+            state: State::Closed,
+            title: "t".to_owned(),
+            templates: vec![om(&t).template.clone()],
+            repos: t.repos.keys().cloned().collect(),
+            expected_paths: Vec::new(),
+            summary: None,
+            estimate: None,
+            chain: Vec::new(),
+            granted_seconds: 60,
+            used_seconds: 60,
+            signatures: writ_proto::Count { used: 0, max: 1 },
+            pushes: writ_proto::Count { used: 0, max: 1 },
+            fetches: 0,
+            commits: Vec::new(),
+            pushed: Vec::new(),
+            branches: Vec::new(),
+            denials: Vec::new(),
+            warnings: warnings.clone(),
+            phases: writ_proto::Phases {
+                approval_wait_seconds: None,
+                coding_seconds: None,
+                ci_rounds_seconds: Vec::new(),
+                after_last_push_seconds: None,
+            },
+            truncated: false,
+        };
+        let command = format!("writ report {} --full", t.id);
+        let cut = self::report(&report, &[], Rows::new(false, &command));
+        assert!(
+            cut.contains(&format!(
+                "    … 10 more lines not shown\n      ({command} shows them)\n"
+            )),
+            "{cut}"
+        );
+        assert!(cut.contains("src/file-39.rs") && !cut.contains("src/file-40.rs"));
+        let all = self::report(&report, &[], Rows::new(true, &command));
+        assert!(warnings.iter().all(|w| all.contains(&format!("│ {w}\n"))));
+        assert!(!all.contains("more lines not shown"));
+
+        // Sixteen long templates: every one shown, every row within the width.
+        let templates: Vec<writ_core::names::TemplateName> = (0..16)
+            .map(|i| {
+                format!("template-{i:02}-{}", "t".repeat(50))
+                    .parse()
+                    .unwrap()
+            })
+            .collect();
+        let listing = writ_proto::Listing {
+            tickets: vec![writ_proto::Summary {
+                id: t.id.clone(),
+                lease: t.id.clone(),
+                state: State::Pending,
+                templates: templates.clone(),
+                revision: 1,
+                repos: t.repos.keys().cloned().collect(),
+                created_at: t.created_at,
+                expires_at: t.limits.expires_at,
+                title: "First".into(),
+            }],
+        };
+        let shown = self::listing(&listing, t.created_at);
+        assert!(!shown.contains("writ show"), "{shown}");
+        let joined: String = shown.lines().collect::<String>().replace([' ', '│'], "");
+        for template in &templates {
+            assert!(joined.contains(template.as_str()), "{template}: {shown}");
+        }
+        for line in shown.lines() {
+            assert!(width(line) <= WIDTH, "{line:?}");
+        }
     }
 
     #[test]

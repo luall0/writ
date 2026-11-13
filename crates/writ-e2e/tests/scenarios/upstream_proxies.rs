@@ -114,12 +114,22 @@ const FLAGS: &str = "--yes --approval-url \"$WRIT_APPROVAL_URL\" --key \
 
 /// `command` on a terminal (`script`), `answers` typed one per line: what it showed.
 fn on_terminal(approver: &writ_e2e::Host, command: &str, answers: &[&str]) -> String {
+    exits_on_terminal(approver, command, answers, 0)
+}
+
+/// [`on_terminal`], the command exiting with `code` (6: answered no, nothing signed).
+fn exits_on_terminal(
+    approver: &writ_e2e::Host,
+    command: &str,
+    answers: &[&str],
+    code: i32,
+) -> String {
     let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
     let out = approver.run_with(
         &format!("script -qec '{command}' /dev/null"),
         typed.as_bytes(),
     );
-    assert_eq!(out.status.code(), Some(0), "{command}: {}", stdout(&out));
+    assert_eq!(out.status.code(), Some(code), "{command}: {}", stdout(&out));
     stdout(&out)
 }
 
@@ -226,10 +236,11 @@ fn proxies_are_managed_from_the_approver_s_machine_and_hosts_behind_them_scanned
     // named), and a new name pinned through it.
     // The setup pinned Forgejo's Ed25519 key only: the rescan shows it pinned, and its ECDSA
     // key new. Declined first (nothing signed), then pinned through `--proxy`.
-    let said = on_terminal(
+    let said = exits_on_terminal(
         approver,
         "writ admin host rescan forgejo-behind",
         &["y", "n"],
+        6,
     );
     assert!(
         said.contains("Scanning forgejo-behind:22 from the daemon through proxy socks"),

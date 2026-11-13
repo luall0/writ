@@ -487,7 +487,8 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
         "{writ} admin apply approvers .writ-sealed/approvers --yes --approval-url {ssh} {signer}"
     ));
     let (said, _) = expect(&out, 0, "writ admin apply");
-    assert!(said.contains("+ second ssh-ed25519 "), "{said}");
+    // The key on the next row: a diff row fits the display (the review after M7.6, U-6).
+    assert!(said.contains("+ second ssh-ed25519\n+│ AAAA"), "{said}");
     assert!(
         said.contains("Applied: approvers is version 2 (sha256 "),
         "{said}"

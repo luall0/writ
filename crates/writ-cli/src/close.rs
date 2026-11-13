@@ -107,12 +107,14 @@ fn read_marks(paths: &Paths, leases: &[TicketId]) -> Vec<(i64, Phase)> {
     marks
 }
 
-/// `writ close [<lease>] --summary <text>`.
+/// `writ close [<lease>] --summary <text> [--full]` (`full`: every line of the report's agent
+/// text and warnings).
 pub async fn close(
     paths: &Paths,
     url: &str,
     lease: Option<&TicketId>,
     summary: &str,
+    full: bool,
 ) -> anyhow::Result<Exit> {
     let id = match lease {
         Some(id) => id.clone(),
@@ -139,7 +141,13 @@ pub async fn close(
     let leases: Vec<TicketId> = report.chain.iter().map(|l| l.id.clone()).collect();
     let start = report.chain.first().map_or(0, |l| l.created_at.unix());
     let marks = timings::marked(start, &read_marks(paths, &leases));
-    print!("{}", display::report(&report, &marks, false));
+    // A lease is closed once: what the report cuts, the approver's `writ report` shows (the
+    // review after M7.6, U-5).
+    let command = format!("writ report {id} --full");
+    print!(
+        "{}",
+        display::report(&report, &marks, display::Rows::new(full, &command))
+    );
     match timings_here() {
         Some((path, repo)) => {
             let repo = repo.unwrap_or_else(|| section_of(&report));

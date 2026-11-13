@@ -30,6 +30,8 @@ zeroize.workspace = true
 [dev-dependencies]
 # The count of blocks wiped: the test that proves the global allocator is the wiping one.
 writ-alloc = { workspace = true, features = ["testing"] }
+# The display's exhaustiveness test walks a ticket's canonical JSON, leaf by leaf.
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

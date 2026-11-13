@@ -10,7 +10,7 @@
 //! are conveniences: the daemon checks the namespace, the size, the key and the signature
 //! again.
 
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{BufReader, Read as _};
 
 use anyhow::{Context, bail};
 use writ_core::names::{KeyId, ProofNamespace};
@@ -70,25 +70,16 @@ fn render(proof: &Proof) -> String {
     out
 }
 
-/// Asks on the terminal (stdin holds the message): only `y` or `yes` signs.
+/// Asks on the terminal (stdin holds the message), as every "Sign …?" is asked
+/// ([`super::confirm_on`]: the same answers sign).
 fn confirm() -> anyhow::Result<bool> {
     let tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
         .context("no terminal to ask on: check the proof above and pass --yes")?;
-    let mut out = &tty;
     // The key is named above: the prompt stays one short row.
-    write!(out, "Sign this proof? [y/N]: ").context("cannot write to the terminal")?;
-    out.flush().context("cannot write to the terminal")?;
-    let mut answer = String::new();
-    BufReader::new(&tty)
-        .read_line(&mut answer)
-        .context("cannot read the answer")?;
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    super::confirm_on("Sign this proof?", BufReader::new(&tty), &tty)
 }
 
 /// `writ prove-key`.

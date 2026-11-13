@@ -47,9 +47,12 @@ triggering the signature; it is the trusted display
   an id or a name never reads as two), each continuation behind the gutter, so a row the
   terminal made can't start with agent text that reads like one of `writ sign`'s
   (`  repos  …`). Each agent field shows at most 40 rows (runs of blank lines collapsed),
-  then how many more there are (`writ sign --full` shows everything); the expected paths
-  too, under their repository's enforced terms, one quoted item per line. Lists are quoted
-  so two different lists never read the same.
+  then how many more there are and the command that shows everything (`writ sign <id>
+  --full`). An enforced term is never cut: the expected paths are shown whole, under their
+  repository's enforced terms, one quoted item per line (the ticket's bounds keep them
+  displayable: 100 paths, 16 KiB, per repository; the review after M7.6, `U-1`: the agent
+  chose which paths fell past row 40). Lists are quoted so two different lists never read
+  the same.
 - The enforced terms come in two parts, as the ticket gives them (M6.1.5): **the lease's
   terms once** ("The lease (enforced, for every repository)": repos, committer emails and
   name, signing key, rate, on violation), then **one block per repository** ("Repository
@@ -66,6 +69,15 @@ triggering the signature; it is the trusted display
   ticket happens to be the only one waiting.
 - It signs exactly the canonical bytes it displayed (fetched from the daemon, then decoded and
   re-encoded locally to check they match).
+- Every field of the ticket is displayed: `display::ticket` and `display::summary` destructure
+  the ticket's types with no `..`, and a test changes each leaf of a ticket's canonical JSON
+  in turn and checks the display changes
+  (`every_leaf_of_a_ticket_changes_what_writ_sign_shows`): a field added later can't be
+  signed unseen.
+- The diff sections ("Changes since revision …", "from the terms in force of lease …", "of
+  lease …, renewed", "Narrowed by you") list the agent's words first, each side cut at 40
+  rows like a field unless `--full`, and the enforced terms last, nearest the prompt, never
+  cut.
 
 ### What `writ sign` shows beside the ticket
 
@@ -85,7 +97,9 @@ triggering the signature; it is the trusted display
 All of it comes before the enforced terms, which stay last, right above the prompt.
 
 `writ report <lease>` prints a lease's activity report ([closing](../flows.md#6b-closing-a-ticket)),
-the same the agent got from `writ close`.
+the same the agent got from `writ close`. Its agent text and warnings show 40 rows each, then
+how many more and `writ report <lease> --full`, which shows them all (`writ close --full`
+for the agent: a lease closes once, so its cut report names `writ report`).
 
 ## Admin changes
 
@@ -95,8 +109,11 @@ keystore by a MAC over their head (`writ_crypto::authority`, keyed by a sealed s
 at unseal). They change only by:
 
 - **`writ admin apply <target> <file>`**: `writ` fetches the version in force (`writ admin
-  show`), shows what changes line by line (every line cleaned of what a terminal would act
-  on), and signs a `writ-admin/2` document (`{daemon, target, version, previous, text}`: the
+  show`), shows what changes line by line (two lines of context, each run of changes under
+  the lines that enclose it, `@@ templates: / feature:`; every line cleaned of what a
+  terminal would act on and cut to the display's width; the lines both texts share at their
+  start and end set aside, and a change still past 4,000,000 compared cells refused, to be
+  split, never shown as the whole new text), and signs a `writ-admin/2` document (`{daemon, target, version, previous, text}`: the
   daemon's SSH host key fingerprint, the number and the digest of the version it replaces, the
   new text, at most 100 KiB without control characters but newlines and tabs). The service
   checks the document and the approver's signature, that it names this daemon, and that
@@ -188,11 +205,12 @@ one, on the backend named (`software`, `se-cryptokit`; the old one's by default:
 changes backend, so moving one is a rotation; `writ` refuses a backend the daemon doesn't
 list, or one that doesn't make the key's algorithm, before the signature is asked for) (`<id>-2`, the
 next number after a trailing one, or the name given), one signed change, its public half
-printed to register; once it is registered (Enter), switches every repo and template that
-used the old key to it, a second signed change (a signing key's leases then stop fitting
+printed to register; once it is registered (Enter), switches every repo, proxy and template
+that used the old key to it, a second signed change (a signing key's leases then stop fitting
 their template and are amended: the old public key stays registered for the commits it
-signed); then offers to remove the old key. Without a terminal, `--yes` answers the question
-between the two changes, and the old key stays declared, unused.
+signed); then, once nothing uses the old key, offers to remove it, or says what still uses
+it. `--yes` answers the question between the two changes, on a terminal or not, and the old
+key stays declared, unused.
 
 ## The daemon's checks
 
@@ -404,7 +422,10 @@ are SSHSIGs the approval service verifies. `writ ls --all` returns the 200 most 
 tickets. Commands: `writ info`, `writ ls [--all]`, `writ show <id>`, `writ approve <id>`,
 `writ refuse <id>`, `writ revoke <id>`, `writ prove` (`writ_proto::Command`). Signatures are made with
 `ssh-keygen -Y sign -U -n writ-approval -f <approval key .pub>` against the approver's agent
-socket (`WRIT_APPROVAL_AGENT`, else `SSH_AUTH_SOCK`): only the dedicated approval key is used,
+socket (`WRIT_APPROVAL_AGENT`, else `SSH_AUTH_SOCK`), the bytes to sign on its standard input
+and the signature read from its standard output (never a file, which a Ctrl-C at the Touch
+ID prompt would leave behind: only the key's public half goes through a private temporary
+directory): only the dedicated approval key is used,
 `-U` makes ssh-keygen sign with the agent only (never a private key file beside the `.pub`),
 and ssh-keygen runs by its absolute path (`/usr/bin/ssh-keygen`, or `WRIT_SSH_KEYGEN`) with a
 clean environment, never found through `PATH`. Text from the daemon or from ssh-keygen is

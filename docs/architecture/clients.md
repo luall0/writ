@@ -35,8 +35,10 @@ authenticated: [what `writ` checks](approvals.md#reaching-the-daemon)),
 `WRIT_SSH_KEYGEN` (the ssh-keygen `writ sign` runs, an absolute path; default
 `/usr/bin/ssh-keygen`, never looked up in `PATH`). It never reads `~/.ssh` or uses the user's ssh-agent
 for connections: it would offer personal keys to the daemon. Exit statuses: 0 done, 1 error,
-3 rejected by policy, 4 refused, 5 expired or withdrawn, 6 not signed (`writ sign` or `writ
-prove-key` answered no).
+3 rejected by policy, 4 refused, 5 expired or withdrawn, 6 not signed (the approver answered
+no to a "Sign …?" question: `writ sign`, `writ prove-key`, every `writ admin` change, a
+scan's keys found not matching; every such question takes `y` or `yes`, in any case, and
+nothing else, the end of the input included).
 
 Denial reasons from the daemon reach the agent: `writ-sign` prints them on stderr (escaped,
 like any text from elsewhere) before exiting 1, and git shows them; git shows the gateway's

@@ -276,12 +276,22 @@ A new input is added here in the same change.
   turn every hidden character into a visible `\u{…}`, and `writ-sign` does the same to what
   the daemon and ssh say (a denial lists the commit's paths, which can hold anything). The hidden set is generated from
   Unicode categories (`tool/gen-hidden-chars.py`), never written by hand.
-- **The trusted display is bounded** in rows (40 per agent field unless `--full`, the
-  expected paths too) and in width (every row 78 columns at most, a non-ASCII character
+- **The trusted display is bounded** in rows (40 per agent field unless `--full`, then how
+  many more and the command that shows them; an enforced term, the expected paths included,
+  never cut; the diff sections the same, the enforced changes last) and in width (every row 78 columns at most, a non-ASCII character
   counted as two; a longer line cut by the display, between words, each continuation
   behind the gutter, never left to the terminal to wrap), and **ends on the enforced terms**, one row each,
   right above the prompt. Lists are quoted so two different lists never read the same. A
-  new line of the display that holds agent text goes through `display::cut` or `block`.
+  new line of the display that holds agent text goes through `display::cut` or `block`. Every
+  field of a ticket is shown: the display destructures its types (no `..`), and a test changes
+  each leaf of a ticket's JSON and checks the display changes. An admin change's diff names
+  each hunk's section and entry, cuts its rows to the width, and refuses a change too large to
+  compare rather than show it otherwise.
+- **Every "Sign …?" takes the same answers** (`y` or `yes`, any case; anything else signs
+  nothing) and an answered no exits 6 on every command.
+- **The bytes to sign never touch the disk:** `ssh-keygen -Y sign` reads them on stdin and
+  writes the signature on stdout, so a Ctrl-C at the Touch ID prompt leaves no ticket or
+  policy text behind.
 - **Enforced identities are ASCII** (committer emails), so look-alikes and invisibles can't
   pass for another.
 - **No agent text leaves the network** in a notification, and nothing in a notification

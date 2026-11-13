@@ -107,7 +107,8 @@ fn a_signed_change_applies_at_once_and_is_written_back_to_its_file() {
         );
         let said = stdout(&out);
         assert!(
-            said.contains("+ second ssh-ed25519 "),
+            // The key on the next row: a diff row fits the display (the review after M7.6, U-6).
+            said.contains("+ second ssh-ed25519\n+│ AAAA"),
             "the change is shown: {said}"
         );
         assert!(

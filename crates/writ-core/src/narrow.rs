@@ -5,7 +5,7 @@
 //! [`check`] accepts the signed ticket only if every field is the same as submitted or
 //! narrower. Identity, subject, each repository's template and the text must be identical.
 
-use crate::ticket::Ticket;
+use crate::ticket::{Common, Limits, RepoLimits, RepoTerms, Ticket, TicketText};
 
 /// Why a signed ticket is not a narrowing of the submitted one. Lists every difference.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -16,62 +16,109 @@ pub struct NarrowingError {
 
 /// Checks that `signed` grants nothing `submitted` did not.
 pub fn check(submitted: &Ticket, signed: &Ticket) -> Result<(), NarrowingError> {
+    // Every field placed (the review after M7.6, U-4): one added to the ticket doesn't compile
+    // until it is checked here. The ones bound to `_` are checked by [`widenings`].
+    let Ticket {
+        kind,
+        id,
+        created_at,
+        // Compared whole: a field added to it is compared too.
+        subject,
+        common:
+            Common {
+                committer_emails: _,
+                committer_name: _,
+                signing_key,
+            },
+        repos,
+        text:
+            TicketText {
+                title,
+                task,
+                plan,
+                estimate,
+                amends,
+                renews,
+                revises,
+                revision,
+                previous_feedback,
+            },
+        limits: Limits {
+            expires_at,
+            max_ops_per_minute,
+        },
+        on_violation: _,
+    } = signed;
     let mut reasons = Vec::new();
     let mut same = |name: &str, equal: bool| {
         if !equal {
             reasons.push(format!("{name} changed"));
         }
     };
-    same("kind", submitted.kind == signed.kind);
-    same("id", submitted.id == signed.id);
-    same("created_at", submitted.created_at == signed.created_at);
-    same("subject", submitted.subject == signed.subject);
+    same("kind", submitted.kind == *kind);
+    same("id", submitted.id == *id);
+    same("created_at", submitted.created_at == *created_at);
+    same("subject", submitted.subject == *subject);
     same(
         "common.signing_key",
-        submitted.common.signing_key == signed.common.signing_key,
+        submitted.common.signing_key == *signing_key,
     );
-    let (a, b) = (&submitted.text, &signed.text);
-    same("ticket.title", a.title == b.title);
-    same("ticket.task", a.task == b.task);
-    same("ticket.plan", a.plan == b.plan);
-    same("ticket.estimate", a.estimate == b.estimate);
-    same("ticket.amends", a.amends == b.amends);
-    same("ticket.renews", a.renews == b.renews);
-    same("ticket.revises", a.revises == b.revises);
-    same("ticket.revision", a.revision == b.revision);
+    let a = &submitted.text;
+    same("ticket.title", a.title == *title);
+    same("ticket.task", a.task == *task);
+    same("ticket.plan", a.plan == *plan);
+    same("ticket.estimate", a.estimate == *estimate);
+    same("ticket.amends", a.amends == *amends);
+    same("ticket.renews", a.renews == *renews);
+    same("ticket.revises", a.revises == *revises);
+    same("ticket.revision", a.revision == *revision);
     same(
         "ticket.previous_feedback",
-        a.previous_feedback == b.previous_feedback,
+        a.previous_feedback == *previous_feedback,
     );
 
-    for (repo, b) in &signed.repos {
+    for (repo, b) in repos {
+        // The scope's fields (`_`) are checked by [`widenings`].
+        let RepoTerms {
+            template,
+            operations: _,
+            branches: _,
+            force_push: _,
+            expected_paths: _,
+            limits:
+                RepoLimits {
+                    max_signatures,
+                    max_pushes,
+                    max_push_size,
+                },
+        } = b;
         if let Some(a) = submitted.terms(repo) {
-            if a.template != b.template {
+            if a.template != *template {
                 reasons.push(format!("repos.{repo}.template changed"));
             }
-            let (a, b) = (&a.limits, &b.limits);
+            let a = &a.limits;
             let mut at_most = |name: &str, narrower: bool| {
                 if !narrower {
                     reasons.push(format!("repos.{repo}.limits.{name} raised"));
                 }
             };
-            at_most("max_signatures", b.max_signatures <= a.max_signatures);
-            at_most("max_pushes", b.max_pushes <= a.max_pushes);
-            at_most("max_push_size", b.max_push_size <= a.max_push_size);
+            at_most("max_signatures", *max_signatures <= a.max_signatures);
+            at_most("max_pushes", *max_pushes <= a.max_pushes);
+            at_most("max_push_size", *max_push_size <= a.max_push_size);
         }
     }
     reasons.extend(widenings(submitted, signed));
 
-    let (a, b) = (&submitted.limits, &signed.limits);
+    let a = &submitted.limits;
     let mut at_most = |name: &str, narrower: bool| {
         if !narrower {
             reasons.push(format!("limits.{name} raised"));
         }
     };
-    at_most("expires_at", b.expires_at <= a.expires_at);
+    at_most("expires_at", *expires_at <= a.expires_at);
     at_most(
         "max_ops_per_minute",
-        b.max_ops_per_minute <= a.max_ops_per_minute,
+        *max_ops_per_minute <= a.max_ops_per_minute,
     );
 
     if reasons.is_empty() {

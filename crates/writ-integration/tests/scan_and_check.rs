@@ -107,7 +107,8 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
 
     // On a terminal: scanned, shown, not matching (answered no): nothing pinned.
     let (status, shown) = on_terminal(daemon.writ(&["admin", "host", "add", &host]), &["n"]);
-    assert!(status.success(), "{shown}");
+    // Answered no: nothing signed, the exit says so (6).
+    assert_eq!(status.code(), Some(6), "{shown}");
     assert!(
         shown.contains(&format!("{host} offered these keys")),
         "{shown}"
@@ -196,7 +197,7 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     );
     // Not matching: nothing changed.
     let (status, shown) = on_terminal(daemon.writ(&["admin", "host", "rescan", &host]), &["n"]);
-    assert!(status.success(), "{shown}");
+    assert_eq!(status.code(), Some(6), "{shown}");
     assert!(
         shown.contains(&format!(
             "  ssh-ed25519 {fingerprint}  (new: not in the pin)\r\n"

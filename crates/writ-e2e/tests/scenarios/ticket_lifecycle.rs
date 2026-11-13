@@ -153,7 +153,9 @@ fn tickets_are_requested_signed_refused_revised_amended_and_revoked() {
         .run_with(&format!("writ sign {fourth}"), b"r\nNot this one\n\n");
     let (out, _) = expect(&out, 0, "a refusal at the prompt");
     assert!(
-        out.contains("more lines not shown (writ sign --full shows them)"),
+        out.contains(&format!(
+            "more lines not shown\n      (writ sign {fourth} --full shows them)\n"
+        )),
         "{out}"
     );
     assert!(out.contains("step 40") && !out.contains("step 45"), "{out}");

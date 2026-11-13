@@ -3,7 +3,7 @@
 //!
 //! The client never uses the user's `~/.ssh`, ssh config or ssh-agent: it would offer personal
 //! keys (Secretive's among them) to the daemon. It authenticates only with the key it is given
-//! (a session key, or a throwaway key for the approval API).
+//! (a session key, or the reader key for the approval API).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

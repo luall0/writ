@@ -222,14 +222,22 @@ fn a_lease_is_renewed_closed_and_learned_from() {
         Some(first.as_str())
     );
 
-    // Closed: the report, and the run recorded in the timings file.
+    // Closed: the report, and the run recorded in the timings file. A summary of 45 lines,
+    // shown whole with --full (by default, a field shows 40).
+    agent.ok(
+        "printf 'Renewed once, pushed\\n' > /tmp/summary && seq -f 'step %g' 44 >> /tmp/summary",
+    );
     let out = agent.in_dir(
         "work",
         &format!(
-            "WRIT_SESSION={renewed} writ close --summary 'Renewed once, pushed' --url \"$WRIT_URL\""
+            "WRIT_SESSION={renewed} writ close --summary \"$(cat /tmp/summary)\" --full --url \"$WRIT_URL\""
         ),
     );
     let (report, _) = expect(&out, 0, "writ close");
+    assert!(
+        report.contains("│ step 44\n") && !report.contains("more lines not shown"),
+        "{report}"
+    );
     for words in [
         format!("Activity report of lease {renewed} (closed)"),
         format!("renewal chain      {lease} →"),
@@ -275,7 +283,8 @@ fn a_lease_is_renewed_closed_and_learned_from() {
     );
     agent.ok_in("work", &format!("writ check {file}"));
 
-    // The approver reads the same report.
+    // The approver reads the same report: the summary cut at 40 rows, the command that shows
+    // the rest named; then whole with --full.
     let out = stack.approver.run(&format!(
         "writ report {renewed} --approval-url \"$WRIT_APPROVAL_URL\""
     ));
@@ -285,6 +294,24 @@ fn a_lease_is_renewed_closed_and_learned_from() {
         "{shown}"
     );
     assert!(shown.contains("Renewed once, pushed"), "{shown}");
+    assert!(
+        shown.contains("│ step 39\n") && !shown.contains("step 44"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!(
+            "    … 5 more lines not shown\n      (writ report {renewed} --full shows them)\n"
+        )),
+        "{shown}"
+    );
+    let out = stack.approver.run(&format!(
+        "writ report {renewed} --full --approval-url \"$WRIT_APPROVAL_URL\""
+    ));
+    let (shown, _) = expect(&out, 0, "writ report --full");
+    assert!(
+        shown.contains("│ step 44\n") && !shown.contains("more lines not shown"),
+        "{shown}"
+    );
 
     // In the agent's own folders.
     agent.clone_from_forgejo(&stack, REPO, "global");

@@ -14,8 +14,7 @@ use rustls::pki_types::ServerName;
 use serde::de::DeserializeOwned;
 use writ_proto::{ApiError, Command};
 
-/// The largest reply read from the daemon.
-/// The most of a reply read, over HTTPS and SSH alike.
+/// The most of a reply read from the daemon, over HTTPS and SSH alike.
 pub const MAX_REPLY: usize = 8 * 1024 * 1024;
 
 /// Finds the pinned fingerprint for `name` in the pins file. None pinned: an error saying how
@@ -49,8 +48,10 @@ pub fn pinned_fingerprint(pins: &Path, name: &str) -> anyhow::Result<String> {
 
 /// Replaces the pin `old` of `name` with `new` in the pins file (M7.5, `writ admin tls rotate`:
 /// the daemon's new certificate, given over a connection its old one authenticated). Only a
-/// line naming `name` with `old` changes; the file is read with the same checks as for a
-/// connection, written whole beside it (mode 0600), then renamed over it. None such: refused.
+/// line naming `name` with `old` changes (what follows the pin on it kept, as
+/// [`pinned_fingerprint`] reads such a line: the review after M7.6, U-11); the file is read
+/// with the same checks as for a connection, written whole beside it (mode 0600), then
+/// renamed over it. None such: refused.
 pub fn repin(pins: &Path, name: &str, old: &str, new: &str) -> anyhow::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -60,15 +61,19 @@ pub fn repin(pins: &Path, name: &str, old: &str, new: &str) -> anyhow::Result<()
     for line in text.lines() {
         let mut fields = line.split_whitespace();
         let hit = matches!(
-            (fields.next(), fields.next(), fields.next()),
-            (Some(hosts), Some(pin), None)
+            (fields.next(), fields.next()),
+            (Some(hosts), Some(pin))
                 if !line.trim_start().starts_with('#')
                     && pin == old
                     && hosts.split(',').any(|h| h == name)
         );
         if hit {
             let hosts = line.split_whitespace().next().unwrap_or_default();
-            out.push_str(&format!("{hosts} {new}\n"));
+            let rest: Vec<&str> = line.split_whitespace().skip(2).collect();
+            match rest.is_empty() {
+                true => out.push_str(&format!("{hosts} {new}\n")),
+                false => out.push_str(&format!("{hosts} {new} {}\n", rest.join(" "))),
+            }
             changed = true;
         } else {
             out.push_str(line);
@@ -202,5 +207,35 @@ mod tests {
         assert!(error.starts_with("invalid pin for bad:1"), "{error}");
         let error = crate::error_of(pinned_fingerprint(&dir.path().join("missing"), "[h]:8443"));
         assert!(error.contains("is not pinned"), "{error}");
+    }
+
+    /// The review after M7.6 (U-11): a pin line with words after the pin connects (they are
+    /// read past), but `tls rotate` found "no line pins…" once the daemon had rotated. The
+    /// line is replaced, its words kept; another host's line and a comment are not touched.
+    #[test]
+    fn a_pin_with_words_after_it_is_replaced_as_it_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("tls_pins");
+        let old = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+        let new = "SHA256:AAAAQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+        std::fs::write(
+            &file,
+            format!("# [h]:8443 {old}\n[h]:8443 {old} the office daemon\nother {old}\n"),
+        )
+        .unwrap();
+        assert_eq!(pinned_fingerprint(&file, "[h]:8443").unwrap(), old);
+        repin(&file, "[h]:8443", old, new).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            format!("# [h]:8443 {old}\n[h]:8443 {new} the office daemon\nother {old}\n")
+        );
+        assert_eq!(pinned_fingerprint(&file, "[h]:8443").unwrap(), new);
+        assert_eq!(
+            crate::error_of(repin(&file, "[h]:8443", old, new)),
+            format!(
+                "{}: no line pins [h]:8443 to {old}: add `[h]:8443 {new}` yourself",
+                file.display()
+            )
+        );
     }
 }
