@@ -53,7 +53,7 @@ pub enum Command {
     /// `writ admin token <id>`, first step: the token file in force for the credential `id`
     /// (its digest, never the token). Reply: [`TokenShown`].
     TokenShow { id: KeyId },
-    /// `writ admin token <id>`: an approver's signed `writ-token/2` ([`TokenRequest`] on
+    /// `writ admin token <id>`: an approver's signed `writ-token/3` ([`TokenRequest`] on
     /// stdin). Reply: [`TokenApplied`].
     TokenApply,
     /// `writ recovery check` (M7.6): the keystore's recovery recipient and its challenge, to

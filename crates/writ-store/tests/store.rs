@@ -1148,3 +1148,44 @@ fn closing_ends_an_active_lease_and_keeps_an_ended_one_s_end() {
         Err(StoreError::Lifecycle(_))
     ));
 }
+
+/// The review after M7.6 (A-6): each credential's count of token changes only grows, one at a
+/// time from the count in force, and outlives everything else of the id: a reopened store
+/// keeps it, and nothing deletes it.
+#[test]
+fn a_token_s_change_count_only_grows_and_survives_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("writ.db");
+    let id: KeyId = "Token-01".parse().unwrap();
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.token_version(&id).unwrap(), 0, "never given one");
+    assert_eq!(store.bump_token_version(&id, 0).unwrap(), 1);
+    // From another count than the one in force, on both sides: refused, nothing counted.
+    for stale in [0, 2] {
+        assert!(
+            matches!(
+                store.bump_token_version(&id, stale),
+                Err(StoreError::TokenVersion { expected, found: 1, .. }) if expected == stale
+            ),
+            "from {stale}"
+        );
+    }
+    assert_eq!(store.token_version(&id).unwrap(), 1);
+    assert_eq!(store.bump_token_version(&id, 1).unwrap(), 2);
+    // Another spelling of the same file's name is the same count; another id its own.
+    let folded: KeyId = "token-01".parse().unwrap();
+    assert_eq!(store.token_version(&folded).unwrap(), 2);
+    let other: KeyId = "token-02".parse().unwrap();
+    assert_eq!(store.token_version(&other).unwrap(), 0);
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.token_version(&id).unwrap(), 2, "kept across a reopen");
+    drop(store);
+    // A count of 0 (which would read as "never given one") can't be written, even by hand.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let refused = conn.execute("UPDATE token_versions SET version = 0", []);
+    assert!(
+        matches!(refused, Err(rusqlite::Error::SqliteFailure(..))),
+        "the schema refuses it: {refused:?}"
+    );
+}

@@ -83,7 +83,9 @@ certificate on the deny list, and each sweep (every request runs one first) reco
 until the store takes it.
 
 `decide_sign` checks the count and the rate before the commit's paths: a request refused for
-them never pays for the path match. That match is bounded by the ticket: at most 100
+them never pays for the path match. `recheck_sign` is the same decision without the count,
+the rate and the lease's exhaustion, for a signature's last phase (the slot the first phase
+took fills them), against the policy in force then (the review after M7.6, A-7). That match is bounded by the ticket: at most 100
 `expected_paths` patterns, 16 KiB of them in all, 16 wildcards (`*`, `?`, `[`, `{`) each.
 
 ## Lease store + ledger (SQLite)
@@ -95,8 +97,8 @@ them never pays for the path match. That match is bounded by the ticket: at most
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
 Tables (`writ_store::Store`). The state carries its version: `PRAGMA user_version` (the
-state version, `STATE_VERSION`, now 10: M6.2's policy shape, which the authority versions
-hold) and `formats.ticket_kind` (the ticket format it stores, `writ-ticket/3`). A new database gets the whole schema at once; a database of any other version
+state version, `STATE_VERSION`, now 11: M6.2's policy shape, which the authority versions
+hold, and the token changes' counts of M7.7) and `formats.ticket_kind` (the ticket format it stores, `writ-ticket/3`). A new database gets the whole schema at once; a database of any other version
 or ticket format is refused at open, both versions named (`StoreError::OtherVersion`,
 `OtherTicketFormat`): no migration chain, never a silent mix. A format change bumps the version
 and the operator starts that version from a new state directory ([decisions](../decisions.md)).
@@ -106,6 +108,7 @@ and the operator starts that version from a new state directory ([decisions](../
 | `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with, the source it came from (`source`: an IPv4 address, an IPv6 /64 or `local`; what `max_active_per_source` and `writ sign`'s other leases are counted by) and the lease it renews (`renews`). A lease is the row of its first ticket, with the certificate serial, `current_ticket` (the row whose terms are in force: itself, or the last applied amendment), the certificate issued for it, and the closing summary (`summary`) |
 | `usage` | `(lease, repo)` → the `signatures` and `pushes` counters of that lease in that repo (M6.1.5, version 9: each repo counted against its own terms; a repo with nothing used yet has no row) |
 | `formats` | One row: the ticket format the state holds |
+| `token_versions` | A credential id (ASCII lowercase: one count per token file, on a file system that folds case) → how many token changes (`writ-token/3`) were applied for it (version 11, the review after M7.6, A-6). Never deleted, not even when the id leaves the policy and its token file goes: a change names the count it replaces, so it applies once. An id never given a token has no row (count 0) |
 | `ops` | One row per allowed operation of a lease, for `max_ops_per_minute` (window: the last 60 s). The daemon's timer sweep deletes rows an hour past the window (`Store::prune_ops`): a clock set back by up to an hour still counts what it must |
 | `ledger` | `(commit, lease, repo)` → signer key id, time, the digest of the paths the commit touched as signing computed them (`writ_git::paths::digest`; none when unknown, schema 4). The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry. Under `ticket_link: notes` (schema 5), each entry's `note`: none (not asked for), `pending` once upstream took the commit (with `note_credential`, the credential of that push, which pushes the note), `written` once the note is upstream; a written note stays written |
 
@@ -141,7 +144,8 @@ signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remot
 (a lease's [notes](gateway.md#notes) pushed upstream, or not, one line per lease and push of
 the notes ref), `admin`, `seal`, `unseal`, `key` (a key made on the host by `writd recover`,
 with its public half), `scan` (a [host key scan](approvals.md#the-daemons-checks): allowed
-with the host, port and fingerprints read and the approver who signed it, or denied with why:
+with the host and port (`<host>:<port>: scanning`) and the approver who signed it, written
+before the daemon connects out; then done with the fingerprints read, or denied with why:
 the document refused, the host not reached), `check` (an [upstream check](approvals.md#the-daemons-checks):
 allowed with each step, or denied with the step that failed and what upstream said)), `result` (`allowed`, `denied`, `done`), `lease`,
 `ticket`, `cert`, `approver`, `repo`, `commit`, `refs`, `committer`, `key` (a proof's key, the

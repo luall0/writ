@@ -1,6 +1,6 @@
 //! A secret sealed on the approver's machine for the daemon's keystore: encrypted to the
 //! keystore's public recipient (age X25519), so only the keystore's identity reads it, and
-//! carried as standard base64 in a signed document (`writ-token/2`). Sealing needs no secret:
+//! carried as standard base64 in a signed document (`writ-token/3`). Sealing needs no secret:
 //! the recipient is public, served by `writ info` over the pinned channel.
 
 use base64ct::{Base64, Encoding};

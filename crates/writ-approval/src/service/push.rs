@@ -3,8 +3,12 @@
 //! new commits and the paths each touches, the pack's size), the service looks every commit
 //! up in the ledger and decides with `decide_push`, and takes the push from the lease's
 //! count and rate, all under one lock. Nothing reaches upstream or the mirror before this.
+//! A push decided is in flight ([`InFlightPush`]) until the gateway is done with upstream: the
+//! sweep doesn't mark its lease used up meanwhile, or the check before upstream would refuse
+//! the push the count was just taken for (the review after M7.6, A-3).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use writ_core::caller::CallerFacts;
 use writ_core::config::PushMode;
@@ -45,6 +49,70 @@ impl Pushing {
         )
         .repo(&self.repo)
         .refs(self.updates.iter().map(|u| u.name.clone()))
+    }
+}
+
+/// A push [`Service::push`] allowed, on its way upstream: its lease, whose count it took.
+/// While it lives, the sweep doesn't mark the lease used up (revoked or expired, it still
+/// ends). Ended by [`InFlightPush::end`] once the push is over, whatever became of it, or
+/// when dropped.
+pub struct InFlightPush {
+    service: Arc<Service>,
+    lease: Lease,
+    ended: bool,
+}
+
+impl std::fmt::Debug for InFlightPush {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InFlightPush")
+            .field("lease", &self.lease.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl InFlightPush {
+    /// The lease the push was decided under.
+    pub fn lease(&self) -> &Lease {
+        &self.lease
+    }
+
+    /// The push is over: the lease is marked used up now if it is (a sweep). Blocks on the
+    /// state lock: off the async threads.
+    pub fn end(mut self) {
+        self.release();
+    }
+
+    fn release(&mut self) {
+        if self.ended {
+            return;
+        }
+        self.ended = true;
+        let service = &self.service;
+        // Releasing lets the lease be marked used up: a reduction of privilege, so a poisoned
+        // lock is recovered for it (and no sweep is run on a state that can't be trusted).
+        let mut inner = match service.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => {
+                poisoned.into_inner().pushing.end(&self.lease.id);
+                return;
+            }
+        };
+        inner.pushing.end(&self.lease.id);
+        let swept = service
+            .now()
+            .and_then(|now| service.sweep_locked(&mut inner, now));
+        drop(inner);
+        match swept {
+            Ok(true) => service.changed.notify_waiters(),
+            Ok(false) => {}
+            Err(e) => tracing::error!(error = %e.detail(), "sweep failed"),
+        }
+    }
+}
+
+impl Drop for InFlightPush {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
@@ -112,8 +180,11 @@ impl Service {
     /// Decides a push under the lease the certificate stands for: each new commit looked up
     /// in the ledger, `decide_push`, then the push taken from the lease's count and rate, all
     /// under one lock. One `push` line, whatever the outcome; a violation under
-    /// `on_violation: revoke_lease` revokes the lease (the caller drops its sessions).
-    pub fn push(&self, pushing: &Pushing) -> Result<Lease, Denial> {
+    /// `on_violation: revoke_lease` revokes the lease (the caller drops its sessions). An
+    /// allowed push is in flight until the caller ends it ([`InFlightPush`]).
+    pub fn push(&self, pushing: &Pushing) -> Result<InFlightPush, Denial> {
+        // The service is always shared (`Service::new` returns an `Arc`): fail closed if not.
+        let service = self.me.upgrade().ok_or_else(Denial::internal)?;
         let (now, mut inner) = self.begin().map_err(super::as_denial)?;
         let event = pushing.event(now);
         let refuse = |inner: &mut Inner, event: &AuditEvent, denial: Denial| {
@@ -176,7 +247,13 @@ impl Service {
         if let Err(e) = Self::log(&mut inner, &event) {
             return Err(Denial::new(DenyCode::Invalid, e.to_string()));
         }
-        Ok(lease)
+        // In flight from the moment its count is taken, under the same lock.
+        inner.pushing.start(&lease.id);
+        Ok(InFlightPush {
+            service,
+            lease,
+            ended: false,
+        })
     }
 
     /// The new commits of a push whose paths the gateway must compute again: those the

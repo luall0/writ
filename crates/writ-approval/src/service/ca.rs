@@ -4,7 +4,6 @@
 //! force, is the daemon's ([`writ_gateway`]'s `AdminApplier`); deciding and logging is here.
 
 use writ_core::caller::CallerFacts;
-use writ_core::canonical::Canonical;
 use writ_core::names::KeyFingerprint;
 use writ_core::signed::CaRotation;
 use writ_proto::CaRequest;
@@ -15,8 +14,9 @@ use super::scan::within;
 use super::tls::MAX_ROTATIONS_A_MINUTE;
 use crate::{RefusalCode, ServiceError};
 
-/// A rotation whose document and signature passed: only [`Service::check_ca`] makes one.
-#[derive(Debug, Clone)]
+/// A rotation whose document and signature passed: only [`Service::check_ca`] makes one, and
+/// it is never copied (what holds one moves it).
+#[derive(Debug)]
 pub struct CheckedCa {
     rotation: CaRotation,
     approver: KeyFingerprint,
@@ -50,23 +50,19 @@ impl Service {
         self.opened()?;
         let checked = self.ca_document(request);
         if let Err(e) = &checked {
-            self.ca_logged(None, Err(&e.to_string()), caller);
+            self.ca_denied(None, &e.to_string(), caller);
         }
         checked
     }
 
     fn ca_document(&self, request: &CaRequest) -> Result<CheckedCa, ServiceError> {
-        let rotation = CaRotation::from_canonical(request.document.as_bytes())
-            .map_err(|e| refused(format!("not a writ-ca/1 document: {e}")))?;
-        let approver = self
-            .verify_approver(request.document.as_bytes(), &request.signature)
-            .map_err(|reason| ServiceError::refused(RefusalCode::Signature, reason))?;
-        if rotation.daemon != self.boot.daemon {
-            return Err(refused(format!(
-                "the rotation names daemon {}, not this one ({})",
-                rotation.daemon, self.boot.daemon
-            )));
-        }
+        let (rotation, approver) = self.approver_document(
+            &request.document,
+            &request.signature,
+            |r: &CaRotation| &r.daemon,
+            "rotation",
+            RefusalCode::Ca,
+        )?;
         let now = self.now()?;
         if !within(&mut self.outbound().rotations, now, MAX_ROTATIONS_A_MINUTE) {
             return Err(refused(format!(
@@ -98,36 +94,25 @@ impl Service {
         Self::log(&mut inner, &event)
     }
 
-    /// Logs a CA rotation refused (denied, with the reason), or one done whose line wasn't
-    /// written first (a rotation finished at start).
-    pub fn ca_logged(
-        &self,
-        checked: Option<&CheckedCa>,
-        result: Result<&KeyFingerprint, &str>,
-        caller: &CallerFacts,
-    ) {
+    /// Logs a checked CA rotation refused after its check (denied, with the reason: a CA no
+    /// longer in force, a backend the daemon lacks, the key not made). A rotation done has its
+    /// line from [`Service::ca_rotating`], before it is in force.
+    pub fn ca_refused(&self, checked: &CheckedCa, why: &str, caller: &CallerFacts) {
+        self.ca_denied(Some(checked), why, caller);
+    }
+
+    fn ca_denied(&self, checked: Option<&CheckedCa>, why: &str, caller: &CallerFacts) {
         let (Ok(now), Ok(mut inner)) = (self.now(), self.lock()) else {
             return;
         };
-        let (outcome, reason) = match (result, checked) {
-            (Ok(new), Some(checked)) => (
-                Outcome::Done,
-                format!(
-                    "SSH CA rotated: {} replaced by {new}, its key on backend {}",
-                    checked.rotation.replaces, checked.rotation.backend
-                ),
+        let reason = match checked {
+            Some(checked) => format!(
+                "SSH CA not rotated (CA {}, backend {}): {why}",
+                checked.rotation.replaces, checked.rotation.backend
             ),
-            (Ok(new), None) => (Outcome::Done, format!("SSH CA rotated: {new}")),
-            (Err(why), Some(checked)) => (
-                Outcome::Denied,
-                format!(
-                    "SSH CA not rotated (CA {}, backend {}): {why}",
-                    checked.rotation.replaces, checked.rotation.backend
-                ),
-            ),
-            (Err(why), None) => (Outcome::Denied, format!("SSH CA not rotated: {why}")),
+            None => format!("SSH CA not rotated: {why}"),
         };
-        let mut event = AuditEvent::new(now, EventKind::Admin, outcome)
+        let mut event = AuditEvent::new(now, EventKind::Admin, Outcome::Denied)
             .caller(caller)
             .reason(reason);
         if let Some(checked) = checked {
@@ -141,11 +126,14 @@ impl Service {
         Ok(self.opened()?.ca.public_key())
     }
 
-    /// Puts `key` in force for every certificate from now on (a CA rotation). A certificate
-    /// signed by the CA it replaces while an approval was in flight is signed again by this
-    /// one before its lease is recorded ([`Service::approve`]'s last phase).
+    /// Puts `key` in force for every certificate from now on: the rotation `checked` asked
+    /// for, its line written ([`Service::ca_rotating`]). A certificate signed by the CA it
+    /// replaces while an approval was in flight is signed again by this one before its lease
+    /// is recorded ([`Service::approve`]'s last phase).
     pub fn replace_ca(
         &self,
+        // The proof that an approver asked for it: nothing else of it is needed here.
+        _asked: &CheckedCa,
         key: std::sync::Arc<dyn writ_crypto::ca::CaSigner>,
     ) -> Result<(), ServiceError> {
         self.opened()?.ca.replace(key);

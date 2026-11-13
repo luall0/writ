@@ -349,4 +349,40 @@ mod tests {
         }));
         assert!(!String::from_utf8_lossy(&none).contains("keystore"));
     }
+
+    /// The review after M7.6 (A-6): a token's change count travels in both replies, and a
+    /// reply without it (the format before) is unreadable, never read as count 0.
+    #[test]
+    fn a_token_s_change_count_round_trips_and_is_required() {
+        let daemon: writ_core::names::KeyFingerprint =
+            "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+                .parse()
+                .unwrap();
+        let shown = TokenShown {
+            daemon: daemon.clone(),
+            id: "token-01".parse().unwrap(),
+            version: 4,
+            previous: writ_core::authority::PreviousToken::None,
+        };
+        let bytes = encode_reply(&Ok::<_, ApiError>(shown.clone()));
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains(r#""version":4,"previous":"none""#), "{text}");
+        assert_eq!(decode_reply::<TokenShown>(&bytes), Ok(shown));
+        let without = text.replace(r#""version":4,"#, "");
+        let error = decode_reply::<TokenShown>(without.as_bytes()).unwrap_err();
+        assert!(
+            error.message.contains("missing field `version`"),
+            "{error:?}"
+        );
+
+        let applied = TokenApplied {
+            id: "token-01".parse().unwrap(),
+            version: 5,
+            digest: writ_core::authority::TextDigest::of_bytes(b"file"),
+            replaced: writ_core::authority::PreviousToken::None,
+            signed_by: daemon,
+        };
+        let bytes = encode_reply(&Ok::<_, ApiError>(applied.clone()));
+        assert_eq!(decode_reply::<TokenApplied>(&bytes), Ok(applied));
+    }
 }

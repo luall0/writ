@@ -28,7 +28,7 @@ mod unseal;
 pub use admin::{AdminParsed, AlteredAtRest, CheckedAdmin, InForce};
 pub use ca::CheckedCa;
 pub use gateway::GatewayDenial;
-pub use push::Pushing;
+pub use push::{InFlightPush, Pushing};
 pub use scan::{CheckedScan, MAX_CHECKS_A_MINUTE, MAX_NONCES, MAX_SCANS_A_MINUTE, NONCE_SECONDS};
 pub use sign::{SignObject, SignedCommit, Signing};
 pub use submissions::{
@@ -262,7 +262,10 @@ struct Inner {
     /// Each lease's allowed `connect` lines in the current window, and those counted past it.
     connections: coalesced::Coalesced,
     /// Signatures between their first and last phase ([`sign`]).
-    signing: sign::InFlightSignatures,
+    signing: sign::InFlightCounts,
+    /// Pushes decided and not yet ended ([`push`]): taken from the lease's count, on their way
+    /// upstream (the review after M7.6, A-3).
+    pushing: sign::InFlightCounts,
     /// Revocations the daemon decided (a violation, an ended session, a removed approver)
     /// that the store couldn't record, with their reason: their certificates are refused in
     /// memory meanwhile, and each sweep records them again until the store takes them.
@@ -411,7 +414,8 @@ impl Service {
                 submissions,
                 denials: coalesced::Coalesced::denials(),
                 connections: coalesced::Coalesced::connections(),
-                signing: sign::InFlightSignatures::default(),
+                signing: sign::InFlightCounts::default(),
+                pushing: sign::InFlightCounts::default(),
                 unrecorded: std::collections::BTreeMap::new(),
             }),
             revoked: RwLock::new(revoked),
@@ -701,7 +705,7 @@ impl Service {
     }
 
     /// This daemon: the fingerprint of its SSH host key, which every signed document bound to
-    /// one daemon names (`writ-unseal/1`, `writ-admin/2`, `writ-token/2`).
+    /// one daemon names (`writ-unseal/1`, `writ-admin/2`, `writ-token/3`).
     pub fn daemon(&self) -> &KeyFingerprint {
         &self.boot.daemon
     }

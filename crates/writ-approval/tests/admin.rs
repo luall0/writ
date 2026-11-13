@@ -401,6 +401,87 @@ fn removing_an_approver_revokes_the_leases_it_signed() {
     );
 }
 
+/// The review after M7.6 (A-4): a daemon stopped once an approvers change is recorded and
+/// before the leases the removed key signed are revoked (here: the store takes none of the
+/// revocations, and the daemon stops with them in memory only) starts with those leases
+/// active; its unseal revokes them, each with its reason. A lease a kept approver signed is
+/// left as it was.
+#[test]
+fn a_removal_cut_short_by_a_stop_is_finished_at_the_next_unseal() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let shown = h.service.admin_show(AdminTarget::Approvers).unwrap();
+    let other = generate(KeyKind::Ed25519).unwrap();
+    let both = format!(
+        "{}other {}\n",
+        shown.text,
+        other.public_key().to_openssh().unwrap()
+    );
+    let apply = |text: &str| {
+        let request = change(
+            &h.approver,
+            AdminTarget::Approvers,
+            current(&h, AdminTarget::Approvers),
+            text,
+        );
+        let checked = h.service.check_admin(&request, &facts()).unwrap();
+        h.service
+            .commit_admin(
+                &checked,
+                parsed_approvers(text),
+                vec![],
+                vec![],
+                Default::default(),
+                &facts(),
+            )
+            .unwrap()
+    };
+    apply(&both);
+    let by_other = lease_by(&h, &other);
+    let by_me = lease(&h);
+    let orphan: writ_core::names::TicketId = by_other.key_id.parse().unwrap();
+    let mine: writ_core::names::TicketId = by_me.key_id.parse().unwrap();
+    // `other` removed, the change recorded; the store takes no revocation before the stop.
+    h.store_breaker.fail_state_changes(u32::MAX);
+    let applied = apply(&shown.text);
+    assert!(applied.revoked.is_empty(), "{:?}", applied.revoked);
+    assert!(h.service.is_revoked(by_other.serial), "barred in memory");
+    drop(h);
+
+    let store = writ_store::Store::open(&dir.path().join("leases.db")).unwrap();
+    assert_eq!(
+        store.lease(&orphan).unwrap().unwrap().state,
+        writ_core::lease::State::Active,
+        "the stop left it active"
+    );
+    drop(store);
+    let h = TestServiceBuilder::new(POLICY).sealed().build(dir.path());
+    assert!(!h.service.is_revoked(by_other.serial), "nothing in memory");
+    h.open().unwrap();
+    assert_eq!(
+        h.service.show(&orphan).unwrap().state,
+        writ_core::lease::State::Revoked
+    );
+    assert!(h.service.is_revoked(by_other.serial));
+    assert_eq!(
+        h.service.show(&mine).unwrap().state,
+        writ_core::lease::State::Active
+    );
+    let other_fp = other
+        .public_key()
+        .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
+        .to_string();
+    let revoked: Vec<_> = h
+        .events("revoke", "done")
+        .into_iter()
+        .filter(|l| l["lease"] == orphan.as_str())
+        .collect();
+    assert_eq!(
+        revoked.last().unwrap()["reason"],
+        format!("its approver {other_fp} was removed from approvers (version 3)")
+    );
+}
+
 /// The second review after M5.5 (R3): the leases a removed approver signed were listed after
 /// the change was in force, and a list the store couldn't give left them running. Listed
 /// under the change's lock now, before anything is written: the change is refused instead.

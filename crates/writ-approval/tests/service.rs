@@ -340,17 +340,10 @@ fn a_signed_ticket_becomes_a_lease_with_a_certificate_until_it_expires() {
         START,
     )
     .unwrap();
-    let lease = h
-        .service
-        .authorize(&identity(&cert), &facts(), None)
-        .unwrap();
+    let lease = h.service.authorize(&identity(&cert), &facts()).unwrap();
     assert_eq!(lease.id, ticket.id);
-    h.service
-        .authorize(&identity(&cert), &facts(), Some(Operation::CommitSign))
-        .unwrap();
     assert_eq!(h.events("grant", "allowed"), 1);
     assert_eq!(h.events("connect", "allowed"), 1);
-    assert_eq!(h.events("sign", "allowed"), 1);
 }
 
 #[test]
@@ -443,7 +436,7 @@ fn a_narrowed_approval_is_the_lease_and_bounds_the_certificate() {
     assert_eq!(cert.valid_before(), START + 1800);
     let denial = h
         .service
-        .authorize(&identity(&cert), &facts(), Some(Operation::Push))
+        .may_push(&identity(&cert), &facts(), &"omega-code".parse().unwrap())
         .unwrap_err();
     assert_eq!(denial.code, DenyCode::Operation);
     assert_eq!(h.events("push", "denied"), 1);
@@ -567,10 +560,7 @@ fn a_revocation_puts_the_certificate_on_the_deny_list_and_announces_it() {
     assert_eq!(h.revoke_signed(&ticket.id).unwrap(), State::Revoked);
     assert_eq!(revocations.try_recv().unwrap(), cert.serial());
     assert!(h.service.is_revoked(cert.serial()));
-    let denial = h
-        .service
-        .authorize(&identity(&cert), &facts(), None)
-        .unwrap_err();
+    let denial = h.service.authorize(&identity(&cert), &facts()).unwrap_err();
     assert_eq!(denial.code, DenyCode::NotActive);
     refused_as(
         h.revoke_signed(&ticket.id),
@@ -723,10 +713,7 @@ fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
     };
     let cert = Certificate::from_openssh(&certificate).unwrap();
     // Over the network there is no process chain: the lease can't be used.
-    let denial = h
-        .service
-        .authorize(&identity(&cert), &facts(), None)
-        .unwrap_err();
+    let denial = h.service.authorize(&identity(&cert), &facts()).unwrap_err();
     assert_eq!(denial.code, DenyCode::Caller);
     let inside = CallerFacts {
         source_addr: None,
@@ -738,9 +725,7 @@ fn a_lease_bound_to_a_session_needs_a_watcher_and_ends_with_it() {
             unbindable: None,
         }]),
     };
-    h.service
-        .authorize(&identity(&cert), &inside, None)
-        .unwrap();
+    h.service.authorize(&identity(&cert), &inside).unwrap();
 
     let mut revocations = h.service.subscribe_revocations();
     h.watcher.exit(4242, 7);
@@ -1502,7 +1487,7 @@ fn a_revocation_never_waits_for_the_audit_log() {
     assert!(h.service.is_revoked(cert.serial()));
     assert_eq!(
         h.service
-            .authorize(&identity(&cert), &facts(), None)
+            .authorize(&identity(&cert), &facts())
             .unwrap_err()
             .code,
         DenyCode::NotActive

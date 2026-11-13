@@ -68,9 +68,12 @@ impl Service {
             let Some(next) = lease::due_transition(&lease, &usage, now) else {
                 continue;
             };
-            // A signature in flight took its slot already: the lease is used up once it is
-            // settled, not before (its own last check would refuse it).
-            if next == State::Exhausted && inner.signing.any(&lease.id) {
+            // A signature or a push in flight took its slot already: the lease is used up once
+            // it is settled, not before (its own last check, or the check before upstream,
+            // would refuse it: the review after M7.6, A-3).
+            if next == State::Exhausted
+                && (inner.signing.any(&lease.id) || inner.pushing.any(&lease.id))
+            {
                 continue;
             }
             // The certificate is refused first: whatever happens to the store write, the

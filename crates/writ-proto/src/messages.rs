@@ -330,10 +330,13 @@ pub struct RecoveryShown {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenShown {
-    /// The fingerprint of the daemon's SSH host key: what a `writ-token/2` names as `daemon`.
+    /// The fingerprint of the daemon's SSH host key: what a `writ-token/3` names as `daemon`.
     pub daemon: KeyFingerprint,
     pub id: KeyId,
-    /// What a `writ-token/2` replacing it names as `previous`.
+    /// How many token changes of `id` the daemon applied (kept once `id` leaves the policy):
+    /// what a `writ-token/3` replacing it names as `version`.
+    pub version: u64,
+    /// What a `writ-token/3` replacing it names as `previous`.
     pub previous: PreviousToken,
 }
 
@@ -558,8 +561,8 @@ pub struct OpenpgpShown {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenRequest {
-    /// The canonical bytes of the `writ-token/2` document: the daemon, the credential, the
-    /// file it replaces, the token sealed to the keystore's recipient.
+    /// The canonical bytes of the `writ-token/3` document: the daemon, the credential, the
+    /// change count and the file it replaces, the token sealed to the keystore's recipient.
     pub document: String,
     /// The approver's armored SSHSIG over them, namespace `writ-approval`.
     pub signature: String,
@@ -570,6 +573,8 @@ pub struct TokenRequest {
 #[serde(deny_unknown_fields)]
 pub struct TokenApplied {
     pub id: KeyId,
+    /// The id's change count now (the change's `version`, plus one).
+    pub version: u64,
     /// The digest of the new token file.
     pub digest: TextDigest,
     pub replaced: PreviousToken,

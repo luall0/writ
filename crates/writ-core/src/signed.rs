@@ -426,46 +426,60 @@ impl Admin {
     }
 }
 
-/// Only `"writ-token/2"` (`writ-token/1` named no daemon).
+/// Only `"writ-token/3"` (`writ-token/1` named no daemon; `writ-token/2` named the token file it
+/// replaced by its digest alone, so once the id's file was deleted with its key and the id
+/// declared again, its first change, `previous: none`, applied again: the review after M7.6,
+/// A-6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TokenKind {
     #[default]
-    #[serde(rename = "writ-token/2")]
-    V2,
+    #[serde(rename = "writ-token/3")]
+    V3,
 }
 
 /// The approver puts, on the daemon `daemon`, the token `sealed` (encrypted to the keystore's
 /// recipient on their machine) in place of the token file `previous` for the credential
-/// `id`: an `https://` upstream's, or a notifier's kept sealed. Replayed, sent to another
-/// daemon, or signed against a file no longer there, it changes nothing. (`previous` is the
-/// digest of a file encrypted afresh each time, so it never comes back; only `none`, a
-/// credential's first token, could: a file removed by hand on the host.)
+/// `id`: an `https://` upstream's, or a notifier's kept sealed. `version` is how many token
+/// changes of `id` the daemon applied before this one: a number that only grows, kept by the
+/// daemon even once `id` leaves the policy, so a change applies once. Replayed, sent to
+/// another daemon, or signed against a version or a file no longer in force, it changes
+/// nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Token {
     pub kind: TokenKind,
     pub daemon: KeyFingerprint,
     pub id: KeyId,
+    pub version: u64,
     pub previous: PreviousToken,
     pub sealed: SealedToken,
 }
 
 impl Canonical for Token {
-    const KIND: &'static str = "writ-token/2";
+    const KIND: &'static str = "writ-token/3";
+}
+
+/// What a token change replaces: the id's change count and the token file in force, as
+/// `writ admin token` reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenReplaced {
+    pub version: u64,
+    pub previous: PreviousToken,
 }
 
 impl Token {
     pub fn new(
         daemon: KeyFingerprint,
         id: KeyId,
-        previous: PreviousToken,
+        replaced: TokenReplaced,
         sealed: SealedToken,
     ) -> Self {
         Self {
-            kind: TokenKind::V2,
+            kind: TokenKind::V3,
             daemon,
             id,
-            previous,
+            version: replaced.version,
+            previous: replaced.previous,
             sealed,
         }
     }
@@ -807,26 +821,32 @@ mod tests {
         let change = Token::new(
             daemon(),
             "token-01".parse().unwrap(),
-            previous.clone(),
+            TokenReplaced {
+                version: 3,
+                previous: previous.clone(),
+            },
             SealedToken::try_from("YWdlLWVuY3J5cHRpb24=".to_owned()).unwrap(),
         );
         let bytes = change.canonical_bytes().unwrap();
         assert_eq!(
             String::from_utf8(bytes.clone()).unwrap(),
             format!(
-                r#"{{"kind":"writ-token/2","daemon":"{DAEMON}","id":"token-01","previous":"{previous}","sealed":"YWdlLWVuY3J5cHRpb24="}}"#
+                r#"{{"kind":"writ-token/3","daemon":"{DAEMON}","id":"token-01","version":3,"previous":"{previous}","sealed":"YWdlLWVuY3J5cHRpb24="}}"#
             )
         );
         assert_eq!(Token::from_canonical(&bytes).unwrap(), change);
         let first = Token::new(
             daemon(),
             "token-01".parse().unwrap(),
-            PreviousToken::None,
+            TokenReplaced {
+                version: 0,
+                previous: PreviousToken::None,
+            },
             SealedToken::try_from("YWdl".to_owned()).unwrap(),
         );
         let first_bytes = String::from_utf8(first.canonical_bytes().unwrap()).unwrap();
         assert!(
-            first_bytes.contains(r#""previous":"none""#),
+            first_bytes.contains(r#""version":0,"previous":"none""#),
             "{first_bytes}"
         );
         // Never another document, nor an admin change.
@@ -846,10 +866,23 @@ mod tests {
                 text.replace("}", r#","token":"in clear"}"#),
                 "unknown field",
             ),
-            // The first format, which named no daemon: refused.
+            // The first formats: refused (`/1` named no daemon, `/2` no version).
             (
-                text.replace("writ-token/2", "writ-token/1"),
-                "unknown variant",
+                text.replace("writ-token/3", "writ-token/1"),
+                "unknown variant `writ-token/1`, expected `writ-token/3`",
+            ),
+            (
+                text.replace("writ-token/3", "writ-token/2")
+                    .replace(r#""version":3,"#, ""),
+                "unknown variant `writ-token/2`, expected `writ-token/3`",
+            ),
+            (
+                text.replace(r#""version":3,"#, ""),
+                "missing field `version`",
+            ),
+            (
+                text.replace(r#""version":3"#, r#""version":-1"#),
+                "invalid value",
             ),
             (
                 text.replace(&format!(r#""daemon":"{DAEMON}","#), ""),

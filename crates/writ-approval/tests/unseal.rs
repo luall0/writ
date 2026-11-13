@@ -152,7 +152,7 @@ fn while_sealed_every_request_fails_closed_with_daemon_sealed() {
             .parse()
             .unwrap(),
     };
-    let denial = s.authorize(&cert, &facts(), None).unwrap_err();
+    let denial = s.authorize(&cert, &facts()).unwrap_err();
     assert_eq!(
         (denial.code, denial.reason.as_str()),
         (DenyCode::Sealed, SEALED)

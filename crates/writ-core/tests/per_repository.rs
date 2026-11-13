@@ -271,6 +271,39 @@ fn each_repository_s_counts_hold_on_both_sides() {
     assert!(submit(&TWO.replace("max_signatures: 6", "max_signatures: 5")).is_ok());
 }
 
+/// The review after M7.6 (A-7): a signature's last phase decides again with everything but
+/// the count and the rate, which its own slot (taken in the first phase) now fills.
+#[test]
+fn the_last_phase_s_decision_is_everything_but_the_count_and_the_rate() {
+    let lease = active(submit(TWO).unwrap());
+    let mut w = world(lease.clone());
+    // The slot of api's last signature taken, and the rate's minute full.
+    w.usage = Usage {
+        repos: [(
+            repo("api"),
+            RepoUsage {
+                signatures: 10,
+                pushes: 0,
+            },
+        )]
+        .into(),
+        ops_last_minute: 20,
+    };
+    let request = sign_in(&lease, "api", "src/auth/a.rs");
+    denied(
+        policy::decide_sign(&w.ctx(), &request),
+        DenyCode::Limit,
+        "all 10 signatures used in repo api",
+    );
+    assert!(policy::recheck_sign(&w.ctx(), &request).is_ok());
+    // Everything else is decided again: a path outside the part's expected paths.
+    denied(
+        policy::recheck_sign(&w.ctx(), &sign_in(&lease, "api", "app/login/b.ts")),
+        DenyCode::Paths,
+        "app/login/b.ts",
+    );
+}
+
 #[test]
 fn the_lease_s_time_and_rate_are_the_strictest_template_s_on_both_sides() {
     let with = |limits: &str| format!("{TWO}limits:\n{limits}");

@@ -58,6 +58,14 @@ pub enum StoreError {
     },
     #[error("can't encode an audit event: {0}")]
     Encode(#[from] serde_json::Error),
+    /// A token change counted against another count than the one in force (a change of the
+    /// same id applied meanwhile).
+    #[error("token {id}: {found} changes are in force, not {expected}")]
+    TokenVersion {
+        id: writ_core::names::KeyId,
+        expected: u64,
+        found: u64,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;

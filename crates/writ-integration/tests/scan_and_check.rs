@@ -132,8 +132,16 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
         pinned[0].split(' ').take(2).collect::<Vec<_>>(),
         key_line.split(' ').take(2).collect::<Vec<_>>()
     );
-    // Each scan logged, with its fingerprints and the approver who signed it.
-    let scans = audit_events(&daemon.audit(), "scan", "allowed");
+    // Each scan logged before the daemon connects out, then with its fingerprints, both with
+    // the approver who signed it.
+    let started = audit_events(&daemon.audit(), "scan", "allowed");
+    assert_eq!(started.len(), 2, "{started:?}");
+    assert_eq!(
+        started[1]["reason"],
+        format!("127.0.0.1:{}: scanning", other.port)
+    );
+    assert_eq!(started[1]["approver"], started[0]["approver"]);
+    let scans = audit_events(&daemon.audit(), "scan", "done");
     assert_eq!(scans.len(), 2, "{scans:?}");
     assert_eq!(
         scans[1]["reason"],
@@ -283,8 +291,10 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
         )),
         "{shown}"
     );
+    // Each failing scan went out (its line first), then was denied with why.
     assert_eq!(daemon.audited("scan", "denied"), 2);
-    assert_eq!(daemon.audited("scan", "allowed"), 5);
+    assert_eq!(daemon.audited("scan", "allowed"), 7);
+    assert_eq!(daemon.audited("scan", "done"), 5);
 
     // The check: read, sync, write with nothing pushed, against the repo's upstream.
     let head = daemon.upstream_commit("main", "upstream work");
@@ -482,7 +492,7 @@ fn a_host_behind_a_proxy_is_scanned_through_it_on_the_approver_s_signature() {
         "{shown}"
     );
     assert_eq!(pins(&daemon, &added).map(|p| p.len()), Some(1));
-    let scans = audit_events(&daemon.audit(), "scan", "allowed");
+    let scans = audit_events(&daemon.audit(), "scan", "done");
     assert_eq!(
         scans.last().unwrap()["reason"],
         format!(

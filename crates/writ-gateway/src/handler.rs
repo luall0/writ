@@ -187,7 +187,7 @@ impl russh::server::Handler for Connection {
         match self.check_certificate(user, certificate) {
             Ok(cert) => {
                 // The service logs the outcome (event `connect`).
-                match self.gateway.authorize(&cert, &self.facts, None).await {
+                match self.gateway.authorize(&cert, &self.facts).await {
                     Ok(_) => {
                         self.identity = Some(Identity::Lease(cert));
                         Ok(Auth::Accept)

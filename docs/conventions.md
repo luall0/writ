@@ -90,7 +90,8 @@ change, with a row in the [decision log](decisions.md) when the reason isn't obv
   `git` in `Service::sign`) is one less input to trust.
 - **A type that stands for a check's result has private fields** and is made only by the
   check (`CheckedAdmin`, `CheckedToken`): holding one proves the check ran, whatever order
-  its callers call things in.
+  its callers call things in. It isn't `Clone` (what holds one moves it), and every public
+  call that acts on what was checked takes it (`Service::replace_ca` takes the rotation's).
 - **One function for one job across crates**: what two clients both need (the terminal
   escaping, a URL's parsing) lives once, in the crate they share (`writ_core::text::escaped`),
   so the two can't drift (`writ-sign` once took a port `writ` refused).

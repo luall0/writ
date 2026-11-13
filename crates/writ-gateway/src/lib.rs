@@ -63,7 +63,6 @@ use writ_core::caller::CallerFacts;
 use writ_core::lease::Lease;
 use writ_core::net::Sources;
 use writ_core::policy::{CertIdentity, Denial};
-use writ_core::ticket::Operation;
 use writ_crypto::readers::ReaderSet;
 use writ_crypto::ssh_key::{Fingerprint, HashAlg, PrivateKey};
 use writ_platform::{CallerAttestor, Connection, PeerInfo, Transport};
@@ -119,7 +118,7 @@ pub trait Unsealer: Send + Sync {
 /// wiring; the gateway calls it one change at a time.
 ///
 /// It holds the sealed tokens too: which file is in force for a credential
-/// ([`AdminApplier::token_show`]), and a checked `writ-token/2` put in force
+/// ([`AdminApplier::token_show`]), and a checked `writ-token/3` put in force
 /// ([`AdminApplier::apply_token`]: opened and checked to be a token, logged by the service
 /// against the file in force ([`Service::commit_token`]), written, used at once). And the
 /// signers: every declared key's public half ([`AdminApplier::keys_show`]).
@@ -166,8 +165,8 @@ pub trait AdminApplier: Send + Sync {
 
     /// A checked `writ-ca/1` done: refused unless it names the CA in force; a new key made on
     /// its backend, written to the keystore, put in force for every certificate from now on,
-    /// the old CA trusted until its last lease ends. Logged by the gateway, from what this
-    /// answers.
+    /// the old CA trusted until its last lease ends. Its line is written before it is in
+    /// force; a refusal is logged here, once.
     fn rotate_ca(
         &self,
         checked: writ_approval::CheckedCa,
@@ -181,7 +180,8 @@ pub trait AdminApplier: Send + Sync {
 
     /// A checked `writ-tls/1` done: refused unless it names the certificate in force; a new
     /// key made on its backend, its certificate, both written to the boot tier and put in force
-    /// for every handshake from now on. Logged by the gateway, from what this answers.
+    /// for every handshake from now on. Its line is written before it is in force; a refusal
+    /// is logged here, once.
     fn rotate_tls(
         &self,
         checked: writ_approval::CheckedTls,
@@ -459,10 +459,9 @@ impl Gateway {
         &self,
         cert: &CertIdentity,
         caller: &CallerFacts,
-        operation: Option<Operation>,
     ) -> std::result::Result<Lease, Denial> {
         let (service, cert, caller) = (self.service().clone(), cert.clone(), caller.clone());
-        tokio::task::spawn_blocking(move || service.authorize(&cert, &caller, operation))
+        tokio::task::spawn_blocking(move || service.authorize(&cert, &caller))
             .await
             .unwrap_or_else(|_| Err(Denial::internal()))
     }
@@ -523,11 +522,20 @@ impl Gateway {
     }
 
     /// [`Service::push`], off the async threads.
-    async fn push(&self, pushing: writ_approval::Pushing) -> std::result::Result<Lease, Denial> {
+    async fn push(
+        &self,
+        pushing: writ_approval::Pushing,
+    ) -> std::result::Result<writ_approval::InFlightPush, Denial> {
         let service = self.service().clone();
         tokio::task::spawn_blocking(move || service.push(&pushing))
             .await
             .unwrap_or_else(|_| Err(Denial::internal()))
+    }
+
+    /// Ends a push [`Service::push`] allowed, off the async threads (its lease may be used up
+    /// now: a sweep).
+    async fn push_ended(&self, push: writ_approval::InFlightPush) {
+        let _ = tokio::task::spawn_blocking(move || push.end()).await;
     }
 
     /// [`Service::paths_to_check`], off the async threads; any failure is an internal error.

@@ -303,7 +303,7 @@ fn proxies_are_managed_from_the_approver_s_machine_and_hosts_behind_them_scanned
     let scans = stack
         .audit()
         .into_iter()
-        .filter(|l| l["event"] == "scan" && l["result"] == "allowed")
+        .filter(|l| l["event"] == "scan" && l["result"] == "done")
         .filter(|l| {
             l["reason"]
                 .as_str()

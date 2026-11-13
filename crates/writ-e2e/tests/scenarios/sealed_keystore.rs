@@ -462,7 +462,7 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     assert!(count("command", "denied") >= 1, "{audit}");
     assert!(!audit.contains(passphrase));
     assert!(
-        audit.contains("token token-sealed: sha256 ") && !audit.contains(token),
+        audit.contains("token token-sealed: version 1 (sha256 ") && !audit.contains(token),
         "{audit}"
     );
 

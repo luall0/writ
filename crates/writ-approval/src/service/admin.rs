@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::caller::CallerFacts;
-use writ_core::canonical::Canonical;
 use writ_core::config::PolicyConfig;
 use writ_core::lease::Lease;
 use writ_core::names::{KeyFingerprint, TicketId};
@@ -68,8 +67,9 @@ pub struct AlteredAtRest;
 
 /// An admin change whose document and signature passed: what the daemon checks the new text
 /// of before [`Service::commit_admin`]. Only [`Service::check_admin`] makes one (its fields
-/// are private), so holding one proves the check ran.
-#[derive(Debug, Clone)]
+/// are private), so holding one proves the check ran; it is never copied (what holds one
+/// moves it).
+#[derive(Debug)]
 pub struct CheckedAdmin {
     admin: Admin,
     /// The canonical document and the SSHSIG over it, kept with the version.
@@ -162,11 +162,13 @@ impl Service {
     }
 
     fn admin_document(&self, request: &AdminRequest) -> Result<CheckedAdmin, ServiceError> {
-        let admin = Admin::from_canonical(request.document.as_bytes())
-            .map_err(|e| refused(format!("not a writ-admin/2 document: {e}")))?;
-        let approver = self
-            .verify_approver(request.document.as_bytes(), &request.signature)
-            .map_err(|reason| ServiceError::refused(RefusalCode::Signature, reason))?;
+        let (admin, approver) = self.approver_document(
+            &request.document,
+            &request.signature,
+            |a: &Admin| &a.daemon,
+            "change",
+            RefusalCode::Admin,
+        )?;
         self.current(&admin)?;
         Ok(CheckedAdmin {
             admin,
@@ -176,18 +178,12 @@ impl Service {
         })
     }
 
-    /// The version of the change's target in force, if the change was signed for this daemon
-    /// and replaces exactly that version (its number and its text's digest); a refusal naming
-    /// what differs otherwise. Versions only grow, so a change applied once, or one made for
-    /// another daemon, never applies again, even when the text comes back to what it was.
+    /// The version of the change's target in force, if the change replaces exactly that
+    /// version (its number and its text's digest); a refusal naming what differs otherwise.
+    /// Versions only grow, so a change applied once never applies again, even when the text
+    /// comes back to what it was (the daemon it names is checked with its signature).
     fn current(&self, admin: &Admin) -> Result<u64, ServiceError> {
         let target = admin.target;
-        if admin.daemon != self.boot.daemon {
-            return Err(refused(format!(
-                "the change names daemon {}, not this one ({})",
-                admin.daemon, self.boot.daemon
-            )));
-        }
         let in_force = self.in_force();
         let (version, digest) = in_force
             .versions

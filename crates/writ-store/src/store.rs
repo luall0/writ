@@ -7,12 +7,14 @@
 //! lease's row the certificate issued for it.
 //!
 //! [`schema`] creates and migrates the tables, [`rows`] decodes rows strictly (fail closed:
-//! a row that doesn't decode is an error), [`ledger`] holds the signed commits.
+//! a row that doesn't decode is an error), [`ledger`] holds the signed commits, [`tokens`]
+//! each credential's count of token changes.
 
 mod authority;
 mod ledger;
 mod rows;
 mod schema;
+mod tokens;
 
 pub use authority::{AuthorityHead, AuthorityHow, AuthorityVersion};
 pub use ledger::{LedgerEntry, PendingNote};

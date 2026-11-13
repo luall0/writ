@@ -6,7 +6,9 @@
 //!    commit, the count and the rate slot taken (never given back);
 //! 2. without it: the signature, through the signer's queue and its deadline;
 //! 3. under the lock again: the lease still the same, active, not expired and its
-//!    certificate not on the deny list, then the audit line and the commit in the ledger.
+//!    certificate not on the deny list, the decision made again against the policy in force
+//!    (all but the count and the rate, taken in the first phase), then the audit line and the
+//!    commit in the ledger. The paths' digest the ledger keeps is computed before, unlocked.
 //!
 //! The signature is handed back only once its line is written and the ledger holds the
 //! commit: a signature the daemon didn't record never leaves it, and one made while the lease
@@ -138,6 +140,13 @@ fn signer_reason(e: &SignerError) -> String {
     }
 }
 
+/// What the second phase made, without the lock: the signature (or why there is none), and
+/// the digest of the commit's paths the ledger keeps.
+struct Signed {
+    signed: Result<String, SignerError>,
+    paths_digest: Option<String>,
+}
+
 /// What [`Service::reserve`] took for a signature, for the next phases.
 struct Reserved<'a> {
     lease: Lease,
@@ -147,7 +156,6 @@ struct Reserved<'a> {
     /// The time an OpenPGP signature says it was made (seconds since the epoch).
     time: u32,
     commit: &'a Commit,
-    warnings: Vec<String>,
     in_flight: InFlight<'a>,
 }
 
@@ -184,17 +192,18 @@ impl Drop for InFlight<'_> {
     }
 }
 
-/// The signatures in flight, per lease.
+/// The signatures (or the pushes) in flight, per lease: while a lease has one, the sweep
+/// doesn't mark it used up.
 #[derive(Default)]
-pub(super) struct InFlightSignatures(HashMap<TicketId, u32>);
+pub(super) struct InFlightCounts(HashMap<TicketId, u32>);
 
-impl InFlightSignatures {
-    fn start(&mut self, lease: &TicketId) {
+impl InFlightCounts {
+    pub(super) fn start(&mut self, lease: &TicketId) {
         let count = self.0.entry(lease.clone()).or_default();
         *count = count.saturating_add(1);
     }
 
-    fn end(&mut self, lease: &TicketId) {
+    pub(super) fn end(&mut self, lease: &TicketId) {
         if let Some(count) = self.0.get_mut(lease) {
             *count = count.saturating_sub(1);
             if *count == 0 {
@@ -203,7 +212,7 @@ impl InFlightSignatures {
         }
     }
 
-    /// Whether a signature of `lease` is between its phases.
+    /// Whether one of `lease` is in flight.
     pub(super) fn any(&self, lease: &TicketId) -> bool {
         self.0.contains_key(lease)
     }
@@ -262,7 +271,24 @@ impl Service {
             reserved.commit.bytes(),
             reserved.time,
         );
-        self.settle(signing, &request, reserved, signed)
+        // Outside the lock: up to 64 MiB of the agent's paths sorted and hashed (the review
+        // after M7.6, A-7).
+        let paths_digest = match &signing.object {
+            SignObject::Commit {
+                touched_paths: Some(paths),
+                ..
+            } => Some(writ_git::paths::digest(paths)),
+            _ => None,
+        };
+        self.settle(
+            signing,
+            &request,
+            reserved,
+            Signed {
+                signed,
+                paths_digest,
+            },
+        )
     }
 
     /// The first phase, under the lock: the lease, the policy's decision, and the count and
@@ -299,14 +325,12 @@ impl Service {
             caller: &signing.caller,
             now,
         };
-        let allowed = match policy::decide_sign(&ctx, request) {
-            Ok(allowed) => allowed,
-            Err(denial) => {
-                let denial = deny(&mut inner, &event, denial);
-                self.after_violation(inner, &lease, &denial);
-                return Err(denial);
-            }
-        };
+        // Its warnings are the last phase's, against the policy in force then.
+        if let Err(denial) = policy::decide_sign(&ctx, request) {
+            let denial = deny(&mut inner, &event, denial);
+            self.after_violation(inner, &lease, &denial);
+            return Err(denial);
+        }
         let (SignObject::Commit { commit, .. }, Some(key)) =
             (&signing.object, &lease.ticket.common.signing_key)
         else {
@@ -373,7 +397,6 @@ impl Service {
             key_use,
             time,
             commit,
-            warnings: allowed.warnings,
             in_flight: InFlight {
                 service: self,
                 lease: lease.id.clone(),
@@ -384,16 +407,17 @@ impl Service {
     }
 
     /// The last phase, under the lock again: the lease must still be the one the decision
-    /// was made on, active, not past `expires_at` and its certificate not on the deny list;
-    /// then the signed commit's id, the audit line and the ledger entry, and only then does
-    /// the signature leave. Otherwise it is discarded and the denial logged. Then the lease
-    /// is marked used up if it is, now that nothing of it is in flight.
+    /// was made on, active, not past `expires_at` and its certificate not on the deny list,
+    /// and the decision must hold against the policy in force; then the signed commit's id,
+    /// the audit line and the ledger entry, and only then does the signature leave. Otherwise
+    /// it is discarded and the denial logged. Then the lease is marked used up if it is, now
+    /// that nothing of it is in flight.
     fn settle(
         &self,
         signing: &Signing,
         request: &SignRequest,
         mut reserved: Reserved<'_>,
-        signed: Result<String, SignerError>,
+        signed: Signed,
     ) -> Result<SignedCommit, Denial> {
         let (now, mut inner) = match self.now().and_then(|now| Ok((now, self.lock()?))) {
             Ok(locked) => locked,
@@ -421,10 +445,14 @@ impl Service {
         signing: &Signing,
         request: &SignRequest,
         reserved: &Reserved<'_>,
-        signed: Result<String, SignerError>,
+        signed: Signed,
         now: Timestamp,
     ) -> Result<SignedCommit, Denial> {
         let event = &sign_event(signing, request, now).lease(&reserved.lease.id);
+        let Signed {
+            signed,
+            paths_digest,
+        } = signed;
         let signature = match signed {
             Ok(signature) => signature,
             Err(e) => {
@@ -455,16 +483,35 @@ impl Service {
                 return Err(deny(inner, event, Denial { reason, ..denial }));
             }
         };
-        // The policy may have changed too (a signed change applies at once): the lease must
-        // still fit the template in force, as the first phase checked.
-        if let Err(why) = writ_core::fit::fits(&self.policy(), &current.ticket) {
-            let reason = format!(
-                "lease {} no longer fits its templates: {why} (changed while the commit was \
-                 being signed); the signature was discarded",
-                current.id
-            );
-            return Err(deny(inner, event, Denial::new(DenyCode::Config, reason)));
-        }
+        // The policy may have changed too (a signed change applies at once): the decision is
+        // made again against the policy in force, all but the count and the rate this
+        // signature's slot answered already (the review after M7.6, A-7: a template's
+        // `paths_check` or a repo's `ticket_link` is not part of the lease's fit).
+        let usage = match inner.store.usage(&current.id, now) {
+            Ok(usage) => usage,
+            Err(e) => {
+                let denial = Denial::new(DenyCode::Invalid, internal(e).to_string());
+                return Err(deny(inner, event, denial));
+            }
+        };
+        let policy = self.policy();
+        let ctx = Context {
+            config: &policy,
+            lease: &current,
+            usage: &usage,
+            caller: &signing.caller,
+            now,
+        };
+        let warnings = match policy::recheck_sign(&ctx, request) {
+            Ok(allowed) => allowed.warnings,
+            Err(denial) => {
+                let reason = format!(
+                    "{} (changed while the commit was being signed); the signature was discarded",
+                    denial.reason
+                );
+                return Err(deny(inner, event, Denial { reason, ..denial }));
+            }
+        };
         let commit_id = match writ_git::signed::signed_id(reserved.commit, &signature)
             .and_then(|id| Ok(id.to_commit_id()?))
         {
@@ -474,23 +521,14 @@ impl Service {
                 return Err(deny(inner, event, denial));
             }
         };
-        let line = event
-            .clone()
-            .commit(&commit_id)
-            .warnings(reserved.warnings.clone());
+        let line = event.clone().commit(&commit_id).warnings(warnings.clone());
         let entry = LedgerEntry {
             commit: commit_id.clone(),
             lease: current.id.clone(),
             repo: request.repo.clone(),
             key: reserved.key.clone(),
             signed_at: now,
-            paths_digest: match &signing.object {
-                SignObject::Commit {
-                    touched_paths: Some(paths),
-                    ..
-                } => Some(writ_git::paths::digest(paths)),
-                _ => None,
-            },
+            paths_digest,
         };
         let recorded = Self::logged(inner, line, |inner| {
             inner.store.ledger_append(&entry).map_err(internal)
@@ -499,7 +537,7 @@ impl Service {
             Ok(()) => Ok(SignedCommit {
                 signature,
                 commit: commit_id,
-                warnings: reserved.warnings.clone(),
+                warnings,
             }),
             Err(e) => {
                 tracing::error!(error = %e.detail(), "a signature was not recorded");

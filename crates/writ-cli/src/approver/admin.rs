@@ -3,8 +3,9 @@
 //! shows what changes line by line (every line cleaned of what a terminal would act on), and
 //! signs a `writ-admin/2` document naming that version: a change made meanwhile is refused by
 //! the daemon, never overwritten. And `writ admin token <id>`: a token read here, encrypted
-//! here to the daemon keystore's recipient, and signed as a `writ-token/2` naming the token
-//! file it replaces: the daemon host never sees it in clear on its disk.
+//! here to the daemon keystore's recipient, and signed as a `writ-token/3` naming the id's
+//! change count and the token file it replaces: the daemon host never sees it in clear on its
+//! disk.
 
 use std::path::Path;
 
@@ -283,7 +284,7 @@ pub(super) async fn sign_applied(
 
 /// `writ admin token <id>`: the keystore's recipient from `writ info`, the token file in force
 /// for `id`, the token (asked for with no echo, or one line of stdin), encrypted here, then one
-/// signature over the `writ-token/2` document.
+/// signature over the `writ-token/3` document.
 pub async fn token(
     paths: &Paths,
     url: &str,
@@ -350,8 +351,12 @@ pub async fn token(
                 println!("Not signed.");
                 return Ok(Exit::NotSigned);
             }
+            let replaced = writ_core::signed::TokenReplaced {
+                version: shown.version,
+                previous: shown.previous,
+            };
             let document =
-                Token::new(shown.daemon, id.clone(), shown.previous, sealed).canonical_bytes()?;
+                Token::new(shown.daemon, id.clone(), replaced, sealed).canonical_bytes()?;
             let request = TokenRequest {
                 signature: signer.sign(&document)?,
                 document: String::from_utf8(document)?,

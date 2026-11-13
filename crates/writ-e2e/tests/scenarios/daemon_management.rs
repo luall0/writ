@@ -677,13 +677,24 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
             .ok("writ admin host show forgejo-scan")
             .contains(&format!("\nfingerprint: ssh-ed25519 {compared}\n"))
     );
-    // The daemon logged each scan, with what it read and who signed for it.
-    let scans: Vec<_> = stack
+    // The daemon logged each scan before it connected out, then what it read, and who signed
+    // for it.
+    let started = stack
         .audit()
         .into_iter()
         .filter(|e| {
             e["event"] == "scan"
                 && e["result"] == "allowed"
+                && e["reason"] == "forgejo-scan:22: scanning"
+        })
+        .count();
+    assert_eq!(started, 3);
+    let scans: Vec<_> = stack
+        .audit()
+        .into_iter()
+        .filter(|e| {
+            e["event"] == "scan"
+                && e["result"] == "done"
                 && e["reason"]
                     .as_str()
                     .is_some_and(|r| r.starts_with("forgejo-scan:22: "))

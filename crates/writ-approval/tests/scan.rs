@@ -190,6 +190,41 @@ fn nonces_and_scans_are_bounded() {
         .unwrap();
 }
 
+/// The review after M7.6 (A-5's remainder): a scan's line was written after the daemon had
+/// connected out, best effort. It is written first now, naming the target and the approver,
+/// and a log that can't take it refuses the scan (no line, no connection out); what the scan
+/// read is its own line after.
+#[test]
+fn a_scan_s_line_comes_before_the_daemon_connects_out_and_none_refuses_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let checked = h
+        .service
+        .check_scan(&signed(&h.approver, &scan(&h)), &facts())
+        .unwrap();
+    h.audit_breaker.set_broken(true);
+    let error = h.service.scan_starting(&checked, &facts()).unwrap_err();
+    assert!(matches!(error, ServiceError::AuditLog(_)), "{error:?}");
+    h.audit_breaker.set_broken(false);
+    assert!(scan_lines(&h, "allowed").is_empty(), "nothing written");
+    h.service.scan_starting(&checked, &facts()).unwrap();
+    let started = scan_lines(&h, "allowed");
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0]["reason"], "forgejo.home:2222: scanning");
+    assert_eq!(started[0]["approver"], checked.approver().as_str());
+    h.service.scan_logged(
+        &checked,
+        Ok(&["SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".to_owned()]),
+        &facts(),
+    );
+    let done = scan_lines(&h, "done");
+    assert_eq!(done.len(), 1);
+    assert_eq!(
+        done[0]["reason"],
+        "forgejo.home:2222: SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+    );
+}
+
 #[test]
 fn a_check_reaches_only_a_registered_repo_within_its_rate() {
     let dir = tempfile::tempdir().unwrap();

@@ -191,7 +191,8 @@ hold remote credentials, even read-only ones.
   `decisions: signed`, the revocation is an SSHSIG over a `writ-revocation/1` document. On a
   pending ticket, `writ revoke` withdraws it.
 - TTL reached → `expired`; every counted operation used up → `exhausted` (never with
-  `fetch`, [lease model](lease-model.md#lifecycle)); notify. The daemon checks every second
+  `fetch`, [lease model](lease-model.md#lifecycle)), once no signature or push of the lease
+  is still in flight (the last one's own checks would refuse it otherwise); notify. The daemon checks every second
   and before every request; the certificate itself ends at `expires_at`, and open sessions
   are dropped like on a revocation. A pending ticket not signed by `expires_at` expires too.
 - Local mode: session root process exits → `revoked`

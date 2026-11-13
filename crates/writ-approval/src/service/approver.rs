@@ -239,6 +239,39 @@ impl Service {
         fingerprint(key).map_err(|e| e.to_string())
     }
 
+    /// A signed document an approver sent to change this daemon (an admin change, a token,
+    /// a TLS or CA rotation, a scan), in one order for every kind: decoded strictly as a `D`,
+    /// its SSHSIG by an approver in force over exactly those bytes, then the daemon it names
+    /// this one's (`what` names it in the refusal: "the {what} names daemon …"). A malformed
+    /// document or another daemon is refused with `code`, a signature with
+    /// [`RefusalCode::Signature`]. What else a kind checks (a version, a nonce, a rate) comes
+    /// after, with its proof.
+    pub(super) fn approver_document<D: Canonical>(
+        &self,
+        document: &str,
+        signature: &str,
+        daemon: impl FnOnce(&D) -> &KeyFingerprint,
+        what: &str,
+        code: RefusalCode,
+    ) -> Result<(D, KeyFingerprint), ServiceError> {
+        let decoded = D::from_canonical(document.as_bytes())
+            .map_err(|e| ServiceError::refused(code, format!("not a {} document: {e}", D::KIND)))?;
+        let approver = self
+            .verify_approver(document.as_bytes(), signature)
+            .map_err(|reason| ServiceError::refused(RefusalCode::Signature, reason))?;
+        let named = daemon(&decoded);
+        if named != &self.boot.daemon {
+            return Err(ServiceError::refused(
+                code,
+                format!(
+                    "the {what} names daemon {named}, not this one ({})",
+                    self.boot.daemon
+                ),
+            ));
+        }
+        Ok((decoded, approver))
+    }
+
     /// Accepts an approval: an approver's SSHSIG over the canonical bytes of the submitted
     /// ticket or a narrowing of it. A ticket becomes an active lease with a certificate; an
     /// amendment becomes the terms of its lease. Anything wrong denies, and the ticket stays
@@ -406,7 +439,20 @@ impl Service {
         };
         // Checked again: a lease granted since the submission takes the slot it counted on
         // (and in the last phase, one granted while this certificate was signed).
-        if let (Some(max), Some(source)) = (self.config.max_active_per_source, record.source) {
+        if let Some(max) = self.config.max_active_per_source {
+            // Every submission records its source: one missing is a fact the limit needs,
+            // and a missing fact denies (the review after M7.6, A-10).
+            let Some(source) = record.source else {
+                return denied.deny(
+                    inner,
+                    RefusalCode::TooManyActive,
+                    format!(
+                        "ticket {} has no source recorded: max_active_per_source can't be \
+                         checked",
+                        record.ticket.id
+                    ),
+                );
+            };
             let replaced = renewed
                 .as_ref()
                 .map(|(lease, _)| lease)

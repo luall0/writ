@@ -9,7 +9,6 @@
 use std::collections::VecDeque;
 
 use writ_core::caller::CallerFacts;
-use writ_core::canonical::Canonical;
 use writ_core::names::{KeyFingerprint, RepoName};
 use writ_core::signed::{BootNonce, Scan};
 use writ_core::units::Timestamp;
@@ -56,8 +55,9 @@ pub(crate) fn within(window: &mut VecDeque<Timestamp>, now: Timestamp, max: usiz
     true
 }
 
-/// A scan whose document and signature passed: only [`Service::check_scan`] makes one.
-#[derive(Debug, Clone)]
+/// A scan whose document and signature passed: only [`Service::check_scan`] makes one, and it
+/// is never copied (what holds one moves it).
+#[derive(Debug)]
 pub struct CheckedScan {
     scan: Scan,
     approver: KeyFingerprint,
@@ -129,23 +129,19 @@ impl Service {
         self.opened()?;
         let checked = self.scan_document(request);
         if let Err(e) = &checked {
-            self.scan_logged(None, Err(&e.to_string()), caller);
+            self.scan_denied(None, Err(&e.to_string()), caller);
         }
         checked
     }
 
     fn scan_document(&self, request: &ScanRequest) -> Result<CheckedScan, ServiceError> {
-        let scan = Scan::from_canonical(request.document.as_bytes())
-            .map_err(|e| refused(format!("not a writ-scan/1 document: {e}")))?;
-        let approver = self
-            .verify_approver(request.document.as_bytes(), &request.signature)
-            .map_err(|reason| ServiceError::refused(RefusalCode::Signature, reason))?;
-        if scan.daemon != self.boot.daemon {
-            return Err(refused(format!(
-                "the scan names daemon {}, not this one ({})",
-                scan.daemon, self.boot.daemon
-            )));
-        }
+        let (scan, approver) = self.approver_document(
+            &request.document,
+            &request.signature,
+            |s: &Scan| &s.daemon,
+            "scan",
+            RefusalCode::Scan,
+        )?;
         let now = self.now()?;
         let mut outbound = self.outbound();
         let fresh = |(nonce, at): &(BootNonce, Timestamp)| {
@@ -167,9 +163,35 @@ impl Service {
         Ok(CheckedScan { scan, approver })
     }
 
-    /// Logs a scan: allowed with the fingerprints read, or denied with the reason (the host
-    /// not reached, the document refused).
+    /// The line of a checked scan, before the daemon reaches the host (the review after M7.6:
+    /// no line, no connection out), as for an admin change: refused when the log can't take
+    /// it. It names the host, the port and the proxy, and the approver.
+    pub fn scan_starting(
+        &self,
+        checked: &CheckedScan,
+        caller: &CallerFacts,
+    ) -> Result<(), ServiceError> {
+        let now = self.now()?;
+        let mut inner = self.lock()?;
+        let event = AuditEvent::new(now, EventKind::Scan, Outcome::Allowed)
+            .caller(caller)
+            .approver(&checked.approver)
+            .reason(format!("{}: scanning", checked.target()));
+        Self::log(&mut inner, &event)
+    }
+
+    /// Logs what a checked scan read: done with the fingerprints, or denied with the reason
+    /// (the host not reached).
     pub fn scan_logged(
+        &self,
+        checked: &CheckedScan,
+        result: Result<&[String], &str>,
+        caller: &CallerFacts,
+    ) {
+        self.scan_denied(Some(checked), result, caller);
+    }
+
+    fn scan_denied(
         &self,
         checked: Option<&CheckedScan>,
         result: Result<&[String], &str>,
@@ -181,10 +203,11 @@ impl Service {
         let target = checked.map(CheckedScan::target);
         let (outcome, reason) = match (result, &target) {
             (Ok(fingerprints), Some(target)) => (
-                Outcome::Allowed,
+                Outcome::Done,
                 format!("{target}: {}", fingerprints.join(", ")),
             ),
-            (Ok(_), None) => (Outcome::Allowed, String::new()),
+            // Nothing scanned without a check: never written.
+            (Ok(_), None) => return,
             (Err(why), Some(target)) => (Outcome::Denied, format!("{target}: {why}")),
             (Err(why), None) => (Outcome::Denied, why.to_owned()),
         };

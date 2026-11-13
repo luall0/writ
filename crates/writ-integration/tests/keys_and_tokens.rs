@@ -349,8 +349,14 @@ fn a_token_added_from_the_mac_is_used_at_once_and_never_in_clear_on_disk() {
     nowhere_on_the_daemon_host(&daemon, HTTPS_TOKEN);
     let lines = audit_events(&daemon.audit(), "admin", "allowed");
     let reason = lines.last().unwrap()["reason"].as_str().unwrap().to_owned();
-    assert!(reason.starts_with("token token-01: sha256 "), "{reason}");
-    assert!(reason.ends_with(" replaces none"), "{reason}");
+    assert!(
+        reason.starts_with("token token-01: version 1 (sha256 "),
+        "{reason}"
+    );
+    assert!(
+        reason.ends_with(" replaces version 0 (no token)"),
+        "{reason}"
+    );
 
     // Rotated (to one upstream refuses): used at once, the file it replaces named.
     let digest = writ_core::authority::TextDigest::of_bytes(&sealed);
@@ -388,6 +394,29 @@ fn a_token_added_from_the_mac_is_used_at_once_and_never_in_clear_on_disk() {
     let out = ls_remote(&daemon, &lease, "web");
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     nowhere_on_the_daemon_host(&daemon, HTTPS_TOKEN);
+
+    // The key taken out (its file deleted with it) and declared again (the review after
+    // M7.6, A-6): its change count outlived the file and the restart, so the next change
+    // names it, and the id's first change, `version 0`, can never apply again.
+    let out = apply_policy(&daemon, POLICY);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(!file.exists(), "deleted with its key");
+    let out = apply_policy(&daemon, &policy);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let out = add_token(&daemon, "token-01", HTTPS_TOKEN);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("it replaces no token."),
+        "{}",
+        stdout(&out)
+    );
+    let lines = audit_events(&daemon.audit(), "admin", "allowed");
+    let reason = lines.last().unwrap()["reason"].as_str().unwrap().to_owned();
+    assert!(
+        reason.starts_with("token token-01: version 4 (sha256 ")
+            && reason.ends_with(" replaces version 3 (no token)"),
+        "{reason}"
+    );
     drop(runtime);
 }
 

@@ -225,8 +225,9 @@ pub(crate) async fn approval_reply(
 }
 
 /// `writ admin host add`'s scan: the service checks the `writ-scan/1` and its signature (its
-/// nonce used); the host's keys read ([`writ_mirror::scan`]), logged with their fingerprints,
-/// and shown, never pinned.
+/// nonce used); its line written before the daemon connects out (refused without it); the
+/// host's keys read ([`writ_mirror::scan`]), logged with their fingerprints, and shown, never
+/// pinned.
 async fn scan(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Option<String>) {
     let request: writ_proto::ScanRequest = match writ_proto::decode_body(body) {
         Ok(request) => request,
@@ -251,13 +252,28 @@ async fn scan(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Op
             .map_err(|e| e.to_string())
             .and_then(|m| m.dialer(proxy.as_ref())),
     };
-    let scanned = match dialer {
-        Ok(dialer) => writ_mirror::scan::scan(host.as_str(), port, &dialer, deadline)
-            .await
-            .map_err(|e| e.to_string()),
-        Err(why) => Err(why),
-    };
     let service = gateway.service().clone();
+    let (checked, scanned) = match dialer {
+        Ok(dialer) => {
+            // The line first: no line, no connection out (the review after M7.6).
+            let (logger, caller) = (service.clone(), facts.clone());
+            let started = tokio::task::spawn_blocking(move || {
+                let started = logger.scan_starting(&checked, &caller);
+                (checked, started)
+            })
+            .await;
+            let checked = match started {
+                Ok((checked, Ok(()))) => checked,
+                Ok((_, Err(e))) => return encoded::<()>(served(Err(e))),
+                Err(e) => return encoded::<()>(served(Err(ServiceError::internal(e)))),
+            };
+            let scanned = writ_mirror::scan::scan(host.as_str(), port, &dialer, deadline)
+                .await
+                .map_err(|e| e.to_string());
+            (checked, scanned)
+        }
+        Err(why) => (checked, Err(why)),
+    };
     match scanned {
         Ok(keys) => {
             let shown: Vec<writ_proto::ScannedKey> = keys
@@ -276,9 +292,8 @@ async fn scan(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Op
                 Ok(pin) => pin.to_string(),
                 Err(e) => return encoded::<()>(Err(ApiError::new(e.to_string()))),
             };
-            let logged = checked.clone();
             blocking(move || {
-                service.scan_logged(Some(&logged), Ok(&fingerprints), &facts);
+                service.scan_logged(&checked, Ok(&fingerprints), &facts);
                 Ok::<(), writ_approval::ServiceError>(())
             })
             .await
@@ -289,9 +304,9 @@ async fn scan(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Op
             }))
         }
         Err(why) => {
-            let logged = (checked.clone(), why.clone());
+            let logged = why.clone();
             blocking(move || {
-                service.scan_logged(Some(&logged.0), Err(&logged.1), &facts);
+                service.scan_logged(&checked, Err(&logged), &facts);
                 Ok::<(), writ_approval::ServiceError>(())
             })
             .await
@@ -405,7 +420,7 @@ async fn token_apply(
 /// daemon checks it names the certificate in force and makes the new key and certificate, put
 /// in force at once (this connection keeps the one it was opened with). One admin change at a
 /// time; a rotation done is logged by the daemon before it is in force (the review after
-/// M7.6, S-2), a refusal here.
+/// M7.6, S-2), a refusal by the daemon too, once.
 async fn tls_rotate(
     gateway: Gateway,
     facts: CallerFacts,
@@ -424,17 +439,7 @@ async fn tls_rotate(
         Ok(checked) => checked,
         Err(e) => return encoded::<()>(Err(e)),
     };
-    let done = applier.rotate_tls(checked.clone(), facts.clone()).await;
-    if let Err(why) = &done {
-        let (service, why) = (gateway.service().clone(), why.clone());
-        blocking(move || {
-            service.tls_logged(Some(&checked), Err(&why), &facts);
-            Ok::<(), writ_approval::ServiceError>(())
-        })
-        .await
-        .ok();
-    }
-    match done {
+    match applier.rotate_tls(checked, facts).await {
         Ok(rotated) => encoded(Ok(rotated)),
         Err(reason) => encoded::<()>(Err(ApiError::new(format!("not rotated: {reason}")))),
     }
@@ -442,7 +447,7 @@ async fn tls_rotate(
 
 /// `writ admin ca rotate` (M7.6): the service checks the document and the signature, the
 /// daemon rotates (one admin change at a time), its line written before the new CA is in force
-/// (the review after M7.6, S-2); a refusal logged here.
+/// (the review after M7.6, S-2); a refusal logged by the daemon, once.
 async fn ca_rotate(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Option<String>) {
     let request: writ_proto::CaRequest = match writ_proto::decode_body(body) {
         Ok(request) => request,
@@ -457,17 +462,7 @@ async fn ca_rotate(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8
         Ok(checked) => checked,
         Err(e) => return encoded::<()>(Err(e)),
     };
-    let done = applier.rotate_ca(checked.clone(), facts.clone()).await;
-    if let Err(why) = &done {
-        let (service, why) = (gateway.service().clone(), why.clone());
-        blocking(move || {
-            service.ca_logged(Some(&checked), Err(&why), &facts);
-            Ok::<(), writ_approval::ServiceError>(())
-        })
-        .await
-        .ok();
-    }
-    match done {
+    match applier.rotate_ca(checked, facts).await {
         Ok(rotated) => encoded(Ok(rotated)),
         Err(reason) => encoded::<()>(Err(ApiError::new(format!("not rotated: {reason}")))),
     }

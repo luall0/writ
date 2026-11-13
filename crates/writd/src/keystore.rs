@@ -826,27 +826,52 @@ impl Live {
         sealed::token_in_force(sealed, id)
     }
 
-    /// The plaintext of a token an approver sealed to the keystore's recipient (`file`, an age
-    /// file), wiped on drop.
-    pub fn open_token(&self, id: &KeyId, file: &[u8]) -> anyhow::Result<Zeroizing<Vec<u8>>> {
-        let (_, files) = self.sealed()?;
-        files.open(file, &format!("the token sent for {id}"))
-    }
-
-    /// Puts the age file `file` in force as the token of `id`: checked again, under the
-    /// state, to open with the ways in force (a rotation of the data key between the open and
-    /// the write would leave a token the new identity doesn't open).
-    pub fn write_token(&self, id: &KeyId, file: &[u8]) -> anyhow::Result<()> {
+    /// The age file `file` an approver sealed for `id`, held for its write: the keystore's
+    /// state held (read) for as long as the stage lives, so a rotation of the data key waits
+    /// (it would leave a token the new identity doesn't open), and the file opened with the
+    /// ways in force (on a hardware keystore, a device: before the service's lock is taken).
+    /// The plaintext comes with it, wiped on drop, for the caller to check it is a token.
+    pub fn stage_token<'a>(
+        &'a self,
+        id: &KeyId,
+        file: &'a [u8],
+    ) -> anyhow::Result<(StagedToken<'a>, Zeroizing<Vec<u8>>)> {
         let Some((sealed, state)) = self.sealing() else {
             self.sealed()?;
             bail!("the development keystore takes no token from writ admin token");
         };
-        drop(
-            state
-                .files
-                .open(file, &format!("the token sent for {id}"))?,
-        );
-        sealed::write_token(sealed, id, file)
+        let plaintext = state
+            .files
+            .open(file, &format!("the token sent for {id}"))?;
+        Ok((
+            StagedToken {
+                sealed,
+                _state: state,
+                id: id.clone(),
+                file,
+            },
+            plaintext,
+        ))
+    }
+}
+
+/// A token file about to be put in force ([`Live::stage_token`]), the keystore's state held.
+pub struct StagedToken<'a> {
+    sealed: &'a SealedConfig,
+    _state: std::sync::RwLockReadGuard<'a, SealedState>,
+    id: KeyId,
+    file: &'a [u8],
+}
+
+impl StagedToken<'_> {
+    /// The token file in force for the id now: what the change must replace.
+    pub fn in_force(&self) -> anyhow::Result<PreviousToken> {
+        sealed::token_in_force(self.sealed, &self.id)
+    }
+
+    /// Writes the file whole in place of the one in force.
+    pub fn write(self) -> anyhow::Result<()> {
+        sealed::write_token(self.sealed, &self.id, self.file)
     }
 }
 

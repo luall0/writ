@@ -173,11 +173,14 @@ in part. Any failure to reach the daemon refuses the push. The daemon then:
    rate), then the push taken from the lease's count and rate; one `push` line, allowed or
    denied with its code and the refs;
 5. looks at the lease once more (a revocation that came while the push was read stops it
-   here), then pushes upstream from the quarantine ([Upstream](#upstream)); only once the
+   here; the push is in flight since step 4, so the count it took doesn't make its own lease
+   look used up here: the review after M7.6, A-3), then pushes upstream from the quarantine ([Upstream](#upstream)); only once the
    remote took it does the hook answer `ok`, and git move the mirror's refs. A remote that
    refuses (upstream moved, its own hook, any error) gets the push refused with its reason
    (`upstream refused the push: …`, cut and cleaned), logged as a `push` denial; the mirror
    never holds a ref the remote didn't take, and is marked stale after every upstream push;
+   the push in flight ends then, whatever upstream said (a lease whose last push it was is
+   used up at that moment);
 6. once upstream took the push, for a repo whose `ticket_link` is `notes`, its commits wait
    for their note, and the repo's notes job starts ([Notes](#notes)): off the hook's path, it
    never delays the agent.

@@ -312,7 +312,6 @@ impl Opener {
             Ok(()) => {}
             Err(keystore::ca::Committed::NotInForce(why)) => {
                 keystore::ca::unstage(sealed);
-                inner.service.ca_logged(Some(checked), Err(&why), caller);
                 return Err(why);
             }
             Err(keystore::ca::Committed::Unfinished(why)) => but.push(format!(
@@ -323,7 +322,7 @@ impl Opener {
             public.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256),
             trusted(u64::MAX, &still),
         );
-        if let Err(e) = inner.service.replace_ca(signer) {
+        if let Err(e) = inner.service.replace_ca(checked, signer) {
             but.push(format!(
                 "the running daemon still signs with the old CA ({e}): restart it"
             ));
@@ -733,10 +732,11 @@ impl Opener {
         let gateway = inner.gateway.get().ok_or("the daemon is not started yet")?;
         let target = checked.admin().target;
         let text = checked.admin().text.as_str().to_owned();
+        let approver = checked.approver().clone();
         let refuse = |reason: String| {
             inner
                 .service
-                .admin_failed(Some(checked.approver()), Some(target), &reason, &caller);
+                .admin_failed(Some(&approver), Some(target), &reason, &caller);
             reason
         };
         enum Ready {
@@ -838,12 +838,11 @@ impl Opener {
                 (AdminParsed::Readers, Ready::Readers(readers))
             }
         };
-        let (service, checked_owned, caller_owned) =
-            (inner.service.clone(), checked.clone(), caller.clone());
+        let (service, caller_owned) = (inner.service.clone(), caller.clone());
         let shown: Vec<RemovedKey> = removed.iter().map(|(key, _)| key.clone()).collect();
         let mut applied = tokio::task::spawn_blocking(move || {
             service.commit_admin(
-                &checked_owned,
+                &checked,
                 parsed,
                 created,
                 shown,
@@ -1251,17 +1250,25 @@ impl Opener {
         self.token_use(id)?;
         let open = self.0.open.get().ok_or("the daemon is not open")?;
         let previous = open.live.token_in_force(id).map_err(|e| format!("{e:#}"))?;
+        let version = self
+            .0
+            .service
+            .token_version(id)
+            .map_err(|e| e.to_string())?;
         Ok(TokenShown {
             daemon: self.0.service.daemon().clone(),
             id: id.clone(),
+            version,
             previous,
         })
     }
 
-    /// Puts a checked `writ-token/2` in force: its id one a repo or a notifier uses, its
-    /// ciphertext opened by the keystore's identity and a token; logged by the service against
-    /// the file in force; then written, and used at once (the mirrors that use it opened
-    /// again, the notifier started with it). A refusal is logged once.
+    /// Puts a checked `writ-token/3` in force: its id one a repo or a notifier uses, its
+    /// ciphertext opened by the keystore's identity and a token; committed by the service
+    /// against the id's change count and the file in force, the file written under the same
+    /// lock as its line and its count (the review after M7.6, A-6); then used at once (the
+    /// mirrors that use it opened again, the notifier started with it). A refusal is logged
+    /// once.
     async fn apply_token(
         &self,
         checked: CheckedToken,
@@ -1269,11 +1276,12 @@ impl Opener {
     ) -> Result<TokenApplied, String> {
         let inner = &self.0;
         let id = checked.token().id.clone();
+        let approver = checked.approver().clone();
         let refuse = |reason: String| {
             let reason = format!("token {id}: {reason}");
             inner
                 .service
-                .admin_failed(Some(checked.approver()), None, &reason, &caller);
+                .admin_failed(Some(&approver), None, &reason, &caller);
             reason
         };
         let gateway = inner.gateway.get().ok_or("the daemon is not started yet")?;
@@ -1284,42 +1292,49 @@ impl Opener {
         let used = self.token_use(&id).map_err(refuse)?;
         let file = writ_crypto::sealed::decode(checked.token().sealed.as_str())
             .map_err(|e| refuse(e.to_string()))?;
-        let plaintext = open
-            .live
-            .open_token(&id, &file)
-            .map_err(|e| refuse(format!("{e:#} (is it sealed to this daemon's recipient?)")))?;
-        // Checked as a token now, then dropped: the mirrors unwrap it again at each use.
-        if used.upstream {
-            UpstreamToken::from_bytes(&plaintext)
-                .map_err(|why| refuse(format!("not a token: {why}")))?;
-        }
-        let bot_token = match used.notifier {
-            Some(_) => {
-                Some(keystore::bot_token(&id, &plaintext).map_err(|e| refuse(format!("{e:#}")))?)
-            }
-            None => None,
-        };
-        drop(plaintext);
-        let current = open
-            .live
-            .token_in_force(&id)
-            .map_err(|e| refuse(format!("{e:#}")))?;
         let digest = TextDigest::of_bytes(&file);
-        let (service, checked_owned, caller_owned, digest_owned) = (
+        let (live, service, caller_owned, id_owned) = (
+            open.live.clone(),
             inner.service.clone(),
-            checked.clone(),
             caller.clone(),
-            digest.clone(),
+            id.clone(),
         );
-        let applied = tokio::task::spawn_blocking(move || {
-            service.commit_token(&checked_owned, &current, &digest_owned, &caller_owned)
+        let (upstream, notifier) = (used.upstream, used.notifier.is_some());
+        let committed = tokio::task::spawn_blocking(move || {
+            let (service, caller, id) = (&service, &caller_owned, &id_owned);
+            let refuse = |reason: String| {
+                let reason = format!("token {id}: {reason}");
+                service.admin_failed(Some(checked.approver()), None, &reason, caller);
+                reason
+            };
+            // Opened with the ways in force, the keystore's state held to the write.
+            let (staged, plaintext) = live
+                .stage_token(id, &file)
+                .map_err(|e| refuse(format!("{e:#} (is it sealed to this daemon's recipient?)")))?;
+            // Checked as a token now, then dropped: the mirrors unwrap it again at each use.
+            if upstream {
+                UpstreamToken::from_bytes(&plaintext)
+                    .map_err(|why| refuse(format!("not a token: {why}")))?;
+            }
+            let bot_token = match notifier {
+                true => Some(
+                    keystore::bot_token(id, &plaintext).map_err(|e| refuse(format!("{e:#}")))?,
+                ),
+                false => None,
+            };
+            drop(plaintext);
+            let current = staged.in_force().map_err(|e| refuse(format!("{e:#}")))?;
+            let applied = service
+                .commit_token(&checked, &current, &digest, caller, move || {
+                    staged.write().map_err(|e| format!("{e:#}"))
+                })
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>((applied, bot_token))
         })
         .await
-        .map_err(|_| "the change stopped".to_owned())?
-        .map_err(|e| e.to_string())?;
-        if let Err(e) = open.live.write_token(&id, &file) {
-            return Err(refuse(format!("logged but not written: {e:#}")));
-        }
+        .map_err(|_| "the change stopped".to_owned())?;
+        let (applied, bot_token) = committed?;
+        let digest = &applied.digest;
         tracing::info!(token = %id, digest = %digest, approver = %applied.signed_by, "token in force");
         if let (Some(token), Some(telegram)) = (bot_token, used.notifier) {
             self.start_notifier(&id, token, telegram);
@@ -1548,9 +1563,16 @@ impl AdminApplier for Opener {
         let me = self.clone();
         // Files and a device: off the async threads; run to its end even if the client goes.
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || me.rotate_ca_now(&checked, &caller))
-                .await
-                .map_err(|_| "the rotation stopped".to_owned())?
+            tokio::task::spawn_blocking(move || {
+                let done = me.rotate_ca_now(&checked, &caller);
+                // A refusal after the check, logged once, here.
+                if let Err(why) = &done {
+                    me.0.service.ca_refused(&checked, why, &caller);
+                }
+                done
+            })
+            .await
+            .map_err(|_| "the rotation stopped".to_owned())?
         })
     }
 
@@ -1571,9 +1593,16 @@ impl AdminApplier for Opener {
         let me = self.clone();
         // Files and a device: off the async threads; run to its end even if the client goes.
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || me.rotate(&checked, &caller))
-                .await
-                .map_err(|_| "the rotation stopped".to_owned())?
+            tokio::task::spawn_blocking(move || {
+                let done = me.rotate(&checked, &caller);
+                // A refusal after the check, logged once, here.
+                if let Err(why) = &done {
+                    me.0.service.tls_refused(&checked, why, &caller);
+                }
+                done
+            })
+            .await
+            .map_err(|_| "the rotation stopped".to_owned())?
         })
     }
 }

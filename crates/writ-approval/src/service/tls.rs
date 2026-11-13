@@ -5,7 +5,6 @@
 //! here.
 
 use writ_core::caller::CallerFacts;
-use writ_core::canonical::Canonical;
 use writ_core::names::KeyFingerprint;
 use writ_core::signed::{CertFingerprint, TlsRotation};
 use writ_proto::TlsRequest;
@@ -18,8 +17,9 @@ use crate::{RefusalCode, ServiceError};
 /// Rotations a minute, daemon-wide.
 pub const MAX_ROTATIONS_A_MINUTE: usize = 5;
 
-/// A rotation whose document and signature passed: only [`Service::check_tls`] makes one.
-#[derive(Debug, Clone)]
+/// A rotation whose document and signature passed: only [`Service::check_tls`] makes one, and
+/// it is never copied (what holds one moves it).
+#[derive(Debug)]
 pub struct CheckedTls {
     rotation: TlsRotation,
     approver: KeyFingerprint,
@@ -53,23 +53,19 @@ impl Service {
         self.opened()?;
         let checked = self.tls_document(request);
         if let Err(e) = &checked {
-            self.tls_logged(None, Err(&e.to_string()), caller);
+            self.tls_denied(None, &e.to_string(), caller);
         }
         checked
     }
 
     fn tls_document(&self, request: &TlsRequest) -> Result<CheckedTls, ServiceError> {
-        let rotation = TlsRotation::from_canonical(request.document.as_bytes())
-            .map_err(|e| refused(format!("not a writ-tls/1 document: {e}")))?;
-        let approver = self
-            .verify_approver(request.document.as_bytes(), &request.signature)
-            .map_err(|reason| ServiceError::refused(RefusalCode::Signature, reason))?;
-        if rotation.daemon != self.boot.daemon {
-            return Err(refused(format!(
-                "the rotation names daemon {}, not this one ({})",
-                rotation.daemon, self.boot.daemon
-            )));
-        }
+        let (rotation, approver) = self.approver_document(
+            &request.document,
+            &request.signature,
+            |r: &TlsRotation| &r.daemon,
+            "rotation",
+            RefusalCode::Tls,
+        )?;
         let now = self.now()?;
         if !within(&mut self.outbound().rotations, now, MAX_ROTATIONS_A_MINUTE) {
             return Err(refused(format!(
@@ -106,37 +102,25 @@ impl Service {
         Self::log(&mut inner, &event)
     }
 
-    /// Logs a rotation refused (denied, with the reason: the document refused, a certificate
-    /// no longer in force, the key not made), or one done whose line wasn't written first (a
-    /// rotation finished at start).
-    pub fn tls_logged(
-        &self,
-        checked: Option<&CheckedTls>,
-        result: Result<&CertFingerprint, &str>,
-        caller: &CallerFacts,
-    ) {
+    /// Logs a checked rotation refused after its check (denied, with the reason: a
+    /// certificate no longer in force, a backend the daemon lacks, the key not made). A
+    /// rotation done has its line from [`Service::tls_rotating`], before it is in force.
+    pub fn tls_refused(&self, checked: &CheckedTls, why: &str, caller: &CallerFacts) {
+        self.tls_denied(Some(checked), why, caller);
+    }
+
+    fn tls_denied(&self, checked: Option<&CheckedTls>, why: &str, caller: &CallerFacts) {
         let (Ok(now), Ok(mut inner)) = (self.now(), self.lock()) else {
             return;
         };
-        let (outcome, reason) = match (result, checked) {
-            (Ok(new), Some(checked)) => (
-                Outcome::Done,
-                format!(
-                    "TLS key rotated: certificate {} replaced by {new}, its key on backend {}",
-                    checked.rotation.replaces, checked.rotation.backend
-                ),
+        let reason = match checked {
+            Some(checked) => format!(
+                "TLS key not rotated (certificate {}, backend {}): {why}",
+                checked.rotation.replaces, checked.rotation.backend
             ),
-            (Ok(new), None) => (Outcome::Done, format!("TLS key rotated: certificate {new}")),
-            (Err(why), Some(checked)) => (
-                Outcome::Denied,
-                format!(
-                    "TLS key not rotated (certificate {}, backend {}): {why}",
-                    checked.rotation.replaces, checked.rotation.backend
-                ),
-            ),
-            (Err(why), None) => (Outcome::Denied, format!("TLS key not rotated: {why}")),
+            None => format!("TLS key not rotated: {why}"),
         };
-        let mut event = AuditEvent::new(now, EventKind::Admin, outcome)
+        let mut event = AuditEvent::new(now, EventKind::Admin, Outcome::Denied)
             .caller(caller)
             .reason(reason);
         if let Some(checked) = checked {

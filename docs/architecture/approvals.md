@@ -226,7 +226,9 @@ the policy (M7.2, `proxy=<name>` or `--proxy`), that proxy, in the `writ-approva
 namespace, and sends it (`writ admin scan`, `POST /v1/scan`). A reader key alone can't make
 the daemon reach a host, so the scan can't probe the daemon's network. The daemon checks the
 document strictly, the signature against `approvers`, the daemon and the nonce (refused
-`scan`, or `signature`), then makes one SSH handshake per key algorithm Writ verifies, each connection opened
+`scan`, or `signature`), writes the scan's `scan` line (allowed, `<host>:<port>: scanning`,
+with the approver) before it connects out, refusing the scan when the log can't take it (the
+review after M7.6: no line, no connection), then makes one SSH handshake per key algorithm Writ verifies, each connection opened
 through the named proxy when there is one ([gateway](gateway.md#through-a-proxy)) and refused
 when the policy in force declares no such proxy or lacks its password,
 (Ed25519, ECDSA P-256 and P-384) with its own SSH library (russh, `writ_mirror::scan`), each
@@ -259,26 +261,32 @@ keystore from the Mac, never in clear on the daemon host's disk.
 `writ admin token <id> [--yes]`:
 
 1. reads the keystore's public recipient from `writ info` (over the pinned channel, so it is
-   the daemon's), and the digest of the token file in force (`writ admin token <id>` asks
-   `GET /v1/tokens/<id>`: the digest, or none; never the token);
+   the daemon's), and what is in force for the id (`writ admin token <id>` asks
+   `GET /v1/tokens/<id>`): its change count (how many token changes of it the daemon
+   applied) and the digest of its token file, or none; never the token;
 2. reads the token (no echo; one line of stdin when it isn't a terminal), encrypts it to the
    recipient (age, armored), and wipes its copies;
-3. signs a `writ-token/2` document `{daemon, id, previous, sealed}` with the approval key:
-   `daemon` the daemon's SSH host key fingerprint, `previous` the digest of the
-   `tokens/<id>.age` it replaces (`none` for a first one), `sealed` the armored ciphertext (at
-   most 8 KiB);
+3. signs a `writ-token/3` document `{daemon, id, version, previous, sealed}` with the
+   approval key: `daemon` the daemon's SSH host key fingerprint, `version` the id's change
+   count, `previous` the digest of the `tokens/<id>.age` it replaces (`none` for a first
+   one), `sealed` the armored ciphertext (at most 8 KiB);
 4. sends the document and its SSHSIG (`POST /v1/tokens`).
 
-The service checks the daemon is open, the document decodes strictly and names this daemon,
-the signer is an approver in force, and `previous` is still the file in force (a replay, or a
-token changed meanwhile, is refused: each file is encrypted afresh, so its digest never comes
-back; only `none` could, were a token file removed by hand on the host). The daemon checks the id is a token the policy declares (`kind: token`) or a sealed
-notifier uses, opens the ciphertext with the keystore's identity (kept open after unseal) and
-checks it is a token; then the `admin` line is written (the id, both digests, the approver:
-never the token), `tokens/<id>.age` written (the old one replaced), and the token used at
-once: the mirrors of the repos that use it reopen (`Mirrors::with_tokens`), the notifier with
-that token starts or takes it. The development keystore refuses it (its tokens are files the
-operator writes, `<keys>/tokens/<id>`).
+The service checks the daemon is open, the document decodes strictly, the signer is an
+approver in force, and the document names this daemon. The daemon checks the id is a token
+the policy declares (`kind: token`) or a sealed notifier uses, opens the ciphertext with the
+keystore's identity (kept open after unseal; the keystore's state held, so a rotation of the
+data key waits) and checks it is a token. Then, under the service's state lock: `version`
+must be the id's change count and `previous` the file in force (a replay, or a token changed
+meanwhile, is refused), the `admin` line is written (the id, the count it makes, both
+digests, the approver: never the token), the count bumped in the state, `tokens/<id>.age`
+written (the old one replaced), and the token used at once: the mirrors of the repos that use
+it reopen (`Mirrors::with_tokens`), the notifier with that token starts or takes it. The
+count only grows and is kept by the id (ASCII lowercase) even when the id leaves the policy
+and its file is deleted with it: a digest of content can come back (`none`, once the file is
+gone), a count can't, so a change applies once (the review after M7.6, A-6; `writ-token/2`,
+which had no count, is refused). The development keystore refuses it (its tokens are files
+the operator writes, `<keys>/tokens/<id>`).
 
 An `https://` repo whose token isn't in the keystore yet doesn't stop the unseal: its mirror
 is served, and its syncs and pushes are refused with "add it with `writ admin token <id>`".

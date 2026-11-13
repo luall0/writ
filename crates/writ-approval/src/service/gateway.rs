@@ -5,7 +5,6 @@ use writ_core::caller::{self, CallerFacts};
 use writ_core::lease::{Lease, State};
 use writ_core::names::{RepoName, TicketId};
 use writ_core::policy::{self, CertIdentity, Context, Denial, DenyCode, FetchRequest};
-use writ_core::ticket::Operation;
 use writ_core::units::Timestamp;
 use writ_store::{AuditEvent, Counter, EventKind, Outcome};
 
@@ -13,43 +12,21 @@ use super::{Inner, Service, cert_event, internal};
 
 impl Service {
     /// Finds the single active lease a session certificate stands for and checks the caller
-    /// against its constraint. Run when a certificate is presented (`event: connect`) and
-    /// again before each command (`event` of that command, with the operation it needs).
-    pub fn authorize(
-        &self,
-        cert: &CertIdentity,
-        caller: &CallerFacts,
-        operation: Option<Operation>,
-    ) -> Result<Lease, Denial> {
+    /// against its constraint: run when a certificate is presented, logged as `connect`
+    /// (coalesced per lease past its budget). Each command a connection runs is decided again
+    /// by its own call ([`Service::may_sign`], [`Service::may_push`], [`Service::fetch`]).
+    pub fn authorize(&self, cert: &CertIdentity, caller: &CallerFacts) -> Result<Lease, Denial> {
         let (now, mut inner) = self.begin().map_err(super::as_denial)?;
-        let kind = match operation {
-            None => EventKind::Connect,
-            Some(Operation::CommitSign) => EventKind::Sign,
-            Some(Operation::Push) => EventKind::Push,
-            Some(Operation::Fetch) => EventKind::Fetch,
-        };
-        let decision = self
-            .lease_for(&mut inner, cert, caller, now)
-            .and_then(|lease| {
-                if let Some(operation) = operation {
-                    policy::check_allowed_anywhere(&lease, operation)?;
-                }
-                Ok(lease)
-            });
+        let decision = self.lease_for(&mut inner, cert, caller, now);
         let outcome = if decision.is_ok() {
             Outcome::Allowed
         } else {
             Outcome::Denied
         };
-        let event = cert_event(now, kind, outcome, cert, caller);
+        let event = cert_event(now, EventKind::Connect, outcome, cert, caller);
         match decision {
             Ok(lease) => {
-                let logged = match operation {
-                    // A connection: coalesced per lease past its budget.
-                    None => Self::log_connection(&mut inner, &event),
-                    Some(_) => Self::log(&mut inner, &event),
-                };
-                if let Err(e) = logged {
+                if let Err(e) = Self::log_connection(&mut inner, &event) {
                     return Err(Denial::new(DenyCode::Invalid, e.to_string()));
                 }
                 Ok(lease)

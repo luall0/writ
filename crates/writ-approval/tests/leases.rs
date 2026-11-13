@@ -231,6 +231,44 @@ fn a_lease_granted_meanwhile_makes_the_signature_refused() {
     assert_eq!(h.approve(&second).unwrap(), State::Active);
 }
 
+/// The review after M7.6 (A-10): a ticket whose source the store doesn't hold skipped
+/// `max_active_per_source` at signing, a missing fact that allowed. Refused now; the same
+/// ticket with its source back is granted (the refusal is the missing fact's).
+#[test]
+fn a_ticket_without_its_source_is_refused_where_the_limit_needs_one() {
+    let h = Harness::new(|b| b.max_active_per_source(5));
+    let here = from("192.0.2.7");
+    let ticket = h
+        .submit(
+            &generate(KeyKind::Ed25519).unwrap(),
+            &feature("agent/a-*"),
+            &here,
+        )
+        .unwrap();
+    let set_source = |source: Option<&str>| {
+        let conn = rusqlite::Connection::open(h._dir.path().join("leases.db")).unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE tickets SET source = ?1 WHERE id = ?2",
+                rusqlite::params![source, ticket.id.as_str()],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "the fixture changed");
+    };
+    set_source(None);
+    refused(
+        h.approve(&ticket),
+        RefusalCode::TooManyActive,
+        &format!(
+            "ticket {} has no source recorded: max_active_per_source can't be checked",
+            ticket.id
+        ),
+    );
+    assert_eq!(h.state(&ticket.id), State::Pending);
+    set_source(Some("192.0.2.7"));
+    assert_eq!(h.approve(&ticket).unwrap(), State::Active);
+}
+
 #[test]
 fn writ_sign_sees_the_source_s_other_active_leases() {
     let h = Harness::new(|b| {
@@ -534,16 +572,43 @@ fn a_certificate_is_signed_outside_the_state_lock_and_decided_again_before_its_l
 
     // The CA rotated while a certificate waits: the lease gets one from the new CA.
     let (ticket, key) = held("agent/c-*");
+    let rotation = {
+        let replaces = writ_crypto::keys::fingerprint(h.ca_key.public_key())
+            .parse()
+            .unwrap();
+        let document = writ_core::signed::CaRotation::new(
+            h.daemon.clone(),
+            replaces,
+            "software".to_owned().try_into().unwrap(),
+        )
+        .canonical_bytes()
+        .unwrap();
+        let request = writ_proto::CaRequest {
+            signature: writ_crypto::sshsig::sign(
+                &h.approver,
+                writ_core::lease::APPROVAL_NAMESPACE,
+                &document,
+            )
+            .unwrap(),
+            document: String::from_utf8(document).unwrap(),
+        };
+        h.service
+            .check_ca(&request, &CallerFacts::default())
+            .unwrap()
+    };
     h.ca_gate.close();
     let rotated = generate(KeyKind::Ed25519).unwrap();
     std::thread::scope(|scope| {
         let approving = scope.spawn(|| h.approve(&ticket));
         h.ca_gate.wait_entered();
         h.service
-            .replace_ca(Arc::new(writ_approval::testing::GatedCa::new(
-                &rotated,
-                Arc::new(writ_approval::testing::CaGate::default()),
-            )))
+            .replace_ca(
+                &rotation,
+                Arc::new(writ_approval::testing::GatedCa::new(
+                    &rotated,
+                    Arc::new(writ_approval::testing::CaGate::default()),
+                )),
+            )
             .unwrap();
         h.ca_gate.open();
         assert_eq!(approving.join().unwrap().unwrap(), State::Active);

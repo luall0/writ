@@ -1,7 +1,8 @@
-//! Sealed tokens on the platform fakes: an approver's `writ-token/2` signature, against the
-//! token file in force, is logged and answered (the daemon writes the file); unsigned,
-//! wrongly signed, malformed, stale or replayed changes are refused and logged; a sealed
-//! service takes none; no line ever holds the token or its ciphertext.
+//! Sealed tokens on the platform fakes: an approver's `writ-token/3` signature, against the
+//! id's change count and the token file in force, is logged, counted and answered (the
+//! daemon's write runs under the same lock); unsigned, wrongly signed, malformed, stale or
+//! replayed changes are refused and logged, a replay even once the id's file is gone; a
+//! sealed service takes none; no line ever holds the token or its ciphertext.
 
 #![allow(
     clippy::unwrap_used,
@@ -18,7 +19,7 @@ use writ_core::authority::{PreviousToken, SealedToken, TextDigest};
 use writ_core::caller::CallerFacts;
 use writ_core::canonical::Canonical;
 use writ_core::lease::APPROVAL_NAMESPACE;
-use writ_core::signed::{Admin, Token};
+use writ_core::signed::{Admin, Token, TokenReplaced};
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::PrivateKey;
 use writ_crypto::sshsig;
@@ -36,11 +37,11 @@ fn facts() -> CallerFacts {
     }
 }
 
-fn token(h: &TestService, previous: PreviousToken) -> Token {
+fn token(h: &TestService, version: u64, previous: PreviousToken) -> Token {
     Token::new(
         h.service.daemon().clone(),
         "token-01".parse().unwrap(),
-        previous,
+        TokenReplaced { version, previous },
         SealedToken::try_from(SEALED.to_owned()).unwrap(),
     )
 }
@@ -52,8 +53,19 @@ fn signed(signer: &PrivateKey, document: &[u8]) -> TokenRequest {
     }
 }
 
-fn request(h: &TestService, previous: PreviousToken) -> TokenRequest {
-    signed(&h.approver, &token(h, previous).canonical_bytes().unwrap())
+fn request(h: &TestService, version: u64, previous: PreviousToken) -> TokenRequest {
+    signed(
+        &h.approver,
+        &token(h, version, previous).canonical_bytes().unwrap(),
+    )
+}
+
+/// The daemon's write of the file, as `commit_token` runs it: counted in `writes`.
+fn written(writes: &std::cell::Cell<u32>) -> impl FnOnce() -> Result<(), String> + '_ {
+    move || {
+        writes.set(writes.get() + 1);
+        Ok(())
+    }
 }
 
 fn refused<T: std::fmt::Debug>(result: Result<T, ServiceError>, code: RefusalCode) -> String {
@@ -77,27 +89,43 @@ fn nothing_sealed_logged(h: &TestService) {
 fn a_signed_token_against_the_file_in_force_is_logged_and_a_replay_is_stale() {
     let dir = tempfile::tempdir().unwrap();
     let h = TestServiceBuilder::new(POLICY).build(dir.path());
-    let first = request(&h, PreviousToken::None);
+    let id = "token-01".parse().unwrap();
+    let writes = std::cell::Cell::new(0);
+    assert_eq!(h.service.token_version(&id).unwrap(), 0);
+    let first = request(&h, 0, PreviousToken::None);
     let checked = h.service.check_token(&first, &facts()).unwrap();
     assert_eq!(checked.token().id.as_str(), "token-01");
     let file = TextDigest::of_bytes(b"the new age file");
     let applied = h
         .service
-        .commit_token(&checked, &PreviousToken::None, &file, &facts())
+        .commit_token(
+            &checked,
+            &PreviousToken::None,
+            &file,
+            &facts(),
+            written(&writes),
+        )
         .unwrap();
     assert_eq!(
-        (&applied.digest, &applied.replaced, &applied.signed_by),
-        (&file, &PreviousToken::None, checked.approver())
+        (
+            applied.version,
+            &applied.digest,
+            &applied.replaced,
+            &applied.signed_by
+        ),
+        (1, &file, &PreviousToken::None, checked.approver())
     );
+    assert_eq!(writes.get(), 1, "written once, under the commit");
+    assert_eq!(h.service.token_version(&id).unwrap(), 1);
     let lines = h.events("admin", "allowed");
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["approver"], checked.approver().as_str());
     assert_eq!(
         lines[0]["reason"],
-        format!("token token-01: sha256 {file} replaces none")
+        format!("token token-01: version 1 (sha256 {file}) replaces version 0 (no token)")
     );
 
-    // Replayed once the file exists: against a file no longer in force.
+    // Replayed once the file exists: its count is spent.
     let replayed = h.service.check_token(&first, &facts()).unwrap();
     let message = refused(
         h.service.commit_token(
@@ -105,39 +133,179 @@ fn a_signed_token_against_the_file_in_force_is_logged_and_a_replay_is_stale() {
             &PreviousToken::File(file.clone()),
             &TextDigest::of_bytes(b"another"),
             &facts(),
+            written(&writes),
+        ),
+        RefusalCode::Admin,
+    );
+    assert!(
+        message.contains(
+            "token token-01: 1 changes of it were applied, not the 0 this change replaces"
+        ),
+        "{message}"
+    );
+    // The right count against another file than the one in force: stale too.
+    let elsewhere = request(&h, 1, PreviousToken::File(TextDigest::of_bytes(b"x")));
+    let checked = h.service.check_token(&elsewhere, &facts()).unwrap();
+    let message = refused(
+        h.service.commit_token(
+            &checked,
+            &PreviousToken::File(file.clone()),
+            &TextDigest::of_bytes(b"another"),
+            &facts(),
+            written(&writes),
         ),
         RefusalCode::Admin,
     );
     assert!(
         message.contains(&format!(
-            "the token in force is {file}, not the one this change replaces (none)"
+            "the token in force is {file}, not the one this change replaces"
         )),
         "{message}"
     );
-    // A rotation against the file in force: fine.
-    let rotation = request(&h, PreviousToken::File(file.clone()));
+    assert_eq!(writes.get(), 1, "nothing written for either");
+    // A rotation against the count and the file in force: fine.
+    let rotation = request(&h, 1, PreviousToken::File(file.clone()));
     let checked = h.service.check_token(&rotation, &facts()).unwrap();
     let next = TextDigest::of_bytes(b"the next age file");
-    h.service
+    let applied = h
+        .service
         .commit_token(
             &checked,
             &PreviousToken::File(file.clone()),
             &next,
             &facts(),
+            written(&writes),
         )
         .unwrap();
+    assert_eq!(applied.version, 2);
     let denied = h.events("admin", "denied");
-    assert_eq!(denied.len(), 1, "the stale replay");
+    assert_eq!(denied.len(), 2, "the two stale changes");
     assert!(
-        denied[0]["reason"]
+        denied.iter().all(|line| line["reason"]
             .as_str()
             .unwrap()
-            .starts_with("token token-01: the token in force is "),
-        "{}",
-        denied[0]
+            .starts_with("token token-01: ")),
+        "{denied:?}"
     );
     assert_eq!(h.events("admin", "allowed").len(), 2);
     nothing_sealed_logged(&h);
+}
+
+/// The review after M7.6 (A-6): removing a key deletes its token file, so the file in force
+/// said `none` again once the id was declared again, and the id's first change, replayed by
+/// anyone who read it, put an old token back with no fresh signature. The count outlives the
+/// file: the replay is refused, on both sides of the count, and only a change signed for the
+/// count in force applies.
+#[test]
+fn a_token_replayed_once_its_file_was_deleted_is_refused_by_its_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let writes = std::cell::Cell::new(0);
+    let first = request(&h, 0, PreviousToken::None);
+    let checked = h.service.check_token(&first, &facts()).unwrap();
+    let file = TextDigest::of_bytes(b"the first age file");
+    h.service
+        .commit_token(
+            &checked,
+            &PreviousToken::None,
+            &file,
+            &facts(),
+            written(&writes),
+        )
+        .unwrap();
+    // The key removed (its file deleted with it) and declared again: no file in force.
+    let gone = PreviousToken::None;
+    let commit = |request: &TokenRequest| {
+        let checked = h.service.check_token(request, &facts()).unwrap();
+        h.service.commit_token(
+            &checked,
+            &gone,
+            &TextDigest::of_bytes(b"replayed"),
+            &facts(),
+            written(&writes),
+        )
+    };
+    let message = refused(commit(&first), RefusalCode::Admin);
+    assert_eq!(
+        message,
+        "token token-01: 1 changes of it were applied, not the 0 this change replaces: it was \
+         applied already, or another came first (run writ admin token token-01 again)"
+    );
+    // One past the count: refused too.
+    let message = refused(commit(&request(&h, 2, gone.clone())), RefusalCode::Admin);
+    assert!(
+        message.contains("not the 2 this change replaces"),
+        "{message}"
+    );
+    assert_eq!(writes.get(), 1, "nothing written for the replays");
+    // At the count: a new signature, taken.
+    let applied = commit(&request(&h, 1, gone.clone())).unwrap();
+    assert_eq!(applied.version, 2);
+    assert_eq!(writes.get(), 2);
+    let denied = h.events("admin", "denied");
+    assert_eq!(denied.len(), 2, "{denied:?}");
+}
+
+/// No line, no change: a log that can't take the line counts and writes nothing; a write
+/// that fails is refused and logged, its count spent (the document can't apply again).
+#[test]
+fn a_token_change_is_counted_and_written_only_after_its_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let id = "token-01".parse().unwrap();
+    let writes = std::cell::Cell::new(0);
+    let first = request(&h, 0, PreviousToken::None);
+    let checked = h.service.check_token(&first, &facts()).unwrap();
+    let file = TextDigest::of_bytes(b"an age file");
+    h.audit_breaker.set_broken(true);
+    let error = h
+        .service
+        .commit_token(
+            &checked,
+            &PreviousToken::None,
+            &file,
+            &facts(),
+            written(&writes),
+        )
+        .unwrap_err();
+    assert!(matches!(error, ServiceError::AuditLog(_)), "{error:?}");
+    h.audit_breaker.set_broken(false);
+    assert_eq!(h.service.token_version(&id).unwrap(), 0, "nothing counted");
+    assert_eq!(writes.get(), 0, "nothing written");
+
+    let message = refused(
+        h.service
+            .commit_token(&checked, &PreviousToken::None, &file, &facts(), || {
+                Err("no space left on the device".to_owned())
+            }),
+        RefusalCode::Admin,
+    );
+    assert_eq!(
+        message,
+        "token token-01: not written: no space left on the device"
+    );
+    assert_eq!(
+        h.service.token_version(&id).unwrap(),
+        1,
+        "the document is spent"
+    );
+    let denied = h.events("admin", "denied");
+    assert_eq!(
+        denied.last().unwrap()["reason"],
+        "not applied: token token-01: not written: no space left on the device"
+    );
+    let replayed = h.service.check_token(&first, &facts()).unwrap();
+    refused(
+        h.service.commit_token(
+            &replayed,
+            &PreviousToken::None,
+            &file,
+            &facts(),
+            written(&writes),
+        ),
+        RefusalCode::Admin,
+    );
+    assert_eq!(writes.get(), 0);
 }
 
 #[test]
@@ -145,12 +313,12 @@ fn an_unsigned_wrongly_signed_or_malformed_token_is_refused_and_logged() {
     let dir = tempfile::tempdir().unwrap();
     let h = TestServiceBuilder::new(POLICY).build(dir.path());
     let stranger = generate(KeyKind::Ed25519).unwrap();
-    let document = token(&h, PreviousToken::None).canonical_bytes().unwrap();
+    let document = token(&h, 0, PreviousToken::None).canonical_bytes().unwrap();
     let mut no_signature = signed(&h.approver, &document);
     no_signature.signature = String::new();
     let mut other_bytes = signed(&h.approver, &document);
     other_bytes.document = String::from_utf8(
-        token(&h, PreviousToken::File(TextDigest::of_bytes(b"x")))
+        token(&h, 0, PreviousToken::File(TextDigest::of_bytes(b"x")))
             .canonical_bytes()
             .unwrap(),
     )
@@ -176,6 +344,9 @@ fn an_unsigned_wrongly_signed_or_malformed_token_is_refused_and_logged() {
         text.replace("\"token-01\"", "\"../../etc/x\""),
         text.replace("}", r#","plaintext":"x"}"#),
         format!(" {text}"),
+        // The format before (the review after M7.6, A-6): no count, refused.
+        text.replace("writ-token/3", "writ-token/2")
+            .replace(r#""version":0,"#, ""),
     ];
     let mut cases = vec![
         (
@@ -209,7 +380,10 @@ fn an_unsigned_wrongly_signed_or_malformed_token_is_refused_and_logged() {
             .parse()
             .unwrap(),
         "token-01".parse().unwrap(),
-        PreviousToken::None,
+        TokenReplaced {
+            version: 0,
+            previous: PreviousToken::None,
+        },
         SealedToken::try_from(SEALED.to_owned()).unwrap(),
     )
     .canonical_bytes()
@@ -225,16 +399,29 @@ fn an_unsigned_wrongly_signed_or_malformed_token_is_refused_and_logged() {
         ),
         "{message}"
     );
-    let count = cases.len() + 1;
+    let count = cases.len() + 2;
     for (what, request, code) in cases {
         let message = refused(h.service.check_token(&request, &facts()), code);
         if code == RefusalCode::Admin {
             assert!(
-                message.contains("not a writ-token/2 document"),
+                message.contains("not a writ-token/3 document"),
                 "{what}: {message}"
             );
         }
     }
+    // The format before, refused with its exact reason.
+    let message = refused(
+        h.service
+            .check_token(&signed(&h.approver, hostile[4].as_bytes()), &facts()),
+        RefusalCode::Admin,
+    );
+    assert!(
+        message.starts_with(
+            "not a writ-token/3 document: not a canonical writ-token/3 document: unknown \
+             variant `writ-token/2`, expected `writ-token/3`"
+        ),
+        "{message}"
+    );
     let denied = h.events("admin", "denied");
     assert_eq!(denied.len(), count, "one line each");
     for line in &denied {
@@ -253,7 +440,7 @@ fn a_sealed_service_takes_no_token() {
     let h = TestServiceBuilder::new(POLICY).sealed().build(dir.path());
     let message = refused(
         h.service
-            .check_token(&request(&h, PreviousToken::None), &facts()),
+            .check_token(&request(&h, 0, PreviousToken::None), &facts()),
         RefusalCode::Sealed,
     );
     assert_eq!(message, writ_core::policy::SEALED);

@@ -430,12 +430,32 @@ pub struct FetchRequest {
     pub repo: RepoName,
 }
 
+/// Whether a decision checks what the lease has used, or runs again after its count was taken
+/// (a signature's last phase: the slot the first phase took makes a lease's last signature
+/// look used up, and it is never given back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Counted {
+    /// The counts, the rate and the lease's exhaustion are checked.
+    No,
+    /// They were, when the count was taken: not again.
+    Already,
+}
+
 /// The checks every operation starts with. Returns the repository's template, its registry
 /// entry and its terms in the lease.
 fn admit<'a>(
     ctx: &Context<'a>,
     operation: Operation,
     repo: &RepoName,
+) -> Result<(&'a Template, &'a RepoEntry, &'a RepoTerms), Denial> {
+    admit_counted(ctx, operation, repo, Counted::No)
+}
+
+fn admit_counted<'a>(
+    ctx: &Context<'a>,
+    operation: Operation,
+    repo: &RepoName,
+    counted: Counted,
 ) -> Result<(&'a Template, &'a RepoEntry, &'a RepoTerms), Denial> {
     let lease = ctx.lease;
     let id = &lease.id;
@@ -448,7 +468,7 @@ fn admit<'a>(
     if lease.ticket.is_expired(ctx.now) {
         return Err(ran_out(id, DenyCode::Expired, "expired"));
     }
-    if is_exhausted(&lease.ticket, ctx.usage) {
+    if counted == Counted::No && is_exhausted(&lease.ticket, ctx.usage) {
         return Err(ran_out(id, DenyCode::Exhausted, "is used up"));
     }
     caller::check(lease.ticket.subject.caller.as_ref(), ctx.caller)
@@ -510,7 +530,24 @@ fn check_rate(ctx: &Context<'_>) -> Result<(), Denial> {
 
 /// May the daemon sign this object under the lease?
 pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, Denial> {
-    let (template, entry, terms) = admit(ctx, Operation::CommitSign, &request.repo)?;
+    decide_sign_counted(ctx, request, Counted::No)
+}
+
+/// [`decide_sign`] again, in a signature's last phase, against the policy in force: every
+/// check but the count, the rate and the lease's exhaustion, which the first phase made when
+/// it took the signature's slot (the review after M7.6, A-7: a template's `paths_check` or a
+/// repo's `ticket_link` changed while the signer ran discards the signature).
+pub fn recheck_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, Denial> {
+    decide_sign_counted(ctx, request, Counted::Already)
+}
+
+fn decide_sign_counted(
+    ctx: &Context<'_>,
+    request: &SignRequest,
+    counted: Counted,
+) -> Result<Allowed, Denial> {
+    let (template, entry, terms) =
+        admit_counted(ctx, Operation::CommitSign, &request.repo, counted)?;
     let lease = ctx.lease;
     let id = &lease.id;
     let mut allowed = Allowed::default();
@@ -635,16 +672,18 @@ pub fn decide_sign(ctx: &Context<'_>, request: &SignRequest) -> Result<Allowed, 
     }
     // The count and the rate first: they are cheap, and a request refused by them never
     // pays for the path match (the review after M5.5, S8).
-    if ctx.usage.of(&request.repo).signatures >= terms.limits.max_signatures {
-        return Err(deny(
-            DenyCode::Limit,
-            format!(
-                "lease {id}: all {} signatures used in repo {}",
-                terms.limits.max_signatures, request.repo
-            ),
-        ));
+    if counted == Counted::No {
+        if ctx.usage.of(&request.repo).signatures >= terms.limits.max_signatures {
+            return Err(deny(
+                DenyCode::Limit,
+                format!(
+                    "lease {id}: all {} signatures used in repo {}",
+                    terms.limits.max_signatures, request.repo
+                ),
+            ));
+        }
+        check_rate(ctx)?;
     }
-    check_rate(ctx)?;
     check_paths(ctx, template, terms, request, &mut allowed)?;
     Ok(allowed)
 }

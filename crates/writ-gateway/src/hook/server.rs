@@ -282,8 +282,8 @@ async fn decide_push(
         commits,
         pack_size,
     };
-    let lease = match gateway.push(pushing.clone()).await {
-        Ok(lease) => lease,
+    let in_flight = match gateway.push(pushing.clone()).await {
+        Ok(in_flight) => in_flight,
         Err(denial) => {
             // A violation may have revoked the lease: its other sessions go now.
             if gateway.service().is_revoked(context.cert.serial) {
@@ -292,11 +292,16 @@ async fn decide_push(
             return Err(Denied::logged(&denial));
         }
     };
-    go_upstream(gateway, context, &quarantine, &pushing.updates).await?;
+    // In flight until upstream answered, whatever it said: the lease isn't marked used up by
+    // the push's own count before it gets there (the review after M7.6, A-3).
+    let lease = in_flight.lease().id.clone();
+    let upstream = go_upstream(gateway, context, &quarantine, &pushing.updates).await;
+    gateway.push_ended(in_flight).await;
+    upstream?;
     // Upstream has the commits: their notes, if the repo asks for them, once git gave the
     // mirror back.
     let commits = pushing.commits.into_iter().map(|(id, _)| id).collect();
-    crate::notes::after_push(gateway, &lease.id, &context.repo, commits);
+    crate::notes::after_push(gateway, &lease, &context.repo, commits);
     Ok(())
 }
 

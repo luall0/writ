@@ -10,9 +10,10 @@ use crate::{Result, StoreError};
 
 /// The version of the state's format: the schema below, the ticket format it stores
 /// ([`Ticket::KIND`]) and the policy shape its authority versions hold (10: M6.2's, keys
-/// declared in the policy and repos naming their templates). Kept in `PRAGMA user_version`,
-/// and the ticket format in `formats`.
-pub const STATE_VERSION: i64 = 10;
+/// declared in the policy and repos naming their templates; 11: each credential's count of
+/// token changes, the review after M7.6's A-6). Kept in `PRAGMA user_version`, and the ticket
+/// format in `formats`.
+pub const STATE_VERSION: i64 = 11;
 
 /// How long a write waits for another connection's transaction before failing.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -87,6 +88,10 @@ CREATE TABLE authority_head (
     approvers INTEGER NOT NULL,
     readers   INTEGER NOT NULL,
     mac       TEXT NOT NULL
+) STRICT;
+CREATE TABLE token_versions (
+    id      TEXT PRIMARY KEY,
+    version INTEGER NOT NULL CHECK (version >= 1)
 ) STRICT;
 ";
 

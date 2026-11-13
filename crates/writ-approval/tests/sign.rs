@@ -818,7 +818,7 @@ fn a_lease_s_connections_are_counted_past_sixty_lines_a_minute() {
             .collect::<Vec<_>>()
     };
     for _ in 0..60 {
-        h.service.authorize(&cert, &caller, None).unwrap();
+        h.service.authorize(&cert, &caller).unwrap();
     }
     assert_eq!(
         lines_of(&lease).len(),
@@ -827,13 +827,13 @@ fn a_lease_s_connections_are_counted_past_sixty_lines_a_minute() {
     );
     for _ in 0..5 {
         assert!(
-            h.service.authorize(&cert, &caller, None).is_ok(),
+            h.service.authorize(&cert, &caller).is_ok(),
             "past the budget, still allowed"
         );
     }
     assert_eq!(lines_of(&lease).len(), 60);
     // Another lease, a denial, a command's own line: unaffected.
-    h.service.authorize(&other_cert, &caller, None).unwrap();
+    h.service.authorize(&other_cert, &caller).unwrap();
     assert_eq!(lines_of(&other).len(), 1);
     let outside: writ_core::names::RepoName = "dotfiles".parse().unwrap();
     h.service.may_sign(&cert, &caller, &outside).unwrap_err();
@@ -841,7 +841,7 @@ fn a_lease_s_connections_are_counted_past_sixty_lines_a_minute() {
     // One second short of the window, still counted; at the window, the count is written by
     // the next sweep (here, any call), then lines resume.
     h.clock.advance(59);
-    h.service.authorize(&cert, &caller, None).unwrap();
+    h.service.authorize(&cert, &caller).unwrap();
     assert_eq!(lines_of(&lease).len(), 60);
     h.clock.advance(1);
     h.service.list(false).unwrap();
@@ -852,7 +852,7 @@ fn a_lease_s_connections_are_counted_past_sixty_lines_a_minute() {
         reason.starts_with("6 more connections of this lease since"),
         "{reason}"
     );
-    h.service.authorize(&cert, &caller, None).unwrap();
+    h.service.authorize(&cert, &caller).unwrap();
     assert_eq!(lines_of(&lease).len(), 62);
 }
 
@@ -1176,6 +1176,98 @@ fn the_last_signature_in_flight_is_not_refused_as_used_up() {
 }
 
 #[test]
+fn the_last_push_of_a_lease_without_fetch_reaches_upstream_and_then_uses_it_up() {
+    // The review after M7.6, A-3: the push took the last count, and the gateway's check
+    // before upstream (`may_push`) swept the lease used up first: the push was refused there.
+    let h = Harness::new();
+    let only = max_signatures(
+        &only_omega(FEATURE).replace("[fetch, commit_sign, push]", "[commit_sign, push]"),
+        1,
+    )
+    .replace(
+        "      max_signatures: 1\n",
+        "      max_signatures: 1\n      max_pushes: 1\n",
+    );
+    assert!(only.contains("max_pushes: 1"), "the fixture changed");
+    let (lease, cert) = h.lease(&only);
+    let repo: writ_core::names::RepoName = "omega-code".parse().unwrap();
+    let signed = h
+        .sign(
+            &cert,
+            &build("src/a.rs", EMAIL, &trailer(&lease)),
+            "omega-code",
+        )
+        .unwrap();
+    let digest = h.ledger(&lease)[0].paths_digest.clone();
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Active);
+
+    let in_flight = h
+        .service
+        .push(&pushing(&cert, &signed.commit, digest.clone()))
+        .unwrap();
+    assert_eq!(in_flight.lease().id, lease);
+    // Its count taken, on its way upstream: the check before upstream lets it through, and
+    // the daemon's sweep leaves the lease active.
+    h.service
+        .may_push(&cert, &CallerFacts::default(), &repo)
+        .unwrap();
+    h.service.sweep();
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Active);
+    assert!(!h.service.is_revoked(cert.serial));
+    // Not a second push: the count is spent.
+    let second = h
+        .service
+        .push(&pushing(&cert, &signed.commit, digest))
+        .unwrap_err();
+    assert_eq!(second.code, DenyCode::Exhausted, "{second}");
+
+    // Ended: the lease is used up at once, its certificate refused.
+    in_flight.end();
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Exhausted);
+    assert!(h.service.is_revoked(cert.serial));
+    let after = h
+        .service
+        .may_push(&cert, &CallerFacts::default(), &repo)
+        .unwrap_err();
+    assert_eq!(after.code, DenyCode::NotActive, "{after}");
+    assert_eq!(after.reason, format!("lease {lease} is exhausted"));
+    assert_eq!(h.events("exhaust", "done").len(), 1);
+}
+
+#[test]
+fn a_push_in_flight_dropped_unended_still_releases_its_lease() {
+    // Whatever path the gateway leaves by (an error, a task cancelled), the lease isn't kept
+    // active by a push that is over.
+    let h = Harness::new();
+    let only = max_signatures(
+        &only_omega(FEATURE).replace("[fetch, commit_sign, push]", "[commit_sign, push]"),
+        1,
+    )
+    .replace(
+        "      max_signatures: 1\n",
+        "      max_signatures: 1\n      max_pushes: 1\n",
+    );
+    let (lease, cert) = h.lease(&only);
+    let signed = h
+        .sign(
+            &cert,
+            &build("src/a.rs", EMAIL, &trailer(&lease)),
+            "omega-code",
+        )
+        .unwrap();
+    let digest = h.ledger(&lease)[0].paths_digest.clone();
+    let in_flight = h
+        .service
+        .push(&pushing(&cert, &signed.commit, digest))
+        .unwrap();
+    h.service.sweep();
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Active);
+    drop(in_flight);
+    assert_eq!(h.service.show(&lease).unwrap().state, State::Exhausted);
+    assert!(h.service.is_revoked(cert.serial));
+}
+
+#[test]
 fn a_busy_or_late_signer_is_refused_with_its_reason() {
     use writ_signer::SignerError;
     let h = Harness::new();
@@ -1478,36 +1570,50 @@ fn a_policy_change_and_a_revocation_complete_while_an_openpgp_signature_is_in_fl
 fn a_template_tightened_while_signing_discards_the_signature() {
     // The review after M5.5 (L3): the last phase checked the lease's state, not the policy;
     // a template tightened below the lease by a signed change while the backend signed still
-    // handed the signature out.
+    // handed the signature out. The review after M7.6 (A-7): the last phase checked the
+    // lease's fit only, so a template's `paths_check` or a repo's `ticket_link` tightened
+    // meanwhile still let it out: the whole decision is made again.
     use writ_core::authority::AdminTarget;
     let h = Harness::new();
-    let (lease, cert) = h.lease(FEATURE);
-    let commit = build("src/a.rs", EMAIL, &trailer(&lease));
-    let shown = h.service.admin_show(AdminTarget::Policy).unwrap();
-    let tight = shown
-        .text
-        .replacen("max_signatures: 50", "max_signatures: 1", 1);
-    assert_ne!(tight, shown.text, "the fixture changed");
-    let closed = h.signer.close();
-    std::thread::scope(|scope| {
-        let in_flight = scope.spawn(|| h.sign(&cert, &commit, "omega-code"));
-        h.signer.wait_entered();
-        answers("a policy change", || {
-            apply_admin(&h, AdminTarget::Policy, &tight)
-        });
-        closed.open();
-        denied(
-            in_flight.join().unwrap(),
-            DenyCode::Config,
-            &format!(
-                "lease {lease} no longer fits its templates: repos.homelab-scripts.limits.\
-                 max_signatures is 50, over the template's 1; repos.omega-code.limits.\
-                 max_signatures is 50, over the template's 1 (changed while the commit was \
-                 being signed)"
-            ),
-        );
-    });
-    assert!(h.ledger(&lease).is_empty(), "nothing recorded");
+    // Signs `commit` for `repo` under a new lease, the policy changed by `edit` while the
+    // signer holds the signature; what the signature's request answers.
+    let tightened =
+        |edit: &dyn Fn(&str) -> String, commit: &dyn Fn(&TicketId) -> Built, repo: &str| {
+            let (lease, cert) = h.lease(FEATURE);
+            let commit = commit(&lease);
+            let shown = h.service.admin_show(AdminTarget::Policy).unwrap();
+            let tight = edit(&shown.text);
+            assert_ne!(tight, shown.text, "the fixture changed");
+            let closed = h.signer.close();
+            let answered = std::thread::scope(|scope| {
+                let in_flight = scope.spawn(|| h.sign(&cert, &commit, repo));
+                h.signer.wait_entered();
+                answers("a policy change", || {
+                    apply_admin(&h, AdminTarget::Policy, &tight)
+                });
+                closed.open();
+                in_flight.join().unwrap()
+            });
+            assert!(h.ledger(&lease).is_empty(), "nothing recorded");
+            (lease, answered)
+        };
+
+    // Its count: the lease no longer fits the template.
+    let (lease, answered) = tightened(
+        &|text| text.replacen("max_signatures: 50", "max_signatures: 1", 1),
+        &|lease| build("src/a.rs", EMAIL, &trailer(lease)),
+        "omega-code",
+    );
+    denied(
+        answered,
+        DenyCode::Config,
+        &format!(
+            "lease {lease} no longer fits its templates: repos.homelab-scripts.limits.\
+             max_signatures is 50, over the template's 1; repos.omega-code.limits.\
+             max_signatures is 50, over the template's 1 (changed while the commit was \
+             being signed)"
+        ),
+    );
     let lines = h.events("sign", "denied");
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0]["code"], "config");
@@ -1519,6 +1625,82 @@ fn a_template_tightened_while_signing_discards_the_signature() {
         "{}",
         lines[0]
     );
+    // Put back: the next leases fit again.
+    let shown = h.service.admin_show(AdminTarget::Policy).unwrap();
+    apply_admin(
+        &h,
+        AdminTarget::Policy,
+        &shown
+            .text
+            .replacen("max_signatures: 1", "max_signatures: 50", 1),
+    );
+
+    // `paths_check: warn` made `deny`: a commit outside `expected_paths` had only a warning
+    // when it was decided.
+    let (lease, answered) = tightened(
+        &|text| text.replacen("paths_check: warn", "paths_check: deny", 1),
+        &|lease| build("docs/a.md", EMAIL, &trailer(lease)),
+        "omega-code",
+    );
+    denied(
+        answered,
+        DenyCode::Paths,
+        &format!(
+            "outside ticket {lease}: files outside expected_paths: docs/a.md (changed while \
+             the commit was being signed); the signature was discarded"
+        ),
+    );
+
+    // `ticket_link: ledger_only` made `trailer`: a commit without its `Writ:` trailer.
+    let (_, answered) = tightened(
+        &|text| text.replacen("ticket_link: ledger_only", "ticket_link: trailer", 1),
+        &|_| build("src/a.rs", EMAIL, "Change\n"),
+        "homelab-scripts",
+    );
+    denied(
+        answered,
+        DenyCode::TicketLink,
+        "repo homelab-scripts needs a `Writ: ",
+    );
+    let lines = h.events("sign", "denied");
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(
+        [&lines[1]["code"], &lines[2]["code"]],
+        ["paths", "ticket_link"]
+    );
+
+    // The same commit with the policy left as it was: signed, its warning the policy's in
+    // force (the check, not the fixture, refused the two above).
+    let (lease, cert) = h.lease(FEATURE);
+    let signed = h
+        .sign(
+            &cert,
+            &build("docs/b.md", EMAIL, &trailer(&lease)),
+            "omega-code",
+        )
+        .unwrap_err();
+    assert_eq!(
+        signed.code,
+        DenyCode::Paths,
+        "deny is in force now: {signed}"
+    );
+    let shown = h.service.admin_show(AdminTarget::Policy).unwrap();
+    apply_admin(
+        &h,
+        AdminTarget::Policy,
+        &shown
+            .text
+            .replacen("paths_check: deny", "paths_check: warn", 1),
+    );
+    let signed = h
+        .sign(
+            &cert,
+            &build("docs/b.md", EMAIL, &trailer(&lease)),
+            "omega-code",
+        )
+        .unwrap();
+    assert_eq!(signed.warnings, ["files outside expected_paths: docs/b.md"]);
+    assert_eq!(h.ledger(&lease).len(), 1);
 }
 
 /// A push of `commit` (its paths' digest as git would compute it again) to a new branch,
