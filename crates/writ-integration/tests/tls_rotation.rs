@@ -287,7 +287,7 @@ fn a_replayed_stale_foreign_or_unsigned_rotation_is_refused_and_logged() {
 
 #[test]
 fn on_the_mac_the_tls_key_moves_to_the_secure_enclave_and_back() {
-    if std::env::consts::OS != "macos" {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let mut daemon = Daemon::start(POLICY, Approvals::Https);
@@ -368,7 +368,7 @@ fn writd_init_refuses_a_tls_backend_it_lacks() {
 
 #[test]
 fn on_the_mac_writd_init_makes_the_tls_key_in_the_secure_enclave() {
-    if std::env::consts::OS != "macos" {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     // The installer's way: the keystore made with its HTTPS key in the Secure Enclave, served

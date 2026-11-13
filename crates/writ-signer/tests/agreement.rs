@@ -242,13 +242,12 @@ fn every_way_a_helper_fails_or_lies_is_refused_with_its_error() {
     // A helper that crashes on one agreement: that one refused, the next served by a new one.
     let marker = dir.path().join("once");
     let args = ["--fault", "agree:crash", "--once", marker.to_str().unwrap()];
-    let loaded = loop {
-        // The probe at load is the faulty agreement the first time; then it answers.
-        match HelperAgreement::load(&config(&args, PATIENT), &made.stored, &made.point) {
-            Ok(loaded) => break loaded,
-            Err(why) => assert_eq!(why, HelperError::Died.to_string()),
-        }
-    };
+    // The probe at load is the faulty agreement the first time (the fault fired, exactly
+    // once: the review after M7.6, T-7); the next load's helper (the marker there) answers.
+    let first = HelperAgreement::load(&config(&args, PATIENT), &made.stored, &made.point);
+    assert_eq!(first.err(), Some(HelperError::Died.to_string()));
+    assert!(marker.exists(), "the faulty helper ran");
+    let loaded = HelperAgreement::load(&config(&args, PATIENT), &made.stored, &made.point).unwrap();
     let peer = HelperAgreement::create(&config(&[], PATIENT))
         .unwrap()
         .1

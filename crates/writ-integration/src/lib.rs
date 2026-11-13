@@ -102,6 +102,20 @@ pub fn changed_files(
 }
 
 /// A command's stdout, as text.
+/// Whether this is the Mac, where `writd`'s `se-cryptokit` backend is built (the tests that
+/// need it run against the fake helper, never the device). Elsewhere it says the test is
+/// skipped, and why, rather than pass in silence (the review after M7.6, T-10).
+pub fn on_the_mac(what: &str) -> bool {
+    let here = std::env::consts::OS == "macos";
+    if !here {
+        eprintln!(
+            "skipped on {}: {what} needs writd's se-cryptokit backend, built on macOS only",
+            std::env::consts::OS
+        );
+    }
+    here
+}
+
 pub fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }

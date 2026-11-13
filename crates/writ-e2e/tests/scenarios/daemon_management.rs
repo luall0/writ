@@ -8,7 +8,7 @@
 
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
-use writ_e2e::setup::HTTPS_CREDENTIAL;
+use writ_e2e::setup::{HTTPS_CREDENTIAL, doc_step, doc_step_on_terminal, doc_step_with};
 
 #[test]
 #[ignore = "end to end: make e2e"]
@@ -341,15 +341,132 @@ fn the_policy_is_changed_field_by_field_and_entries_removed_from_the_approver_s_
     );
 }
 
-/// `command` on a terminal (`script`), `answers` typed one per line: what it showed (the
-/// streams merged, rows ending in `\r\n`).
-fn on_terminal(approver: &writ_e2e::docker::Host, command: &str, answers: &[&str]) -> String {
-    let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
-    let out = approver.run_with(
-        &format!("script -qec '{command}' /dev/null"),
-        typed.as_bytes(),
+/// The daily operations page (`docs/operators/sealing.md`) as written: the policy entry by
+/// entry, then the approvers as a whole file, each command its exact text (the review after
+/// M7.6, X-4; its `writ unseal` and `writ admin token` are the setup's, its recovery key's
+/// commands `keystore_recipients`'). On entries of its own, the policy and the approvers put
+/// back at the end.
+#[test]
+#[ignore = "end to end: make e2e"]
+fn the_daily_operations_page_runs_as_written() {
+    let stack = Stack::exclusive();
+    let approver = &stack.approver;
+    approver.ok("writ admin show policy > daily-before.yaml");
+    approver.ok("writ admin show approvers > daily-approvers-before");
+    // Entries of its own: a template and a key nothing else uses.
+    approver.ok(&format!(
+        "writ admin template add daily --from feature {FLAGS}"
+    ));
+    approver.ok(&format!(
+        "writ admin key add daily-key use=signing format=ssh algorithm=ed25519 {FLAGS}"
+    ));
+
+    // The policy, entry by entry.
+    let listed = doc_step(approver, "writ admin repo list", &[]);
+    assert!(listed.lines().any(|l| l.starts_with("setup  ")), "{listed}");
+    let shown = doc_step(
+        approver,
+        "writ admin repo show <repo>",
+        &[("<repo>", "setup")],
     );
-    writ_e2e::stdout(&out)
+    assert!(shown.starts_with("setup:\n"), "{shown}");
+    // Added on a terminal with the setup's credential: each field asked, one signature, then
+    // checked once Enter says the credential is registered (it is: it reads and writes).
+    let added = doc_step_on_terminal(
+        approver,
+        "writ admin repo add <repo>",
+        &[("<repo>", "daily")],
+        &[
+            "ssh://git@forgejo/writ/setup.git",
+            "upstream-setup",
+            // proxy: none.
+            "",
+            "managed",
+            "",
+            "",
+            "",
+            "",
+            "y",
+            "",
+        ],
+    );
+    assert!(added.contains("with repo daily added"), "{added}");
+    assert!(added.contains("daily is ready"), "{added}");
+    let edited = doc_step_on_terminal(
+        approver,
+        "writ admin repo edit <repo>",
+        &[("<repo>", "daily")],
+        &["", "", "", "", "refs/heads/main", "", "", "", "y"],
+    );
+    assert!(
+        edited.contains("with repo daily edited: protected_refs=refs/heads/main"),
+        "{edited}"
+    );
+    assert!(edited.contains("Applied: policy is version "), "{edited}");
+    let set = doc_step_with(
+        approver,
+        "writ admin template set <template> max_ttl=2h branches+=fix/*",
+        &[("<template>", "daily")],
+        b"y\n",
+    );
+    assert!(set.contains("Applied: policy is version "), "{set}");
+    let template = approver.ok("writ admin template show daily");
+    assert!(
+        template.contains("  max_ttl: 2h\n") && template.contains("fix/*"),
+        "{template}"
+    );
+    let removed = doc_step_on_terminal(
+        approver,
+        "writ admin key remove <id>",
+        &[("<id>", "daily-key")],
+        &["daily-key", "y", "y"],
+    );
+    assert!(
+        removed.contains("Deleted signing ssh ed25519 daily-key (SHA256:"),
+        "{removed}"
+    );
+
+    // A whole file: the approvers, edited by $EDITOR (here a script adding a comment line).
+    approver.write(
+        "daily-editor",
+        "#!/bin/sh\nprintf '# edited by the daily operations scenario\\n' >> \"$1\"\n",
+        "0755",
+    );
+    approver.write(
+        "daily.env",
+        ". ./client.env\nexport EDITOR=\"$HOME/daily-editor\"\n",
+        "0644",
+    );
+    let editing = approver.with(&approver.dir, Some("daily.env"));
+    doc_step(&editing, "writ admin show approvers > approvers", &[]);
+    doc_step(&editing, "$EDITOR approvers", &[]);
+    let applied = doc_step_with(
+        &editing,
+        "writ admin apply approvers approvers",
+        &[],
+        b"y\n",
+    );
+    assert!(
+        applied.contains("# edited by the daily operations scenario"),
+        "the change shown: {applied}"
+    );
+    assert!(
+        applied.contains("Applied: approvers is version "),
+        "{applied}"
+    );
+
+    // Put back as they were.
+    approver.ok("writ admin apply approvers daily-approvers-before --yes");
+    approver.ok("writ admin apply policy daily-before.yaml --yes");
+    assert_eq!(
+        approver.ok("writ admin show policy"),
+        approver.ok("cat daily-before.yaml")
+    );
+}
+
+/// `command` on a terminal, which must exit 0 ([`writ_e2e::Host::on_terminal`]).
+fn on_terminal(approver: &writ_e2e::docker::Host, command: &str, answers: &[&str]) -> String {
+    approver.on_terminal(command, answers)
 }
 
 #[test]
@@ -397,9 +514,9 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
         "guided-token  upstream token for forgejo-https  not added yet (writ admin token)  unused"
     ));
     // A repo with a new credential, declared in the same change (RSA: some remotes take only
-    // RSA keys); then edited, each field kept but those changed.
-    let shown = on_terminal(
-        approver,
+    // RSA keys); then edited, each field kept but those changed. Its check fails (the
+    // credential isn't registered): added, the exit 1.
+    let shown = approver.exits_on_terminal(
         &format!("writ admin repo add guided-repo {url}"),
         &[
             "ssh://git@forgejo/writ/guided.git",
@@ -416,6 +533,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
             "y",
             "",
         ],
+        1,
     );
     assert!(
         shown.contains(
@@ -566,11 +684,38 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
         "writ admin repo add guided-other upstream=ssh://git@forgejo/writ/guided-other.git upstream_credential=guided-repo-upstream-2 templates= --yes {url}"
     ));
     assert!(said.contains("with repo guided-other added"), "{said}");
-    for (noun, name, answers) in [
-        ("repo", "guided-other", vec!["", "", "", "", "", "", "", ""]),
-        ("template", "guided-yes", vec!["", "", "", "", "", "", ""]),
-        ("key", "guided-signing", vec!["sha256"]),
-        ("host", "guided.invalid", vec![""]),
+    // Each edit with --yes makes a real change (an edit that changes nothing never reaches
+    // the question --yes answers: the review after M7.6, T-2), applied with no question.
+    let hash = match approver
+        .ok("writ admin key show guided-signing")
+        .contains("  hash: sha512\n")
+    {
+        true => "sha256",
+        false => "sha512",
+    };
+    approver.ok("rm -f guided-2 && ssh-keygen -q -t ed25519 -N '' -C '' -f guided-2");
+    let second = approver.ok("cut -d' ' -f1,2 guided-2.pub");
+    let keys = format!("{},{}", key.trim(), second.trim());
+    for (noun, name, answers, edited) in [
+        (
+            "repo",
+            "guided-other",
+            vec!["", "", "", "", "refs/heads/main", "", "", ""],
+            "protected_refs=refs/heads/main".to_owned(),
+        ),
+        (
+            "template",
+            "guided-yes",
+            vec!["", "", "", "", "8", "", "", ""],
+            "max_ops_per_minute=8".to_owned(),
+        ),
+        ("key", "guided-signing", vec![hash], format!("hash={hash}")),
+        (
+            "host",
+            "guided.invalid",
+            vec![keys.as_str()],
+            "keys=".to_owned(),
+        ),
     ] {
         let shown = on_terminal(
             approver,
@@ -578,10 +723,24 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
             &answers,
         );
         assert!(
+            shown.contains(&format!("with {noun} {name} edited: ")) && shown.contains(&edited),
+            "{noun}: {shown}"
+        );
+        assert!(
+            shown.contains("Applied: policy is version "),
+            "{noun}: {shown}"
+        );
+        assert!(
             !shown.contains("Sign this change?"),
             "{noun}: --yes asks no question: {shown}"
         );
     }
+    assert!(
+        approver
+            .ok("writ admin host show guided.invalid")
+            .contains(second.trim()),
+        "the host's second key pinned"
+    );
 
     // Put back as it was (the keys removed or rotated made again, new).
     approver.ok("writ admin apply policy guided-before.yaml --yes");

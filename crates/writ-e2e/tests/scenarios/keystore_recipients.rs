@@ -9,6 +9,7 @@
 
 use writ_e2e::Stack;
 use writ_e2e::agent::expect;
+use writ_e2e::setup::{doc_step, doc_step_with};
 use writ_e2e::stdout;
 
 /// The approval flags, given explicitly, and `--yes`.
@@ -17,7 +18,11 @@ const FLAGS: &str = "--yes --approval-url \"$WRIT_APPROVAL_URL\" --key \
 
 /// `writ recovery new` on the approver's machine: the secret key and its recipient.
 fn new_key(approver: &writ_e2e::Host) -> (String, String) {
-    let said = approver.ok("writ recovery new");
+    key_of(&approver.ok("writ recovery new"))
+}
+
+/// The secret key and its recipient, from what `writ recovery new` printed.
+fn key_of(said: &str) -> (String, String) {
     let secret = said
         .lines()
         // The key: the first line with text after the one that announces it.
@@ -126,12 +131,25 @@ fn the_recovery_key_is_made_declared_checked_and_replaced_from_the_approver_s_ma
         1,
         "the replaced key",
     );
-    // Edited on a terminal, Enter keeping the recipient.
-    let typed = approver.run_with(
-        &format!("script -qec 'writ admin recipient edit recovery {FLAGS}' /dev/null"),
-        b"\n",
+    // Edited on a terminal, back to the first key: a real change (every flag used, --yes
+    // answering the question, the review after M7.6, T-2), applied with no question.
+    let shown = approver.on_terminal(
+        &format!("writ admin recipient edit recovery {FLAGS}"),
+        &[&recipient, ""],
     );
-    assert_eq!(typed.status.code(), Some(0), "{}", stdout(&typed));
+    assert!(
+        shown.contains(&format!(
+            "with recipient recovery edited: recipient={recipient}"
+        )),
+        "{shown}"
+    );
+    assert!(shown.contains("Applied: policy is version "), "{shown}");
+    assert!(!shown.contains("Sign this change?"), "{shown}");
+    expect(
+        &approver.run_with("writ recovery check", format!("{secret}\n").as_bytes()),
+        0,
+        "the first key, back",
+    );
 
     // A hardware key on a daemon without the device: refused by name, nothing changed.
     let (_, err) = expect(
@@ -155,6 +173,28 @@ fn the_recovery_key_is_made_declared_checked_and_replaced_from_the_approver_s_ma
         "no recovery key",
     );
     assert!(err.contains("declares no recovery recipient"), "{err}");
+
+    // The daily operations page's steps, as written (docs/operators/sealing.md: the review
+    // after M7.6, X-4): a key made, declared (one signature), checked.
+    let said = doc_step(approver, "writ recovery new", &[]);
+    let (secret, recipient) = key_of(&said);
+    let said = doc_step_with(
+        approver,
+        "writ admin recipient add recovery recipient=<age1…>",
+        &[("<age1…>", &recipient)],
+        b"y\n",
+    );
+    assert!(said.contains("with recipient recovery added"), "{said}");
+    let checked = doc_step_with(
+        approver,
+        "writ recovery check",
+        &[],
+        format!("{secret}\n").as_bytes(),
+    );
+    assert!(
+        checked.starts_with("Recovery key checked: it is recipient recovery"),
+        "{checked}"
+    );
     approver.ok("writ admin apply policy policy-before-recipients.yaml --yes");
 
     // The SSH CA (M7.6): shown, rotated live (the leases of every other scenario keep

@@ -100,7 +100,7 @@ fn writd_init_refuses_a_ca_backend_it_lacks() {
 
 #[test]
 fn on_the_mac_writd_init_makes_the_ca_on_the_device_and_it_signs_each_certificate() {
-    if std::env::consts::OS != "macos" {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let helper = bin("writ-fake-se");

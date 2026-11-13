@@ -69,10 +69,6 @@ limits:
   ttl: 1h
 "#;
 
-fn on_the_mac() -> bool {
-    std::env::consts::OS == "macos"
-}
-
 fn git(daemon: &Daemon, cwd: &Path, args: &[&str]) -> Output {
     Command::new("git")
         .args(args)
@@ -108,7 +104,7 @@ fn writ_ok(daemon: &Daemon, cwd: &Path, args: &[&str]) -> String {
 
 #[test]
 fn a_build_without_the_secure_enclave_refuses_its_backend_by_name() {
-    if on_the_mac() {
+    if std::env::consts::OS == "macos" {
         return;
     }
     let error = Daemon::refused_policy(POLICY, POLICY);
@@ -122,7 +118,7 @@ fn a_build_without_the_secure_enclave_refuses_its_backend_by_name() {
 
 #[test]
 fn secure_enclave_keys_sign_commits_git_verifies_and_push_upstream() {
-    if !on_the_mac() {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let daemon = Daemon::start(POLICY, Approvals::Ssh);
@@ -227,7 +223,7 @@ fn fake_helper() -> std::path::PathBuf {
 
 #[test]
 fn a_damaged_blob_leaves_its_key_unusable_and_the_daemon_running() {
-    if !on_the_mac() {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let helper = fake_helper();
@@ -360,7 +356,7 @@ templates:
 
 #[test]
 fn a_key_moves_to_the_secure_enclave_and_back_from_the_cli_alone() {
-    if !on_the_mac() {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let daemon = Daemon::start(SOFTWARE, Approvals::Ssh);

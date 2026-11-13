@@ -128,7 +128,7 @@ fn auto_unseal_says_what_is_missing_and_is_refused_until_everything_is_in_hardwa
 /// On the Mac, against the fake `writ-se`.
 #[test]
 fn on_the_mac_a_daemon_with_everything_in_hardware_opens_itself_at_each_start() {
-    if std::env::consts::OS != "macos" {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let (_, recovery) = writ_crypto::recovery::new_key();
@@ -267,7 +267,7 @@ fn on_the_mac_a_daemon_with_everything_in_hardware_opens_itself_at_each_start() 
 /// directory is as it was (no identity sealed to their recovery key).
 #[test]
 fn on_the_mac_an_unseal_auto_altered_at_rest_opens_nothing_and_writes_nothing() {
-    if std::env::consts::OS != "macos" {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let (_, recovery) = writ_crypto::recovery::new_key();

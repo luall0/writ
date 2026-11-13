@@ -774,4 +774,75 @@ mod tests {
         let past = vec![0u8; MAX_REQUEST - 4];
         assert_eq!(request(Op::Sign, &[&past]), Err(HelperError::TooLarge));
     }
+
+    /// A frame of `len` announced, then `body`.
+    fn framed(len: usize, body: &[u8]) -> Vec<u8> {
+        let mut bytes = u32::try_from(len).unwrap().to_be_bytes().to_vec();
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    /// The review after M7.6 (T-3): the answer's bound on both sides: one of exactly
+    /// [`MAX_ANSWER`] bytes read whole, one byte more refused before anything is read.
+    #[test]
+    fn an_answer_is_read_up_to_its_bound_and_refused_one_byte_past_it() {
+        let body = vec![7u8; MAX_ANSWER];
+        let read = read_frame(&mut std::io::Cursor::new(framed(MAX_ANSWER, &body))).unwrap();
+        assert_eq!(read.len(), MAX_ANSWER);
+        let past = framed(MAX_ANSWER + 1, &vec![7u8; MAX_ANSWER + 1]);
+        assert_eq!(
+            read_frame(&mut std::io::Cursor::new(past)),
+            Err(HelperError::Oversized)
+        );
+        // Announced but cut short: the helper died, nothing decided on part of it.
+        let cut = framed(10, b"short");
+        assert_eq!(
+            read_frame(&mut std::io::Cursor::new(cut)),
+            Err(HelperError::Died)
+        );
+    }
+
+    /// A refusal's code on both sides of [`MAX_CODE`]: 64 bytes taken as the helper's word,
+    /// 65 a malformed answer.
+    #[test]
+    fn a_refusal_code_is_at_most_its_bound() {
+        let refusal = |code: &[u8]| {
+            let mut body = vec![1u8];
+            body.extend_from_slice(&u32::try_from(code.len()).unwrap().to_be_bytes());
+            body.extend_from_slice(code);
+            body
+        };
+        let at = vec![b'a'; MAX_CODE];
+        assert_eq!(
+            answer(&refusal(&at), 1),
+            Err(HelperError::Refused("a".repeat(MAX_CODE)))
+        );
+        let past = vec![b'a'; MAX_CODE + 1];
+        assert_eq!(
+            answer(&refusal(&past), 1),
+            Err(HelperError::Malformed("a refusal that isn't one code"))
+        );
+        assert_eq!(
+            answer(&refusal(b""), 1),
+            Err(HelperError::Malformed("a refusal that isn't one code"))
+        );
+    }
+
+    /// A stored blob on both sides of [`MAX_ANSWER`] (what the helper could have answered):
+    /// one of exactly that length unframed, one byte more refused before any helper sees it,
+    /// whatever its digest says.
+    #[test]
+    fn a_stored_blob_is_at_most_an_answer_long() {
+        let key = writ_crypto::keypair::KeyPair::generate(KeyAlgorithm::P256).unwrap();
+        let public = key.public_key();
+        let at = vec![3u8; MAX_ANSWER];
+        let stored = frame(&public, &at).unwrap();
+        assert_eq!(unframe(&stored, &public).unwrap().as_bytes(), at.as_slice());
+        let past = vec![3u8; MAX_ANSWER + 1];
+        let stored = frame(&public, &past).unwrap();
+        assert_eq!(
+            unframe(&stored, &public).map(|s| s.as_bytes().len()),
+            Err("its stored blob's length is out of bounds")
+        );
+    }
 }

@@ -312,10 +312,6 @@ fn a_change_whose_rewrap_fails_is_written_back_and_finished_at_the_next_unseal()
     );
 }
 
-fn on_the_mac() -> bool {
-    std::env::consts::OS == "macos"
-}
-
 const HTTPS_TOKEN: &str = "writ-test-recipients-https-token-0123456789";
 
 /// A bare repo `web` on an HTTPS test remote, with one commit on `main`.
@@ -366,7 +362,7 @@ fn ls_remote(daemon: &Daemon, lease: &str, repo: &str) -> Output {
 /// Enclave here): a hardware recipient declared live takes the keystore.
 #[test]
 fn on_the_mac_a_hardware_recipient_takes_the_keystore_live_and_unwraps_the_token_per_use() {
-    if !on_the_mac() {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let runtime = tokio::runtime::Runtime::new().unwrap();

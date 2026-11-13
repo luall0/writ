@@ -366,7 +366,8 @@ fn an_https_upstream_behind_a_proxy_is_synced_through_it() {
                 "HEAD:refs/heads/main",
             ],
         );
-        // The certificate names localhost: the proxy resolves it.
+        // The certificate names a host no resolver knows: only the proxy reaches it, so a
+        // request that skipped the proxy fails (the review after M7.6, T-6).
         let port = remote
             .url("demo")
             .rsplit_once(':')
@@ -376,14 +377,12 @@ fn an_https_upstream_behind_a_proxy_is_synced_through_it() {
             .next()
             .unwrap()
             .to_owned();
-        let url = format!("https://localhost:{port}/demo.git");
+        let name = writ_integration::https_remote::UNRESOLVED;
+        let url = format!("https://{name}:{port}/demo.git");
         let proxy = TestProxy::start(&runtime, kind, Some(("writ", PASSWORD)));
-        proxy.map(
-            "localhost",
-            ([127, 0, 0, 1], port.parse::<u16>().unwrap()).into(),
-        );
+        proxy.map(name, ([127, 0, 0, 1], port.parse::<u16>().unwrap()).into());
         let policy = PolicyConfig::from_yaml(&format!(
-            "keys:\n  token-01: {{ use: upstream, kind: token, host: localhost }}\n  \
+            "keys:\n  token-01: {{ use: upstream, kind: token, host: {name} }}\n  \
              proxy-pass: {{ use: upstream, kind: token, host: \"127.0.0.1\" }}\n\
              proxies:\n  p: {{ url: \"{}\", credential: proxy-pass }}\n\
              repos:\n  demo:\n    upstream: {url}\n    upstream_credential: token-01\n    \
@@ -433,9 +432,11 @@ fn an_https_upstream_behind_a_proxy_is_synced_through_it() {
         let asked = proxy.asked();
         assert!(!asked.is_empty());
         assert!(
-            asked.iter().all(|a| *a == format!("localhost:{port}")),
+            asked.iter().all(|a| *a == format!("{name}:{port}")),
             "{kind:?}: {asked:?}"
         );
+        // Every connection the remote took is one the proxy opened.
+        assert_eq!(remote.connections(), asked.len(), "{kind:?}");
         assert!(remote.requests() > 0);
     }
 }

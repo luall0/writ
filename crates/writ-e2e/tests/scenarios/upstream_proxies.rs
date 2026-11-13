@@ -112,25 +112,17 @@ fn repos_behind_a_socks5_and_an_http_proxy_are_reached_through_them_alone() {
 const FLAGS: &str = "--yes --approval-url \"$WRIT_APPROVAL_URL\" --key \
                      \"$HOME/.writ/approver.pub\" --agent \"$WRIT_APPROVAL_AGENT\"";
 
-/// `command` on a terminal (`script`), `answers` typed one per line: what it showed.
 fn on_terminal(approver: &writ_e2e::Host, command: &str, answers: &[&str]) -> String {
-    exits_on_terminal(approver, command, answers, 0)
+    approver.on_terminal(command, answers)
 }
 
-/// [`on_terminal`], the command exiting with `code` (6: answered no, nothing signed).
 fn exits_on_terminal(
     approver: &writ_e2e::Host,
     command: &str,
     answers: &[&str],
     code: i32,
 ) -> String {
-    let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
-    let out = approver.run_with(
-        &format!("script -qec '{command}' /dev/null"),
-        typed.as_bytes(),
-    );
-    assert_eq!(out.status.code(), Some(code), "{command}: {}", stdout(&out));
-    stdout(&out)
+    approver.exits_on_terminal(command, answers, code)
 }
 
 #[test]

@@ -159,6 +159,26 @@ impl Host {
         self.run_with(script, b"")
     }
 
+    /// `command` on a terminal (`script`), `answers` typed one per line, which must exit 0:
+    /// what it showed (the streams merged, rows ending in `\r\n`).
+    pub fn on_terminal(&self, command: &str, answers: &[&str]) -> String {
+        self.exits_on_terminal(command, answers, 0)
+    }
+
+    /// [`Host::on_terminal`], the command exiting with `code` (6: answered no, nothing
+    /// signed; 1: refused). The code is always read: a command that fails never passes for
+    /// one that showed the right text (the review after M7.6, T-2).
+    pub fn exits_on_terminal(&self, command: &str, answers: &[&str], code: i32) -> String {
+        assert!(!command.contains('\''), "{command}");
+        let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
+        let out = self.run_with(
+            &format!("script -qec '{command}' /dev/null"),
+            typed.as_bytes(),
+        );
+        assert_eq!(out.status.code(), Some(code), "{command}: {}", stdout(&out));
+        stdout(&out)
+    }
+
     /// Runs `script`, which must exit 0; its stdout.
     pub fn ok(&self, script: &str) -> String {
         let out = self.run(script);

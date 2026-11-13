@@ -152,6 +152,34 @@ fn a_scan_runs_only_on_an_approver_s_signature_over_this_daemon_and_a_fresh_nonc
     assert_eq!(scan_lines(&h, "denied").len(), 7, "{:?}", h.audit());
 }
 
+/// The review after M7.6 (T-11): the nonce cap on its other side: with [`MAX_NONCES`] out,
+/// the oldest still counts; one more evicts it.
+#[test]
+fn the_oldest_nonce_stays_while_at_most_max_nonces_are_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = TestServiceBuilder::new(POLICY).build(dir.path());
+    let oldest = scan(&h);
+    for _ in 0..MAX_NONCES - 1 {
+        scan(&h);
+    }
+    h.service
+        .check_scan(&signed(&h.approver, &oldest), &facts())
+        .unwrap();
+    // One past: the oldest of those out now goes.
+    let next = scan(&h);
+    for _ in 0..MAX_NONCES {
+        scan(&h);
+    }
+    let why = refused(
+        h.service.check_scan(&signed(&h.approver, &next), &facts()),
+        RefusalCode::Scan,
+    );
+    assert!(
+        why.contains("the scan's nonce is unknown, used or expired"),
+        "{why}"
+    );
+}
+
 #[test]
 fn nonces_and_scans_are_bounded() {
     let dir = tempfile::tempdir().unwrap();

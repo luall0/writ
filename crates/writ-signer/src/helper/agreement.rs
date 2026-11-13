@@ -212,3 +212,25 @@ impl HelperAgreement {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The review after M7.6 (T-3): a key-agreement key's stored blob on both sides of
+    /// [`MAX_ANSWER`]: unframed at it, refused one byte past it, before any helper sees it.
+    #[test]
+    fn a_stored_agreement_blob_is_at_most_an_answer_long() {
+        let point = [4u8; POINT];
+        let at = vec![5u8; MAX_ANSWER];
+        assert_eq!(
+            unframe(&frame(&point, &at), &point).unwrap().as_bytes(),
+            at.as_slice()
+        );
+        let past = vec![5u8; MAX_ANSWER + 1];
+        assert_eq!(
+            unframe(&frame(&point, &past), &point).map(|s| s.as_bytes().len()),
+            Err("its stored blob's length is out of bounds")
+        );
+    }
+}

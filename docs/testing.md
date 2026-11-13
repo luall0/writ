@@ -118,6 +118,9 @@ These rules hold for every test, at every level.
   (`crates/writ-platform-macos/tests/secure_enclave.rs`) does only what the daemon does:
   keys made, framed, given back and signed with. That the daemon refuses a bad blob before
   the device sees it is tested against the fake, which records every request it gets.
+- **A test this build can't run here says so**: one that needs what only another OS builds
+  (`writd`'s `se-cryptokit` backend, on macOS: the fake helper stands in for the device)
+  prints `skipped on <os>` and why (`writ_integration::on_the_mac`), never a silent pass.
 - **Fixtures are shared, not copied**: the test kits and the integration harness hold the
   service setup, the approver's signatures, the agent, the daemon. A fixture edited for a test
   asserts the edit applied, so a drifted fixture fails instead of weakening the test.
@@ -334,4 +337,5 @@ try to break it (the guarantee registry), wherever they live: `writ-core/tests/g
 at the policy level, then the service, the gateway and the integration scenarios.
 `tool/check-guarantees.py` (in `make check`) fails if a named test doesn't exist or is
 `#[ignore]`d, or if a guarantee has neither a test nor the milestone that brings one
-(`planned: M7.5`). When a guarantee is added, its tests come in the same change.
+(`planned: M7.5`). When a guarantee is added, its tests come in the same change. It also
+checks the tests the [untrusted-input inventory](security.md#untrusted-inputs) names exist.

@@ -695,16 +695,12 @@ fn writd_recover_rotates_the_data_key_for_a_policy_taking_a_recipient_out() {
     ok(&daemon.unseal());
 }
 
-fn on_the_mac() -> bool {
-    std::env::consts::OS == "macos"
-}
-
 /// On the Mac, against the fake `writ-se` (never the real Secure Enclave): a hardware
 /// keystore rotates its data key at once when its recovery recipient is replaced, and again
 /// when a hardware recipient is removed. One hardware recipient is named `recovery` (S-3).
 #[test]
 fn on_the_mac_a_replaced_recovery_key_or_a_removed_hardware_key_rotates_the_data_key_at_once() {
-    if !on_the_mac() {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -818,7 +814,7 @@ fn on_the_mac_a_replaced_recovery_key_or_a_removed_hardware_key_rotates_the_data
 /// so it can run again (S-10): on the Mac, the fake `writ-se` refusing to make it.
 #[test]
 fn on_the_mac_writd_init_with_a_ca_device_that_fails_leaves_nothing_behind() {
-    if !on_the_mac() {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let helper = writ_integration::binaries::bin("writ-fake-se");

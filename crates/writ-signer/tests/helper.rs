@@ -43,6 +43,22 @@ fn config(args: &[&str], deadline: Duration) -> HelperConfig {
 /// Long enough for any answer of a working helper: what ends a wait is the answer.
 const PATIENT: Duration = Duration::from_secs(60);
 
+/// The deadline of the tests whose subject is a helper that never answers: what ends that
+/// wait. The working helper's requests run under it too (a signer has one deadline), so it is
+/// far past one of their round trips on a warm binary ([`warmed`]), and the test's outcome
+/// is the silent helper's, never the working one's speed (the review after M7.6, T-7).
+const SHORT: Duration = Duration::from_secs(1);
+
+/// Runs the fake once and waits for its end (it reads its stdin to EOF, then exits): the
+/// first start of a freshly built binary (a Mac scanning it) never falls under [`SHORT`].
+fn warmed() {
+    let status = std::process::Command::new(FAKE)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+}
+
 fn signer(args: &[&str]) -> HelperSigner {
     HelperSigner::new(config(args, PATIENT), []).unwrap()
 }
@@ -168,8 +184,9 @@ fn every_way_a_helper_fails_to_sign_is_refused_and_the_next_job_served() {
         SignerError::Failed(k) if k == id("k")
     ));
     // Silent: past its deadline, a timeout (the deadline is what's tested: it ends the wait).
+    warmed();
     assert!(matches!(
-        sign_with_fault("silent", Duration::from_millis(200)),
+        sign_with_fault("silent", SHORT),
         SignerError::Timeout(k) if k == id("k")
     ));
 }
@@ -188,7 +205,8 @@ fn a_helper_that_never_reads_a_large_request_costs_one_deadline() {
         "--once",
         marker.to_str().unwrap(),
     ];
-    let held = HelperSigner::new(config(&args, Duration::from_millis(300)), made(&["k"])).unwrap();
+    warmed();
+    let held = HelperSigner::new(config(&args, SHORT), made(&["k"])).unwrap();
     // Far past a pipe's buffer (64 KiB on macOS and Linux): the write itself blocks.
     let data = vec![b'x'; 1 << 20];
     assert!(matches!(

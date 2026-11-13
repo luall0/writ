@@ -3,6 +3,10 @@
 guarantee names tests that try to break it, or the milestone that brings them
 (`planned: M<n>`, a milestone the roadmap still lists as to come); every named test exists
 as a test function in the workspace and is not `#[ignore]`d.
+
+And the untrusted-input inventory (docs/security.md § Untrusted inputs): every test it names
+(`test `…``, `tests `…`, `…``) exists, so a hostile-input test removed or renamed is seen
+(the review after M7.6, T-8).
 """
 
 import pathlib
@@ -74,6 +78,21 @@ for row in rows:
             errors.append(f"{guarantee}: test `{name}` does not exist")
         elif tests[name]:
             errors.append(f"{guarantee}: test `{name}` is ignored")
+
+# The inventory's named tests: each list after "test" or "tests" (an end-to-end scenario,
+# `#[ignore]`d, may be named there too).
+security = (ROOT / "docs/security.md").read_text()
+start = security.index("## Untrusted inputs")
+end = security.index("\n## ", start + 1)
+inventory = security[start:end]
+named = 0
+for listed in re.finditer(r"\btests?\s+((?:`[a-z0-9_]+`(?:,\s*(?:and\s+)?|\s+and\s+)?)+)", inventory):
+    for name in re.findall(r"`([a-z0-9_]+)`", listed.group(1)):
+        named += 1
+        if name not in tests:
+            errors.append(f"security.md's inventory: test `{name}` does not exist")
+if named == 0:
+    errors.append("security.md's inventory names no test: the table moved or changed shape")
 
 for e in errors:
     print(f"check-guarantees: {e}", file=sys.stderr)

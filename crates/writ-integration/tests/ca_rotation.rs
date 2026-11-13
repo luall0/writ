@@ -322,7 +322,7 @@ fn a_replayed_stale_foreign_or_unsigned_ca_rotation_is_refused_and_logged() {
 /// to software by another, each new lease certified by the CA in force.
 #[test]
 fn on_the_mac_the_ca_moves_to_the_secure_enclave_and_back() {
-    if std::env::consts::OS != "macos" {
+    if !writ_integration::on_the_mac("this test") {
         return;
     }
     let helper = writ_integration::binaries::bin("writ-fake-se");

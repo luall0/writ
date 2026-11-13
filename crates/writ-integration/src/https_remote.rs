@@ -40,6 +40,8 @@ struct State {
     root: PathBuf,
     token: Mutex<String>,
     mode: Mutex<HttpsMode>,
+    /// Connections accepted.
+    connections: AtomicUsize,
     /// Requests received, and the user names of those carrying the token.
     requests: AtomicUsize,
     users: Mutex<Vec<String>>,
@@ -49,11 +51,15 @@ struct State {
     before_push: Mutex<Option<Vec<String>>>,
 }
 
+/// A name its certificate holds that no resolver answers: reached only through a test proxy
+/// that maps it ([`crate::proxy::TestProxy::map`]), so a connection that skips the proxy fails.
+pub const UNRESOLVED: &str = "https-upstream.invalid";
+
 /// A running HTTPS test remote.
 pub struct HttpsRemote {
     pub port: u16,
-    /// Its certificate (self-signed, for `127.0.0.1` and `localhost`), PEM: the daemon's
-    /// `ca_certs`.
+    /// Its certificate (self-signed, for `127.0.0.1`, `localhost` and [`UNRESOLVED`]), PEM:
+    /// the daemon's `ca_certs`.
     pub ca_pem: String,
     state: Arc<State>,
 }
@@ -66,6 +72,7 @@ impl HttpsRemote {
         let certified = rcgen::generate_simple_self_signed(vec![
             "127.0.0.1".to_owned(),
             "localhost".to_owned(),
+            UNRESOLVED.to_owned(),
         ])
         .unwrap();
         let ca_pem = certified.cert.pem();
@@ -85,6 +92,7 @@ impl HttpsRemote {
             root: root.to_owned(),
             token: Mutex::new(token.to_owned()),
             mode: Mutex::new(HttpsMode::Serve),
+            connections: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
             users: Mutex::new(Vec::new()),
             receive_packs: AtomicUsize::new(0),
@@ -100,6 +108,7 @@ impl HttpsRemote {
                 let Ok((stream, _)) = listener.accept().await else {
                     return;
                 };
+                served.connections.fetch_add(1, Ordering::AcqRel);
                 let (acceptor, state) = (acceptor.clone(), served.clone());
                 tokio::spawn(async move {
                     let Ok(tls) = acceptor.accept(stream).await else {
@@ -141,6 +150,11 @@ impl HttpsRemote {
     pub fn before_next_push(&self, args: &[&str]) {
         *self.state.before_push.lock().unwrap() =
             Some(args.iter().map(|a| (*a).to_owned()).collect());
+    }
+
+    /// How many connections it accepted.
+    pub fn connections(&self) -> usize {
+        self.state.connections.load(Ordering::Acquire)
     }
 
     /// How many requests it received.
