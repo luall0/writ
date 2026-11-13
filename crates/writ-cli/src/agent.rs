@@ -80,12 +80,7 @@ pub async fn request(paths: &Paths, url: &str, file: &Path, mode: Mode) -> anyho
         (Some(lease), _, _) => (load_key(&session_dir(paths, lease).join("key"))?, false),
         (None, Some(lease), _) => {
             let path = session_dir(paths, lease).join("key");
-            let key = load_key(&path).with_context(|| {
-                format!(
-                    "a renewal of {lease} comes from its session, and it isn't on this host                      (looked in {})",
-                    path.display()
-                )
-            })?;
+            let key = load_key(&path).with_context(|| renewal_session_missing(lease, &path))?;
             (key, true)
         }
         (None, None, Some(refused)) => {
@@ -371,6 +366,29 @@ fn print_narrowing(submitted: Option<&Ticket>, terms: &Ticket) {
         print!(
             "{}",
             display::changes("The approver narrowed the ticket:", &changes)
+        );
+    }
+}
+
+/// Why a renewal can't be sent from this host: the renewed lease's session isn't here.
+fn renewal_session_missing(lease: &TicketId, looked: &Path) -> String {
+    format!(
+        "a renewal of {lease} comes from its session, and it isn't on this host (looked in {})",
+        looked.display()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_renewal_session_is_said_in_one_sentence() {
+        let lease: TicketId = "wrt_01JD8X0000000000000000000A".parse().unwrap();
+        assert_eq!(
+            renewal_session_missing(&lease, Path::new("/h/sessions/x/key")),
+            "a renewal of wrt_01JD8X0000000000000000000A comes from its session, and it isn't \
+             on this host (looked in /h/sessions/x/key)"
         );
     }
 }

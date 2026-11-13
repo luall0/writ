@@ -290,6 +290,14 @@ const MAX_READ: u64 = 1024 * 1024;
 /// The longest line kept from the file (a run, a note): longer ones are cut.
 const MAX_LINE_CHARS: usize = 400;
 
+/// The most repositories kept while reading (the most recently updated, the last ones): a
+/// section is at least 6 lines and a file at most 1,000 (`max_lines`), so no more can fit.
+const MAX_SECTIONS: usize = 200;
+
+/// The most runs, and the most notes, kept per repository while reading (the last ones):
+/// `keep_runs` and `max_notes` are at most 50.
+const MAX_ITEMS: usize = 50;
+
 const INTRO: &str = "# Writ timings
 
 Written by `writ close` from each lease's activity report: the figures are the daemon's.
@@ -298,10 +306,62 @@ Add a note under a repository's `notes:` (one line, starting with `- `) when som
 explains the figures; `writ close` keeps the latest ones and rewrites the rest.
 ";
 
+/// Pushes `item`, keeping only the last [`MAX_ITEMS`].
+fn push_capped(list: &mut Vec<String>, item: String) {
+    if list.len() >= MAX_ITEMS {
+        list.remove(0);
+    }
+    list.push(item);
+}
+
+/// The lines and bytes of a list item as rendered (`- <item>\n`).
+fn item_size(item: &str) -> usize {
+    item.len().saturating_add(3)
+}
+
+/// Whether `text` starts with a timings file's front matter: `---`, then a limit
+/// (`max_lines:`…) as its first key. A ticket may start with YAML's `---` too.
+pub fn looks_like_one(text: &str) -> bool {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return false;
+    }
+    lines
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .and_then(|l| l.split_once(':'))
+        .is_some_and(|(key, _)| BOUNDS.iter().any(|(name, _, _)| *name == key.trim()))
+}
+
+/// Opens the regular file at `path` to read it, without blocking on a FIFO put in its place
+/// (none: not there). The file is the agent's: a device or a FIFO is refused.
+pub(crate) fn open_regular(path: &Path) -> anyhow::Result<Option<std::fs::File>> {
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let file = match rustix::fs::open(path, flags, Mode::empty()) {
+        Ok(fd) => std::fs::File::from(fd),
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(e) => {
+            return Err(std::io::Error::from(e))
+                .with_context(|| format!("cannot read {}", path.display()));
+        }
+    };
+    let meta = file
+        .metadata()
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("{} is not a regular file: not read", path.display());
+    }
+    Ok(Some(file))
+}
+
 impl Timings {
-    /// Parses a timings file (tolerant: what it can't read is dropped).
+    /// Parses a timings file (tolerant: what it can't read is dropped), in one pass and within
+    /// bounds whatever it holds: at most [`MAX_SECTIONS`] repositories, each with at most
+    /// [`MAX_ITEMS`] runs and notes (the last ones).
     pub fn parse(text: &str) -> Self {
         let mut timings = Timings::default();
+        let mut sections: std::collections::VecDeque<Section> = std::collections::VecDeque::new();
         let mut lines = text.lines().peekable();
         if lines.peek().map(|l| l.trim()) == Some("---") {
             lines.next();
@@ -328,14 +388,18 @@ impl Timings {
         for line in lines {
             let line = line.trim_end();
             if let Some(name) = line.strip_prefix("## ") {
-                timings.sections.push(Section {
+                // The least recently updated go first, as compacting would drop them.
+                if sections.len() >= MAX_SECTIONS {
+                    sections.pop_front();
+                }
+                sections.push_back(Section {
                     name: cut(name.trim()),
                     ..Section::default()
                 });
                 list = In::Nothing;
                 continue;
             }
-            let Some(section) = timings.sections.last_mut() else {
+            let Some(section) = sections.back_mut() else {
                 continue;
             };
             if let Some(rest) = line.strip_prefix("summary:") {
@@ -347,39 +411,49 @@ impl Timings {
                 list = In::Notes;
             } else if let Some(item) = line.strip_prefix("- ") {
                 match list {
-                    In::Runs => section.runs.push(cut(item)),
-                    In::Notes => section.notes.push(cut(item)),
+                    In::Runs => push_capped(&mut section.runs, cut(item)),
+                    In::Notes => push_capped(&mut section.notes, cut(item)),
                     In::Nothing => {}
                 }
             } else if !line.trim().is_empty() {
                 list = In::Nothing;
             }
         }
+        timings.sections = sections.into();
         timings
     }
 
-    /// The file's text.
-    pub fn render(&self) -> String {
+    /// The file's front matter and introduction.
+    fn header(&self) -> String {
         let mut out = String::from("---\n");
         for (name, _, _) in BOUNDS {
             let _ = writeln!(out, "{name}: {}", self.limits.get(name).unwrap_or(0));
         }
         out.push_str("---\n");
         out.push_str(INTRO);
+        out
+    }
+
+    /// The file's text.
+    pub fn render(&self) -> String {
+        let mut out = self.header();
         for section in &self.sections {
-            let _ = write!(out, "\n## {}\n", section.name);
-            let _ = writeln!(out, "{}", section.summary.line());
-            let _ = writeln!(out, "{}", section.summary.averages());
-            out.push_str("runs:\n");
-            for run in &section.runs {
-                let _ = writeln!(out, "- {run}");
-            }
-            out.push_str("notes:\n");
-            for note in &section.notes {
-                let _ = writeln!(out, "- {note}");
-            }
+            section.render_into(&mut out);
         }
         out
+    }
+
+    /// The lines and bytes of [`Timings::render`]'s text, counted without rendering it whole:
+    /// every piece of it ends with a newline, and none holds another.
+    fn size(&self) -> (usize, usize) {
+        let header = self.header();
+        let lines = header.bytes().filter(|b| *b == b'\n').count();
+        self.sections
+            .iter()
+            .map(Section::size)
+            .fold((lines, header.len()), |(l, b), (sl, sb)| {
+                (l.saturating_add(sl), b.saturating_add(sb))
+            })
     }
 
     /// Records a run of `repo` (moved last: the most recently updated), then compacts.
@@ -402,7 +476,8 @@ impl Timings {
     /// `keep_runs` runs and its last `max_notes` notes (the same note once); then, while the
     /// text is over `max_lines` or `max_bytes`, the oldest run of the repository with the
     /// most runs goes, then the oldest note of the one with the most notes, then the least
-    /// recently updated repository. Summaries are never cut: they hold every run.
+    /// recently updated repository. Summaries are never cut: they hold every run. The text's
+    /// size is counted once, then kept up to date as each thing goes: never rendered again.
     pub fn compact(&mut self) {
         let limits = self.limits;
         for section in &mut self.sections {
@@ -419,21 +494,55 @@ impl Timings {
             seen.drain(..extra);
             section.notes = seen;
         }
-        loop {
-            let text = self.render();
-            if text.lines().count() <= limits.max_lines && text.len() <= limits.max_bytes {
-                return;
-            }
-            if let Some(section) = most(&mut self.sections, |s| s.runs.len()) {
-                section.runs.remove(0);
+        let (mut lines, mut bytes) = self.size();
+        while lines > limits.max_lines || bytes > limits.max_bytes {
+            let gone = if let Some(section) = most(&mut self.sections, |s| s.runs.len()) {
+                (1, item_size(&section.runs.remove(0)))
             } else if let Some(section) = most(&mut self.sections, |s| s.notes.len()) {
-                section.notes.remove(0);
+                (1, item_size(&section.notes.remove(0)))
             } else if self.sections.len() > 1 {
-                self.sections.remove(0);
+                self.sections.remove(0).size()
             } else {
                 return;
-            }
+            };
+            lines = lines.saturating_sub(gone.0);
+            bytes = bytes.saturating_sub(gone.1);
         }
+    }
+}
+
+impl Section {
+    /// Its text in the file.
+    fn render_into(&self, out: &mut String) {
+        let _ = write!(out, "\n## {}\n", self.name);
+        let _ = writeln!(out, "{}", self.summary.line());
+        let _ = writeln!(out, "{}", self.summary.averages());
+        out.push_str("runs:\n");
+        for run in &self.runs {
+            let _ = writeln!(out, "- {run}");
+        }
+        out.push_str("notes:\n");
+        for note in &self.notes {
+            let _ = writeln!(out, "- {note}");
+        }
+    }
+
+    /// The lines and bytes of its text: six lines of its own, one per run and note.
+    fn size(&self) -> (usize, usize) {
+        let mut own = String::new();
+        Section {
+            name: self.name.clone(),
+            summary: self.summary,
+            runs: Vec::new(),
+            notes: Vec::new(),
+        }
+        .render_into(&mut own);
+        let items = self.runs.iter().chain(&self.notes);
+        let lines = 6usize
+            .saturating_add(self.runs.len())
+            .saturating_add(self.notes.len());
+        let bytes = items.fold(own.len(), |b, item| b.saturating_add(item_size(item)));
+        (lines, bytes)
     }
 }
 
@@ -479,7 +588,17 @@ pub fn problems(text: &str) -> Vec<String> {
         .collect();
     let mut compacted = timings.clone();
     compacted.compact();
-    for (before, after) in timings.sections.iter().zip(&compacted.sections) {
+    // Compacting drops whole repositories from the front only: the ones kept are the last.
+    let dropped = timings
+        .sections
+        .len()
+        .saturating_sub(compacted.sections.len());
+    for (before, after) in timings
+        .sections
+        .iter()
+        .skip(dropped)
+        .zip(&compacted.sections)
+    {
         let runs = before.runs.len().saturating_sub(after.runs.len());
         let notes = before.notes.len().saturating_sub(after.notes.len());
         if runs > 0 || notes > 0 {
@@ -494,10 +613,6 @@ pub fn problems(text: &str) -> Vec<String> {
             ));
         }
     }
-    let dropped = timings
-        .sections
-        .len()
-        .saturating_sub(compacted.sections.len());
     if dropped > 0 {
         problems.push(format!(
             "writ close would drop the {dropped} least recently updated repositories to fit the limits"
@@ -509,10 +624,8 @@ pub fn problems(text: &str) -> Vec<String> {
 /// Reads the timings file at `path` (none yet: an empty one).
 pub fn read(path: &Path) -> anyhow::Result<Timings> {
     use std::io::Read as _;
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Timings::default()),
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    let Some(file) = open_regular(path)? else {
+        return Ok(Timings::default());
     };
     let mut text = String::new();
     file.take(MAX_READ.saturating_add(1))
@@ -708,6 +821,8 @@ mod tests {
             }
             timings.compact();
             let text = timings.render();
+            // The size compacting counts is the text's.
+            assert_eq!(timings.size(), (text.lines().count(), text.len()), "{n}");
             assert!(text.lines().count() <= 100, "{n}: {}", text.lines().count());
             assert!(text.len() <= timings.limits.max_bytes, "{n}");
             assert!(
@@ -761,6 +876,144 @@ mod tests {
         assert_eq!(section.summary.granted_min, 10);
         assert!(section.runs[0].chars().count() <= MAX_LINE_CHARS);
         assert_eq!(section.notes, ["a [2Jb"]);
+    }
+
+    /// `n` sections named `r0`…, with nothing in them.
+    fn sections(n: usize) -> String {
+        (0..n).fold(String::new(), |mut text, i| {
+            let _ = writeln!(text, "## r{i}");
+            text
+        })
+    }
+
+    #[test]
+    fn a_hostile_file_is_capped_while_it_is_read_and_compacted_in_one_pass() {
+        // The repositories: at the cap all kept, one past it the least recently updated goes.
+        let names = |t: &Timings| {
+            t.sections
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let at = Timings::parse(&sections(MAX_SECTIONS));
+        assert_eq!(at.sections.len(), MAX_SECTIONS);
+        assert_eq!(at.sections[0].name, "r0");
+        let past = Timings::parse(&sections(MAX_SECTIONS + 1));
+        assert_eq!(past.sections.len(), MAX_SECTIONS);
+        assert_eq!(past.sections[0].name, "r1");
+        assert_eq!(names(&past).last().map(String::as_str), Some("r200"));
+        // Runs and notes: the last ones, at the cap and one past it.
+        let listed = |n: usize| {
+            let mut text = String::from("## demo\nruns:\n");
+            for i in 0..n {
+                let _ = writeln!(text, "- run {i}");
+            }
+            text.push_str("notes:\n");
+            for i in 0..n {
+                let _ = writeln!(text, "- note {i}");
+            }
+            Timings::parse(&text)
+        };
+        let at = listed(MAX_ITEMS);
+        assert_eq!(at.sections[0].runs.len(), MAX_ITEMS);
+        assert_eq!(at.sections[0].runs[0], "run 0");
+        let past = listed(MAX_ITEMS + 1);
+        assert_eq!(past.sections[0].runs.len(), MAX_ITEMS);
+        assert_eq!(past.sections[0].runs[0], "run 1");
+        assert_eq!(past.sections[0].notes.len(), MAX_ITEMS);
+        assert_eq!(past.sections[0].notes[0], "note 1");
+
+        // A whole MiB of tiny sections, and one of 100,000 runs and notes: read and compacted
+        // with nothing rendered per thing dropped (it once took one render each, for ever).
+        let mut text = String::from("---\nmax_lines: 1000\nmax_bytes: 65536\n---\n");
+        let mut n = 0usize;
+        while text.len() < 1024 * 1024 - 16 {
+            let _ = writeln!(text, "## r{n}");
+            n += 1;
+        }
+        let mut timings = Timings::parse(&text);
+        assert_eq!(timings.sections.len(), MAX_SECTIONS);
+        assert_eq!(timings.sections[0].name, format!("r{}", n - MAX_SECTIONS));
+        timings.compact();
+        let rendered = timings.render();
+        assert_eq!(timings.size(), (rendered.lines().count(), rendered.len()));
+        assert!(
+            rendered.lines().count() <= 1000,
+            "{}",
+            rendered.lines().count()
+        );
+        assert_eq!(
+            names(&timings).last().map(String::as_str),
+            Some(format!("r{}", n - 1).as_str()),
+            "the most recently updated kept"
+        );
+        let mut many = listed(100_000);
+        assert_eq!(many.sections[0].runs.len(), MAX_ITEMS);
+        many.compact();
+        let rendered = many.render();
+        assert_eq!(many.size(), (rendered.lines().count(), rendered.len()));
+        assert!(rendered.lines().count() <= many.limits.max_lines);
+        assert!(rendered.len() <= many.limits.max_bytes);
+    }
+
+    #[test]
+    fn what_compacting_drops_is_named_for_the_repositories_it_keeps() {
+        // Three repositories, the last with six notes: compacting drops its notes, then the
+        // first two repositories; the notes are said of `c`, not of whatever comes first.
+        let mut text = String::from("---\nmax_lines: 20\n---\n");
+        text.push_str(&sections(2));
+        text.push_str("## c\nnotes:\n- 1\n- 2\n- 3\n- 4\n- 5\n- 6\n");
+        let found = problems(&text);
+        assert!(
+            found.iter().any(|p| p
+                == "c: writ close would drop the 0 oldest runs and 6 oldest or repeated notes \
+                    (keep_runs 5, max_notes 5, max_lines 20, max_bytes 6144)"),
+            "{found:?}"
+        );
+        assert!(
+            found.iter().any(|p| p
+                == "writ close would drop the 2 least recently updated repositories to fit the \
+                    limits"),
+            "{found:?}"
+        );
+        assert!(!found.iter().any(|p| p.starts_with("r0:")), "{found:?}");
+    }
+
+    #[test]
+    fn only_front_matter_naming_a_limit_makes_a_timings_file() {
+        assert!(looks_like_one(&Timings::default().render()));
+        assert!(looks_like_one("---\n\nkeep_runs: 3\n---\n"));
+        // A ticket may start with YAML's document marker.
+        assert!(!looks_like_one("---\nrepos:\n  demo: {}\n"));
+        assert!(!looks_like_one("---\n"));
+        assert!(!looks_like_one("repos:\n---\nmax_lines: 3\n"));
+        assert!(!looks_like_one("---\nmax_line: 3\n"));
+    }
+
+    #[test]
+    fn a_timings_file_that_is_a_fifo_or_a_directory_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("timings.md");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        // Opened without blocking, then refused: `writ close` never hangs on it.
+        let error = crate::error_of(read(&fifo));
+        assert!(
+            error.ends_with("timings.md is not a regular file: not read"),
+            "{error}"
+        );
+        let error = crate::error_of(read(dir.path()));
+        assert!(
+            error.ends_with("is not a regular file: not read"),
+            "{error}"
+        );
+        assert_eq!(
+            read(&dir.path().join("none.md")).unwrap(),
+            Timings::default()
+        );
     }
 
     #[test]

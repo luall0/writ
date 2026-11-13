@@ -42,9 +42,8 @@ fn lease_of_session(paths: &Paths) -> anyhow::Result<TicketId> {
 fn timings_here() -> Option<(PathBuf, Option<String>)> {
     let dir = std::env::current_dir().ok()?;
     if let Ok(Some(wired)) = wiring::load(&dir) {
-        let record = wired.common_dir.join("writ").join("config");
-        let own = wiring::read_file(&dir, &record)
-            .ok()?
+        let own = wiring::record_entries(&wired.common_dir)
+            .ok()??
             .into_iter()
             .find(|(k, _)| k == "skill.timings")
             .map(|(_, v)| PathBuf::from(v));
@@ -73,15 +72,31 @@ fn pinned_here(dir: &Path) -> Option<TicketId> {
     }
 }
 
+/// The most of a session's `marks` file read: `writ mark` writes about 20 bytes a mark.
+const MAX_MARKS_BYTES: u64 = 256 * 1024;
+
+/// The most marks read from one session.
+const MAX_MARKS: usize = 10_000;
+
+/// A session's `marks` file, as text: at most [`MAX_MARKS_BYTES`] of it; none when it isn't
+/// there, isn't a regular file (a FIFO never holds `writ close` up) or doesn't read.
+fn marks_text(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let file = timings::open_regular(path).ok()??;
+    let mut text = String::new();
+    file.take(MAX_MARKS_BYTES).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
 /// The agent's marks in the sessions of `leases` (`marks`: one `<unix time> <phase>` a line;
 /// a line that doesn't read is skipped).
 fn read_marks(paths: &Paths, leases: &[TicketId]) -> Vec<(i64, Phase)> {
     let mut marks = Vec::new();
     for lease in leases {
-        let Ok(text) = std::fs::read_to_string(session_dir(paths, lease).join("marks")) else {
+        let Some(text) = marks_text(&session_dir(paths, lease).join("marks")) else {
             continue;
         };
-        for line in text.lines().take(10_000) {
+        for line in text.lines().take(MAX_MARKS) {
             if let Some((at, phase)) = line.split_once(' ')
                 && let (Ok(at), Ok(phase)) = (at.parse::<i64>(), phase.parse::<Phase>())
             {
@@ -223,13 +238,31 @@ pub fn timings(set: &[(&str, Option<usize>)]) -> anyhow::Result<Exit> {
     Ok(Exit::Ok)
 }
 
+/// Whether `file` is the timings file the wiring here records (whatever its text says).
+fn is_timings_here(file: &Path) -> bool {
+    let Some((recorded, _)) = timings_here() else {
+        return false;
+    };
+    match (std::fs::canonicalize(file), std::fs::canonicalize(recorded)) {
+        (Ok(file), Ok(recorded)) => file == recorded,
+        _ => false,
+    }
+}
+
 /// The largest file `writ check` reads: a ticket's bound on the wire ([`writ_proto::MAX_BODY`]).
 const MAX_CHECKED: u64 = writ_proto::MAX_BODY as u64;
 
 /// `writ check <file>`: a ticket file checked as far as it can be without the daemon, or a
-/// timings file (it starts with front matter) checked for what `writ close` would drop or
-/// rewrite. Sends nothing, changes nothing; exit 3 with every problem when there are some.
+/// timings file (its front matter names a limit, or it is the one the wiring here records)
+/// checked for what `writ close` would drop or rewrite. A ticket may start with YAML's `---`
+/// too: that alone doesn't make a timings file. Sends nothing, changes nothing; exit 3 with
+/// every problem when there are some.
 pub fn check(file: &Path) -> anyhow::Result<Exit> {
+    check_with(file, is_timings_here)
+}
+
+/// [`check`], `here` saying whether a file is the timings file the wiring here records.
+fn check_with(file: &Path, here: impl Fn(&Path) -> bool) -> anyhow::Result<Exit> {
     use std::io::Read as _;
     let mut text = String::new();
     let reader: Box<dyn std::io::Read> = if file == Path::new("-") {
@@ -250,7 +283,7 @@ pub fn check(file: &Path) -> anyhow::Result<Exit> {
         );
         return Ok(Exit::Rejected);
     }
-    let timings_file = text.lines().next().map(str::trim) == Some("---");
+    let timings_file = timings::looks_like_one(&text) || here(file);
     let (what, problems) = if timings_file {
         ("timings file", timings::problems(&text))
     } else {
@@ -276,4 +309,52 @@ pub fn check(file: &Path) -> anyhow::Result<Exit> {
         println!("  - {}", display::clean(problem));
     }
     Ok(Exit::Rejected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ticket as the skill shows one, after YAML's document marker.
+    const TICKET: &str = "---\nrepos:\n  demo:\n    operations: [fetch, commit_sign, push]\n    \
+                          branches: [\"agent/x\"]\nticket:\n  title: A title\n  task: A task\n\
+                          limits:\n  ttl: 1h\n";
+
+    #[test]
+    fn a_ticket_starting_with_yaml_s_marker_is_checked_as_a_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let ticket = dir.path().join("ticket.yaml");
+        std::fs::write(&ticket, TICKET).unwrap();
+        assert!(!timings::looks_like_one(TICKET));
+        assert_eq!(check_with(&ticket, |_| false).unwrap(), Exit::Ok);
+        // The same with a problem: named as a ticket's, exit 3.
+        std::fs::write(&ticket, TICKET.replace("ttl: 1h", "ttl: soon")).unwrap();
+        assert_eq!(check_with(&ticket, |_| false).unwrap(), Exit::Rejected);
+        // A timings file is still one.
+        let file = dir.path().join("timings.md");
+        std::fs::write(&file, timings::Timings::default().render()).unwrap();
+        assert_eq!(check_with(&file, |_| false).unwrap(), Exit::Ok);
+    }
+
+    #[test]
+    fn marks_are_read_bounded_and_never_from_a_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let marks = dir.path().join("marks");
+        assert_eq!(marks_text(&marks), None);
+        std::fs::write(&marks, "1800000000 coding\n").unwrap();
+        assert_eq!(marks_text(&marks).as_deref(), Some("1800000000 coding\n"));
+        // Past the bound: only the bound read.
+        let line = "1800000000 checks\n";
+        let many = line.repeat(usize::try_from(MAX_MARKS_BYTES).unwrap() / line.len() + 10);
+        std::fs::write(&marks, &many).unwrap();
+        let read = marks_text(&marks).unwrap();
+        assert_eq!(read.len() as u64, MAX_MARKS_BYTES);
+        std::fs::remove_file(&marks).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(&marks)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        assert_eq!(marks_text(&marks), None, "a FIFO: not waited on");
+    }
 }

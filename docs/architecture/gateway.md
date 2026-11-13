@@ -458,11 +458,20 @@ The step-by-step of each mode is in [Flows](../flows.md#3-push) (3, 3b, 3c).
 ```ini
 [url "ssh://git@writ.home:2222/omega-code.git"]
     insteadOf = git@github.com:user/omega-code.git
+    pushInsteadOf = git@github.com:user/omega-code.git
 ```
 
 The agent keeps `origin` pointing at GitHub; under the wiring, git routes `push origin` and
 `fetch origin` through the daemon. In wrapper mode the rewrite travels with the other settings
 in `writ git`'s environment, so the operator's plain git still reaches GitHub itself; in
-whole-repo mode it is in the clone's config, and `writ init` says so. Only that one URL is
-rewritten, never in a global config, and a clone without `origin` gets no rewrite. The full
+whole-repo mode it is in the clone's config, and `writ init` says so. The push rule is there
+too because git takes a push's URL from the push rules alone when one matches: a shorter rule
+of the user's (`url."git@github.com:".pushInsteadOf "https://github.com/"`) would otherwise
+send the push past the daemon; the whole URL is the longest match there is. git matches the
+rule as a prefix, so another URL that starts with the origin's text (an origin recorded
+without `.git`) goes to the daemon too, under a repository name the daemon refuses unless its
+registry holds it: never anywhere else. Nothing is written in a global config, and a clone
+without `origin` gets no rewrite. `writ init` refuses an `origin` the rewrite can't send
+through the daemon whole (a push URL of its own, several URLs, a credential in the URL;
+[clients](clients.md#repo-setup-on-an-agent-host)). The full
 git config of an agent host is in [Clients](clients.md#repo-setup-on-an-agent-host).

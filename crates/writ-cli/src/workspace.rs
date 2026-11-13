@@ -5,7 +5,7 @@
 //! (git config format), so `writ init --undo` at the root takes every repository back.
 //!
 //! The record is in the working folder, the agent's to write too: it is read bounded (a
-//! regular file, never a link, at most [`MAX_RECORD`] bytes, at most [`MAX_MEMBERS`]
+//! regular file, never a link, at most [`wiring::MAX_RECORD`] bytes, at most [`MAX_MEMBERS`]
 //! repositories), each repository a folder right under the root ([`valid_dir`]), and
 //! `--undo` takes back only a repository whose own record names this root.
 
@@ -18,9 +18,6 @@ use crate::{display, wiring};
 
 /// The workspace's record, at its root.
 pub const RECORD: &str = ".writ-workspace";
-
-/// The largest record read: past it, it isn't one `writ init` wrote.
-pub const MAX_RECORD: u64 = 64 * 1024;
 
 /// The most repositories a workspace holds (and `writ init` wires at once).
 pub const MAX_MEMBERS: usize = 256;
@@ -115,25 +112,10 @@ pub fn valid_dir(name: &str) -> bool {
 /// The workspace recorded at `root`, if there is one.
 pub fn load(root: &Path) -> anyhow::Result<Option<Workspace>> {
     let path = record_path(root);
-    let meta = match std::fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
-    };
-    if !meta.file_type().is_file() {
-        bail!(
-            "{} is not a workspace record (a link, or not a regular file)",
-            path.display()
-        );
+    match wiring::read_record(root, &path, "workspace record")? {
+        Some(entries) => parse(root, entries).map(Some),
+        None => Ok(None),
     }
-    if meta.len() > MAX_RECORD {
-        bail!(
-            "{} is larger than {MAX_RECORD} bytes: not a workspace record",
-            path.display()
-        );
-    }
-    let entries = wiring::read_file(root, &path)?;
-    parse(root, entries).map(Some)
 }
 
 /// A record's entries, checked.
@@ -474,7 +456,7 @@ mod tests {
         );
         std::fs::remove_file(record_path(root.path())).unwrap();
         let mut big = String::from("[writ]\n");
-        while big.len() as u64 <= MAX_RECORD {
+        while big.len() as u64 <= wiring::MAX_RECORD {
             big.push_str(
                 "\tnote = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
             );

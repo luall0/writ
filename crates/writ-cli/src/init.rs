@@ -194,20 +194,171 @@ struct RepoWiring<'a> {
     socket: Option<&'a Path>,
     /// The workspace root it is wired from (`writ.workspace`).
     workspace: Option<&'a Path>,
+    /// Its `origin` URL, checked ([`check_remotes`]).
+    origin: Option<&'a str>,
 }
 
-/// The session the settings point at: the lease named (on this host and running), or
-/// `current`.
-fn session_for(paths: &Paths, lease: Option<&TicketId>) -> anyhow::Result<SessionRef> {
-    match lease {
-        Some(id) => {
-            wiring::check_session(&paths.home, id)
-                .map_err(|why| anyhow::anyhow!("--lease {id}: {why}"))?;
-            Ok(SessionRef::Lease(id.clone()))
+/// Where the session a wiring points at comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionFrom {
+    /// `--lease`: the repo is pinned to it.
+    Pinned,
+    /// `WRIT_SESSION`, as every command of the session order takes it.
+    Env,
+    /// `<home>/sessions/current`.
+    Current,
+}
+
+/// The session the settings point at, in the order every command takes it: `WRIT_SESSION`,
+/// the lease named (`--lease`), `current`. A lease named must be on this host and running.
+/// `--lease` and `WRIT_SESSION` naming two leases are refused: one wiring, one session.
+fn session_for(
+    paths: &Paths,
+    lease: Option<&TicketId>,
+) -> anyhow::Result<(SessionRef, SessionFrom)> {
+    let env = match std::env::var("WRIT_SESSION") {
+        Ok(text) if !text.is_empty() => Some(
+            text.parse::<TicketId>()
+                .map_err(|e| anyhow::anyhow!("WRIT_SESSION {}: {e}", display::clean(&text)))?,
+        ),
+        _ => None,
+    };
+    let (id, from, why) = match (env, lease) {
+        (Some(env), Some(pinned)) if &env != pinned => bail!(
+            "--lease {pinned}, but WRIT_SESSION names lease {env}: one wiring works under one \
+             session (unset WRIT_SESSION, or pin that lease) (nothing was wired)"
+        ),
+        (Some(id), pinned) => {
+            let from = if pinned.is_some() {
+                SessionFrom::Pinned
+            } else {
+                SessionFrom::Env
+            };
+            let why = format!("WRIT_SESSION names lease {id}");
+            (id, from, why)
         }
-        None => Ok(SessionRef::Current),
+        (None, Some(id)) => (id.clone(), SessionFrom::Pinned, format!("--lease {id}")),
+        (None, None) => return Ok((SessionRef::Current, SessionFrom::Current)),
+    };
+    wiring::check_session(&paths.home, &id)
+        .map_err(|e| anyhow::anyhow!("{why}: {e} (nothing was wired)"))?;
+    Ok((SessionRef::Lease(id), from))
+}
+
+/// Every value of `key` git reads in `dir`, from every scope (the system's, the user's, the
+/// repository's, the environment's), in order; none is an empty list.
+fn all_values(dir: &Path, key: &str) -> anyhow::Result<Vec<String>> {
+    // PATH: the agent host's own git.
+    let out = std::process::Command::new("git")
+        .args(["config", "--get-all", "-z", key])
+        .current_dir(dir)
+        .output()
+        .context("cannot run git")?;
+    match out.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        // Exit 1: the key isn't set.
+        Some(1) => Ok(Vec::new()),
+        _ => bail!("git config --get-all {key} failed"),
     }
 }
+
+/// The repository at `dir`'s `origin` URL, once checked to be one `writ init` can send
+/// through the daemon whole: one URL, no push URL of its own, no credential in it; and, in
+/// wrapper mode, no `writ` remote of the user's (git would add the daemon's URL to it). In
+/// whole-repo mode the repo's own `writ` remote is replaced and put back by `--undo`, so only
+/// one set elsewhere, or with a push URL, is refused. Each refusal names the command that fixes
+/// it.
+fn check_remotes(dir: &Path, mode: Mode) -> anyhow::Result<Option<String>> {
+    let urls = all_values(dir, "remote.origin.url")?;
+    if urls.len() > 1 {
+        let shown: Vec<String> = urls.iter().map(|u| wiring::shown_url(u)).collect();
+        bail!(
+            "`origin` has {} URLs ({}): git pushes to each, and only one would go through the \
+             daemon. Keep one: `git remote set-url --delete origin <url>` (nothing was wired)",
+            urls.len(),
+            shown.join(", ")
+        );
+    }
+    if let Some(push) = all_values(dir, "remote.origin.pushurl")?.first() {
+        bail!(
+            "`origin` has a push URL of its own ({}): git pushes there, past the daemon. \
+             Remove it: `git config --unset-all remote.origin.pushurl` (nothing was wired)",
+            wiring::shown_url(push)
+        );
+    }
+    let origin = urls.into_iter().next();
+    if let Some(url) = origin.as_deref().filter(|u| wiring::has_credential(u)) {
+        bail!(
+            "`origin`'s URL holds a credential ({}): writ init would copy it into its settings \
+             and print it, and plain git would use it past the daemon. Keep it out of the URL \
+             (a credential helper holds it): `git remote set-url origin {}` (nothing was wired)",
+            wiring::shown_url(url),
+            wiring::without_credential(url)
+        );
+    }
+    let writ_urls = all_values(dir, "remote.writ.url")?;
+    let writ_push = all_values(dir, "remote.writ.pushurl")?;
+    let theirs = match mode {
+        Mode::Wrapper => !writ_urls.is_empty() || !writ_push.is_empty(),
+        Mode::WholeRepo => {
+            !writ_push.is_empty() || writ_urls.len() > local_values(dir, "remote.writ.url")?.len()
+        }
+    };
+    if theirs {
+        let shown = writ_urls
+            .iter()
+            .chain(&writ_push)
+            .next()
+            .map_or_else(String::new, |u| wiring::shown_url(u));
+        bail!(
+            "a `writ` remote is already set ({shown}): writ init adds its own, and git would push \
+             to both. Rename or remove yours (`git remote rename writ <name>`) (nothing was \
+             wired)"
+        );
+    }
+    Ok(origin)
+}
+
+/// `--whole-repo` writes the repository's config: in a linked worktree, that is the config
+/// every worktree of the repository reads, the operator's own checkout included. Refused.
+fn check_worktree(dir: &Path, mode: Mode) -> anyhow::Result<()> {
+    if mode == Mode::WholeRepo && wiring::is_linked_worktree(dir)? {
+        bail!(
+            "this is a linked worktree (git worktree add): its git config is the one every \
+             worktree of the repository reads, your own checkout's included, so --whole-repo \
+             would wire them all. Wire it in wrapper mode (writ init without --whole-repo), or \
+             give the agent a clone of its own (git clone) (nothing was wired)"
+        );
+    }
+    Ok(())
+}
+
+/// `--agents-md` adds a line to `AGENTS.md` and `CLAUDE.md` where they are: each must be a
+/// regular file (a folder or a FIFO there is refused before anything is written).
+fn check_agents_md(root: &Path) -> anyhow::Result<()> {
+    for name in skill::AGENTS_MD {
+        let file = root.join(name);
+        match std::fs::metadata(&file) {
+            Ok(meta) if !meta.is_file() => bail!(
+                "{} is there and isn't a regular file: --agents-md adds a line to it (nothing \
+                 was wired)",
+                file.display()
+            ),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", file.display())),
+        }
+    }
+    Ok(())
+}
+
+/// What a stop part way through says: the record exists, so `--undo` takes it back.
+const PART_WAY: &str =
+    "writ init stopped part way (`writ init --undo` here takes back what it did)";
 
 /// The skills folders (absolute) for `agents`, in the root or the user's folders, and
 /// `--skill-dir`.
@@ -232,22 +383,23 @@ fn skill_folders(
     Ok(folders)
 }
 
-/// Wires the repository at `plan.dir`: what is done recorded in its `<git common dir>/writ/
-/// config` first, then, in whole-repo mode, the settings written in its config. The settings
-/// are computed once: the record, the config and the summary come from them.
-fn wire(
-    paths: &Paths,
-    plan: &RepoWiring<'_>,
-    session: &SessionRef,
-) -> anyhow::Result<(Wiring, Vec<Setting>)> {
+/// Starts the wiring of the repository at `plan.dir`: its record (`<git common dir>/writ/
+/// config`) written with what says what it is, whole (to a file beside it, then renamed), so
+/// from here on `writ init --undo` can read it and take back whatever follows, however far
+/// that goes.
+fn start_record(plan: &RepoWiring<'_>) -> anyhow::Result<Wiring> {
     let dir = plan.dir;
-    let record_path = wiring::record_path(dir)?;
-    let record_dir = record_path
-        .parent()
-        .context("the record has no directory")?;
+    let final_path = wiring::record_path(dir)?;
+    let record_dir = final_path.parent().context("the record has no directory")?;
     std::fs::create_dir_all(record_dir)
         .with_context(|| format!("cannot create {}", record_dir.display()))?;
-    let origin = local_values(dir, "remote.origin.url")?.into_iter().next();
+    let record_path = record_dir.join("config.new");
+    match std::fs::remove_file(&record_path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("cannot remove {}", record_path.display()));
+        }
+        _ => {}
+    }
     let wiring = Wiring {
         mode: plan.mode,
         base_url: plan.base_url.to_owned(),
@@ -255,23 +407,10 @@ fn wire(
         repo: plan.repo.clone(),
         email: plan.email.map(|e| e.as_str().to_owned()),
         common_dir: wiring::common_dir(dir)?,
-        origin,
+        origin: plan.origin.map(str::to_owned),
         lease: plan.lease.cloned(),
         workspace: plan.workspace.map(Path::to_path_buf),
     };
-    let settings = wiring::settings_with(paths, &wiring, session)?;
-    if plan.mode == Mode::WholeRepo {
-        // The values replaced, first: `--undo` puts them back.
-        for (key, _) in &settings {
-            let before = local_values(dir, key)?;
-            if before.is_empty() {
-                record(dir, &record_path, &format!("previous.{key}.absent"), "true")?;
-            }
-            for value in before {
-                record(dir, &record_path, &format!("previous.{key}.value"), &value)?;
-            }
-        }
-    }
     record(dir, &record_path, "writ.mode", plan.mode.as_str())?;
     record(dir, &record_path, "writ.url", plan.base_url)?;
     if let Some(socket) = plan.socket {
@@ -300,50 +439,74 @@ fn wire(
             &root.display().to_string(),
         )?;
     }
-    if plan.mode == Mode::WholeRepo {
+    std::fs::rename(&record_path, &final_path)
+        .with_context(|| format!("cannot write {}", final_path.display()))?;
+    Ok(wiring)
+}
+
+/// The settings of the repository whose record [`start_record`] wrote, computed once (the
+/// config and the summary come from them); in whole-repo mode, each written in its config
+/// after the values it replaces are recorded (`--undo` puts them back).
+fn apply_settings(
+    paths: &Paths,
+    dir: &Path,
+    wiring: &Wiring,
+    session: &SessionRef,
+) -> anyhow::Result<Vec<Setting>> {
+    let settings = wiring::settings_with(paths, wiring, session)?;
+    if wiring.mode == Mode::WholeRepo {
+        let record_path = wiring.common_dir.join("writ").join("config");
         for (key, value) in &settings {
+            let before = local_values(dir, key)?;
+            if before.is_empty() {
+                record(dir, &record_path, &format!("previous.{key}.absent"), "true")?;
+            }
+            for value in before {
+                record(dir, &record_path, &format!("previous.{key}.value"), &value)?;
+            }
             wiring::git(dir, &["config", "--local", "--replace-all", key, value])?;
         }
     }
-    Ok((wiring, settings))
+    Ok(settings)
 }
 
-/// Records what a skill installation made, in the record at `record_path`.
-fn record_skill(
+/// Records a line [`skill::add_line`] added to an `exclude` file, and how, for `--undo`.
+fn record_excluded(
     dir: &Path,
     record_path: &Path,
-    installed: &skill::Installed,
+    line: &str,
+    added: skill::Added,
 ) -> anyhow::Result<()> {
-    for (path, new) in &installed.skills {
+    if added.created {
+        record(dir, record_path, "skill.excludecreated", "true")?;
+    }
+    if added.joined {
+        record(dir, record_path, "skill.excludejoined", line)?;
+    }
+    record(dir, record_path, "skill.exclude", line)
+}
+
+/// Records one step of a skill installation, in the record at `record_path`, as it is done.
+fn record_step(dir: &Path, record_path: &Path, step: skill::Step<'_>) -> anyhow::Result<()> {
+    let path = |p: &Path| p.display().to_string();
+    match step {
+        skill::Step::CreatedDir(created) => {
+            record(dir, record_path, "skill.createddir", &path(created))
+        }
         // Created: `--undo` removes it. Written over (Writ's already, a global skill another
-        // repository's `writ init` made): only `writ skill update` rewrites it.
-        let key = if *new {
-            "skill.created"
-        } else {
-            "skill.written"
-        };
-        record(dir, record_path, key, &path.display().to_string())?;
+        // repository's `writ init` made): `--undo` leaves it in the repository, and outside
+        // it removes it once no other wired repository's record names it.
+        skill::Step::Skill(skill, new) => {
+            let key = if new {
+                "skill.created"
+            } else {
+                "skill.written"
+            };
+            record(dir, record_path, key, &path(skill))
+        }
+        skill::Step::Excluded(line, added) => record_excluded(dir, record_path, line, added),
+        skill::Step::Timings(timings) => record(dir, record_path, "skill.timings", &path(timings)),
     }
-    for created in &installed.created_dirs {
-        record(
-            dir,
-            record_path,
-            "skill.createddir",
-            &created.display().to_string(),
-        )?;
-    }
-    for line in &installed.excluded {
-        record(dir, record_path, "skill.exclude", line)?;
-    }
-    if let Some((timings, _)) = &installed.timings {
-        record(
-            dir,
-            record_path,
-            "skill.timings",
-            &timings.display().to_string(),
-        )?;
-    }
-    Ok(())
 }
 
 pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
@@ -360,54 +523,59 @@ pub fn init(paths: &Paths, request: &Init<'_>) -> anyhow::Result<Exit> {
     let root = top_level(&dir)?;
     let home = home_dir();
     // Everything that can refuse comes first: nothing is wired when it can't all be done.
+    check_worktree(&dir, request.mode)?;
+    let origin = check_remotes(&dir, request.mode)?;
     let agents = choose_agents(&request.skill, &root, home.as_deref())?;
-    let session = session_for(paths, request.lease)?;
+    let (session, from) = session_for(paths, request.lease)?;
     let folders = skill_folders(&request.skill, &agents, &root, home.as_deref())?;
+    let plan = skill::Plan {
+        folders,
+        root: root.clone(),
+        kind: Kind::Repo,
+        repos: String::new(),
+    };
+    skill::check(&plan)?;
+    if request.skill.agents_md {
+        check_agents_md(&root)?;
+    }
 
-    let (wiring, settings) = wire(
-        paths,
-        &RepoWiring {
-            dir: &dir,
-            repo: request.repo,
-            mode: request.mode,
-            email: request.email,
-            lease: request.lease,
-            base_url: &base_url,
-            socket: socket.as_deref(),
-            workspace: None,
-        },
-        &session,
-    )?;
+    let wiring = start_record(&RepoWiring {
+        dir: &dir,
+        repo: request.repo,
+        mode: request.mode,
+        email: request.email,
+        lease: request.lease,
+        base_url: &base_url,
+        socket: socket.as_deref(),
+        workspace: None,
+        origin: origin.as_deref(),
+    })?;
+    // Listed as soon as there is a record, so the uninstall's `--undo --all` finds it.
+    repos::add(&paths.home, repos::Kind::Repo, &root).context(PART_WAY)?;
+    let settings = apply_settings(paths, &dir, &wiring, &session).context(PART_WAY)?;
     let exclude = wiring.common_dir.join("info").join("exclude");
-    let installed = skill::install(
-        &skill::Plan {
-            folders,
-            root: root.clone(),
-            kind: Kind::Repo,
-            repos: String::new(),
-        },
-        Some(&exclude),
-    )?;
-    record_skill(&dir, &record_path, &installed)?;
+    let installed = skill::install(&plan, Some(&exclude), &mut |step| {
+        record_step(&dir, &record_path, step)
+    })
+    .context(PART_WAY)?;
     let pointed = if request.skill.agents_md {
-        agents_md(&dir, &record_path, &root, Kind::Repo)?
+        agents_md(&dir, &record_path, &root, Kind::Repo).context(PART_WAY)?
     } else {
         Vec::new()
     };
     print_summary(
         &wiring,
         &settings,
-        &session,
+        (&session, from),
         &installed,
         &pointed,
         request.skill.agents_md,
     );
-    repos::add(&paths.home, repos::Kind::Repo, &root)?;
     Ok(Exit::Ok)
 }
 
 /// `--agents-md`: the pointer line in each of `AGENTS.md` and `CLAUDE.md` in `root` (a new
-/// `AGENTS.md` when it has neither), recorded for `--undo`.
+/// `AGENTS.md` when it has neither), recorded for `--undo` as each is added.
 fn agents_md(
     dir: &Path,
     record_path: &Path,
@@ -419,19 +587,21 @@ fn agents_md(
         .map(|f| root.join(f))
         .filter(|f| f.exists())
         .collect();
-    let mut created = false;
     if files.is_empty() {
         files.push(root.join("AGENTS.md"));
-        created = true;
     }
     for file in &files {
-        if skill::add_line(file, kind.pointer())? {
-            let key = if created {
+        if let Some(added) = skill::add_line(file, kind.pointer())? {
+            let shown = file.display().to_string();
+            if added.joined {
+                record(dir, record_path, "skill.agentsmdjoined", &shown)?;
+            }
+            let key = if added.created {
                 "skill.agentsmdcreated"
             } else {
                 "skill.agentsmd"
             };
-            record(dir, record_path, key, &file.display().to_string())?;
+            record(dir, record_path, key, &shown)?;
         }
     }
     Ok(files)
@@ -546,10 +716,9 @@ fn ask_name(found: &Found) -> anyhow::Result<Option<RepoName>> {
         Some(name) if found.dir != "." => name.to_string(),
         _ => "-".to_owned(),
     };
-    let from = found
-        .origin
-        .as_deref()
-        .map_or_else(String::new, |o| format!(" (origin {})", display::clean(o)));
+    let from = found.origin.as_deref().map_or_else(String::new, |o| {
+        format!(" (origin {})", wiring::shown_url(o))
+    });
     print!("  {what}{from} [{default}]: ");
     std::io::Write::flush(&mut std::io::stdout()).context("cannot write to the terminal")?;
     let mut line = String::new();
@@ -570,6 +739,55 @@ fn ask_name(found: &Found) -> anyhow::Result<Option<RepoName>> {
         .map_err(|e: writ_core::names::NameError| anyhow::anyhow!(display::clean(&e.to_string())))
 }
 
+/// The repositories right under the workspace at `root` that are wired on their own, and the
+/// ones set aside with why: a submodule of the root's repository, or a worktree of a
+/// repository already found (its git directory, and so its record, is the other's).
+fn workspace_dirs(
+    root: &Path,
+    root_common: Option<&Path>,
+) -> anyhow::Result<(Vec<String>, Vec<workspace::Aside>)> {
+    let (children, mut aside) = workspace::children(root)?;
+    let mut seen: Vec<PathBuf> = root_common
+        .and_then(|c| std::fs::canonicalize(c).ok())
+        .into_iter()
+        .collect();
+    let root_common = seen.first().cloned();
+    let mut found: Vec<(String, PathBuf, bool)> = Vec::new();
+    for child in children {
+        let path = root.join(&child);
+        let common = wiring::common_dir(&path)?;
+        let common = std::fs::canonicalize(&common)
+            .with_context(|| format!("cannot resolve {}", common.display()))?;
+        found.push((child, common, wiring::is_linked_worktree(&path)?));
+    }
+    // The repository's own checkout before its linked worktrees, then by name.
+    found.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+    let mut dirs: Vec<String> = Vec::new();
+    for (child, common, _) in found {
+        if seen.contains(&common) {
+            aside.push((
+                display::clean(&child),
+                "a worktree of a repository already here (one git directory, one wiring)",
+            ));
+        } else if root_common
+            .as_ref()
+            .is_some_and(|rc| common.starts_with(rc))
+        {
+            // A submodule of the root's repository: left to the backlog.
+            aside.push((
+                display::clean(&child),
+                "a submodule of this folder's repository: submodules aren't wired yet",
+            ));
+        } else {
+            seen.push(common);
+            dirs.push(child);
+        }
+    }
+    dirs.sort();
+    aside.sort();
+    Ok((dirs, aside))
+}
+
 /// `writ init` with no repo named, at a folder of repositories: every child repository one
 /// level down wired (and the folder's own, when named), the `writ-workspace` skill installed
 /// at the root, the workspace recorded in `<root>/.writ-workspace`.
@@ -583,30 +801,20 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
             existing.members.len()
         );
     }
+    if request.skill.global {
+        bail!(
+            "--global at a workspace: its skill lists this folder's repositories, and one skill \
+             in your home can't list two workspaces'. Install it here (writ init without \
+             --global) (nothing was wired)"
+        );
+    }
     let root_is_repo = workspace::is_top_level(&root);
     let root_common = if root_is_repo {
         Some(wiring::common_dir(&root)?)
     } else {
         None
     };
-    let (children, mut aside) = workspace::children(&root)?;
-    let mut dirs: Vec<String> = Vec::new();
-    for child in children {
-        // A submodule of the root's repository: left to the backlog.
-        let common = wiring::common_dir(&root.join(&child))?;
-        let inside = match (&root_common, std::fs::canonicalize(&common)) {
-            (Some(rc), Ok(c)) => std::fs::canonicalize(rc).is_ok_and(|rc| c.starts_with(rc)),
-            _ => false,
-        };
-        if inside {
-            aside.push((
-                display::clean(&child),
-                "a submodule of this folder's repository: submodules aren't wired yet",
-            ));
-        } else {
-            dirs.push(child);
-        }
-    }
+    let (mut dirs, aside) = workspace_dirs(&root, root_common.as_deref())?;
     if dirs.is_empty() {
         bail!(
             "writ init needs the repo's registry name (`writ init <repo>`), or a folder whose \
@@ -633,7 +841,7 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
                 wired.repo
             );
         }
-        let origin = local_values(&path, "remote.origin.url")?.into_iter().next();
+        let origin = all_values(&path, "remote.origin.url")?.into_iter().next();
         let folder = if dir == "." {
             root.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -649,74 +857,165 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
     }
     // Everything that can refuse comes first: nothing is wired when it can't all be done.
     let members = names(&found, request.answers)?;
-    let home = home_dir();
-    let agents = choose_agents(&request.skill, &root, home.as_deref())?;
-    let session = session_for(paths, request.lease)?;
-    let folders = skill_folders(&request.skill, &agents, &root, home.as_deref())?;
-
-    let record_path = workspace::record_path(&root);
-    // The record first, then each repository named in it before it is wired: a run stopped
-    // half way is taken back by `writ init --undo` here.
-    record(&root, &record_path, "writ.mode", request.mode.as_str())?;
-    if let Some(lease) = request.lease {
-        record(&root, &record_path, "writ.lease", lease.as_str())?;
-    }
-    let exclude = root_common
-        .as_ref()
-        .map(|common| common.join("info").join("exclude"));
-    if let Some(exclude) = &exclude {
-        let line = format!("/{}", workspace::RECORD);
-        if skill::add_line(exclude, &line)? {
-            record(&root, &record_path, "skill.exclude", &line)?;
-        }
-    }
     let workspace = Workspace {
         root: root.clone(),
         members: members.clone(),
         lease: request.lease.cloned(),
         entries: Vec::new(),
     };
-    let mut wired = Vec::new();
+    let mut origins: Vec<Option<String>> = Vec::new();
     for member in &members {
+        let path = workspace.path(member);
+        let checked = check_worktree(&path, request.mode)
+            .and_then(|()| check_remotes(&path, request.mode))
+            .with_context(|| shown_dir(&member.dir))?;
+        origins.push(checked);
+    }
+    let home = home_dir();
+    let agents = choose_agents(&request.skill, &root, home.as_deref())?;
+    let (session, from) = session_for(paths, request.lease)?;
+    let folders = skill_folders(&request.skill, &agents, &root, home.as_deref())?;
+    let plan = skill::Plan {
+        folders,
+        root: root.clone(),
+        kind: Kind::Workspace,
+        repos: skill_repos(&members),
+    };
+    skill::check(&plan)?;
+    if request.skill.agents_md {
+        check_agents_md(&root)?;
+    }
+
+    let record_path = workspace::record_path(&root);
+    // The record first, then each repository named in it before it is wired: a run stopped
+    // half way is taken back by `writ init --undo` here.
+    record(&root, &record_path, "writ.mode", request.mode.as_str())?;
+    // Listed as soon as there is a record, so the uninstall's `--undo --all` finds it.
+    repos::add(&paths.home, repos::Kind::Workspace, &root).context(PART_WAY)?;
+    let exclude = root_common
+        .as_ref()
+        .map(|common| common.join("info").join("exclude"));
+    let wired = wire_members(
+        paths,
+        &workspace,
+        &origins,
+        &MemberWiring {
+            request,
+            base_url: &base_url,
+            socket: socket.as_deref(),
+            exclude: exclude.as_deref(),
+            session: &session,
+        },
+    )
+    .context(PART_WAY)?;
+    let installed = skill::install(&plan, exclude.as_deref(), &mut |step| {
+        record_step(&root, &record_path, step)
+    })
+    .context(PART_WAY)?;
+    let pointed = if request.skill.agents_md {
+        agents_md(&root, &record_path, &root, Kind::Workspace).context(PART_WAY)?
+    } else {
+        Vec::new()
+    };
+    print_workspace_summary(&WorkspaceSummary {
+        request,
+        root: &root,
+        found: &found,
+        members: &members,
+        aside: &aside,
+        wired: &wired,
+        session: (&session, from),
+        installed: &installed,
+        pointed: &pointed,
+    });
+    Ok(Exit::Ok)
+}
+
+/// What every repository of a workspace is wired with.
+struct MemberWiring<'a> {
+    request: &'a WorkspaceInit<'a>,
+    base_url: &'a str,
+    socket: Option<&'a Path>,
+    /// The root repository's `.git/info/exclude`, when the root is one.
+    exclude: Option<&'a Path>,
+    session: &'a SessionRef,
+}
+
+/// Wires each repository of `workspace` (its `origins` checked), each named in the
+/// workspace's record before it is wired; the record itself excluded from the root's git
+/// first.
+fn wire_members(
+    paths: &Paths,
+    workspace: &Workspace,
+    origins: &[Option<String>],
+    with: &MemberWiring<'_>,
+) -> anyhow::Result<Vec<(Wiring, Vec<Setting>)>> {
+    let root = &workspace.root;
+    let record_path = workspace::record_path(root);
+    if let Some(lease) = with.request.lease {
+        record(root, &record_path, "writ.lease", lease.as_str())?;
+    }
+    if let Some(exclude) = with.exclude {
+        let line = format!("/{}", workspace::RECORD);
+        if let Some(added) = skill::add_line(exclude, &line)? {
+            record_excluded(root, &record_path, &line, added)?;
+        }
+    }
+    let mut wired = Vec::new();
+    for (member, origin) in workspace.members.iter().zip(origins) {
         record(
-            &root,
+            root,
             &record_path,
             &format!("member.{}.repo", member.dir),
             member.repo.as_str(),
         )?;
-        let (wiring, settings) = wire(
-            paths,
-            &RepoWiring {
-                dir: &workspace.path(member),
-                repo: &member.repo,
-                mode: request.mode,
-                email: request.email,
-                lease: request.lease,
-                base_url: &base_url,
-                socket: socket.as_deref(),
-                workspace: Some(&root),
-            },
-            &session,
-        )
+        let dir = workspace.path(member);
+        let wiring = start_record(&RepoWiring {
+            dir: &dir,
+            repo: &member.repo,
+            mode: with.request.mode,
+            email: with.request.email,
+            lease: with.request.lease,
+            base_url: with.base_url,
+            socket: with.socket,
+            workspace: Some(root),
+            origin: origin.as_deref(),
+        })
+        .and_then(|wiring| {
+            let settings = apply_settings(paths, &dir, &wiring, with.session)?;
+            Ok((wiring, settings))
+        })
         .with_context(|| format!("wiring {}", display::clean(&member.dir)))?;
-        wired.push((member, wiring, settings));
+        wired.push(wiring);
     }
-    let installed = skill::install(
-        &skill::Plan {
-            folders,
-            root: root.clone(),
-            kind: Kind::Workspace,
-            repos: skill_repos(&members),
-        },
-        exclude.as_deref(),
-    )?;
-    record_skill(&root, &record_path, &installed)?;
-    let pointed = if request.skill.agents_md {
-        agents_md(&root, &record_path, &root, Kind::Workspace)?
-    } else {
-        Vec::new()
-    };
+    Ok(wired)
+}
 
+/// What the summary of a workspace's wiring shows.
+struct WorkspaceSummary<'a> {
+    request: &'a WorkspaceInit<'a>,
+    root: &'a Path,
+    found: &'a [Found],
+    members: &'a [Member],
+    aside: &'a [workspace::Aside],
+    wired: &'a [(Wiring, Vec<Setting>)],
+    session: (&'a SessionRef, SessionFrom),
+    installed: &'a skill::Installed,
+    pointed: &'a [PathBuf],
+}
+
+fn print_workspace_summary(summary: &WorkspaceSummary<'_>) {
+    let WorkspaceSummary {
+        request,
+        root,
+        found,
+        members,
+        aside,
+        wired,
+        session,
+        installed,
+        pointed,
+    } = *summary;
     let mode = match request.mode {
         Mode::Wrapper => "wrapper mode: `writ git -C <dir> …`; plain git keeps your own config",
         Mode::WholeRepo => "whole repo: plain git in each is the agent's",
@@ -725,24 +1024,24 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
         "Workspace wired for Writ at {} ({mode}). One agent at this folder works on:",
         root.display()
     );
-    for (member, wiring, _) in &wired {
+    for (member, (wiring, _)) in members.iter().zip(wired) {
         let origin = match &wiring.origin {
-            Some(origin) => format!(", origin {} through the daemon", display::clean(origin)),
+            Some(origin) => format!(", origin {} through the daemon", wiring::shown_url(origin)),
             None => ", no origin: push to the `writ` remote".to_owned(),
         };
         println!("  {}  repo {}{origin}", shown_dir(&member.dir), member.repo);
     }
-    for f in &found {
+    for f in found {
         if !members.iter().any(|m| m.dir == f.dir) {
             println!("Left out: {}.", shown_dir(&f.dir));
         }
     }
-    for (dir, why) in &aside {
+    for (dir, why) in aside {
         println!("Not wired: {dir} ({why}).");
     }
     let email = wired
         .first()
-        .and_then(|(_, _, settings)| settings.iter().find(|(k, _)| k == "user.email"));
+        .and_then(|(_, settings)| settings.iter().find(|(k, _)| k == "user.email"));
     match (request.email, email) {
         (Some(email), _) => println!(
             "Committer email: {} (--email; the lease must allow it).",
@@ -756,16 +1055,8 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
              emails a ticket may ask for)."
         ),
     }
-    match &session {
-        SessionRef::Lease(id) => println!(
-            "Pinned to lease {id}: commands here use its session, never `current` \
-             (WRIT_SESSION still comes first)."
-        ),
-        SessionRef::Current => println!(
-            "Session: WRIT_SESSION when it is set, otherwise the current lease \
-             (<home>/sessions/current). One ticket names every repository a task touches."
-        ),
-    }
+    print_session(session, request.mode);
+    println!("One ticket names every repository a task touches.");
     if installed.skills.is_empty() {
         println!("No skill installed (--agents none).");
     }
@@ -786,7 +1077,7 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
             installed.excluded.join(", ")
         );
     }
-    for file in &pointed {
+    for file in pointed {
         println!("Pointer added to {}.", file.display());
     }
     if !request.skill.agents_md && !installed.skills.is_empty() {
@@ -798,10 +1089,35 @@ pub fn init_workspace(paths: &Paths, request: &WorkspaceInit<'_>) -> anyhow::Res
     }
     println!(
         "Recorded in {}: `writ init --undo` here takes every repository back.",
-        record_path.display()
+        workspace::record_path(root).display()
     );
-    repos::add(&paths.home, repos::Kind::Workspace, &root)?;
-    Ok(Exit::Ok)
+}
+
+/// The summary's line on the session the wiring works under.
+fn print_session(session: (&SessionRef, SessionFrom), mode: Mode) {
+    match (session, mode) {
+        ((SessionRef::Lease(id), SessionFrom::Pinned), _) => println!(
+            "Pinned to lease {id}: commands here use its session, never `current` \
+             (WRIT_SESSION still comes first)."
+        ),
+        ((SessionRef::Lease(id), _), Mode::WholeRepo) => println!(
+            "Session: lease {id}, from WRIT_SESSION: this clone's git config names its session, \
+             never `current`."
+        ),
+        ((SessionRef::Lease(id), _), Mode::Wrapper) => println!(
+            "Session: WRIT_SESSION when it is set (now lease {id}), otherwise the current lease \
+             (<home>/sessions/current)."
+        ),
+        ((SessionRef::Current, _), Mode::WholeRepo) => println!(
+            "Session: the current lease (<home>/sessions/current), whichever it is when git \
+             runs: this clone's git config names `current` (WRIT_SESSION set later is checked \
+             against it by writ-sign)."
+        ),
+        ((SessionRef::Current, _), Mode::Wrapper) => println!(
+            "Session: WRIT_SESSION when it is set, otherwise the current lease \
+             (<home>/sessions/current)."
+        ),
+    }
 }
 
 /// A workspace repository's folder, for the terminal.
@@ -831,7 +1147,7 @@ fn skill_repos(members: &[Member]) -> String {
 fn print_summary(
     wiring: &Wiring,
     settings: &[Setting],
-    session: &SessionRef,
+    session: (&SessionRef, SessionFrom),
     installed: &skill::Installed,
     pointed: &[PathBuf],
     agents_md: bool,
@@ -852,12 +1168,12 @@ fn print_summary(
         (Some(origin), Mode::Wrapper) => println!(
             "Remote `origin` ({}): `writ git push origin` and `writ git fetch origin` go through \
              the daemon; plain git still reaches it directly.",
-            crate::display::clean(origin)
+            wiring::shown_url(origin)
         ),
         (Some(origin), Mode::WholeRepo) => println!(
             "Remote `origin` ({}): in this clone every push and fetch to it goes through the \
              daemon, plain git too (`writ init --undo` takes that back).",
-            crate::display::clean(origin)
+            wiring::shown_url(origin)
         ),
         (None, _) => println!("No `origin` remote: push to the `writ` remote."),
     }
@@ -893,16 +1209,7 @@ fn print_summary(
             crate::display::clean(name)
         );
     }
-    match session {
-        SessionRef::Lease(id) => println!(
-            "Pinned to lease {id}: commands here use its session, never `current` \
-             (WRIT_SESSION still comes first)."
-        ),
-        SessionRef::Current => println!(
-            "Session: WRIT_SESSION when it is set, otherwise the current lease \
-             (<home>/sessions/current)."
-        ),
-    }
+    print_session(session, wiring.mode);
     let settings_session = settings
         .iter()
         .find(|(k, _)| k == "writ.session")
@@ -946,7 +1253,6 @@ fn print_summary(
     }
 }
 
-/// Takes the repository back to before `writ init`.
 /// What undoing a record left alone, to say so.
 #[derive(Debug, Default)]
 struct Undone {
@@ -956,11 +1262,75 @@ struct Undone {
     left: Vec<String>,
 }
 
-/// Takes back what the record's `skill.*` entries say `writ init` installed: the skill files
-/// (Writ's only), the folders made for them (when empty), the lines added to `exclude` (the
-/// repository's own `.git/info/exclude`, never a file the record names) and the pointer
-/// lines (in `AGENTS.md` and `CLAUDE.md` only).
+/// Why a skill file outside the root being taken back stays: another entry of the host's
+/// list of wired repositories (`<home>/repos`) whose record names it (a global skill is
+/// shared), or the list can't be read; none when nothing else uses it.
+fn used_elsewhere(paths: &Paths, own: &Own<'_>, skill: &str) -> Option<String> {
+    let listing = match repos::read(&paths.home) {
+        Ok(listing) => listing,
+        Err(e) => {
+            return Some(format!(
+                "the list of wired repositories can't be read ({})",
+                display::clean_lines(&format!("{e:#}"))
+            ));
+        }
+    };
+    let canonical = |p: &Path| std::fs::canonicalize(p).ok();
+    let own_root = canonical(own.root);
+    let own_common = own.common_dir.and_then(canonical);
+    for entry in &listing.entries {
+        let entries = match entry.kind {
+            repos::Kind::Repo => {
+                let Ok(common) = wiring::common_dir(&entry.path) else {
+                    continue;
+                };
+                // The same record, reached from another worktree of the repository.
+                if own_common.is_some() && canonical(&common) == own_common {
+                    continue;
+                }
+                wiring::record_entries(&common).ok().flatten()
+            }
+            repos::Kind::Workspace => {
+                if canonical(&entry.path) == own_root {
+                    continue;
+                }
+                workspace::load(&entry.path)
+                    .ok()
+                    .flatten()
+                    .map(|w| w.entries)
+            }
+        };
+        let names = entries.is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|(k, v)| (k == "skill.created" || k == "skill.written") && v == skill)
+        });
+        if names {
+            return Some(format!(
+                "another wired repository uses it ({})",
+                display::clean(&entry.path.display().to_string())
+            ));
+        }
+    }
+    None
+}
+
+/// The record an undo takes back: its root, and a repository's git directory (a workspace
+/// has none of its own).
+struct Own<'a> {
+    root: &'a Path,
+    common_dir: Option<&'a Path>,
+}
+
+/// Takes back what the record's `skill.*` entries say `writ init` installed in or for `root`:
+/// the skill files (Writ's only: in the root those it created, outside it, a global skill,
+/// those it created or wrote once no other wired repository's record names them), the
+/// folders made for them (when empty), the lines added to `exclude` (the repository's own
+/// `.git/info/exclude`, never a file the record names) and the pointer lines (in `AGENTS.md`
+/// and `CLAUDE.md` only), each line's bytes taken out as they were put in.
 fn undo_skill(
+    paths: &Paths,
+    own: &Own<'_>,
     entries: &[(String, String)],
     exclude: Option<&Path>,
     kind: Kind,
@@ -973,8 +1343,27 @@ fn undo_skill(
             .map(|(_, v)| v.as_str())
             .collect()
     };
-    let created = values("skill.created");
-    for path in &created {
+    let inside = |path: &str| Path::new(path).starts_with(own.root);
+    let mut removable: Vec<&str> = values("skill.created");
+    removable.retain(|path| {
+        if inside(path) {
+            return true;
+        }
+        match used_elsewhere(paths, own, path) {
+            Some(why) => {
+                undone.left.push(format!("{}: {why}", display::clean(path)));
+                false
+            }
+            None => true,
+        }
+    });
+    for path in values("skill.written") {
+        if !inside(path) && !removable.contains(&path) && used_elsewhere(paths, own, path).is_none()
+        {
+            removable.push(path);
+        }
+    }
+    for path in &removable {
         match skill::remove_skill(Path::new(path))? {
             None => {}
             Some(skill::Kept::NotASkillPath) => undone.left.push(format!(
@@ -987,10 +1376,17 @@ fn undo_skill(
             )),
         }
     }
-    skill::remove_created_dirs(&values("skill.createddir"), &created);
+    skill::remove_created_dirs(&values("skill.createddir"), &removable);
     if let Some(exclude) = exclude {
-        for line in values("skill.exclude") {
-            skill::remove_line(exclude, line, false)?;
+        let created = values("skill.excludecreated").contains(&"true");
+        let joined = values("skill.excludejoined");
+        // The last added first: a line break added before the first comes off last.
+        for line in values("skill.exclude").into_iter().rev() {
+            let added = skill::Added {
+                created,
+                joined: joined.contains(&line),
+            };
+            skill::remove_line(exclude, line, added)?;
         }
     }
     let pointer_file = |file: &str| {
@@ -998,10 +1394,15 @@ fn undo_skill(
             .file_name()
             .is_some_and(|n| skill::AGENTS_MD.iter().any(|a| n == *a))
     };
+    let joined = values("skill.agentsmdjoined");
     for (key, created) in [("skill.agentsmd", false), ("skill.agentsmdcreated", true)] {
         for file in values(key) {
             if pointer_file(file) {
-                skill::remove_line(Path::new(file), kind.pointer(), created)?;
+                let added = skill::Added {
+                    created,
+                    joined: joined.contains(&file),
+                };
+                skill::remove_line(Path::new(file), kind.pointer(), added)?;
             } else {
                 undone.left.push(format!(
                     "{}: not an AGENTS.md or CLAUDE.md, left as it is",
@@ -1019,9 +1420,9 @@ fn undo_skill(
 }
 
 /// Takes the repository at `dir`, wired as `wired`, back to before `writ init`.
-fn undo_repo(dir: &Path, wired: &Wiring) -> anyhow::Result<Undone> {
+fn undo_repo(paths: &Paths, dir: &Path, wired: &Wiring) -> anyhow::Result<Undone> {
     let record_path = wired.common_dir.join("writ").join("config");
-    let entries = wiring::read_file(dir, &record_path)?;
+    let entries = wiring::record_entries(&wired.common_dir)?.unwrap_or_default();
     if wired.mode == Mode::WholeRepo {
         // The keys `writ init` set: the ones it recorded a previous state for.
         let mut keys: Vec<&str> = Vec::new();
@@ -1057,7 +1458,11 @@ fn undo_repo(dir: &Path, wired: &Wiring) -> anyhow::Result<Undone> {
         }
     }
     let exclude = wired.common_dir.join("info").join("exclude");
-    let undone = undo_skill(&entries, Some(&exclude), Kind::Repo)?;
+    let own = Own {
+        root: dir,
+        common_dir: Some(&wired.common_dir),
+    };
+    let undone = undo_skill(paths, &own, &entries, Some(&exclude), Kind::Repo)?;
     let record_dir = record_path
         .parent()
         .context("the record has no directory")?;
@@ -1111,8 +1516,7 @@ fn update_skills_in(dir: &Path) -> anyhow::Result<Exit> {
                 found.root.display()
             );
         }
-        let record_path = wired.common_dir.join("writ").join("config");
-        let entries = wiring::read_file(&dir, &record_path)?;
+        let entries = wiring::record_entries(&wired.common_dir)?.unwrap_or_default();
         (top_level(&dir)?, entries, Kind::Repo, String::new())
     };
     let mut skills: Vec<&str> = Vec::new();
@@ -1181,7 +1585,7 @@ pub fn undo(paths: &Paths) -> anyhow::Result<Exit> {
 /// `writ init --undo` in `dir`: its line taken off the list of wired repositories once done.
 fn undo_in(paths: &Paths, dir: &Path) -> anyhow::Result<Exit> {
     if let Some(workspace) = workspace::load(dir)? {
-        let exit = undo_workspace(&workspace)?;
+        let exit = undo_workspace(paths, &workspace)?;
         repos::remove(&paths.home, &workspace.root)?;
         return Ok(exit);
     }
@@ -1196,7 +1600,7 @@ fn undo_in(paths: &Paths, dir: &Path) -> anyhow::Result<Exit> {
             found.root.display()
         );
     }
-    let undone = undo_repo(dir, &wired)?;
+    let undone = undo_repo(paths, dir, &wired)?;
     println!(
         "Writ wiring removed ({} mode): the repo's git config is as it was before writ init.",
         wired.mode.as_str()
@@ -1265,7 +1669,7 @@ pub fn undo_all(paths: &Paths) -> anyhow::Result<Exit> {
 /// Takes a workspace back: each repository it lists that was wired from it, then what was
 /// installed at the root, then its record. Stopped by an error, the record stays: running it
 /// again takes back the rest.
-fn undo_workspace(workspace: &Workspace) -> anyhow::Result<Exit> {
+fn undo_workspace(paths: &Paths, workspace: &Workspace) -> anyhow::Result<Exit> {
     let root = &workspace.root;
     println!("Taking the workspace at {} back:", root.display());
     for member in &workspace.members {
@@ -1273,7 +1677,7 @@ fn undo_workspace(workspace: &Workspace) -> anyhow::Result<Exit> {
         let shown = shown_dir(&member.dir);
         match wiring::load(&path) {
             Ok(Some(wired)) if from_workspace(&wired, root) => {
-                undo_repo(&path, &wired).with_context(|| format!("undoing {shown}"))?;
+                undo_repo(paths, &path, &wired).with_context(|| format!("undoing {shown}"))?;
                 println!("  {shown}: wiring removed ({} mode).", wired.mode.as_str());
             }
             Ok(Some(_)) => println!(
@@ -1288,7 +1692,17 @@ fn undo_workspace(workspace: &Workspace) -> anyhow::Result<Exit> {
     } else {
         None
     };
-    let undone = undo_skill(&workspace.entries, exclude.as_deref(), Kind::Workspace)?;
+    let own = Own {
+        root,
+        common_dir: None,
+    };
+    let undone = undo_skill(
+        paths,
+        &own,
+        &workspace.entries,
+        exclude.as_deref(),
+        Kind::Workspace,
+    )?;
     let record_path = workspace::record_path(root);
     std::fs::remove_file(&record_path)
         .with_context(|| format!("cannot remove {}", record_path.display()))?;

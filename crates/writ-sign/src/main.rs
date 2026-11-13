@@ -229,6 +229,21 @@ fn sign_openpgp() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The object git hands `-Y sign` in a file: at most what the daemon takes
+/// ([`writ_proto::sign::MAX_SIGN_INPUT`]), as the OpenPGP path reads stdin.
+fn read_object(path: &Path) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let max = u64::try_from(writ_proto::sign::MAX_SIGN_INPUT)?;
+    let mut object = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(max.saturating_add(1)).read_to_end(&mut object))
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    if object.len() > writ_proto::sign::MAX_SIGN_INPUT {
+        bail!("{} is too large to sign", path.display());
+    }
+    Ok(object)
+}
+
 fn sign(args: &[OsString]) -> anyhow::Result<()> {
     let request = parse(args)?;
     // git signs commits in namespace `git`; anything else is no commit of a lease (the
@@ -239,8 +254,7 @@ fn sign(args: &[OsString]) -> anyhow::Result<()> {
             clean(&request.namespace)
         );
     }
-    let object = std::fs::read(&request.file)
-        .with_context(|| format!("cannot read {}", request.file.display()))?;
+    let object = read_object(&request.file)?;
     let format = session_format()?.unwrap_or("git");
     let signature = ask_daemon(format, object)?;
     check_answer(format, &signature)?;
@@ -723,5 +737,23 @@ mod tests {
         );
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(checks, (true, true, false, false));
+    }
+
+    #[test]
+    fn the_object_to_sign_is_read_within_the_daemon_s_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("object");
+        let max = writ_proto::sign::MAX_SIGN_INPUT;
+        std::fs::write(&path, vec![b'x'; max]).unwrap();
+        assert_eq!(read_object(&path).unwrap().len(), max, "at the bound");
+        std::fs::write(&path, vec![b'x'; max + 1]).unwrap();
+        assert_eq!(
+            error_of(read_object(&path)),
+            format!("{} is too large to sign", path.display())
+        );
+        assert!(
+            error_of(read_object(&dir.path().join("none"))).starts_with("cannot read "),
+            "a missing file"
+        );
     }
 }

@@ -62,14 +62,28 @@ repo; the other repository's SSH remotes still get the session's key (and fail o
 pinned host key). The operator's own `git`, in the same
 clone and working tree, keeps the operator's keys, email and remotes; a plain `git push writ`
 finds no such remote. Commits a command rewrites (a rebase) are signed again, one signature
-each from `max_signatures`.
+each from `max_signatures`. In a linked worktree (`git worktree add`) the record is in the
+git directory every worktree of the repository shares: `writ git` works under the wiring in
+each of them, and plain git in none.
 
 **Whole repo** (`writ init <repo> --whole-repo`): the same settings written in the repo's
 config, for a clone dedicated to an agent (a VM, a container); plain `git` is then the agent's
-git. The values they replace are recorded first.
+git. The values they replace are recorded first. Refused in a linked worktree: its config is
+the one every worktree of the repository reads, the operator's checkout included (wrapper
+mode, or a clone of its own).
+
+Everything `writ init` can refuse is checked before anything is written: the remotes (below),
+a linked worktree, the session, every `SKILL.md` it would write (one that isn't Writ's, or
+can't be read) and the timings path, the `AGENTS.md`/`CLAUDE.md` it would add to. Then the
+record is written first, whole (renamed into place), the repository added to `<home>/repos`
+at once, and each thing done recorded as it is done (a folder or a skill before it is made, a
+line once added): an init that fails part way says so, and `--undo` then takes back what it
+did.
 
 `writ init --undo` takes either back exactly: the record removed, and in whole-repo mode every
-key restored as it was. Good practice for the operator (their own keys, guardrails in the
+key restored as it was; a line it added (an exclude line, the pointer) comes out byte for
+byte, with the line break it added before it and in the file's own line endings (`\r\n` or
+`\n`), and a file it made for it goes once empty. Good practice for the operator (their own keys, guardrails in the
 agent's configuration): the [operators' good practice](../operators/good-practice.md).
 
 ```ini
@@ -101,6 +115,7 @@ agent's configuration): the [operators' good practice](../operators/good-practic
     sshCommand = ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -i '<home>/sessions/current/key' -o 'CertificateFile=<home>/sessions/current/key-cert.pub' -o 'UserKnownHostsFile=<home>/known_hosts' -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes
 [url "ssh://git@writ.home:2222/omega-code.git"]
     insteadOf = git@github.com:user/omega-code.git   # the clone's origin URL when wired
+    pushInsteadOf = git@github.com:user/omega-code.git   # over any push rule of the user's
 ```
 
 `writ git` finds the repository a command works in as git does (`writ_cli::gitopts`): git's
@@ -142,7 +157,9 @@ Some people keep several repositories in one folder and start one agent at the f
 - **Its repositories**: the folders right under it that are a repository's top (`.git` there,
   and `git rev-parse --show-toplevel` naming the folder), sorted; a hidden folder, a link
   (named), a name with a control character or not UTF-8 (named), and a submodule of the
-  folder's own repository (named: submodules aren't wired yet) are not. At most 256. The
+  folder's own repository (named: submodules aren't wired yet) are not, nor a worktree of a
+  repository already found (named: one git directory, one record; the repository's own
+  checkout is kept before its linked worktrees). At most 256. The
   folder's own repository, when it is one (a meta-repository ignoring its children), is a
   member only when named (`--repo .=<name>`).
 - **Their registry names**: `--repo <dir>=<name>` (repeatable; `<dir>=-` leaves one out;
@@ -230,7 +247,11 @@ chosen in this order:
 
 A session named by the first two must be on this host, not ended (its `ended` file: closed,
 or renewed by another lease) and not past its end, or the command is refused with the reason:
-never replaced by `current` (`wiring::choose_session`). One command uses one session: with
+never replaced by `current` (`wiring::choose_session`). `writ init` takes the session the same
+way (a whole-repo clone gets that session's paths, `current`'s otherwise) and refuses
+`--lease` and `WRIT_SESSION` naming two leases. `writ git` and `writ exec` resolve `current`
+once, to the lease it points at: every setting of one command names that session, however a
+grant moves `current` while it runs. One command uses one session: with
 `WRIT_SESSION` set, `writ-sign` refuses a commit when the settings git gave it name another
 session (`writ.session`: a whole-repo clone pinned elsewhere, or `current` pointing at another
 lease). `writ request` warns when the grant moves `current` while another lease of the same
@@ -305,7 +326,11 @@ agents it is asked for (`writ_cli::skill`), in as few folders as possible:
   `skill.exclude`, `skill.agentsmd`…), and `--undo` takes exactly that back: the skill files
   that are still Writ's, and the folders made for them once empty. `timings.md` stays. A
   `SKILL.md` it rewrote (Writ's already: a global skill another repository's `writ init`
-  made) is recorded too (`skill.written`), never removed by `--undo`.
+  made) is recorded too (`skill.written`): `--undo` leaves it in the repository; outside it
+  (a global skill, shared by every repository wired with `--global`), it removes a skill file
+  it created or wrote only once no other entry of `<home>/repos` records it, and says which
+  one still does. `--global` is refused at a workspace: its skill lists that folder's
+  repositories.
 - `writ skill update`, after upgrading `writ`: in the repository (or at the workspace's root)
   it runs in, every `SKILL.md` the record names (`skill.created`, `skill.written`) rewritten
   from the skill built into this `writ`, its timings file and a workspace's repositories
@@ -326,9 +351,14 @@ time used against granted, the estimate against the phases, the counts, the agen
 and the agent's notes (`notes:`). `writ close` appends a run and compacts with fixed rules:
 the last `keep_runs` runs and `max_notes` notes (the same note once) per repository; then,
 while over `max_lines` or `max_bytes`, the oldest run of the repository with the most, then
-the oldest note, then the least recently updated repository. The file is untrusted: what
-doesn't parse is rewritten, every line is cut to 400 characters, and `writ check` names every
-line `writ close` would drop or rewrite.
+the oldest note, then the least recently updated repository, the text's size counted once and
+kept up to date (never rendered again per thing dropped). The file is untrusted: read only as
+a regular file (never a FIFO) of at most 1 MiB, in one pass that keeps at most 200
+repositories and 50 runs and notes each (the latest), what doesn't parse is rewritten, every
+line is cut to 400 characters, and `writ check` names every line `writ close` would drop or
+rewrite. `writ check` takes a file for a timings file when its front matter names a limit
+(`max_lines:`…) or it is the one the wiring here records: a ticket may start with YAML's
+`---` too.
 
 The SSH command never reaches the user's own SSH setup: no `~/.ssh/config` (`-F /dev/null`), no
 other key and no agent (`IdentitiesOnly`, `IdentityAgent=none`: Secretive's keys are never
@@ -340,7 +370,14 @@ Agents never get a git remote pointing at the real upstream (GitHub, Codeberg, F
 with credentials. `writ init` also writes the [URL rewrite](gateway.md#url-rewrite) of the
 clone's `origin` so it keeps working (in wrapper mode, passed the same way: `writ git push
 origin` goes through the daemon, the operator's `git push origin` doesn't; in whole-repo mode,
-every push to `origin` in that clone does, and `writ init` says so).
+every push to `origin` in that clone does, and `writ init` says so). For that to hold,
+`writ init` refuses, naming the command that fixes each: an `origin` with a push URL of its
+own (`remote.origin.pushurl`, in any of git's config files) or several URLs (git pushes to
+each); an `origin` URL holding a credential (any user in an `http(s)://` URL, a password in
+another: copied into the record and the settings, printed, and used by plain git past the
+daemon; what `writ init` prints shows it as `<redacted>`); in wrapper mode, a `writ` remote of
+the user's (the daemon's URL would be added to it); in whole-repo mode, a `writ` remote with a
+push URL or set outside the repo's own config. A remote changed after `writ init` isn't seen.
 
 ## The recovery key (M7.6)
 

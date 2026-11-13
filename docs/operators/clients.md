@@ -154,9 +154,9 @@ would follow it and swap leases. Give each agent its own lease:
 
 ## Binding a lease to its session (local mode)
 
-With a daemon on this Mac, start the agent through `writ run`:
+With a daemon on this Mac, start the agent through `writ run` (here Claude Code):
 
-```sh
+```text
 writ run -- claude
 ```
 

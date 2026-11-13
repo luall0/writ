@@ -251,7 +251,7 @@ pub fn update(path: &Path, kind: Kind, text: &str) -> anyhow::Result<Updated> {
         Ok(true) if !shaped => return Ok(Updated::Kept(Kept::NotASkillPath)),
         Ok(true) => {}
     }
-    let current = read_bounded(path, 1024 * 1024)?;
+    let current = read_bounded(path, MAX_SKILL)?;
     if !current.contains(OWNED) {
         return Ok(Updated::Kept(Kept::NotWrits));
     }
@@ -270,38 +270,107 @@ fn missing_dirs(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Whether the `SKILL.md` at `path` is Writ's already (`false`: there is none), or why it
+/// can't be written.
+fn existing(path: &Path) -> anyhow::Result<bool> {
+    use std::io::Read as _;
+    // A FIFO or a device in its place is refused, never waited on.
+    let Some(file) = crate::timings::open_regular(path)? else {
+        return Ok(false);
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_SKILL)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    if !String::from_utf8_lossy(&bytes).contains(OWNED) {
+        bail!(
+            "{} exists and isn't Writ's: not writing over it (move it, or use --skill-dir)",
+            path.display()
+        );
+    }
+    Ok(true)
+}
+
+/// The most of a `SKILL.md` read to find Writ's mark.
+const MAX_SKILL: u64 = 1024 * 1024;
+
+/// The timings file the skills of `plan` name: beside the first.
+fn timings_path(plan: &Plan) -> Option<PathBuf> {
+    let first = plan.folders.first()?;
+    Some(first.join(plan.kind.name()).join("timings.md"))
+}
+
+/// What [`install`] would refuse, refused before anything is written: a `SKILL.md` in any of
+/// the folders that isn't Writ's or can't be read, a timings path that is there but isn't a
+/// regular file.
+pub fn check(plan: &Plan) -> anyhow::Result<()> {
+    for folder in &plan.folders {
+        existing(&folder.join(plan.kind.name()).join("SKILL.md"))?;
+    }
+    if let Some(timings) = timings_path(plan) {
+        match std::fs::metadata(&timings) {
+            Ok(meta) if !meta.is_file() => bail!(
+                "{} is there and isn't a timings file (not a regular file): move it, or use \
+                 --skill-dir",
+                timings.display()
+            ),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot read {}", timings.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One thing [`install`] does, handed to its caller to record before or as it is done, so
+/// `--undo` after a failure part way still takes back everything done.
+pub enum Step<'a> {
+    /// A folder about to be made (recorded first: `--undo` removes it only when empty).
+    CreatedDir(&'a Path),
+    /// A `SKILL.md` about to be written, and whether it is new (recorded first: `--undo`
+    /// removes it only when it carries Writ's mark).
+    Skill(&'a Path, bool),
+    /// A line just added to `.git/info/exclude`, and how.
+    Excluded(&'a str, Added),
+    /// The timings file, and whether it is new.
+    Timings(&'a Path),
+}
+
 /// Installs the skill in every folder of `plan` (`<folder>/<kind>/SKILL.md`), the timings
-/// file beside the first; a `SKILL.md` that isn't Writ's is never written over. In the root,
-/// each new skill folder is excluded from git when the root is a repository (`exclude`: its
-/// `.git/info/exclude`).
-pub fn install(plan: &Plan, exclude: Option<&Path>) -> anyhow::Result<Installed> {
+/// file beside the first; a `SKILL.md` that isn't Writ's is never written over ([`check`],
+/// which the caller runs before anything is written). In the root, each new skill folder is
+/// excluded from git when the root is a repository (`exclude`: its `.git/info/exclude`).
+/// Each step goes to `record` as it is done.
+pub fn install(
+    plan: &Plan,
+    exclude: Option<&Path>,
+    record: &mut dyn FnMut(Step<'_>) -> anyhow::Result<()>,
+) -> anyhow::Result<Installed> {
     let mut installed = Installed::default();
-    let Some(first) = plan.folders.first() else {
+    let Some(timings) = timings_path(plan) else {
         return Ok(installed);
     };
-    let timings = first.join(plan.kind.name()).join("timings.md");
     for folder in &plan.folders {
         let dir = folder.join(plan.kind.name());
         let path = dir.join("SKILL.md");
-        let existed = match std::fs::read_to_string(&path) {
-            Ok(text) if text.contains(OWNED) => true,
-            Ok(_) => bail!(
-                "{} exists and isn't Writ's: not writing over it (move it, or use --skill-dir)",
-                path.display()
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
-        };
+        let existed = existing(&path)?;
         let missing = missing_dirs(&dir);
+        for created in &missing {
+            record(Step::CreatedDir(created))?;
+        }
+        installed.created_dirs.extend(missing);
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("cannot create {}", dir.display()))?;
-        installed.created_dirs.extend(missing);
+        record(Step::Skill(&path, !existed))?;
         std::fs::write(&path, skill_text(plan, &timings))
             .with_context(|| format!("cannot write {}", path.display()))?;
         installed.skills.push((path, !existed));
         if let (Some(exclude), Ok(relative)) = (exclude, dir.strip_prefix(&plan.root)) {
             let line = format!("/{}/", relative.display());
-            if add_line(exclude, &line)? {
+            if let Some(added) = add_line(exclude, &line)? {
+                record(Step::Excluded(&line, added))?;
                 installed.excluded.push(line);
             }
         }
@@ -310,51 +379,93 @@ pub fn install(plan: &Plan, exclude: Option<&Path>) -> anyhow::Result<Installed>
     if new {
         crate::timings::write(&timings, &crate::timings::Timings::default())?;
     }
+    record(Step::Timings(&timings))?;
     installed.timings = Some((timings, new));
     Ok(installed)
 }
 
+/// How [`add_line`] added its line, for [`remove_line`] to take exactly that back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Added {
+    /// The file wasn't there: made for the line.
+    pub created: bool,
+    /// The file didn't end with a line break: one was added before the line.
+    pub joined: bool,
+}
+
+/// The file's lines, each with its own line break (`\n`, `\r\n`, or none for the last).
+fn lines_of(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes.split_inclusive(|b| *b == b'\n')
+}
+
+/// A line without its line break.
+fn content(line: &[u8]) -> &[u8] {
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    line.strip_suffix(b"\r").unwrap_or(line)
+}
+
 /// Appends `line` to the file at `path` (created if it isn't there) unless a line of it is
-/// already exactly that; whether it was added.
-pub fn add_line(path: &Path, line: &str) -> anyhow::Result<bool> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+/// already exactly that, with the file's own line break (`\r\n` when its lines end so, `\n`
+/// otherwise); how it was added, or none.
+pub fn add_line(path: &Path, line: &str) -> anyhow::Result<Option<Added>> {
+    let (bytes, created) = match std::fs::read(path) {
+        Ok(bytes) => (bytes, false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), true),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
-    if text.lines().any(|l| l == line) {
-        return Ok(false);
+    if lines_of(&bytes).any(|l| content(l) == line.as_bytes()) {
+        return Ok(None);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
     }
-    let mut new = text;
-    if !new.is_empty() && !new.ends_with('\n') {
-        new.push('\n');
+    let crlf = lines_of(&bytes)
+        .next()
+        .is_some_and(|l| l.ends_with(b"\r\n"));
+    let eol: &[u8] = if crlf { b"\r\n" } else { b"\n" };
+    let joined = !bytes.is_empty() && !bytes.ends_with(b"\n");
+    let mut new = bytes;
+    if joined {
+        new.extend_from_slice(eol);
     }
-    new.push_str(line);
-    new.push('\n');
+    new.extend_from_slice(line.as_bytes());
+    new.extend_from_slice(eol);
     std::fs::write(path, new).with_context(|| format!("cannot write {}", path.display()))?;
-    Ok(true)
+    Ok(Some(Added { created, joined }))
 }
 
-/// Removes the lines exactly `line` from the file at `path`; the file too when it is left
-/// empty and `created` says `writ init` made it.
-pub fn remove_line(path: &Path, line: &str, created: bool) -> anyhow::Result<()> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
+/// Takes back what [`add_line`] added: the lines exactly `line`, each with its own line break
+/// and nothing else of the file, so it comes back byte for byte; the line break added before
+/// it too (`added.joined`) when it is still the last line; the file when it is left empty and
+/// `added.created` says `writ init` made it.
+pub fn remove_line(path: &Path, line: &str, added: Added) -> anyhow::Result<()> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
-    let kept: Vec<&str> = text.lines().filter(|l| *l != line).collect();
-    if kept.is_empty() && created {
+    let mut new: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut last_removed = false;
+    for piece in lines_of(&bytes) {
+        last_removed = content(piece) == line.as_bytes();
+        if !last_removed {
+            new.extend_from_slice(piece);
+        }
+    }
+    if new.len() == bytes.len() {
+        return Ok(());
+    }
+    if added.joined && last_removed {
+        if new.ends_with(b"\r\n") {
+            new.truncate(new.len().saturating_sub(2));
+        } else if new.ends_with(b"\n") {
+            new.truncate(new.len().saturating_sub(1));
+        }
+    }
+    if new.is_empty() && added.created {
         return std::fs::remove_file(path)
             .with_context(|| format!("cannot remove {}", path.display()));
-    }
-    let mut new = kept.join("\n");
-    if !new.is_empty() {
-        new.push('\n');
     }
     std::fs::write(path, new).with_context(|| format!("cannot write {}", path.display()))
 }
@@ -386,7 +497,7 @@ pub fn remove_skill(path: &Path) -> anyhow::Result<Option<Kept>> {
         Ok(true) if !shaped => return Ok(Some(Kept::NotASkillPath)),
         Ok(true) => {}
     }
-    let text = read_bounded(path, 1024 * 1024)?;
+    let text = read_bounded(path, MAX_SKILL)?;
     if !text.contains(OWNED) {
         return Ok(Some(Kept::NotWrits));
     }
@@ -493,7 +604,7 @@ mod tests {
             kind: Kind::Repo,
             repos: String::new(),
         };
-        let installed = install(&plan, Some(&exclude)).unwrap();
+        let installed = install(&plan, Some(&exclude), &mut |_| Ok(())).unwrap();
         assert_eq!(installed.skills.len(), 2);
         assert!(installed.skills.iter().all(|(_, new)| *new));
         assert_eq!(
@@ -517,7 +628,7 @@ mod tests {
         assert!(root.path().join(".claude/skills/writ/timings.md").exists());
         assert!(!root.path().join(".cursor/skills/writ/timings.md").exists());
         // Again: refreshed, nothing added twice.
-        let again = install(&plan, Some(&exclude)).unwrap();
+        let again = install(&plan, Some(&exclude), &mut |_| Ok(())).unwrap();
         assert!(again.skills.iter().all(|(_, new)| !*new));
         assert!(again.excluded.is_empty());
         assert_eq!(again.timings.as_ref().map(|(_, new)| *new), Some(false));
@@ -531,15 +642,200 @@ mod tests {
             kind: Kind::Repo,
             repos: String::new(),
         };
-        let error = install(&plan, Some(&exclude)).unwrap_err().to_string();
+        let error = install(&plan, Some(&exclude), &mut |_| Ok(()))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("isn't Writ's"), "{error}");
         assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "my own skill");
         // Lines come back out exactly.
-        remove_line(&exclude, "/.claude/skills/writ/", false).unwrap();
+        remove_line(&exclude, "/.claude/skills/writ/", Added::default()).unwrap();
         assert_eq!(
             std::fs::read_to_string(&exclude).unwrap(),
             "# git's own\n/.cursor/skills/writ/\n"
         );
+    }
+
+    #[test]
+    fn every_target_is_checked_before_anything_is_written() {
+        let root = tempfile::tempdir().unwrap();
+        let plan = |folders: &[&str]| Plan {
+            folders: folders.iter().map(|f| root.path().join(f)).collect(),
+            root: root.path().to_owned(),
+            kind: Kind::Repo,
+            repos: String::new(),
+        };
+        let both = plan(&[".claude/skills", ".cursor/skills"]);
+        check(&both).unwrap();
+        // The second folder's SKILL.md is someone else's: refused by the check, nothing made.
+        let theirs = root.path().join(".cursor/skills/writ/SKILL.md");
+        std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        std::fs::write(&theirs, "my own skill").unwrap();
+        let error = crate::error_of(check(&both));
+        assert!(
+            error.ends_with(".cursor/skills/writ/SKILL.md exists and isn't Writ's: not writing over it (move it, or use --skill-dir)"),
+            "{error}"
+        );
+        assert!(!root.path().join(".claude").exists());
+        std::fs::remove_file(&theirs).unwrap();
+        // A FIFO in its place: refused at once, never waited on.
+        let made = std::process::Command::new("mkfifo")
+            .arg(&theirs)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let error = crate::error_of(check(&both));
+        assert!(
+            error.ends_with("SKILL.md is not a regular file: not read"),
+            "{error}"
+        );
+        std::fs::remove_file(&theirs).unwrap();
+        // A file where its folder should be: can't be read, refused.
+        std::fs::remove_dir_all(root.path().join(".cursor")).unwrap();
+        std::fs::create_dir_all(root.path().join(".cursor")).unwrap();
+        std::fs::write(root.path().join(".cursor/skills"), "").unwrap();
+        let error = crate::error_of(check(&both));
+        assert!(error.starts_with("cannot read "), "{error}");
+        std::fs::remove_dir_all(root.path().join(".cursor")).unwrap();
+        // The timings path taken by a folder: refused; a timings file there already: kept.
+        let timings = root.path().join(".claude/skills/writ/timings.md");
+        std::fs::create_dir_all(&timings).unwrap();
+        let error = crate::error_of(check(&both));
+        assert!(
+            error.ends_with("timings.md is there and isn't a timings file (not a regular file): move it, or use --skill-dir"),
+            "{error}"
+        );
+        std::fs::remove_dir(&timings).unwrap();
+        std::fs::write(&timings, "").unwrap();
+        check(&both).unwrap();
+        check(&plan(&[])).unwrap();
+    }
+
+    #[test]
+    fn each_step_is_handed_over_as_it_is_done() {
+        let root = tempfile::tempdir().unwrap();
+        let exclude = root.path().join(".git/info/exclude");
+        let plan = Plan {
+            folders: vec![root.path().join(".claude/skills")],
+            root: root.path().to_owned(),
+            kind: Kind::Repo,
+            repos: String::new(),
+        };
+        let mut steps: Vec<String> = Vec::new();
+        install(&plan, Some(&exclude), &mut |step| {
+            // Each thing recorded before it is made (a folder, a skill) is not there yet.
+            steps.push(match step {
+                Step::CreatedDir(dir) => {
+                    assert!(!dir.exists(), "{}", dir.display());
+                    format!("dir {}", dir.strip_prefix(root.path()).unwrap().display())
+                }
+                Step::Skill(path, new) => {
+                    assert!(!path.exists());
+                    format!("skill {new}")
+                }
+                Step::Excluded(line, added) => {
+                    format!("exclude {line} {} {}", added.created, added.joined)
+                }
+                Step::Timings(path) => {
+                    assert!(path.is_file());
+                    "timings".to_owned()
+                }
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            steps,
+            [
+                "dir .claude/skills/writ",
+                "dir .claude/skills",
+                "dir .claude",
+                "skill true",
+                "exclude /.claude/skills/writ/ true false",
+                "timings",
+            ]
+        );
+        // A recorder that fails stops the installation there.
+        let other = tempfile::tempdir().unwrap();
+        let plan = Plan {
+            folders: vec![other.path().join("a"), other.path().join("b")],
+            root: other.path().to_owned(),
+            kind: Kind::Repo,
+            repos: String::new(),
+        };
+        let mut seen = 0;
+        let error = install(&plan, None, &mut |step| {
+            seen += 1;
+            match step {
+                Step::Skill(..) => anyhow::bail!("the record can't be written"),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(crate::error_of(error), "the record can't be written");
+        assert_eq!(seen, 3, "a/writ, a, then the skill");
+        assert!(!other.path().join("a/writ/SKILL.md").exists());
+    }
+
+    #[test]
+    fn lines_come_back_out_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("AGENTS.md");
+        // CRLF, no final line break: the line follows in CRLF, and goes with the break added.
+        let before = b"# Agents\r\nBe kind.".to_vec();
+        std::fs::write(&file, &before).unwrap();
+        let added = add_line(&file, POINTER).unwrap().unwrap();
+        assert_eq!(
+            added,
+            Added {
+                created: false,
+                joined: true
+            }
+        );
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            [&before[..], b"\r\n", POINTER.as_bytes(), b"\r\n"].concat()
+        );
+        assert_eq!(add_line(&file, POINTER).unwrap(), None, "once");
+        remove_line(&file, POINTER, added).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        // LF, ending with its break: nothing joined, the rest untouched.
+        let before = b"one\n\ntwo\n".to_vec();
+        std::fs::write(&file, &before).unwrap();
+        let added = add_line(&file, POINTER).unwrap().unwrap();
+        assert_eq!(added, Added::default());
+        remove_line(&file, POINTER, added).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        // Lines added after it since: only the line goes.
+        let added = add_line(&file, POINTER).unwrap().unwrap();
+        let mut edited = std::fs::read(&file).unwrap();
+        edited.extend_from_slice(b"mine\n");
+        std::fs::write(&file, &edited).unwrap();
+        remove_line(&file, POINTER, added).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"one\n\ntwo\nmine\n");
+        // A file it made: gone once its lines are; one with the user's lines too: kept.
+        let made = dir.path().join("info/exclude");
+        let added = add_line(&made, "/a/").unwrap().unwrap();
+        assert_eq!(
+            added,
+            Added {
+                created: true,
+                joined: false
+            }
+        );
+        let second = add_line(&made, "/b/").unwrap().unwrap();
+        assert_eq!(second, Added::default());
+        remove_line(&made, "/a/", added).unwrap();
+        remove_line(&made, "/b/", added).unwrap();
+        assert!(!made.exists());
+        add_line(&made, "/a/").unwrap().unwrap();
+        std::fs::write(&made, "/a/\n# mine\n").unwrap();
+        remove_line(&made, "/a/", added).unwrap();
+        assert_eq!(std::fs::read(&made).unwrap(), b"# mine\n");
+        // Not UTF-8: read and kept as bytes.
+        let bytes = b"\xff\xfe\n".to_vec();
+        std::fs::write(&file, &bytes).unwrap();
+        let added = add_line(&file, POINTER).unwrap().unwrap();
+        remove_line(&file, POINTER, added).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
     }
 
     #[test]
@@ -554,7 +850,7 @@ mod tests {
             kind: Kind::Repo,
             repos: String::new(),
         };
-        install(&plan, None).unwrap();
+        install(&plan, None, &mut |_| Ok(())).unwrap();
         let claude = root.path().join(".claude/skills/writ/SKILL.md");
         let agents = root.path().join(".agents/skills/writ/SKILL.md");
         let timings = root.path().join(".claude/skills/writ/timings.md");
@@ -632,7 +928,7 @@ mod tests {
             kind: Kind::Workspace,
             repos: "- `api`: repo `api`".to_owned(),
         };
-        let installed = install(&plan, None).unwrap();
+        let installed = install(&plan, None, &mut |_| Ok(())).unwrap();
         let skill = root.path().join(".claude/skills/writ-workspace/SKILL.md");
         assert_eq!(installed.skills, [(skill.clone(), true)]);
         assert_eq!(

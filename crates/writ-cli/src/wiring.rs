@@ -20,8 +20,14 @@
 //! `writ-sign` signs with that session only, in its lease's format.
 //!
 //! The clone's `origin` URL, as it was when wired, is rewritten to the daemon
-//! (`url.<daemon>/<repo>.git.insteadOf`), so `git push origin` and `git fetch origin` under the
-//! wiring go through the daemon; only that exact URL, never the user's global config.
+//! (`url.<daemon>/<repo>.git.insteadOf`, and `pushInsteadOf` so a push rule of the user's own
+//! can't take a push elsewhere), so `git push origin` and `git fetch origin` under the wiring go
+//! through the daemon; never the user's global config. git matches the rule as a prefix: a URL
+//! that starts with the origin's text goes to the daemon too, which refuses a repository it
+//! doesn't serve; nothing is sent anywhere else. `writ init` refuses an `origin` it can't send
+//! there whole (a push URL, several URLs, a credential in it).
+//!
+//! The record is the agent's to write too: read bounded ([`read_record`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -101,6 +107,35 @@ impl SessionRef {
             Self::Current => sessions.join("current"),
             Self::Lease(id) => sessions.join(id.as_str()),
         }
+    }
+
+    /// `current` resolved to the lease it points at now, so that every setting of one command
+    /// names that one session: ssh, `writ-sign` and git would each follow the link again, and
+    /// a grant meanwhile would move them to another lease half way. `current` pointing at
+    /// nothing stays `Current` (no lease to sign under: the daemon refuses).
+    pub fn resolved(self, home: &Path) -> anyhow::Result<SessionRef> {
+        let Self::Current = self else {
+            return Ok(self);
+        };
+        let link = self.dir(home);
+        let target = match std::fs::read_link(&link) {
+            Ok(target) => target,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::Current),
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("{} isn't a link to a lease's session", link.display())
+                });
+            }
+        };
+        let text = target.to_string_lossy();
+        let id: TicketId = text.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "{} doesn't point at a lease ({})",
+                link.display(),
+                display::clean(&text)
+            )
+        })?;
+        Ok(Self::Lease(id))
     }
 }
 
@@ -242,8 +277,69 @@ pub fn settings(
     let daemon = format!("{base_url}/{repo}.git");
     if let Some(origin) = origin.filter(|o| !o.is_empty() && *o != daemon) {
         settings.push((format!("url.{daemon}.insteadOf"), origin.to_owned()));
+        // git takes a push's URL from the push rules alone when one matches: a shorter one of
+        // the user's (`url.git@github.com:.pushInsteadOf https://github.com/`) would send the
+        // push past the daemon. The whole URL is the longest match there is.
+        settings.push((format!("url.{daemon}.pushInsteadOf"), origin.to_owned()));
     }
     settings
+}
+
+/// Whether `url` carries a credential: any user in an `http://` or `https://` URL (a token
+/// often stands as the user name), a password (`user:password@`) in any other `scheme://`
+/// URL. An ssh login (`git@host:path`, `ssh://git@host/path`) is none.
+pub fn has_credential(url: &str) -> bool {
+    userinfo(url).is_some_and(|u| u.credential())
+}
+
+/// `url` as `writ init` shows it: a credential ([`has_credential`]) replaced with
+/// `<redacted>`, the rest escaped.
+pub fn shown_url(url: &str) -> String {
+    match userinfo(url) {
+        Some(u) if u.credential() => {
+            display::clean(&format!("{}://<redacted>@{}", u.scheme, u.after))
+        }
+        _ => display::clean(url),
+    }
+}
+
+/// `url` with its user information taken out (`https://host/path`), for the command that
+/// fixes it.
+pub fn without_credential(url: &str) -> String {
+    match userinfo(url) {
+        Some(u) => display::clean(&format!("{}://{}", u.scheme, u.after)),
+        None => display::clean(url),
+    }
+}
+
+/// A `scheme://userinfo@host/…` URL, cut at its user information.
+struct UserInfo<'a> {
+    scheme: &'a str,
+    info: &'a str,
+    /// What follows the `@`.
+    after: &'a str,
+}
+
+impl UserInfo<'_> {
+    fn credential(&self) -> bool {
+        let web =
+            self.scheme.eq_ignore_ascii_case("http") || self.scheme.eq_ignore_ascii_case("https");
+        web || self.info.contains(':')
+    }
+}
+
+/// The user information of a `scheme://userinfo@host/…` URL: what comes before the last `@`
+/// of the authority (up to the first `/`, `?` or `#`).
+fn userinfo(url: &str) -> Option<UserInfo<'_>> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let (info, _) = authority.rsplit_once('@')?;
+    let after = rest.strip_prefix(info)?.strip_prefix('@')?;
+    Some(UserInfo {
+        scheme,
+        info,
+        after,
+    })
 }
 
 /// The fingerprint of the OpenPGP certificate in `session` (`signing_key.asc`, written with
@@ -347,16 +443,117 @@ pub fn common_dir(dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(out.trim_end_matches('\n')))
 }
 
+/// Whether the repository at `dir` is a linked worktree (`git worktree add`): its own git
+/// directory isn't the one it shares with the others, whose `config` they all read.
+pub fn is_linked_worktree(dir: &Path) -> anyhow::Result<bool> {
+    let out = git(dir, &["rev-parse", "--path-format=absolute", "--git-dir"])
+        .map_err(|_| anyhow::anyhow!("not in a git repository ({})", dir.display()))?;
+    let own = PathBuf::from(out.trim_end_matches('\n'));
+    let common = common_dir(dir)?;
+    let canonical = |p: &Path| {
+        std::fs::canonicalize(p).with_context(|| format!("cannot resolve {}", p.display()))
+    };
+    Ok(canonical(&own)? != canonical(&common)?)
+}
+
 /// `<common dir>/writ/config`, where `writ init` records what it did.
 pub fn record_path(dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(common_dir(dir)?.join("writ").join("config"))
 }
 
-/// The entries of a git config file (`git config -f <file> --list -z`), in order.
-pub fn read_file(dir: &Path, file: &Path) -> anyhow::Result<Vec<(String, String)>> {
-    let file = file.display().to_string();
-    let out = git(dir, &["config", "-f", &file, "--list", "-z"])?;
-    Ok(out
+/// The largest record read (a repository's `<git common dir>/writ/config`, a workspace's
+/// `.writ-workspace`): past it, it isn't one `writ init` wrote.
+pub const MAX_RECORD: u64 = 64 * 1024;
+
+/// The entries of a record `writ init` wrote at `path` (a `what`, for the errors), or none when
+/// there is none. The record is the agent's to write too: opened without following a link and
+/// without blocking (a FIFO), refused unless it is a regular file of at most [`MAX_RECORD`]
+/// bytes, then read whole into memory and handed to git on its stdin (`git config -f -`), so
+/// what git reads is what was checked.
+pub fn read_record(
+    dir: &Path,
+    path: &Path,
+    what: &str,
+) -> anyhow::Result<Option<Vec<(String, String)>>> {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read as _;
+    let not_one = || {
+        anyhow::anyhow!(
+            "{} is not a {what} (a link, or not a regular file)",
+            path.display()
+        )
+    };
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let file = match rustix::fs::open(path, flags, Mode::empty()) {
+        Ok(fd) => std::fs::File::from(fd),
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(rustix::io::Errno::LOOP) => return Err(not_one()),
+        Err(e) => {
+            return Err(std::io::Error::from(e))
+                .with_context(|| format!("cannot read {}", path.display()));
+        }
+    };
+    let meta = file
+        .metadata()
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    if !meta.is_file() {
+        return Err(not_one());
+    }
+    if meta.len() > MAX_RECORD {
+        bail!(
+            "{} is larger than {MAX_RECORD} bytes: not a {what}",
+            path.display()
+        );
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_RECORD.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    if u64::try_from(bytes.len()).map_or(true, |n| n > MAX_RECORD) {
+        bail!(
+            "{} is larger than {MAX_RECORD} bytes: not a {what}",
+            path.display()
+        );
+    }
+    parse_config(dir, &bytes)
+        .with_context(|| format!("{} is not a {what}", path.display()))
+        .map(Some)
+}
+
+/// The entries of git config text (`git config -f - --list -z`, the text on its stdin), in
+/// order.
+fn parse_config(dir: &Path, text: &[u8]) -> anyhow::Result<Vec<(String, String)>> {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    // PATH: the agent host's own git, the one the repo is used with.
+    let mut child = Command::new("git")
+        .args(["config", "-f", "-", "--list", "-z"])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("cannot run git")?;
+    let mut stdin = child.stdin.take().context("cannot write to git")?;
+    // Written from a thread of its own: git answers as it reads, and a full stdout pipe would
+    // otherwise stop both.
+    let (written, out) = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(text));
+        let out = child.wait_with_output();
+        (writer.join(), out)
+    });
+    let out = out.context("cannot run git")?;
+    if !out.status.success() {
+        bail!(
+            "git config failed: {}",
+            display::clean_lines(String::from_utf8_lossy(&out.stderr).trim())
+        );
+    }
+    match written {
+        Ok(result) => result.context("cannot write to git")?,
+        Err(_) => bail!("cannot write to git"),
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter(|e| !e.is_empty())
         .map(|entry| match entry.split_once('\n') {
@@ -364,6 +561,13 @@ pub fn read_file(dir: &Path, file: &Path) -> anyhow::Result<Vec<(String, String)
             None => (entry.to_owned(), String::new()),
         })
         .collect())
+}
+
+/// What `writ init` recorded in a repository whose shared git directory is `common_dir`:
+/// every entry of its record, read bounded ([`read_record`]); none when it isn't wired.
+pub fn record_entries(common_dir: &Path) -> anyhow::Result<Option<Vec<(String, String)>>> {
+    let path = common_dir.join("writ").join("config");
+    read_record(common_dir, &path, "Writ wiring record")
 }
 
 /// What `writ init` recorded in the repository at `dir`, if it is wired.
@@ -375,10 +579,9 @@ pub fn load(dir: &Path) -> anyhow::Result<Option<Wiring>> {
 /// if it is wired.
 pub fn load_common(common_dir: &Path) -> anyhow::Result<Option<Wiring>> {
     let path = common_dir.join("writ").join("config");
-    if !path.exists() {
+    let Some(entries) = record_entries(common_dir)? else {
         return Ok(None);
-    }
-    let entries = read_file(common_dir, &path)?;
+    };
     let get = |key: &str| {
         entries
             .iter()
@@ -576,6 +779,10 @@ mod tests {
                 "url.ssh://git@writ.home:2222/omega-code.git.insteadOf",
                 "git@github.com:user/omega-code.git",
             ),
+            (
+                "url.ssh://git@writ.home:2222/omega-code.git.pushInsteadOf",
+                "git@github.com:user/omega-code.git",
+            ),
         ];
         let got: Vec<(&str, &str)> = settings
             .iter()
@@ -606,13 +813,175 @@ mod tests {
             .filter(|(k, _)| k.starts_with("url."))
             .count()
         };
-        assert_eq!(rewrites(Some("ssh://git@github.com/u/demo.git")), 1);
+        // Fetch and push: a push rule of the user's can't take the push elsewhere.
+        assert_eq!(rewrites(Some("ssh://git@github.com/u/demo.git")), 2);
         assert_eq!(rewrites(None), 0, "no origin");
         assert_eq!(rewrites(Some("")), 0, "an empty origin");
         assert_eq!(
             rewrites(Some("ssh://git@writ.home:2222/demo.git")),
             0,
             "origin already the daemon: no loop"
+        );
+    }
+
+    #[test]
+    fn a_credential_in_a_url_is_found_and_never_shown() {
+        for (url, credential, shown, without) in [
+            (
+                "https://ghp_secret@github.com/u/r.git",
+                true,
+                "https://<redacted>@github.com/u/r.git",
+                "https://github.com/u/r.git",
+            ),
+            (
+                "HTTPS://me:hunter2@host/r.git",
+                true,
+                "HTTPS://<redacted>@host/r.git",
+                "HTTPS://host/r.git",
+            ),
+            (
+                "ssh://git:hunter2@host/r.git",
+                true,
+                "ssh://<redacted>@host/r.git",
+                "ssh://host/r.git",
+            ),
+            // A login name over ssh is none; nor is an `@` in a path.
+            (
+                "ssh://git@host:22/r.git",
+                false,
+                "ssh://git@host:22/r.git",
+                "ssh://host:22/r.git",
+            ),
+            (
+                "git@github.com:u/r.git",
+                false,
+                "git@github.com:u/r.git",
+                "git@github.com:u/r.git",
+            ),
+            (
+                "https://host/u/r@v2.git",
+                false,
+                "https://host/u/r@v2.git",
+                "https://host/u/r@v2.git",
+            ),
+            ("/srv/r.git", false, "/srv/r.git", "/srv/r.git"),
+        ] {
+            assert_eq!(has_credential(url), credential, "{url}");
+            assert_eq!(shown_url(url), shown, "{url}");
+            assert_eq!(without_credential(url), without, "{url}");
+        }
+        // Escaped once redacted.
+        assert_eq!(
+            shown_url("https://t@h/\u{1b}[2J"),
+            "https://<redacted>@h/\\u{1b}[2J"
+        );
+    }
+
+    #[test]
+    fn current_is_resolved_once_to_the_lease_it_points_at() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        // No `current`: no lease to name.
+        assert_eq!(
+            SessionRef::Current.resolved(home.path()).unwrap(),
+            SessionRef::Current
+        );
+        let id: TicketId = "wrt_01JD8X0000000000000000000A".parse().unwrap();
+        std::os::unix::fs::symlink(id.as_str(), sessions.join("current")).unwrap();
+        let resolved = SessionRef::Current.resolved(home.path()).unwrap();
+        assert_eq!(resolved, SessionRef::Lease(id.clone()));
+        assert_eq!(resolved.dir(home.path()), sessions.join(id.as_str()));
+        // A lease named stays itself.
+        let other: TicketId = "wrt_01JD8X0000000000000000000B".parse().unwrap();
+        assert_eq!(
+            SessionRef::Lease(other.clone())
+                .resolved(home.path())
+                .unwrap(),
+            SessionRef::Lease(other)
+        );
+        // A `current` that names no lease, or isn't a link: refused, never followed.
+        std::fs::remove_file(sessions.join("current")).unwrap();
+        std::os::unix::fs::symlink("../../etc", sessions.join("current")).unwrap();
+        let error = crate::error_of(SessionRef::Current.resolved(home.path()));
+        assert!(
+            error.ends_with("sessions/current doesn't point at a lease (../../etc)"),
+            "{error}"
+        );
+        std::fs::remove_file(sessions.join("current")).unwrap();
+        std::fs::create_dir(sessions.join("current")).unwrap();
+        let error = crate::error_of(SessionRef::Current.resolved(home.path()));
+        assert!(
+            error.contains("sessions/current isn't a link to a lease's session"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_record_is_read_bounded_whatever_is_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        let read = |p: &Path| read_record(dir.path(), p, "Writ wiring record");
+        assert_eq!(read(&path).unwrap(), None);
+        std::fs::write(&path, "[writ]\n\tmode = wrapper\n\trepo = demo\n").unwrap();
+        assert_eq!(
+            read(&path).unwrap(),
+            Some(vec![
+                ("writ.mode".to_owned(), "wrapper".to_owned()),
+                ("writ.repo".to_owned(), "demo".to_owned()),
+            ])
+        );
+        // At the bound read, one past it refused.
+        let padded = |len: u64| {
+            let mut text = String::from("[writ]\n\tmode = wrapper\n");
+            while (text.len() as u64) < len - 1 {
+                text.push('#');
+            }
+            text.push('\n');
+            text
+        };
+        std::fs::write(&path, padded(MAX_RECORD)).unwrap();
+        assert_eq!(read(&path).unwrap().map(|e| e.len()), Some(1));
+        std::fs::write(&path, padded(MAX_RECORD + 1)).unwrap();
+        let error = crate::error_of(read(&path));
+        assert!(
+            error.ends_with("is larger than 65536 bytes: not a Writ wiring record"),
+            "{error}"
+        );
+        // A link (to /dev/zero, to a good record), a FIFO, a folder: refused at once.
+        let good = dir.path().join("good");
+        std::fs::write(&good, "[writ]\n\tmode = wrapper\n").unwrap();
+        for target in [Path::new("/dev/zero"), good.as_path()] {
+            std::fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(target, &path).unwrap();
+            let error = crate::error_of(read(&path));
+            assert!(
+                error.ends_with("is not a Writ wiring record (a link, or not a regular file)"),
+                "{error}"
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+        let made = Command::new("mkfifo").arg(&path).status().unwrap();
+        assert!(made.success());
+        let error = crate::error_of(read(&path));
+        assert!(
+            error.ends_with("is not a Writ wiring record (a link, or not a regular file)"),
+            "{error}"
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let error = crate::error_of(read(&path));
+        assert!(
+            error.ends_with("is not a Writ wiring record (a link, or not a regular file)"),
+            "{error}"
+        );
+        // Text git can't read: refused, naming the record.
+        let broken = dir.path().join("broken");
+        std::fs::write(&broken, "[writ\n").unwrap();
+        let error = crate::error_of(read(&broken));
+        assert!(
+            error.contains("broken is not a Writ wiring record: git config failed"),
+            "{error}"
         );
     }
 

@@ -47,8 +47,10 @@ fn not_wired(dir: &Path, reason: Option<&str>) -> anyhow::Error {
 /// Runs `command` (in place of this process) under the wiring `wired`.
 fn run(paths: &Paths, wired: &Wiring, mut command: Command) -> anyhow::Result<Exit> {
     if wired.mode == Mode::Wrapper {
-        // One session for the whole command: chosen once, every setting from it.
-        let session = wiring::choose_session(&paths.home, wired.lease.as_ref())?;
+        // One session for the whole command: chosen once, `current` resolved to its lease, so
+        // every setting names that session however `current` moves while the command runs.
+        let session =
+            wiring::choose_session(&paths.home, wired.lease.as_ref())?.resolved(&paths.home)?;
         let settings = wiring::settings_with(paths, wired, &session)?;
         let existing = std::env::var("GIT_CONFIG_COUNT").ok();
         command.envs(wiring::config_env(existing.as_deref(), &settings)?);

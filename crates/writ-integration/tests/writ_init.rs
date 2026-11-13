@@ -545,6 +545,162 @@ fn whole_repo_mode_wires_a_dedicated_clone_and_undo_restores_it() {
     assert!(!repo.join(".git/writ").exists());
 }
 
+#[test]
+fn a_linked_worktree_is_wired_in_wrapper_mode_only() {
+    let (daemon, id, agent_key) = granted();
+    let root = daemon.root().to_owned();
+    fs::write(
+        root.join("home/.gitconfig"),
+        "[user]\n\tname = Operator\n\temail = me@operator.example\n[init]\n\tdefaultBranch = main\n",
+    )
+    .unwrap();
+    // The operator's checkout, and a worktree of it for the agent.
+    let main = root.join("main");
+    fs::create_dir_all(&main).unwrap();
+    git_ok(&daemon, &main, &["init", "-q"]);
+    let origin = daemon.remote.repo("demo");
+    git_ok(
+        &daemon,
+        &main,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    fs::write(main.join("README"), "demo\n").unwrap();
+    git_ok(&daemon, &main, &["add", "-A"]);
+    git_ok(&daemon, &main, &["commit", "-q", "-m", "seed"]);
+    let agent = root.join("agent");
+    git_ok(
+        &daemon,
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agent/oauth",
+            agent.to_str().unwrap(),
+        ],
+    );
+    let before = local_config(&daemon, &main);
+
+    // --whole-repo: refused, the config every worktree reads untouched.
+    let out = writ(
+        &daemon,
+        &agent,
+        &["init", "demo", "--whole-repo", "--agents", "none"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(
+            "this is a linked worktree (git worktree add): its git config is the one every \
+             worktree of the repository reads, your own checkout's included, so --whole-repo \
+             would wire them all. Wire it in wrapper mode (writ init without --whole-repo), or \
+             give the agent a clone of its own (git clone) (nothing was wired)"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(local_config(&daemon, &main), before);
+    assert!(!main.join(".git/writ").exists());
+
+    // Wrapper mode works there: the agent's commit is signed by the daemon, the operator's
+    // checkout keeps its own config and plain git.
+    writ_ok(&daemon, &agent, &["init", "demo", "--agents", "none"]);
+    assert_eq!(local_config(&daemon, &main), before);
+    fs::create_dir_all(agent.join("src")).unwrap();
+    fs::write(agent.join("src/oauth.rs"), "pub fn login() {}\n").unwrap();
+    writ_ok(&daemon, &agent, &["git", "add", "-A"]);
+    let trailer = format!("Writ: {id}");
+    writ_ok(
+        &daemon,
+        &agent,
+        &[
+            "git",
+            "commit",
+            "-q",
+            "-m",
+            "Add OAuth",
+            "--trailer",
+            &trailer,
+        ],
+    );
+    assert!(verified_by(
+        &daemon,
+        &agent,
+        "HEAD",
+        "agent@writ",
+        &agent_key
+    ));
+    let plain = git(&daemon, &main, &["config", "core.sshCommand"]);
+    assert_eq!(plain.status.code(), Some(1), "no SSH command in plain git");
+    assert_eq!(
+        git_ok(&daemon, &main, &["config", "user.email"]).trim(),
+        "me@operator.example"
+    );
+    writ_ok(&daemon, &agent, &["init", "--undo"]);
+    assert_eq!(local_config(&daemon, &main), before);
+    assert!(!main.join(".git/writ").exists());
+}
+
+#[test]
+fn writ_init_follows_writ_session_like_the_other_commands() {
+    let (daemon, id, _) = granted();
+    let root = daemon.root().to_owned();
+    fs::write(
+        root.join("home/.gitconfig"),
+        "[user]\n\tname = Agent\n[init]\n\tdefaultBranch = main\n",
+    )
+    .unwrap();
+    // `current` points at another session meanwhile (another agent's grant).
+    let sessions = root.join("writ/sessions");
+    let other = "wrt_01JD8X0000000000000000000B";
+    fs::create_dir_all(sessions.join(other)).unwrap();
+    fs::remove_file(sessions.join("current")).unwrap();
+    std::os::unix::fs::symlink(other, sessions.join("current")).unwrap();
+    let repo = root.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    git_ok(&daemon, &repo, &["init", "-q"]);
+    let out = daemon
+        .writ(&["init", "demo", "--whole-repo", "--agents", "none"])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("WRIT_SESSION", &id)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains(&format!(
+            "Session: lease {id}, from WRIT_SESSION: this clone's git config names its session"
+        )),
+        "{}",
+        stdout(&out)
+    );
+    let config = local_config(&daemon, &repo);
+    assert!(
+        config.contains(&format!("writ.session={}", sessions.join(&id).display())),
+        "{config}"
+    );
+    assert!(
+        config.contains("user.email=agent@writ"),
+        "the lease's: {config}"
+    );
+    writ_ok(&daemon, &repo, &["init", "--undo"]);
+    // Without it: `current`, whichever lease it names when git runs.
+    writ_ok(
+        &daemon,
+        &repo,
+        &["init", "demo", "--whole-repo", "--agents", "none"],
+    );
+    let config = local_config(&daemon, &repo);
+    assert!(
+        config.contains(&format!(
+            "writ.session={}",
+            sessions.join("current").display()
+        )),
+        "{config}"
+    );
+}
+
 /// The absolute path of the host's `gpg` (the tests need GnuPG 2.2 or newer).
 fn gpg_path() -> String {
     let out = Command::new("sh")

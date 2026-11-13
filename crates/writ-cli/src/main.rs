@@ -236,10 +236,8 @@ enum Commands {
         /// checked: what an uninstall or `--undo --all` would take back.
         #[arg(long, conflicts_with_all = ["repo", "undo"])]
         list: bool,
-        /// The daemon's agents listener, ssh://host:port or unix:<path> (default: `url` in
-        /// <home>/config).
-        #[arg(long, env = "WRIT_URL")]
-        url: Option<String>,
+        #[command(flatten)]
+        url: AgentUrl,
         /// Pin the repo to this lease: its session, never `current` (WRIT_SESSION still
         /// comes first).
         #[arg(long, conflicts_with = "undo")]
@@ -1130,12 +1128,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             agents_md,
             ..
         } => {
-            let url = &resolve(
-                url.as_ref(),
-                &paths,
-                |s| s.url,
-                "WRIT_URL (or --url, or url",
-            )?;
+            let url = &url.get(&paths)?;
             let mode = if *whole_repo {
                 wiring::Mode::WholeRepo
             } else {

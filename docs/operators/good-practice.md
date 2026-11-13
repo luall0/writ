@@ -19,6 +19,12 @@ user from using what is on your machine: that part is up to you. This page cover
 In both modes, the agent's `origin` goes through the daemon, so it pushes to `origin` as
 usual. In wrapper mode, your own `git push origin` still goes straight to the remote.
 
+- `writ init` refuses an `origin` it can't send through the daemon whole. That is one with a
+  push URL of its own, with several URLs, or with a token or password in its URL. It names the
+  command that fixes each. Keep a token in a credential helper, not in the URL.
+- In wrapper mode it also refuses a `writ` remote of your own: rename it first.
+- Whole-repo mode is refused in a worktree made with `git worktree add`. Its config is the one
+  your own checkout reads too. Give the agent a clone of its own instead.
 - `writ init --undo` reverts either mode exactly.
 - One wiring per clone: undo it before switching modes.
 - For one agent at a folder of repositories, run `writ init` in the folder, with no repo

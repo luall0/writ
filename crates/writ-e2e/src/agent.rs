@@ -166,17 +166,23 @@ impl Agent {
         self.read(&format!(".writ/sessions/{lease}/{file}"))
     }
 
-    /// Clones `repo` from Forgejo into `dir`, with the operator's own access (an HTTP URL
-    /// with the operator's token): the clone a person has before wiring it.
+    /// Clones `repo` from Forgejo into `dir`, with the operator's own access: the clone a
+    /// person has before wiring it. The token is kept out of `origin`'s URL, in a credential
+    /// helper of the clone's own, as `writ init` asks (it refuses an origin holding one).
     pub fn clone_from_forgejo(&self, stack: &Stack, repo: &str, dir: &str) {
-        let url = format!(
-            "{}/{OWNER}/{repo}.git",
-            BASE.replace(
-                "http://",
-                &format!("http://{OWNER}:{}@", stack.forgejo.token)
-            )
+        let plain = format!("{BASE}/{OWNER}/{repo}.git");
+        let url = plain.replace(
+            "http://",
+            &format!("http://{OWNER}:{}@", stack.forgejo.token),
         );
-        self.ok(&format!("git clone -q {url} {dir}"));
+        let helper = format!(
+            "!f() {{ echo username={OWNER}; echo password={}; }}; f",
+            stack.forgejo.token
+        );
+        self.ok(&format!(
+            "git clone -q {url} {dir} && git -C {dir} remote set-url origin {plain} && git -C \
+             {dir} config credential.helper '{helper}'"
+        ));
     }
 
     /// Runs `script` in `dir` (a clone in the agent's directory).
