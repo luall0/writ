@@ -29,13 +29,62 @@ use crate::{Exit, Paths};
 /// is shown whole instead.
 const MAX_DIFF_CELLS: usize = 4_000_000;
 
+/// A file in force as the daemon showed it, checked against what the connection
+/// authenticated and against itself ([`in_force`]): only that check makes one (its field is
+/// private), and a `writ-admin/2` is only signed over one ([`sign_applied`]).
+pub(super) struct ShownInForce(AdminShown);
+
+impl std::ops::Deref for ShownInForce {
+    type Target = AdminShown;
+    fn deref(&self) -> &AdminShown {
+        &self.0
+    }
+}
+
+/// The file `target` in force, from the daemon, refused unless the reply is the one asked for:
+/// the daemon it names is the one the connection authenticated, the target is `target`, and
+/// the text is the one its digest names (the review after M7.6, L-1: a relay answering with
+/// the real daemon's name, version and digest but another text got its own lines signed, the
+/// diff showing only the approver's edit).
+pub(super) async fn in_force(
+    session: &Approvals,
+    target: AdminTarget,
+) -> anyhow::Result<ShownInForce> {
+    let shown: AdminShown = session.call(&Command::AdminShow { target }, b"").await??;
+    checked_in_force(&session.authenticated()?, target, shown)
+}
+
+/// [`in_force`]'s checks on a reply.
+fn checked_in_force(
+    authenticated: &crate::client::Authenticated,
+    target: AdminTarget,
+    shown: AdminShown,
+) -> anyhow::Result<ShownInForce> {
+    authenticated.check_daemon(&shown.daemon)?;
+    if shown.target != target {
+        bail!(
+            "asked for the {target} in force, the daemon answered with its {}: nothing was signed",
+            shown.target
+        );
+    }
+    let digest = writ_core::authority::TextDigest::of(&shown.text);
+    if digest != shown.digest {
+        bail!(
+            "the {target} the daemon sent is not the text its digest names (sha256 {}, the text \
+             sent hashes to {digest}): something changed it on the way, so nothing was signed",
+            shown.digest
+        );
+    }
+    Ok(ShownInForce(shown))
+}
+
 /// `writ admin show <target>`: the text in force on stdout, as is (to edit and apply), its
 /// version and digest on stderr.
 pub async fn show(paths: &Paths, url: &str, target: AdminTarget) -> anyhow::Result<Exit> {
     connect(paths, url)
         .await?
         .run(async |session| {
-            let shown: AdminShown = session.call(&Command::AdminShow { target }, b"").await??;
+            let shown = in_force(session, target).await?;
             eprintln!(
                 "{}: version {} (sha256 {})",
                 shown.target, shown.version, shown.digest
@@ -110,7 +159,7 @@ pub async fn apply(
     connect(paths, url)
         .await?
         .run(async |session| {
-            let shown: AdminShown = session.call(&Command::AdminShow { target }, b"").await??;
+            let shown = in_force(session, target).await?;
             let what = format!("replaced by {}", file.display());
             sign_change(session, signer, &shown, &text, &what, yes).await
         })
@@ -124,7 +173,7 @@ pub async fn apply(
 pub(super) async fn sign_change(
     session: &Approvals,
     signer: &Signer,
-    shown: &AdminShown,
+    shown: &ShownInForce,
     text: &AdminText,
     what: &str,
     yes: bool,
@@ -139,7 +188,7 @@ pub(super) async fn sign_change(
 pub(super) async fn sign_applied(
     session: &Approvals,
     signer: &Signer,
-    shown: &AdminShown,
+    shown: &ShownInForce,
     text: &AdminText,
     what: &str,
     yes: bool,
@@ -235,6 +284,14 @@ pub async fn token(
             let shown: TokenShown = session
                 .call(&Command::TokenShow { id: id.clone() }, b"")
                 .await??;
+            // Before the token is asked for: it is encrypted to what this daemon serves.
+            session.authenticated()?.check_daemon(&shown.daemon)?;
+            if shown.id != *id {
+                bail!(
+                    "asked for token {id}, the daemon answered for {}: nothing was signed",
+                    shown.id
+                );
+            }
             let sealed = {
                 let typed = writ_crypto::passphrase::read(&format!("Token {id}: "), None, false)
                     .map_err(token_error)?;
@@ -295,17 +352,12 @@ pub async fn token(
         .await
 }
 
-/// `writ admin tls rotate [--backend <name>]` (M7.5): the certificate in force and its key's
-/// backend (`writ admin tls show`'s reply), one signature over the `writ-tls/1` naming it and
-/// the backend the new key is made on (the current one by default), the new certificate's
-/// fingerprint. Reached over HTTPS, the pin is replaced in `tls_pins` (the old certificate
-/// vouched for the reply) and checked with a new connection; over SSH, the line to pin is
-/// `writ admin ca show` (M7.6).
+/// `writ admin ca show` (M7.6): the SSH CA in force, the CAs it replaced still trusted.
 pub async fn ca_show(paths: &Paths, url: &str) -> anyhow::Result<Exit> {
     connect(paths, url)
         .await?
         .run(async |session| {
-            let shown: writ_proto::CaShown = session.call(&Command::CaShow, b"").await??;
+            let shown = ca_in_force(session).await?;
             println!("SSH CA of daemon {}: {}", shown.daemon, shown.fingerprint);
             println!("public key: {}", clean(&shown.public_key));
             println!("backend: {}", clean(&shown.backend));
@@ -340,7 +392,7 @@ pub async fn ca_rotate(
     connect(paths, url)
         .await?
         .run(async |session| {
-            let shown: writ_proto::CaShown = session.call(&Command::CaShow, b"").await??;
+            let shown = ca_in_force(session).await?;
             let backend = backend.unwrap_or(&shown.backend).to_owned();
             if !shown.backends.iter().any(|b| b.name == backend) {
                 let names: Vec<String> = shown.backends.iter().map(|b| clean(&b.name)).collect();
@@ -397,6 +449,28 @@ pub async fn ca_rotate(
         .await
 }
 
+/// The SSH CA in force, from the daemon, refused unless the daemon it names is the one the
+/// connection authenticated and its fingerprint is its public key's.
+async fn ca_in_force(session: &Approvals) -> anyhow::Result<writ_proto::CaShown> {
+    let shown: writ_proto::CaShown = session.call(&Command::CaShow, b"").await??;
+    session.authenticated()?.check_daemon(&shown.daemon)?;
+    let key = writ_crypto::ssh_key::PublicKey::from_openssh(shown.public_key.trim())
+        .map_err(|_| anyhow::anyhow!("the daemon sent a CA key that doesn't read"))?;
+    let fingerprint = writ_crypto::keys::fingerprint(&key);
+    if fingerprint != shown.fingerprint.as_str() {
+        bail!(
+            "the daemon names CA {} but sent the key of {fingerprint}: nothing was signed",
+            shown.fingerprint
+        );
+    }
+    Ok(shown)
+}
+
+/// `writ admin tls rotate [--backend <name>]` (M7.5): the certificate in force and its key's
+/// backend (`writ admin tls show`'s reply), one signature over the `writ-tls/1` naming it and
+/// the backend the new key is made on (the current one by default), the new certificate's
+/// fingerprint. Reached over HTTPS, the pin is replaced in `tls_pins` (the old certificate
+/// vouched for the reply) and checked with a new connection; over SSH, the line to pin is
 /// printed.
 pub async fn tls_rotate(
     paths: &Paths,
@@ -410,6 +484,10 @@ pub async fn tls_rotate(
         .await?
         .run(async |session| {
             let shown: TlsShown = session.call(&Command::TlsShow, b"").await??;
+            let authenticated = session.authenticated()?;
+            authenticated.check_daemon(&shown.daemon)?;
+            // Over HTTPS the certificate in force is the one this connection checked.
+            authenticated.check_certificate(shown.fingerprint.as_str())?;
             let backend = backend.unwrap_or(&shown.backend).to_owned();
             let Some(offered) = shown.backends.iter().find(|b| b.name == backend) else {
                 let names: Vec<String> = shown.backends.iter().map(|b| clean(&b.name)).collect();
@@ -620,6 +698,61 @@ pub fn target(text: &str) -> anyhow::Result<AdminTarget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The review after M7.6 (L-1): a file in force is taken only from the daemon the
+    /// connection authenticated, for the target asked, and as the text its digest names.
+    #[test]
+    fn a_file_in_force_is_checked_against_the_connection_the_target_and_its_digest() {
+        let fingerprint = || -> writ_core::names::KeyFingerprint {
+            let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+            writ_crypto::keys::fingerprint(key.public_key())
+                .parse()
+                .unwrap()
+        };
+        let (daemon, other) = (fingerprint(), fingerprint());
+        let authenticated = crate::client::Authenticated::HostKey(daemon.clone());
+        let text = "approver ssh-ed25519 AAAA\n".to_owned();
+        let shown = |daemon: &writ_core::names::KeyFingerprint, target, text: &str| AdminShown {
+            daemon: daemon.clone(),
+            target,
+            version: 3,
+            digest: writ_core::authority::TextDigest::of("approver ssh-ed25519 AAAA\n"),
+            text: text.to_owned(),
+        };
+        let ok = checked_in_force(
+            &authenticated,
+            AdminTarget::Approvers,
+            shown(&daemon, AdminTarget::Approvers, &text),
+        )
+        .unwrap();
+        assert_eq!(ok.text, text);
+        let refused = |reply| {
+            crate::error_of(checked_in_force(
+                &authenticated,
+                AdminTarget::Approvers,
+                reply,
+            ))
+        };
+        assert!(
+            refused(shown(&other, AdminTarget::Approvers, &text))
+                .starts_with(&format!("the reply names daemon {other}, but the daemon"))
+        );
+        assert_eq!(
+            refused(shown(&daemon, AdminTarget::Readers, &text)),
+            "asked for the approvers in force, the daemon answered with its readers: nothing was \
+             signed"
+        );
+        let altered = format!("{text}eve ssh-ed25519 BBBB\n");
+        assert_eq!(
+            refused(shown(&daemon, AdminTarget::Approvers, &altered)),
+            format!(
+                "the approvers the daemon sent is not the text its digest names (sha256 {}, the \
+                 text sent hashes to {}): something changed it on the way, so nothing was signed",
+                writ_core::authority::TextDigest::of(&text),
+                writ_core::authority::TextDigest::of(&altered)
+            )
+        );
+    }
 
     #[test]
     fn a_diff_shows_the_changed_lines_with_context_cleaned() {

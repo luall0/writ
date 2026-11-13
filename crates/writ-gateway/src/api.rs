@@ -267,9 +267,7 @@ async fn scan(gateway: Gateway, facts: CallerFacts, body: &[u8]) -> (Vec<u8>, Op
                     let key_line = line.split(' ').take(2).collect::<Vec<_>>().join(" ");
                     Some(writ_proto::ScannedKey {
                         key: key_line,
-                        fingerprint: key
-                            .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
-                            .to_string(),
+                        fingerprint: writ_crypto::keys::fingerprint(key),
                     })
                 })
                 .collect();

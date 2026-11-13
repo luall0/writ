@@ -14,6 +14,7 @@ use russh::ChannelMsg;
 use russh::client::{self, Handle};
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use serde::de::DeserializeOwned;
+use writ_core::names::KeyFingerprint;
 use writ_proto::{ApiError, Command};
 
 /// Where the daemon listens: `ssh://[user@]host[:port]`, `unix:<path>` (both SSH), or
@@ -198,6 +199,9 @@ impl client::Handler for Pinned {
 /// An authenticated connection to the daemon.
 pub struct Session {
     handle: Handle<Pinned>,
+    /// The host key the daemon proved it holds: the pinned one, the only key the handshake
+    /// takes.
+    host_key: PublicKey,
 }
 
 /// What a command printed, and how it exited.
@@ -224,7 +228,9 @@ impl Session {
             inactivity_timeout: None,
             ..Default::default()
         });
-        let handler = Pinned { expected };
+        let handler = Pinned {
+            expected: expected.clone(),
+        };
         let refused = || format!("cannot connect to the daemon at {endpoint:?}");
         let mut handle = match endpoint {
             Endpoint::Tcp { host, port } => {
@@ -251,7 +257,17 @@ impl Session {
         if !auth.success() {
             bail!("the daemon refused the connection");
         }
-        Ok(Self { handle })
+        Ok(Self {
+            handle,
+            host_key: expected,
+        })
+    }
+
+    /// The daemon's name as this connection authenticated it: its host key's fingerprint.
+    pub fn daemon(&self) -> anyhow::Result<KeyFingerprint> {
+        writ_crypto::keys::fingerprint(&self.host_key)
+            .parse()
+            .map_err(|e| anyhow::anyhow!("the daemon's host key: {e}"))
     }
 
     /// Ends the connection politely (SSH disconnect), and waits a moment for it to go out.
@@ -332,6 +348,52 @@ impl Session {
     }
 }
 
+/// What a connection to the approval API authenticated the daemon by: what the client may
+/// name in a document it signs (the review after M7.6, L-1). In local mode the pins and the
+/// endpoint are files of the user every agent runs as: whatever answers is checked against
+/// the key it proved it holds, never taken at its word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Authenticated {
+    /// Over SSH: the fingerprint of the host key that matched the pin, which is how the
+    /// daemon names itself in every signed document ([`writ_crypto::keys::fingerprint`]).
+    HostKey(KeyFingerprint),
+    /// Over HTTPS: the fingerprint of the TLS certificate that matched the pin. The daemon
+    /// names itself by its SSH host key, which an HTTPS connection never sees: the name in a
+    /// reply can't be checked here (a gap, said in the clients' architecture page), only
+    /// what names the certificate.
+    Certificate(String),
+}
+
+impl Authenticated {
+    /// Refuses a reply naming `named` as the daemon when the connection authenticated
+    /// another: called before anything of that reply is shown, asked or signed.
+    pub fn check_daemon(&self, named: &KeyFingerprint) -> anyhow::Result<()> {
+        match self {
+            Self::HostKey(authenticated) if authenticated == named => Ok(()),
+            Self::HostKey(authenticated) => bail!(
+                "the reply names daemon {named}, but the daemon that answered holds host key \
+                 {authenticated}, the key pinned for this address: it is not the daemon it says \
+                 it is (something stands between this client and the daemon), so nothing was \
+                 signed"
+            ),
+            Self::Certificate(_) => Ok(()),
+        }
+    }
+
+    /// Refuses a reply naming `named` as the TLS certificate in force when this connection
+    /// authenticated another one over HTTPS (over SSH there is none to compare).
+    pub fn check_certificate(&self, named: &str) -> anyhow::Result<()> {
+        match self {
+            Self::Certificate(authenticated) if authenticated != named => bail!(
+                "the reply names certificate {named} as the one in force, but the daemon that \
+                 answered showed {authenticated}, the one pinned for this address: nothing was \
+                 signed"
+            ),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// A connection to the approval API, over SSH or HTTPS: the same commands and replies.
 pub enum Approvals {
     Ssh(Session),
@@ -363,6 +425,14 @@ impl Approvals {
                 .await?,
             )),
         }
+    }
+
+    /// What this connection authenticated the daemon by ([`Authenticated`]).
+    pub fn authenticated(&self) -> anyhow::Result<Authenticated> {
+        Ok(match self {
+            Self::Ssh(session) => Authenticated::HostKey(session.daemon()?),
+            Self::Https(client) => Authenticated::Certificate(client.pin().to_owned()),
+        })
     }
 
     /// Ends the connection (an SSH disconnect; HTTPS connections close after each call).
@@ -520,6 +590,44 @@ mod tests {
         );
         assert_eq!(tcp("h", 2222).known_hosts_name(), "[h]:2222");
         assert_eq!(tcp("h", 22).known_hosts_name(), "h");
+    }
+
+    /// The review after M7.6 (L-1): what a reply names is checked against what the connection
+    /// authenticated, the right daemon taken, any other refused with the reason.
+    #[test]
+    fn a_reply_naming_another_daemon_than_the_one_authenticated_is_refused() {
+        let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+        let other = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+        let name = |k: &PrivateKey| -> KeyFingerprint {
+            writ_crypto::keys::fingerprint(k.public_key())
+                .parse()
+                .unwrap()
+        };
+        let (mine, theirs) = (name(&key), name(&other));
+        let authenticated = Authenticated::HostKey(mine.clone());
+        authenticated.check_daemon(&mine).unwrap();
+        assert_eq!(
+            crate::error_of(authenticated.check_daemon(&theirs)),
+            format!(
+                "the reply names daemon {theirs}, but the daemon that answered holds host key \
+                 {mine}, the key pinned for this address: it is not the daemon it says it is \
+                 (something stands between this client and the daemon), so nothing was signed"
+            )
+        );
+        // No certificate over SSH: nothing to compare.
+        authenticated.check_certificate("SHA256:anything").unwrap();
+        // Over HTTPS: the certificate named must be the one pinned; the name can't be checked.
+        let pin = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+        let https = Authenticated::Certificate(pin.to_owned());
+        https.check_certificate(pin).unwrap();
+        assert_eq!(
+            crate::error_of(https.check_certificate("SHA256:other")),
+            format!(
+                "the reply names certificate SHA256:other as the one in force, but the daemon that \
+                 answered showed {pin}, the one pinned for this address: nothing was signed"
+            )
+        );
+        https.check_daemon(&theirs).unwrap();
     }
 
     #[test]

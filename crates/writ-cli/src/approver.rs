@@ -161,6 +161,18 @@ async fn fetch_reviewed(session: &Approvals, id: &TicketId) -> anyhow::Result<Re
         }
         None => None,
     };
+    if let Some((relation, previous)) = &previous {
+        follows(&submitted, *relation, previous)?;
+    }
+    if let Some((_, original)) = &renewal
+        && (submitted.text.renews.is_none() || original.text.renews.is_some())
+    {
+        bail!(
+            "the daemon sent ticket {} as the original of a chain ticket {id} doesn't continue: \
+             not signing it",
+            original.id
+        );
+    }
     Ok(Reviewed {
         submitted,
         state: shown.state,
@@ -168,6 +180,36 @@ async fn fetch_reviewed(session: &Approvals, id: &TicketId) -> anyhow::Result<Re
         renewal,
         others: shown.others,
     })
+}
+
+/// Refuses a ticket shown as the one `submitted` follows when it isn't (the review after
+/// M7.6, L-1: what the screen compares the ticket with comes from the reply, so it must be the
+/// ticket the submitted one names). An amendment or a renewal follows the terms in force of
+/// the lease it names: that lease's own ticket, or an amendment of it; a revision follows the
+/// refused ticket it names.
+fn follows(submitted: &Ticket, relation: Relation, previous: &Ticket) -> anyhow::Result<()> {
+    let lease_terms =
+        |lease: &TicketId| &previous.id == lease || previous.text.amends.as_ref() == Some(lease);
+    let ok = match (
+        relation,
+        &submitted.text.amends,
+        &submitted.text.renews,
+        &submitted.text.revises,
+    ) {
+        (Relation::Amends, Some(lease), _, _) => lease_terms(lease),
+        (Relation::Renews, None, Some(lease), _) => lease_terms(lease),
+        // The daemon's fallback when the lease named isn't found: the refused ticket.
+        (Relation::Revises, _, _, Some(refused)) => &previous.id == refused,
+        _ => false,
+    };
+    if !ok {
+        bail!(
+            "the daemon sent ticket {} as the one {} follows, which it doesn't: not signing it",
+            previous.id,
+            submitted.id
+        );
+    }
+    Ok(())
 }
 
 /// The trusted display of what is about to be signed: the ticket (narrowed), what changed
@@ -341,6 +383,8 @@ pub async fn unseal(paths: &Paths, url: &str, signer: &Signer) -> anyhow::Result
             let Some(boot) = info.sealed else {
                 bail!("the daemon is not sealed: there is nothing to unseal");
             };
+            // Before the passphrase is asked: it goes to the daemon this one authenticated.
+            session.authenticated()?.check_daemon(&boot.daemon)?;
             println!(
                 "Daemon {} is sealed (start {}).",
                 boot.daemon,
@@ -409,4 +453,69 @@ pub async fn revoke(
             Ok(Exit::Ok)
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ticket of the shared fixture, with the links given.
+    fn ticket(
+        id: &str,
+        amends: Option<&str>,
+        renews: Option<&str>,
+        revises: Option<&str>,
+    ) -> Ticket {
+        const FULL: &[u8] = include_bytes!("../../writ-core/tests/fixtures/ticket-full.json");
+        let mut ticket = Ticket::from_canonical(FULL).unwrap();
+        ticket.id = id.parse().unwrap();
+        ticket.text.amends = amends.map(|i| i.parse().unwrap());
+        ticket.text.renews = renews.map(|i| i.parse().unwrap());
+        ticket.text.revises = revises.map(|i| i.parse().unwrap());
+        ticket
+    }
+
+    /// The review after M7.6 (L-1): what `writ sign` compares a ticket with must be the
+    /// ticket it names, by the daemon's own rule; any other is refused before anything shows.
+    #[test]
+    fn a_ticket_shown_as_the_one_followed_must_be_the_one_named() {
+        const LEASE: &str = "wrt_01JD8X0000000000000000000A";
+        const OTHER: &str = "wrt_01JD8X0000000000000000000B";
+        const NEW: &str = "wrt_01JD8X0000000000000000000C";
+        const AMENDMENT: &str = "wrt_01JD8X0000000000000000000D";
+        let lease = ticket(LEASE, None, None, None);
+        let amended = ticket(AMENDMENT, Some(LEASE), None, None);
+        let other = ticket(OTHER, None, None, None);
+        let amends = ticket(NEW, Some(LEASE), None, None);
+        let renews = ticket(NEW, None, Some(LEASE), None);
+        let revises = ticket(NEW, None, None, Some(LEASE));
+        for (submitted, relation, previous) in [
+            (&amends, Relation::Amends, &lease),
+            (&amends, Relation::Amends, &amended),
+            (&renews, Relation::Renews, &lease),
+            (&renews, Relation::Renews, &amended),
+            (&revises, Relation::Revises, &lease),
+        ] {
+            follows(submitted, relation, previous).unwrap();
+        }
+        for (submitted, relation, previous) in [
+            (&amends, Relation::Amends, &other),
+            (&amends, Relation::Renews, &lease),
+            (&renews, Relation::Amends, &lease),
+            (&renews, Relation::Renews, &other),
+            (&revises, Relation::Revises, &other),
+            (&revises, Relation::Revises, &amended),
+            (&other, Relation::Revises, &lease),
+        ] {
+            assert_eq!(
+                crate::error_of(follows(submitted, relation, previous)),
+                format!(
+                    "the daemon sent ticket {} as the one {} follows, which it doesn't: not \
+                     signing it",
+                    previous.id, submitted.id
+                ),
+                "{relation:?}"
+            );
+        }
+    }
 }

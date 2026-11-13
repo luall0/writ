@@ -1,4 +1,5 @@
-//! Key generation for the software backend and tests, and the system's random source.
+//! Key generation for the software backend and tests, the system's random source, and how a
+//! public key is named ([`fingerprint`]).
 //!
 //! Nothing here panics when the system's random source fails: the bytes are fetched fallibly
 //! first, and key generation draws only from those bytes ([`FallibleRng`]). A failure is an
@@ -31,6 +32,15 @@ impl KeyKind {
 /// Fills `buf` from the system's random source.
 pub(crate) fn fill_random(buf: &mut [u8]) -> Result<()> {
     SysRng.try_fill_bytes(buf).map_err(|_| CryptoError::Random)
+}
+
+/// How Writ names a public key: its SHA-256 fingerprint, `SHA256:<base64>`, as OpenSSH prints
+/// it. A daemon is named by its SSH host key's, in every document an approver signs: the
+/// daemon names itself with this function, and `writ` names the host key it authenticated
+/// with it, so the two compare (the review after M7.6, L-1). Host keys a scan found are shown
+/// by it too (U-7).
+pub fn fingerprint(key: &ssh_key::PublicKey) -> String {
+    key.fingerprint(ssh_key::HashAlg::Sha256).to_string()
 }
 
 /// `N` random bytes from the system's random source.

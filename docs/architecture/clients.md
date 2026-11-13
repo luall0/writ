@@ -27,7 +27,9 @@ an agent can write it): `WRIT_URL` (agents' listener,
 is pinned; `writd host-key` prints it), `WRIT_TLS_PINS` (default `~/.writ/tls_pins`, lines
 `[host]:port SHA256:…` pinning the HTTPS certificate; `writd tls-fingerprint` prints it) and
 `WRIT_READER` (default `~/.writ/reader`: the key the approval API lets in; `writ reader
-[<name>]` makes it on first use and prints the line for the daemon's `readers` file),
+[<name>]` makes it on first use and prints the line for the daemon's `readers` file; before
+`writ` signs anything a reply named, it checks the reply against what the connection
+authenticated: [what `writ` checks](approvals.md#reaching-the-daemon)),
 `WRIT_SESSION` (the lease an agent works under: [the session](#which-session-a-command-uses)),
 `WRIT_RUN_PID` (set by `writ run`: [the session binding](#binding-a-lease-to-its-session)), and
 `WRIT_SSH_KEYGEN` (the ssh-keygen `writ sign` runs, an absolute path; default

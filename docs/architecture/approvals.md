@@ -366,6 +366,34 @@ commands, bodies and replies ([Q29](../decisions.md)):
 
 `writ` picks the transport from `WRIT_APPROVAL_URL` (`ssh://…`, `unix:…` or `https://…`).
 
+**What `writ` checks before it signs** (the review after M7.6, L-1). In local mode the pins,
+the reader key and the settings are files of the user every agent runs as, so an agent can
+point `writ` at a relay of its own that reaches the daemon with the reader key: `writ`
+names in a signed document only what its connection authenticated or what it computed
+itself, never a reply's word for it.
+- **The daemon:** over SSH, the daemon a reply names (`daemon` in `AdminShown`, `TokenShown`,
+  `TlsShown`, `CaShown`, `ScanNonce`, and the sealed boot `writ unseal` reads) must be the
+  fingerprint of the host key the connection checked against its pin
+  (`writ_crypto::keys::fingerprint`, the function the daemon names itself with); any other is
+  refused before anything is shown, asked (a passphrase, a token) or signed. Over HTTPS the
+  connection authenticates the TLS certificate, never the host key the daemon names itself
+  by: the name can't be checked there (a gap,
+  [security.md's known gaps](../security.md#known-gaps)); what names the certificate (`writ
+  admin tls rotate`'s `replaces`) must be the pinned one.
+- **A text and its digest:** the file in force an admin change replaces must hash to the
+  digest its reply names (and be the file asked for), whichever command built the change
+  (`writ admin apply`, `set`, `add`, `remove`, the guided flows, `key rotate`, `auto-unseal`);
+  a CA's fingerprint must be its public key's; a scan's fingerprints are computed by `writ`
+  from the keys it pins, for the host asked (U-7).
+- **`writ sign`:** the ticket shown as the one a ticket follows (the refused one it revises,
+  the terms in force of the lease it amends or renews) must be the one it names, and a
+  renewal's original the root of a chain. The source's other leases are the daemon's
+  context, shown as it sends them: nothing a client can check.
+
+What a relay that answers in its own name can still do (its host key pinned, its replies
+naming itself) is the threat model's residual risk for local mode: it receives what is sent
+to it, never a document another daemon takes.
+
 **Only readers reach the API.** The reader key is an Ed25519 client key `writ reader`
 generates on the approver's machine (`~/.writ/reader`, 0600) and prints as a line for the
 daemon's `readers` file (`<name> ssh-ed25519 …`). It is never the approval key: Secretive's

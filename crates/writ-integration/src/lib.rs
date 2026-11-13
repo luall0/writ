@@ -12,6 +12,7 @@
 //! - [`https_remote`]: the same repositories over HTTPS with a token (`git http-backend`).
 //! - [`proxy`]: a SOCKS5 or HTTP CONNECT proxy in front of them, which alone resolves their name.
 //! - [`clone`]: an agent's clone of `demo`, and plain `git` and `writ` run in it.
+//! - [`relay`]: a relay in front of the daemon's approval listener, with its own host key.
 //!
 //! Scenarios never touch the user's `~/.ssh`, git configuration or ssh-agent: `HOME`,
 //! `GIT_CONFIG_*` and `SSH_AUTH_SOCK` are always set to throwaway values.
@@ -35,6 +36,7 @@ pub mod gateway;
 pub mod https_remote;
 pub mod process;
 pub mod proxy;
+pub mod relay;
 pub mod remote;
 pub mod telegram;
 pub mod terminal;

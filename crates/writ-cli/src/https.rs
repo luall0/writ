@@ -108,6 +108,8 @@ pub fn repin(pins: &Path, name: &str, old: &str, new: &str) -> anyhow::Result<()
 pub struct Client {
     host: String,
     port: u16,
+    /// The certificate fingerprint every connection is checked against.
+    pin: String,
     connector: tokio_rustls::TlsConnector,
 }
 
@@ -122,8 +124,15 @@ impl Client {
         Ok(Self {
             host: host.to_owned(),
             port,
+            pin: fingerprint,
             connector: tokio_rustls::TlsConnector::from(Arc::new(config)),
         })
+    }
+
+    /// The certificate fingerprint every connection of this client is checked against: the
+    /// certificate the daemon showed, since a handshake with any other one fails.
+    pub fn pin(&self) -> &str {
+        &self.pin
     }
 
     /// Runs an approval command and decodes its reply, like `Session::call` over SSH.

@@ -372,6 +372,7 @@ async fn scanned(
     pinned: &[String],
 ) -> anyhow::Result<Option<Vec<String>>> {
     let nonce: ScanNonce = session.call(&Command::ScanNonce, b"").await??;
+    session.authenticated()?.check_daemon(&nonce.daemon)?;
     let document = Scan::new(nonce.daemon, host.clone(), port, nonce.nonce)
         .through(proxy.cloned())
         .canonical_bytes()?;
@@ -389,6 +390,7 @@ async fn scanned(
     let found: Scanned = session
         .call(&Command::Scan, &writ_proto::encode_body(&request)?)
         .await??;
+    let found = checked_scan(host, port, found)?;
     println!(
         "{} offered these keys: compare each fingerprint with the one the remote publishes \
          (never trust a scan alone).",
@@ -423,6 +425,43 @@ async fn scanned(
         return Ok(None);
     }
     Ok(Some(found.keys.into_iter().map(|k| k.key).collect()))
+}
+
+/// A scan's answer as the approver compares it (the review after M7.6, U-7): for the host and
+/// port asked, each fingerprint computed here from the key that gets pinned, never taken from
+/// the reply; a reply whose host or fingerprints say otherwise is refused, nothing pinned.
+fn checked_scan(host: &HostName, port: u16, found: Scanned) -> anyhow::Result<Scanned> {
+    let asked = UpstreamHost::of(host.as_str(), port)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .to_string();
+    if found.host != asked {
+        bail!(
+            "asked to scan {}, the daemon answered for {}: nothing pinned",
+            clean(&asked),
+            clean(&found.host)
+        );
+    }
+    let mut keys = Vec::with_capacity(found.keys.len());
+    for key in found.keys {
+        let public = writ_crypto::ssh_key::PublicKey::from_openssh(&key.key).map_err(|_| {
+            anyhow::anyhow!(
+                "the scan sent a key that doesn't read ({}): nothing pinned",
+                clean(&key.key)
+            )
+        })?;
+        let fingerprint = writ_crypto::keys::fingerprint(&public);
+        if fingerprint != key.fingerprint {
+            bail!(
+                "the scan names a key {} whose fingerprint is {fingerprint}: nothing pinned",
+                clean(&key.fingerprint)
+            );
+        }
+        keys.push(writ_proto::ScannedKey {
+            key: key.key,
+            fingerprint,
+        });
+    }
+    Ok(Scanned { host: asked, keys })
 }
 
 /// The keys to pin for `host` on `port`, as `keys=…`: scanned (on a terminal) and compared.
@@ -1080,6 +1119,49 @@ fn check_backend(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The review after M7.6 (U-7): what the approver compares is computed here from the keys
+    /// that get pinned, for the host asked; a reply that says otherwise is refused.
+    #[test]
+    fn a_scan_is_shown_by_fingerprints_of_the_keys_pinned_for_the_host_asked() {
+        let key = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+        let line = key.public_key().to_openssh().unwrap();
+        let line: String = line.split(' ').take(2).collect::<Vec<_>>().join(" ");
+        let fingerprint = writ_crypto::keys::fingerprint(key.public_key());
+        let other = writ_crypto::keys::generate(writ_crypto::keys::KeyKind::Ed25519).unwrap();
+        let wrong = writ_crypto::keys::fingerprint(other.public_key());
+        let host = HostName::try_from("git.example".to_owned()).unwrap();
+        let reply = |host: &str, fingerprint: &str| Scanned {
+            host: host.to_owned(),
+            keys: vec![writ_proto::ScannedKey {
+                key: line.clone(),
+                fingerprint: fingerprint.to_owned(),
+            }],
+        };
+        let checked = checked_scan(&host, 2222, reply("[git.example]:2222", &fingerprint)).unwrap();
+        assert_eq!(checked.host, "[git.example]:2222");
+        assert_eq!(checked.keys[0].fingerprint, fingerprint);
+        assert_eq!(
+            crate::error_of(checked_scan(
+                &host,
+                2222,
+                reply("git.example", &fingerprint)
+            )),
+            "asked to scan [git.example]:2222, the daemon answered for git.example: nothing pinned"
+        );
+        assert_eq!(
+            crate::error_of(checked_scan(&host, 22, reply("git.example", &wrong))),
+            format!(
+                "the scan names a key {wrong} whose fingerprint is {fingerprint}: nothing pinned"
+            )
+        );
+        let mut unreadable = reply("git.example", &fingerprint);
+        unreadable.keys[0].key = "ssh-ed25519 !!!".to_owned();
+        assert_eq!(
+            crate::error_of(checked_scan(&host, 22, unreadable)),
+            "the scan sent a key that doesn't read (ssh-ed25519 !!!): nothing pinned"
+        );
+    }
 
     #[test]
     fn a_backend_is_checked_against_what_the_daemon_has_and_makes() {

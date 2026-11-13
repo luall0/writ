@@ -458,10 +458,9 @@ fn run(path: &Path) -> anyhow::Result<()> {
             Start::Open(boot, opened) => (boot, Some(*opened)),
         };
         let host_public = boot.host.public_key().clone();
-        let daemon: KeyFingerprint = host_public
-            .fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
-            .to_string()
-            .parse()?;
+        // The daemon's name in every document an approver signs: what `writ` computes from
+        // the host key it authenticated, with the same function.
+        let daemon: KeyFingerprint = writ_crypto::keys::fingerprint(&host_public).parse()?;
         let tls = Arc::new(platform::tls_identity(&config, boot.tls)?);
         log_access(&loaded.approvers, &loaded.readers);
         let readers = writ_crypto::readers::ReaderSet::new(loaded.readers);

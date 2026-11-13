@@ -16,7 +16,7 @@ use writ_core::authority::AdminText;
 use writ_core::config::edit::FieldEdit;
 use writ_proto::Listing;
 
-use super::admin::sign_change;
+use super::admin::{ShownInForce, in_force, sign_change};
 use super::{Signer, connect};
 use crate::client::Approvals;
 use crate::display::clean;
@@ -25,15 +25,8 @@ use crate::{Exit, Paths};
 /// The policy in force, as the daemon holds it, and parsed for showing.
 pub(super) async fn policy_in_force(
     session: &Approvals,
-) -> anyhow::Result<(AdminShown, PolicyConfig)> {
-    let shown: AdminShown = session
-        .call(
-            &Command::AdminShow {
-                target: writ_core::authority::AdminTarget::Policy,
-            },
-            b"",
-        )
-        .await??;
+) -> anyhow::Result<(ShownInForce, PolicyConfig)> {
+    let shown = in_force(session, writ_core::authority::AdminTarget::Policy).await?;
     // The daemon's own `min_ttl` isn't known here: the lowest any daemon takes, so a policy
     // in force always reads (the daemon checked it against its own).
     let policy = PolicyConfig::from_yaml_with_min_ttl(&shown.text, writ_core::fit::MIN_TTL_FLOOR)
@@ -336,10 +329,7 @@ fn details(policy: &PolicyConfig, section: Section, name: &str, key: Option<&Key
             {
                 for key in pinned {
                     let fingerprint = writ_crypto::ssh_key::PublicKey::from_openssh(key.as_str())
-                        .map(|k| {
-                            k.fingerprint(writ_crypto::ssh_key::HashAlg::Sha256)
-                                .to_string()
-                        })
+                        .map(|k| writ_crypto::keys::fingerprint(&k))
                         .unwrap_or_else(|_| "(not a key)".to_owned());
                     out.push_str(&format!(
                         "fingerprint: {} {}\n",
