@@ -519,3 +519,214 @@ fn a_hook_git_cannot_run_refuses_every_push() {
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 }
+
+/// `git-receive-pack` on the gateway (the daemon's real git), fed `input` by hand as the
+/// client's side of the protocol, with the first session's certificate.
+fn receive_pack_by_hand(gateway: &GitGateway, input: Vec<u8>) -> Output {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let target = gateway.url.strip_prefix("ssh://").unwrap();
+    let (user_host, port) = target.rsplit_once(':').unwrap();
+    let ssh = gateway.ssh_command(&gateway.root().join("keys/session"), true);
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "{ssh} -p {port} {user_host} \"git-receive-pack '/demo.git'\""
+        ))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", gateway.root().join("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    // The daemon may stop reading (that is the point): a refused write is fine.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let out = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    out
+}
+
+/// One pkt-line.
+fn pkt(payload: &[u8]) -> Vec<u8> {
+    let mut line = format!("{:04x}", payload.len() + 4).into_bytes();
+    line.extend_from_slice(payload);
+    line
+}
+
+const ZERO: &str = "0000000000000000000000000000000000000000";
+
+/// Ref commands deleting refs nobody has, `size` bytes in all with their flush (no pack
+/// follows a push that only deletes).
+fn deletions_of(size: usize) -> Vec<u8> {
+    let old = "1".repeat(40);
+    let line = |n: usize, pad: &str| format!("{old} {ZERO} refs/heads/agent/d{pad}{n:06}\n");
+    let mut section = Vec::new();
+    let mut n = 0;
+    while section.len() + 2 * pkt(line(n, "").as_bytes()).len() + 4 <= size {
+        section.extend(pkt(line(n, "").as_bytes()));
+        n += 1;
+    }
+    let left = size - section.len() - 4;
+    let pad = "p".repeat(left - pkt(line(n, "").as_bytes()).len());
+    section.extend(pkt(line(n, &pad).as_bytes()));
+    section.extend(b"0000");
+    assert_eq!(section.len(), size);
+    section
+}
+
+/// The review after M7.6, G-1: receive-pack took in every ref command a client sent (200,000
+/// of them, 61 MB, measured), and handed them all to the hook. The commands are bounded in
+/// bytes now: at the bound they reach the hook (which refuses more than 1,000 updates), one
+/// byte past it receive-pack is killed and the push refused with its reason, logged.
+#[test]
+fn ref_commands_past_their_bound_are_refused_before_git_holds_them() {
+    const MAX: usize = 1 << 20;
+    let (gateway, work) = setup();
+    // At the bound: taken in, decided by the hook.
+    let out = receive_pack_by_hand(&gateway, deletions_of(MAX));
+    assert!(
+        stderr(&out).contains("a push updates from 1 to 1000 refs"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("ref commands are over"),
+        "{}",
+        stderr(&out)
+    );
+    // One byte past it: refused by the gateway, git never holds them.
+    let out = receive_pack_by_hand(&gateway, deletions_of(MAX + 1));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("writ: the push's ref commands are over 1048576 bytes"),
+        "{}",
+        stderr(&out)
+    );
+    // A stream that never ends its commands is cut the same way.
+    let endless: Vec<u8> = (0..30_000)
+        .flat_map(|n| pkt(format!("{} {ZERO} refs/heads/agent/e{n}\n", "1".repeat(40)).as_bytes()))
+        .collect();
+    let out = receive_pack_by_hand(&gateway, endless);
+    assert!(
+        stderr(&out).contains("writ: the push's ref commands are over 1048576 bytes"),
+        "{}",
+        stderr(&out)
+    );
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    let denied = audit_events(&audit, "push", "denied");
+    let over: Vec<_> = denied
+        .iter()
+        .filter(|e| e["reason"] == "the push's ref commands are over 1048576 bytes")
+        .collect();
+    assert_eq!(over.len(), 2, "{denied:?}");
+    // Nothing was left behind holding the mirror: the next push goes through.
+    gateway.commit_signed(&work, "f", "x\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+}
+
+/// A push the gateway refused on its own (its reason, for the agent and as the last `push`
+/// line), git fed by hand: receive-pack reports the hook's refusal and exits 0.
+fn refused_by_the_gateway(gateway: &GitGateway, out: &Output, reason: &str) {
+    assert!(
+        stderr(out).contains(&format!("writ: {reason}")),
+        "expected {reason:?} in:\n{}",
+        stderr(out)
+    );
+    let audit = fs::read_to_string(gateway.root().join("audit.jsonl")).unwrap();
+    let denied = audit_events(&audit, "push", "denied");
+    assert_eq!(denied.last().unwrap()["reason"], reason, "{denied:?}");
+}
+
+/// An empty pack, as git writes one.
+fn empty_pack(gateway: &GitGateway, work: &Path) -> Vec<u8> {
+    let out = gateway
+        .git_command("ssh", work, &["pack-objects", "--stdout", "-q"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    out.stdout
+}
+
+/// The review after M7.6, G-6: git hands its pre-receive hook the `old` id the client wrote,
+/// unchecked; the gateway computed the fast-forward from it, and skipped the case check when
+/// it wasn't null. Each update's `old` must now be the ref's value in the mirror.
+#[test]
+fn an_update_whose_old_id_is_not_the_ref_s_is_refused() {
+    let (gateway, work) = setup();
+    let seed = gateway
+        .git_ok(&work, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    let first = gateway.commit_signed(&work, "f", "1\n");
+    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
+    let pack = empty_pack(&gateway, &work);
+    let by_hand = |old: &str, new: &str, name: &str| {
+        let mut input = pkt(format!("{old} {new} {name}\0report-status\n").as_bytes());
+        input.extend(b"0000");
+        input.extend(&pack);
+        receive_pack_by_hand(&gateway, input)
+    };
+    // A twin in case of agent/x, claimed to exist at the seed: the case check is not skipped.
+    let out = by_hand(&seed, &first, "refs/heads/agent/X");
+    refused_by_the_gateway(
+        &gateway,
+        &out,
+        &format!(
+            "refs/heads/agent/X is absent in the repo, not {seed} as the push says: fetch, then push again"
+        ),
+    );
+    // agent/x, claimed to be at the seed: a fast-forward computed from there is not its own.
+    let out = by_hand(&seed, &first, "refs/heads/agent/x");
+    refused_by_the_gateway(
+        &gateway,
+        &out,
+        &format!(
+            "refs/heads/agent/x is {first} in the repo, not {seed} as the push says: fetch, then push again"
+        ),
+    );
+    assert_eq!(gateway.bare_ref("refs/heads/agent/X"), None);
+    // With its true old id, the same update is decided as usual (here, nothing to move).
+    let out = by_hand(ZERO, &first, "refs/heads/agent/y");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        gateway.bare_ref("refs/heads/agent/y").as_deref(),
+        Some(first.as_str())
+    );
+}
+
+/// The review after M7.6, G-7: a commit only the mirror's notes ref reaches (the daemon's
+/// own, unsigned, after a notes push upstream refused) counted as one the repo had, so a
+/// branch pushed to it took it upstream unsigned. It is a new commit now, checked against
+/// the ledger.
+#[test]
+fn a_commit_only_the_mirror_s_notes_reach_is_checked_like_a_new_one() {
+    let (gateway, work) = setup();
+    let seed = gateway
+        .git_ok(&work, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    // A note in the mirror that upstream lacks.
+    let mirror = gateway.root().join("repos/demo.git");
+    gateway.git_ok(&mirror, &["notes", "add", "-m", "Writ: wrt_x", &seed]);
+    let note = gateway
+        .bare_ref("refs/notes/commits")
+        .expect("the mirror's notes ref");
+    assert_eq!(gateway.upstream_ref("refs/notes/commits"), None);
+    // The agent fetches it from the gateway and pushes a branch to it.
+    gateway.git_ok(&work, &["fetch", "-q", "origin", "refs/notes/commits"]);
+    let out = push(&gateway, &work, &format!("{note}:refs/heads/agent/n"));
+    assert_refused(
+        &gateway,
+        &out,
+        &format!("commit {note} was not signed under this lease"),
+        "unsigned",
+    );
+    assert_eq!(gateway.upstream_ref("refs/heads/agent/n"), None);
+    assert_eq!(gateway.bare_ref("refs/heads/agent/n"), None);
+}

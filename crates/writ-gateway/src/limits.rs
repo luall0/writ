@@ -16,7 +16,9 @@ use zeroize::Zeroizing;
 
 /// Open connections per listener.
 pub(crate) const MAX_CONNECTIONS: usize = 256;
-/// Open connections per source address (all local callers count as one source).
+/// Open connections per source: a network address (its group, an IPv6 /64), or on a Unix
+/// socket the caller process the kernel attested (the review after M7.6, G-2: every local
+/// caller counted as one source, so one agent could hold all of the approver's slots).
 pub(crate) const MAX_CONNECTIONS_PER_SOURCE: usize = 16;
 /// How long a client has to authenticate (SSH) or finish its handshake (TLS).
 pub(crate) const AUTH_DEADLINE: Duration = Duration::from_secs(20);
@@ -48,17 +50,59 @@ const MAX_TRACKED_SOURCES: usize = 4096;
 /// `text` cut to `max` characters (with `…`), for what an unauthenticated peer chose.
 pub(crate) use writ_core::text::shown;
 
+/// Who a connection counts against for [`MAX_CONNECTIONS_PER_SOURCE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SlotSource {
+    /// A network peer: its address's group (an IPv6 /64); `None` for a local caller nothing
+    /// is known of (they all share one share then).
+    Address(Option<IpAddr>),
+    /// A local caller: its process, by pid and generation (a reused pid is another process).
+    Process { pid: u32, generation: u64 },
+}
+
+impl SlotSource {
+    /// The source of a caller: its address when it has one (TCP, unchanged); else the first
+    /// process of its attested chain (a Unix socket); else what the kernel's peer credentials
+    /// say of the process (an approval listener's caller without a chain, L-7); else the one
+    /// shared local source.
+    pub(crate) fn of(
+        facts: &writ_core::caller::CallerFacts,
+        peer: &writ_platform::PeerInfo,
+    ) -> Self {
+        if let Some(address) = facts.source_addr {
+            return Self::Address(Some(writ_core::net::source_group(address)));
+        }
+        if let Some(caller) = facts.process_chain.as_ref().and_then(|chain| chain.first()) {
+            return Self::Process {
+                pid: caller.pid,
+                generation: caller.generation,
+            };
+        }
+        match peer {
+            writ_platform::PeerInfo::Unix {
+                pid: Some(pid),
+                generation,
+                ..
+            } => Self::Process {
+                pid: *pid,
+                generation: generation.unwrap_or(0),
+            },
+            _ => Self::Address(None),
+        }
+    }
+}
+
 /// The connection slots of one listener.
 pub(crate) struct Slots {
     total: Arc<Semaphore>,
-    per_source: Arc<Mutex<HashMap<Option<IpAddr>, usize>>>,
+    per_source: Arc<Mutex<HashMap<SlotSource, usize>>>,
 }
 
 /// A taken slot, given back when the connection ends.
 pub(crate) struct Slot {
     _total: OwnedSemaphorePermit,
-    source: Option<IpAddr>,
-    per_source: Arc<Mutex<HashMap<Option<IpAddr>, usize>>>,
+    source: SlotSource,
+    per_source: Arc<Mutex<HashMap<SlotSource, usize>>>,
 }
 
 impl Drop for Slot {
@@ -87,10 +131,8 @@ impl Slots {
         }
     }
 
-    /// A slot for a connection from `source` (counted by its group: an IPv6 /64), or why
-    /// there is none.
-    pub(crate) fn take(&self, source: Option<IpAddr>) -> Result<Slot, &'static str> {
-        let source = source.map(writ_core::net::source_group);
+    /// A slot for a connection from `source` ([`SlotSource::of`]), or why there is none.
+    pub(crate) fn take(&self, source: SlotSource) -> Result<Slot, &'static str> {
         let total = self
             .total
             .clone()
@@ -103,7 +145,10 @@ impl Slots {
             .map_err(|_| "too many open connections")?;
         let count = counts.entry(source).or_insert(0);
         if *count >= MAX_CONNECTIONS_PER_SOURCE {
-            return Err("too many open connections from this address");
+            return Err(match source {
+                SlotSource::Address(_) => "too many open connections from this address",
+                SlotSource::Process { .. } => "too many open connections from this process",
+            });
         }
         *count = count.saturating_add(1);
         Ok(Slot {
@@ -265,14 +310,15 @@ impl DenialThrottle {
         }
     }
 
-    /// Whether to log this denial now: `Some(n)` with the number of denials not logged since
-    /// the last line (this source's, and any the global budget held back), `None` to only
-    /// count it. Sources are grouped (an IPv6 /64). A poisoned table logs everything.
-    pub(crate) fn admit(&self, source: Option<IpAddr>, kind: &'static str) -> Option<u64> {
-        let suppressed = self.admit_source(source.map(writ_core::net::source_group), kind)?;
+    /// Whether to log this denial now: `Some` with the denials not logged since the last line,
+    /// this source's apart from those the global budget held back (from any source: the
+    /// review after M7.6, G-11, a line credited them all to the source it named), `None` to
+    /// only count it. Sources are grouped (an IPv6 /64). A poisoned table logs everything.
+    pub(crate) fn admit(&self, source: Option<IpAddr>, kind: &'static str) -> Option<Suppressed> {
+        let own = self.admit_source(source.map(writ_core::net::source_group), kind)?;
         // poisoned: every line is logged then (fail toward the audit log, never silence).
         let Ok(mut global) = self.global.lock() else {
-            return Some(suppressed);
+            return Some(Suppressed { own, others: 0 });
         };
         let now = Instant::now();
         if now.duration_since(global.started) >= DENIAL_WINDOW {
@@ -280,13 +326,16 @@ impl DenialThrottle {
             global.logged = 0;
         }
         if global.logged >= MAX_DENIAL_LINES {
-            global.suppressed = global
-                .suppressed
-                .saturating_add(suppressed.saturating_add(1));
+            // Held back: this one and the source's count go to the next line logged, from
+            // whatever source, as others'.
+            global.suppressed = global.suppressed.saturating_add(own.saturating_add(1));
             return None;
         }
         global.logged = global.logged.saturating_add(1);
-        Some(suppressed.saturating_add(std::mem::take(&mut global.suppressed)))
+        Some(Suppressed {
+            own,
+            others: std::mem::take(&mut global.suppressed),
+        })
     }
 
     fn admit_source(&self, source: Option<IpAddr>, kind: &'static str) -> Option<u64> {
@@ -364,12 +413,28 @@ impl DenialThrottle {
     }
 }
 
-/// The reason to log for a coalesced denial.
-pub(crate) fn with_suppressed(reason: String, suppressed: u64) -> String {
-    if suppressed == 0 {
-        reason
-    } else {
-        format!("{reason} (and {suppressed} more from this address since the last line)")
+/// The denials a line logged now stands for besides its own ([`DenialThrottle::admit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Suppressed {
+    /// This source's, of this kind, since its last line.
+    pub own: u64,
+    /// Those the global budget held back, or a full table carried, from any source.
+    pub others: u64,
+}
+
+/// The reason to log for a coalesced denial: the source's own count apart from the others'.
+pub(crate) fn with_suppressed(reason: String, suppressed: Suppressed) -> String {
+    match (suppressed.own, suppressed.others) {
+        (0, 0) => reason,
+        (own, 0) => format!("{reason} (and {own} more from this address since the last line)"),
+        (0, others) => format!(
+            "{reason} (and {others} more from any address held back by the line budget since the \
+             last line)"
+        ),
+        (own, others) => format!(
+            "{reason} (and {own} more from this address, and {others} from any address held \
+             back by the line budget, since the last line)"
+        ),
     }
 }
 
@@ -381,53 +446,160 @@ mod tests {
         Some(text.parse().unwrap())
     }
 
+    /// A TCP peer's slot source, as [`SlotSource::of`] makes it.
+    fn tcp(text: &str) -> SlotSource {
+        let address: IpAddr = text.parse().unwrap();
+        let facts = writ_core::caller::CallerFacts {
+            source_addr: Some(address),
+            process_chain: None,
+        };
+        SlotSource::of(
+            &facts,
+            &writ_platform::PeerInfo::Tcp {
+                remote: std::net::SocketAddr::new(address, 40_000),
+            },
+        )
+    }
+
     #[test]
     fn each_source_gets_its_share_and_the_listener_its_total() {
         let slots = Slots::with(MAX_CONNECTIONS_PER_SOURCE + 1);
         let a: Vec<Slot> = (0..MAX_CONNECTIONS_PER_SOURCE)
-            .map(|_| slots.take(ip("10.0.0.1")).unwrap())
+            .map(|_| slots.take(tcp("10.0.0.1")).unwrap())
             .collect();
         assert_eq!(
-            slots.take(ip("10.0.0.1")).err(),
+            slots.take(tcp("10.0.0.1")).err(),
             Some("too many open connections from this address")
         );
-        let b = slots.take(ip("10.0.0.2")).unwrap();
+        let b = slots.take(tcp("10.0.0.2")).unwrap();
         assert_eq!(
-            slots.take(ip("10.0.0.3")).err(),
+            slots.take(tcp("10.0.0.3")).err(),
             Some("too many open connections")
         );
         drop(b);
         drop(a);
         // Given back when the connections end.
-        assert!(slots.take(ip("10.0.0.1")).is_ok());
+        assert!(slots.take(tcp("10.0.0.1")).is_ok());
         assert!(slots.per_source.lock().unwrap().is_empty());
+    }
+
+    /// The review after M7.6, G-2: on a Unix socket every caller was the one source `None`, so
+    /// one local process holding 16 connections shut the approver out. Each attested process
+    /// now has its own share, under the listener's total; a pid reused is another process.
+    #[test]
+    fn on_a_unix_socket_each_caller_process_gets_its_own_share() {
+        use writ_core::caller::{CallerFacts, ProcessRef};
+        let unix = |pid: u32, generation: u64| {
+            let facts = CallerFacts {
+                source_addr: None,
+                process_chain: Some(vec![
+                    ProcessRef {
+                        pid,
+                        generation,
+                        executable: "/usr/bin/agent".into(),
+                        code_identity: None,
+                        unbindable: None,
+                    },
+                    ProcessRef {
+                        pid: 1,
+                        generation: 1,
+                        executable: "/sbin/launchd".into(),
+                        code_identity: None,
+                        unbindable: None,
+                    },
+                ]),
+            };
+            let peer = writ_platform::PeerInfo::Unix {
+                uid: 501,
+                gid: 20,
+                pid: Some(pid),
+                generation: Some(generation),
+            };
+            SlotSource::of(&facts, &peer)
+        };
+        assert_eq!(
+            unix(100, 7),
+            SlotSource::Process {
+                pid: 100,
+                generation: 7
+            }
+        );
+        let slots = Slots::with(2 * MAX_CONNECTIONS_PER_SOURCE + 1);
+        let agent: Vec<Slot> = (0..MAX_CONNECTIONS_PER_SOURCE)
+            .map(|_| slots.take(unix(100, 7)).unwrap())
+            .collect();
+        // At its share, and one past it.
+        assert_eq!(
+            slots.take(unix(100, 7)).err(),
+            Some("too many open connections from this process")
+        );
+        // The approver's `writ`, another process of the same user, still gets in; so does a
+        // process that got the agent's pid back (another generation).
+        let approver: Vec<Slot> = (0..MAX_CONNECTIONS_PER_SOURCE)
+            .map(|_| slots.take(unix(200, 1)).unwrap())
+            .collect();
+        let reused = slots.take(unix(100, 8)).unwrap();
+        // The listener's total still holds, whatever the processes.
+        assert_eq!(
+            slots.take(unix(300, 1)).err(),
+            Some("too many open connections")
+        );
+        drop((agent, approver, reused));
+        assert!(slots.per_source.lock().unwrap().is_empty());
+
+        // Without a chain (an approval listener whose process reader broke, L-7), the
+        // kernel's peer credentials still name the process; with nothing at all, the callers
+        // share one source, as before.
+        let peer = |pid| writ_platform::PeerInfo::Unix {
+            uid: 501,
+            gid: 20,
+            pid,
+            generation: Some(3),
+        };
+        assert_eq!(
+            SlotSource::of(&CallerFacts::default(), &peer(Some(42))),
+            SlotSource::Process {
+                pid: 42,
+                generation: 3
+            }
+        );
+        assert_eq!(
+            SlotSource::of(&CallerFacts::default(), &peer(None)),
+            SlotSource::Address(None)
+        );
+        // A TCP peer is its address group, whatever else is known.
+        assert_eq!(tcp("10.0.0.1"), SlotSource::Address(ip("10.0.0.1")));
     }
 
     #[tokio::test(start_paused = true)]
     async fn denials_from_one_source_are_coalesced_per_window() {
         let throttle = DenialThrottle::new();
-        assert_eq!(throttle.admit(ip("10.0.0.1"), "cap"), Some(0));
+        let own = |own| Some(Suppressed { own, others: 0 });
+        assert_eq!(throttle.admit(ip("10.0.0.1"), "cap"), own(0));
         assert_eq!(throttle.admit(ip("10.0.0.1"), "cap"), None);
         assert_eq!(throttle.admit(ip("10.0.0.1"), "cap"), None);
         // Another source, or another kind, has its own window.
-        assert_eq!(throttle.admit(ip("10.0.0.2"), "cap"), Some(0));
-        assert_eq!(throttle.admit(ip("10.0.0.1"), "cert"), Some(0));
+        assert_eq!(throttle.admit(ip("10.0.0.2"), "cap"), own(0));
+        assert_eq!(throttle.admit(ip("10.0.0.1"), "cert"), own(0));
         tokio::time::advance(DENIAL_WINDOW - Duration::from_secs(1)).await;
         assert_eq!(throttle.admit(ip("10.0.0.1"), "cap"), None);
         tokio::time::advance(Duration::from_secs(1)).await;
         assert_eq!(
             throttle.admit(ip("10.0.0.1"), "cap"),
-            Some(3),
+            own(3),
             "the count is kept"
         );
         // An IPv6 host is its /64: rotating addresses inside it is one source.
-        assert_eq!(throttle.admit(ip("2001:db8::1"), "cap"), Some(0));
+        assert_eq!(throttle.admit(ip("2001:db8::1"), "cap"), own(0));
         assert_eq!(throttle.admit(ip("2001:db8::2"), "cap"), None);
         assert_eq!(
-            with_suppressed("over the cap".into(), 3),
+            with_suppressed("over the cap".into(), Suppressed { own: 3, others: 0 }),
             "over the cap (and 3 more from this address since the last line)"
         );
-        assert_eq!(with_suppressed("over the cap".into(), 0), "over the cap");
+        assert_eq!(
+            with_suppressed("over the cap".into(), Suppressed { own: 0, others: 0 }),
+            "over the cap"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -440,7 +612,45 @@ mod tests {
         assert_eq!(logged, MAX_DENIAL_LINES as usize, "the global budget holds");
         // In the next window, the next line carries the count of those not logged.
         tokio::time::advance(DENIAL_WINDOW).await;
-        assert_eq!(throttle.admit(source(1_000), "cap"), Some(10));
+        assert_eq!(
+            throttle.admit(source(1_000), "cap"),
+            Some(Suppressed { own: 0, others: 10 }),
+            "the others' count, not this source's"
+        );
+    }
+
+    /// The review after M7.6, G-11: after a flood from many sources, the next line named one
+    /// address with every denial the budget held back. Its own count is now apart.
+    #[tokio::test(start_paused = true)]
+    async fn a_line_counts_its_source_s_denials_apart_from_the_others() {
+        let throttle = DenialThrottle::new();
+        let source = |n: u32| Some(IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + n)));
+        // The budget spent by as many sources, then 5 more held back.
+        for n in 0..MAX_DENIAL_LINES + 5 {
+            throttle.admit(source(n), "cap");
+        }
+        // 10.9.9.9 is denied twice more in its window (counted), then logs in the next one.
+        let quiet = ip("10.9.9.9");
+        tokio::time::advance(DENIAL_WINDOW).await;
+        assert_eq!(
+            throttle.admit(quiet, "cap"),
+            Some(Suppressed { own: 0, others: 5 })
+        );
+        assert_eq!(throttle.admit(quiet, "cap"), None);
+        assert_eq!(throttle.admit(quiet, "cap"), None);
+        tokio::time::advance(DENIAL_WINDOW).await;
+        let suppressed = throttle.admit(quiet, "cap").unwrap();
+        assert_eq!(suppressed, Suppressed { own: 2, others: 0 });
+        assert_eq!(
+            with_suppressed("over the cap".into(), Suppressed { own: 0, others: 5 }),
+            "over the cap (and 5 more from any address held back by the line budget since the \
+             last line)"
+        );
+        assert_eq!(
+            with_suppressed("over the cap".into(), Suppressed { own: 2, others: 5 }),
+            "over the cap (and 2 more from this address, and 5 from any address held back by \
+             the line budget, since the last line)"
+        );
     }
 
     #[test]
@@ -452,10 +662,20 @@ mod tests {
             )))
         };
         let held: Vec<Slot> = (0..u16::try_from(MAX_CONNECTIONS_PER_SOURCE).unwrap())
-            .map(|n| slots.take(addr(n)).unwrap())
+            .map(|n| {
+                slots
+                    .take(SlotSource::Address(
+                        addr(n).map(writ_core::net::source_group),
+                    ))
+                    .unwrap()
+            })
             .collect();
         assert_eq!(
-            slots.take(addr(999)).err(),
+            slots
+                .take(SlotSource::Address(
+                    addr(999).map(writ_core::net::source_group)
+                ))
+                .err(),
             Some("too many open connections from this address"),
             "another address in the same /64"
         );
@@ -578,7 +798,7 @@ mod tests {
         let mut deny = |source: Option<IpAddr>| {
             denials += 1;
             if let Some(more) = throttle.admit(source, "cap") {
-                accounted += 1 + more;
+                accounted += 1 + more.own + more.others;
             }
         };
         // Two denials from each of a table's worth of sources, then one from a new source,

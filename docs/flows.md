@@ -215,9 +215,11 @@ When the work is done (or stops for good), the agent runs `writ close --summary 
 session key (as user `writ`, like `writ wait`; to another session the lease doesn't exist).
 The daemon:
 
+- counts the request against the submission rates, like a submission (any key can ask);
 - ends an active lease (`closed`, its certificate on the deny list, its sessions dropped); a
   lease that already ended (expired, used up, renewed) keeps its state and gets the summary,
-  so its report still comes back;
+  so its report still comes back; a lease takes one summary: once it has one, a `close` gets
+  the report as `writ report` gives it, the summary as first written, and writes no line;
 - writes one `close` line;
 - builds the **activity report** of the lease and the leases it renews (`Service::close`),
   from its state (the chain, each lease's counters, the ledger) under the lock, then from its

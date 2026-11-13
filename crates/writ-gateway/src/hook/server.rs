@@ -213,10 +213,35 @@ async fn decide_push(
             "a push updates from 1 to {MAX_UPDATES} refs"
         )));
     }
-    let lease = gateway
-        .may_push(&context.cert, &context.caller, &context.repo)
+    // The lease, and its ref rules on the updates as git sent them: the cheapest checks,
+    // before the mirror is held and any git runs for an update (the review after M7.6, G-9).
+    let unread = updates
+        .iter()
+        .map(|u| {
+            Ok(policy::RefUpdate {
+                name: u.name.to_string(),
+                old: commit_id(&u.old)?,
+                new: commit_id(&u.new)?,
+                // Known only once the quarantine is read: `Service::push` decides on them.
+                fast_forward: true,
+                case_twin: false,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(Denied::new)?;
+    let lease = match gateway
+        .may_push_refs(&context.cert, &context.caller, &context.repo, unread)
         .await
-        .map_err(|denial| Denied::logged(&denial))?;
+    {
+        Ok(lease) => lease,
+        Err(denial) => {
+            // A violation may have revoked the lease: its other sessions go now.
+            if gateway.service().is_revoked(context.cert.serial) {
+                gateway.drop_sessions_except(context.cert.serial, context.connection);
+            }
+            return Err(Denied::logged(&denial));
+        }
+    };
     let quarantine = hold_mirror(gateway, context, quarantine).await?;
     // Bounded as a whole, the mirror held: each git it runs is killed with its group when the
     // deadline drops it.
@@ -373,8 +398,12 @@ fn commit_id(id: &str) -> Result<Option<CommitId>, String> {
         .map_err(|_| format!("{id} is not an object id"))
 }
 
-/// Each ref update as the policy sees it: whether it moves forward, and for a new ref whether
-/// the mirror has one with the same name ignoring case.
+/// Each ref update as the policy sees it, read under the held mirror: its `old` must be the
+/// ref's value in the mirror (git hands the hook the `old` the client wrote, unchecked: the
+/// review after M7.6, G-6, a false `old` chose the ancestor a fast-forward was computed
+/// against, and skipped the case check), whether it moves forward from there, and, whenever
+/// the mirror has no ref of exactly this name, whether it has one with the same name ignoring
+/// case.
 async fn read_updates(
     quarantine: &Quarantine,
     updates: &[RefUpdate],
@@ -382,6 +411,18 @@ async fn read_updates(
     let mut facts = Vec::with_capacity(updates.len());
     for update in updates {
         let (old, new) = (commit_id(&update.old)?, commit_id(&update.new)?);
+        let name = update.name.as_str();
+        let state = quarantine
+            .ref_state(name)
+            .await
+            .map_err(|e| e.to_string())?;
+        if state.value.as_deref() != old.as_ref().map(CommitId::as_str) {
+            let is = state.value.as_deref().unwrap_or("absent");
+            let said = old.as_ref().map_or("absent", CommitId::as_str);
+            return Err(format!(
+                "{name} is {is} in the repo, not {said} as the push says: fetch, then push again"
+            ));
+        }
         let fast_forward = match (&old, &new) {
             (Some(old), Some(new)) => quarantine
                 .is_ancestor(old.as_str(), new.as_str())
@@ -389,13 +430,7 @@ async fn read_updates(
                 .map_err(|e| e.to_string())?,
             _ => true,
         };
-        let case_twin = match old {
-            None => quarantine
-                .case_twin(update.name.as_str())
-                .await
-                .map_err(|e| e.to_string())?,
-            Some(_) => false,
-        };
+        let case_twin = state.value.is_none() && state.case_twin;
         facts.push(policy::RefUpdate {
             name: update.name.to_string(),
             old,

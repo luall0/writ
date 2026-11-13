@@ -205,9 +205,15 @@ impl Walk<'_> {
             if next.depth > self.limits.depth {
                 return Err(PathsError::TooDeep);
             }
-            let old = self.entries_of(next.old.as_ref())?;
-            let new = self.entries_of(next.new.as_ref())?;
-            let names: BTreeSet<&Vec<u8>> = old.keys().chain(new.keys()).collect();
+            let evidence = self.evidence;
+            let old = Self::entries_of(evidence, self.algo, next.old.as_ref())?;
+            let new = Self::entries_of(evidence, self.algo, next.new.as_ref())?;
+            // Both sides' names, sorted, once each: a plain vector, 16 bytes a name.
+            let mut names: Vec<&[u8]> = Vec::with_capacity(old.len().saturating_add(new.len()));
+            names.extend(old.names());
+            names.extend(new.names());
+            names.sort_unstable();
+            names.dedup();
             for name in names {
                 self.entries = self.entries.saturating_add(1);
                 if self.entries > self.limits.entries {
@@ -223,7 +229,7 @@ impl Walk<'_> {
                 let mut path = self.path(&next.prefix, name)?;
                 let tree = |e: Option<&tree::Entry>| {
                     e.filter(|e| e.kind == EntryKind::Tree)
-                        .map(|e| e.id.clone())
+                        .map(|e| e.id.to_id())
                 };
                 let leaf = |e: Option<&tree::Entry>| e.is_some_and(|e| e.kind == EntryKind::Leaf);
                 let (old_tree, new_tree) = (tree(before), tree(after));
@@ -282,12 +288,17 @@ impl Walk<'_> {
         Ok(())
     }
 
-    fn entries_of(&self, id: Option<&ObjectId>) -> Result<tree::Entries, PathsError> {
+    /// The entries of the tree `id` (none for no tree), its names borrowed from `evidence`.
+    fn entries_of<'e>(
+        evidence: &'e Evidence,
+        algo: HashAlgo,
+        id: Option<&ObjectId>,
+    ) -> Result<tree::Entries<'e>, PathsError> {
         let Some(id) = id else {
             return Ok(tree::Entries::new());
         };
-        let content = self.evidence.get(id, ObjectType::Tree)?;
-        tree::parse(self.algo, content).map_err(|e| PathsError::Tree(id.clone(), e))
+        let content = evidence.get(id, ObjectType::Tree)?;
+        tree::parse(algo, content).map_err(|e| PathsError::Tree(id.clone(), e))
     }
 }
 

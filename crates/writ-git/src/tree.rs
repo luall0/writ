@@ -7,8 +7,6 @@
 //! it, `100664` a file. Reading only the modes git writes, and refusing the others, keeps this
 //! walk from seeing a leaf where git sees a directory (and the files under it).
 
-use std::collections::BTreeMap;
-
 use crate::object::{HashAlgo, ObjectId};
 
 /// Why a tree can't be read.
@@ -49,21 +47,131 @@ pub enum EntryKind {
     Leaf,
 }
 
-/// One entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An entry's mode: one of the five git writes ([`MODES`]), so a parsed entry holds no copy
+/// of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// `100644`.
+    File,
+    /// `100755`.
+    Executable,
+    /// `120000`.
+    Link,
+    /// `40000`.
+    Tree,
+    /// `160000` (gitlink).
+    Submodule,
+}
+
+impl Mode {
+    /// The mode as git writes it, if it is one of [`MODES`].
+    fn read(bytes: &[u8]) -> Option<Self> {
+        Some(match bytes {
+            b"100644" => Self::File,
+            b"100755" => Self::Executable,
+            b"120000" => Self::Link,
+            b"40000" => Self::Tree,
+            b"160000" => Self::Submodule,
+            _ => return None,
+        })
+    }
+
+    /// The mode as written.
+    pub fn as_bytes(self) -> &'static [u8] {
+        match self {
+            Self::File => b"100644",
+            Self::Executable => b"100755",
+            Self::Link => b"120000",
+            Self::Tree => TREE_MODE,
+            Self::Submodule => b"160000",
+        }
+    }
+}
+
+/// An entry's id as its raw bytes, held in place: no allocation per entry (the review after
+/// M7.6, G-10: a hex `String`, a mode `Vec` and a name `Vec` made a 16 MiB tree of short
+/// names cost several times its bytes once parsed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawId {
+    algo: HashAlgo,
+    bytes: [u8; 32],
+}
+
+impl RawId {
+    fn new(algo: HashAlgo, raw: &[u8]) -> Self {
+        let mut bytes = [0u8; 32];
+        for (to, from) in bytes.iter_mut().zip(raw) {
+            *to = *from;
+        }
+        Self { algo, bytes }
+    }
+
+    /// The id, as the rest of the crate names objects.
+    pub fn to_id(&self) -> ObjectId {
+        let raw = self.bytes.get(..self.algo.raw_len()).unwrap_or_default();
+        ObjectId::from_raw(self.algo, raw)
+    }
+}
+
+/// One entry. Its name is the key it is found under, borrowed from the tree's content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
     pub kind: EntryKind,
     /// The mode as written (a mode change is a change).
-    pub mode: Vec<u8>,
-    pub id: ObjectId,
+    pub mode: Mode,
+    pub id: RawId,
 }
 
-/// A tree's entries by name.
-pub type Entries = BTreeMap<Vec<u8>, Entry>;
+/// What one parsed entry holds in memory, its name borrowed: [`ENTRY_BYTES`] bytes beside
+/// the tree's content, which is at least 28 bytes an entry (`40000 a\0` and a SHA-1). A
+/// parsed tree is held in one vector sized up front, so it costs at most about twice the
+/// bytes it was read from, whatever its names (the review after M7.6, G-10).
+pub const ENTRY_BYTES: usize = std::mem::size_of::<(&[u8], Entry)>();
+
+/// A tree's entries, sorted by name, the names borrowed from its content.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Entries<'a> {
+    sorted: Vec<(&'a [u8], Entry)>,
+}
+
+impl<'a> Entries<'a> {
+    /// No entries (no tree).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The entry named `name`.
+    pub fn get(&self, name: &[u8]) -> Option<&Entry> {
+        let found = self
+            .sorted
+            .binary_search_by(|(each, _)| (*each).cmp(name))
+            .ok()?;
+        self.sorted.get(found).map(|(_, entry)| entry)
+    }
+
+    /// The names, sorted.
+    pub fn names(&self) -> impl Iterator<Item = &'a [u8]> + '_ {
+        self.sorted.iter().map(|(name, _)| *name)
+    }
+
+    pub fn len(&self) -> usize {
+        self.sorted.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sorted.is_empty()
+    }
+}
+
+/// The fewest bytes a tree entry takes in a tree's content: a mode, a space, a one-byte name,
+/// its NUL, a raw SHA-1.
+const MIN_ENTRY_LEN: usize = 5 + 1 + 1 + 1 + 20;
 
 /// Parses a tree's content.
-pub fn parse(algo: HashAlgo, content: &[u8]) -> Result<Entries, TreeError> {
-    let mut entries = Entries::new();
+pub fn parse(algo: HashAlgo, content: &[u8]) -> Result<Entries<'_>, TreeError> {
+    // Sized up front from the content's length: never more than one entry per
+    // `MIN_ENTRY_LEN` bytes, and no copy left behind by growing.
+    let mut sorted = Vec::with_capacity(content.len() / MIN_ENTRY_LEN);
     let mut rest = content;
     while !rest.is_empty() {
         let space = rest
@@ -75,9 +183,7 @@ pub fn parse(algo: HashAlgo, content: &[u8]) -> Result<Entries, TreeError> {
         if mode.is_empty() || mode.len() > 6 || !mode.iter().all(|b| (b'0'..=b'7').contains(b)) {
             return Err(TreeError::Mode);
         }
-        if !MODES.contains(&mode) {
-            return Err(TreeError::NonStandardMode);
-        }
+        let mode = Mode::read(mode).ok_or(TreeError::NonStandardMode)?;
         let nul = after
             .iter()
             .position(|&b| b == 0)
@@ -93,22 +199,27 @@ pub fn parse(algo: HashAlgo, content: &[u8]) -> Result<Entries, TreeError> {
         let (raw, after) = after
             .split_at_checked(algo.raw_len())
             .ok_or(TreeError::CutShort)?;
-        let kind = if mode == TREE_MODE {
+        let kind = if mode == Mode::Tree {
             EntryKind::Tree
         } else {
             EntryKind::Leaf
         };
         let entry = Entry {
             kind,
-            mode: mode.to_vec(),
-            id: ObjectId::from_raw(algo, raw),
+            mode,
+            id: RawId::new(algo, raw),
         };
-        if entries.insert(name.to_vec(), entry).is_some() {
-            return Err(TreeError::Duplicate);
-        }
+        sorted.push((name, entry));
         rest = after;
     }
-    Ok(entries)
+    sorted.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    if sorted
+        .windows(2)
+        .any(|pair| matches!(pair, [a, b] if a.0 == b.0))
+    {
+        return Err(TreeError::Duplicate);
+    }
+    Ok(Entries { sorted })
 }
 
 /// Characters HFS+ ignores in a name (git's `is_hfs_dotgit`).
@@ -130,10 +241,12 @@ pub fn is_dotgit(name: &[u8]) -> bool {
         .collect::<String>()
         .to_ascii_lowercase();
     folded.split('\\').any(|component| {
-        if component == "git~1" {
-            return true;
-        }
-        let Some(rest) = component.strip_prefix(".git") else {
+        // The short name takes NTFS's trailing dots and spaces as well (git's
+        // `is_ntfs_dotgit`; the review after M7.6, G-8: `git~1.` and `GIT~1 ` were missed).
+        let Some(rest) = component
+            .strip_prefix(".git")
+            .or_else(|| component.strip_prefix("git~1"))
+        else {
             return false;
         };
         let rest = rest.split(':').next().unwrap_or(rest);
@@ -160,10 +273,10 @@ mod tests {
         content.extend(entry("120000", b"link", 3));
         let entries = parse(HashAlgo::Sha1, &content).unwrap();
         assert_eq!(entries.len(), 3);
-        assert_eq!(entries[&b"src"[..]].kind, EntryKind::Tree);
-        assert_eq!(entries[&b"README"[..]].kind, EntryKind::Leaf);
+        assert_eq!(entries.get(b"src").unwrap().kind, EntryKind::Tree);
+        assert_eq!(entries.get(b"README").unwrap().kind, EntryKind::Leaf);
         assert_eq!(
-            entries[&b"link"[..]].id.as_str(),
+            entries.get(b"link").unwrap().id.to_id().as_str(),
             "0303030303030303030303030303030303030303"
         );
         assert!(parse(HashAlgo::Sha1, b"").unwrap().is_empty());
@@ -201,6 +314,9 @@ mod tests {
             b".git::$INDEX_ALLOCATION",
             b"git~1",
             b"GIT~1",
+            b"git~1.",
+            b"GIT~1 ",
+            b"git~1. .",
             ".g\u{200c}it".as_bytes(),
             "\u{feff}.git".as_bytes(),
             b"a\\.git",
@@ -219,6 +335,9 @@ mod tests {
             b"git",
             b"x.git",
             b".git~1",
+            b"git~1x",
+            b"git~1.x",
+            b"git~10",
         ] {
             assert!(
                 parse(HashAlgo::Sha1, &entry("100644", name, 1)).is_ok_and(|e| e.len() == 1),
@@ -233,6 +352,40 @@ mod tests {
         );
     }
 
+    /// The review after M7.6, G-10: each entry held its mode, its hex id and its name in
+    /// allocations of their own, in a map's nodes: several times the tree's bytes. An entry
+    /// is now a fixed few dozen bytes, in one vector sized from the content.
+    #[test]
+    fn a_parsed_tree_costs_at_most_twice_its_bytes() {
+        const { assert!(ENTRY_BYTES <= 2 * MIN_ENTRY_LEN) };
+        // The worst case: the shortest entries git allows, as many as fit in 1 MiB.
+        let mut content = Vec::new();
+        let mut n = 0u32;
+        while content.len() < 1 << 20 {
+            // Names of three bytes, each once, never `.`, `..` or with a `/` or a NUL.
+            let letter = |k: u32| b'a' + u8::try_from(k % 26).unwrap();
+            let name = [letter(n / 676), letter(n / 26), letter(n)];
+            content.extend(entry("100644", &name, 1));
+            n += 1;
+            if n == 26 * 26 * 26 {
+                break;
+            }
+        }
+        let entries = parse(HashAlgo::Sha1, &content).unwrap();
+        assert_eq!(entries.len(), usize::try_from(n).unwrap());
+        let held = entries.sorted.capacity() * ENTRY_BYTES;
+        assert!(
+            held <= 2 * content.len(),
+            "{held} for {} bytes",
+            content.len()
+        );
+        // Sorted by name, found by name.
+        let names: Vec<&[u8]> = entries.names().collect();
+        assert!(names.windows(2).all(|w| w[0] < w[1]));
+        assert!(entries.get(b"abc").is_some());
+        assert!(entries.get(b"ab").is_none());
+    }
+
     #[test]
     fn only_the_modes_git_writes_are_read() {
         for (mode, kind) in [
@@ -243,9 +396,14 @@ mod tests {
             // A submodule's commit is not a tree: its path is a leaf.
             ("160000", EntryKind::Leaf),
         ] {
-            let entries = parse(HashAlgo::Sha1, &entry(mode, b"x", 1)).unwrap();
-            assert_eq!(entries[&b"x"[..]].kind, kind, "{mode}");
-            assert_eq!(entries[&b"x"[..]].mode, mode.as_bytes(), "{mode}");
+            let content = entry(mode, b"x", 1);
+            let entries = parse(HashAlgo::Sha1, &content).unwrap();
+            assert_eq!(entries.get(b"x").unwrap().kind, kind, "{mode}");
+            assert_eq!(
+                entries.get(b"x").unwrap().mode.as_bytes(),
+                mode.as_bytes(),
+                "{mode}"
+            );
         }
         // Modes git reads by their type bits but never writes: directories with permission
         // bits or zero-padded, files with other permissions, a link or a gitlink with bits,

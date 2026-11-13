@@ -369,12 +369,10 @@ fn closing_ends_the_lease_and_reports_what_it_did() {
     let line = h.events("close", "done");
     assert_eq!(line.len(), 1);
     assert_eq!(line[0]["lease"], lease.as_str());
-    // Closed once; the approver reads the same report.
-    refused(
-        close(&key, "again"),
-        RefusalCode::WrongState,
-        "is closed: nothing to close",
-    );
+    // Closed once: a second close is answered with the same report, its summary the first
+    // one, and writes no line (the review after M7.6, A-1); the approver reads it too.
+    assert_eq!(close(&key, "again").unwrap(), report);
+    assert_eq!(h.events("close", "done").len(), 1, "no second line");
     assert_eq!(h.service.report(&lease).unwrap(), report);
     // An expired lease is closed too, to get its report: it keeps its state.
     let (expired, key, _) = h.lease(&feature("agent/b-*"), &here);
@@ -393,4 +391,88 @@ fn closing_ends_the_lease_and_reports_what_it_did() {
     assert_eq!(report.state, State::Expired);
     assert_eq!(report.used_seconds, 7200);
     assert_eq!(h.events("close", "done")[1]["reason"], "already expired");
+    // An ended lease takes one summary too: a second close neither rewrites it nor logs.
+    let again = h
+        .service
+        .close(
+            &expired,
+            key.public_key(),
+            &CloseRequest {
+                summary: "rewritten after the approver read it".to_owned(),
+            },
+            &CallerFacts::default(),
+        )
+        .unwrap();
+    assert_eq!(again.summary.as_deref(), Some("ran out"));
+    assert_eq!(again, report);
+    assert_eq!(h.events("close", "done").len(), 2);
+}
+
+/// The review after M7.6, A-1: `writ close` had no rate, and its denial carried the id the
+/// caller chose, so a flood of fresh `wrt_…` ids was never coalesced: one line and one fsync
+/// under the state lock each. It counts against the submission rates now, and a denial for a
+/// lease the caller doesn't hold names no lease.
+#[test]
+fn closes_count_against_the_submission_rates_and_a_flood_of_unknown_ids_is_bounded() {
+    let h = Harness::new(|b| {
+        b.submissions(writ_approval::SubmissionLimits {
+            per_source: 10,
+            in_all: 1_000,
+        })
+    });
+    let (lease, key, _) = h.lease(&feature("agent/a-*"), &from("192.0.2.9"));
+    let flooder = from("192.0.2.7");
+    let stranger = generate(KeyKind::Ed25519).unwrap();
+    let unknown = |n: u32| -> TicketId { format!("wrt_01JD8X{n:020}").parse().unwrap() };
+    let close = |id: &TicketId, key: &PrivateKey, caller: &CallerFacts| {
+        h.service.close(
+            id,
+            key.public_key(),
+            &CloseRequest {
+                summary: "done".to_owned(),
+            },
+            caller,
+        )
+    };
+    // At the source's rate: each is refused as unknown, with its own line.
+    for n in 0..10 {
+        assert!(matches!(
+            close(&unknown(n), &stranger, &flooder),
+            Err(ServiceError::NotFound(_))
+        ));
+    }
+    // One past it: refused over the rate; a flood after that only counted.
+    for n in 10..500 {
+        refused(
+            close(&unknown(n), &stranger, &flooder),
+            RefusalCode::RateLimited,
+            "",
+        );
+    }
+    let denied = h.events("close", "denied");
+    assert_eq!(denied.len(), 10, "the flood's lines are the rate's bound");
+    assert!(
+        denied.iter().all(|line| line.get("lease").is_none()),
+        "no caller-chosen lease id: {denied:?}"
+    );
+    assert_eq!(
+        denied[0]["reason"],
+        format!("no lease {} for this session", unknown(0))
+    );
+    let over = h.events("submit", "denied");
+    assert_eq!(
+        over.len(),
+        1,
+        "one line for the burst over the rate: {over:?}"
+    );
+    // The holder of a real lease, from its own source, is not held back by the flood.
+    let report = close(&lease, &key, &from("192.0.2.9")).unwrap();
+    assert_eq!(report.state, State::Closed);
+    // Its source's rate is its own: past it, even its own close waits.
+    h.clock.advance(60);
+    let quiet = from("192.0.2.10");
+    for _ in 0..10 {
+        close(&lease, &key, &quiet).unwrap();
+    }
+    refused(close(&lease, &key, &quiet), RefusalCode::RateLimited, "");
 }

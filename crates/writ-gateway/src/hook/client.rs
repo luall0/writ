@@ -30,14 +30,15 @@ fn pre_receive() -> Result<(), String> {
     if quarantine.contains('\n') {
         return Err("the push's quarantine path holds a newline".to_owned());
     }
-    let mut updates = String::new();
-    std::io::stdin()
-        .read_to_string(&mut updates)
+    // At most one byte more than the daemon reads: past its bound, the daemon refuses the
+    // push for its size (and logs it) without this process holding all git sends (the review
+    // after M7.6, G-1).
+    let updates = read_bounded(std::io::stdin().lock())
         .map_err(|e| format!("cannot read the ref updates: {e}"))?;
     let mut stream = std::os::unix::net::UnixStream::connect(socket)
         .map_err(|e| format!("cannot reach the daemon: {e}"))?;
     stream
-        .write_all(request(&token, &quarantine, &updates).as_bytes())
+        .write_all(&request(&token, &quarantine, &updates))
         .and_then(|()| stream.shutdown(std::net::Shutdown::Write))
         .map_err(|e| format!("cannot reach the daemon: {e}"))?;
     let mut reply = String::new();
@@ -47,12 +48,24 @@ fn pre_receive() -> Result<(), String> {
     answer(&reply)
 }
 
+/// What git sends the hook, up to one byte more than the daemon reads
+/// ([`MAX_HOOK_INPUT`](super::MAX_HOOK_INPUT)).
+fn read_bounded(input: impl Read) -> std::io::Result<Vec<u8>> {
+    let limit = u64::try_from(super::MAX_HOOK_INPUT)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut updates = Vec::new();
+    input.take(limit).read_to_end(&mut updates)?;
+    Ok(updates)
+}
+
 /// What the hook sends: the token line, the quarantine line (empty when there is none), then
-/// git's lines (each ending in `\n`).
-fn request(token: &str, quarantine: &str, updates: &str) -> String {
-    let mut text = format!("{token}\n{quarantine}\n{updates}");
-    if !text.ends_with('\n') {
-        text.push('\n');
+/// git's lines (each ending in `\n`; the daemon checks they are UTF-8).
+fn request(token: &str, quarantine: &str, updates: &[u8]) -> Vec<u8> {
+    let mut text = format!("{token}\n{quarantine}\n").into_bytes();
+    text.extend_from_slice(updates);
+    if text.last() != Some(&b'\n') {
+        text.push(b'\n');
     }
     text
 }
@@ -70,14 +83,32 @@ fn answer(reply: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 
     #[test]
     fn every_line_sent_ends_with_a_newline() {
-        assert_eq!(request("t", "", ""), "t\n\n");
-        assert_eq!(request("t", "/q", "a b c\n"), "t\n/q\na b c\n");
-        assert_eq!(request("t", "/q", "a b c"), "t\n/q\na b c\n");
+        assert_eq!(request("t", "", b""), b"t\n\n");
+        assert_eq!(request("t", "/q", b"a b c\n"), b"t\n/q\na b c\n");
+        assert_eq!(request("t", "/q", b"a b c"), b"t\n/q\na b c\n");
+    }
+
+    /// The review after M7.6, G-1: the hook read all git sent into memory before the daemon
+    /// refused anything over its bound.
+    #[test]
+    fn the_hook_reads_at_most_one_byte_past_the_daemon_s_bound() {
+        let max = super::super::MAX_HOOK_INPUT;
+        assert_eq!(read_bounded(&vec![b'a'; max][..]).unwrap().len(), max);
+        assert_eq!(
+            read_bounded(&vec![b'a'; max + 1][..]).unwrap().len(),
+            max + 1
+        );
+        assert_eq!(
+            read_bounded(&vec![b'a'; 3 * max][..]).unwrap().len(),
+            max + 1,
+            "never more"
+        );
     }
 
     #[test]

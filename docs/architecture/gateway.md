@@ -23,7 +23,8 @@ each listener has a role:
 Each listener accepts connections only from its configured sources (`allow` in
 `writd.yaml`, required on the agents' TCP listeners), and bounds what any peer can make it
 hold (`crates/writ-gateway/src/limits.rs`): 256 open connections per listener and 16 per
-source address (an IPv6 host counts as its /64), 20 seconds from the accept to be
+source address (an IPv6 host counts as its /64; on a Unix socket, per caller process, by its
+pid and generation from the attestor's chain or the kernel's peer credentials), 20 seconds from the accept to be
 authenticated (the SSH handshake and the authentication together, or the TLS handshake; then
 10 seconds for each HTTPS request's headers), 4 channels at once per SSH connection and one
 command per channel (each of these refusals logged, coalesced per source), 30 seconds to
@@ -31,7 +32,12 @@ send a request body (60 seconds for a sign request's, up to 16 MiB), 16 sign req
 once by the whole daemon and 4 by one lease (`sign_requests.per_lease` in `writd.yaml`, 1 to 16), 10 minutes without traffic. A
 denial before authentication (a source not allowed, no free slot, a key not in `readers`,
 a refused certificate) writes one audit line per source and minute, at most 60 a minute in
-all, with the count of the others; text the peer chose (a certificate's key id) is cut to 64 characters.
+all, with the count of the others (the source's own apart from those the line budget held
+back from any source); text the peer chose (a certificate's key id) is cut to 64 characters.
+The attestation runs off the async threads; a caller it can't attest is turned away, except
+on an approval listener's Unix socket, which takes it without a process chain (the approval
+API needs a reader key, never a chain), so a broken process reader never shuts the approver
+out of a revocation.
 
 The SSH algorithms are listed by the gateway, never left to the library's defaults:
 mlkem768x25519-sha256 or curve25519-sha256 key exchange with strict kex, chacha20-poly1305
@@ -39,7 +45,12 @@ or aes256-gcm, Ed25519 and ECDSA P-256 keys (host, session and reader keys), no 
 (RFC 4253 `zlib` would decompress before authentication), nothing with SHA-1. git runs
 through `writ_mirror::git::command` ([the daemon's git](#the-daemons-git)); `git
 receive-pack` also gets `receive.maxInputSize` set to the repo's `max_push_size` in the lease
-(the smaller of it and its template's in force).
+(the smaller of it and its template's in force). That bounds only the pack, so the gateway
+bounds the rest of what a client sends git: a push's ref commands (everything before the
+pack's first flush packet, read as git reads pkt-lines) at 1 MiB, the hook's own bound, and
+the whole push at `max_push_size` and that; a fetch's negotiation (wants, haves) at 16 MiB;
+and every git operation at one hour in all (`GIT_DEADLINE`), however steadily its client
+sends. Past any of them git is killed and the command refused with the reason, logged.
 
 A certificate is checked twice: when it is presented (CA, validity, deny list, principal
 `git`, no critical option, then the approval service finds its single active lease and checks the caller,
@@ -122,8 +133,11 @@ UTF-8, a line that isn't a ref update, more than 1,000 updates) is refused, neve
 in part. Any failure to reach the daemon refuses the push. The daemon then:
 
 1. looks the token up (which lease, which repo, which connection) and checks the lease again
-   (`Service::may_push`): a lease revoked or expired while the pack was coming in moves no
-   ref, nothing is read for it, and revoking a lease forgets its pushes in progress;
+   with its ref rules on the updates (`Service::may_push_refs`: `may_push`, then
+   `policy::check_push_refs`, the ref loop `decide_push` runs: branches, protected refs, a
+   name twice, a deletion without `force_push`): a lease revoked or expired while the pack was
+   coming in, or a ref it can't push, moves no ref, and nothing is read for it (no mirror
+   held, no git run), and revoking a lease forgets its pushes in progress;
 2. holds the repo's mirror (no sync, no other push) until `receive-pack` has moved the refs
    and exited: released at its exit, not when the client has read its output (a client that
    keeps its SSH window shut holds nothing; what is left of the output gets 30 s, then the
@@ -138,10 +152,14 @@ in part. Any failure to reach the daemon refuses the push. The daemon then:
    with git's prefix, and running git there with `GIT_QUARANTINE_PATH` set (nothing it runs
    can move a ref):
    - each new tip is a commit;
-   - the commits no ref of the mirror reaches (`rev-list --not --all`), at most the lease's
-     `max_signatures` for this repo (and 10,000): more means some aren't signed under it;
-   - for each update, whether it is a fast-forward (`merge-base --is-ancestor`), and for a new
-     ref whether the mirror has one with the same name ignoring case;
+   - the commits no branch or tag of the mirror reaches (`rev-list --not --branches --tags`,
+     the refs a sync brings: a commit only the mirror's notes ref reaches, the daemon's own and
+     unsigned, is new and checked like any other), at most the lease's `max_signatures` for
+     this repo (and 10,000): more means some aren't signed under it;
+   - for each update, its `old` against the ref's value in the mirror (git hands the hook the
+     `old` the client wrote, unchecked: a mismatch refuses the push), whether it is a
+     fast-forward (`merge-base --is-ancestor`), and, whenever the mirror has no ref of exactly
+     that name, whether it has one with the same name ignoring case;
    - the pack's size on disk;
    - for each new commit the ledger holds for this lease and repo with its paths
      (`Service::paths_to_check`, a read), the paths it touches, computed again with

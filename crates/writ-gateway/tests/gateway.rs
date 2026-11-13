@@ -577,6 +577,98 @@ async fn a_caller_the_attestor_cannot_attest_is_turned_away() {
     );
 }
 
+/// The review after M7.6, L-7 and G-2: a process reader that broke made every Unix caller
+/// unattestable, the approver too, for good; and every local caller was one source of 16
+/// slots. On an approval listener's Unix socket the caller is now taken without a chain (a
+/// reader key still required), its slots counted per process from the kernel's peer
+/// credentials; the agents' listener still turns it away.
+#[tokio::test]
+async fn a_broken_process_reader_never_shuts_the_approver_out_and_slots_are_per_process() {
+    let daemon = Daemon::start(FakeAttestor::failing()).await;
+    let unix = |pid: u32| PeerInfo::Unix {
+        uid: 501,
+        gid: 20,
+        pid: Some(pid),
+        generation: Some(1),
+    };
+    let connect = |connector: &FakeConnector, pid: u32| {
+        let connector = connector.clone();
+        async move {
+            let stream = connector.connect(unix(pid)).await.unwrap();
+            client::connect_stream(Arc::new(client::Config::default()), stream, Accept).await
+        }
+    };
+    // The agents' listener: fail closed, logged.
+    // any error: the connection is dropped before the SSH handshake; the line says why.
+    assert!(connect(&daemon.agents, 10).await.is_err());
+    let lines = daemon.audit("connect", "denied");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        lines[0]["reason"],
+        "caller turned away: cannot attest the caller: the fake attestor is set to fail"
+    );
+
+    // The approval listener: a reader gets in and is served, a stranger's key still not.
+    let mut reader = connect(&daemon.approvals, 20).await.unwrap();
+    let auth = reader
+        .authenticate_publickey(
+            "writ",
+            PrivateKeyWithHashAlg::new(Arc::new(daemon.reader.clone()), None),
+        )
+        .await
+        .unwrap();
+    assert!(auth.success());
+    let listing: Listing = call(&reader, Command::List { all: true }, b"")
+        .await
+        .unwrap();
+    assert!(listing.tickets.is_empty());
+    let mut stranger = connect(&daemon.approvals, 21).await.unwrap();
+    let auth = stranger
+        .authenticate_publickey(
+            "writ",
+            PrivateKeyWithHashAlg::new(Arc::new(generate(KeyKind::Ed25519).unwrap()), None),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        auth.success().then_some("in"),
+        None,
+        "a reader key is still required"
+    );
+
+    // One process holds its 16 slots; the 17th from it is refused, another process gets in.
+    let mut held = Vec::new();
+    for _ in 0..16 {
+        held.push(connect(&daemon.approvals, 30).await.unwrap());
+    }
+    // any error: the connection is dropped before the SSH handshake; the line says why.
+    assert!(
+        connect(&daemon.approvals, 30).await.is_err(),
+        "past its share"
+    );
+    let mut other = connect(&daemon.approvals, 40).await.unwrap();
+    let auth = other
+        .authenticate_publickey(
+            "writ",
+            PrivateKeyWithHashAlg::new(Arc::new(daemon.reader.clone()), None),
+        )
+        .await
+        .unwrap();
+    assert!(
+        auth.success(),
+        "another process still reaches the approval API"
+    );
+    let refused = daemon.audit("connect", "denied");
+    assert!(
+        refused
+            .iter()
+            .any(|l| l["reason"]
+                == "caller turned away: too many open connections from this process"),
+        "{refused:?}"
+    );
+    drop(held);
+}
+
 #[tokio::test]
 async fn git_runs_only_on_the_lease_repos_and_every_refusal_is_logged() {
     let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;

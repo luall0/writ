@@ -41,6 +41,15 @@ const MAX_LISTING: usize = 64 << 20;
 /// The most bytes of a list of commit ids read (64 bytes and a newline each).
 const MAX_ID_LIST: usize = 1 << 24;
 
+/// A ref of the mirror, as a push update is checked against it ([`Quarantine::ref_state`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefState {
+    /// The id the ref points at; `None` when the mirror has no such ref.
+    pub value: Option<String>,
+    /// Whether the mirror has another ref with the same name ignoring case.
+    pub case_twin: bool,
+}
+
 /// A push's quarantine, or none (a push that only deletes refs sends no pack).
 #[derive(Debug, Clone)]
 pub struct Quarantine {
@@ -125,18 +134,29 @@ impl Quarantine {
         Ok(done.stdout)
     }
 
-    /// The commits reachable from `tips` that no ref of the mirror reaches: what the push
-    /// brings. More than `max` refuses the push ([`MirrorError::TooManyCommits`]).
+    /// The commits reachable from `tips` that no branch or tag of the mirror reaches (the
+    /// refs a sync brings from upstream): what the push brings. A commit only the mirror's
+    /// notes ref reaches (the daemon's own, unsigned, kept after a notes push that failed) is
+    /// new, so it is checked against the ledger like any other (the review after M7.6, G-7:
+    /// `--all` counted it as upstream's). More than `max` refuses the push
+    /// ([`MirrorError::TooManyCommits`]).
     pub async fn new_commits(&self, tips: &[String], max: usize) -> Result<Vec<String>> {
         if tips.is_empty() {
             return Ok(Vec::new());
         }
         let input: String = tips.iter().map(|t| format!("{t}\n")).collect();
         let count = format!("--max-count={}", max.saturating_add(1));
-        // `--not --all` on the command line doesn't apply to the tips read from stdin.
+        // `--not …` on the command line doesn't apply to the tips read from stdin.
         let out = self
             .run_ok(
-                &["rev-list", &count, "--not", "--all", "--stdin"],
+                &[
+                    "rev-list",
+                    &count,
+                    "--not",
+                    "--branches",
+                    "--tags",
+                    "--stdin",
+                ],
                 Some(input.into_bytes()),
                 MAX_ID_LIST,
             )
@@ -203,6 +223,46 @@ impl Quarantine {
         Ok(String::from_utf8_lossy(&out)
             .lines()
             .any(|found| found != name && found.eq_ignore_ascii_case(name)))
+    }
+
+    /// The ref `name` in the mirror, in one read: the id it points at (`None`: no such ref),
+    /// and whether another ref has the same name ignoring case. What a push update's `old`
+    /// is checked against: git hands its pre-receive hook the `old` the client wrote, unchecked
+    /// (the review after M7.6, G-6).
+    pub async fn ref_state(&self, name: &str) -> Result<RefState> {
+        let out = self
+            .run_ok(
+                &[
+                    "for-each-ref",
+                    "--ignore-case",
+                    "--format=%(objectname) %(refname)",
+                    "--",
+                    name,
+                ],
+                None,
+                MAX_ID_LIST,
+            )
+            .await?;
+        let mut state = RefState {
+            value: None,
+            case_twin: false,
+        };
+        // A pattern also matches the refs under it (`refs/heads/a` matches `refs/heads/a/b`):
+        // only the name itself, and its twins in case, count.
+        for line in String::from_utf8_lossy(&out).lines() {
+            let Some((id, found)) = line.split_once(' ') else {
+                return Err(MirrorError::Read(format!(
+                    "unexpected ref line {}",
+                    shown(line.as_bytes())
+                )));
+            };
+            if found == name {
+                state.value = Some(id.to_owned());
+            } else if found.eq_ignore_ascii_case(name) {
+                state.case_twin = true;
+            }
+        }
+        Ok(state)
     }
 
     /// What the push holds on disk: every file in the quarantine, in bytes (links not

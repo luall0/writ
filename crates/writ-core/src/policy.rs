@@ -743,8 +743,45 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
     if request.updates.is_empty() {
         return Err(deny(DenyCode::Invalid, "the push updates no ref"));
     }
+    check_ref_updates(id, entry, scope, &request.repo, &request.updates)?;
+    // The chain must start with the lease this one says it renews: anything else is a fault
+    // in the daemon's lookup, never a reason to accept more.
+    if request.predecessors.first() != lease.ticket.text.renews.as_ref() {
+        return Err(Denial::internal());
+    }
+    decide_push_commits(ctx, request, template, scope)
+}
+
+/// The lease's ref rules on a push's updates, before anything is read for it (the review
+/// after M7.6, G-9): each name a branch the lease names, none protected, none twice (ignoring
+/// case), no deletion without `force_push`. The rules [`decide_push`] checks first, in the
+/// same code; it checks them again on the facts read from the quarantine (fast-forwards,
+/// twins in case), which this check can't know: `updates` has those set as passing. A push
+/// this refuses, `decide_push` refuses the same way, so the gateway refuses it before it holds
+/// the repo's mirror or runs any git for it. Nothing to check against (no such repo or terms):
+/// left to `decide_push`.
+pub fn check_push_refs(
+    config: &PolicyConfig,
+    lease: &Lease,
+    repo: &RepoName,
+    updates: &[RefUpdate],
+) -> Result<(), Denial> {
+    let (Some(scope), Some(entry)) = (lease.ticket.terms(repo), config.repo(repo)) else {
+        return Ok(());
+    };
+    check_ref_updates(&lease.id, entry, scope, repo, updates)
+}
+
+/// The ref loop of [`decide_push`] and [`check_push_refs`].
+fn check_ref_updates(
+    id: &TicketId,
+    entry: &RepoEntry,
+    scope: &RepoTerms,
+    repo: &RepoName,
+    updates: &[RefUpdate],
+) -> Result<(), Denial> {
     let mut seen = BTreeSet::new();
-    for update in &request.updates {
+    for update in updates {
         let name: RefName = update
             .name
             .parse()
@@ -762,7 +799,7 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
         if entry.protected_refs.iter().any(|p| p.protects(&name)) {
             return Err(deny(
                 DenyCode::ProtectedRef,
-                format!("{name} is protected in repo {}", request.repo),
+                format!("{name} is protected in repo {repo}"),
             ));
         }
         if name.branch().is_none() {
@@ -801,11 +838,18 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
             _ => {}
         }
     }
-    // The chain must start with the lease this one says it renews: anything else is a fault
-    // in the daemon's lookup, never a reason to accept more.
-    if request.predecessors.first() != lease.ticket.text.renews.as_ref() {
-        return Err(Denial::internal());
-    }
+    Ok(())
+}
+
+/// The rest of [`decide_push`], once its refs passed: each new commit in the ledger with its
+/// paths, the size, the count, the rate.
+fn decide_push_commits(
+    ctx: &Context<'_>,
+    request: &PushRequest,
+    template: &Template,
+    scope: &RepoTerms,
+) -> Result<Allowed, Denial> {
+    let id = &ctx.lease.id;
     for commit in &request.commits {
         let Some(entry) = commit.signed_under.iter().find(|entry| {
             (&entry.lease == id || request.predecessors.contains(&entry.lease))

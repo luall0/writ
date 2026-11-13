@@ -48,6 +48,15 @@ impl Service {
     /// ended (expired, used up, renewed, revoked) keeps its state and gets the summary, so the
     /// agent still gets its report. To another session the lease doesn't exist. One `close`
     /// line either way.
+    ///
+    /// The review after M7.6, A-1: any key the agents' listener lets in can ask, so a close
+    /// counts against the submission rates like a submission, a dry run or a policy read
+    /// (over them, refused and coalesced like them); a denial for a lease the caller doesn't
+    /// hold names no lease (the id is the caller's choice: keyed by it, the per-lease
+    /// coalescing never held a flood of fresh ids back, and it spent a victim's budget). And a
+    /// lease takes one summary: once it has one, a `close` is answered with the report as
+    /// `writ report` gives it, the summary kept as first written, and writes no line (a
+    /// read, like `writ report`).
     pub fn close(
         &self,
         id: &TicketId,
@@ -57,16 +66,26 @@ impl Service {
     ) -> Result<Report, ServiceError> {
         let session = fingerprint(session_key)?;
         let (now, mut inner) = self.begin()?;
-        let denied = AuditEvent::new(now, EventKind::Close, Outcome::Denied)
-            .lease(id)
-            .caller(caller);
+        Self::within_rate(&mut inner, caller, now)?;
         let lease = match inner.store.lease(id).map_err(internal)? {
             Some(lease) if lease.ticket.subject.session_key == session => lease,
             _ => {
-                Self::log_best_effort(&mut inner, &denied.reason("no such lease for this session"));
+                let denied = AuditEvent::new(now, EventKind::Close, Outcome::Denied)
+                    .caller(caller)
+                    .reason(format!("no lease {id} for this session"));
+                Self::log_best_effort(&mut inner, &denied);
                 return Err(not_found(id));
             }
         };
+        if inner.store.summary(id).map_err(internal)?.is_some() {
+            let gathered = self.gather(&inner, id, now)?;
+            let path = inner.audit.path().to_owned();
+            drop(inner);
+            return Self::report_from(gathered, &path);
+        }
+        let denied = AuditEvent::new(now, EventKind::Close, Outcome::Denied)
+            .lease(id)
+            .caller(caller);
         if let Err(reason) = check_summary(&request.summary) {
             Self::log_best_effort(&mut inner, &denied.reason(reason.clone()));
             return Err(ServiceError::refused(RefusalCode::Summary, reason));

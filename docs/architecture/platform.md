@@ -241,9 +241,11 @@ refused). It answers one pid at a time with what that process's links say: its e
 world-readable) and holds a pidfd of the process around the answer, so everything it gets is
 that process's (`read::read_with`). A compromised `writd` can ask the reader nothing else, and
 can't attach to it (a process holding a capability its tracer lacks can't be traced).
-An answer late (5 s), broken or oversized ends the reader's use for good: every Unix caller is
-refused from then on, logged once, and it is never started again (nothing left to start it
-with). Started without the capability (a development daemon, the tests), `writd` reads `/proc`
+An answer late (5 s), broken or oversized ends the reader's use for good: every Unix caller of
+the agents' listener is refused from then on, logged once, and it is never started again
+(nothing left to start it with); the approval listeners take their callers without a process
+chain (they need a reader key, never a chain), so the approver can still revoke. The gateway
+asks the attestor off its async threads. Started without the capability (a development daemon, the tests), `writd` reads `/proc`
 itself (`read::Direct`), which reaches its own user's processes only.
 
 `attest::ProcessChain` (`attestor: linux_process_chain`):

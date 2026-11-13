@@ -81,6 +81,34 @@ impl Service {
         }
     }
 
+    /// [`Service::may_push`], then the lease's ref rules on the push's `updates`
+    /// ([`policy::check_push_refs`]), before the gateway holds the repo's mirror and runs git
+    /// for each update (the review after M7.6, G-9). `updates` carry the facts only the
+    /// quarantine can tell (fast-forwards, twins in case) as passing: [`Service::push`]
+    /// decides on them later. A refusal is logged as `push`, and a violation revokes the lease
+    /// like one `push` finds.
+    pub fn may_push_refs(
+        &self,
+        cert: &CertIdentity,
+        caller: &CallerFacts,
+        repo: &RepoName,
+        updates: &[RefUpdate],
+    ) -> Result<Lease, Denial> {
+        let lease = self.may_push(cert, caller, repo)?;
+        let policy = self.policy();
+        let Err(denial) = policy::check_push_refs(&policy, &lease, repo, updates) else {
+            return Ok(lease);
+        };
+        let (now, mut inner) = self.begin().map_err(super::as_denial)?;
+        let event = cert_event(now, EventKind::Push, Outcome::Denied, cert, caller)
+            .repo(repo)
+            .lease(&lease.id)
+            .refs(updates.iter().map(|u| u.name.clone()));
+        Self::log_best_effort(&mut inner, &event.denial(&denial));
+        self.after_violation(inner, &lease, &denial);
+        Err(denial)
+    }
+
     /// Decides a push under the lease the certificate stands for: each new commit looked up
     /// in the ledger, `decide_push`, then the push taken from the lease's count and rate, all
     /// under one lock. One `push` line, whatever the outcome; a violation under

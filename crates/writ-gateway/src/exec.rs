@@ -254,12 +254,25 @@ async fn run_prepared(
             return refuse(channel, refusing.deny(reason, Some(repo)).await).await;
         }
     };
-    let bridged = git::bridge(child, channel, || {
+    let bound = match &push {
+        Some(_) => git::InputBound::Push {
+            max_pack: max_push_size,
+        },
+        None => git::InputBound::Fetch,
+    };
+    let bridged = git::bridge(child, channel, bound, || {
         if let Some(push) = &push {
             push.release_mirror();
         }
     })
     .await;
+    // Stopped by the gateway (over its bound, or its deadline): the reason went to the agent,
+    // and to the audit log, unless the hook decided the push and logged it already.
+    if let Some(reason) = &bridged.stopped
+        && push.as_ref().is_none_or(|push| !push.decided())
+    {
+        refusing.deny(reason.clone(), Some(repo)).await;
+    }
     // The client sent ref updates (more than the flush of a push with nothing to send) and
     // the hook never saw them: git refused the push before its checks. Its reason went to the
     // agent; the refusal goes to the audit log.
@@ -267,12 +280,14 @@ async fn run_prepared(
         && bridged.from_client > FLUSH_ONLY
         && !push.decided()
     {
-        let reason = format!(
-            "the push ended before its checks (exit {}): git refused it (a pack too large, an \
-             object fsck refuses), or the client went away",
-            bridged.code
-        );
-        refusing.deny(reason, Some(repo)).await;
+        if bridged.stopped.is_none() {
+            let reason = format!(
+                "the push ended before its checks (exit {}): git refused it (a pack too large, \
+                 an object fsck refuses), or the client went away",
+                bridged.code
+            );
+            refusing.deny(reason, Some(repo)).await;
+        }
         // Whatever git did without a decision, the next fetch or push syncs the mirror first:
         // a ref upstream doesn't have is pruned. A mirror busy past its deadline is synced
         // anyway once `fresh_for` has passed.

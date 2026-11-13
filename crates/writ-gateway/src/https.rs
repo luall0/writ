@@ -46,7 +46,13 @@ impl Gateway {
         let slots = limits::Slots::new();
         loop {
             let (connection, facts, slot) = self
-                .accept_attested(&*transport, &*attestor, &sources, &slots)
+                .accept_attested(
+                    &*transport,
+                    &attestor,
+                    crate::Role::Approvals,
+                    &sources,
+                    &slots,
+                )
                 .await?;
             let (gateway, acceptor) = (self.clone(), acceptor.clone());
             tokio::spawn(async move {

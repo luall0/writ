@@ -503,6 +503,25 @@ impl Gateway {
             .unwrap_or_else(|_| Err(Denial::internal()))
     }
 
+    /// [`Service::may_push_refs`], off the async threads.
+    async fn may_push_refs(
+        &self,
+        cert: &CertIdentity,
+        caller: &CallerFacts,
+        repo: &writ_core::names::RepoName,
+        updates: Vec<writ_core::policy::RefUpdate>,
+    ) -> std::result::Result<Lease, Denial> {
+        let (service, cert, caller, repo) = (
+            self.service().clone(),
+            cert.clone(),
+            caller.clone(),
+            repo.clone(),
+        );
+        tokio::task::spawn_blocking(move || service.may_push_refs(&cert, &caller, &repo, &updates))
+            .await
+            .unwrap_or_else(|_| Err(Denial::internal()))
+    }
+
     /// [`Service::push`], off the async threads.
     async fn push(&self, pushing: writ_approval::Pushing) -> std::result::Result<Lease, Denial> {
         let service = self.service().clone();
@@ -548,7 +567,7 @@ impl Gateway {
         let slots = limits::Slots::new();
         loop {
             let (connection, facts, slot) = self
-                .accept_attested(&*transport, &*attestor, &sources, &slots)
+                .accept_attested(&*transport, &attestor, role, &sources, &slots)
                 .await?;
             let authenticated = Arc::new(AtomicBool::new(false));
             let handler =
@@ -610,18 +629,40 @@ impl Gateway {
     }
 
     /// The next connection whose caller the attestor can attest, from a source the listener
-    /// accepts, with a free connection slot. Others are logged (coalesced) and dropped.
+    /// accepts, with a free connection slot (per source: an address, or a local caller's
+    /// process, [`limits::SlotSource`]). Others are logged (coalesced) and dropped.
+    ///
+    /// The attestation runs off the async threads: it reads `/proc`, or asks a helper under a
+    /// lock and a deadline (the review after M7.6, L-7). On the agents' listener a caller it
+    /// can't attest is turned away (fail closed: a lease may be bound to a process). On an
+    /// approval listener's Unix socket, which needs a reader key and never a process chain,
+    /// such a caller is taken without a chain (the kernel's peer credentials still give its
+    /// connection slot), so a broken process reader never shuts the approver out of a
+    /// revocation; the lines its requests write then have no chain. A TCP caller the
+    /// attestor can't attest is turned away on every listener.
     async fn accept_attested(
         &self,
         transport: &dyn Transport,
-        attestor: &dyn CallerAttestor,
+        attestor: &Arc<dyn CallerAttestor>,
+        role: Role,
         sources: &Sources,
         slots: &limits::Slots,
     ) -> Result<(Connection, CallerFacts, limits::Slot)> {
         loop {
             let connection = transport.accept().await?;
-            let facts = match attestor.attest(&connection.peer) {
+            let facts = match attest(attestor, &connection.peer).await {
                 Ok(facts) => facts,
+                Err(e)
+                    if role == Role::Approvals
+                        && matches!(connection.peer, PeerInfo::Unix { .. }) =>
+                {
+                    tracing::debug!(
+                        listener = %transport.describe(),
+                        error = %e,
+                        "caller not attested: taken without a process chain (approval API)"
+                    );
+                    peer_facts(&connection.peer)
+                }
                 Err(e) => {
                     tracing::debug!(
                         listener = %transport.describe(),
@@ -639,7 +680,7 @@ impl Gateway {
                 self.turned_away(facts, "source", reason.to_owned()).await;
                 continue;
             }
-            match slots.take(facts.source_addr) {
+            match slots.take(limits::SlotSource::of(&facts, &connection.peer)) {
                 Ok(slot) => return Ok((connection, facts, slot)),
                 Err(reason) => {
                     let reason = format!("caller turned away: {reason}");
@@ -792,6 +833,17 @@ fn preferred_algorithms() -> russh::Preferred {
         compression: Cow::Borrowed(COMPRESSION),
         ..russh::Preferred::DEFAULT
     }
+}
+
+/// What `attestor` says of `peer`, off the async threads; a task that can't run is an error.
+async fn attest(
+    attestor: &Arc<dyn CallerAttestor>,
+    peer: &PeerInfo,
+) -> std::result::Result<CallerFacts, String> {
+    let (attestor, peer) = (attestor.clone(), peer.clone());
+    tokio::task::spawn_blocking(move || attestor.attest(&peer).map_err(|e| e.to_string()))
+        .await
+        .unwrap_or_else(|_| Err("internal error: the attestation did not run".to_owned()))
 }
 
 /// What the transport alone says about a caller the attestor turned away.

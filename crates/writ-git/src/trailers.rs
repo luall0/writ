@@ -31,9 +31,9 @@ pub fn parse(message: &[u8]) -> Vec<Trailer> {
         if line.first() == Some(&COMMENT) {
             continue;
         }
-        if line.first().is_some_and(|b| *b == b' ' || *b == b'\t') {
+        if line.first().copied().is_some_and(is_git_space) {
             if let (true, Some(last)) = (last_is_trailer, trailers.last_mut()) {
-                let more = String::from_utf8_lossy(line.trim_ascii()).into_owned();
+                let more = String::from_utf8_lossy(trim(line)).into_owned();
                 if !more.is_empty() {
                     last.value.push(' ');
                     last.value.push_str(&more);
@@ -49,8 +49,8 @@ pub fn parse(message: &[u8]) -> Vec<Trailer> {
             let (key, value) = line.split_at_checked(position).unwrap_or((line, b""));
             let value = value.get(1..).unwrap_or_default();
             trailers.push(Trailer {
-                key: String::from_utf8_lossy(key.trim_ascii()).into_owned(),
-                value: String::from_utf8_lossy(value.trim_ascii()).into_owned(),
+                key: String::from_utf8_lossy(trim(key)).into_owned(),
+                value: String::from_utf8_lossy(trim(value)).into_owned(),
             });
             last_is_trailer = true;
         }
@@ -67,8 +67,28 @@ fn split_lines(message: &[u8]) -> Vec<&[u8]> {
     lines
 }
 
+/// git's `isspace` (its own `sane_ctype`): space, tab, newline and carriage return only. Rust's
+/// `is_ascii_whitespace` adds the form feed, where git sees text (the review after M7.6, G-3: a
+/// `\f` line split a block git reads whole, and hid a second `Writ:` trailer).
+fn is_git_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+/// `bytes` without git's whitespace at either end (`strbuf_trim`).
+fn trim(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|&b| !is_git_space(b))
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|&b| !is_git_space(b))
+        .map_or(start, |last| last.saturating_add(1));
+    bytes.get(start..end).unwrap_or_default()
+}
+
 fn is_blank(line: &[u8]) -> bool {
-    line.iter().all(u8::is_ascii_whitespace)
+    line.iter().copied().all(is_git_space)
 }
 
 /// The index of the first line of the trailer block, if the message has one (git's
@@ -102,7 +122,7 @@ fn block_start(lines: &[&[u8]]) -> Option<usize> {
             recognized = true;
             continue;
         }
-        let starts_with_space = line.first().is_some_and(u8::is_ascii_whitespace);
+        let starts_with_space = line.first().copied().is_some_and(is_git_space);
         if separator(line).is_some_and(|p| p >= 1) && !starts_with_space {
             trailer_lines = trailer_lines.saturating_add(1);
             continuations = 0;
@@ -187,6 +207,24 @@ mod tests {
         ] {
             assert_eq!(pairs(message), vec![], "{message:?}");
         }
+    }
+
+    /// The review after M7.6, G-3: a form feed is text to git, never a blank line nor
+    /// whitespace to trim.
+    #[test]
+    fn whitespace_is_git_s_set() {
+        assert_eq!(
+            pairs("S\n\nSigned-off-by: A <a@x>\nWrit: wrt_OTHER\n\x0c\nWrit: wrt_A\n"),
+            vec![
+                ("Signed-off-by".into(), "A <a@x>".into()),
+                ("Writ".into(), "wrt_OTHER".into()),
+                ("Writ".into(), "wrt_A".into())
+            ]
+        );
+        assert_eq!(pairs("S\n\nBody\n\x0c\nWrit: wrt_A\n"), vec![]);
+        assert_eq!(pairs("S\n\nWrit: wrt_A\n\x0c\n"), vec![]);
+        assert_eq!(pairs("S\n\nWrit: wrt_A\x0c\n"), one("Writ", "wrt_A\x0c"));
+        assert_eq!(pairs("S\n\nWrit: wrt_A\r\n"), one("Writ", "wrt_A"));
     }
 
     #[test]

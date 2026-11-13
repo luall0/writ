@@ -256,6 +256,83 @@ fn a_missing_tree_leaves_the_paths_unknown() {
     assert_eq!(error.to_string(), format!("object {subtree} was not sent"));
 }
 
+/// The review after M7.6, G-8: `git~1` followed by dots or spaces is `.git` to NTFS, and to
+/// `git fsck` (`is_ntfs_dotgit`). Every name `fsck` reports as `.git` is one Writ refuses.
+#[test]
+fn a_dot_git_name_is_refused_wherever_git_fsck_sees_one() {
+    // (name, whether git fsck says `hasDotgit`)
+    let names: [(&str, bool); 20] = [
+        (".git", true),
+        (".GIT.", true),
+        ("git~1", true),
+        ("GIT~1", true),
+        ("git~1.", true),
+        ("GIT~1 ", true),
+        ("git~1. .", true),
+        ("Git~1 . ", true),
+        ("git~1:x", true),
+        ("git~1\\x", true),
+        ("git~1x", false),
+        ("git~10", false),
+        ("git~1.x", false),
+        ("git~1 x", false),
+        ("git~2", false),
+        (".git~1", false),
+        ("xgit~1", false),
+        (".gitx", false),
+        ("git", false),
+        (".gitignore", false),
+    ];
+    for (name, dotgit) in names {
+        // A repository of its own: fsck checks every object it holds.
+        let repo = Repo::new("sha1");
+        let blob = {
+            let mut child = repo
+                .command(&["hash-object", "-w", "--stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(b"x\n").unwrap();
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        let raw_id: Vec<u8> = (0..blob.len() / 2)
+            .map(|i| u8::from_str_radix(&blob[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        let mut content = format!("100644 {name}\0").into_bytes();
+        content.extend(&raw_id);
+        let mut child = repo
+            .command(&["hash-object", "-t", "tree", "-w", "--literally", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&content).unwrap();
+        let tree = child.wait_with_output().unwrap();
+        assert!(tree.status.success(), "{name:?}");
+        let fsck = repo
+            .command(&["fsck", "--no-dangling", "--no-progress"])
+            .output()
+            .unwrap();
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&fsck.stdout),
+            String::from_utf8_lossy(&fsck.stderr)
+        );
+        assert_eq!(
+            said.contains("hasDotgit"),
+            dotgit,
+            "git fsck on {name:?}: {said}"
+        );
+        assert_eq!(
+            writ_git::tree::is_dotgit(name.as_bytes()),
+            dotgit,
+            "Writ on {name:?}"
+        );
+    }
+}
+
 #[test]
 fn a_mode_git_reads_as_a_directory_is_refused_not_read_as_a_file() {
     use writ_git::paths::PathsError;
@@ -387,6 +464,19 @@ fn trailers_are_git_s() {
         "S\n\nWrit:wrt_A\n",
         "S\n\n Writ: wrt_A\n",
         "S\n\nWrit: wrt_A\n\n\n\n",
+        // The review after M7.6, G-3: git's whitespace is space, tab, newline and carriage
+        // return; a form feed or a vertical tab is text to it.
+        "S\n\nSigned-off-by: A <a@x>\nWrit: wrt_OTHER\n\x0c\nWrit: wrt_A\n",
+        "S\n\nBody\n\x0c\nWrit: wrt_A\n",
+        "S\n\x0c\nWrit: wrt_A\n",
+        "S\n\nWrit: wrt_A\n\x0c\n",
+        "S\n\nWrit: wrt_A\x0c\n",
+        "S\n\nWrit: wrt_A\x0b\n",
+        "S\n\n\x0bWrit: wrt_A\n",
+        "S\n\nWrit: wrt_A\r\n",
+        "S\n\nWrit: wrt_A\n\r\n",
+        "S\n\nWrit: wrt_A\n\rmore\n",
+        "S\n\r\nWrit: wrt_A\n",
     ];
     for message in messages {
         let mut child = repo

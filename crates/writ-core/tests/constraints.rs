@@ -43,11 +43,66 @@ fn check_push(cases: &[(&str, Mutate<PushRequest>, Option<DenyCode>)]) {
         let mut world = World::new(lease());
         let mut request = push_request(&world.lease);
         mutate(&mut world, &mut request);
-        let got = policy::decide_push(&world.ctx(), &request)
-            .err()
-            .map(|d| d.code);
+        let decided = policy::decide_push(&world.ctx(), &request).err();
+        let got = decided.as_ref().map(|d| d.code);
         assert_eq!(got, *expected, "push case {name:?}");
+        // The pre-check the gateway makes before it reads anything (G-9), on the updates
+        // with the facts it can't know yet set as passing: what it refuses, the decision
+        // refuses the same way.
+        let mut unread = request.updates.clone();
+        for update in &mut unread {
+            update.fast_forward = true;
+            update.case_twin = false;
+        }
+        if let Err(pre) =
+            policy::check_push_refs(&world.config, &world.lease, &request.repo, &unread)
+        {
+            assert_eq!(decided.as_ref(), Some(&pre), "push case {name:?}");
+        }
     }
+}
+
+/// The review after M7.6, G-9: the lease's ref rules are checked before the mirror is held and
+/// any git runs for the push, in the code `decide_push` checks them with.
+#[test]
+fn the_ref_rules_are_checked_before_anything_is_read() {
+    let world = World::new(lease());
+    let repo = push_request(&world.lease).repo;
+    let pre = |updates: Vec<RefUpdate>| {
+        policy::check_push_refs(&world.config, &world.lease, &repo, &updates)
+            .err()
+            .map(|d| d.code)
+    };
+    let deleting = |name: &str| RefUpdate {
+        new: None,
+        ..update(name)
+    };
+    assert_eq!(pre(vec![update("refs/heads/agent/oauth-login")]), None);
+    assert_eq!(
+        pre(vec![update("refs/heads/feature/x")]),
+        Some(DenyCode::Ref)
+    );
+    assert_eq!(
+        pre(vec![update("refs/heads/main")]),
+        Some(DenyCode::ProtectedRef)
+    );
+    assert_eq!(
+        pre(vec![
+            update("refs/heads/agent/oauth-login"),
+            update("refs/heads/agent/OAUTH-login")
+        ]),
+        Some(DenyCode::Invalid),
+        "twice, ignoring case"
+    );
+    assert_eq!(
+        pre(vec![deleting("refs/heads/agent/oauth-login")]),
+        Some(DenyCode::ForcePush)
+    );
+    // A thousand updates outside the lease: refused at the first, without a fact read.
+    let many: Vec<RefUpdate> = (0..1000)
+        .map(|n| update(&format!("refs/heads/outside/{n}")))
+        .collect();
+    assert_eq!(pre(many), Some(DenyCode::Ref));
 }
 
 fn check_fetch(cases: &[(&str, Mutate<()>, Option<DenyCode>)]) {
