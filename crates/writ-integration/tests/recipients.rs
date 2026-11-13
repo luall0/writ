@@ -176,6 +176,36 @@ fn a_recovery_key_on_a_passphrase_keystore_opens_it_and_is_checked_from_the_appr
     ok(&daemon.unseal());
     ok(&daemon.run(&["recovery", "check"], &format!("{secret}\n")));
 
+    // The passphrase forgotten: `writd recover` takes the recovery key instead, on the host;
+    // the passphrase stays the way in.
+    let shown = daemon.run(&["admin", "show", "policy"], "");
+    ok(&shown);
+    fs::write(daemon.root().join("recovered.yaml"), stdout(&shown)).unwrap();
+    daemon.stop();
+    let out = daemon.writd_with(
+        &["recover", "writd.yaml", "policy", "recovered.yaml"],
+        &format!("{secret}\n"),
+    );
+    ok(&out);
+    assert!(
+        daemon
+            .audit()
+            .contains("recovered on the host with the recovery key")
+    );
+    assert_eq!(stanza_tags(&dir.join("identity.age")), ["scrypt"]);
+    let out = daemon.writd_with(
+        &["recover", "writd.yaml", "policy", "recovered.yaml"],
+        &format!("{}\n", new_recovery_key(&daemon).0),
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("the recovery key doesn't open this keystore"),
+        "{}",
+        stderr(&out)
+    );
+    daemon.restart();
+    ok(&daemon.unseal());
+
     // Replaced: the old key no longer checks, the new one does; removed: its files go.
     let given = format!("recipient={other_recipient}");
     ok(&daemon.run(
@@ -367,10 +397,15 @@ fn on_the_mac_a_hardware_recipient_takes_the_keystore_live_and_unwraps_the_token
     let out = ls_remote(&daemon, &lease, "web");
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 
-    // A start again: the device unseals, whatever passphrase is typed.
+    // A start again: the device unseals, no passphrase asked (none read).
     daemon.restart();
-    let out = daemon.run(&["unseal"], "not the passphrase at all\n");
+    let out = daemon.run(&["unseal"], "");
     ok(&out);
+    assert!(
+        stdout(&out).contains("Its keystore opens with the daemon's hardware: no passphrase."),
+        "{}",
+        stdout(&out)
+    );
     let out = ls_remote(&daemon, &lease, "web");
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     ok(&daemon.run(&["recovery", "check"], &format!("{secret}\n")));
@@ -398,4 +433,65 @@ fn on_the_mac_a_hardware_recipient_takes_the_keystore_live_and_unwraps_the_token
             .unwrap_or_default()
             .contains("last hardware recipient")
     }));
+
+    // The device lost: `writd recover`, on the host, never with the hardware alone. The
+    // passphrase is refused (there is none); the recovery key recovers a policy without the
+    // device, and sets a new passphrase.
+    let shown = daemon.run(&["admin", "show", "policy"], "");
+    ok(&shown);
+    let without = stdout(&shown).replace("  se-01:\n    backend: se-cryptokit\n", "");
+    assert_ne!(without, stdout(&shown));
+    fs::write(daemon.root().join("recovered.yaml"), &without).unwrap();
+    daemon.stop();
+    // Lost: its blob no longer what the device made (the frame refuses it before the helper
+    // sees it).
+    let blob = dir.join("recipients/se-01.blob");
+    let mut bytes = fs::read(&blob).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    fs::write(&blob, &bytes).unwrap();
+    let recover = |stdin: &str| {
+        daemon.writd_with(
+            &["recover", "writd.yaml", "policy", "recovered.yaml"],
+            stdin,
+        )
+    };
+    let out = recover(&format!("{}\n", writ_integration::daemon::PASSPHRASE));
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains(
+            "this keystore has no passphrase (its hardware opens it): give the recovery key"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    let out = recover(&format!("{secret}\na new passphrase, long enough\n"));
+    ok(&out);
+    let said = stdout(&out);
+    assert!(
+        said.contains("recipient se-01: its device doesn't open it"),
+        "{said}"
+    );
+    assert!(
+        said.contains("keystore: the identity wrapped to the new passphrase"),
+        "{said}"
+    );
+    assert_eq!(stanza_tags(&dir.join("identity.age")), ["scrypt"]);
+    assert_eq!(
+        stanza_tags(&token),
+        ["X25519"],
+        "the token back to the identity"
+    );
+    assert!(!blob.exists());
+    assert!(
+        daemon
+            .audit()
+            .contains("recovered on the host with the recovery key"),
+        "{}",
+        daemon.audit()
+    );
+    daemon.restart();
+    ok(&daemon.run(&["unseal"], "a new passphrase, long enough\n"));
+    let out = ls_remote(&daemon, &lease, "web");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
 }

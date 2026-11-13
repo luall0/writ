@@ -418,6 +418,17 @@ pub fn data_key(
     )?)
 }
 
+/// Wraps the keystore's identity with `passphrase` into the new file `path` (`writd recover`
+/// going back to a passphrase).
+pub fn enroll_at(
+    path: &std::path::Path,
+    passphrase: &writ_platform::Passphrase,
+    key: &writ_platform::DataKey,
+) -> anyhow::Result<()> {
+    writ_platform::unlock::passphrase::enroll(path, passphrase, key)?;
+    Ok(())
+}
+
 /// Wraps a new keystore identity with `passphrase` (`writd init`). Refuses an existing file.
 pub fn enroll(
     sealed: &SealedConfig,

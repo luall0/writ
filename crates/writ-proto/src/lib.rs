@@ -37,8 +37,8 @@ pub use messages::{
     Phases, Previous, ProveRequest, Proved, RecoveryShown, RefuseRequest, Relation, RemovedKey,
     Renewal, RepoPolicy, Report, ReportCommit, ReportPush, RevokeRequest, ScanNonce, ScanRequest,
     Scanned, ScannedKey, SealedBoot, Shown, Submitted, Summary, TemplateView, TlsRequest,
-    TlsRotated, TlsShown, TokenApplied, TokenRequest, TokenShown, UnsealRequest, Unsealed,
-    UpstreamChecked,
+    TlsRotated, TlsShown, TokenApplied, TokenRequest, TokenShown, UnsealRequest, UnsealWay,
+    Unsealed, UpstreamChecked,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -224,6 +224,7 @@ mod tests {
             sealed: None,
             recipient: None,
             token_recipients: Vec::new(),
+            unseal: None,
         });
         let bytes = encode_reply(&ok);
         assert_eq!(bytes, b"{\"ok\":{\"decisions\":\"open\"}}\n");
@@ -273,6 +274,7 @@ mod tests {
                 "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p".to_owned(),
             ),
             token_recipients: vec!["age1se1example".to_owned()],
+            unseal: Some(crate::UnsealWay::Hardware),
         };
         let bytes = encode_reply(&Ok::<_, ApiError>(info.clone()));
         assert_eq!(decode_reply::<Info>(&bytes), Ok(info));
@@ -281,6 +283,7 @@ mod tests {
             sealed: None,
             recipient: None,
             token_recipients: Vec::new(),
+            unseal: None,
         }));
         assert_eq!(open, b"{\"ok\":{\"decisions\":\"signed\"}}\n");
     }

@@ -105,6 +105,9 @@ pub struct ServiceConfig {
     /// The sealed keystore's public recipient, served by `writ info` (what `writ admin
     /// token` encrypts to); `None` with the development keystore.
     pub recipient: Option<String>,
+    /// What opens the keystore while sealed (M7.6), served by `writ info`; `None` with the
+    /// development keystore.
+    pub unseal: Option<writ_proto::UnsealWay>,
     /// How each signing key of `policy` signs, as its declaration resolves on its backend
     /// (`keys.<id>`). A key without its entry signs nothing; a policy change brings its own
     /// ([`AdminParsed::Policy`]).
@@ -701,6 +704,7 @@ impl Service {
             decisions: self.config.decisions,
             sealed: self.is_sealed().then(|| self.boot.clone()),
             recipient: self.config.recipient.clone(),
+            unseal: self.is_sealed().then_some(self.config.unseal).flatten(),
             token_recipients: match self.is_sealed() {
                 true => Vec::new(),
                 // poisoned: the list is replaced whole.

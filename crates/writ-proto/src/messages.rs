@@ -135,6 +135,21 @@ pub struct Info {
     /// while sealed, and with the development keystore: [`Info::recipient`] then.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub token_recipients: Vec<String>,
+    /// While sealed (M7.6): what opens the keystore. `writ unseal` asks for a passphrase only
+    /// for [`UnsealWay::Passphrase`]; with [`UnsealWay::Hardware`] it sends none (an empty
+    /// one, never read) and the daemon's device opens it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unseal: Option<UnsealWay>,
+}
+
+/// What opens a sealed keystore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UnsealWay {
+    /// The keystore's passphrase, typed at `writ unseal`.
+    Passphrase,
+    /// The daemon's hardware recipient (the Secure Enclave): no passphrase.
+    Hardware,
 }
 
 /// A sealed daemon's boot, as a `writ-unseal/1` document names it.

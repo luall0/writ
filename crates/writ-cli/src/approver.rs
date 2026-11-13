@@ -344,7 +344,14 @@ pub async fn unseal(paths: &Paths, url: &str, signer: &Signer) -> anyhow::Result
                 boot.daemon,
                 boot.nonce.as_str()
             );
-            let typed = writ_crypto::passphrase::read("Keystore passphrase: ", None, false)?;
+            // A keystore its hardware opens (M7.6) takes no passphrase: none is asked.
+            let typed = match info.unseal {
+                Some(writ_proto::UnsealWay::Hardware) => {
+                    println!("Its keystore opens with the daemon's hardware: no passphrase.");
+                    zeroize::Zeroizing::new(String::new())
+                }
+                _ => writ_crypto::passphrase::read("Keystore passphrase: ", None, false)?,
+            };
             let document = Unseal::new(boot.daemon, boot.nonce).canonical_bytes()?;
             let signature = signer.sign(&document)?;
             let request = UnsealRequest {

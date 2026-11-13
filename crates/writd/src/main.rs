@@ -556,6 +556,15 @@ fn start_service(
             daemon,
             in_force,
             recipient: keystore::recipient(config)?,
+            unseal: match &config.keystore {
+                config::KeystoreConfig::Sealed(sealed) => {
+                    Some(match keystore::hardware_wrapped(sealed)? {
+                        true => writ_proto::UnsealWay::Hardware,
+                        false => writ_proto::UnsealWay::Passphrase,
+                    })
+                }
+                config::KeystoreConfig::Dev(_) => None,
+            },
             signing_keys: declared::key_uses(declared),
         },
         writ_crypto::keys::random_array()?,

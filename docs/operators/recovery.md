@@ -10,7 +10,8 @@ be fixed afterwards.
 |---|---|---|
 | A second approval key | With only one, losing it leaves no way to sign any change | A YubiKey (`ssh-keygen -t ed25519-sk`), added with `writ admin apply approvers` |
 | A second reader key | A lost Mac takes its reader key, and without one nobody reaches the approval API | `writ reader <name>` on another machine, added with `writ admin apply readers` |
-| The passphrase, written down somewhere safe | Nothing opens the keystore without it, not even `writd recover` | A password manager |
+| The passphrase, written down somewhere safe | Without it or the recovery key, nothing opens the keystore, not even `writd recover` | A password manager |
+| A recovery key, kept offline | It opens the keystore when the passphrase is lost, or the Mac's Secure Enclave is | `writ recovery new`, then `writ admin recipient add recovery recipient=<age1…>` ([how](sealing.md#the-recovery-key-and-the-secure-enclave)); check it now and then with `writ recovery check` |
 | Backups | A lost disk loses the leases, the ledger, the audit log and the keys | `state_dir` (copy `leases.db` with `sqlite3 leases.db .backup`), `keystore.sealed.dir` (encrypted: safe anywhere), the boot directory (secret: keep it safe) |
 | A copy of the current files | Something to edit and recover from | `writ admin show policy > policy.yaml`, and the same for `approvers` and `readers` |
 
@@ -25,7 +26,9 @@ be fixed afterwards.
 | Found `<file>.unapplied-<time>` on the host | Someone edited that file by hand. It was never applied. To apply it: `writ admin apply`, or `writd recover` |
 | The daemon won't unseal: "altered at rest" | Someone changed the daemon's copies of the files without the keystore. Find out how (audit log, host logs). Then `writd recover` the file that was altered, from a copy you trust: it shows you the other two and asks whether you trust them (step 3 below). Or restore a backup of `state_dir` |
 | The daemon won't start: "no authority files in force" | Its state lost its copies (a new or emptied `state_dir`). Restore a backup of `state_dir`, or run `writd init` if it was never initialized |
-| Lost the passphrase | It can't be recovered, by design. [Start over](#starting-over) |
+| Lost the passphrase, and you declared a recovery key | `writd recover` takes the recovery key where it asks for the passphrase. The passphrase stays as it was: to change it, start over |
+| Lost the Mac's Secure Enclave key (a new Mac, a wiped one), and you declared a recovery key | [`writd recover`](#writd-recover-step-by-step) `policy`, with the recovery key and a policy that no longer names the lost key: it asks for a new passphrase, and the keystore opens with it from then on |
+| Lost the passphrase and had no recovery key | It can't be recovered, by design. [Start over](#starting-over) |
 | Lost the keys directory, the boot directory or the host, and you have backups | Restore them at the same paths, same owner, same modes. Then start and unseal |
 
 **About backups:** restoring an older `state_dir` also restores the older policy, approvers
@@ -35,8 +38,9 @@ itself.
 ## `writd recover`, step by step
 
 `writd recover <writd.yaml> <policy|approvers|readers> <file>` puts `<file>` in force, from the
-daemon host. It needs access to the host and the passphrase. Together they already open every
-secret, so it gives nobody anything new.
+daemon host. It needs access to the host and the passphrase, or the recovery key. Together
+they already open every secret, so it gives nobody anything new. The Secure Enclave alone is
+never enough: on a keystore it opens, `writd recover` takes the recovery key only.
 
 1. **Stop the daemon.** `writd recover` refuses to run while it runs, and says so:
    `writd (pid 812) holds …/writd.lock: stop the daemon first`.
@@ -50,7 +54,8 @@ secret, so it gives nobody anything new.
    writd recover writd.yaml approvers approvers.new
    ```
 
-   It asks for the passphrase, then checks the file like a signed change would: it must
+   It asks for the passphrase or the recovery key (paste the line `writ recovery new` printed),
+   then checks the file like a signed change would: it must
    parse, keep at least one approver and one reader, and no key may be both. Then it puts the
    file in force, writes an `admin` line to the audit log ("recovered on the host"), and
    writes the file back. A wrong passphrase changes nothing.
@@ -60,6 +65,11 @@ secret, so it gives nobody anything new.
    with this keystore? [y/N]`. Read them. Answer `y` only if they are what you expect: all
    three are then sealed again. Any other answer changes nothing. If one of them is wrong
    too, answer no and recover that one first.
+
+   Recovering a `policy` also brings the keystore in line with its `recipients`. A Secure
+   Enclave key the policy no longer names, and that the Mac no longer opens, is dropped. If no
+   Secure Enclave key is left, it asks for a new passphrase, twice: from then on, `writ unseal`
+   asks for it.
 4. **Start the daemon and unseal it** with the new key: `writ unseal --key <new key>.pub`.
 5. **Check** from your machine: `writ admin show approvers` shows the new version.
 
@@ -145,7 +155,7 @@ you) from the daemon's keys, so your user must not have passwordless `sudo`
 
 ## What recovery can't do
 
-- Open the keystore without the passphrase.
+- Open the keystore without the passphrase or the recovery key.
 - Bring back leases, the ledger or the audit log from a lost `state_dir`. Only a backup can.
 - Undo what a lost key did while it was still listed. Read the audit log's `grant` and `admin`
   lines for what it approved, and `writ revoke` what you don't recognize.

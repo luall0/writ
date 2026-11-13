@@ -218,12 +218,25 @@ pub fn make_missing(
 
 /// Every hardware recipient the keystore holds (the policy's, and any it no longer declares
 /// whose files are still there: what a change cut short may still need to read), its blob
-/// checked against its point by its device.
+/// checked against its point by its device. One its device refuses fails the whole.
 pub fn load(config: &Config, sealed: &SealedConfig) -> anyhow::Result<Vec<Hardware>> {
+    let (held, refused) = load_each(config, sealed)?;
+    if let Some((_, why)) = refused.into_iter().next() {
+        return Err(why);
+    }
+    Ok(held)
+}
+
+/// The hardware recipients loaded, and those refused with why.
+pub type Each = (Vec<Hardware>, Vec<(KeyId, anyhow::Error)>);
+
+/// [`load`], each recipient on its own: those loaded, and those refused with why (`writd
+/// recover` after a device was lost, whose policy no longer declares them).
+pub fn load_each(config: &Config, sealed: &SealedConfig) -> anyhow::Result<Each> {
     let paths = Paths(sealed);
     let dir = paths.dir();
     if !dir.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let mut names = Vec::new();
     for entry in
@@ -239,40 +252,61 @@ pub fn load(config: &Config, sealed: &SealedConfig) -> anyhow::Result<Vec<Hardwa
         }
     }
     names.sort();
-    let mut held = Vec::new();
+    let (mut held, mut refused) = (Vec::new(), Vec::new());
     for name in names {
-        let public = read_public(&paths.public(&name))?;
-        let Some(backend) = public.backend else {
-            continue; // the recovery recipient's file: no device.
-        };
-        let backend = Backend::of(
-            &backend
-                .clone()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("recipient {name}: backend {backend:?}"))?,
-            &format!("recipient {name}"),
-        )?;
-        let recipient = P256Recipient::parse(&public.recipient, HRP)
-            .map_err(|e| anyhow::anyhow!("recipient {name}: {e}"))?;
-        let stored =
-            writ_platform::fs::read_secret(&paths.blob(&name), "a recipient's key", MAX_BLOB)?;
-        let way = crate::platform::agreement_way(
-            config,
-            backend,
-            name.as_str(),
-            &writ_signer::Stored::new(stored.to_vec()),
-            &recipient.uncompressed(),
-        )?;
-        if way.recipient() != &recipient {
-            bail!("recipient {name}: its key is not the one its file names");
+        match load_one(config, &paths, &name) {
+            Ok(Some(hardware)) => held.push(hardware),
+            Ok(None) => {}
+            Err(why) => refused.push((name, why)),
         }
-        held.push(Hardware {
-            name,
-            recipient,
-            way,
-        });
     }
-    Ok(held)
+    Ok((held, refused))
+}
+
+/// The hardware recipient `name`, or none for the recovery recipient's file.
+fn load_one(config: &Config, paths: &Paths<'_>, name: &KeyId) -> anyhow::Result<Option<Hardware>> {
+    let public = read_public(&paths.public(name))?;
+    let Some(backend) = public.backend else {
+        return Ok(None); // the recovery recipient's file: no device.
+    };
+    let backend = Backend::of(
+        &backend
+            .clone()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("recipient {name}: backend {backend:?}"))?,
+        &format!("recipient {name}"),
+    )?;
+    let recipient = P256Recipient::parse(&public.recipient, HRP)
+        .map_err(|e| anyhow::anyhow!("recipient {name}: {e}"))?;
+    let stored = writ_platform::fs::read_secret(&paths.blob(name), "a recipient's key", MAX_BLOB)?;
+    let way = crate::platform::agreement_way(
+        config,
+        backend,
+        name.as_str(),
+        &writ_signer::Stored::new(stored.to_vec()),
+        &recipient.uncompressed(),
+    )?;
+    if way.recipient() != &recipient {
+        bail!("recipient {name}: its key is not the one its file names");
+    }
+    Ok(Some(Hardware {
+        name: name.clone(),
+        recipient,
+        way,
+    }))
+}
+
+/// Deletes the files of the hardware recipient `name` (`writd recover`: one its device no
+/// longer opens, which the recovered policy doesn't declare).
+pub fn forget(sealed: &SealedConfig, name: &KeyId) -> anyhow::Result<()> {
+    let paths = Paths(sealed);
+    for path in [paths.public(name), paths.blob(name)] {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("cannot remove {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The age header's stanzas, `(tag, first argument)` each: what a file is wrapped to, read

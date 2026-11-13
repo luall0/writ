@@ -270,6 +270,7 @@ impl TestServiceBuilder {
                 daemon: daemon.clone(),
                 in_force,
                 recipient: None,
+                unseal: None,
                 signing_keys: ids
                     .iter()
                     .map(|id| (id.parse().unwrap(), key_use))

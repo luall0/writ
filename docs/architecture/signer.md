@@ -358,7 +358,11 @@ unlocked ([Q17](../decisions.md)).
   [residual risk](../threat-model.md#residual-risks-v1), closed by hardware recipients
   (M7.6).
 - v1: `writ unseal` on the Mac asks for the keystore passphrase **and** signs an unseal
-  approval with Secretive. Both travel over the authenticated channel; the daemon decrypts in
+  approval with Secretive. From M7.6, `writ info` says what opens the sealed keystore
+  (`unseal`: `passphrase` or `hardware`, read from `identity.age`'s header at start): with
+  `hardware`, `writ unseal` asks for none and sends an empty one, never read; the daemon's
+  hardware recipients unwrap the identity. `writd recover` takes the passphrase or the
+  recovery key, never the hardware alone. Both travel over the authenticated channel; the daemon decrypts in
   memory only.
 - Later: the data key is wrapped to hardware recipients (age plugins for the Secure Enclave or
   YubiKey), so unsealing needs no passphrase, and the tokens with it, each unwrapped only
