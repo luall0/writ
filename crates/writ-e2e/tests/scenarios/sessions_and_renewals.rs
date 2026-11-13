@@ -354,7 +354,7 @@ fn a_lease_is_renewed_closed_and_learned_from() {
 }
 
 /// `writ run`, the session launcher (M7): the harness's status passed on, the session's pid
-/// given to it, and a ticket requested under it bound to the session, which this daemon,
+/// (the harness's own) given to it, and a ticket requested under it bound to the session, which this daemon,
 /// reached over TCP, refuses (local mode's Unix socket is where a binding is made: tested
 /// against the real daemon on the Mac in `writ-integration`'s `local_mode`).
 #[test]
@@ -367,7 +367,9 @@ fn writ_run_binds_its_tickets_to_its_session_and_passes_the_harness_s_status_on(
         7,
         "writ run with a harness that exits 7",
     );
-    let out = agent.ok("writ run -- sh -c 'test \"$WRIT_RUN_PID\" = \"$PPID\" && echo session'");
+    // The harness is the session's root: its own pid is the session's (writ run's child,
+    // which put its pid there and became the harness).
+    let out = agent.ok("writ run -- sh -c 'test \"$WRIT_RUN_PID\" = \"$$\" && echo session'");
     assert_eq!(out.trim(), "session", "{out}");
     agent.write("ticket.yaml", &ticket("agent/run", ""), "0644");
     let (_, err) = expect(

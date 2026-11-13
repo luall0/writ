@@ -288,7 +288,10 @@ serves that one operation.
   git's ssh program: it runs ssh and counts the bytes, killing it past the cap; and through
   the operation's byte-capping SOCKS5 socket (ssh's `ProxyCommand`, `writd upstream-tunnel`,
   also without a proxy), which holds the cap for every git of the operation together (the
-  review after M7.6, M-6: a relay per git had the whole cap each).
+  review after M7.6, M-6: a relay per git had the whole cap each). git then only says that
+  socket failed, so a connection the daemon can't open names its own reason in the
+  operation's error (upstream's address, directly; the proxy's words, through one): in the
+  audit line and the log, never in what the agent is told.
 - Its sockets live in `<state>/mirror/sockets/`, a private directory; leftovers are removed
   at startup.
 

@@ -313,16 +313,22 @@ fn local_mode_on_linux_binds_a_lease_to_its_session_and_keeps_the_daemon_out_of_
         );
     }
 
-    // The M6 workflow under `writ run`: the ticket bound to the session by the daemon.
-    let clone = format!(
-        "{}/{OWNER}/{REPO}.git",
-        BASE.replace(
-            "http://",
-            &format!("http://{OWNER}:{}@", stack.forgejo.token)
-        )
+    // The M6 workflow under `writ run`: the ticket bound to the session by the daemon. The
+    // token is kept out of `origin`'s URL, in a credential helper of the clone's own (`writ
+    // init` refuses an origin holding one: the review after M7.6, W-8).
+    let plain = format!("{BASE}/{OWNER}/{REPO}.git");
+    let clone = plain.replace(
+        "http://",
+        &format!("http://{OWNER}:{}@", stack.forgejo.token),
+    );
+    let helper = format!(
+        "!f() {{ echo username={OWNER}; echo password={}; }}; f",
+        stack.forgejo.token
     );
     dev.ok(&format!(
-        "git clone -q {clone} work && git -C work config user.name Agent && \
+        "git clone -q {clone} work && git -C work remote set-url origin {plain} && \
+         git -C work config credential.helper '{helper}' && \
+         git -C work config user.name Agent && \
          git -C work config user.email agent@writ.invalid && mkfifo go"
     ));
     dev.write("ticket.yaml", TICKET, "0644");

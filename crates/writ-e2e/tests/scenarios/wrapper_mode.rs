@@ -236,7 +236,7 @@ fn an_agent_works_through_writ_git_beside_the_operator_s_own_git() {
         );
     }
     assert!(
-        config.contains("remote.origin.url=http://writ:"),
+        config.contains("remote.origin.url=http://forgejo:3000/writ/demo.git"),
         "{config}"
     );
     work.ok("git checkout -q -b operator-work origin/main && echo mine > mine.txt && git add mine.txt && git commit -q -m Mine");

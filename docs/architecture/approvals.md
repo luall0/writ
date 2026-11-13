@@ -280,7 +280,9 @@ data key waits) and checks it is a token. Then, under the service's state lock: 
 must be the id's change count and `previous` the file in force (a replay, or a token changed
 meanwhile, is refused), the `admin` line is written (the id, the count it makes, both
 digests, the approver: never the token), the count bumped in the state, `tokens/<id>.age`
-written (the old one replaced), and the token used at once: the mirrors of the repos that use
+written (the old one replaced) with the token sealed again by the daemon to the recipients in
+force (a token a client sealed to recipients read before a rotation is never stored readable
+by one taken out), and the token used at once: the mirrors of the repos that use
 it reopen (`Mirrors::with_tokens`), the notifier with that token starts or takes it. The
 count only grows and is kept by the id (ASCII lowercase) even when the id leaves the policy
 and its file is deleted with it: a digest of content can come back (`none`, once the file is

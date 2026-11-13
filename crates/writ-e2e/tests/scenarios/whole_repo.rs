@@ -34,7 +34,8 @@ fn a_dedicated_clone_is_wired_whole_and_undone_exactly() {
         "user.email=agent@writ.invalid",
         "writ.repo=whole",
         "remote.writ.url=ssh://git@writd:2222/whole.git",
-        "url.ssh://git@writd:2222/whole.git.insteadof=http://writ:",
+        "url.ssh://git@writd:2222/whole.git.insteadof=http://forgejo:3000/writ/whole.git",
+        "url.ssh://git@writd:2222/whole.git.pushinsteadof=http://forgejo:3000/writ/whole.git",
     ] {
         assert!(config.contains(setting), "{setting} not in:\n{config}");
     }

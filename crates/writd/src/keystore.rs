@@ -830,11 +830,15 @@ impl Live {
     /// state held (read) for as long as the stage lives, so a rotation of the data key waits
     /// (it would leave a token the new identity doesn't open), and the file opened with the
     /// ways in force (on a hardware keystore, a device: before the service's lock is taken).
-    /// The plaintext comes with it, wiped on drop, for the caller to check it is a token.
+    /// What is written is the token sealed again here to what tokens are sealed to now,
+    /// never the file as sent: one sealed by a client that read the recipients before a
+    /// rotation (a recipient taken out among them) is never stored readable by it (the review
+    /// after M7.6, S-8). The plaintext comes with it, wiped on drop, for the caller to check
+    /// it is a token.
     pub fn stage_token<'a>(
         &'a self,
         id: &KeyId,
-        file: &'a [u8],
+        file: &[u8],
     ) -> anyhow::Result<(StagedToken<'a>, Zeroizing<Vec<u8>>)> {
         let Some((sealed, state)) = self.sealing() else {
             self.sealed()?;
@@ -843,24 +847,28 @@ impl Live {
         let plaintext = state
             .files
             .open(file, &format!("the token sent for {id}"))?;
+        let resealed = writ_crypto::sealed::seal_to(&state.token_recipients, &plaintext)
+            .and_then(|text| writ_crypto::sealed::decode(&text))
+            .map_err(|e| anyhow::anyhow!("the token sent for {id}: {e}"))?;
         Ok((
             StagedToken {
                 sealed,
                 _state: state,
                 id: id.clone(),
-                file,
+                file: resealed,
             },
             plaintext,
         ))
     }
 }
 
-/// A token file about to be put in force ([`Live::stage_token`]), the keystore's state held.
+/// A token file about to be put in force ([`Live::stage_token`]), the keystore's state held:
+/// the token sealed to the recipients in force.
 pub struct StagedToken<'a> {
     sealed: &'a SealedConfig,
     _state: std::sync::RwLockReadGuard<'a, SealedState>,
     id: KeyId,
-    file: &'a [u8],
+    file: Vec<u8>,
 }
 
 impl StagedToken<'_> {
@@ -869,9 +877,14 @@ impl StagedToken<'_> {
         sealed::token_in_force(self.sealed, &self.id)
     }
 
+    /// The file that is written: what the change's line and answer name by its digest.
+    pub fn bytes(&self) -> &[u8] {
+        &self.file
+    }
+
     /// Writes the file whole in place of the one in force.
     pub fn write(self) -> anyhow::Result<()> {
-        sealed::write_token(self.sealed, &self.id, self.file)
+        sealed::write_token(self.sealed, &self.id, &self.file)
     }
 }
 
@@ -1244,5 +1257,80 @@ mod tests {
         );
         assert!(error.starts_with("cannot create"), "{error}");
         assert_eq!(names(dir.path()), ["agent-01.age"]);
+    }
+
+    /// The review after M7.6 (S-8's remainder): a token sealed by a client that read the
+    /// recipients before a rotation (here: to the device and a recovery key since replaced)
+    /// still opens with the device, but is stored sealed again to the recipients in force: the
+    /// recovery key taken out opens nothing the daemon wrote, the new one and the device do.
+    #[test]
+    fn a_token_sealed_to_a_recipient_taken_out_is_stored_without_it() {
+        use writ_platform::unlock::x25519::X25519Unwrap;
+        let dir = tempfile::tempdir().unwrap();
+        let sealed = SealedConfig {
+            dir: dir.path().join("keys"),
+            boot: dir.path().join("boot"),
+        };
+        std::fs::create_dir_all(&sealed.dir).unwrap();
+        // The device (an X25519 key stands for it here: no hardware in a unit test), the
+        // recovery key taken out, and the one in force.
+        let device = age::x25519::Identity::generate();
+        let (old_recovery, new_recovery) = (
+            age::x25519::Identity::generate(),
+            age::x25519::Identity::generate(),
+        );
+        let ways: Vec<sealed::SecretIdentity> =
+            vec![Box::new(X25519Unwrap::new("se-01", device.clone()))];
+        let live = Live::Sealed {
+            sealed: sealed.clone(),
+            state: std::sync::RwLock::new(SealedState {
+                files: Arc::new(sealed::SecretFiles::new(ways)),
+                key: None,
+                token_recipients: vec![
+                    device.to_public().to_string(),
+                    new_recovery.to_public().to_string(),
+                ],
+                recipient: age::x25519::Identity::generate().to_public(),
+                owed: Vec::new(),
+            }),
+        };
+        let stale = writ_crypto::sealed::decode(
+            &writ_crypto::sealed::seal_to(
+                &[
+                    device.to_public().to_string(),
+                    old_recovery.to_public().to_string(),
+                ],
+                b"tok-0123456789",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let id: KeyId = "token-01".parse().unwrap();
+        let (staged, plaintext) = live.stage_token(&id, &stale).unwrap();
+        assert_eq!(plaintext.as_slice(), b"tok-0123456789");
+        assert_ne!(
+            staged.bytes(),
+            stale.as_slice(),
+            "sealed again, not as sent"
+        );
+        staged.write().unwrap();
+        let stored = std::fs::read(sealed::Layout(&sealed).token(&id)).unwrap();
+        let opens = |identity: &age::x25519::Identity| {
+            let decryptor = age::Decryptor::new(stored.as_slice()).unwrap();
+            let mut reader =
+                match decryptor.decrypt(std::iter::once(identity as &dyn age::Identity)) {
+                    Ok(reader) => reader,
+                    Err(_) => return None,
+                };
+            let mut out = Vec::new();
+            std::io::Read::read_to_end(&mut reader, &mut out).unwrap();
+            Some(out)
+        };
+        assert_eq!(opens(&old_recovery), None, "the recovery key taken out");
+        assert_eq!(
+            opens(&new_recovery).as_deref(),
+            Some(&b"tok-0123456789"[..])
+        );
+        assert_eq!(opens(&device).as_deref(), Some(&b"tok-0123456789"[..]));
     }
 }

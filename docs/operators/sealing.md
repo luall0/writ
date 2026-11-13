@@ -118,8 +118,10 @@ unsealed:
 writ admin token <id>      # asks for the token (no echo), then one signature
 ```
 
-The token is encrypted on your machine before it is sent. The daemon stores it as
-`tokens/<id>.age` and uses it at once. Run the command again to rotate it.
+The token is encrypted on your machine before it is sent. The daemon seals it again to the
+keystore's ways in before it stores it as `tokens/<id>.age`: a recovery key or Secure Enclave
+key you removed can't read it, even if your `writ` read them before the change. It is used at
+once. Run the command again to rotate it.
 
 ## The recovery key and the Secure Enclave
 

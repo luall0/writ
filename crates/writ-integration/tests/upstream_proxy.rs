@@ -322,6 +322,26 @@ fn an_ssh_upstream_behind_a_proxy_is_synced_and_written_through_it_by_a_name_it_
     }
 }
 
+/// A repo reached directly whose upstream can't be reached (here: a name no resolver knows,
+/// which only a proxy could map): every operation goes through the daemon's own proxy, so git
+/// only says that proxy failed; the error says the dial's reason with upstream named, for the
+/// audit line, and the agent is told nothing of it (the review after M7.6, M-5 and M-6).
+#[test]
+fn a_direct_upstream_that_can_t_be_reached_is_named_in_the_error_never_to_the_agent() {
+    let f = Fixture::new();
+    f.upstream_commit("a");
+    let mirrors = f.open(&f.policy(None), None);
+    let error = f.sync(&mirrors).unwrap_err();
+    let MirrorError::Upstream { upstream, why, .. } = &error else {
+        panic!("expected upstream's dial failure, got {error:?}");
+    };
+    assert_eq!(upstream, &f.url());
+    assert!(why.starts_with("cannot reach it: "), "{why}");
+    assert!(error.to_string().contains(HIDDEN), "{error}");
+    let told = error.for_agent();
+    assert_eq!(told, "repo demo: upstream can't be reached as configured");
+}
+
 #[test]
 fn an_https_upstream_behind_a_proxy_is_synced_through_it() {
     for kind in [ProxyKind::Socks5, ProxyKind::Http] {

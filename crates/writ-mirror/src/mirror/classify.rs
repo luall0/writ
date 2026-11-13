@@ -23,9 +23,18 @@ impl MirrorGuard {
                 repo,
                 max: self.shared.config.max_fetch_bytes,
             }
-        } else if let Some(failure @ crate::dial::DialError::Proxy { .. }) = access.dial_failure() {
-            // git only says the proxy failed: the dialer says why.
-            MirrorError::Proxy { repo, failure }
+        } else if let Some(failure) = access.dial_failure() {
+            // git only says the daemon's proxy failed (every operation goes through it): the
+            // dialer says why, through the repo's proxy or directly (upstream's host named:
+            // the audit line's, never the agent's).
+            match failure {
+                crate::dial::DialError::Proxy { .. } => MirrorError::Proxy { repo, failure },
+                crate::dial::DialError::Direct(why) => MirrorError::Upstream {
+                    repo,
+                    upstream: self.repo.reach.url().to_owned(),
+                    why: format!("cannot reach it: {why}"),
+                },
+            }
         } else if text.contains("Host key verification failed") {
             MirrorError::HostKey { repo }
         } else if access.transport == Transport::Https && is_certificate_failure(&text) {

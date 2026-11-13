@@ -76,7 +76,6 @@ impl Opener {
         let used = self.token_use(&id).map_err(refuse)?;
         let file = writ_crypto::sealed::decode(checked.token().sealed.as_str())
             .map_err(|e| refuse(e.to_string()))?;
-        let digest = TextDigest::of_bytes(&file);
         let (live, service, caller_owned, id_owned) = (
             open.live.clone(),
             inner.service.clone(),
@@ -108,6 +107,8 @@ impl Opener {
             };
             drop(plaintext);
             let current = staged.in_force().map_err(|e| refuse(format!("{e:#}")))?;
+            // The file written: sealed again to the recipients in force.
+            let digest = TextDigest::of_bytes(staged.bytes());
             let applied = service
                 .commit_token(&checked, &current, &digest, caller, move || {
                     staged.write().map_err(|e| format!("{e:#}"))
