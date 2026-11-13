@@ -40,13 +40,82 @@ pub struct CertificateRequest<'a> {
     pub valid_before: u64,
 }
 
+/// What signs a session certificate (M7.6): the CA's key, wherever it lives. A software key
+/// in memory ([`CertificateAuthority::new`]), or one a `Signer` backend holds (the Secure
+/// Enclave), behind this.
+pub trait CaSigner: Send + Sync {
+    fn public_key(&self) -> &PublicKey;
+    /// The signature over `data`, as the CA's algorithm signs a certificate (Ed25519 the bytes
+    /// themselves, ECDSA their curve's hash).
+    fn sign(&self, data: &[u8]) -> Result<crate::keypair::RawSignature>;
+}
+
+/// The CA's key in memory (software).
+struct Software {
+    key: crate::keypair::KeyPair,
+    public: PublicKey,
+}
+
+impl CaSigner for Software {
+    fn public_key(&self) -> &PublicKey {
+        &self.public
+    }
+
+    fn sign(&self, data: &[u8]) -> Result<crate::keypair::RawSignature> {
+        let hash = match self.key.algorithm() {
+            crate::algorithm::KeyAlgorithm::Ed25519 => None,
+            crate::algorithm::KeyAlgorithm::P256 => Some(crate::algorithm::Hash::Sha256),
+            crate::algorithm::KeyAlgorithm::P384 => Some(crate::algorithm::Hash::Sha384),
+            other => {
+                return Err(crate::CryptoError::Unsupported(format!(
+                    "a CA key of {other}"
+                )));
+            }
+        };
+        self.key.sign(data, hash)
+    }
+}
+
+/// A [`CaSigner`] as `ssh-key`'s certificate builder signs with.
+struct Through<'a>(&'a dyn CaSigner);
+
+impl signature::Signer<ssh_key::Signature> for Through<'_> {
+    fn try_sign(&self, msg: &[u8]) -> std::result::Result<ssh_key::Signature, signature::Error> {
+        self.0
+            .sign(msg)
+            .and_then(|raw| raw.to_ssh())
+            .map_err(|_| signature::Error::new())
+    }
+}
+
+impl From<&Through<'_>> for ssh_key::public::KeyData {
+    fn from(through: &Through<'_>) -> Self {
+        through.0.public_key().key_data().clone()
+    }
+}
+
 /// Issues and checks session certificates.
 pub struct CertificateAuthority {
-    key: PrivateKey,
+    key: std::sync::Arc<dyn CaSigner>,
 }
 
 impl CertificateAuthority {
+    /// The CA over a software key.
     pub fn new(key: PrivateKey) -> Self {
+        let public = key.public_key().clone();
+        match crate::keypair::KeyPair::from_ssh(key) {
+            Ok(key) => Self {
+                key: std::sync::Arc::new(Software { key, public }),
+            },
+            // A key ssh-key reads but Writ doesn't sign with: every certificate refused.
+            Err(_) => Self {
+                key: std::sync::Arc::new(Refusing(public)),
+            },
+        }
+    }
+
+    /// The CA over `key`, a key a `Signer` backend holds.
+    pub fn with_signer(key: std::sync::Arc<dyn CaSigner>) -> Self {
         Self { key }
     }
 
@@ -73,7 +142,20 @@ impl CertificateAuthority {
         for principal in request.principals {
             builder.valid_principal(*principal)?;
         }
-        Ok(builder.sign(&self.key)?)
+        Ok(builder.sign(&Through(&*self.key))?)
+    }
+}
+
+/// A CA key Writ can't sign with: refuses every certificate.
+struct Refusing(PublicKey);
+
+impl CaSigner for Refusing {
+    fn public_key(&self) -> &PublicKey {
+        &self.0
+    }
+
+    fn sign(&self, _: &[u8]) -> Result<crate::keypair::RawSignature> {
+        Err(crate::CryptoError::SigningFailed)
     }
 }
 

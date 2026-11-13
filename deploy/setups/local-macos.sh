@@ -89,11 +89,12 @@ check_prefix() {
 }
 
 # The setup's own questions, after the frame's (the setup, the approval key): where the TLS
-# key and the first agent signing key live. With the daemon's data kept from before, its
+# key, the SSH CA's key and the first agent signing key live. With the daemon's data kept from before, its
 # keystore and policy are kept: nothing more to ask.
 setup_questions() {
     choose_approver
     TLS_BACKEND=${TLS_BACKEND:-}
+    CA_BACKEND=${CA_BACKEND:-}
     AGENT_BACKEND=${AGENT_BACKEND:-}
     [ -d "$DATA" ] && return 0
     if [ -z "$TLS_BACKEND" ] && terminal; then
@@ -105,6 +106,15 @@ setup_questions() {
         say "writ admin tls rotate --backend moves it later either way."
     fi
     TLS_BACKEND=$(choose_one TLS_BACKEND "$TLS_BACKEND" "TLS key" software software se-cryptokit)
+    if [ -z "$CA_BACKEND" ] && terminal; then
+        say ""
+        say "The daemon's SSH certificate authority: it signs each lease's certificate, the one"
+        say "your agents connect with."
+        say "  software: an Ed25519 key in the daemon's sealed keystore"
+        say "  se-cryptokit: a P-256 key in this Mac's Secure Enclave, never out of it (needed to"
+        say "  start the daemon without you, auto-unseal)"
+    fi
+    CA_BACKEND=$(choose_one CA_BACKEND "$CA_BACKEND" "SSH CA key" software software se-cryptokit)
     if [ -z "$AGENT_BACKEND" ] && terminal; then
         say ""
         say "Your agents' first commit signing key, agent-01: it signs every commit they make"
@@ -123,6 +133,7 @@ setup_answers() {
         return 0
     fi
     say "  TLS key: $TLS_BACKEND"
+    say "  SSH CA key: $CA_BACKEND"
     say "  Agent signing key agent-01: $(agent_key_said)"
 }
 
@@ -324,7 +335,7 @@ setup_install() {
         put_root "$DATA/approvers" 0644 "$DAEMON_USER:$DAEMON_USER" "approver $(head -n 1 "$APPROVER")"
         put_root "$DATA/readers" 0644 "$DAEMON_USER:$DAEMON_USER" "$reader_line"
         step "The keystore (writd init, as $DAEMON_USER): choose its passphrase"
-        as_daemon "$DAEMON_USER" "$BIN/writd" init "$CONFIG" --tls-backend "$TLS_BACKEND"
+        as_daemon "$DAEMON_USER" "$BIN/writd" init "$CONFIG" --tls-backend "$TLS_BACKEND" --ca-backend "$CA_BACKEND"
     fi
 
     step "The LaunchDaemon $LABEL ($PLIST), started"

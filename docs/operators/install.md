@@ -134,6 +134,7 @@ give every one.
 | `SETUP=local` | The setup |
 | `APPROVER=<path to the .pub>` | Your approval key |
 | `TLS_BACKEND=software\|se-cryptokit` | Where the HTTPS key is made (the Mac; `software` when left out) |
+| `CA_BACKEND=software\|se-cryptokit` | Where the SSH CA's key is made, the one that signs each lease's certificate (the Mac; `software` when left out) |
 | `AGENT_BACKEND=software\|se-cryptokit` | Where `agent-01` is made (the Mac; `software` when left out) |
 | `DRY_RUN=1` | Only list the changes, make none |
 | `REPOS=undo\|keep` | The uninstall's question about the repositories `writ init` set up |

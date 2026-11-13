@@ -70,7 +70,7 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 const COMMANDS: &[(&str, &str)] = &[
     (
         "init",
-        "<writd.yaml> [--tls-backend <software|se-cryptokit>]",
+        "<writd.yaml> [--tls-backend <software|se-cryptokit>] [--ca-backend <software|se-cryptokit>]",
     ),
     ("run", "<writd.yaml>"),
     ("recover", "<writd.yaml> <policy|approvers|readers> <file>"),
@@ -166,14 +166,24 @@ fn host_key(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `writd init <writd.yaml> [--tls-backend <name>]`.
+/// `writd init <writd.yaml> [--tls-backend <name>] [--ca-backend <name>]`.
 fn init(path: &Path, options: &[&str]) -> anyhow::Result<()> {
-    let backend = match options {
-        [] => "software",
-        [flag, backend] if *flag == "--tls-backend" => backend,
-        _ => bail!("usage: writd init <writd.yaml> [--tls-backend <software|se-cryptokit>]"),
-    };
-    keystore::init(path, backend)
+    let usage = "usage: writd init <writd.yaml> [--tls-backend <software|se-cryptokit>] \
+                 [--ca-backend <software|se-cryptokit>]";
+    let (mut tls, mut ca) = ("software", "software");
+    let mut rest = options;
+    while let [flag, backend, after @ ..] = rest {
+        match *flag {
+            "--tls-backend" => tls = backend,
+            "--ca-backend" => ca = backend,
+            _ => bail!("{usage}"),
+        }
+        rest = after;
+    }
+    if !rest.is_empty() {
+        bail!("{usage}");
+    }
+    keystore::init(path, tls, ca)
 }
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {

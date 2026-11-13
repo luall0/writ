@@ -301,7 +301,7 @@ pub fn keys(dir: &Path, declared: &Declarations, makers: &super::Makers) -> anyh
     allowed()?;
     private_dir(dir)?;
     Ok(Keys {
-        ca: dev_key(dir, "ca")?,
+        ca: dev_ca(dir)?,
         signing: dev_keys_of(dir, declared, KeyRole::Signing, makers)?,
         upstream: dev_keys_of(dir, declared, KeyRole::Upstream, makers)?,
     })
@@ -315,6 +315,17 @@ pub fn boot(dir: &Path) -> anyhow::Result<Boot> {
         host: dev_key(dir, "host")?,
         tls: dev_tls(dir)?,
         ca_public: dev_key(dir, "ca")?.public_key().clone(),
+    })
+}
+
+/// The development keystore's CA key, in software.
+fn dev_ca(dir: &Path) -> anyhow::Result<super::StoredKey> {
+    let key = dev_key(dir, "ca")?;
+    let meta = writ_crypto::keyfile::KeyMeta::SSH;
+    Ok(super::StoredKey {
+        id: super::sealed::CA_ID.parse()?,
+        key: super::Material::Software(writ_crypto::keypair::KeyPair::from_ssh(key)?),
+        meta,
     })
 }
 
@@ -372,7 +383,7 @@ templates: {{}}
         let makers = &makers;
         let keys = |dir: &Path, declared: &Declarations| -> anyhow::Result<Keys> {
             Ok(Keys {
-                ca: dev_key(dir, "ca")?,
+                ca: dev_ca(dir)?,
                 signing: dev_keys_of(dir, declared, KeyRole::Signing, makers)?,
                 upstream: dev_keys_of(dir, declared, KeyRole::Upstream, makers)?,
             })

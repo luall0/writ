@@ -199,6 +199,62 @@ pub fn agreement_way(
     ))
 }
 
+/// Certificates that may wait for the CA's backend (one per grant).
+const CA_QUEUE: usize = 8;
+
+/// How long a certificate waits for the CA's backend.
+const CA_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The SSH CA behind a `Signer` (M7.6): its key in software or on a device, signing each
+/// certificate through its own queue. A key the device refused at unseal signs nothing (every
+/// grant refused, the daemon running), said in `refused`.
+pub fn ca(
+    config: &Config,
+    key: StoredKey,
+) -> anyhow::Result<(writ_crypto::ca::CertificateAuthority, Vec<(KeyId, String)>)> {
+    let public = key.key.public_key();
+    let algorithm = writ_crypto::algorithm::KeyAlgorithm::of_public(public.key_data())
+        .ok_or_else(|| anyhow::anyhow!("the CA key's algorithm is not one Writ signs with"))?;
+    let hash = match algorithm {
+        writ_crypto::algorithm::KeyAlgorithm::Ed25519 => None,
+        writ_crypto::algorithm::KeyAlgorithm::P256 => Some(writ_crypto::algorithm::Hash::Sha256),
+        writ_crypto::algorithm::KeyAlgorithm::P384 => Some(writ_crypto::algorithm::Hash::Sha384),
+        other => bail!("a CA key of {other} is not supported"),
+    };
+    let id = key.id.clone();
+    let use_signer = use_signer(config, vec![key], "ca", CA_QUEUE, CA_DEADLINE)?;
+    let signer = CaThrough {
+        signer: use_signer.signer,
+        id,
+        public,
+        hash,
+    };
+    Ok((
+        writ_crypto::ca::CertificateAuthority::with_signer(Arc::new(signer)),
+        use_signer.refused,
+    ))
+}
+
+/// The CA's key in its signer, as the certificate authority signs with it.
+struct CaThrough {
+    signer: Arc<Routed>,
+    id: KeyId,
+    public: writ_crypto::ssh_key::PublicKey,
+    hash: writ_crypto::algorithm::SignerHash,
+}
+
+impl writ_crypto::ca::CaSigner for CaThrough {
+    fn public_key(&self) -> &writ_crypto::ssh_key::PublicKey {
+        &self.public
+    }
+
+    fn sign(&self, data: &[u8]) -> writ_crypto::Result<writ_crypto::keypair::RawSignature> {
+        self.signer
+            .sign(&self.id, data, self.hash)
+            .map_err(|_| writ_crypto::CryptoError::SigningFailed)
+    }
+}
+
 /// Commit signatures that may wait for one of the agent keys' backends while it signs one.
 const AGENT_KEYS_QUEUE: usize = 16;
 

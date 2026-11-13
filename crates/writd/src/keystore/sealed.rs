@@ -512,26 +512,62 @@ pub fn public(sealed: &SealedConfig, declared: &Declarations) -> anyhow::Result<
     })
 }
 
-/// The sealed key at `secret`, opened by `files`, and checked against its public half at
-/// `public` (the one printed and registered): a mismatch means one was replaced. The CA key.
-fn sealed_key(
-    files: &SecretFiles,
-    secret: &Path,
-    public: &Path,
-    what: &str,
-) -> anyhow::Result<PrivateKey> {
-    let text = files.read(secret, what)?;
-    let key = PrivateKey::from_openssh(text.as_slice())
-        .with_context(|| format!("{}: not an OpenSSH private key", secret.display()))?;
-    if read_public(public, what)? != *key.public_key() {
+/// The CA's key, opened by `files` (an OpenSSH key in software, or, from M7.6, a device's
+/// framed blob behind its `writ-key/1` header), checked against its public half.
+pub fn ca_key(files: &SecretFiles, layout: &Layout<'_>) -> anyhow::Result<StoredKey> {
+    let public = read_public(&layout.ca_public(), "the CA key")?;
+    let text = files.read(&layout.ca(), "the CA key")?;
+    let (material, meta) = super::Material::decode(&text, public.clone())
+        .with_context(|| format!("{}: not a CA key", layout.ca().display()))?;
+    if material.public_key() != public {
         bail!(
             "{} does not match {}: one of them was replaced",
-            public.display(),
-            secret.display()
+            layout.ca_public().display(),
+            layout.ca().display()
         );
     }
-    Ok(key)
+    Ok(StoredKey {
+        id: CA_ID.parse()?,
+        key: material,
+        meta,
+    })
 }
+
+/// Replaces the software CA `writd init` made with one made on the device `backend` (M7.6,
+/// `--ca-backend`): P-256, sealed to the keystore's identity like any key, its public half
+/// beside it.
+pub fn make_ca(
+    sealed: &SealedConfig,
+    key: &writ_platform::DataKey,
+    backend: crate::declared::Backend,
+    makers: &super::Makers,
+) -> anyhow::Result<()> {
+    let layout = Layout(sealed);
+    let declared = Declared {
+        role: KeyRole::Signing,
+        format: writ_crypto::algorithm::SignatureFormat::Ssh,
+        algorithm: writ_crypto::algorithm::KeyAlgorithm::P256,
+        hash: writ_crypto::algorithm::Hash::Sha256,
+        backend,
+    };
+    let (material, meta) = makers.make(&CA_ID.parse()?, &declared)?;
+    let text = material.encode(meta)?;
+    let recipient = key.recipient()?;
+    let to: [&dyn age::Recipient; 1] = [&recipient];
+    for path in [layout.ca(), layout.ca_public()] {
+        std::fs::remove_file(&path)
+            .with_context(|| format!("cannot replace {}", path.display()))?;
+    }
+    seal(&layout.ca(), text.as_bytes(), &to)?;
+    write_public(
+        &layout.ca_public(),
+        &format!("{}\n", material.public_key().to_openssh()?),
+    )?;
+    Ok(())
+}
+
+/// The CA key's id in its signer.
+pub const CA_ID: &str = "ca";
 
 /// The declared key `id`, opened by `files`, checked against its public half (the one printed
 /// and registered, and what its file says it is) and against its declaration.
@@ -612,7 +648,7 @@ pub fn keys(
             .collect()
     };
     Ok(Keys {
-        ca: sealed_key(files, &layout.ca(), &layout.ca_public(), "the CA key")?,
+        ca: ca_key(files, &layout)?,
         signing: open(KeyRole::Signing)?,
         upstream: open(KeyRole::Upstream)?,
     })
@@ -774,7 +810,7 @@ mod tests {
         let keys = keys(&sealed, &declared(), &opened(&sealed, PASSPHRASE).unwrap()).unwrap();
         let boot = boot(&sealed).unwrap();
         assert_eq!(*boot.host.public_key(), made.keys.host);
-        assert_eq!(boot.ca_public, *keys.ca.public_key());
+        assert_eq!(boot.ca_public, keys.ca.key.public_key());
         assert_eq!(
             writ_crypto::tls::fingerprint_pem(&boot.tls.cert_pem).unwrap(),
             made.keys.tls_fingerprint

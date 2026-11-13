@@ -374,8 +374,8 @@ fn the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_
     // On a terminal, the setup is asked.
     let mut asked = fake.command("install", &[("DRY_RUN", "1")]);
     asked.env("APPROVER", &fake.approver);
-    // The setup, then this setup's two questions (Enter: software).
-    let (status, shown) = on_terminal(asked, &["local", "", ""]);
+    // The setup, then this setup's three questions (Enter: software).
+    let (status, shown) = on_terminal(asked, &["local", "", "", ""]);
     assert!(status.success(), "{shown}");
     assert!(
         shown.contains("Which setup? Offered on Darwin: local"),
@@ -902,6 +902,7 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
             "yubikey",
             "",
             "",
+            "",
             "n",
         ],
     );
@@ -918,16 +919,18 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         "se-cryptokit: in this Mac's Secure Enclave, which makes it and never lets it out",
         "TLS key [software]: ",
         "  yubikey: one of software se-cryptokit",
+        "SSH CA key [software]: ",
         "Agent signing key [software]: ",
         "Your answers:",
         "  Setup: local (the daemon on this Mac",
         &format!("  Approval key: {approver}"),
         "  TLS key: software",
+        "  SSH CA key: software",
         "  Agent signing key agent-01: Ed25519, in software",
         "The changes, in order (none is made yet):",
         "    (root) dscl . -create /Users/_writd UniqueID 450",
         "agent-01: { use: signing, format: ssh, algorithm: ed25519 }",
-        "/opt/writ/bin/writd init /var/db/writ/writd.yaml --tls-backend software",
+        "/opt/writ/bin/writd init /var/db/writ/writd.yaml --tls-backend software --ca-backend software",
         "Install? [y/N] ",
         "Nothing changed.",
     ] {
@@ -942,6 +945,7 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         &[
             "",
             &approver,
+            "",
             "",
             "",
             "y",
@@ -1007,6 +1011,11 @@ fn without_a_terminal_each_answer_is_a_variable_checked_like_a_typed_one() {
             "tpm",
             "AGENT_BACKEND=tpm: one of software se-cryptokit",
         ),
+        (
+            "CA_BACKEND",
+            "yubikey",
+            "CA_BACKEND=yubikey: one of software se-cryptokit",
+        ),
     ] {
         refused(&fake.install(&[(name, value)]), why);
         assert_eq!(fake.tree(), before, "{name}: nothing made");
@@ -1019,11 +1028,12 @@ fn without_a_terminal_each_answer_is_a_variable_checked_like_a_typed_one() {
     let said = fake.shown(&ok(&fake.install(&[
         ("DRY_RUN", "1"),
         ("TLS_BACKEND", "se-cryptokit"),
+        ("CA_BACKEND", "se-cryptokit"),
         ("AGENT_BACKEND", "se-cryptokit"),
     ])));
     for change in [
         "agent-01: { use: signing, format: ssh, algorithm: p256, backend: se-cryptokit }",
-        "/opt/writ/bin/writd init /var/db/writ/writd.yaml --tls-backend se-cryptokit",
+        "/opt/writ/bin/writd init /var/db/writ/writd.yaml --tls-backend se-cryptokit --ca-backend se-cryptokit",
     ] {
         assert!(said.contains(change), "{change:?} not in:\n{said}");
     }

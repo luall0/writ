@@ -46,8 +46,9 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
     let home = &stack.operator;
     // The approvers and readers first: `writd init` records the three files in force.
     home.ok(
-        "mkdir -p sealed-init sealed-short sealed-tls && cp approvers readers sealed-init/ && \
-             cp approvers readers sealed-short/ && cp approvers readers sealed-tls/",
+        "mkdir -p sealed-init sealed-short sealed-tls sealed-ca && cp approvers readers sealed-init/ && \
+             cp approvers readers sealed-short/ && cp approvers readers sealed-tls/ && \
+             cp approvers readers sealed-ca/",
     );
     let dir = home.with(&format!("{}/sealed-init", home.dir), None);
     dir.write("writd.yaml", &sealed_yaml(), "0644");
@@ -250,6 +251,27 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
     );
     let (said, _) = expect(&out, 0, "writd init --tls-backend software");
     assert!(said.contains("TLS fingerprint: SHA256:"), "{said}");
+
+    // The SSH CA's backend at `writd init` (M7.6, for auto-unseal on a Mac): likewise.
+    let ca = home.with(&format!("{}/sealed-ca", home.dir), None);
+    ca.write("writd.yaml", &sealed_yaml(), "0644");
+    ca.write("policy.yaml", POLICY_YAML, "0644");
+    let out = ca.run_with(
+        "writd init writd.yaml --ca-backend se-cryptokit",
+        b"an end-to-end passphrase\n",
+    );
+    let (_, why) = expect(&out, 1, "a CA backend the daemon lacks");
+    assert_eq!(
+        why.trim_end(),
+        "writd: --ca-backend se-cryptokit: this daemon has no such backend (it has: software)"
+    );
+    let out = ca.run_with(
+        "writd init writd.yaml --tls-backend software --ca-backend software",
+        b"an end-to-end passphrase\n",
+    );
+    let (said, _) = expect(&out, 0, "writd init --ca-backend software");
+    assert!(said.contains("keystore made:"), "{said}");
+    assert!(ca.ok("cat keys/ca.pub").starts_with("ssh-ed25519 "));
 }
 
 /// The second daemon's policy: an `ssh://` repo, and an `https://` one whose token only an

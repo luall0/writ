@@ -403,5 +403,13 @@ and that the signer holds every template's key, and logs `unseal` before anythin
 served). The notifiers whose token is sealed (`notifiers[].telegram.token.sealed`) start
 then; those whose token is in the boot tier (`token.boot`) were told of the sealed start.
 
+**The SSH CA behind the `Signer` (M7.6):** the CA's key is read like any key file (an
+OpenSSH key in software, or a device's framed blob behind its `writ-key/1` header), given to
+its own signer (`writ-ca`, a queue per backend), and the certificate authority signs each
+session certificate through it (`writ_crypto::ca::CaSigner`; ECDSA's hash for a P-256 key).
+`writd init --ca-backend se-cryptokit` makes it in the Secure Enclave (P-256); a blob the
+device refuses at unseal leaves every grant refused, the daemon running. Moving an existing
+daemon's CA is `writ admin ca rotate` (step 7b).
+
 Secrets held in memory (decrypted keys, the data key, tokens: `UpstreamToken`, `BotToken`) are zeroized on drop and never
 printed through `Debug` or logs.

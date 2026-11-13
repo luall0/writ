@@ -20,7 +20,6 @@ use writ_approval::{Opened, Service};
 use writ_core::caller::CallerFacts;
 use writ_core::config::PolicyConfig;
 use writ_core::names::KeyFingerprint;
-use writ_crypto::ca::CertificateAuthority;
 
 use writ_approval::{AdminParsed, CheckedAdmin, CheckedToken};
 use writ_core::authority::{AdminTarget, TextDigest};
@@ -256,6 +255,8 @@ impl Opener {
         } = platform::signer(&inner.config, keys.signing)?;
         let upstream = platform::upstream_signer(&inner.config, keys.upstream)?;
         unusable.extend(upstream.refused);
+        let (ca, refused) = platform::ca(&inner.config, keys.ca)?;
+        unusable.extend(refused);
         let upstream = upstream.signer;
         let mirrors = Mirrors::open(
             inner.mirrors.clone(),
@@ -266,7 +267,7 @@ impl Opener {
         )
         .await?;
         let opened = Opened {
-            ca: CertificateAuthority::new(keys.ca),
+            ca,
             signer: signer.clone(),
             authority,
             openpgp,

@@ -226,7 +226,8 @@ impl Makers {
 
 /// The daemon's keys an unseal opens (private halves).
 pub struct Keys {
-    pub ca: PrivateKey,
+    /// The SSH CA's key (M7.6: in software, or on a device), signing through its own signer.
+    pub ca: StoredKey,
     /// The keys commits are signed with: every signing key the policy declares, for the
     /// `Signer`.
     pub signing: Vec<StoredKey>,

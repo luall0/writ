@@ -138,7 +138,21 @@ impl Daemon {
     /// `tls_backend` (`--tls-backend`).
     pub fn start_sealed_tls(policy: &str, approvals: Approvals, tls_backend: &str) -> Self {
         Self::launch(
-            setup_tls(policy, None, true, Some(tls_backend)),
+            setup_tls(policy, None, true, &["--tls-backend", tls_backend]),
+            approvals,
+            "info",
+        )
+    }
+
+    /// [`Daemon::start_sealed_with`], `writd init` given `init` (`--ca-backend <backend>`…).
+    pub fn start_sealed_init(
+        policy: &str,
+        approvals: Approvals,
+        init: &[&str],
+        edit: impl Fn(&str) -> String,
+    ) -> Self {
+        Self::launch(
+            setup_tls(policy, Some(&edit), true, init),
             approvals,
             "info",
         )
@@ -642,16 +656,12 @@ fn approval_url(approvals: Approvals, ssh: u16, https: u16) -> String {
 /// `writd.yaml` (edited by `edit`, which must change it); the daemon's upstream credential is
 /// authorized on the remote.
 fn setup(policy: &str, edit: Option<Edit<'_>>, sealed: bool) -> Setup {
-    setup_tls(policy, edit, sealed, None)
+    setup_tls(policy, edit, sealed, &[])
 }
 
-/// [`setup`], `writd init` given `--tls-backend <backend>` (a sealed keystore).
-fn setup_tls(
-    policy: &str,
-    edit: Option<Edit<'_>>,
-    sealed: bool,
-    tls_backend: Option<&str>,
-) -> Setup {
+/// [`setup`], `writd init` given `init` (`--tls-backend <backend>`, `--ca-backend <backend>`;
+/// a sealed keystore).
+fn setup_tls(policy: &str, edit: Option<Edit<'_>>, sealed: bool, init_args: &[&str]) -> Setup {
     crate::tools::require();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -728,16 +738,20 @@ fn setup_tls(
         yaml
     };
     fs::write(root.join("writd.yaml"), &yaml).unwrap();
+    // With init flags (a backend `writd init` makes keys on), the edit comes first: `writd
+    // init` makes them with the helper the edit names.
+    let edit_first = !init_args.is_empty();
+    if edit_first && let Some(edit) = edit {
+        let edited = edit(&yaml);
+        assert_ne!(edited, yaml, "the edit left writd.yaml as it was");
+        fs::write(root.join("writd.yaml"), edited).unwrap();
+    }
     if sealed {
         // `writd init`, the passphrase on stdin as a script gives it.
         let mut init = Command::new(bin("writd"))
             .arg("init")
             .arg(root.join("writd.yaml"))
-            .args(
-                tls_backend
-                    .map(|b| vec!["--tls-backend", b])
-                    .unwrap_or_default(),
-            )
+            .args(init_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -757,7 +771,7 @@ fn setup_tls(
     let line = keys.lines().next().expect("an upstream credential");
     let key: Vec<&str> = line.split(' ').skip(1).take(2).collect();
     remote.authorize(PublicKey::from_openssh(&key.join(" ")).unwrap());
-    if let Some(edit) = edit {
+    if !edit_first && let Some(edit) = edit {
         let edited = edit(&yaml);
         assert_ne!(edited, yaml, "the edit left writd.yaml as it was");
         fs::write(root.join("writd.yaml"), edited).unwrap();

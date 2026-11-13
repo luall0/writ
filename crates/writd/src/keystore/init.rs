@@ -27,21 +27,26 @@ use crate::declared::Declarations;
 /// cheap work factor in tests.
 pub type Enroll<'a> = &'a dyn Fn(&SealedConfig, &Passphrase, &DataKey) -> anyhow::Result<()>;
 
-pub fn init(path: &Path, tls_backend: &str) -> anyhow::Result<()> {
+pub fn init(path: &Path, tls_backend: &str, ca_backend: &str) -> anyhow::Result<()> {
     let config = Config::load(path)?;
-    // The backend the HTTPS approval API's key is made on (the Secure Enclave on a Mac, from
-    // the installer): one this daemon has, checked before anything is asked.
-    let tls_backend = crate::platform::BACKENDS
-        .iter()
-        .copied()
-        .find(|b| b.name() == tls_backend)
-        .ok_or_else(|| {
-            let names: Vec<&str> = crate::platform::BACKENDS.iter().map(|b| b.name()).collect();
-            anyhow::anyhow!(
-                "--tls-backend {tls_backend}: this daemon has no such backend (it has: {})",
-                names.join(", ")
-            )
-        })?;
+    // The backends the HTTPS approval API's key and the SSH CA's key are made on (the Secure
+    // Enclave on a Mac, from the installer): ones this daemon has, checked before anything is
+    // asked.
+    let backend = |flag: &str, name: &str| {
+        crate::platform::BACKENDS
+            .iter()
+            .copied()
+            .find(|b| b.name() == name)
+            .ok_or_else(|| {
+                let names: Vec<&str> = crate::platform::BACKENDS.iter().map(|b| b.name()).collect();
+                anyhow::anyhow!(
+                    "{flag} {name}: this daemon has no such backend (it has: {})",
+                    names.join(", ")
+                )
+            })
+    };
+    let tls_backend = backend("--tls-backend", tls_backend)?;
+    let ca_backend = backend("--ca-backend", ca_backend)?;
     let KeystoreConfig::Sealed(sealed) = &config.keystore else {
         bail!(
             "{}: `writd init` makes a sealed keystore: set keystore.sealed (dir, boot)",
@@ -96,8 +101,11 @@ pub fn init(path: &Path, tls_backend: &str) -> anyhow::Result<()> {
     // A device backend a key or the TLS key lives on answers before anything is made.
     crate::platform::check_devices(&config, &declared)?;
     let makers = crate::platform::makers(&config)?;
-    if tls_backend.is_device() {
-        makers.device(tls_backend)?;
+    for device in [tls_backend, ca_backend]
+        .into_iter()
+        .filter(|b| b.is_device())
+    {
+        makers.device(device)?;
     }
     let made = make(
         sealed,
@@ -108,6 +116,9 @@ pub fn init(path: &Path, tls_backend: &str) -> anyhow::Result<()> {
         tls_backend,
         &makers,
     )?;
+    if ca_backend.is_device() {
+        super::sealed::make_ca(sealed, &made.data_key, ca_backend, &makers)?;
+    }
     let mut undo = Undo {
         dirs: [&sealed.dir, &sealed.boot],
         done: false,
