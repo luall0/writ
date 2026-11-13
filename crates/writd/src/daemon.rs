@@ -29,7 +29,7 @@ use writ_gateway::{AdminApplier, Gateway, Unsealer};
 use writ_mirror::credential::UpstreamToken;
 use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{MirrorConfig, Mirrors};
-use writ_platform::{BoxFuture, KeystoreUnlock, Passphrase, UnsealRequest};
+use writ_platform::{BoxFuture, Passphrase, UnsealRequest};
 use writ_proto::PassphraseText;
 use writ_proto::{
     AdminApplied, CreatedKey, KeyRole, KeyShown, KeysShown, RemovedKey, TokenApplied, TokenShown,
@@ -913,14 +913,13 @@ impl Opener {
             let KeystoreConfig::Sealed(sealed) = &inner.config.keystore else {
                 bail!("this daemon's keystore is not sealed");
             };
-            let unlock: Arc<dyn KeystoreUnlock> = platform::unlock(sealed);
             let request =
                 UnsealRequest::with_passphrase(Passphrase::new(passphrase.expose().to_owned()));
             drop(passphrase);
-            let key = unlock.unlock(&request)?;
+            let key = platform::data_key(sealed, &request)?;
             drop(request);
             let declared = crate::declared::declarations(&inner.policy)?;
-            keystore::open(&inner.config, &declared, &inner.policy, key.identity()?)
+            keystore::open(&inner.config, &declared, &inner.policy, key.way()?)
         })
         .await
         .context("the unseal stopped")?

@@ -18,4 +18,4 @@ process.
 
 - Only per-process calls: never a setting of the whole system (docs/operators/hardening.md).
 - Later (M7, M7.5): the process chain attestor, the kqueue session watcher, the Secure
-  Enclave `Signer`, `KeystoreUnlock`.
+  Enclave `Signer`, and (M7.6) the Secure Enclave's `KeystoreUnwrap`.

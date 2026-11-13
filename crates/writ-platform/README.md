@@ -10,7 +10,7 @@ with the portable implementations.
 | `Transport`: how clients reach the daemon | `transport::tcp::TcpTransport` |
 | `CallerAttestor`: what the network or kernel says about the caller | `attest::network::NetworkAttestor` |
 | `SessionWatcher`: a notice when a session's process ends | `watch::none::NoSessionWatcher` |
-| `KeystoreUnlock`: recovering the keystore's data key | `unlock::passphrase::PassphraseUnlock` |
+| `KeystoreUnwrap`: one way to unwrap a keystore file (the data key, a secret) | `unlock::passphrase::PassphraseUnwrap`, `unlock::x25519::X25519Unwrap` |
 | `Notifier`: telling the approver something happened | `notify::telegram::TelegramNotifier` |
 | `Clock`: what time it is | `clock::system::SystemClock` |
 | `ProcessHardening`: no core dump, no debugger, memory out of swap | `harden::none::NoHardening` (refuses every step: Linux and macOS have theirs) |

@@ -1,5 +1,5 @@
-//! Every keystore unlock, real and fake, through the unlock contract, and the passphrase
-//! file's own guarantees.
+//! Every way into the keystore, real and fake, through the unwrap contract, the passphrase
+//! file's own guarantees, and how a file opens when several ways are given.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,9 +13,11 @@
 use std::path::Path;
 
 use writ_platform::contract;
-use writ_platform::testing::FakeUnlock;
-use writ_platform::unlock::passphrase::PassphraseUnlock;
-use writ_platform::{DataKey, KeystoreUnlock, Passphrase, PlatformError, UnsealRequest};
+use writ_platform::testing::FakeUnwrap;
+use writ_platform::unlock::passphrase::{self, PassphraseUnwrap};
+use writ_platform::unlock::x25519::X25519Unwrap;
+use writ_platform::unlock::{OpenError, PassphraseFile};
+use writ_platform::{DataKey, KeystoreUnwrap, Passphrase, PlatformError};
 
 const PASSPHRASE: &str = "correct horse battery staple";
 const KEY: [u8; 32] = [
@@ -29,12 +31,8 @@ fn passphrase(text: &str) -> Passphrase {
     Passphrase::new(text.to_owned())
 }
 
-fn request(text: &str) -> UnsealRequest {
-    UnsealRequest::with_passphrase(passphrase(text))
-}
-
-fn enroll(path: &Path) -> PassphraseUnlock {
-    PassphraseUnlock::enroll_with_work_factor(
+fn enroll(path: &Path) {
+    passphrase::enroll_with_work_factor(
         path,
         &passphrase(PASSPHRASE),
         &DataKey::from_bytes(KEY),
@@ -43,8 +41,13 @@ fn enroll(path: &Path) -> PassphraseUnlock {
     .unwrap()
 }
 
-fn unlock_error(unlock: &PassphraseUnlock, text: &str) -> String {
-    match unlock.unlock(&request(text)) {
+/// The data key at `path`, opened with the passphrase `text`.
+fn unlock(path: &Path, text: &str) -> writ_platform::Result<DataKey> {
+    writ_platform::unlock::data_key(path, &[&PassphraseUnwrap::new(&passphrase(text))])
+}
+
+fn unlock_error(path: &Path, text: &str) -> String {
+    match unlock(path, text) {
         Ok(_) => panic!("must not unlock"),
         Err(e) => {
             assert!(matches!(e, PlatformError::Unlock(_)), "{e:?}");
@@ -70,36 +73,48 @@ fn write_private(path: &Path, contents: &[u8]) {
 }
 
 #[test]
-fn passphrase_unlock_passes_the_contract() {
-    let dir = tempfile::tempdir().unwrap();
-    let unlock = enroll(&dir.path().join("data-key.age"));
-    contract::keystore_unlock_passphrase(&unlock, PASSPHRASE, &KEY);
+fn the_passphrase_passes_the_contract() {
+    contract::keystore_unwrap_passphrase(PASSPHRASE, LOG_N);
 }
 
 #[test]
-fn passphrase_unlock_reopened_from_its_path_passes_the_contract() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("data-key.age");
-    enroll(&path);
-    contract::keystore_unlock_passphrase(&PassphraseUnlock::new(&path), PASSPHRASE, &KEY);
+fn an_x25519_identity_passes_the_contract() {
+    let identity = DataKey::from_bytes(KEY).identity().unwrap();
+    let way = X25519Unwrap::new("recovery", identity);
+    let other = age::x25519::Identity::generate();
+    let fake = FakeUnwrap::new("se-01", [7; 16]).recipient();
+    let wrong = X25519Unwrap::new("keystore", other.clone());
+    contract::keystore_unwrap(
+        &way,
+        &way.recipient(),
+        &[&other.to_public(), &fake],
+        &[&wrong],
+        true,
+        &[],
+    );
 }
 
 #[test]
-fn fake_unlock_passes_the_contract() {
-    contract::keystore_unlock_passphrase(&FakeUnlock::new(PASSPHRASE, KEY), PASSPHRASE, &KEY);
+fn the_fake_passes_the_contract() {
+    let way = FakeUnwrap::new("se-01", [7; 16]);
+    let other = FakeUnwrap::new("se-02", [9; 16]);
+    let x25519 = age::x25519::Identity::generate().to_public();
+    contract::keystore_unwrap(
+        &way,
+        &way.recipient(),
+        &[&other.recipient(), &x25519],
+        &[&other],
+        true,
+        &[],
+    );
 }
 
 #[test]
 fn enroll_with_the_default_work_factor_round_trips() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data-key.age");
-    let unlock =
-        PassphraseUnlock::enroll(&path, &passphrase(PASSPHRASE), &DataKey::from_bytes(KEY))
-            .unwrap();
-    assert_eq!(
-        unlock.unlock(&request(PASSPHRASE)).unwrap().as_bytes(),
-        &KEY
-    );
+    passphrase::enroll(&path, &passphrase(PASSPHRASE), &DataKey::from_bytes(KEY)).unwrap();
+    assert_eq!(unlock(&path, PASSPHRASE).unwrap().as_bytes(), &KEY);
 }
 
 #[test]
@@ -107,7 +122,7 @@ fn enroll_refuses_to_overwrite() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data-key.age");
     std::fs::write(&path, b"precious").unwrap();
-    let result = PassphraseUnlock::enroll_with_work_factor(
+    let result = passphrase::enroll_with_work_factor(
         &path,
         &passphrase(PASSPHRASE),
         &DataKey::from_bytes(KEY),
@@ -123,7 +138,7 @@ fn enroll_refuses_to_overwrite() {
     let path = dir.path().join("enrolled.age");
     enroll(&path);
     let before = std::fs::read(&path).unwrap();
-    let again = PassphraseUnlock::enroll_with_work_factor(
+    let again = passphrase::enroll_with_work_factor(
         &path,
         &passphrase("another"),
         &DataKey::from_bytes([1; 32]),
@@ -168,23 +183,35 @@ fn the_wrapped_key_file_holds_neither_the_key_nor_the_passphrase() {
 }
 
 #[test]
-fn a_wrong_or_missing_passphrase_fails() {
+fn a_wrong_passphrase_or_no_way_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let unlock = enroll(&dir.path().join("data-key.age"));
-    let error = unlock_error(&unlock, "Correct horse battery staple");
-    assert!(error.contains("wrong passphrase"), "{error}");
-    let missing = unlock.unlock(&UnsealRequest::default());
-    match missing {
-        Err(PlatformError::Unlock(why)) => assert_eq!(why, "a passphrase is required"),
+    let path = dir.path().join("data-key.age");
+    enroll(&path);
+    let error = unlock_error(&path, "Correct horse battery staple");
+    assert_eq!(error, "cannot unlock the keystore: wrong passphrase");
+    let none = writ_platform::unlock::data_key(&path, &[]);
+    match none {
+        Err(PlatformError::Unlock(why)) => {
+            assert_eq!(why, format!("{}: nothing given unwraps it", path.display()));
+        }
         other => panic!("{other:?}"),
     }
+    // An identity is no way into a passphrase file.
+    let identity = X25519Unwrap::new("recovery", age::x25519::Identity::generate());
+    let error = writ_platform::unlock::data_key(&path, &[&identity]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "cannot unlock the keystore: {}: nothing given unwraps it",
+            path.display()
+        )
+    );
 }
 
 #[test]
 fn a_missing_file_fails_cleanly() {
     let dir = tempfile::tempdir().unwrap();
-    let unlock = PassphraseUnlock::new(dir.path().join("absent.age"));
-    unlock_error(&unlock, PASSPHRASE);
+    unlock_error(&dir.path().join("absent.age"), PASSPHRASE);
 }
 
 #[test]
@@ -213,8 +240,7 @@ fn a_truncated_or_corrupted_file_fails_cleanly() {
     for (i, (what, contents)) in variants.into_iter().enumerate() {
         let path = dir.path().join(format!("bad-{i}.age"));
         write_private(&path, &contents);
-        let unlock = PassphraseUnlock::new(&path);
-        let error = unlock_error(&unlock, PASSPHRASE);
+        let error = unlock_error(&path, PASSPHRASE);
         assert!(!error.contains(PASSPHRASE), "{what}: {error}");
     }
 }
@@ -225,15 +251,13 @@ fn a_wrapped_key_of_the_wrong_length_fails() {
     for len in [0usize, 16, 31, 33, 64] {
         let path = dir.path().join(format!("len-{len}.age"));
         wrap_raw(&path, &vec![7u8; len]);
-        let error = unlock_error(&PassphraseUnlock::new(&path), PASSPHRASE);
+        let error = unlock_error(&path, PASSPHRASE);
         assert!(error.contains("32-byte"), "{len}: {error}");
     }
     // The same plaintext path works for exactly 32 bytes.
     let path = dir.path().join("len-32.age");
     wrap_raw(&path, &KEY);
-    let key = PassphraseUnlock::new(&path)
-        .unlock(&request(PASSPHRASE))
-        .unwrap();
+    let key = unlock(&path, PASSPHRASE).unwrap();
     assert_eq!(key.as_bytes(), &KEY);
 }
 
@@ -242,7 +266,7 @@ fn a_huge_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("huge.age");
     write_private(&path, &vec![b'a'; 200 * 1024]);
-    let error = unlock_error(&PassphraseUnlock::new(&path), PASSPHRASE);
+    let error = unlock_error(&path, PASSPHRASE);
     assert!(error.contains("is larger than"), "{error}");
 }
 
@@ -251,11 +275,11 @@ fn a_wrapped_key_others_can_read_is_refused() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("data-key.age");
-    let unlock = enroll(&path);
-    assert!(unlock.unlock(&request(PASSPHRASE)).is_ok());
+    enroll(&path);
+    assert!(unlock(&path, PASSPHRASE).is_ok());
     // A copy others can read allows an offline attack on the passphrase.
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let error = unlock_error(&unlock, PASSPHRASE);
+    let error = unlock_error(&path, PASSPHRASE);
     assert!(
         error.contains("accessible by group or others (mode 644)"),
         "{error}"
@@ -266,7 +290,7 @@ fn a_wrapped_key_others_can_read_is_refused() {
 fn an_invalid_work_factor_is_a_config_error() {
     let dir = tempfile::tempdir().unwrap();
     for log_n in [0u8, 64, 200] {
-        let result = PassphraseUnlock::enroll_with_work_factor(
+        let result = passphrase::enroll_with_work_factor(
             dir.path().join(format!("wf-{log_n}.age")),
             &passphrase(PASSPHRASE),
             &DataKey::from_bytes(KEY),
@@ -322,4 +346,72 @@ fn a_data_key_is_one_age_identity_whose_recipient_opens_only_with_it() {
     };
     assert_eq!(open(&key).as_deref(), Some(&b"a secret"[..]));
     assert_eq!(open(&other), None, "another key opens nothing");
+}
+
+/// A file encrypted to several ways opens through whichever is given; a way that fails
+/// doesn't stop the next, and its failure is the error when nothing opens.
+#[test]
+fn a_file_opens_by_any_of_its_ways_and_a_failing_one_does_not_stop_the_next() {
+    use std::io::Write;
+    let device = FakeUnwrap::new("se-01", [7; 16]);
+    let recovery = X25519Unwrap::new("recovery", age::x25519::Identity::generate());
+    let recipients: [&dyn age::Recipient; 2] = [&device.recipient(), &recovery.recipient()];
+    let encryptor = age::Encryptor::with_recipients(recipients.into_iter()).unwrap();
+    let mut sealed = Vec::new();
+    let mut writer = encryptor.wrap_output(&mut sealed).unwrap();
+    writer.write_all(b"a token").unwrap();
+    writer.finish().unwrap();
+    let open = |ways: &[&dyn KeystoreUnwrap]| {
+        writ_platform::unlock::open(&sealed, ways, PassphraseFile::Refused, 1024)
+    };
+
+    assert_eq!(open(&[&device]).unwrap().as_slice(), b"a token");
+    assert_eq!(open(&[&recovery]).unwrap().as_slice(), b"a token");
+    assert_eq!(device.uses(), 1);
+
+    device.refuse();
+    // The device refuses: the recovery identity after it still opens the file.
+    assert_eq!(open(&[&device, &recovery]).unwrap().as_slice(), b"a token");
+    // Alone, the device's refusal is the error, with its name.
+    match open(&[&device]) {
+        Err(OpenError::Way { way, reason }) => {
+            assert_eq!(way, "se-01");
+            assert_eq!(
+                reason.to_string(),
+                "cannot unlock the keystore: the fake device refuses"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // A way with no stanza in the file: nothing opens it.
+    let other = FakeUnwrap::new("se-02", [7; 16]);
+    assert!(matches!(open(&[&other]), Err(OpenError::NoWay)));
+    // Past the bound, never parsed.
+    assert!(matches!(
+        writ_platform::unlock::open(&sealed, &[&recovery], PassphraseFile::Refused, 16),
+        Err(OpenError::TooLarge(16))
+    ));
+    assert!(matches!(
+        writ_platform::unlock::open(b"garbage", &[&recovery], PassphraseFile::Refused, 1024),
+        Err(OpenError::NotAge)
+    ));
+}
+
+#[test]
+fn a_passphrase_file_opens_only_where_one_is_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data-key.age");
+    enroll(&path);
+    let sealed = std::fs::read(&path).unwrap();
+    let way = PassphraseUnwrap::new(&passphrase(PASSPHRASE));
+    assert!(matches!(
+        writ_platform::unlock::open(&sealed, &[&way], PassphraseFile::Refused, 64 * 1024),
+        Err(OpenError::Passphrase)
+    ));
+    assert_eq!(
+        writ_platform::unlock::open(&sealed, &[&way], PassphraseFile::Allowed, 64 * 1024)
+            .unwrap()
+            .as_slice(),
+        KEY
+    );
 }

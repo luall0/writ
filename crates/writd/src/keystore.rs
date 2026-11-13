@@ -21,6 +21,7 @@ use writ_crypto::keyfile::KeyMeta;
 use writ_crypto::keypair::KeyPair;
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
 use writ_mirror::credential::UpstreamToken;
+use writ_platform::unlock::x25519::X25519Unwrap;
 use writ_proto::KeyRole;
 use zeroize::Zeroizing;
 
@@ -596,7 +597,7 @@ pub fn sealed_bot_ids(config: &Config) -> BTreeSet<KeyId> {
 /// The sealed keystore's authority key, opened with the identity a passphrase unwrapped.
 pub fn sealed_authority_key(
     sealed: &crate::config::SealedConfig,
-    identity: age::x25519::Identity,
+    identity: X25519Unwrap,
 ) -> anyhow::Result<writ_crypto::authority::AuthorityKey> {
     sealed::authority_key(sealed, &sealed::SecretFiles::new(vec![Box::new(identity)]))
 }
@@ -639,7 +640,7 @@ pub fn open(
     config: &Config,
     declared: &Declarations,
     policy: &PolicyConfig,
-    identity: age::x25519::Identity,
+    identity: X25519Unwrap,
 ) -> anyhow::Result<Opened> {
     let KeystoreConfig::Sealed(sealed) = &config.keystore else {
         bail!("only a sealed keystore is opened at unseal");
@@ -648,7 +649,7 @@ pub fn open(
     // what `writ info` gives approvers): it must be this identity's, or someone who could
     // write it would receive them (the review after M5.5, L6).
     let recipient = sealed::recipient(sealed)?;
-    if recipient.to_string() != identity.to_public().to_string() {
+    if recipient.to_string() != identity.recipient().to_string() {
         bail!(
             "{}: not this keystore's recipient (replaced?): refused, nothing would be sealed to \
              it",

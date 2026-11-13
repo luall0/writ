@@ -9,7 +9,7 @@
 //! | [`Transport`] | [`transport`] (async) |
 //! | [`CallerAttestor`] | [`attestor`] |
 //! | [`SessionWatcher`] | [`session_watcher`] |
-//! | [`KeystoreUnlock`] | [`keystore_unlock`], or [`keystore_unlock_passphrase`] |
+//! | [`KeystoreUnwrap`] | [`keystore_unwrap`], or [`keystore_unwrap_passphrase`] |
 //! | [`Notifier`] | [`notifier`] and [`notifier_unreachable`] |
 //! | [`ProcessHardening`](crate::ProcessHardening) | [`process_hardening`] (in a test binary of its own: it changes the process) |
 
@@ -31,8 +31,8 @@ use tokio::sync::mpsc;
 use writ_core::caller::{CallerFacts, ProcessRef};
 
 use crate::{
-    AsyncStream, BoxFuture, CallerAttestor, Clock, KeystoreUnlock, Notification, Notifier,
-    Passphrase, PeerInfo, PlatformError, Priority, SessionWatcher, Transport, UnsealRequest,
+    AsyncStream, BoxFuture, CallerAttestor, Clock, KeystoreUnwrap, Notification, Notifier,
+    Passphrase, PeerInfo, PlatformError, Priority, SessionWatcher, Transport,
 };
 
 /// How long a step may take before the suite fails instead of hanging.
@@ -562,97 +562,191 @@ fn session_watcher_supported<W: SessionWatcher + ?Sized>(
     drop(second_handle);
 }
 
-// ----- KeystoreUnlock -----
+// ----- KeystoreUnwrap -----
 
-/// The [`KeystoreUnlock`] contract. `right` builds a request that unlocks `expected_key`;
-/// `wrong` holds requests that must fail (a wrong passphrase, a missing one, …); `secrets`
-/// are strings (the passphrase) that must never appear in any `Debug` or error text (those
-/// shorter than 4 bytes aren't searched for: they'd match ordinary text).
+/// What the [`KeystoreUnwrap`] suite encrypts: 32 bytes, as the keystore's data key is.
+const UNWRAP_PAYLOAD: [u8; 32] = [
+    0x3c, 0x91, 0x07, 0xe4, 0x5d, 0xa8, 0x62, 0x1f, 0xc3, 0x7a, 0x0e, 0xb5, 0x48, 0xd9, 0x26, 0x83,
+    0xf0, 0x14, 0x6b, 0xae, 0x39, 0xc7, 0x52, 0x8d, 0x01, 0xfa, 0x6e, 0x95, 0x2b, 0xd4, 0x70, 0x1c,
+];
+
+fn encrypt_to(recipients: &[&dyn age::Recipient], payload: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write as _;
+    let encryptor = age::Encryptor::with_recipients(recipients.iter().copied()).ok()?;
+    let mut sealed = Vec::new();
+    let mut writer = encryptor.wrap_output(&mut sealed).ok()?;
+    writer.write_all(payload).ok()?;
+    writer.finish().ok()?;
+    Some(sealed)
+}
+
+fn open_with(
+    sealed: &[u8],
+    ways: &[&dyn KeystoreUnwrap],
+) -> Result<zeroize::Zeroizing<Vec<u8>>, crate::unlock::OpenError> {
+    crate::unlock::open(
+        sealed,
+        ways,
+        crate::unlock::PassphraseFile::Allowed,
+        64 * 1024,
+    )
+}
+
+/// Every stanza line of an age file's header (`-> tag args`, then its body lines) with one
+/// body character changed, one variant per stanza: what a damaged or tampered stanza is.
+fn tampered_stanzas(sealed: &[u8]) -> Vec<Vec<u8>> {
+    let header_end = sealed
+        .windows(4)
+        .position(|w| w == b"\n---")
+        .expect("an age header ends with its MAC line");
+    let header = &sealed[..header_end];
+    let mut variants = Vec::new();
+    let mut offset = 0;
+    let mut in_stanza = false;
+    for line in header.split(|b| *b == b'\n') {
+        if line.starts_with(b"-> ") {
+            in_stanza = true;
+        } else if in_stanza && !line.is_empty() {
+            // The first character of the stanza's first body line.
+            let mut changed = sealed.to_vec();
+            changed[offset] = if changed[offset] == b'A' { b'B' } else { b'A' };
+            variants.push(changed);
+            in_stanza = false;
+        }
+        offset += line.len() + 1;
+    }
+    variants
+}
+
+/// The [`KeystoreUnwrap`] contract, for one way and the recipient it opens:
 ///
-/// - the right request gives the expected key, twice, and so does a fresh one;
-/// - every wrong request fails;
-/// - the `Debug` of the requests, their passphrases, the key and the `Debug` and `Display` of
-///   the errors never contain a secret or the key bytes (hex, decimal list or raw).
-pub fn keystore_unlock<U: KeystoreUnlock + ?Sized>(
-    unlock: &U,
-    expected_key: &[u8; 32],
-    right: impl Fn() -> UnsealRequest,
-    wrong: Vec<UnsealRequest>,
+/// - its name is a short plain word, and its `Debug` holds no secret;
+/// - a file encrypted to `recipient` opens to its plaintext, twice, and from several threads
+///   at once; with `mixes`, also when the file is encrypted to `others` as well (a passphrase
+///   can't share a file: age refuses it);
+/// - a file encrypted only to one of `others` doesn't open (another key of its kind, another
+///   kind of key), nor does the file of `recipient` through any of `wrong` (another
+///   passphrase, another identity);
+/// - a file whose stanza was changed doesn't open;
+/// - no `Debug` or error text holds the plaintext or any of `secrets`.
+pub fn keystore_unwrap(
+    way: &dyn KeystoreUnwrap,
+    recipient: &dyn age::Recipient,
+    others: &[&dyn age::Recipient],
+    wrong: &[&dyn KeystoreUnwrap],
+    mixes: bool,
     secrets: &[&str],
 ) {
     assert!(
-        !wrong.is_empty(),
-        "the unlock suite needs at least one wrong request"
+        !others.is_empty(),
+        "the unwrap suite needs another recipient"
     );
-    let mut texts = Vec::new();
+    let name = way.name();
+    assert!(
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        "a way's name is a short plain word: {name:?}"
+    );
+    let mut texts = vec![name.to_owned()];
 
-    let request = right();
+    let sealed = encrypt_to(&[recipient], &UNWRAP_PAYLOAD).expect("encrypt to the recipient");
     for attempt in ["first", "second"] {
-        let key = unlock
-            .unlock(&request)
-            .unwrap_or_else(|e| panic!("the right request must unlock ({attempt} time): {e}"));
-        assert_eq!(
-            key.as_bytes(),
-            expected_key,
-            "the right request must give the expected key ({attempt} time)"
-        );
-        texts.push(format!("{key:?}"));
+        let plaintext = open_with(&sealed, &[way])
+            .unwrap_or_else(|e| panic!("the way must open its file ({attempt} time): {e}"));
+        assert_eq!(plaintext.as_slice(), UNWRAP_PAYLOAD, "{attempt} time");
     }
-    let fresh = unlock
-        .unlock(&right())
-        .unwrap_or_else(|e| panic!("a fresh right request must unlock: {e}"));
-    assert_eq!(fresh.as_bytes(), expected_key, "a fresh right request");
-    texts.push(format!("{request:?}"));
-    if let Some(passphrase) = &request.passphrase {
-        texts.push(format!("{passphrase:?}"));
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| scope.spawn(|| open_with(&sealed, &[way]).map(|p| p.to_vec())))
+            .collect();
+        for handle in handles {
+            let opened = handle.join().expect("a thread of the suite panicked");
+            assert_eq!(
+                opened
+                    .expect("opens from several threads at once")
+                    .as_slice(),
+                UNWRAP_PAYLOAD
+            );
+        }
+    });
+
+    if mixes {
+        let mut all: Vec<&dyn age::Recipient> = others.to_vec();
+        all.push(recipient);
+        let shared = encrypt_to(&all, &UNWRAP_PAYLOAD).expect("encrypt to several");
+        let plaintext = open_with(&shared, &[way]).expect("opens a file shared with others");
+        assert_eq!(plaintext.as_slice(), UNWRAP_PAYLOAD);
     }
 
-    for (i, request) in wrong.iter().enumerate() {
-        match unlock.unlock(request) {
-            Ok(_) => panic!("wrong request #{i} must not unlock the keystore"),
-            Err(e) => {
-                texts.push(format!("{e:?}"));
-                texts.push(e.to_string());
-            }
+    for (i, other) in others.iter().enumerate() {
+        let foreign = encrypt_to(&[*other], &UNWRAP_PAYLOAD).expect("encrypt to another");
+        match open_with(&foreign, &[way]) {
+            Ok(_) => panic!("the way must not open a file of another recipient (#{i})"),
+            Err(e) => texts.push(format!("{e:?} {e}")),
         }
-        texts.push(format!("{request:?}"));
+    }
+    for (i, wrong) in wrong.iter().enumerate() {
+        match open_with(&sealed, &[*wrong]) {
+            Ok(_) => panic!("wrong way #{i} must not open the file"),
+            Err(e) => texts.push(format!("{e:?} {e}")),
+        }
+        texts.push(format!("{:?}", wrong.name()));
+    }
+    let tampered = tampered_stanzas(&sealed);
+    assert!(!tampered.is_empty(), "the file has a stanza");
+    for (i, changed) in tampered.iter().enumerate() {
+        match open_with(changed, &[way]) {
+            Ok(_) => panic!("a file whose stanza was changed must not open (#{i})"),
+            Err(e) => texts.push(format!("{e:?} {e}")),
+        }
     }
 
     for text in &texts {
-        assert_no_secret(text, expected_key, secrets);
+        assert_no_secret(text, &UNWRAP_PAYLOAD, secrets);
     }
 }
 
-/// [`keystore_unlock`] for an implementation unlocked by `passphrase` alone: the wrong
-/// requests are a missing passphrase, an empty one, a different one, and near misses.
-pub fn keystore_unlock_passphrase<U: KeystoreUnlock + ?Sized>(
-    unlock: &U,
-    passphrase: &str,
-    expected_key: &[u8; 32],
-) {
-    let with = |text: String| UnsealRequest::with_passphrase(Passphrase::new(text));
-    let mut wrong = vec![
-        UnsealRequest::default(),
-        with(String::new()),
-        with(format!("{passphrase}x")),
-        with(format!(" {passphrase}")),
-        with("definitely not the passphrase".to_owned()),
+/// [`keystore_unwrap`] for the passphrase: its file encrypted with the scrypt work factor
+/// `2^log_n` (low in tests); the wrong ways are an empty passphrase, another, and near misses.
+pub fn keystore_unwrap_passphrase(passphrase: &str, log_n: u8) {
+    use crate::unlock::passphrase::PassphraseUnwrap;
+    let secret = |text: &str| age::secrecy::SecretString::from(text.to_owned());
+    let way = PassphraseUnwrap::new(&Passphrase::new(passphrase.to_owned()));
+    let mut recipient = age::scrypt::Recipient::new(secret(passphrase));
+    recipient.set_work_factor(log_n);
+    let mut another = age::scrypt::Recipient::new(secret("definitely not the passphrase"));
+    another.set_work_factor(log_n);
+    let x25519 = age::x25519::Identity::generate().to_public();
+    let mut near = vec![
+        String::new(),
+        format!("{passphrase}x"),
+        format!(" {passphrase}"),
+        "definitely not the passphrase".to_owned(),
     ];
     if passphrase.len() > 1 {
         let mut shorter = passphrase.to_owned();
         shorter.pop();
-        wrong.push(with(shorter));
+        near.push(shorter);
     }
-    keystore_unlock(
-        unlock,
-        expected_key,
-        || with(passphrase.to_owned()),
-        wrong,
+    let wrong: Vec<PassphraseUnwrap> = near
+        .into_iter()
+        .map(|text| PassphraseUnwrap::new(&Passphrase::new(text)))
+        .collect();
+    let wrong: Vec<&dyn KeystoreUnwrap> = wrong.iter().map(|w| w as &dyn KeystoreUnwrap).collect();
+    keystore_unwrap(
+        &way,
+        &recipient,
+        &[&another, &x25519],
+        &wrong,
+        false,
         &[passphrase],
     );
 }
 
-fn assert_no_secret(text: &str, key: &[u8; 32], secrets: &[&str]) {
+fn assert_no_secret(text: &str, key: &[u8], secrets: &[&str]) {
     for secret in secrets {
         if secret.len() >= 4 {
             assert!(

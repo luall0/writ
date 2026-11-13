@@ -17,7 +17,7 @@ a YubiKey) means writing an implementation of an existing interface and register
 | `Transport` | How clients reach the daemon; every transport carries the same SSH protocol | TCP (SSH gateway); Unix socket (local mode) | — |
 | `CallerAttestor` | What the network or the kernel says about the caller, as `CallerFacts` | Network (source address); macOS process chain (local mode, M7); Linux process chain (local mode, M7.1) | — |
 | `SessionWatcher` | A notice when a session's root process exits, to revoke its lease | None (detached); macOS kqueue (local mode, M7); Linux pidfd (local mode, M7.1) | — |
-| `KeystoreUnlock` | How the keystore's data key is recovered at unseal | Passphrase + approver signature | M7.6: generalized into a recipient unwrapping one secret ([hardware-wrapped secrets](../backlog/hardware-wrapped-secrets.md)); the Secure Enclave, a recovery identity; later YubiKey, TPM, cloud KMS |
+| `KeystoreUnwrap` | One way to unwrap a keystore file's file key: the data key at unseal, and each secret when used ([hardware-wrapped secrets](../backlog/hardware-wrapped-secrets.md)) | The passphrase (age scrypt, the identity's file only), an age X25519 identity (the keystore's own) | M7.6: the Secure Enclave, the offline recovery identity; later YubiKey, TPM, cloud KMS |
 | `Notifier` | How I'm told something is waiting or went wrong | Telegram (Bot API) | Native macOS notifications, approver apps, any other sink |
 | `Clock` | What time it is: every expiry, rate window and certificate validity | The system clock | — |
 | `ProcessHardening` | Keeping the secrets in a process's memory away from the OS's ways out: core dumps, a debugger, swap | Linux (`RLIMIT_CORE` 0 and not dumpable, required; `mlockall` when the lock limit allows it), macOS (`RLIMIT_CORE` 0 and `PT_DENY_ATTACH`, required), `NoHardening` elsewhere (refuses) | — |
@@ -56,10 +56,15 @@ pub trait SessionWatcher: Send + Sync {
     fn watch(&self, process: &ProcessRef, on_exit: OnExit) -> Result<WatchHandle>;
 }
 
-/// Recovers the keystore's data key at unseal time. The approver signature that comes with
-/// an unseal is verified by the daemon before this is asked.
-pub trait KeystoreUnlock: Send + Sync {
-    fn unlock(&self, request: &UnsealRequest) -> Result<DataKey>;
+/// One way to unwrap the file key of an age file of the keystore, from its header's
+/// stanzas. `Ok(None)`: no stanza is this way's; an error: one is and it failed (a wrong
+/// passphrase, a device that refuses). `unlock::open` tries each way given in turn (one that
+/// fails doesn't stop the next), and is the one place a keystore file is opened. The
+/// approver signature that comes with an unseal is verified before any way is asked.
+pub trait KeystoreUnwrap: Send + Sync {
+    /// In errors and the log (`passphrase`, `keystore`, `recovery`, a hardware key's name).
+    fn name(&self) -> &str;
+    fn unwrap(&self, stanzas: &[Stanza]) -> Result<Option<FileKey>>;
 }
 
 /// Tells me something happened. Never an approval channel.

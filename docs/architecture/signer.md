@@ -334,8 +334,8 @@ unlocked ([Q17](../decisions.md)).
   signing keys, the upstream credentials, each with its public half beside it (`.pub`, read by
   the commands that print a key with no unseal, and checked against the key when it is
   opened). A secret is read only through one seam (`SecretFiles` in `writd`'s keystore: the
-  identities that may open a file), so a hardware recipient (M7.6) is one more identity there,
-  with no format change.
+  ways, `KeystoreUnwrap`, that may open a file), so a hardware recipient (M7.6) is one more
+  way there, with no format change.
 - **The boot tier** (`keystore.sealed.boot`, its own directory): the keys a sealed daemon
   authenticates itself with to the client that brings the passphrase, readable at start: the
   SSH host key and the HTTPS approval API's TLS key and certificate. Without hardware, what a
@@ -363,9 +363,12 @@ unlocked ([Q17](../decisions.md)).
 - A recovery recipient (offline YubiKey or paper key) avoids losing everything with one device.
 - Hardware signer backends (YubiKey, TPM) don't need the keystore; sealing then only gates the
   daemon.
-- How the data key is recovered is a `KeystoreUnlock` implementation (passphrase + approver
-  signature in v1; age plugin recipients later), so new unseal methods plug in without
-  touching the sealing logic ([Platform interfaces](platform.md)).
+- How a keystore file is opened is a `KeystoreUnwrap`: one way to unwrap an age file's file
+  key from its header (the passphrase for the identity's file, the keystore's identity for
+  every other secret in this build; hardware recipients and the recovery identity from M7.6),
+  through `writ_platform::unlock::open`, the one place a keystore file is opened, which tries
+  each way given in turn. New unseal methods plug in without touching the sealing logic
+  ([Platform interfaces](platform.md)).
 
 The unseal sequence is [Flows § 7](../flows.md#7-daemon-startup-sealed). Until unsealed, every
 request fails closed with "daemon sealed".
@@ -375,7 +378,7 @@ signer) and the gateway without mirrors; `writ info` names the boot to unseal (t
 fingerprint and a nonce drawn at start). `writ unseal` sends the passphrase with an approver's
 SSHSIG over `writ-unseal/1` (`{daemon, nonce}`); the service checks it
 (`Service::check_unseal`), then the daemon's `Unsealer` (`writd`'s `daemon::Opener`) unwraps
-the identity through `KeystoreUnlock`, opens every secret through the one seam, starts the
+the identity through the ways the request brings (`KeystoreUnwrap`: the passphrase), opens every secret through the one seam, starts the
 signers and the mirrors (`Gateway::set_mirrors`), and hands the service its keys
 (`Service::unseal`, which checks the CA is the one whose public half the daemon started with
 and that the signer holds every template's key, and logs `unseal` before anything is

@@ -4057,6 +4057,7 @@ name = "writ-platform"
 version = "0.0.0"
 dependencies = [
  "age",
+ "age-core",
  "bech32",
  "rustix",
  "serde_json",
@@ -4159,7 +4160,6 @@ name = "writd"
 version = "0.0.0"
 dependencies = [
  "age",
- "age-core",
  "anyhow",
  "serde",
  "ssh-key",

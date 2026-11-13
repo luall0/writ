@@ -75,7 +75,7 @@ flowchart LR
 | Startup and sealing | Encrypted keystore, sealed start, `writ unseal` | [signer.md](signer.md#startup-and-sealing) |
 | Approval service | Verifies approver SSHSIGs over tickets, admin changes and unseal requests | [approvals.md](approvals.md) |
 | Session identity, process chain | Daemon-issued SSH certificates; kernel peer checks in local mode | [identity.md](identity.md) |
-| Platform interfaces | `Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnlock`, `Notifier` (and `Signer`): what makes a mode a configuration | [platform.md](platform.md) |
+| Platform interfaces | `Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnwrap`, `Notifier` (and `Signer`): what makes a mode a configuration | [platform.md](platform.md) |
 | Clients | `writ` CLI, agent skill, `writ-sign`, harness | [clients.md](clients.md) |
 | Deployment | Docker compose, network exposure, host hardening | [deployment.md](deployment.md) |
 
@@ -98,7 +98,7 @@ crates/
   writ-crypto/          SSHSIG build/verify, the SSH CA (certificates), approvers file,
                         keys and randomness, the approval API's pinned TLS
   writ-platform/        platform traits (Transport, CallerAttestor, SessionWatcher,
-                        KeystoreUnlock, Notifier, Clock), portable implementations, private
+                        KeystoreUnwrap, Notifier, Clock), portable implementations, private
                         files, fakes and contract suites (feature `testing`)
   writ-store/           SQLite lease store + ledger, JSONL audit log
   writ-git/             git objects from an agent's bytes: commits, trailers, trees, the

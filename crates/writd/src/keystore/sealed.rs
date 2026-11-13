@@ -20,7 +20,7 @@
 //! A secret is read only through [`SecretFiles`]: the one seam that knows which identities may
 //! open a file. Hardware recipients (M7.6) are more identities there, with no format change.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -116,9 +116,9 @@ impl Layout<'_> {
     }
 }
 
-/// An identity that may open a secret file: the keystore's own (unwrapped at unseal), or,
-/// from M7.6, one held by hardware.
-pub type SecretIdentity = Box<dyn age::Identity + Send + Sync>;
+/// A way that may open a secret file: the keystore's own identity (unwrapped at unseal), or,
+/// from M7.6, a key held by hardware.
+pub type SecretIdentity = Box<dyn writ_platform::KeystoreUnwrap>;
 
 /// Opens the keystore's secret files: the one seam a secret is unwrapped through. A file is
 /// opened by whichever of the identities its header names a stanza for.
@@ -142,36 +142,27 @@ impl SecretFiles {
     /// The plaintext of the age file `sealed` (a secret not written yet: a token an approver
     /// sent; `name` names it in errors), as [`SecretFiles::read`] opens a file.
     pub fn open(&self, sealed: &[u8], name: &str) -> anyhow::Result<Zeroizing<Vec<u8>>> {
-        if u64::try_from(sealed.len()).unwrap_or(u64::MAX) > MAX_SECRET_FILE {
-            bail!("{name} is larger than a sealed secret ({MAX_SECRET_FILE} bytes)");
-        }
-        let not_one = || format!("{name} is not a sealed secret");
-        let decryptor = age::Decryptor::new_buffered(sealed)
-            .map_err(|_| anyhow::anyhow!("{}: not an age file", not_one()))?;
-        if decryptor.is_scrypt() {
-            bail!("{}: it is encrypted to a passphrase", not_one());
-        }
-        let mut reader = decryptor
-            .decrypt(
-                self.identities
-                    .iter()
-                    .map(|identity| identity.as_ref() as &dyn age::Identity),
-            )
-            .map_err(|e| match e {
-                age::DecryptError::NoMatchingKeys => {
-                    anyhow::anyhow!("{name}: no identity of this keystore opens it")
-                }
-                _ => anyhow::anyhow!("{name}: cannot decrypt it"),
-            })?;
-        // Room for the largest secret up front: reading never moves the plaintext to a
-        // larger buffer, which would leave an unwiped copy behind.
-        let capacity = usize::try_from(MAX_SECRET_FILE).unwrap_or(usize::MAX);
-        let mut plaintext = Zeroizing::new(Vec::with_capacity(capacity));
-        (&mut reader)
-            .take(MAX_SECRET_FILE)
-            .read_to_end(&mut plaintext)
-            .map_err(|_| anyhow::anyhow!("{name}: cannot decrypt it"))?;
-        Ok(plaintext)
+        use writ_platform::unlock::OpenError;
+        let ways: Vec<&dyn writ_platform::KeystoreUnwrap> =
+            self.identities.iter().map(AsRef::as_ref).collect();
+        writ_platform::unlock::open(
+            sealed,
+            &ways,
+            writ_platform::unlock::PassphraseFile::Refused,
+            MAX_SECRET_FILE,
+        )
+        .map_err(|e| match e {
+            OpenError::TooLarge(max) => {
+                anyhow::anyhow!("{name} is larger than a sealed secret ({max} bytes)")
+            }
+            OpenError::NotAge | OpenError::Passphrase => {
+                anyhow::anyhow!("{name} is not a sealed secret: {e}")
+            }
+            OpenError::NoWay | OpenError::Way { .. } => anyhow::anyhow!("{name}: {e}"),
+            OpenError::Damaged | OpenError::ExcessiveWork => {
+                anyhow::anyhow!("{name}: cannot decrypt it")
+            }
+        })
     }
 }
 
@@ -559,13 +550,11 @@ pub fn keys(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashSet};
+    use std::collections::BTreeSet;
     use std::os::unix::fs::PermissionsExt;
 
-    use age::secrecy::ExposeSecret;
-    use age_core::format::{FileKey, Stanza};
-    use writ_platform::unlock::passphrase::PassphraseUnlock;
-    use writ_platform::{DataKey, KeystoreUnlock, Passphrase, UnsealRequest};
+    use writ_platform::unlock::passphrase;
+    use writ_platform::{DataKey, Passphrase, UnsealRequest};
 
     use super::super::init::{Made, make};
     use super::*;
@@ -585,12 +574,7 @@ mod tests {
 
     /// Wraps the identity with a cheap work factor: the tests open it many times.
     fn cheap(sealed: &SealedConfig, passphrase: &Passphrase, key: &DataKey) -> anyhow::Result<()> {
-        PassphraseUnlock::enroll_with_work_factor(
-            sealed.dir.join("identity.age"),
-            passphrase,
-            key,
-            4,
-        )?;
+        passphrase::enroll_with_work_factor(sealed.dir.join("identity.age"), passphrase, key, 4)?;
         Ok(())
     }
 
@@ -615,10 +599,11 @@ mod tests {
 
     /// The keystore's files opened with the passphrase, as the sealed start does.
     fn opened(sealed: &SealedConfig, passphrase: &str) -> anyhow::Result<SecretFiles> {
-        let key = PassphraseUnlock::new(sealed.dir.join("identity.age")).unlock(
+        let key = crate::platform::data_key(
+            sealed,
             &UnsealRequest::with_passphrase(Passphrase::new(passphrase.to_owned())),
         )?;
-        Ok(SecretFiles::new(vec![Box::new(key.identity()?)]))
+        Ok(SecretFiles::new(vec![Box::new(key.way()?)]))
     }
 
     fn files(dir: &Path) -> Vec<PathBuf> {
@@ -739,9 +724,7 @@ mod tests {
             "cannot unlock the keystore: wrong passphrase"
         );
         // Another keystore's identity opens none of these files.
-        let other = SecretFiles::new(vec![Box::new(
-            DataKey::from_bytes([3; 32]).identity().unwrap(),
-        )]);
+        let other = SecretFiles::new(vec![Box::new(DataKey::from_bytes([3; 32]).way().unwrap())]);
         let error = keys_error(&sealed, &other);
         assert!(
             error.ends_with("ca.age: no identity of this keystore opens it"),
@@ -756,38 +739,9 @@ mod tests {
         }
     }
 
-    /// A recipient of another kind (a stand-in for M7.6's hardware ones): its stanza wraps the
-    /// file key with a fixed pad. For this test only.
-    struct FakeRecipient;
-    struct FakeIdentity;
-    const PAD: [u8; 16] = [0x5a; 16];
-
-    fn padded(bytes: &[u8]) -> Vec<u8> {
-        bytes.iter().zip(PAD).map(|(b, p)| b ^ p).collect()
-    }
-
-    impl age::Recipient for FakeRecipient {
-        fn wrap_file_key(
-            &self,
-            file_key: &FileKey,
-        ) -> Result<(Vec<Stanza>, HashSet<String>), age::EncryptError> {
-            let stanza = Stanza {
-                tag: "writ-fake".to_owned(),
-                args: vec![],
-                body: padded(file_key.expose_secret()),
-            };
-            Ok((vec![stanza], HashSet::new()))
-        }
-    }
-
-    impl age::Identity for FakeIdentity {
-        fn unwrap_stanza(&self, stanza: &Stanza) -> Option<Result<FileKey, age::DecryptError>> {
-            if stanza.tag != "writ-fake" {
-                return None;
-            }
-            let key: [u8; 16] = padded(&stanza.body).try_into().ok()?;
-            Some(Ok(FileKey::new(Box::new(key))))
-        }
+    /// A way of another kind (a stand-in for M7.6's hardware ones).
+    fn fake_way() -> writ_platform::testing::FakeUnwrap {
+        writ_platform::testing::FakeUnwrap::new("se-01", [0x5a; 16])
     }
 
     #[test]
@@ -807,12 +761,12 @@ mod tests {
         seal(
             &layout.signing(&id),
             &plaintext,
-            &[&recipient, &FakeRecipient],
+            &[&recipient, &fake_way().recipient()],
         )
         .unwrap();
 
         // The second identity alone opens it, through the keystore's own reading.
-        let fake = SecretFiles::new(vec![Box::new(FakeIdentity)]);
+        let fake = SecretFiles::new(vec![Box::new(fake_way())]);
         assert_eq!(
             *fake.read(&layout.signing(&id), "signing key").unwrap(),
             *plaintext
@@ -849,7 +803,7 @@ mod tests {
 
         // A secret encrypted to a passphrase, or not an age file at all.
         std::fs::remove_file(layout.ca()).unwrap();
-        PassphraseUnlock::enroll_with_work_factor(
+        passphrase::enroll_with_work_factor(
             layout.ca(),
             &Passphrase::new(PASSPHRASE.to_owned()),
             &DataKey::from_bytes([1; 32]),

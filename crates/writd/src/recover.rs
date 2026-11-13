@@ -36,9 +36,11 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
             let typed = writ_crypto::passphrase::read("Keystore passphrase: ", None, false)?;
             let passphrase = writ_platform::Passphrase::new(typed.as_str().to_owned());
             drop(typed);
-            let data_key = crate::platform::unlock(sealed)
-                .unlock(&writ_platform::UnsealRequest::with_passphrase(passphrase))?;
-            crate::keystore::sealed_authority_key(sealed, data_key.identity()?)?
+            let data_key = crate::platform::data_key(
+                sealed,
+                &writ_platform::UnsealRequest::with_passphrase(passphrase),
+            )?;
+            crate::keystore::sealed_authority_key(sealed, data_key.way()?)?
         }
         KeystoreConfig::Dev(dir) => crate::keystore::dev_authority_key(dir)?,
     };

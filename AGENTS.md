@@ -66,7 +66,7 @@ records every commit signed per lease. Use these words in code, logs and docs.
    Secrets in memory are zeroized and never `Debug`-printed.
 4. **Platform-agnostic core** ([platform.md](docs/architecture/platform.md)). Anything that
    depends on the OS, hardware or deployment goes behind an interface (`Signer`, `Transport`,
-   `CallerAttestor`, `SessionWatcher`, `KeystoreUnlock`, `Notifier`), implemented in
+   `CallerAttestor`, `SessionWatcher`, `KeystoreUnwrap`, `Notifier`), implemented in
    `writ-signer` / `writ-platform*` and picked in `writd/src/platform.rs`. No code branches on
    the mode; no `#[cfg(target_os)]` elsewhere. A new platform feature is a new implementation
    (passing the interface's contract suite), never a change to the core. Need a seam that

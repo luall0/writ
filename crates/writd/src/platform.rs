@@ -15,7 +15,6 @@ use writ_platform::notify::Notifiers;
 use writ_platform::notify::telegram::{BotToken, TelegramNotifier};
 use writ_platform::transport::tcp::TcpTransport;
 use writ_platform::transport::unix::{PeerReader, UnixTransport};
-use writ_platform::unlock::passphrase::PassphraseUnlock;
 use writ_platform::watch::none::NoSessionWatcher;
 use writ_platform::{CallerAttestor, Notifier, SessionWatcher, Transport};
 use writ_signer::Signer;
@@ -341,10 +340,30 @@ fn identity_file(sealed: &SealedConfig) -> std::path::PathBuf {
     sealed.dir.join("identity.age")
 }
 
-/// How the sealed keystore's identity is recovered at unseal: the passphrase (age scrypt) in
-/// this build; M7.6 brings hardware recipients, picked here too.
-pub fn unlock(sealed: &SealedConfig) -> Arc<dyn writ_platform::KeystoreUnlock> {
-    Arc::new(PassphraseUnlock::new(identity_file(sealed)))
+/// The ways into the sealed keystore's identity an unseal brings: the passphrase (age
+/// scrypt) in this build; M7.6 brings hardware recipients, picked here too.
+fn unwrap_ways(
+    request: &writ_platform::UnsealRequest,
+) -> anyhow::Result<Vec<Box<dyn writ_platform::KeystoreUnwrap>>> {
+    let Some(passphrase) = &request.passphrase else {
+        anyhow::bail!("cannot unlock the keystore: a passphrase is required");
+    };
+    Ok(vec![Box::new(
+        writ_platform::unlock::passphrase::PassphraseUnwrap::new(passphrase),
+    )])
+}
+
+/// The sealed keystore's data key, unwrapped with what `request` brings.
+pub fn data_key(
+    sealed: &SealedConfig,
+    request: &writ_platform::UnsealRequest,
+) -> anyhow::Result<writ_platform::DataKey> {
+    let ways = unwrap_ways(request)?;
+    let ways: Vec<&dyn writ_platform::KeystoreUnwrap> = ways.iter().map(AsRef::as_ref).collect();
+    Ok(writ_platform::unlock::data_key(
+        &identity_file(sealed),
+        &ways,
+    )?)
 }
 
 /// Wraps a new keystore identity with `passphrase` (`writd init`). Refuses an existing file.
@@ -353,7 +372,7 @@ pub fn enroll(
     passphrase: &writ_platform::Passphrase,
     key: &writ_platform::DataKey,
 ) -> anyhow::Result<()> {
-    PassphraseUnlock::enroll(identity_file(sealed), passphrase, key)?;
+    writ_platform::unlock::passphrase::enroll(identity_file(sealed), passphrase, key)?;
     Ok(())
 }
 

@@ -10,7 +10,7 @@
 //! | [`Transport`] | [`transport::tcp::TcpTransport`] |
 //! | [`CallerAttestor`] | [`attest::network::NetworkAttestor`] |
 //! | [`SessionWatcher`] | [`watch::none::NoSessionWatcher`] |
-//! | [`KeystoreUnlock`] | [`unlock::passphrase::PassphraseUnlock`] |
+//! | [`KeystoreUnwrap`] | [`unlock::passphrase::PassphraseUnwrap`], [`unlock::x25519::X25519Unwrap`] |
 //! | [`Notifier`] | [`notify::telegram::TelegramNotifier`] (and [`notify::Notifiers`], a list of them) |
 //! | [`ProcessHardening`] | [`harden::none::NoHardening`] (refuses: Linux and macOS have theirs) |
 //!
@@ -41,7 +41,7 @@ pub use clock::Clock;
 pub use harden::{Hardened, HardeningOutcome, HardeningStep, ProcessHardening};
 pub use notify::{Notification, Notifier, Priority};
 pub use transport::{AsyncStream, BoxFuture, Connection, PeerInfo, Transport};
-pub use unlock::{DataKey, KeystoreUnlock, Passphrase, UnsealRequest};
+pub use unlock::{DataKey, KeystoreUnwrap, Passphrase, UnsealRequest};
 pub use watch::{OnExit, SessionWatcher, WatchHandle};
 
 /// Errors from platform implementations. Every caller treats them as a denial (fail closed).

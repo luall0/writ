@@ -43,7 +43,7 @@ conventions, hard rules and commands, and points here for details.
 - [Policy, state and audit](architecture/policy-and-state.md): policy engine, lease store and
   ledger, audit log.
 - [Platform interfaces](architecture/platform.md): the platform-agnostic core, its interfaces
-  (`Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnlock`, `Notifier`), where the
+  (`Transport`, `CallerAttestor`, `SessionWatcher`, `KeystoreUnwrap`, `Notifier`), where the
   macOS and Linux implementations live, modes as configuration presets.
 - [macOS Secure Enclave](architecture/macos-secure-enclave.md): Secure Enclave keys for
   local mode without a paid Apple account, plans A to E, and the daemon isolated from my user.

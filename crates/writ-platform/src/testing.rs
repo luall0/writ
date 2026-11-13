@@ -7,7 +7,7 @@
 //! | [`FakeTransport`] + [`FakeConnector`] | a [`Transport`] over in-memory pipes, any [`PeerInfo`] |
 //! | [`FakeAttestor`] | a [`CallerAttestor`] with chosen facts, failing, or network-like |
 //! | [`FakeWatcher`] | a [`SessionWatcher`] whose processes the test starts and ends |
-//! | [`FakeUnlock`] | a [`KeystoreUnlock`] with a known passphrase and key |
+//! | [`FakeUnwrap`] + [`FakeRecipient`] | a [`KeystoreUnwrap`] standing for a hardware key: a stanza of its own, refusing on demand, every use counted |
 //! | [`RecordingNotifier`] | a [`Notifier`] that records what it delivers, or always fails |
 //! | [`FakeClock`] | a [`Clock`] moved by hand |
 
@@ -17,12 +17,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::io::DuplexStream;
 use tokio::sync::mpsc;
 use writ_core::caller::{CallerFacts, ProcessRef};
-use zeroize::Zeroizing;
 
 use crate::contract::ProcessDriver;
 use crate::{
-    BoxFuture, CallerAttestor, Clock, Connection, DataKey, KeystoreUnlock, Notification, Notifier,
-    OnExit, PeerInfo, PlatformError, Result, SessionWatcher, Transport, UnsealRequest, WatchHandle,
+    BoxFuture, CallerAttestor, Clock, Connection, KeystoreUnwrap, Notification, Notifier, OnExit,
+    PeerInfo, PlatformError, Result, SessionWatcher, Transport, WatchHandle,
 };
 
 /// Each in-memory connection can buffer this much in each direction.
@@ -347,38 +346,109 @@ impl ProcessDriver for FakeWatcher {
     }
 }
 
-// ----- KeystoreUnlock -----
+// ----- KeystoreUnwrap -----
 
-/// A [`KeystoreUnlock`] that gives `key` for `passphrase` and fails otherwise.
-pub struct FakeUnlock {
-    passphrase: Zeroizing<String>,
-    key: Zeroizing<[u8; 32]>,
+/// The stanza tag of [`FakeRecipient`]: `writ-fake <name>`, its body the file key masked
+/// with the fake's pad (no secrecy: a stand-in for a hardware key in tests).
+pub const FAKE_STANZA: &str = "writ-fake";
+
+/// The recipient of a [`FakeUnwrap`] of the same name and pad.
+#[derive(Debug, Clone)]
+pub struct FakeRecipient {
+    name: String,
+    pad: [u8; 16],
 }
 
-impl std::fmt::Debug for FakeUnlock {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("FakeUnlock(<redacted>)")
-    }
-}
-
-impl FakeUnlock {
-    pub fn new(passphrase: &str, key: [u8; 32]) -> Self {
+impl FakeRecipient {
+    pub fn new(name: &str, pad: [u8; 16]) -> Self {
         Self {
-            passphrase: Zeroizing::new(passphrase.to_owned()),
-            key: Zeroizing::new(key),
+            name: name.to_owned(),
+            pad,
         }
     }
 }
 
-impl KeystoreUnlock for FakeUnlock {
-    fn unlock(&self, request: &UnsealRequest) -> Result<DataKey> {
-        let Some(passphrase) = &request.passphrase else {
-            return Err(PlatformError::Unlock("a passphrase is required".to_owned()));
+fn masked(bytes: &[u8], pad: &[u8; 16]) -> Vec<u8> {
+    bytes.iter().zip(pad).map(|(b, p)| b ^ p).collect()
+}
+
+impl age::Recipient for FakeRecipient {
+    fn wrap_file_key(
+        &self,
+        file_key: &crate::unlock::FileKey,
+    ) -> std::result::Result<(Vec<crate::unlock::Stanza>, HashSet<String>), age::EncryptError> {
+        use age::secrecy::ExposeSecret;
+        let stanza = crate::unlock::Stanza {
+            tag: FAKE_STANZA.to_owned(),
+            args: vec![self.name.clone()],
+            body: masked(file_key.expose_secret(), &self.pad),
         };
-        if passphrase.expose() != self.passphrase.as_str() {
-            return Err(PlatformError::Unlock("wrong passphrase".to_owned()));
+        Ok((vec![stanza], HashSet::new()))
+    }
+}
+
+/// A [`KeystoreUnwrap`] standing for a hardware key: it opens the stanzas its
+/// [`FakeRecipient`] writes (its name in the stanza, a body of 16 bytes), refuses every use
+/// once [`FakeUnwrap::refuse`] is called (a device that refuses, a key removed), and counts
+/// each unwrap it is asked for (so a test sees a secret unwrapped per use). Clones share the
+/// switch and the count.
+#[derive(Debug, Clone)]
+pub struct FakeUnwrap {
+    name: String,
+    pad: [u8; 16],
+    refusing: Arc<std::sync::atomic::AtomicBool>,
+    uses: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl FakeUnwrap {
+    pub fn new(name: &str, pad: [u8; 16]) -> Self {
+        Self {
+            name: name.to_owned(),
+            pad,
+            refusing: Arc::default(),
+            uses: Arc::default(),
         }
-        Ok(DataKey::from_bytes(*self.key))
+    }
+
+    pub fn recipient(&self) -> FakeRecipient {
+        FakeRecipient::new(&self.name, self.pad)
+    }
+
+    /// From now on, every stanza of its own is refused.
+    pub fn refuse(&self) {
+        self.refusing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many of its own stanzas it was asked to unwrap.
+    pub fn uses(&self) -> usize {
+        self.uses.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl KeystoreUnwrap for FakeUnwrap {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn unwrap(&self, stanzas: &[crate::unlock::Stanza]) -> Result<Option<crate::unlock::FileKey>> {
+        let Some(stanza) = stanzas
+            .iter()
+            .find(|s| s.tag == FAKE_STANZA && s.args.first() == Some(&self.name))
+        else {
+            return Ok(None);
+        };
+        self.uses.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(PlatformError::Unlock("the fake device refuses".to_owned()));
+        }
+        if stanza.args.len() != 1 {
+            return Err(PlatformError::Unlock("a damaged fake stanza".to_owned()));
+        }
+        let key: [u8; 16] = masked(&stanza.body, &self.pad)
+            .try_into()
+            .map_err(|_| PlatformError::Unlock("a damaged fake stanza".to_owned()))?;
+        Ok(Some(crate::unlock::FileKey::new(Box::new(key))))
     }
 }
 
