@@ -84,6 +84,22 @@ pub(crate) async fn run_approval(
     channel: Channel<Msg>,
 ) {
     let (mut rx, tx) = channel.split();
+    // A watch waits for minutes: raced against its channel like an agent's wait, so a client
+    // gone (its channel closed or the connection lost) ends it and gives its slot back.
+    if matches!(command, Command::Watch { .. }) {
+        let watched = approval_reply(gateway, facts, command, Zeroizing::new(Vec::new()));
+        tokio::pin!(watched);
+        let result = loop {
+            tokio::select! {
+                result = &mut watched => break result,
+                message = rx.wait() => match message {
+                    None | Some(ChannelMsg::Close) => return,
+                    Some(_) => {}
+                },
+            }
+        };
+        return reply(tx, result).await;
+    }
     let body = if approval_has_body(&command) {
         match read_body(&mut rx).await {
             Ok(body) => body,
@@ -137,6 +153,7 @@ pub(crate) async fn approval_reply(
         Command::Info => encoded(Ok(service.info())),
         Command::List { all } => encoded(blocking(move || service.list(all)).await),
         Command::Show { id } => encoded(blocking(move || service.show(&id)).await),
+        Command::Watch { since } => watch(gateway, facts, since).await,
         Command::Report { id } => encoded(blocking(move || service.report(&id)).await),
         Command::Approve { id } => match writ_proto::decode_body(&body) {
             Ok(request) => encoded(blocking(move || service.approve(&id, &request, &facts)).await),
@@ -222,6 +239,30 @@ pub(crate) async fn approval_reply(
         | Command::Wait { .. }
         | Command::Close { .. } => encoded::<()>(Err(ApiError::new("command not allowed here"))),
     }
+}
+
+/// `writ watch` (M7.8): a slot of [`limits::MAX_WATCHES`] taken for as long as it waits;
+/// none free, refused with its reason and logged (coalesced per source, like the other
+/// denials a flood could repeat). An allowed watch is a read and writes no line.
+async fn watch(
+    gateway: Gateway,
+    facts: CallerFacts,
+    since: Option<writ_core::authority::TextDigest>,
+) -> (Vec<u8>, Option<String>) {
+    let Ok(_slot) = gateway.shared.watches.clone().try_acquire_owned() else {
+        let reason = format!(
+            "too many watches at once (at most {}): one more is refused",
+            limits::MAX_WATCHES
+        );
+        if let Some(suppressed) = gateway.shared.throttle.admit(facts.source_addr, "watch") {
+            let line = limits::with_suppressed(reason.clone(), suppressed);
+            let denial = writ_approval::GatewayDenial::new(writ_approval::EventKind::Command, line);
+            gateway.log_denial(denial, facts).await;
+        }
+        return encoded::<()>(Err(ApiError::new(reason)));
+    };
+    let service = gateway.service().clone();
+    encoded(served(service.watch(since.as_ref()).await))
 }
 
 /// `writ admin host add`'s scan: the service checks the `writ-scan/1` and its signature (its

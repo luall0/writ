@@ -264,6 +264,8 @@ struct Shared {
     throttle: limits::DenialThrottle,
     /// Sign requests held at once, all lease holders together.
     sign_slots: limits::SignSlots,
+    /// Watches held at once, all readers together ([`limits::MAX_WATCHES`]).
+    watches: Arc<tokio::sync::Semaphore>,
     /// The lease holders' git operations and signatures in flight: an orderly stop waits
     /// for them ([`Gateway::stop`]).
     operations: Arc<writ_mirror::in_flight::InFlight>,
@@ -338,6 +340,7 @@ impl Gateway {
                 hook_socket,
                 throttle: limits::DenialThrottle::new(),
                 sign_slots,
+                watches: Arc::new(tokio::sync::Semaphore::new(limits::MAX_WATCHES)),
                 operations: writ_mirror::in_flight::InFlight::new(),
             }),
         };
@@ -370,6 +373,12 @@ impl Gateway {
     /// The approval service the gateway asks.
     pub fn service(&self) -> &Arc<Service> {
         &self.shared.service
+    }
+
+    /// How many watches (`writ watch`, M7.8) are held now: each ends with its answer or with
+    /// its client.
+    pub fn watching(&self) -> usize {
+        limits::MAX_WATCHES.saturating_sub(self.shared.watches.available_permits())
     }
 
     /// The CAs whose certificates the gateway takes from now on (M7.6): `current`, and each

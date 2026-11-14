@@ -1,7 +1,7 @@
 //! The commands: an SSH exec line (`writ approve <id>`) or, for the approval API, an HTTPS
 //! route (`POST /v1/tickets/<id>/approve`).
 
-use writ_core::authority::AdminTarget;
+use writ_core::authority::{AdminTarget, TextDigest};
 use writ_core::names::{KeyId, RepoName, TicketId};
 
 /// A command run over the daemon's SSH protocol (the exec line).
@@ -27,6 +27,10 @@ pub enum Command {
     List { all: bool },
     /// `writ show <id>`: a ticket's canonical bytes and the revision it follows. Reply: [`Shown`].
     Show { id: TicketId },
+    /// `writ watch [<cursor>]` (M7.8): the tickets waiting for a signature, given as soon as
+    /// they aren't the ones `since` names (the cursor of an earlier reply; none: at once), or
+    /// after a bounded time with the same ones. Reply: [`Watched`].
+    Watch { since: Option<TextDigest> },
     /// `writ report <lease>`: a lease's activity report. Reply: [`Report`].
     Report { id: TicketId },
     /// `writ approve <id>`: an approval ([`ApproveRequest`] on stdin). Reply: [`Ack`].
@@ -161,6 +165,10 @@ impl Command {
             ("ls", None) => Some(Self::List { all: false }),
             ("ls", Some("--all")) => Some(Self::List { all: true }),
             ("show", Some(_)) => Some(Self::Show { id: id()? }),
+            ("watch", None) => Some(Self::Watch { since: None }),
+            ("watch", Some(cursor)) => Some(Self::Watch {
+                since: Some(TextDigest::try_from(cursor.to_owned()).ok()?),
+            }),
             ("approve", Some(_)) => Some(Self::Approve { id: id()? }),
             ("refuse", Some(_)) => Some(Self::Refuse { id: id()? }),
             ("revoke", Some(_)) => Some(Self::Revoke { id: id()? }),
@@ -183,6 +191,10 @@ impl Command {
             Self::List { all: false } => "writ ls".to_owned(),
             Self::List { all: true } => "writ ls --all".to_owned(),
             Self::Show { id } => format!("writ show {id}"),
+            Self::Watch { since: None } => "writ watch".to_owned(),
+            Self::Watch {
+                since: Some(cursor),
+            } => format!("writ watch {cursor}"),
             Self::Approve { id } => format!("writ approve {id}"),
             Self::Refuse { id } => format!("writ refuse {id}"),
             Self::Revoke { id } => format!("writ revoke {id}"),
@@ -230,6 +242,7 @@ impl Command {
     /// | info | `GET /v1/info` |
     /// | ls, ls --all | `GET /v1/tickets`, `GET /v1/tickets?all=true` |
     /// | show | `GET /v1/tickets/<id>` |
+    /// | watch | `GET /v1/tickets/watch`, `GET /v1/tickets/watch?since=<cursor>` |
     /// | report | `GET /v1/tickets/<id>/report` |
     /// | approve, refuse, revoke | `POST /v1/tickets/<id>/approve` (`refuse`, `revoke`) |
     /// | prove | `POST /v1/proofs` |
@@ -254,6 +267,10 @@ impl Command {
             Self::List { all: false } => Some(("GET", "/v1/tickets".to_owned())),
             Self::List { all: true } => Some(("GET", "/v1/tickets?all=true".to_owned())),
             Self::Show { id } => Some(("GET", format!("/v1/tickets/{id}"))),
+            Self::Watch { since: None } => Some(("GET", "/v1/tickets/watch".to_owned())),
+            Self::Watch {
+                since: Some(cursor),
+            } => Some(("GET", format!("/v1/tickets/watch?since={cursor}"))),
             Self::Report { id } => Some(("GET", format!("/v1/tickets/{id}/report"))),
             Self::Approve { id } => Some(("POST", format!("/v1/tickets/{id}/approve"))),
             Self::Refuse { id } => Some(("POST", format!("/v1/tickets/{id}/refuse"))),
@@ -290,6 +307,11 @@ impl Command {
             ("GET", ["info"], None) => Self::Info,
             ("GET", ["tickets"], None) => Self::List { all: false },
             ("GET", ["tickets"], Some("all=true")) => Self::List { all: true },
+            // Before `tickets/<id>`: `watch` is no ticket id, and never parses as one.
+            ("GET", ["tickets", "watch"], None) => Self::Watch { since: None },
+            ("GET", ["tickets", "watch"], Some(query)) => Self::Watch {
+                since: Some(TextDigest::try_from(query.strip_prefix("since=")?.to_owned()).ok()?),
+            },
             ("GET", ["tickets", t], None) => Self::Show { id: id(t)? },
             ("GET", ["tickets", t, "report"], None) => Self::Report { id: id(t)? },
             ("POST", ["tickets", t, "approve"], None) => Self::Approve { id: id(t)? },

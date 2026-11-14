@@ -1438,3 +1438,226 @@ async fn env_requests_are_refused_and_authentication_stops_after_six_attempts() 
     );
     assert!(handle.is_closed());
 }
+
+// ----- Watches (M7.8) --------------------------------------------------------------------
+
+/// Opens a channel running `line` and leaves it waiting for its reply.
+async fn open_watch(handle: &Handle<Accept>, line: &str) -> russh::Channel<client::Msg> {
+    let channel = handle.channel_open_session().await.unwrap();
+    channel.exec(true, line).await.unwrap();
+    channel.eof().await.unwrap();
+    channel
+}
+
+/// The reply a channel opened by [`open_watch`] ends with.
+async fn watch_reply(
+    mut channel: russh::Channel<client::Msg>,
+) -> Result<writ_proto::Watched, ApiError> {
+    let mut out = Vec::new();
+    while let Some(message) = channel.wait().await {
+        match message {
+            ChannelMsg::Data { data } => out.extend_from_slice(&data),
+            ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    writ_proto::decode_reply(&out)
+}
+
+async fn submit(daemon: &Daemon) -> Submitted {
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let agent = Daemon::with_key(&daemon.agents, "writ", &key)
+        .await
+        .unwrap();
+    call(&agent, Command::Request, TICKET.as_bytes())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_watch_answers_on_a_change_over_ssh_and_over_https() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let approver = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
+        .await
+        .unwrap();
+    // No cursor: at once, nothing waiting.
+    let now: writ_proto::Watched = call(&approver, Command::Watch { since: None }, b"")
+        .await
+        .unwrap();
+    assert!(now.tickets.is_empty());
+
+    // Over SSH, with the current cursor: held until a ticket is submitted.
+    let line = Command::Watch {
+        since: Some(now.cursor.clone()),
+    }
+    .line();
+    let channel = open_watch(&approver, &line).await;
+    eventually_async("the watch to be held", || daemon.gateway.watching() == 1).await;
+    let submitted = submit(&daemon).await;
+    let watched = watch_reply(channel).await.unwrap();
+    assert_eq!(watched.tickets.len(), 1);
+    assert_eq!(watched.tickets[0].id, submitted.id);
+    assert_eq!(watched.tickets[0].state, writ_core::lease::State::Pending);
+    assert_eq!(daemon.gateway.watching(), 0);
+
+    // Over HTTPS, the same reply for the same tickets, and held while they don't change.
+    let (status, again) =
+        https_call::<writ_proto::Watched>(&daemon, Command::Watch { since: None }, b"").await;
+    assert_eq!(status, 200);
+    let again = again.unwrap();
+    assert_eq!(again, watched);
+    let held = {
+        let since = again.cursor.clone();
+        let (method, path) = Command::Watch { since: Some(since) }.http_route().unwrap();
+        let pin = daemon.pin.clone();
+        let reader = daemon.reader.clone();
+        let daemon = &daemon;
+        async move { https_as(daemon, &pin, &reader, method, &path, Vec::new()).await }
+    };
+    let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+    let approve = async {
+        eventually_async("the HTTPS watch to be held", || {
+            daemon.gateway.watching() == 1
+        })
+        .await;
+        let _: Ack = call(
+            &approver,
+            Command::Approve {
+                id: submitted.id.clone(),
+            },
+            &writ_proto::encode_body(&sign_approval(&daemon.approver, &ticket)).unwrap(),
+        )
+        .await
+        .unwrap();
+    };
+    let (answer, ()) = tokio::join!(held, approve);
+    let (status, bytes) = answer.unwrap();
+    assert_eq!(status, 200);
+    let gone: writ_proto::Watched = writ_proto::decode_reply(&bytes).unwrap();
+    assert!(gone.tickets.is_empty(), "{gone:?}");
+    assert_eq!(gone.cursor, now.cursor);
+
+    // A cursor that isn't one, and a key that isn't a reader's: refused.
+    let (status, _) = https(
+        &daemon,
+        &daemon.pin,
+        "GET",
+        "/v1/tickets/watch?since=x",
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, 404);
+    let (_, err, code) = exec(&approver, "writ watch x", b"").await;
+    assert_ne!(code, Some(0), "{err}");
+    let stranger = generate(KeyKind::Ed25519).unwrap();
+    let refused = https_as(
+        &daemon,
+        &daemon.pin,
+        &stranger,
+        "GET",
+        "/v1/tickets/watch",
+        Vec::new(),
+    )
+    .await;
+    // any error: rustls or hyper reports the rejected client certificate its own way; the
+    // daemon's line says which (`https_turns_away_a_key_not_in_readers`).
+    assert!(refused.is_err(), "{refused:?}");
+    eventually_async("the refused handshake to be logged", || {
+        !daemon.audit("connect", "denied").is_empty()
+    })
+    .await;
+    assert_eq!(
+        daemon.audit("connect", "denied")[0]["reason"],
+        "TLS handshake refused: unexpected error: the client certificate is not for a reader key"
+    );
+}
+
+#[tokio::test]
+async fn watches_past_the_cap_are_refused_and_logged_and_each_ends_with_its_client() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let approver = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
+        .await
+        .unwrap();
+    let now: writ_proto::Watched = call(&approver, Command::Watch { since: None }, b"")
+        .await
+        .unwrap();
+    let line = Command::Watch {
+        since: Some(now.cursor.clone()),
+    }
+    .line();
+    // Sixteen held: four connections of four channels.
+    let mut connections = Vec::new();
+    for _ in 0..4 {
+        let handle = Daemon::with_key(&daemon.approvals, "writ", &daemon.reader)
+            .await
+            .unwrap();
+        let mut channels = Vec::new();
+        for _ in 0..4 {
+            channels.push(open_watch(&handle, &line).await);
+        }
+        connections.push((handle, channels));
+    }
+    eventually_async("sixteen watches", || daemon.gateway.watching() == 16).await;
+
+    // The seventeenth, over SSH and over HTTPS: refused at once with the reason.
+    let refused = call::<writ_proto::Watched>(&approver, Command::Watch { since: None }, b"")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.message,
+        "too many watches at once (at most 16): one more is refused"
+    );
+    let (status, over_https) =
+        https_call::<writ_proto::Watched>(&daemon, Command::Watch { since: None }, b"").await;
+    assert_eq!(status, 422);
+    assert_eq!(over_https.unwrap_err().message, refused.message);
+    // Logged once for the burst from this source, the second counted on the next line.
+    let lines = daemon.audit("command", "denied");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["reason"], refused.message);
+
+    // One connection hung up: its four watches end, their slots given back.
+    let (handle, _channels) = connections.pop().unwrap();
+    handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await
+        .unwrap();
+    eventually_async("the lost connection's watches to end", || {
+        daemon.gateway.watching() == 12
+    })
+    .await;
+    // One channel closed: its watch ends.
+    let (_, mut channels) = connections.pop().unwrap();
+    channels.pop().unwrap().close().await.unwrap();
+    eventually_async("the closed channel's watch to end", || {
+        daemon.gateway.watching() == 11
+    })
+    .await;
+
+    // An HTTPS watch whose client goes away ends with it.
+    let (method, path) = Command::Watch {
+        since: Some(now.cursor.clone()),
+    }
+    .http_route()
+    .unwrap();
+    let held = {
+        let (pin, reader) = (daemon.pin.clone(), daemon.reader.clone());
+        let daemon = &daemon;
+        async move { https_as(daemon, &pin, &reader, method, &path, Vec::new()).await }
+    };
+    tokio::select! {
+        answer = held => panic!("the watch answered with nothing changed: {answer:?}"),
+        () = eventually_async("the HTTPS watch to be held", || daemon.gateway.watching() == 12) => {}
+    }
+    // The client's future dropped above: its connection closed, the watch ends.
+    eventually_async("the HTTPS watch to end with its client", || {
+        daemon.gateway.watching() == 11
+    })
+    .await;
+    // With slots free again, a watch is served.
+    let served: writ_proto::Watched = call(&approver, Command::Watch { since: None }, b"")
+        .await
+        .unwrap();
+    assert_eq!(served, now);
+}

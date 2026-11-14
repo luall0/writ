@@ -34,6 +34,9 @@ pub const MAX_SIGN_REQUESTS: usize = 16;
 /// Sign requests one lease may have held at once, unless the operator says otherwise
 /// (`sign_requests.per_lease`, 1 to [`MAX_SIGN_REQUESTS`]): one lease can't take every slot.
 pub const DEFAULT_SIGN_REQUESTS_PER_LEASE: usize = 4;
+/// Watches (`writ watch`, M7.8) held at once, all readers together: each holds a connection
+/// for up to `WATCH_LIMIT`, so the approval popup's and a few terminals' fit, and no more.
+pub(crate) const MAX_WATCHES: usize = 16;
 /// A connection with no traffic at all for this long is closed.
 pub(crate) const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(600);
 /// The longest text chosen by an unauthenticated peer (a certificate's key id) that is logged.

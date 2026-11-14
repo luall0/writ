@@ -607,6 +607,15 @@ pub struct Listing {
     pub tickets: Vec<Summary>,
 }
 
+/// Reply to [`Command::Watch`] (M7.8): the tickets waiting for a signature (in id order) and
+/// their cursor, the SHA-256 of their ids, one per line, which the next watch names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Watched {
+    pub cursor: writ_core::authority::TextDigest,
+    pub tickets: Vec<Summary>,
+}
+
 /// One line of `writ ls`. The title is agent-written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

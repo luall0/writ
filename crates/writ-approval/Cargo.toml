@@ -33,6 +33,8 @@ writ-signer = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+# Paused time for the watch's tests (M7.8).
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

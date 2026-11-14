@@ -992,7 +992,7 @@ impl Denied {
     }
 }
 
-fn summary(record: &TicketRecord) -> Summary {
+pub(super) fn summary(record: &TicketRecord) -> Summary {
     let ticket = &record.ticket;
     Summary {
         id: ticket.id.clone(),

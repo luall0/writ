@@ -396,12 +396,30 @@ commands, bodies and replies ([Q29](../decisions.md)):
   SHA-256 fingerprint in `~/.writ/tls_pins` (`writd tls-fingerprint` prints it; no
   certificate authority is trusted), and a client certificate made from the reader key
   (mutual TLS). Routes: `GET /v1/info`, `GET /v1/tickets[?all=true]`,
-  `GET /v1/tickets/<id>`, `POST /v1/tickets/<id>/approve`, `…/refuse`, `…/revoke`,
-  `POST /v1/proofs`; JSON
+  `GET /v1/tickets/watch[?since=<cursor>]`, `GET /v1/tickets/<id>`,
+  `POST /v1/tickets/<id>/approve`, `…/refuse`, `…/revoke`, `POST /v1/proofs`, and the admin
+  routes (`writ_proto::Command::http_route`); JSON
   bodies, replies in the `{"ok"}` / `{"error"}` envelope (HTTP 200, or 422 when the
   command failed, 404 for an unknown route). Each request runs on its own task, to its end
   even when the client goes away (Ctrl-C during `writ unseal` or `writ admin apply`): a
   change is never left half applied, only its reply is lost (SSH commands run so already).
+  A watch is the exception: it changes nothing, so it runs in the connection's own future
+  and ends with its client.
+
+**The watch** (M7.8, for the [approval popup](clients.md)): `writ watch [<cursor>]` over SSH,
+`GET /v1/tickets/watch[?since=<cursor>]` over HTTPS. Its reply is the tickets waiting for a
+signature, in id order, and their **cursor**, the SHA-256 of their ids one per line (64
+lowercase hex characters; anything else is no command). It answers at once when the caller
+names no cursor or one that isn't the current one (a stale one, another daemon's), else as
+soon as the waiting tickets change (a submission, a signature, a refusal, a withdrawal, an
+expiry, which it sweeps every 30 s while it waits) or after 240 s (`WATCH_LIMIT`, well under
+the listeners' 10 minutes of inactivity) with the same ones; the client asks again with the
+cursor it got. At most 16 watches are held at once, all readers together
+(`limits::MAX_WATCHES`); one more is refused at once (`too many watches at once (at most
+16)`) and logged as a `command` denial, coalesced per source like the other denials a flood
+could repeat. An allowed watch is a read: like `writ ls`, it writes no line. Over SSH a
+watch ends with its channel or its connection; over HTTPS with its client. A sealed daemon
+refuses it like any other read.
 
 `writ` picks the transport from `WRIT_APPROVAL_URL` (`ssh://…`, `unix:…` or `https://…`).
 
@@ -440,7 +458,7 @@ key is only ever used through `ssh-keygen -Y sign` (hard rule 8). Without it, an
 reached the listener could read every ticket (task, plan, repos, leases). The connection
 still grants nothing: approvals (and, with `decisions: signed`, refusals and revocations)
 are SSHSIGs the approval service verifies. `writ ls --all` returns the 200 most recent
-tickets. Commands: `writ info`, `writ ls [--all]`, `writ show <id>`, `writ approve <id>`,
+tickets. Commands: `writ info`, `writ ls [--all]`, `writ watch [<cursor>]`, `writ show <id>`, `writ approve <id>`,
 `writ refuse <id>`, `writ revoke <id>`, `writ prove` (`writ_proto::Command`). Signatures are made with
 `ssh-keygen -Y sign -U -n writ-approval -f <approval key .pub>` against the approver's agent
 socket (`WRIT_APPROVAL_AGENT`, else `SSH_AUTH_SOCK`), the bytes to sign on its standard input

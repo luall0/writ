@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::DryRun`], [`Command::Policy`], [`Command::Wait`], [`Command::Close`] |
-//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`], [`Command::ScanNonce`], [`Command::Scan`], [`Command::RepoCheck`], [`Command::TlsShow`], [`Command::TlsRotate`], [`Command::CaShow`], [`Command::CaRotate`], [`Command::AutoUnsealShow`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Watch`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`], [`Command::ScanNonce`], [`Command::Scan`], [`Command::RepoCheck`], [`Command::TlsShow`], [`Command::TlsRotate`], [`Command::CaShow`], [`Command::CaRotate`], [`Command::AutoUnsealShow`] |
 //!
 //! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
 //! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed".
@@ -38,7 +38,7 @@ pub use messages::{
     RefuseRequest, Relation, RemovedKey, Renewal, RepoPolicy, Report, ReportCommit, ReportPush,
     RetiredCa, RevokeRequest, ScanNonce, ScanRequest, Scanned, ScannedKey, SealedBoot, Shown,
     Submitted, Summary, TemplateView, TlsRequest, TlsRotated, TlsShown, TokenApplied, TokenRequest,
-    TokenShown, UnsealRequest, UnsealWay, Unsealed, UpstreamChecked,
+    TokenShown, UnsealRequest, UnsealWay, Unsealed, UpstreamChecked, Watched,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -100,6 +100,11 @@ mod tests {
             Command::CaShow,
             Command::CaRotate,
             Command::AutoUnsealShow,
+            // M7.8.
+            Command::Watch { since: None },
+            Command::Watch {
+                since: Some(writ_core::authority::TextDigest::of("wrt_x")),
+            },
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -144,6 +149,14 @@ mod tests {
             "writ admin check",
             "writ admin check ../x",
             "writ admin check demo extra",
+            // A watch's cursor is 64 lowercase hex characters, and only one.
+            "writ watch extra",
+            "writ watch 0",
+            &format!("writ watch {}", "A".repeat(64)),
+            &format!("writ watch {}", "a".repeat(63)),
+            &format!("writ watch {}", "a".repeat(65)),
+            &format!("writ watch {} {}", "a".repeat(64), "a".repeat(64)),
+            &format!("writ watch  {}", "a".repeat(64)),
             "git-upload-pack 'x'",
         ] {
             assert_eq!(Command::parse(line), None, "{line:?}");
@@ -185,6 +198,10 @@ mod tests {
             Command::CaShow,
             Command::CaRotate,
             Command::AutoUnsealShow,
+            Command::Watch { since: None },
+            Command::Watch {
+                since: Some(writ_core::authority::TextDigest::of("wrt_x")),
+            },
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));
@@ -197,6 +214,7 @@ mod tests {
             Command::CaShow,
             Command::CaRotate,
             Command::AutoUnsealShow,
+            Command::Watch { since: None },
         ] {
             assert!(command.is_approval() && !command.is_agent(), "{command:?}");
         }
@@ -237,6 +255,26 @@ mod tests {
             ("GET", "/v2/info"),
             ("GET", "/v1/info/"),
             ("GET", "v1/info"),
+            ("POST", "/v1/tickets/watch"),
+            ("GET", "/v1/tickets/watch/"),
+            ("GET", "/v1/tickets/watch?since="),
+            ("GET", "/v1/tickets/watch?since=xyz"),
+            (
+                "GET",
+                &format!("/v1/tickets/watch?since={}", "A".repeat(64)),
+            ),
+            (
+                "GET",
+                &format!("/v1/tickets/watch?cursor={}", "a".repeat(64)),
+            ),
+            (
+                "GET",
+                &format!("/v1/tickets/watch?since={}&x=1", "a".repeat(64)),
+            ),
+            (
+                "GET",
+                &format!("/v1/tickets/watch?since={}", "a".repeat(65)),
+            ),
         ] {
             assert_eq!(Command::from_http(method, path), None, "{method} {path}");
         }

@@ -109,6 +109,13 @@ impl Gateway {
                                 &reason,
                             ));
                         }
+                        // A watch changes nothing and waits for minutes: served in this
+                        // future, which hyper drops when its client goes away, so a watch
+                        // never holds its slot past its client.
+                        if is_watch(&request) {
+                            let _slot = slot;
+                            return Ok(handle(gateway, facts, request).await);
+                        }
                         // On a task of its own: hyper drops this future when the client
                         // goes away (an unseal or an admin change cut off by Ctrl-C), and a
                         // change half applied (the state changed, the gateway not told)
@@ -136,6 +143,11 @@ impl Gateway {
             });
         }
     }
+}
+
+/// Whether a request is a watch (`GET /v1/tickets/watch`, with or without its cursor).
+fn is_watch(request: &Request<Incoming>) -> bool {
+    request.method() == hyper::Method::GET && request.uri().path() == "/v1/tickets/watch"
 }
 
 fn respond(status: StatusCode, body: Vec<u8>) -> Response<Full<Bytes>> {

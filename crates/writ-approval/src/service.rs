@@ -24,6 +24,7 @@ mod sweep;
 mod tls;
 mod token;
 mod unseal;
+mod watch;
 
 pub use admin::{AdminParsed, AlteredAtRest, CheckedAdmin, InForce};
 pub use ca::CheckedCa;
@@ -38,6 +39,7 @@ pub use submissions::{
 pub use tls::{CheckedTls, MAX_ROTATIONS_A_MINUTE};
 pub use token::CheckedToken;
 pub use unseal::UnsealedBy;
+pub use watch::WATCH_LIMIT;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
