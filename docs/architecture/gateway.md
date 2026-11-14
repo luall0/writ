@@ -238,15 +238,38 @@ A **sync** fetches upstream's branches and tags, nothing else (`+refs/heads/*` a
 deleted goes). It runs on a fetch and on a push when the mirror is older than `fresh_for`
 (10 s), and in the background every `sync_every` (5 min) (no webhooks,
 [Q19](../decisions.md)). One lock per mirror serializes syncs and pushes; concurrent callers
-wait for one sync and find the mirror fresh; at most 4 syncs run at once, daemon-wide. A caller
-waits for the lock at most twice `mirrors.timeout` plus 10 minutes (what a holder doing its
-job takes: a wait for a sync slot, itself at most `mirrors.timeout`, one upstream operation,
-and its local work, a repack or the reading of a push, 10 minutes for all of it together;
+wait for one sync and find the mirror fresh; at most 4 syncs run at once, daemon-wide. A sync
+has `mirrors.timeout` (5 min), or `mirrors.first_sync_timeout` (1 h) while the mirror holds
+no branch or tag (its first sync, whoever starts it: the sync at start, the background one,
+a fetch, `writ admin repo check`; read before the fetch with `git for-each-ref`, within 10 s,
+a failure taking the shorter limit). A caller
+waits for the lock at most `mirrors.timeout`, the longer of the two limits, 10 s and 10
+minutes (what a holder doing its job takes: the emptiness read, 10 s; a wait for a sync slot,
+itself at most `mirrors.timeout`; one upstream operation; and its local work, a repack or the
+reading of a push, 10 minutes for all of it together;
 `writ admin repo check` takes the lock for each of its steps apart); past it the fetch or push is refused, `the mirror is
-busy`, never left waiting. A sync that fails, or is dropped, leaves the mirror's refs as they
+busy`, never left waiting. A sync past its limit fails naming the key that set it
+(`upstream did not finish within 1h (mirrors.first_sync_timeout)`). A sync that fails, or is dropped, leaves the mirror's refs as they
 were, removes its partial pack, and marks the mirror stale; a mirror a start cut short while
 creating it (`.<name>.git.new-…`) is removed at the next start; the fetch or push that asked for it is refused with the reason (fail closed).
 Past 50 packs, a sync repacks the mirror.
+
+**Each mirror's sync status** is kept beside its lock, in memory (a registry change keeps it
+with the lock; a restart starts it over), so it is read while a sync holds the mirror: the
+sync running, if one is (waiting for a slot or fetching; first or not; for how long, and its
+limit; the bytes its byte-capping proxy counted, of `mirrors.max_fetch`; and git's progress),
+and how the last one ended (how long ago, how long it took, how many refs moved, or the
+failure as `writ admin repo check` says it; a sync dropped before its end is said as
+interrupted). The fetch runs with `--progress`: git's stderr is read as it comes, cut at each
+`\r` and `\n`, and a part that is a progress line of a phase Writ knows (`Receiving objects`
+and `Resolving deltas`, git's own; `Enumerating`, `Counting` and `Compressing objects` after
+`remote: `, upstream's) gives the phase and its two counts, kept out of the stderr a failure is
+classified from (its 64 KiB stay for the error); any other part is kept as before. The counts
+are only shown, never enforced: the objects' total is what upstream's pack says, and a
+`remote:` line is upstream's words, so a hostile upstream can make the progress lie, never
+the sync's bounds. `writ admin repo status [<repo>]` reads it (`GET /v1/repos/status`,
+`GET /v1/repos/<repo>/status`, a reader key), and so does `writ admin repo check` while it
+runs.
 
 Upstream is semi-trusted (the operator's remote, but one that can be compromised, behind a
 network that can be hostile), so what a sync takes from it is checked and bounded:
@@ -254,7 +277,7 @@ network that can be hostile), so what a sync takes from it is checked and bounde
 | What | Bound |
 |---|---|
 | Who it is | `ssh://`: the host key pinned in the signed policy's `upstream_hosts` (`StrictHostKeyChecking=yes`, nothing learned); `https://`: a certificate for its host from the system's CAs, or from those in `mirrors.ca_certs`, and no redirect |
-| What it sends | `mirrors.max_fetch` bytes (1 GiB) per operation, every git of it together (a sync's fetch and `ls-remote`, a notes push's four), counted by the operation's proxy (`ssh://` and `https://`; the relay also bounds each `ssh://` git), git having no limit of its own on a fetch; `mirrors.timeout` (5 min) for the whole sync, then git, the relay and ssh are killed as a process group |
+| What it sends | `mirrors.max_fetch` bytes (1 GiB) per operation, every git of it together (a sync's fetch and `ls-remote`, a notes push's four), counted by the operation's proxy (`ssh://` and `https://`; the relay also bounds each `ssh://` git), git having no limit of its own on a fetch; `mirrors.timeout` (5 min) for the whole sync (`mirrors.first_sync_timeout`, 1 h, while the mirror holds no branch or tag: an upstream that sends none keeps the longer limit, still a bound), then git, the relay and ssh are killed as a process group |
 | Its objects | `fsck`, with the checks above at error level; a pack lands whole or not at all |
 | Its refs | branches and tags only; all or none |
 | Its object format | the registry's: git refuses a remote in another (`mismatched algorithms`) |

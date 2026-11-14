@@ -261,7 +261,19 @@ throughout: read access (`ls-remote`), the mirror synced (its object format the 
 write access (a `push --dry-run` deleting a ref no remote holds: receive-pack answers, nothing
 is sent, an empty repository passing too). It stops at the first step that fails; what upstream says comes back
 cleaned and bounded. A guided `repo add` runs it once Enter says the new credential is
-registered on the remote; without a terminal it says the command to run.
+registered on the remote; without a terminal it says the command to run. While it runs,
+`writ` asks the mirror's sync status every 2 s on the same connection (a second channel) and
+shows the sync running, if one is: on a terminal one line rewritten in place, cut to 78
+columns; otherwise a line a minute. A daemon that can't say (an older one) shows nothing.
+
+**The sync status** (`writ admin repo status [<repo>]`, `writ admin status [<repo>]`,
+`GET /v1/repos/status`, `GET /v1/repos/<repo>/status`, with a reader key): each registered
+repo, or the one named, with the sync running (waiting for a slot or fetching, first or not,
+for how long and its limit, the bytes downloaded of `mirrors.max_fetch`, git's phase and
+counts) and how the last one ended since the daemon started
+([gateway](gateway.md#repo-mirrors)). A read from memory, like `writ admin show`: no
+audit line. Each repo's status in rows of at most 78 columns (a long one wraps, so its
+progress is never cut away); its text (a failure's reason) cleaned.
 
 ## `writ admin token`
 

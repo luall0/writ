@@ -234,9 +234,12 @@ upstream_hosts:
   once you compared them.
 - Wildcards, hashed names and `@cert-authority` lines are refused.
 
-**Large repositories.** One sync may take at most `mirrors.max_fetch` (1 GiB) and
-`mirrors.timeout` (5 min). A first sync of a big repository may need more
-([`mirrors`](writd-yaml.md#mirrors-and-upstream)).
+**Large repositories.** One sync may take at most `mirrors.max_fetch` (1 GiB). The first
+sync of a repo, while its mirror holds no branch or tag, may take `mirrors.first_sync_timeout`
+(1 h); every sync after it `mirrors.timeout` (5 min). A big repository may need more of
+either ([`mirrors`](writd-yaml.md#mirrors-and-upstream)): a sync past its limit fails with
+`upstream did not finish within 1h (mirrors.first_sync_timeout)`, naming the key to raise.
+`writ admin repo status` shows how far a sync is.
 
 ## HTTPS upstreams and tokens
 

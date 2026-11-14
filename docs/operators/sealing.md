@@ -89,7 +89,16 @@ writ admin key remove <id>                 # refused while something uses it
   `host rescan` goes through the proxy the host's repos share, or the one `--proxy <name>`
   names.
 - `writ admin repo check <repo>`: the repo's upstream reached with its key, read and write
-  access proven, nothing pushed.
+  access proven, nothing pushed. While the mirror syncs, it shows how far it is.
+- `writ admin repo status [<repo>]`: how each repo's mirror last synced (when, how long it
+  took, what moved, or why it failed) and the sync running now, if one is: for how long, its
+  limit, what git says it is doing, and what it downloaded:
+
+  ```text
+  demo: synced 2m ago in 4s, 3 refs moved
+  big: first sync running for 6m 12s (cut at 1h): receiving objects 45%
+       │ (4500/10000), 412 MiB of at most 1.0 GiB
+  ```
 
 **A whole file**: the approvers, the readers, or the policy in one go:
 

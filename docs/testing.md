@@ -236,6 +236,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `writd.yaml: mirrors.fresh_for` | `a_sync_mirrors_branches_and_tags_only_and_follows_upstream`, `concurrent_syncs_of_a_stale_mirror_fetch_once`, `upstream_moved_the_push_is_refused_then_fetch_rebase_re_sign_and_push_again` |
 | `writd.yaml: mirrors.sync_every` | `mirrors_sync_every_syncs_without_any_client` |
 | `writd.yaml: mirrors.timeout` | `an_upstream_that_never_answers_is_cut_at_the_deadline`, `a_mirror_held_past_its_deadline_is_busy_never_waited_on_forever` |
+| `writd.yaml: mirrors.first_sync_timeout` | `an_empty_mirror_s_sync_has_the_first_sync_limit_and_a_synced_one_the_other` |
 | `writd.yaml: mirrors.max_fetch` | `a_sync_past_the_byte_cap_is_refused_on_both_sides` |
 | `writd.yaml: mirrors.scan_timeout` | `a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked` |
 | `writd.yaml: signers.se_cryptokit.helper` | `a_damaged_blob_leaves_its_key_unusable_and_the_daemon_running` |

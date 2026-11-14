@@ -71,7 +71,8 @@ open, at unseal (a wrong path then refuses the unseal, naming it).
 | `mirrors.ssh` | Absolute path | `/usr/bin/ssh` | The OpenSSH client for `ssh://` upstreams |
 | `mirrors.fresh_for` | 0s to 1h | `10s` | A mirror synced this recently serves fetches and pushes without asking upstream again. `0s`: always ask |
 | `mirrors.sync_every` | 10s to 1d | `5m` | How often every mirror syncs in the background |
-| `mirrors.timeout` | 10s to 1h | `5m` | The longest one sync or push to upstream may take. Raise it for a first sync of a large repository. A stopping daemon cuts one still running after 320 s |
+| `mirrors.timeout` | 10s to 1h | `5m` | The longest one sync or push to upstream may take, once the mirror holds a branch or a tag. A stopping daemon cuts one still running after 320 s |
+| `mirrors.first_sync_timeout` | 10s to 1d, at least `mirrors.timeout` | `1h` | The longest a sync may take while the mirror holds no branch or tag yet: the first sync of a new repo, which downloads its whole history. Raise it for a large repository on a slow remote. A stopping daemon still cuts one after 320 s, and the next sync starts over |
 | `mirrors.max_fetch` | 1MiB to 64GiB | `1GiB` | The most one sync (or push, notes push or check) may download from upstream, over SSH or HTTPS, all its connections together. Past it, the operation fails and the mirror stays as it was |
 | `mirrors.scan_timeout` | 1s to 5m | `30s` | The longest one handshake of a host key scan (`writ admin host add`) may take: raise it for a host slow to answer. A scan makes up to three, one per key algorithm |
 
