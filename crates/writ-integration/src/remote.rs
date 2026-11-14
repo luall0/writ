@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use russh::server::{Auth, ChannelOpenHandle, Msg, Session, VerifiedPublicKey};
-use russh::{Channel, ChannelId};
+use russh::{Channel, ChannelId, ChannelMsg};
 use tokio::io::AsyncWriteExt;
 use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::{PrivateKey, PublicKey};
@@ -36,8 +36,9 @@ pub enum Mode {
     /// bytes, then ends: git keeps reading, as from a remote with endless refs.
     Flood(usize),
     /// Advertises refs (each a new branch) until about this many bytes, ends the advertisement
-    /// properly and exits: an `ls-remote` succeeds, anything more fails. Each git of an
-    /// operation gets that much, which only the operation's cap adds up.
+    /// properly, reads the client's answer to its flush and exits: an `ls-remote` (a bare
+    /// flush) succeeds, anything more fails (exit 1). Each git of an operation gets that
+    /// much, which only the operation's cap adds up.
     Advertise(usize),
     /// Says this on stderr and fails, as a hostile remote's message would.
     Say(Vec<u8>),
@@ -318,7 +319,7 @@ impl russh::server::Handler for Handler {
                     let _ = tx.close().await;
                 }
                 Mode::Advertise(bytes) => {
-                    let (_rx, tx) = channel.split();
+                    let (mut rx, tx) = channel.split();
                     let mut advertised = Vec::new();
                     let mut n = 0u64;
                     while advertised.len() < bytes {
@@ -329,7 +330,24 @@ impl russh::server::Handler for Handler {
                     }
                     advertised.extend_from_slice(b"0000");
                     let _ = tx.data_bytes(advertised).await;
-                    let _ = tx.exit_status(0).await;
+                    // As upload-pack does, the client's answer read up to its flush (or its
+                    // end) before exiting: closed at once, ssh could exit before `ls-remote`
+                    // wrote its flush, and git fail on the broken pipe with nothing said, a
+                    // failure by luck that isn't the one a test asks for.
+                    let mut answer = Vec::new();
+                    while !ends_with_flush(&answer) {
+                        match rx.wait().await {
+                            Some(ChannelMsg::Data { data }) => answer.extend_from_slice(&data),
+                            Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
+                            Some(_) => {}
+                        }
+                    }
+                    // A bare flush is all an `ls-remote` says: it succeeds. Anything more (a
+                    // push's commands, a fetch's wants) fails, whatever git managed to send:
+                    // this remote advertises no `report-status`, so git would take a push
+                    // whose pack got through for accepted (another failure by luck).
+                    let status = if answer == b"0000" { 0 } else { 1 };
+                    let _ = tx.exit_status(status).await;
                     let _ = tx.eof().await;
                     let _ = tx.close().await;
                 }
@@ -345,6 +363,29 @@ impl russh::server::Handler for Handler {
             }
         });
         Ok(())
+    }
+}
+
+/// Whether the pkt-lines in `bytes` reach a flush (`0000`): each line read by its length,
+/// never by searching for the four characters (an object id may hold them).
+fn ends_with_flush(bytes: &[u8]) -> bool {
+    let mut at = 0usize;
+    loop {
+        let Some(length) = bytes
+            .get(at..at + 4)
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| usize::from_str_radix(hex, 16).ok())
+        else {
+            return false;
+        };
+        match length {
+            0 => return true,
+            // A delimiter or a response end (protocol v2): no length of their own.
+            1 | 2 => at += 4,
+            // Shorter than its own header: not a pkt-line, never a flush.
+            3 => return false,
+            _ => at += length,
+        }
     }
 }
 
@@ -397,4 +438,27 @@ async fn run_git(program: &str, repo: &Path, protocol: Option<String>, channel: 
     let _ = tx.exit_status(u32::try_from(code).unwrap_or(1)).await;
     let _ = tx.eof().await;
     let _ = tx.close().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ends_with_flush;
+
+    #[test]
+    fn a_flush_is_found_by_reading_each_pkt_line_by_its_length() {
+        assert!(ends_with_flush(b"0000"));
+        // A command whose object id holds "0000" is no flush; the flush after it is.
+        let line = format!("{} {} refs/heads/x\n", "0000".repeat(10), "a".repeat(40));
+        let command = format!("{:04x}{line}", line.len() + 4);
+        assert!(!ends_with_flush(command.as_bytes()));
+        assert!(ends_with_flush(format!("{command}0000").as_bytes()));
+        // A delimiter and a response end are not flushes; half a header is not one yet.
+        assert!(!ends_with_flush(b"00010002"));
+        assert!(ends_with_flush(b"000100020000"));
+        assert!(!ends_with_flush(b"000"));
+        assert!(!ends_with_flush(b""));
+        // Not a pkt-line: never a flush, whatever follows.
+        assert!(!ends_with_flush(b"zzzz0000"));
+        assert!(!ends_with_flush(b"00030000"));
+    }
 }
