@@ -14,12 +14,13 @@ services:
     # More names for the same Forgejo, pinned by no one at the start: the repo the setup adds
     # from the approver's machine, the host key scan and a guided `repo add` on a host with no
     # pin (scenario 23).
-    # And on `behind` as `forgejo-behind`: a name only the proxies resolve (scenario 25).
+    # And on `behind` as `forgejo-behind`: a name only the proxies resolve (scenario 25), with
+    # two more no one pins at the start: a host add and a guided `repo add` scanning through one.
     networks:
       default:
         aliases: [forgejo-scan, forgejo-new, forgejo-added]
       behind:
-        aliases: [forgejo-behind, forgejo-behind-scan]
+        aliases: [forgejo-behind, forgejo-behind-scan, forgejo-behind-new]
   # Forgejo over HTTPS, for the daemon's HTTPS upstream (the `https` repo); on `behind` too, as
   # `forgejo-https-behind` (its certificate holds both names), reached through the HTTP proxy.
   forgejo-https:

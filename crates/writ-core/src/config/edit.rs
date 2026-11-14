@@ -89,6 +89,11 @@ const KEY_FIELDS: &[Field] = &[
     fixed("use", true, "signing or upstream"),
     fixed("kind", false, "an upstream credential's: ssh or token"),
     fixed("format", false, "a signing key's: ssh or openpgp"),
+    // Before the algorithm: a backend makes some algorithms only (the Secure Enclave, p256).
+    or(
+        fixed("backend", false, "where the key lives: software"),
+        "software",
+    ),
     fixed(
         "algorithm",
         false,
@@ -104,10 +109,6 @@ const KEY_FIELDS: &[Field] = &[
         "an OpenPGP key's user ids: `Name <local@domain>`, 1 to 16",
     ),
     field("host", Text, "a token's: the one host it is sent to"),
-    or(
-        fixed("backend", false, "where the key lives: software"),
-        "software",
-    ),
 ];
 
 /// A host's entry is its list of pinned keys: written `keys` here.

@@ -501,10 +501,25 @@ fn a_host_behind_a_proxy_is_scanned_through_it_on_the_approver_s_signature() {
         )
     );
 
-    // Directly, the name reaches nothing: refused, logged.
+    // Directly (the proxy asked before the scan: none), the name reaches nothing: refused,
+    // logged, and the refusal says how to go through a proxy.
     let other = format!("[other.invalid]:{}", remote.port);
-    let (_, shown) = on_terminal(daemon.writ(&["admin", "host", "add", &other]), &["y"]);
+    let (_, shown) = on_terminal(daemon.writ(&["admin", "host", "add", &other]), &[""]);
+    assert!(
+        shown.contains(
+            "proxy (the proxy the scan goes through, Enter for none (reached directly); in \
+             force: p): "
+        ),
+        "{shown}"
+    );
     assert!(shown.contains("cannot reach other.invalid:"), "{shown}");
+    assert!(
+        shown.contains(
+            "If the host is reachable only through a proxy: scan through one in force (p) with \
+             proxy=<name>."
+        ),
+        "{shown}"
+    );
     // A proxy the policy doesn't declare: refused by the daemon, nothing reached.
     let asked = proxy.asked().len();
     let (_, shown) = on_terminal(

@@ -776,10 +776,18 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
     );
     // On a terminal: the daemon scans Forgejo under another name on the approver's
     // signature; its key is the one compared at setup; pinned once confirmed.
+    // The policy declares proxies: which one the scan goes through is asked first (none).
     let shown = on_terminal(
         approver,
         &format!("writ admin host add forgejo-scan {url}"),
-        &["y", "y"],
+        &["", "y", "y"],
+    );
+    assert!(
+        shown.contains(
+            "proxy (the proxy the scan goes through, Enter for none (reached directly); in \
+             force: http, socks): "
+        ),
+        "{shown}"
     );
     assert!(
         shown.contains("Scanning forgejo-scan:22 from the daemon"),
@@ -895,10 +903,10 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
         &format!("writ admin repo add scanned {url}"),
         &[
             "ssh://git@forgejo-new/writ/setup.git",
+            // proxy, asked before the scan: none (the repo's own, not asked again).
+            "",
             "y",
             "upstream-setup",
-            // proxy: none.
-            "",
             "managed",
             "",
             "",

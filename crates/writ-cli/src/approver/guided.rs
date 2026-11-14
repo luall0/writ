@@ -148,6 +148,52 @@ fn backend_choice(backend: &BackendShown) -> String {
     )
 }
 
+/// The backend a key being declared lives on, as the daemon described it: the one answered,
+/// `software` when none was (the daemon has one backend, or it was kept); none when the
+/// daemon named no such backend (it refuses that change whole).
+fn backend_makes<'a>(
+    values: &BTreeMap<String, String>,
+    backends: &'a [BackendShown],
+) -> Option<&'a BackendShown> {
+    let named = values
+        .get("backend")
+        .map(String::as_str)
+        .filter(|b| !b.is_empty())
+        .unwrap_or("software");
+    backends.iter().find(|b| b.name == named)
+}
+
+/// What a backend makes, as a prompt shows it.
+fn makes_list(shown: &BackendShown) -> String {
+    shown
+        .algorithms
+        .iter()
+        .map(|a| clean(a))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The algorithm Enter takes on `shown`: `ed25519` when it makes one, else the first it makes.
+fn default_algorithm(shown: &BackendShown) -> Option<&str> {
+    shown
+        .algorithms
+        .iter()
+        .find(|a| *a == "ed25519")
+        .or_else(|| shown.algorithms.first())
+        .map(String::as_str)
+}
+
+/// Why `answer` (an algorithm typed, Enter taking the default) can't be made on `shown`.
+fn unmade(shown: &BackendShown, answer: &str) -> Option<String> {
+    (!answer.is_empty() && !shown.algorithms.iter().any(|a| a == answer)).then(|| {
+        format!(
+            "{} makes {} keys only.",
+            clean(&shown.name),
+            makes_list(shown)
+        )
+    })
+}
+
 /// The key backends the daemon has, from `writ admin key list`'s reply.
 async fn daemon_backends(session: &super::Approvals) -> anyhow::Result<Vec<BackendShown>> {
     let keys: writ_proto::KeysShown = session.call(&Command::AdminKeys, b"").await??;
@@ -185,18 +231,31 @@ fn asked(
         if field.fixed && !adding {
             continue;
         }
-        let help = match choices(policy, section, field.name, backends) {
-            Some(names) => format!("{}; in force: {names}", field.help),
-            None => field.help.to_owned(),
+        // A key's algorithm: among what its backend makes (asked before it), when it is known.
+        let makes = match (section, field.name) {
+            (Section::Keys, "algorithm") => backend_makes(&values, backends),
+            _ => None,
         };
+        let help = match (makes, choices(policy, section, field.name, backends)) {
+            (Some(shown), _) => format!("what {} makes: {}", clean(&shown.name), makes_list(shown)),
+            (None, Some(names)) => format!("{}; in force: {names}", field.help),
+            (None, None) => field.help.to_owned(),
+        };
+        let made_default = makes.and_then(default_algorithm);
         let keeps = current
             .get(field.name)
             .map(String::as_str)
+            .or(made_default)
             .or(field.default);
         loop {
             let answer = ask(field.name, &help, keeps)?;
+            if let Some(why) = makes.and_then(|shown| unmade(shown, &answer)) {
+                println!("  {why}");
+                continue;
+            }
             let change = match answer.as_str() {
                 "" if current.contains_key(field.name) => None,
+                "" if made_default.is_some() => made_default.map(|a| Change::Set(a.to_owned())),
                 "" if field.required => {
                     println!("  {} is required.", field.name);
                     continue;
@@ -294,21 +353,9 @@ fn credential(
                 key.push(FieldEdit::parse(&format!("host={host}")).map_err(anyhow::Error::msg)?);
             }
             None => {
-                let algorithm = ask(
-                    "algorithm",
-                    "ed25519, p256, p384, rsa3072 or rsa4096 (some remotes take RSA only)",
-                    Some("ed25519"),
-                )?;
-                let algorithm = if algorithm.is_empty() {
-                    "ed25519".to_owned()
-                } else {
-                    algorithm
-                };
                 key.push(FieldEdit::parse("kind=ssh").map_err(anyhow::Error::msg)?);
-                key.push(
-                    FieldEdit::parse(&format!("algorithm={algorithm}"))
-                        .map_err(anyhow::Error::msg)?,
-                );
+                // The backend first: it limits the algorithms.
+                let mut values = BTreeMap::new();
                 if backends.len() > 1 {
                     let offered: Vec<String> = backends.iter().map(backend_choice).collect();
                     let backend = ask(
@@ -321,8 +368,32 @@ fn credential(
                             FieldEdit::parse(&format!("backend={backend}"))
                                 .map_err(anyhow::Error::msg)?,
                         );
+                        values.insert("backend".to_owned(), backend);
                     }
                 }
+                let makes = backend_makes(&values, backends);
+                let help = match makes {
+                    Some(shown) => format!(
+                        "what {} makes: {} (some remotes take RSA only)",
+                        clean(&shown.name),
+                        makes_list(shown)
+                    ),
+                    None => "ed25519, p256, p384, rsa3072 or rsa4096 (some remotes take RSA only)"
+                        .to_owned(),
+                };
+                let default = makes.and_then(default_algorithm).unwrap_or("ed25519");
+                let algorithm = loop {
+                    let answer = ask("algorithm", &help, Some(default))?;
+                    match makes.and_then(|shown| unmade(shown, &answer)) {
+                        Some(why) => println!("  {why}"),
+                        None if answer.is_empty() => break default.to_owned(),
+                        None => break answer,
+                    }
+                };
+                key.push(
+                    FieldEdit::parse(&format!("algorithm={algorithm}"))
+                        .map_err(anyhow::Error::msg)?,
+                );
             }
         }
         return Ok((
@@ -362,7 +433,8 @@ pub fn host_and_port(name: &str) -> anyhow::Result<(HostName, u16, String)> {
 /// Has the daemon scan `host` on `port` on the approver's signature (a `writ-scan/1` naming a
 /// nonce it handed out), shows the keys with their fingerprints, and asks whether they are the
 /// ones the remote publishes: the keys to pin when they are, none when they aren't. The scan
-/// pins nothing.
+/// pins nothing. A direct scan the daemon answers with a failure adds `hint` (how to go
+/// through a proxy: [`direct_hint`]).
 async fn scanned(
     session: &crate::client::Approvals,
     signer: &Signer,
@@ -370,6 +442,7 @@ async fn scanned(
     port: u16,
     proxy: Option<&ProxyName>,
     pinned: &[String],
+    hint: &str,
 ) -> anyhow::Result<Option<Vec<String>>> {
     let nonce: ScanNonce = session.call(&Command::ScanNonce, b"").await??;
     session.authenticated()?.check_daemon(&nonce.daemon)?;
@@ -387,9 +460,14 @@ async fn scanned(
         signature: signer.sign(&document)?,
         document: String::from_utf8(document)?,
     };
-    let found: Scanned = session
+    let found: Scanned = match session
         .call(&Command::Scan, &writ_proto::encode_body(&request)?)
-        .await??;
+        .await?
+    {
+        Ok(found) => found,
+        Err(why) if proxy.is_none() => bail!("{why}\n{hint}"),
+        Err(why) => return Err(why.into()),
+    };
     let found = checked_scan(host, port, found)?;
     println!(
         "{} offered these keys: compare each fingerprint with the one the remote publishes \
@@ -469,8 +547,9 @@ async fn pin_edit(
     host: &HostName,
     port: u16,
     proxy: Option<&ProxyName>,
+    hint: &str,
 ) -> anyhow::Result<Option<FieldEdit>> {
-    match scanned(session, signer, host, port, proxy, &[]).await? {
+    match scanned(session, signer, host, port, proxy, &[], hint).await? {
         Some(keys) => Ok(Some(
             FieldEdit::parse(&format!("keys={}", keys.join(","))).map_err(anyhow::Error::msg)?,
         )),
@@ -491,6 +570,61 @@ fn shared_proxy(policy: &PolicyConfig, entry: &str) -> Option<ProxyName> {
     match proxies.split_first() {
         Some((first @ Some(_), rest)) if rest.iter().all(|p| p == first) => first.clone(),
         _ => None,
+    }
+}
+
+/// The proxy a guided scan goes through when none was given: asked when the policy in force
+/// declares some (Enter: none, the host reached directly), never otherwise.
+fn asked_scan_proxy(policy: &PolicyConfig) -> anyhow::Result<Option<ProxyName>> {
+    let names = policy.entry_names(Section::Proxies);
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let help = format!(
+        "the proxy the scan goes through, Enter for none (reached directly); in force: {}",
+        names.join(", ")
+    );
+    loop {
+        match scan_proxy_answer(&names, &ask("proxy", &help, None)?) {
+            Ok(proxy) => return Ok(proxy),
+            Err(why) => println!("  {why}"),
+        }
+    }
+}
+
+/// An answer to the scan's proxy question: none (Enter), or one of the proxies in force.
+fn scan_proxy_answer(names: &[String], answer: &str) -> Result<Option<ProxyName>, String> {
+    if answer.is_empty() {
+        return Ok(None);
+    }
+    if !names.iter().any(|name| name == answer) {
+        return Err(format!(
+            "{} is not a proxy in force (in force: {}).",
+            clean(answer),
+            names.join(", ")
+        ));
+    }
+    answer
+        .parse()
+        .map(Some)
+        .map_err(|e: writ_core::names::NameError| e.to_string())
+}
+
+/// What a direct scan that failed adds: how to scan through a proxy (`how`: `proxy=<name>`, or
+/// `--proxy <name>` for a rescan), with the proxies in force, or declaring one first when there
+/// is none (the daemon dials only a proxy the policy in force declares).
+fn direct_hint(policy: &PolicyConfig, how: &str) -> String {
+    let names = policy.entry_names(Section::Proxies);
+    match names.is_empty() {
+        true => format!(
+            "If the host is reachable only through a proxy: declare it first (writ admin proxy \
+             add <name>), then give {how} to this command."
+        ),
+        false => format!(
+            "If the host is reachable only through a proxy: scan through one in force ({}) \
+             with {how}.",
+            names.join(", ")
+        ),
     }
 }
 
@@ -546,8 +680,9 @@ pub async fn rescan(
                 );
             };
             let proxy = proxy.or_else(|| shared_proxy(&policy, &entry));
+            let hint = direct_hint(&policy, "--proxy <name>");
             let Some(mut keys) =
-                scanned(session, signer, &host, port, proxy.as_ref(), &pinned).await?
+                scanned(session, signer, &host, port, proxy.as_ref(), &pinned, &hint).await?
             else {
                 return Ok(Exit::NotSigned);
             };
@@ -734,7 +869,13 @@ pub async fn add(
             if let (Some((host, port, _)), true) = (&host, interactive)
                 && !given.iter().any(|g| g.field == "keys")
             {
-                match pin_edit(session, signer, host, *port, proxy.as_ref()).await? {
+                // Asked before the scan when none was given and the policy declares some.
+                let proxy = match &proxy {
+                    Some(given) => Some(given.clone()),
+                    None => asked_scan_proxy(&policy)?,
+                };
+                let hint = direct_hint(&policy, "proxy=<name>");
+                match pin_edit(session, signer, host, *port, proxy.as_ref(), &hint).await? {
                     Some(keys) => edits.push(keys),
                     None => return Ok(Err(Exit::NotSigned)),
                 }
@@ -776,7 +917,27 @@ pub async fn add(
                         if !policy.upstream_hosts().keys().any(|h| h.as_str() == wanted) {
                             println!("Its host {} has no pin: it is scanned now.", clean(&wanted));
                             let (host, port, entry) = host_and_port(&wanted)?;
-                            match pin_edit(session, signer, &host, port, proxy.as_ref()).await? {
+                            // Asked before the scan when none was given and the policy
+                            // declares some: the repo's own proxy, not asked again.
+                            let proxy = match &proxy {
+                                Some(given) => Some(given.clone()),
+                                None if policy.entry_names(Section::Proxies).is_empty() => None,
+                                None => {
+                                    let answered = asked_scan_proxy(&policy)?;
+                                    asked_given.push(FieldEdit {
+                                        field: "proxy".to_owned(),
+                                        change: match &answered {
+                                            Some(name) => Change::Set(name.to_string()),
+                                            None => Change::Unset,
+                                        },
+                                    });
+                                    answered
+                                }
+                            };
+                            let hint = direct_hint(&policy, "proxy=<name>");
+                            match pin_edit(session, signer, &host, port, proxy.as_ref(), &hint)
+                                .await?
+                            {
                                 Some(keys) => pin = Some((entry, keys)),
                                 None => return Ok(Err(Exit::NotSigned)),
                             }
@@ -1301,6 +1462,99 @@ mod tests {
         assert_eq!(next_id(&policy, "forgejo-home"), "forgejo-home-3");
         assert_eq!(next_id(&policy, "agent-01"), "agent-2");
         assert_eq!(next_id(&policy, "token"), "token-2");
+    }
+
+    /// Found on a real setup: `repo add` scanned an unpinned host before asking the repo's
+    /// proxy, so a remote reachable only through one failed at the scan. The question comes
+    /// first; an answer is a proxy in force or none, never another name.
+    #[test]
+    fn a_scan_s_proxy_is_one_in_force_or_none() {
+        let names = vec!["socks".to_owned(), "office".to_owned()];
+        assert_eq!(scan_proxy_answer(&names, ""), Ok(None));
+        assert_eq!(
+            scan_proxy_answer(&names, "office"),
+            Ok(Some("office".parse().unwrap()))
+        );
+        assert_eq!(
+            scan_proxy_answer(&names, "tor"),
+            Err("tor is not a proxy in force (in force: socks, office).".to_owned())
+        );
+        // Not a prefix, not another case.
+        for typed in ["sock", "Socks"] {
+            assert_eq!(
+                scan_proxy_answer(&names, typed),
+                Err(format!(
+                    "{typed} is not a proxy in force (in force: socks, office)."
+                ))
+            );
+        }
+        // What was typed is shown escaped.
+        let error = scan_proxy_answer(&names, "x\u{1b}[2J").unwrap_err();
+        assert!(!error.contains('\u{1b}'), "{error:?}");
+    }
+
+    #[test]
+    fn a_failed_direct_scan_says_how_to_go_through_a_proxy() {
+        let none = PolicyConfig::from_yaml("keys: {}\nrepos: {}\ntemplates: {}\n").unwrap();
+        assert_eq!(
+            direct_hint(&none, "proxy=<name>"),
+            "If the host is reachable only through a proxy: declare it first (writ admin proxy \
+             add <name>), then give proxy=<name> to this command."
+        );
+        let some = PolicyConfig::from_yaml(
+            "keys: {}\nrepos: {}\ntemplates: {}\nproxies:\n  \
+             socks: { url: \"socks5://127.0.0.1:1080\" }\n  \
+             office: { url: \"http://127.0.0.1:3128\" }\n",
+        )
+        .unwrap();
+        let hint = direct_hint(&some, "--proxy <name>");
+        assert!(
+            hint.ends_with("scan through one in force (office, socks) with --proxy <name>."),
+            "{hint}"
+        );
+    }
+
+    /// A key's backend is asked before its algorithm, which is then one the backend makes
+    /// (the Secure Enclave makes p256 only): Enter takes ed25519 when it can, else the first.
+    #[test]
+    fn a_key_s_algorithm_is_asked_among_what_its_backend_makes() {
+        let names: Vec<&str> = edit::fields(Section::Keys).iter().map(|f| f.name).collect();
+        let at = |name: &str| names.iter().position(|n| *n == name).unwrap();
+        assert!(at("backend") < at("algorithm"), "{names:?}");
+        let backends = [
+            BackendShown {
+                name: "software".to_owned(),
+                algorithms: vec!["p256".to_owned(), "ed25519".to_owned()],
+            },
+            BackendShown {
+                name: "se-cryptokit".to_owned(),
+                algorithms: vec!["p256".to_owned()],
+            },
+        ];
+        let with = |backend: Option<&str>| -> BTreeMap<String, String> {
+            backend
+                .map(|b| ("backend".to_owned(), b.to_owned()))
+                .into_iter()
+                .collect()
+        };
+        let software = backend_makes(&with(None), &backends).unwrap();
+        assert_eq!(software.name, "software");
+        assert_eq!(default_algorithm(software), Some("ed25519"));
+        let se = backend_makes(&with(Some("se-cryptokit")), &backends).unwrap();
+        assert_eq!(default_algorithm(se), Some("p256"));
+        assert_eq!(unmade(se, "p256"), None);
+        assert_eq!(unmade(se, ""), None);
+        assert_eq!(
+            unmade(se, "ed25519"),
+            Some("se-cryptokit makes p256 keys only.".to_owned())
+        );
+        // A backend the daemon didn't name: nothing assumed of it (the daemon refuses it).
+        assert!(backend_makes(&with(Some("yubikey")), &backends).is_none());
+        let nothing = BackendShown {
+            name: "empty".to_owned(),
+            algorithms: vec![],
+        };
+        assert_eq!(default_algorithm(&nothing), None);
     }
 
     #[test]

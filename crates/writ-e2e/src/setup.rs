@@ -384,12 +384,13 @@ pub fn run() -> Stack {
     unseal(&approver);
 
     // 10. A new host, scanned by the daemon on the approver's signature, its key compared with
-    // the one Forgejo publishes, then pinned (the second signature).
+    // the one Forgejo publishes, then pinned (the second signature). The policy declares
+    // proxies: which one the scan goes through is asked first (none, reached directly).
     let added_host = doc_step_on_terminal(
         &approver,
         "writ admin host add <host>",
         &[("<host>", ADDED_HOST)],
-        &["y", "y"],
+        &["", "y", "y"],
     );
     assert!(
         added_host.contains(&format!(
