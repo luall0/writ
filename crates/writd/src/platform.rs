@@ -101,10 +101,25 @@ fn se_cryptokit_config(config: &Config) -> anyhow::Result<HelperConfig> {
     use writ_platform_macos::secure_enclave::{BACKEND, DEADLINE};
     Ok(HelperConfig {
         backend: BACKEND.to_owned(),
-        program: config.signers.se_cryptokit.helper()?,
+        program: se_helper(config)?,
         args: Vec::new(),
         deadline: DEADLINE,
     })
+}
+
+/// The Secure Enclave helper's path: the one set (absolute once loaded), or `writ-se` beside
+/// the running `writd`.
+#[cfg(target_os = "macos")]
+fn se_helper(config: &Config) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(helper) = &config.signers.se_cryptokit.helper {
+        return Ok(helper.clone());
+    }
+    let me = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("cannot find writd's own path for writ-se: {e}"))?;
+    let dir = me
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("writd's own path has no directory"))?;
+    Ok(dir.join("writ-se"))
 }
 
 #[cfg(not(target_os = "macos"))]

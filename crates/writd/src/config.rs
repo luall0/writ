@@ -356,25 +356,10 @@ pub struct SignersConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SeCryptokitConfig {
-    /// The Secure Enclave helper (`writ-se`); left out: `writ-se` beside the running `writd`.
+    /// The Secure Enclave helper (`writ-se`), absolute once loaded; left out: `writ-se` beside
+    /// the running `writd` (resolved by the macOS build, in `platform.rs`).
     #[serde(default)]
-    helper: Option<PathBuf>,
-}
-
-impl SeCryptokitConfig {
-    /// The helper's path: the one set (absolute once loaded), or `writ-se` beside the running
-    /// `writd`.
-    pub fn helper(&self) -> anyhow::Result<PathBuf> {
-        if let Some(helper) = &self.helper {
-            return Ok(helper.clone());
-        }
-        let me = std::env::current_exe()
-            .map_err(|e| anyhow::anyhow!("cannot find writd's own path for writ-se: {e}"))?;
-        let dir = me
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("writd's own path has no directory"))?;
-        Ok(dir.join("writ-se"))
-    }
+    pub helper: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
