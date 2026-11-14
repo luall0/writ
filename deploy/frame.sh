@@ -393,7 +393,9 @@ do_install() {
 # The manifest, if it can be trusted: a regular file nobody but root (you, under a test
 # root) can write.
 trusted_manifest() {
-    [ -f "$1" ] && [ ! -L "$1" ] || fail "$1 is not a regular file: nothing done"
+    if [ ! -f "$1" ] || [ -L "$1" ]; then
+        fail "$1 is not a regular file: nothing done"
+    fi
     # ls, not stat: stat's options differ between macOS and Linux; the path is the manifest's.
     # shellcheck disable=SC2012
     owner=$(ls -ldn "$1" | awk '{print $3}')
@@ -463,10 +465,10 @@ do_uninstall() {
 # (no list). Asked on a terminal; without one, REPOS answers or nothing is done.
 repos_question() {
     writ=$(setup_writ)
-    [ -f "${WRIT_HOME:-$HOME/.writ}/repos" ] && [ -x "$writ" ] || {
+    if [ ! -f "${WRIT_HOME:-$HOME/.writ}/repos" ] || [ ! -x "$writ" ]; then
         printf none
         return 0
-    }
+    fi
     listed=$("$writ" init --list 2>&1) || listed=
     [ -n "$listed" ] || {
         printf none
