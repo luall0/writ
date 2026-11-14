@@ -470,6 +470,54 @@ fn every_repo(ticket: &Ticket, field: RepoField) -> String {
         .join("; ")
 }
 
+/// A list-valued term's items, for the structure (the popup shows each on its own), each
+/// [`clean`]ed as the value shows it: none for a term that isn't a list, or for a
+/// per-repository term over several repositories (its value names each repository).
+fn items(ticket: &Ticket, field: Field) -> Vec<String> {
+    match field {
+        Field::Repos => ticket.repos.keys().map(|r| clean(r.as_str())).collect(),
+        Field::CommitterEmails => ticket
+            .common
+            .committer_emails
+            .iter()
+            .map(|e| clean(e.as_ref()))
+            .collect(),
+        Field::Repo(f) if ticket.repos.len() == 1 => ticket
+            .repos
+            .values()
+            .next()
+            .map(|terms| repo_items(terms, f))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// One repository's list-valued term, item by item ([`items`]).
+fn repo_items(terms: &RepoTerms, field: RepoField) -> Vec<String> {
+    match field {
+        RepoField::Operations => terms
+            .operations
+            .iter()
+            .map(|o| clean(&o.to_string()))
+            .collect(),
+        RepoField::Branches => terms
+            .branches
+            .iter()
+            .map(|b| clean(&b.to_string()))
+            .collect(),
+        RepoField::ExpectedPaths => terms
+            .expected_paths
+            .iter()
+            .map(|p| clean(p.as_str()))
+            .collect(),
+        RepoField::Template
+        | RepoField::ForcePush
+        | RepoField::MaxSignatures
+        | RepoField::MaxPushes
+        | RepoField::MaxPushSize => Vec::new(),
+    }
+}
+
 /// The templates a ticket fits, in a sentence: `template t`, or `templates a, b`.
 pub fn templates(ticket: &Ticket) -> String {
     let names: Vec<String> = ticket
@@ -717,8 +765,10 @@ pub fn ticket_into(out: &mut Out, ticket: &Ticket, state: State, now: Timestamp,
         let _ = writeln!(out.text, "  revises ticket {revised}");
         out.row(Some("revises ticket"), revised.as_ref(), Tag::Context);
     }
-    let row =
-        |out: &mut Out, f: Field| labelled_row(out, f.label(), &field(ticket, f), Tag::Enforced);
+    let row = |out: &mut Out, f: Field| {
+        labelled_row(out, f.label(), &field(ticket, f), Tag::Enforced);
+        out.items(items(ticket, f));
+    };
     out.text.push_str("\nWho\n");
     out.section(SectionKind::Who, "Who");
     for f in [Field::SessionKey, Field::Caller] {
@@ -757,6 +807,7 @@ pub fn ticket_into(out: &mut Out, ticket: &Ticket, state: State, now: Timestamp,
         for f in RepoField::ALL {
             if f != RepoField::ExpectedPaths {
                 labelled_row(out, f.label(), &repo_field(terms, f), Tag::Enforced);
+                out.items(repo_items(terms, f));
             }
         }
         // Chosen by the agent but enforced by the path check: one quoted item per line, and
@@ -780,6 +831,7 @@ pub fn ticket_into(out: &mut Out, ticket: &Ticket, state: State, now: Timestamp,
             &paths,
             Tag::Enforced,
         );
+        out.items(repo_items(terms, RepoField::ExpectedPaths));
         let room = WIDTH.saturating_sub(4 + width(GUTTER));
         let rows: Vec<String> = terms
             .expected_paths
@@ -922,6 +974,7 @@ pub fn summary_into(out: &mut Out, ticket: &Ticket, narrowed: bool) {
             one_row(&value, room, "(see above)")
         );
         out.row(Some(f.label()), &value, Tag::Enforced);
+        out.items(items(ticket, f));
     }
     let paths: usize = repos.values().map(|t| t.expected_paths.len()).sum();
     let whole = if paths == 0 {
@@ -946,6 +999,7 @@ pub fn summary_into(out: &mut Out, ticket: &Ticket, narrowed: bool) {
         &whole,
         Tag::Enforced,
     );
+    out.items(items(ticket, Field::Repo(RepoField::ExpectedPaths)));
     // Rows within [`WIDTH`] whatever the numbers: the totals over every repository (`u32`
     // sums, saturating), each repository's counts above.
     let limits = format!(
@@ -1439,6 +1493,14 @@ mod tests {
                     row.label,
                     row.value
                 );
+                for item in &row.items {
+                    assert!(
+                        row.value.contains(item.as_str()),
+                        "{item:?} not in {:?}",
+                        row.value
+                    );
+                    assert!(text.contains(item.as_str()), "{item:?} not in the text");
+                }
                 if let Some(label) = &row.label {
                     // A label of the structure is one of the text's, or the name of a line
                     // the text writes as a sentence (`created …, expires …`).

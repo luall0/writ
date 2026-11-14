@@ -55,6 +55,11 @@ pub struct Row {
     pub label: Option<String>,
     pub value: String,
     pub tag: Tag,
+    /// For a term that is a list (repos, emails, operations, branches, expected paths): its
+    /// items, each cleaned as the value shows it, for the app to show one by one; none
+    /// otherwise, or for a term over several repositories (its value names each).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
 }
 
 /// What a row is.
@@ -114,7 +119,20 @@ impl Out {
                 label: label.map(str::to_owned),
                 value: value.to_owned(),
                 tag,
+                items: Vec::new(),
             });
+        }
+    }
+
+    /// The items of the row last written (a list-valued term's).
+    pub(crate) fn items(&mut self, items: Vec<String>) {
+        if let Some(row) = self
+            .doc
+            .sections
+            .last_mut()
+            .and_then(|section| section.rows.last_mut())
+        {
+            row.items = items;
         }
     }
 }

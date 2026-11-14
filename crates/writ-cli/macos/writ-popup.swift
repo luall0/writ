@@ -26,11 +26,13 @@ let restartDelay: TimeInterval = 3.0
 
 // MARK: - What `writ` sends
 
-/// One row of the structure: its label, its value (cleaned by `writ`), what it is.
+/// One row of the structure: its label, its value (cleaned by `writ`), what it is, and for a
+/// list-valued term its items (`writ` splits them: the app never splits a value).
 struct DocRow: Decodable, Hashable {
     let label: String?
     let value: String
     let tag: String
+    let items: [String]?
 }
 
 /// One section of the structure.
@@ -355,16 +357,62 @@ struct KindBadge: View {
     }
 }
 
-/// A repository's name as a chip.
+/// One item (a repository, a branch, a path, an operation) as a chip.
 struct Chip: View {
     let text: String
+    var tint: Color = .secondary
 
     var body: some View {
         Text(text)
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.14)))
+            .font(.system(size: 12, weight: .medium, design: .monospaced))
+            .foregroundStyle(.primary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.16)))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(tint.opacity(0.25)))
+            .textSelection(.enabled)
+    }
+}
+
+/// Views laid out left to right, wrapping to the next line when the width runs out.
+struct Flow: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0, widest: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            if x > 0 && x + size.width > width {
+                x = 0
+                y += line + spacing
+                line = 0
+            }
+            x += size.width + spacing
+            line = max(line, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: min(widest, width), height: y + line)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            if x > 0 && x + size.width > bounds.width {
+                x = 0
+                y += line + spacing
+                line = 0
+            }
+            view.place(
+                at: CGPoint(x: bounds.minX + x, y: bounds.minY + y),
+                proposal: ProposedViewSize(width: min(size.width, bounds.width), height: size.height))
+            x += size.width + spacing
+            line = max(line, size.height)
+        }
     }
 }
 
@@ -388,24 +436,39 @@ struct Card<Content: View>: View {
     }
 }
 
-/// One row of a section, styled by its tag.
+/// One row of a section, styled by its tag: a list-valued term's items as chips.
 struct RowView: View {
     let row: DocRow
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             if let label = row.label {
                 Text(label)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                    .frame(width: 150, alignment: .leading)
+                    .frame(width: 140, alignment: .trailing)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             value
         }
+        .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private var value: some View {
+        if let items = row.items, !items.isEmpty, row.tag == "enforced" {
+            Flow(spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    Chip(text: item, tint: .accentColor)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            styled
+        }
+    }
+
+    @ViewBuilder private var styled: some View {
         switch row.tag {
         case "agent":
             quote(Color.agentTint)
@@ -427,12 +490,14 @@ struct RowView: View {
             .textSelection(.enabled)
         case "context":
             Text(row.value)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         default:
             Text(row.value)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .font(.system(size: 13, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
     }
@@ -441,9 +506,10 @@ struct RowView: View {
     private func quote(_ tint: Color, sign: String? = nil) -> some View {
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 1.5).fill(tint).frame(width: 3)
-            if let sign { Text(sign).font(.system(size: 12, weight: .bold)).foregroundStyle(tint) }
+            if let sign { Text(sign).font(.system(size: 13, weight: .bold)).foregroundStyle(tint) }
             Text(row.value)
-                .font(.system(size: 12.5))
+                .font(.system(size: 13))
+                .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
@@ -453,14 +519,16 @@ struct RowView: View {
     /// A term's side of a change.
     private func mark(_ tint: Color, sign: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(sign).font(.system(size: 12, weight: .bold)).foregroundStyle(tint)
+            Text(sign).font(.system(size: 13, weight: .bold)).foregroundStyle(tint)
             Text(row.value)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.system(size: 12.5, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(RoundedRectangle(cornerRadius: 4).fill(tint.opacity(0.12)))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.13)))
     }
 }
 
@@ -473,11 +541,12 @@ struct SectionView: View {
 
     var body: some View {
         Card(tint: tint) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 7) {
                     if let icon { Image(systemName: icon).foregroundStyle(tint ?? .secondary) }
-                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Text(title).font(.system(size: 14, weight: .semibold))
                 }
+                .padding(.bottom, 2)
                 ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
                     RowView(row: row)
                 }
@@ -486,24 +555,75 @@ struct SectionView: View {
     }
 }
 
-/// A section that folds, closed at first: the details below what is signed.
+/// A section of the details: closed at first, its header saying what it holds and, in a
+/// line, its main terms; a click anywhere on the header opens or closes it.
 struct FoldedSection: View {
     let section: DocSection
     @State private var open = false
 
     var body: some View {
         Card(tint: nil) {
-            DisclosureGroup(isExpanded: $open) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
-                        RowView(row: row)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(open ? 90 : 0))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(heading).font(.system(size: 13, weight: .semibold))
+                        if !open, let summary {
+                            Text(summary)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
                     }
+                    Spacer()
+                    Text(open ? "Hide" : "Show")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.top, 8)
-            } label: {
-                Text(section.title).font(.system(size: 13, weight: .semibold))
+                .contentShape(Rectangle())
+                .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } }
+                if open {
+                    VStack(alignment: .leading, spacing: 9) {
+                        ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
+                            RowView(row: row)
+                        }
+                    }
+                    .padding(.top, 12)
+                }
             }
         }
+    }
+
+    /// What the section holds, in the window's words.
+    private var heading: String {
+        switch section.kind {
+        case "ticket": return "The ticket: revision, state, times"
+        case "who": return "Who asks: the session and the program behind it"
+        case "lease": return "The lease's terms, for every repository"
+        default: return section.title
+        }
+    }
+
+    /// The section's main terms in a line, from its rows by their labels.
+    private var summary: String? {
+        let wanted: [String]
+        switch section.kind {
+        case "ticket": wanted = ["revision", "created"]
+        case "who": wanted = ["caller"]
+        case "lease": wanted = ["signing key", "committer emails", "on violation"]
+        default: wanted = ["operations", "branches", "expected paths"]
+        }
+        let parts = wanted.compactMap { label -> String? in
+            guard let row = section.rows.first(where: { $0.label == label }) else { return nil }
+            var value = row.value
+            if let items = row.items, !items.isEmpty { value = items.joined(separator: ", ") }
+            return "\(label): \(value.replacingOccurrences(of: "\n", with: ", "))"
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
@@ -643,6 +763,14 @@ struct Detail: View {
                         let warn = section.rows.contains { $0.tag == "warning" }
                         SectionView(section: section, title: section.title, tint: warn ? .orange : nil)
                     }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Details")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text("Everything else writ sign shows. Click a section to open it.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 6)
                     ForEach(sections(["ticket", "who", "lease", "repository"]), id: \.self) {
                         FoldedSection(section: $0)
                     }
@@ -752,11 +880,10 @@ final class Popup: NSObject, NSWindowDelegate {
         self.model = model
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 720),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false)
         super.init()
         panel.title = "Writ: waiting for your signature"
-        panel.titlebarAppearsTransparent = true
         panel.level = .modalPanel
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.hidesOnDeactivate = false

@@ -187,7 +187,8 @@ every app, full-screen ones too:
 - It shows the whole ticket, as `writ sign <id> --full` would in a terminal, laid out: what
   you sign first, then what the agent wrote, in a box of its own (the agent's words, never
   acted on), then any change since the ticket it follows (removed in red, added in green),
-  then the details, folded: click one to open it. **Copy as text** copies it as a terminal
+  then the details, folded: click a section's header to open it. Paths, branches and
+  operations show one by one. **Copy as text** copies it as a terminal
   shows it.
 - **Sign** signs it with your approval key: Secretive asks for Touch ID, as in a terminal.
 - **Decline** asks for a reason for the agent (you may leave it empty), then **Refuse** signs

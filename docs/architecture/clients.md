@@ -86,9 +86,12 @@ They talk one JSON object per line each way, on `writ`'s stdout and stdin:
 **The structure** (`doc`, `writ_cli::display::doc`): `sections`, each with a `kind` (`ticket`,
 `who`, `lease`, `repository`, `agent`, `feedback`, `renewal`, `changes`, `others`, `signing`),
 its `title` and its `rows`; a row has an optional `label`, a `value` (cleaned, one or several
-lines: the agent's text whole, as its lines, not cut into the terminal's rows) and a `tag`:
+lines: the agent's text whole, as its lines, not cut into the terminal's rows), a `tag`:
 `enforced`, `agent`, `context`, `added`, `removed`, `agent_added`, `agent_removed`,
-`warning`. The terminal's text and the structure are written by the same calls, so they say
+`warning`, and for a term that is a list (repos, committer emails, operations, branches,
+expected paths) its `items`, each cleaned as the value shows it, which `writ` splits so the
+app never splits a value (none for a per-repository term over several repositories, whose
+value names each). The terminal's text and the structure are written by the same calls, so they say
 the same (`the_structure_says_what_the_text_says`); agent text only ever lands in a row
 tagged as the agent's, or quoted inside an enforced value (the caller's executable), or as
 recorded feedback (`agent_text_is_only_ever_in_the_agent_s_rows`). The app styles each kind
@@ -100,8 +103,10 @@ header (kind, id, title, repositories, the time left, counted live), then **You 
 (the `signing` section) as the first card, an amendment's or a revision's changes (removed in
 red, added in green), the agent's words in a card of their own titled as untrusted, each row
 behind a coloured bar, the feedback and a renewal's chain, the source's other leases (orange
-when one overlaps), and the details (`ticket`, `who`, `lease`, each `repository`) in cards that
-fold, closed. **Copy as text** copies the terminal's text. At the bottom: what happened last
+when one overlaps), and under **Details** the rest (`ticket`, `who`, `lease`, each
+`repository`) in cards that fold, closed: each header says what it holds and its main terms in
+a line, and a click anywhere on it opens it. A list's items show as chips (a path, a branch,
+an operation each on its own). **Copy as text** copies the terminal's text. At the bottom: what happened last
 (Touch ID awaited, signed, refused, a failure), the approval key's path, **Decline…** (a
 feedback field, then **Refuse**) and **Sign**. No button takes the keyboard's focus or is the
 default, and each is greyed for a second after a ticket shows.
