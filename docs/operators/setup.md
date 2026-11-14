@@ -156,7 +156,9 @@ machine with `writ admin`, one signed change at a time (steps 10 to 14).
 
     The daemon scans the host (one Touch ID) and shows its keys with their fingerprints.
     Compare them with the ones the remote publishes, answer `y`, then sign the change that
-    pins them. `<host>:<port>` for another port than 22. A host whose keys changed later:
+    pins them. `<host>:<port>` for another port than 22. When the policy declares proxies,
+    it first asks which one to scan through: press Enter to reach the host directly, or see
+    [a remote behind a proxy](#a-remote-behind-a-proxy). A host whose keys changed later:
     `writ admin host rescan <host>`.
 
 11. **Make a template**, the most a ticket for its repos may ask:

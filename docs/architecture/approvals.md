@@ -190,11 +190,13 @@ entry needs (a template's branches with `commit_sign` or `push`, its committer e
 signing key with `commit_sign`; a key's fields for its use and kind, and its `backend` once
 the daemon has more than one, offered with the algorithms each makes (M7.5: the reply to
 `writ admin key list` names them, `backends`; a new credential a guided `repo add` declares
-is asked its backend too); a repo's `notes_ref` with `ticket_link: notes`). Enter keeps what the prompt shows, `!` leaves an optional field
+is asked its backend too), asked before the algorithm, which is then offered among the ones
+that backend makes (its first one the default when it makes no `ed25519` key) and asked
+again when the backend doesn't make it; a repo's `notes_ref` with `ticket_link: notes`). Enter keeps what the prompt shows, `!` leaves an optional field
 out, `none` empties a list. `edit <name>` asks the same, Enter keeping each current value
 (what a key is is never asked: it doesn't change). A repo's credential is one the policy
 declares for its URL's kind, or a new key declared in the same change (its id, and an SSH
-key's algorithm; a token's host is the URL's). `template add --from <template>` starts from
+key's backend then its algorithm; a token's host is the URL's). `template add --from <template>` starts from
 another template's values. After the change, what to do next is said: a new key's public
 half to register (a deploy key with write access), a token to add with `writ admin token`.
 Without a terminal `add` asks nothing and refuses unless every required field is given,
@@ -238,6 +240,13 @@ fingerprints, never pinned by the scan: `writ` shows them and asks whether they 
 the remote publishes, and only then signs a second change pinning them. A host offering only
 RSA or P-521 keys answers none: its keys are given as `keys=` instead. The scan needs a
 terminal, where the approver compares the keys; without one `host add` takes `keys=`.
+Before a scan `host add` or `repo add` makes, when no `proxy=<name>` was given and the policy
+in force declares proxies, `writ` asks which one the scan goes through (Enter: none, the host
+reached directly); in `repo add` the answer is the repo's `proxy`, not asked again. A direct
+scan that fails says how to go through a proxy: the ones in force to give as `proxy=<name>`
+(`--proxy <name>` for `host rescan`), or, when there is none, `writ admin proxy add` first
+(the daemon only dials a proxy the policy in force declares, so one can't be declared in the
+same change as the scan through it).
 
 `host rescan` is for a host whose keys changed (or to see whether they did): each key read is
 shown against the pin (pinned, new), each pinned key no longer offered said as going, a pinned

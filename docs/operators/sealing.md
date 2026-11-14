@@ -64,7 +64,8 @@ writ admin key remove <id>                 # refused while something uses it
   only), or `--backend software` to come back: a key never changes backend, so moving it is
   a rotation. `writ admin key list` ends with the backends this daemon has.
 - `writ admin key add <id> … backend=se-cryptokit` declares a new key in the Secure Enclave;
-  on a terminal, `add` asks for the backend when the daemon has more than one.
+  on a terminal, `add` asks for the backend when the daemon has more than one, then the
+  algorithm among the ones that backend makes.
 - `writ admin tls rotate` gives the HTTPS approval API a new key and certificate, in force at
   once. Add `--backend se-cryptokit` to make the key in the Mac's Secure Enclave, or
   `--backend software` to come back. Run over HTTPS, it replaces your own pin and checks it;
@@ -81,8 +82,12 @@ writ admin key remove <id>                 # refused while something uses it
 - `writ admin host add <host>` and `writ admin host rescan <host>`: the daemon scans the
   host, you compare its keys with the ones the remote publishes, then a second signature
   pins them. For a host behind a [proxy](setup.md#a-remote-behind-a-proxy), add `proxy=<name>`
-  to `host add` (or to `repo add` with the repo's other fields); `host rescan` goes through
-  the proxy the host's repos share, or the one `--proxy <name>` names.
+  to `host add` (or to `repo add` with the repo's other fields). Without it, `host add` and
+  `repo add` ask which proxy to scan through before scanning, when the policy declares one:
+  press Enter to reach the host directly. In `repo add`, the answer is the repo's `proxy`.
+  When the policy declares no proxy yet, declare it first with `writ admin proxy add`.
+  `host rescan` goes through the proxy the host's repos share, or the one `--proxy <name>`
+  names.
 - `writ admin repo check <repo>`: the repo's upstream reached with its key, read and write
   access proven, nothing pushed.
 
