@@ -249,9 +249,20 @@ fn follows(submitted: &Ticket, relation: Relation, previous: &Ticket) -> anyhow:
 /// The trusted display of what is about to be signed: the ticket (narrowed), what changed
 /// since the ticket it follows, and what the approver narrowed.
 fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, shown: display::Rows) -> String {
-    let mut out = display::ticket(signed, reviewed.state, now, shown);
+    render_out(reviewed, signed, now, shown).text
+}
+
+/// [`render`]'s text and its structure (the approval popup's), written by the same calls.
+fn render_out(
+    reviewed: &Reviewed,
+    signed: &Ticket,
+    now: Timestamp,
+    shown: display::Rows,
+) -> display::Out {
+    let mut out = display::Out::default();
+    display::ticket_into(&mut out, signed, reviewed.state, now, shown);
     if let Some((view, original)) = &reviewed.renewal {
-        out.push_str(&display::renewal_section(view, original, shown));
+        display::renewal_into(&mut out, view, original, shown);
     }
     if let Some((relation, previous)) = &reviewed.previous {
         let title = match relation {
@@ -262,23 +273,25 @@ fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, shown: display::
             Relation::Amends => format!("Changes from the terms in force of lease {}", previous.id),
             Relation::Renews => format!("Changes from the terms of lease {}, renewed", previous.id),
         };
-        out.push_str(&display::changes(
+        display::changes_into(
+            &mut out,
             &title,
             &display::diff(previous, &reviewed.submitted),
             shown,
-        ));
+        );
     }
-    out.push_str(&display::others(&reviewed.others, now));
+    display::others_into(&mut out, &reviewed.others, now);
     let narrowed = display::diff(&reviewed.submitted, signed);
     if !narrowed.is_empty() {
-        out.push_str(&display::changes(
+        display::changes_into(
+            &mut out,
             "Narrowed by you (this is what gets signed)",
             &narrowed,
             display::Rows::All,
-        ));
+        );
     }
     // Last, right above the prompt: the terms that get signed, whatever the agent wrote.
-    out.push_str(&display::summary(signed, !narrowed.is_empty()));
+    display::summary_into(&mut out, signed, !narrowed.is_empty());
     out
 }
 

@@ -1,7 +1,8 @@
 //! Scenario 27, the approval popup's side of `writ` (M7.8): `writ sign --ui` on the approver's
 //! machine, driven as `writ-popup` drives it (one JSON line each way). Two tickets submitted
 //! at once: the oldest shown with the other stacked behind it, its display the very text
-//! `writ sign --full` prints; an answer naming the ticket behind refused, nothing signed; the
+//! `writ sign --full` prints (and its structure); an answer naming the ticket behind refused,
+//! nothing signed; each picked from the list in turn; the
 //! first signed (the agent gets its lease), the second shown next and refused with feedback
 //! (the agent reads it); a ticket withdrawn while shown closing its window; the end of the
 //! app's input ending the command. Alone: a ticket another scenario left waiting would show
@@ -65,7 +66,7 @@ fn kind<'a>(event: &'a Value, expected: &str) -> &'a Value {
     event
 }
 
-/// The ids of ours the event lists behind the one shown.
+/// The ids of ours the event lists as waiting (the one shown among them).
 fn behind(event: &Value, ours: &[&str]) -> Vec<String> {
     event["waiting"]
         .as_array()
@@ -99,10 +100,11 @@ fn the_popup_shows_what_waits_in_order_and_signs_or_refuses_on_its_answer() {
     assert_eq!(shown["id"], older.as_str(), "{shown}");
     assert_eq!(shown["kind"], "ticket");
     let mut stacked = behind(&shown, &ours);
-    while stacked.is_empty() {
+    while stacked.len() < 2 {
         stacked = behind(kind(&next(&mut popup, &ours), "queue"), &ours);
     }
-    assert_eq!(stacked, std::slice::from_ref(newer));
+    assert_eq!(stacked, [older.clone(), newer.clone()]);
+    assert_eq!(shown["doc"]["sections"][0]["kind"], "ticket", "{shown}");
     let display = shown["display"].as_str().unwrap().to_owned();
     let out = stack
         .approver
@@ -125,6 +127,12 @@ fn the_popup_shows_what_waits_in_order_and_signs_or_refuses_on_its_answer() {
         listing.contains(older.as_str()) && listing.contains(newer.as_str()),
         "{listing}"
     );
+
+    // Picked from the window's list: the newer shown, then the older again.
+    popup.send(&json!({ "answer": "pick", "id": newer }).to_string());
+    assert_eq!(kind(&next(&mut popup, &ours), "show")["id"], newer.as_str());
+    popup.send(&json!({ "answer": "pick", "id": older }).to_string());
+    assert_eq!(kind(&next(&mut popup, &ours), "show")["id"], older.as_str());
 
     // Signed through the approval key: the lease is the agent's; the second comes next.
     popup.send(&json!({ "answer": "sign", "id": older }).to_string());

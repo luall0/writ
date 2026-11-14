@@ -150,7 +150,7 @@ impl Popup {
     }
 }
 
-/// The ids of the tickets an event lists behind the one shown.
+/// The ids of the tickets an event lists as waiting (the one shown among them).
 fn behind(event: &Value) -> Vec<String> {
     event["waiting"]
         .as_array()
@@ -183,7 +183,7 @@ fn the_popup_signs_refuses_and_follows_what_waits(approvals: Approvals) {
     let mut popup = Popup::start(&daemon);
     popup.expect("idle");
 
-    // Two tickets at once: the oldest shown, the other stacked behind it.
+    // Two tickets at once: the oldest shown, both listed (the window's sidebar).
     let first = daemon.request("first", &ticket("agent/a", "First", ""));
     let second = daemon.request("second", &ticket("agent/b", "Second", ""));
     let (older, newer) = if first.id < second.id {
@@ -196,10 +196,27 @@ fn the_popup_signs_refuses_and_follows_what_waits(approvals: Approvals) {
     assert_eq!(shown["id"], older.as_str(), "{shown}");
     assert_eq!(shown["kind"], "ticket");
     let mut waiting = behind(&shown);
-    if waiting.is_empty() {
+    if waiting.len() < 2 {
         waiting = behind(&popup.expect("queue"));
     }
-    assert_eq!(waiting, std::slice::from_ref(newer));
+    assert_eq!(waiting, [older.clone(), newer.clone()]);
+    // The header and the structure the window shows (the display's tests check its rows).
+    assert_eq!(shown["repos"], json!(["demo"]));
+    assert!(
+        shown["expires_at"].as_str().unwrap().ends_with('Z'),
+        "{shown}"
+    );
+    let kinds: Vec<&str> = shown["doc"]["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds.first(), Some(&"ticket"), "{kinds:?}");
+    assert_eq!(kinds.last(), Some(&"signing"), "{kinds:?}");
+    for kind in ["who", "lease", "repository", "agent", "others"] {
+        assert!(kinds.contains(&kind), "{kind} not in {kinds:?}");
+    }
     // The display is the very text `writ sign --full` prints above its question.
     let display = shown["display"].as_str().unwrap().to_owned();
     let out = daemon.run(&["sign", older, "--full"], "n\n");
@@ -242,13 +259,30 @@ fn the_popup_signs_refuses_and_follows_what_waits(approvals: Approvals) {
     let listing = pending(&daemon);
     assert_eq!(listing.matches("pending").count(), 2, "{listing}");
 
-    // Signed: the next one shown, nothing behind it.
+    // Picked from the list: the newer shown, then the older again; a ticket that isn't
+    // waiting is refused, the one shown stays.
+    popup.answer(json!({ "answer": "pick", "id": newer }));
+    assert_eq!(popup.expect("show")["id"], newer.as_str());
+    popup.answer(json!({ "answer": "pick", "id": "wrt_01JD8X00000000000000000000" }));
+    assert_eq!(
+        popup.expect("failed")["message"],
+        "ticket wrt_01JD8X00000000000000000000 isn't waiting for a signature: nothing shown"
+    );
+    popup.answer(json!({ "answer": "sign", "id": older }));
+    assert_eq!(
+        popup.expect("failed")["message"],
+        format!("the answer names {older}, but {newer} is shown: nothing signed")
+    );
+    popup.answer(json!({ "answer": "pick", "id": older }));
+    assert_eq!(popup.expect("show")["id"], older.as_str());
+
+    // Signed: the next one shown, alone in the list.
     popup.answer(json!({ "answer": "sign", "id": older }));
     let done = popup.expect("done");
     assert_eq!(done["message"], format!("Signed: lease {older} is active."));
     let next = popup.expect("show");
     assert_eq!(next["id"], newer.as_str());
-    assert!(behind(&next).is_empty(), "{next}");
+    assert_eq!(behind(&next), std::slice::from_ref(newer));
 
     // Refused with no feedback: the agent is told none was given; then nothing waits.
     popup.answer(json!({ "answer": "refuse", "id": newer, "feedback": "  " }));
@@ -305,16 +339,24 @@ fn the_popup_signs_refuses_and_follows_what_waits(approvals: Approvals) {
     let shown = popup.expect("show");
     assert_eq!(shown["id"], amendment.as_str());
     assert_eq!(shown["kind"], "amendment");
-    let stacked = &shown["waiting"][0];
-    assert_eq!(
-        (&stacked["id"], &stacked["skipped"]),
-        (&json!(aside), &json!(true))
-    );
+    let listed = shown["waiting"].as_array().unwrap();
+    let entry = |id: &str| listed.iter().find(|w| w["id"] == id).unwrap().clone();
+    assert_eq!(entry(&aside)["skipped"], json!(true));
+    assert_eq!(entry(&amendment)["kind"], "amendment");
     popup.answer(json!({ "answer": "sign", "id": amendment }));
     assert_eq!(
         popup.expect("done")["message"],
         format!("Signed: amendment {amendment} now applies to its lease.")
     );
+    popup.expect("idle");
+
+    // The ticket put aside, picked from the list: it comes back.
+    popup.answer(json!({ "answer": "pick", "id": aside }));
+    let back = popup.expect("show");
+    assert_eq!(back["id"], aside.as_str());
+    assert_eq!(back["waiting"][0]["skipped"], json!(false));
+    popup.answer(json!({ "answer": "refuse", "id": aside, "feedback": "not now" }));
+    popup.expect("done");
     popup.expect("idle");
 
     popup.close();

@@ -23,7 +23,7 @@ use writ_core::names::TicketId;
 use writ_core::ticket::Ticket;
 use writ_proto::{Command, Summary, Watched};
 
-use super::{Reviewed, Signer, approve, fetch_reviewed, now, refuse_with, render};
+use super::{Reviewed, Signer, approve, fetch_reviewed, now, refuse_with, render_out};
 use crate::client::Approvals;
 use crate::{Exit, Paths, display};
 
@@ -41,14 +41,18 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    /// The ticket to show: what kind it is, its title and the whole trusted display (both
-    /// cleaned of control and hidden characters), the approval key that will sign, and the
-    /// other tickets waiting behind it.
+    /// The ticket to show: what kind it is, its title, repositories and expiry, the whole
+    /// trusted display as the terminal prints it and as a structure of tagged rows (the
+    /// same calls wrote both; every text cleaned of control and hidden characters), the
+    /// approval key that will sign, and the other tickets waiting.
     Show {
         id: TicketId,
         kind: Kind,
         title: String,
+        repos: Vec<String>,
+        expires_at: String,
         display: String,
+        doc: crate::display::Doc,
         key: String,
         waiting: Vec<Waiting>,
     },
@@ -80,10 +84,14 @@ pub enum Kind {
     Renewal,
 }
 
-/// A ticket waiting behind the one shown.
+/// A ticket waiting for a signature, as the window's list shows it (the one shown among
+/// them).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Waiting {
     pub id: TicketId,
+    /// An amendment (its lease isn't itself), a revision (past its first), or a ticket: a
+    /// renewal shows as a ticket here, its kind said once it is shown.
+    pub kind: Kind,
     /// Agent text, cleaned.
     pub title: String,
     /// The repositories it asks for.
@@ -107,12 +115,19 @@ pub enum Answer {
     Skip {
         id: TicketId,
     },
+    /// Show this waiting ticket instead (a click in the window's list): one put aside comes
+    /// back.
+    Pick {
+        id: TicketId,
+    },
 }
 
 impl Answer {
     fn id(&self) -> &TicketId {
         match self {
-            Self::Sign { id } | Self::Refuse { id, .. } | Self::Skip { id } => id,
+            Self::Sign { id } | Self::Refuse { id, .. } | Self::Skip { id } | Self::Pick { id } => {
+                id
+            }
         }
     }
 }
@@ -220,13 +235,17 @@ impl Popup {
         self.shown.as_ref().map(|s| &s.reviewed.submitted.id)
     }
 
-    /// The tickets waiting behind the one shown.
+    /// Every ticket waiting, the one shown among them, in id order (the oldest first).
     fn behind(&self) -> Vec<Waiting> {
         self.waiting
             .iter()
-            .filter(|t| Some(&t.id) != self.shown_id())
             .map(|t| Waiting {
                 id: t.id.clone(),
+                kind: match (t.lease != t.id, t.revision > 1) {
+                    (true, _) => Kind::Amendment,
+                    (false, true) => Kind::Revision,
+                    (false, false) => Kind::Ticket,
+                },
                 title: display::clean(&t.title),
                 repos: t.repos.iter().map(ToString::to_string).collect(),
                 skipped: self.skipped.contains(&t.id),
@@ -324,13 +343,21 @@ impl Popup {
             (None, None, Some(_)) => Kind::Revision,
             (None, None, None) => Kind::Ticket,
         };
-        // The very text `writ sign <id> --full` prints above its question.
-        let display = render(&shown.reviewed, &shown.signed, now()?, display::Rows::All);
+        // The very text `writ sign <id> --full` prints above its question, and the same as a
+        // structure, written by the same calls.
+        let out = render_out(&shown.reviewed, &shown.signed, now()?, display::Rows::All);
         let event = Event::Show {
             id: submitted.id.clone(),
             kind,
             title: display::clean(&submitted.text.title),
-            display,
+            repos: submitted
+                .repos
+                .keys()
+                .map(|r| display::clean(r.as_str()))
+                .collect(),
+            expires_at: submitted.limits.expires_at.to_string(),
+            display: out.text,
+            doc: out.doc,
             key: display::clean(&signer.key.display().to_string()),
             waiting: self.behind(),
         };
@@ -354,6 +381,9 @@ impl Popup {
             }
         };
         let id = answer.id().clone();
+        if let Answer::Pick { .. } = answer {
+            return self.pick(session, signer, id, output).await;
+        }
         match self.shown_id() {
             Some(shown) if shown == &id => {}
             Some(shown) => {
@@ -383,6 +413,11 @@ impl Popup {
             return Ok(());
         };
         let done = match answer {
+            // Handled above, before the ticket shown is taken.
+            Answer::Pick { .. } => {
+                self.shown = Some(shown);
+                return Ok(());
+            }
             Answer::Skip { .. } => {
                 self.skipped.insert(id.clone());
                 return self.show_next(session, signer, output).await;
@@ -415,6 +450,47 @@ impl Popup {
                 )?;
                 self.shown = Some(shown);
                 self.send_shown(signer, output)
+            }
+        }
+    }
+
+    /// Shows ticket `id` instead of the one shown (a click in the window's list), fetched
+    /// and checked like any other: one put aside comes back; one not waiting is refused and
+    /// the ticket shown stays.
+    async fn pick(
+        &mut self,
+        session: &Approvals,
+        signer: &Signer,
+        id: TicketId,
+        output: &mut impl Write,
+    ) -> anyhow::Result<()> {
+        if !self.waiting.iter().any(|t| t.id == id) {
+            let message = format!("ticket {id} isn't waiting for a signature: nothing shown");
+            return send(
+                output,
+                &Event::Failed {
+                    id: Some(id),
+                    message,
+                },
+            );
+        }
+        match fetch_reviewed(session, &id).await {
+            Ok(reviewed) => {
+                self.skipped.remove(&id);
+                let signed = reviewed.submitted.clone();
+                self.shown = Some(Shown { reviewed, signed });
+                self.idle = false;
+                self.send_shown(signer, output)
+            }
+            Err(e) => {
+                let message = display::clean_lines(&format!("{e:#}"));
+                send(
+                    output,
+                    &Event::Failed {
+                        id: Some(id),
+                        message,
+                    },
+                )
             }
         }
     }
@@ -633,10 +709,14 @@ mod tests {
                 id: id.clone(),
                 kind: Kind::Amendment,
                 title: "t".to_owned(),
+                repos: vec!["api".to_owned()],
+                expires_at: "2027-01-15T12:00:00Z".to_owned(),
                 display: "a\nb".to_owned(),
+                doc: crate::display::Doc::default(),
                 key: "/k.pub".to_owned(),
                 waiting: vec![Waiting {
                     id: id.clone(),
+                    kind: Kind::Ticket,
                     title: "w".to_owned(),
                     repos: vec!["api".to_owned()],
                     skipped: true,
@@ -659,7 +739,7 @@ mod tests {
             lines,
             [
                 format!(
-                    r#"{{"type":"show","id":"{id}","kind":"amendment","title":"t","display":"a\nb","key":"/k.pub","waiting":[{{"id":"{id}","title":"w","repos":["api"],"skipped":true}}]}}"#
+                    r#"{{"type":"show","id":"{id}","kind":"amendment","title":"t","repos":["api"],"expires_at":"2027-01-15T12:00:00Z","display":"a\nb","doc":{{"sections":[]}},"key":"/k.pub","waiting":[{{"id":"{id}","kind":"ticket","title":"w","repos":["api"],"skipped":true}}]}}"#
                 )
                 .as_str(),
                 r#"{"type":"idle"}"#,

@@ -343,8 +343,9 @@ Steps (each one commit, `make ci` green, its docs in the same commit):
    installer test. Docs: [install.md](operators/install.md),
    [clients.md](operators/clients.md).
 5. **The structured display** (`writ-cli`, asked by the user on seeing the first window):
-   `writ`'s display built once as sections of tagged rows (enforced, the agent's words, added,
-   removed, a warning, context), the terminal text rendered from it byte for byte as before;
+   `writ`'s display written once as text and as sections of tagged rows (enforced, the agent's
+   words, added, removed, a warning, context) by the same calls, the text byte for byte as
+   before;
    the `show` event carrying that structure and a header (kind, title, repos, expiry); a
    `pick <id>` answer showing any waiting ticket (fetched and checked like the others, one put
    aside coming back). Tests: the structure and the terminal the same content, agent text only

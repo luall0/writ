@@ -25,6 +25,10 @@
 
 use std::fmt::Write as _;
 
+pub mod doc;
+
+pub use doc::{Doc, Out, SectionKind, Tag};
+
 use writ_core::lease::State;
 use writ_core::ticket::{
     Common, Limits, OnViolation, RepoLimits, RepoTerms, Subject, Ticket, TicketText,
@@ -190,6 +194,17 @@ impl<'a> Rows<'a> {
 /// fit [`WIDTH`] (each row behind the gutter too): runs of blank lines shown as one, and,
 /// unless every row is asked, at most [`MAX_BLOCK_LINES`] rows, then how many more.
 pub fn block(text: &str, indent: &str, shown: Rows) -> String {
+    let room = WIDTH.saturating_sub(width(indent) + width(GUTTER));
+    let rows: Vec<String> = block_lines(text)
+        .iter()
+        .flat_map(|line| cut(line, room))
+        .collect();
+    gutter_rows(&rows, indent, shown)
+}
+
+/// The lines of agent text as [`block`] shows them, before they are cut into rows: each
+/// [`clean`]ed, runs of blank lines as one.
+fn block_lines(text: &str) -> Vec<String> {
     let mut lines: Vec<&str> = Vec::new();
     for line in text.split('\n') {
         let blank = line.trim().is_empty();
@@ -198,12 +213,19 @@ pub fn block(text: &str, indent: &str, shown: Rows) -> String {
         }
         lines.push(line);
     }
-    let room = WIDTH.saturating_sub(width(indent) + width(GUTTER));
-    let rows: Vec<String> = lines
-        .iter()
-        .flat_map(|line| cut(&clean(line), room))
-        .collect();
-    gutter_rows(&rows, indent, shown)
+    lines.iter().map(|line| clean(line)).collect()
+}
+
+/// [`block`]'s text in `out`, and the same lines as one row of the structure.
+fn agent_block(out: &mut Out, label: &str, text: &str, indent: &str, shown: Rows, tag: Tag) {
+    out.text.push_str(&block(text, indent, shown));
+    out.row(Some(label), &block_lines(text).join("\n"), tag);
+}
+
+/// A labelled row in the text ([`labelled`]) and the structure.
+fn labelled_row(out: &mut Out, label: &str, value: &str, tag: Tag) {
+    labelled(&mut out.text, label, value);
+    out.row(Some(label), value, tag);
 }
 
 /// `rows` behind `indent` and the gutter, as many as `shown` says, then how many more.
@@ -610,7 +632,15 @@ pub fn diff(before: &Ticket, after: &Ticket) -> Vec<Changed> {
 }
 
 /// The full display of a ticket waiting for a signature, its agent text as `shown` says.
+#[cfg(test)]
 pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, shown: Rows) -> String {
+    let mut out = Out::default();
+    ticket_into(&mut out, ticket, state, now, shown);
+    out.text
+}
+
+/// [`ticket`] into `out`: its text and its structure, written by the same calls.
+pub fn ticket_into(out: &mut Out, ticket: &Ticket, state: State, now: Timestamp, shown: Rows) {
     // Every field placed (the review after M7.6, U-4): one added to the ticket doesn't compile
     // until it is shown. The ones bound to `_` are shown through [`field`].
     let Ticket {
@@ -649,7 +679,6 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, shown: Rows) -> Str
         },
         on_violation: _,
     } = ticket;
-    let mut out = String::new();
     let kind = if amends.is_some() {
         "Amendment"
     } else if renews.is_some() {
@@ -657,34 +686,59 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, shown: Rows) -> Str
     } else {
         "Ticket"
     };
-    let _ = writeln!(out, "{kind} {id}");
-    let _ = writeln!(out, "  revision {revision} · {state}");
+    let _ = writeln!(out.text, "{kind} {id}");
+    out.section(SectionKind::Ticket, &format!("{kind} {id}"));
+    let _ = writeln!(out.text, "  revision {revision} · {state}");
+    out.row(
+        Some("revision"),
+        &format!("{revision} · {state}"),
+        Tag::Context,
+    );
+    let left = duration(now.seconds_until(*expires_at));
     let _ = writeln!(
-        out,
-        "  created {created_at}, expires {expires_at} (in {})",
-        duration(now.seconds_until(*expires_at))
+        out.text,
+        "  created {created_at}, expires {expires_at} (in {left})"
+    );
+    out.row(Some("created"), &created_at.to_string(), Tag::Context);
+    out.row(
+        Some("expires"),
+        &format!("{expires_at} (in {left})"),
+        Tag::Enforced,
     );
     if let Some(lease) = amends {
-        let _ = writeln!(out, "  amends lease {lease}");
+        let _ = writeln!(out.text, "  amends lease {lease}");
+        out.row(Some("amends lease"), lease.as_ref(), Tag::Enforced);
     }
     if let Some(lease) = renews {
-        let _ = writeln!(out, "  renews lease {lease}");
+        let _ = writeln!(out.text, "  renews lease {lease}");
+        out.row(Some("renews lease"), lease.as_ref(), Tag::Enforced);
     }
     if let Some(revised) = revises {
-        let _ = writeln!(out, "  revises ticket {revised}");
+        let _ = writeln!(out.text, "  revises ticket {revised}");
+        out.row(Some("revises ticket"), revised.as_ref(), Tag::Context);
     }
-    let row = |out: &mut String, f: Field| labelled(out, f.label(), &field(ticket, f));
-    out.push_str("\nWho\n");
+    let row =
+        |out: &mut Out, f: Field| labelled_row(out, f.label(), &field(ticket, f), Tag::Enforced);
+    out.text.push_str("\nWho\n");
+    out.section(SectionKind::Who, "Who");
     for f in [Field::SessionKey, Field::Caller] {
-        row(&mut out, f);
+        row(out, f);
     }
-    let _ = writeln!(out, "  origin hint (the agent's claim, not checked):");
-    out.push_str(&block(
+    let _ = writeln!(out.text, "  origin hint (the agent's claim, not checked):");
+    agent_block(
+        out,
+        "origin hint (the agent's claim, not checked)",
         origin_hint.as_deref().unwrap_or("(none)"),
         "    ",
         shown,
-    ));
-    out.push_str("\nThe lease (enforced, for every repository)\n");
+        Tag::Agent,
+    );
+    out.text
+        .push_str("\nThe lease (enforced, for every repository)\n");
+    out.section(
+        SectionKind::Lease,
+        "The lease (enforced, for every repository)",
+    );
     for f in [
         Field::Repos,
         Field::CommitterEmails,
@@ -693,40 +747,60 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, shown: Rows) -> Str
         Field::MaxOpsPerMinute,
         Field::OnViolation,
     ] {
-        row(&mut out, f);
+        row(out, f);
     }
     for (repo, terms) in repos {
         // A registry name: up to 100 characters, cut like any value.
         let title = format!("Repository {repo} (enforced)");
-        let _ = writeln!(out, "\n{}", one_row(&clean(&title), WIDTH, "…"));
+        let _ = writeln!(out.text, "\n{}", one_row(&clean(&title), WIDTH, "…"));
+        out.section(SectionKind::Repository, &clean(&title));
         for f in RepoField::ALL {
             if f != RepoField::ExpectedPaths {
-                labelled(&mut out, f.label(), &repo_field(terms, f));
+                labelled_row(out, f.label(), &repo_field(terms, f), Tag::Enforced);
             }
         }
         // Chosen by the agent but enforced by the path check: one quoted item per line, and
         // never cut (the review after M7.6, U-1: the agent chose which paths fell past row
         // 40). The ticket's bounds keep it displayable: 100 paths, 16 KiB, per repository.
-        let _ = writeln!(out, "  {}", RepoField::ExpectedPaths.label());
+        let _ = writeln!(out.text, "  {}", RepoField::ExpectedPaths.label());
         if terms.expected_paths.is_empty() {
-            let _ = writeln!(out, "    (none: not checked)");
+            let _ = writeln!(out.text, "    (none: not checked)");
         }
+        let paths: Vec<String> = terms
+            .expected_paths
+            .iter()
+            .map(|path| quoted([path.as_str()]))
+            .collect();
+        let paths = match paths.is_empty() {
+            true => "(none: not checked)".to_owned(),
+            false => paths.join("\n"),
+        };
+        out.row(
+            Some(RepoField::ExpectedPaths.label()),
+            &paths,
+            Tag::Enforced,
+        );
         let room = WIDTH.saturating_sub(4 + width(GUTTER));
         let rows: Vec<String> = terms
             .expected_paths
             .iter()
             .flat_map(|path| cut(&quoted([path.as_str()]), room))
             .collect();
-        out.push_str(&gutter_rows(&rows, "    ", Rows::All));
+        out.text.push_str(&gutter_rows(&rows, "    ", Rows::All));
     }
-    out.push_str("\nWritten by the agent (untrusted, shown as written)\n");
-    out.push_str("  title\n");
-    out.push_str(&block(title, "    ", shown));
-    out.push_str("  task\n");
-    out.push_str(&block(task, "    ", shown));
-    out.push_str("  plan\n");
+    out.text
+        .push_str("\nWritten by the agent (untrusted, shown as written)\n");
+    out.section(
+        SectionKind::Agent,
+        "Written by the agent (untrusted, shown as written)",
+    );
+    out.text.push_str("  title\n");
+    agent_block(out, "title", title, "    ", shown, Tag::Agent);
+    out.text.push_str("  task\n");
+    agent_block(out, "task", task, "    ", shown, Tag::Agent);
+    out.text.push_str("  plan\n");
     if plan.is_empty() {
-        out.push_str(&block("(none)", "    ", shown));
+        agent_block(out, "plan", "(none)", "    ", shown, Tag::Agent);
     }
     let plan = plan
         .iter()
@@ -735,32 +809,42 @@ pub fn ticket(ticket: &Ticket, state: State, now: Timestamp, shown: Rows) -> Str
         .collect::<Vec<_>>()
         .join("\n");
     if !plan.is_empty() {
-        out.push_str(&block(&plan, "    ", shown));
+        agent_block(out, "plan", &plan, "    ", shown, Tag::Agent);
     }
     let asked = created_at.seconds_until(*expires_at);
-    labelled(
-        &mut out,
+    labelled_row(
+        out,
         "estimate",
         &format!(
             "{}; the lease asks {}",
             field(ticket, Field::Estimate),
             duration(asked)
         ),
+        Tag::Agent,
     );
     if let Some(feedback) = previous_feedback {
-        let _ = writeln!(
-            out,
-            "\nFeedback on revision {} (as recorded by the daemon)",
+        let title = format!(
+            "Feedback on revision {} (as recorded by the daemon)",
             revision.saturating_sub(1)
         );
-        out.push_str(&block(feedback, "    ", shown));
+        let _ = writeln!(out.text, "\n{title}");
+        out.section(SectionKind::Feedback, &title);
+        agent_block(out, "feedback", feedback, "    ", shown, Tag::Context);
     }
-    out
 }
 
 /// The enforced terms in a few lines, shown last, right before the prompt: whatever the agent
 /// wrote above, this is what gets signed.
+#[cfg(test)]
 pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
+    let mut out = Out::default();
+    summary_into(&mut out, ticket, narrowed);
+    out.text
+}
+
+/// [`summary`] into `out`: each term whole in the structure (the app wraps it), cut to one
+/// row in the text.
+pub fn summary_into(out: &mut Out, ticket: &Ticket, narrowed: bool) {
     // Every field placed (the review after M7.6, U-4): a term added to the ticket doesn't
     // compile until it is in the summary, or said here why not. The ones bound to `_` are
     // repeated through [`field`], or only in the full display above.
@@ -801,22 +885,27 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
         },
         on_violation: _,
     } = ticket;
-    let mut out = String::from("\nYou are signing (enforced):\n");
-    let _ = writeln!(out, "  {id}");
+    out.text.push_str("\nYou are signing (enforced):\n");
+    out.section(SectionKind::Signing, "You are signing (enforced)");
+    let _ = writeln!(out.text, "  {id}");
+    out.row(Some("ticket"), id.as_ref(), Tag::Enforced);
     // One row each: what doesn't fit says so, and is shown whole above (every enforced term
     // is: none is cut there).
     let room = WIDTH.saturating_sub(21);
+    let templates = field(ticket, Field::Repo(RepoField::Template));
     let _ = writeln!(
-        out,
+        out.text,
         "  {:<18} {}",
         "templates",
-        one_row(
-            &field(ticket, Field::Repo(RepoField::Template)),
-            room,
-            "(see above)"
-        )
+        one_row(&templates, room, "(see above)")
     );
-    let _ = writeln!(out, "  {:<18} {expires_at}", Field::ExpiresAt.label());
+    out.row(Some("templates"), &templates, Tag::Enforced);
+    let _ = writeln!(out.text, "  {:<18} {expires_at}", Field::ExpiresAt.label());
+    out.row(
+        Some(Field::ExpiresAt.label()),
+        &expires_at.to_string(),
+        Tag::Enforced,
+    );
     for f in [
         Field::Repos,
         Field::Repo(RepoField::Operations),
@@ -825,76 +914,93 @@ pub fn summary(ticket: &Ticket, narrowed: bool) -> String {
         Field::CommitterEmails,
         Field::CommitterName,
     ] {
+        let value = field(ticket, f);
         let _ = writeln!(
-            out,
+            out.text,
             "  {:<18} {}",
             f.label(),
-            one_row(&field(ticket, f), room, "(see above)")
+            one_row(&value, room, "(see above)")
         );
+        out.row(Some(f.label()), &value, Tag::Enforced);
     }
     let paths: usize = repos.values().map(|t| t.expected_paths.len()).sum();
-    let shown = if paths == 0 {
+    let whole = if paths == 0 {
         "(none: not checked)".to_owned()
     } else {
-        one_row(
-            &format!(
-                "{paths}: {}",
-                field(ticket, Field::Repo(RepoField::ExpectedPaths))
-            ),
-            room,
-            "(see above)",
+        format!(
+            "{paths}: {}",
+            field(ticket, Field::Repo(RepoField::ExpectedPaths))
         )
     };
-    let _ = writeln!(out, "  {:<18} {shown}", RepoField::ExpectedPaths.label());
+    let shown = match paths {
+        0 => whole.clone(),
+        _ => one_row(&whole, room, "(see above)"),
+    };
+    let _ = writeln!(
+        out.text,
+        "  {:<18} {shown}",
+        RepoField::ExpectedPaths.label()
+    );
+    out.row(
+        Some(RepoField::ExpectedPaths.label()),
+        &whole,
+        Tag::Enforced,
+    );
     // Rows within [`WIDTH`] whatever the numbers: the totals over every repository (`u32`
     // sums, saturating), each repository's counts above.
-    let _ = writeln!(
-        out,
-        "  {:<18} {} signatures, {} pushes, {max_ops_per_minute}/min",
-        "limits",
+    let limits = format!(
+        "{} signatures, {} pushes, {max_ops_per_minute}/min",
         ticket.max_signatures(),
         ticket.max_pushes(),
     );
+    let _ = writeln!(out.text, "  {:<18} {limits}", "limits");
+    out.row(Some("limits"), &limits, Tag::Enforced);
+    let size = field(ticket, Field::Repo(RepoField::MaxPushSize));
     let _ = writeln!(
-        out,
+        out.text,
         "  {:<18} {}",
         RepoField::MaxPushSize.label(),
-        one_row(
-            &field(ticket, Field::Repo(RepoField::MaxPushSize)),
-            room,
-            "(see above)"
-        )
+        one_row(&size, room, "(see above)")
     );
-    let _ = writeln!(
-        out,
-        "  {:<18} {}",
-        Field::OnViolation.label(),
-        field(ticket, Field::OnViolation)
-    );
+    out.row(Some(RepoField::MaxPushSize.label()), &size, Tag::Enforced);
+    let violation = field(ticket, Field::OnViolation);
+    let _ = writeln!(out.text, "  {:<18} {violation}", Field::OnViolation.label());
+    out.row(Some(Field::OnViolation.label()), &violation, Tag::Enforced);
     if narrowed {
-        out.push_str("  (narrowed by you: see above)\n");
+        out.text.push_str("  (narrowed by you: see above)\n");
+        out.row(None, "narrowed by you", Tag::Warning);
     }
-    out
 }
 
 /// The chain a renewal continues: the original ticket (the task as first signed: agent text,
 /// behind the gutter), which renewal this is, the time used so far, and what the renewed
 /// lease used.
+#[cfg(test)]
 pub fn renewal_section(view: &writ_proto::Renewal, original: &Ticket, shown: Rows) -> String {
-    let mut out = format!(
-        "\nRenewal {} of the work started as lease {}\n",
+    let mut out = Out::default();
+    renewal_into(&mut out, view, original, shown);
+    out.text
+}
+
+/// [`renewal_section`] into `out`.
+pub fn renewal_into(out: &mut Out, view: &writ_proto::Renewal, original: &Ticket, shown: Rows) {
+    let title = format!(
+        "Renewal {} of the work started as lease {}",
         view.number, original.id
     );
-    labelled(
-        &mut out,
+    let _ = writeln!(out.text, "\n{title}");
+    out.section(SectionKind::Renewal, &title);
+    labelled_row(
+        out,
         "time used so far",
         &format!(
             "{} (every lease of the work together)",
             duration(i64::try_from(view.used_seconds).unwrap_or(i64::MAX))
         ),
+        Tag::Context,
     );
-    labelled(
-        &mut out,
+    labelled_row(
+        out,
         "renewed lease",
         &format!(
             "{}: {}/{} signatures, {}/{} pushes used",
@@ -904,12 +1010,28 @@ pub fn renewal_section(view: &writ_proto::Renewal, original: &Ticket, shown: Row
             view.pushes.used,
             view.pushes.max
         ),
+        Tag::Context,
     );
-    out.push_str("  The original ticket, as you signed it (written by the agent):\n");
-    out.push_str("  title\n");
-    out.push_str(&block(&original.text.title, "    ", shown));
-    out.push_str("  task\n");
-    out.push_str(&block(&original.text.task, "    ", shown));
+    out.text
+        .push_str("  The original ticket, as you signed it (written by the agent):\n");
+    out.text.push_str("  title\n");
+    agent_block(
+        out,
+        "original title",
+        &original.text.title,
+        "    ",
+        shown,
+        Tag::Agent,
+    );
+    out.text.push_str("  task\n");
+    agent_block(
+        out,
+        "original task",
+        &original.text.task,
+        "    ",
+        shown,
+        Tag::Agent,
+    );
     if !original.text.plan.is_empty() {
         let plan = original
             .text
@@ -919,61 +1041,89 @@ pub fn renewal_section(view: &writ_proto::Renewal, original: &Ticket, shown: Row
             .map(|(i, step)| format!("{}. {step}", i + 1))
             .collect::<Vec<_>>()
             .join("\n");
-        out.push_str("  plan\n");
-        out.push_str(&block(&plan, "    ", shown));
+        out.text.push_str("  plan\n");
+        agent_block(out, "original plan", &plan, "    ", shown, Tag::Agent);
     }
-    labelled(&mut out, "repos", &field(original, Field::Repos));
-    labelled(
-        &mut out,
+    labelled_row(out, "repos", &field(original, Field::Repos), Tag::Context);
+    labelled_row(
+        out,
         "branches",
         &field(original, Field::Repo(RepoField::Branches)),
+        Tag::Context,
     );
-    labelled(
-        &mut out,
+    labelled_row(
+        out,
         "expires at",
         &original.limits.expires_at.to_string(),
+        Tag::Context,
     );
-    out
 }
 
 /// The other active leases from the ticket's source (the daemon's record of where tickets
 /// come from): one row each with its id, time left and an overlap flag, then its scope.
+#[cfg(test)]
 pub fn others(others: &writ_proto::Others, now: Timestamp) -> String {
+    let mut out = Out::default();
+    others_into(&mut out, others, now);
+    out.text
+}
+
+/// [`others`] into `out`: a lease that overlaps is a warning row.
+pub fn others_into(out: &mut Out, others: &writ_proto::Others, now: Timestamp) {
     if others.shown.is_empty() {
-        return "\nOther active leases from this source: none\n".to_owned();
+        out.text
+            .push_str("\nOther active leases from this source: none\n");
+        out.section(
+            SectionKind::Others,
+            "Other active leases from this source: none",
+        );
+        return;
     }
     let total = others
         .shown
         .len()
         .saturating_add(usize::try_from(others.more).unwrap_or(usize::MAX));
-    let mut out = format!("\nOther active leases from this source ({total})\n");
+    let title = format!("Other active leases from this source ({total})");
+    let _ = writeln!(out.text, "\n{title}");
+    out.section(SectionKind::Others, &title);
     // The flag's meaning once, on a row of its own: every row stays within [`WIDTH`].
     if others.shown.iter().any(|l| l.overlap) {
-        out.push_str("  OVERLAP: a repo in common with this ticket, and branches that meet\n");
+        out.text
+            .push_str("  OVERLAP: a repo in common with this ticket, and branches that meet\n");
     }
     for lease in &others.shown {
         let flag = if lease.overlap { "  OVERLAP" } else { "" };
-        let _ = writeln!(
-            out,
-            "  {}  {} left{flag}",
-            lease.id,
-            duration(now.seconds_until(lease.expires_at))
+        let left = duration(now.seconds_until(lease.expires_at));
+        let _ = writeln!(out.text, "  {}  {left} left{flag}", lease.id);
+        let scope = format!(
+            "repos {} · branches {} · {}",
+            list(&lease.repos),
+            list(&lease.branches),
+            list(&lease.operations)
         );
-        rows_after(
-            &mut out,
-            "    ",
-            &format!(
-                "repos {} · branches {} · {}",
-                list(&lease.repos),
-                list(&lease.branches),
-                list(&lease.operations)
-            ),
+        rows_after(&mut out.text, "    ", &scope);
+        let tag = match lease.overlap {
+            true => Tag::Warning,
+            false => Tag::Context,
+        };
+        let overlap = match lease.overlap {
+            true => " · OVERLAP: a repo in common with this ticket, and branches that meet",
+            false => "",
+        };
+        out.row(
+            Some(lease.id.as_ref()),
+            &format!("{left} left · {scope}{overlap}"),
+            tag,
         );
     }
     if others.more > 0 {
-        let _ = writeln!(out, "  … and {} more (writ ls)", others.more);
+        let _ = writeln!(out.text, "  … and {} more (writ ls)", others.more);
+        out.row(
+            None,
+            &format!("… and {} more (writ ls)", others.more),
+            Tag::Context,
+        );
     }
-    out
 }
 
 /// An activity report (`writ close`, `writ report`): what the lease and the leases it renews
@@ -1127,35 +1277,48 @@ pub fn report(
 /// [`block`]); the enforced terms come last, nearest the prompt, and are never cut (the review
 /// after M7.6, U-2: an amendment's flood of task and plan pushed what it widened far above).
 pub fn changes(title: &str, changes: &[Changed], shown: Rows) -> String {
-    let mut out = String::from("\n");
+    let mut out = Out::default();
+    changes_into(&mut out, title, changes, shown);
+    out.text
+}
+
+/// [`changes`] into `out`: each side a row, the agent's words tagged as the agent's.
+pub fn changes_into(out: &mut Out, title: &str, changes: &[Changed], shown: Rows) {
+    out.text.push('\n');
     // Writ's own words, ids in them: cut to fit like any row.
     for row in cut(title, WIDTH) {
-        let _ = writeln!(out, "{row}");
+        let _ = writeln!(out.text, "{row}");
     }
+    out.section(SectionKind::Changes, title);
     if changes.is_empty() {
-        out.push_str("  (no change)\n");
+        out.text.push_str("  (no change)\n");
+        out.row(None, "(no change)", Tag::Context);
     }
     // `    - ` or `    │ ` in front: 7 columns at most (`│` counted two).
     let room = WIDTH.saturating_sub(4 + width("│ "));
     let agent = changes.iter().filter(|c| c.field.agent_written());
     let enforced = changes.iter().filter(|c| !c.field.agent_written());
     for change in agent.chain(enforced) {
-        let _ = writeln!(out, "  {}", change.field.label());
+        let _ = writeln!(out.text, "  {}", change.field.label());
         let side = match change.field.agent_written() {
             true => shown,
             false => Rows::All,
         };
-        for (sign, value) in [("-", &change.before), ("+", &change.after)] {
+        let (removed, added) = match change.field.agent_written() {
+            true => (Tag::AgentRemoved, Tag::AgentAdded),
+            false => (Tag::Removed, Tag::Added),
+        };
+        for (sign, value, tag) in [("-", &change.before, removed), ("+", &change.after, added)] {
             let rows = cut(value, room);
             let limit = side.limit(rows.len());
             for (i, row) in rows.iter().take(limit).enumerate() {
                 let mark = if i == 0 { sign } else { "│" };
-                let _ = writeln!(out, "    {mark} {row}");
+                let _ = writeln!(out.text, "    {mark} {row}");
             }
-            side.more(&mut out, "    ", limit, rows.len());
+            side.more(&mut out.text, "    ", limit, rows.len());
+            out.row(Some(change.field.label()), value, tag);
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -1221,6 +1384,143 @@ mod tests {
             );
         }
         assert!(shown.contains("\\u{1b}[2J"), "escaped, still visible");
+    }
+
+    /// `text` with the gutters gone and every run of whitespace one space: how a value cut
+    /// into rows reads again as the value.
+    fn flat(text: &str) -> String {
+        text.replace(GUTTER, " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Everything `writ sign` shows for `t` (its changes from `before` too), text and
+    /// structure written together.
+    fn shown_both(t: &Ticket, before: &Ticket) -> Out {
+        let mut out = Out::default();
+        ticket_into(&mut out, t, State::Pending, t.created_at, Rows::All);
+        changes_into(&mut out, "Changes", &diff(before, t), Rows::All);
+        summary_into(&mut out, t, false);
+        out
+    }
+
+    /// M7.8: the approval popup shows the structure, the terminal the text; written by the
+    /// same calls, they say the same. Every value of the structure is in the text (cut into
+    /// rows there; in the summary, the terms the text cuts to one row are whole above), and
+    /// every section of the text is a section of the structure.
+    #[test]
+    fn the_structure_says_what_the_text_says() {
+        let before = full_ticket();
+        let mut t = full_ticket();
+        t.text.task = "A task\n\nover two paragraphs".to_owned();
+        omega(&mut t).branches.insert("agent/also".parse().unwrap());
+        let out = shown_both(&t, &before);
+        let text = flat(&out.text);
+        let kinds: Vec<SectionKind> = out.doc.sections.iter().map(|s| s.kind).collect();
+        for kind in [
+            SectionKind::Ticket,
+            SectionKind::Who,
+            SectionKind::Lease,
+            SectionKind::Repository,
+            SectionKind::Agent,
+            SectionKind::Changes,
+            SectionKind::Signing,
+        ] {
+            assert!(kinds.contains(&kind), "{kind:?} not in {kinds:?}");
+        }
+        for section in &out.doc.sections {
+            assert!(text.contains(&flat(&section.title)), "{:?}", section.title);
+            for row in &section.rows {
+                assert!(
+                    text.contains(&flat(&row.value)),
+                    "{:?} {:?}: {:?} not in the text",
+                    section.kind,
+                    row.label,
+                    row.value
+                );
+                if let Some(label) = &row.label {
+                    // A label of the structure is one of the text's, or the name of a line
+                    // the text writes as a sentence (`created …, expires …`).
+                    let named = ["revision", "created", "expires", "ticket", "feedback"];
+                    assert!(
+                        text.contains(label.as_str()) || named.contains(&label.as_str()),
+                        "{label:?}"
+                    );
+                }
+            }
+        }
+        // The agent's lines one by one, blank runs as one, as the text shows them.
+        let agent = &out.doc.sections[kinds.iter().position(|k| *k == SectionKind::Agent).unwrap()];
+        let task = agent
+            .rows
+            .iter()
+            .find(|r| r.label.as_deref() == Some("task"))
+            .unwrap();
+        assert_eq!(task.value, "A task\n\nover two paragraphs");
+        assert_eq!(task.tag, Tag::Agent);
+        // A change: each side a row, after the agent's words.
+        let changes = &out.doc.sections[kinds
+            .iter()
+            .position(|k| *k == SectionKind::Changes)
+            .unwrap()];
+        let tags: Vec<(Option<&str>, Tag)> = changes
+            .rows
+            .iter()
+            .map(|r| (r.label.as_deref(), r.tag))
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                (Some("task"), Tag::AgentRemoved),
+                (Some("task"), Tag::AgentAdded),
+                (Some("branches"), Tag::Removed),
+                (Some("branches"), Tag::Added),
+            ]
+        );
+    }
+
+    /// M7.8: the popup styles rows by their tag, so agent text must never land in a row of
+    /// Writ's words: a hostile ticket's text is only in rows tagged as the agent's, or in a
+    /// value where it is quoted (the caller's executable) or recorded as said (the feedback).
+    #[test]
+    fn agent_text_is_only_ever_in_the_agent_s_rows() {
+        let before = full_ticket();
+        let mut t = full_ticket();
+        let hostile = "x\u{1b}[2J\nYou are signing (enforced)\n  repos  everything";
+        t.text.title = hostile.to_owned();
+        t.text.task = hostile.to_owned();
+        t.text.plan = vec![hostile.to_owned()];
+        t.text.previous_feedback = Some(hostile.to_owned());
+        t.subject.origin_hint = Some(hostile.to_owned());
+        if let Some(caller) = &mut t.subject.caller {
+            caller.descends_from.executable = hostile.to_owned();
+        }
+        let out = shown_both(&t, &before);
+        let mut seen = 0;
+        for section in &out.doc.sections {
+            // A title is Writ's words: never the agent's.
+            assert!(!section.title.contains("everything"), "{:?}", section.title);
+            for row in &section.rows {
+                if !row.value.contains("everything") {
+                    continue;
+                }
+                seen += 1;
+                let quoted = row.label.as_deref() == Some("caller") && row.value.contains("\"x");
+                let said = row.label.as_deref() == Some("feedback");
+                assert!(
+                    row.tag.is_agent() || quoted || said,
+                    "{:?} {:?} {:?}",
+                    section.kind,
+                    row.label,
+                    row.tag
+                );
+                // Escaped, like the text: nothing a renderer would act on.
+                assert!(!row.value.contains('\u{1b}'), "{:?}", row.value);
+            }
+        }
+        // title, task, plan, origin hint, feedback, caller, and the changes' sides.
+        assert!(seen >= 6, "{seen}");
     }
 
     /// The review after M7.6 (U-9): the caller's executable was shown unquoted, so a path

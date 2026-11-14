@@ -56,7 +56,8 @@ ones too, with the whole ticket and two buttons, **Sign** and **Decline**. Two p
   [watch](approvals.md#reaching-the-daemon) on the daemon, keeps the queue of waiting tickets
   (in id order: the oldest first), fetches the one to show with `writ sign`'s own checks
   (`fetch_reviewed`), builds its display with `writ sign`'s own code (the very text `writ sign
-  <id> --full` prints above its question), and signs with `writ sign`'s signer
+  <id> --full` prints above its question, and the same as a structure of sections and tagged
+  rows, written by the same calls: `display::Out`), and signs with `writ sign`'s signer
   (`ssh-keygen -Y sign` through the approval agent: Secretive's Touch ID). Nothing of that
   exists anywhere else.
 - **`writ-popup`** (Swift, AppKit; `crates/writ-cli/macos/`) only shows what `writ` sends and
@@ -67,8 +68,8 @@ They talk one JSON object per line each way, on `writ`'s stdout and stdin:
 
 | From `writ` (`type`) | What it carries | The window |
 |---|---|---|
-| `show` | `id`, `kind` (`ticket`, `revision`, `amendment`, `renewal`), `title`, `display`, `key` (the approval key's path), `waiting` (the others: `id`, `title`, `repos`, `skipped`) | shows the ticket, the others stacked behind it ("2 more waiting, newest last") |
-| `queue` | `waiting` | the stack behind the ticket shown changed |
+| `show` | `id`, `kind` (`ticket`, `revision`, `amendment`, `renewal`), `title`, `repos`, `expires_at`, `display` (the terminal's text), `doc` (the same as sections of tagged rows, below), `key` (the approval key's path), `waiting` (every ticket waiting, the one shown among them, oldest first: `id`, `kind`, `title`, `repos`, `skipped`) | shows the ticket; the list beside it, the one shown highlighted |
+| `queue` | `waiting` | the list changed |
 | `gone` | `id` | the ticket shown stopped waiting (signed or refused elsewhere, withdrawn, expired): its window closes |
 | `done` | `id`, `message` | what an answer did (`Signed: lease … is active.`) |
 | `failed` | `id` (or `null`), `message` | an answer that signed nothing, a ticket that couldn't be shown, a signature that failed (Touch ID cancelled: the ticket is shown again) |
@@ -80,6 +81,18 @@ They talk one JSON object per line each way, on `writ`'s stdout and stdin:
 | `sign` | `id`: the ticket shown, signed as shown |
 | `refuse` | `id`, `feedback` (may be empty: the agent then reads *Declined in the approval popup, with no feedback.*), signed under `decisions: signed` like `writ refuse` |
 | `skip` | `id`: the window closed; the ticket stays waiting, put aside by this run (`writ sign` in a terminal reaches it) |
+| `pick` | `id`: a ticket of the list clicked: fetched and checked like any other and shown, one put aside coming back; one not waiting refused (`failed`), the one shown staying |
+
+**The structure** (`doc`, `writ_cli::display::doc`): `sections`, each with a `kind` (`ticket`,
+`who`, `lease`, `repository`, `agent`, `feedback`, `renewal`, `changes`, `others`, `signing`),
+its `title` and its `rows`; a row has an optional `label`, a `value` (cleaned, one or several
+lines: the agent's text whole, as its lines, not cut into the terminal's rows) and a `tag`:
+`enforced`, `agent`, `context`, `added`, `removed`, `agent_added`, `agent_removed`,
+`warning`. The terminal's text and the structure are written by the same calls, so they say
+the same (`the_structure_says_what_the_text_says`); agent text only ever lands in a row
+tagged as the agent's, or quoted inside an enforced value (the caller's executable), or as
+recorded feedback (`agent_text_is_only_ever_in_the_agent_s_rows`). The app styles each kind
+and tag and reads nothing out of a value: it never parses the text.
 
 Every text `writ` sends is cleaned of control and hidden characters, as for the terminal.
 An answer naming another ticket than the one shown, a line that isn't an answer (unknown
@@ -89,9 +102,10 @@ takes no ticket, no narrowing flag, no `--yes` or `--full`. Admin changes and un
 come to the popup: the watch lists tickets only. The end of the app's output ends `writ sign
 --ui` (exit 0).
 
-The tickets that arrive together are all listed: the window shows the oldest and the others
-behind it, each with its title and repositories; once the one shown is decided or gone, the
-next comes up, with no window to reopen.
+The tickets that arrive together are all listed: the window shows the oldest, and the list
+beside it every ticket waiting, each with its title, repositories and kind; a click shows
+another one (`pick`); once the one shown is decided or gone, the oldest left comes up, with no
+window to reopen.
 
 ## Repo setup on an agent host
 
