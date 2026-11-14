@@ -178,8 +178,9 @@ random-seed property pass ([property tests](#property-tests)), and on the Mac, w
 allows a push only of a tree `make ci` passed on. The hook doesn't run CI itself: git runs it
 with the connection to the remote already open, and a hook as long as `make ci` made the
 remote close it. Instead, `make ci` on a clean working tree (no change, no untracked file, no
-file git doesn't compare: ignored outside `target/` and the dev daemon's data,
-assume-unchanged or skip-worktree; the same tree at the start and the end) stamps HEAD's tree in `.git/writ-ci-ok`
+file git doesn't compare: ignored outside `target/`, the dev daemon's data, Claude Code's
+local files and the editors' and the OS's own, each ignored path named by the pattern that
+ignores it (`git status --ignored=matching`), assume-unchanged or skip-worktree; the same tree at the start and the end) stamps HEAD's tree in `.git/writ-ci-ok`
 (`tool/ci-stamp.sh`), and the hook refuses any pushed commit whose tree isn't the stamped one.
 `make push` does both: `make ci` unless the tree is already stamped, then `git push`.
 `make hooks` installs stubs in `.git/hooks` rather than setting a local `core.hooksPath`,

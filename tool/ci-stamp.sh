@@ -35,11 +35,15 @@ clean_tree() {
     listed=$(git ls-files -v) || return 1
     hidden=$(printf '%s\n' "$listed" | grep -E '^([a-z]|S) ') || hidden=
     [ -z "$hidden" ] || return 1
-    # Ignored files, a directory whole: only the build cache, the dev daemon's data and the
-    # editors' and the OS's own files may be.
-    ignored=$(git status --porcelain --ignored=traditional --untracked-files=normal) || return 1
+    # Ignored files, each as the pattern that ignores it names it (a directory whole when the
+    # pattern is the directory's): only the build cache, the dev daemon's data, Claude Code's
+    # local files (its settings, the lock of its scheduled tasks) and the editors' and the OS's
+    # own files may be. Not `traditional`: it names a directory whose files are
+    # all ignored by the directory alone (`.claude/` for `.claude/settings.local.json`), which
+    # the list below can't tell from a directory ignored whole.
+    ignored=$(git status --porcelain --ignored=matching --untracked-files=normal) || return 1
     others=$(printf '%s\n' "$ignored" | sed -n 's/^!! //p' |
-        grep -vE '^(target/|dev/data/|dev/approvers$|dev/readers$|dev/telegram-token$|\.claude/settings\.local\.json$|\.idea/|\.vscode/)' |
+        grep -vE '^(target/|dev/data/|dev/approvers$|dev/readers$|dev/telegram-token$|\.claude/settings\.local\.json$|\.claude/scheduled_tasks\.lock$|\.idea/|\.vscode/)' |
         grep -vE '(^|/)(\.DS_Store|\.build/|xcuserdata/)') || others=
     [ -z "$others" ] || return 1
     git rev-parse --verify -q 'HEAD^{tree}'

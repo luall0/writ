@@ -12,8 +12,9 @@
 .idea/
 .vscode/
 
-# Local Claude settings
+# Local Claude settings, and the lock Claude Code keeps while it runs scheduled tasks
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Swift spikes
 .build/
