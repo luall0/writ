@@ -33,6 +33,7 @@ pub mod git;
 pub mod known_hosts;
 mod mirror;
 mod process;
+pub mod progress;
 pub mod proxy;
 pub mod quarantine;
 pub mod relay;
@@ -44,9 +45,9 @@ pub mod upstream;
 
 pub use mirror::in_flight;
 pub use mirror::{
-    CheckStep, LOCAL_WORK_DEADLINE, MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig,
-    MirrorGuard, Mirrors, NOTES_AUTHOR, Note, NotesPushed, RefMove, STOP_MARGIN, SyncReport,
-    UpstreamUpdate,
+    CheckStep, EMPTINESS_DEADLINE, LOCAL_WORK_DEADLINE, LastSync, Limit, MAX_LOOKUPS,
+    MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorGuard, Mirrors, NOTES_AUTHOR, Note, NotesPushed,
+    RefMove, RunningSync, STOP_MARGIN, SyncOutcome, SyncReport, SyncStatus, UpstreamUpdate,
 };
 
 use std::path::PathBuf;
@@ -135,8 +136,20 @@ pub enum MirrorError {
     TooLarge { repo: RepoName, max: u64 },
     #[error("repo {repo}: the mirror is busy (held for more than {seconds} s); try again")]
     Busy { repo: RepoName, seconds: u64 },
-    #[error("repo {repo}: upstream did not answer within {seconds} s")]
-    Timeout { repo: RepoName, seconds: u64 },
+    /// Past the operation's limit: `seconds` of it, set by `key` (`mirrors.timeout`, or
+    /// `mirrors.first_sync_timeout` for a sync of a mirror holding no branch or tag).
+    #[error(
+        "repo {repo}: upstream did not finish within {} ({key})",
+        writ_core::units::Duration::from_seconds(*seconds)
+    )]
+    Timeout {
+        repo: RepoName,
+        seconds: u64,
+        key: &'static str,
+    },
+    /// The mirrors' sync status can't be read (its lock poisoned).
+    #[error("the sync status can't be read")]
+    StatusUnavailable,
     #[error("repo {repo}: the daemon is stopping: nothing more is sent upstream")]
     Stopping { repo: RepoName },
     #[error("repo {repo}: credential {key} is not the one this mirror reaches upstream with")]
@@ -225,6 +238,7 @@ impl MirrorError {
             Self::TooLarge { .. }
             | Self::Busy { .. }
             | Self::Timeout { .. }
+            | Self::StatusUnavailable
             | Self::Stopping { .. }
             | Self::GitTooOld { .. }
             | Self::SyncSlotsClosed

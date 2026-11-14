@@ -735,9 +735,10 @@ async fn run_check(
     repo: &writ_core::names::RepoName,
 ) -> anyhow::Result<Exit> {
     println!("Checking {repo}'s upstream from the daemon (nothing is pushed)…");
-    let checked: UpstreamChecked = session
-        .call(&Command::RepoCheck { repo: repo.clone() }, b"")
-        .await??;
+    let asked = Command::RepoCheck { repo: repo.clone() };
+    let check = session.call(&asked, b"");
+    let checked: UpstreamChecked =
+        super::sync_status::while_syncing(session, repo, check).await??;
     for step in &checked.steps {
         let mark = if step.ok { "ok" } else { "failed" };
         println!("  {}: {mark}: {}", clean(&step.what), clean(&step.said));

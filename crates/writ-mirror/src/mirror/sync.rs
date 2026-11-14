@@ -8,27 +8,35 @@ use tokio::time::Instant;
 
 use super::access::Access;
 use super::open::remove_leftovers;
-use super::{MAX_FETCH_OUTPUT, MAX_HEAD_OUTPUT, MAX_MOVES_KEPT, MAX_PACKS};
+use super::status::Recording;
+use super::{EMPTINESS_DEADLINE, MAX_FETCH_OUTPUT, MAX_HEAD_OUTPUT, MAX_MOVES_KEPT, MAX_PACKS};
 use super::{MirrorGuard, RefMove, SyncReport};
 use crate::git::{self, Hooks};
 use crate::process;
+use crate::progress::Progress;
 use crate::{Result, shown};
 
 impl MirrorGuard {
     /// Fetches upstream's branches and tags and asks upstream's default branch, both within the
-    /// sync's deadline and through one agent socket; returns what moved and upstream's answer
-    /// for `HEAD` (followed by [`Self::follow_head`], local work).
-    pub(super) async fn fetch(&self) -> Result<(SyncReport, Vec<u8>)> {
-        let shared = &self.shared;
+    /// sync's limit and through one agent socket; returns what moved and upstream's answer
+    /// for `HEAD` (followed by [`Self::follow_head`], local work). What the operation's proxy
+    /// counts and git's progress go to the mirror's status as they come.
+    pub(super) async fn fetch(&self, recording: &Recording) -> Result<(SyncReport, Vec<u8>)> {
         let repo = &self.repo;
+        let limit = self.limit.duration;
         let started = Instant::now();
         let access = self.reach_upstream().await?;
+        if let Some(proxy) = &access.proxy {
+            recording.counting(proxy.received_count());
+        }
         let upstream = repo.reach.url();
+        let mut on_progress = |progress| recording.progress(progress);
         let fetched = self
             .upstream_git(
                 &access,
                 &[
                     "fetch",
+                    "--progress",
                     "--porcelain",
                     "--atomic",
                     "--prune",
@@ -42,17 +50,19 @@ impl MirrorGuard {
                     "+refs/heads/*:refs/heads/*",
                     "+refs/tags/*:refs/tags/*",
                 ],
-                shared.config.timeout,
+                limit,
                 MAX_FETCH_OUTPUT,
+                Some(&mut on_progress),
             )
             .await?;
-        let left = shared.config.timeout.saturating_sub(started.elapsed());
+        let left = limit.saturating_sub(started.elapsed());
         let head = self
             .upstream_git(
                 &access,
                 &["ls-remote", "--symref", "--", upstream, "HEAD"],
                 left,
                 MAX_HEAD_OUTPUT,
+                None,
             )
             .await?;
         drop(access);
@@ -67,14 +77,33 @@ impl MirrorGuard {
         args: &[&str],
         deadline: Duration,
         max_stdout: usize,
+        on_progress: Option<&mut (dyn FnMut(Progress) + Send)>,
     ) -> Result<Vec<u8>> {
         let finished = self
-            .run_upstream(access, args, None, deadline, max_stdout)
+            .run_upstream_with_progress(access, args, None, deadline, max_stdout, on_progress)
             .await?;
         if !finished.status.success() {
             return Err(self.classify(access, &finished.stderr, "sync"));
         }
         Ok(finished.stdout)
+    }
+
+    /// Whether the mirror holds no branch or tag (its next sync is its first), read within
+    /// [`EMPTINESS_DEADLINE`]. Not known (git failed, or took too long): it holds some, and the
+    /// sync gets the shorter limit.
+    pub(super) async fn holds_nothing(&self) -> bool {
+        let mut cmd = git::command(&self.shared.config.git, Hooks::None);
+        cmd.arg("--git-dir").arg(&self.repo.path).args([
+            "for-each-ref",
+            "--count=1",
+            "--format=x",
+            "refs/heads/",
+            "refs/tags/",
+        ]);
+        match process::run(cmd, None, EMPTINESS_DEADLINE, MAX_HEAD_OUTPUT).await {
+            Ok(out) => out.status.success() && out.stdout.is_empty(),
+            Err(_) => false,
+        }
     }
 
     /// Points the mirror's `HEAD` at upstream's default branch (from `ls-remote --symref`'s

@@ -226,6 +226,7 @@ pub(crate) async fn approval_reply(
         Command::ScanNonce => encoded(blocking(move || service.scan_nonce()).await),
         Command::Scan => scan(gateway, facts, &body).await,
         Command::RepoCheck { repo } => check(gateway, facts, repo).await,
+        Command::RepoStatus { repo } => sync_status(&gateway, repo.as_ref()),
         Command::AdminKeys => match gateway.shared.config.admin.clone() {
             Some(applier) => match applier.keys_show().await {
                 Ok(shown) => encoded(Ok(shown)),
@@ -398,6 +399,66 @@ async fn check(
     match refused {
         Some(why) => encoded::<()>(Err(ApiError::new(why))),
         None => encoded(Ok(writ_proto::UpstreamChecked { repo, steps })),
+    }
+}
+
+/// `writ admin repo status [<repo>]`: each repo's sync status, read from memory (never the
+/// mirror's lock); a repo the registry doesn't name refused. A read, like `admin show`: no
+/// audit line.
+fn sync_status(
+    gateway: &Gateway,
+    repo: Option<&writ_core::names::RepoName>,
+) -> (Vec<u8>, Option<String>) {
+    let mirrors = match gateway.mirrors() {
+        Ok(mirrors) => mirrors,
+        Err(reason) => return encoded::<()>(Err(ApiError::new(reason))),
+    };
+    match mirrors.status(repo) {
+        Ok(statuses) => encoded(Ok(writ_proto::SyncStatuses {
+            repos: statuses.into_iter().map(sync_status_shown).collect(),
+        })),
+        Err(e) => encoded::<()>(Err(ApiError::new(e.to_string()))),
+    }
+}
+
+/// A mirror's sync status as the protocol says it.
+fn sync_status_shown(status: writ_mirror::SyncStatus) -> writ_proto::SyncStatus {
+    use writ_mirror::progress::Phase;
+    let seconds = |d: std::time::Duration| d.as_secs();
+    writ_proto::SyncStatus {
+        repo: status.repo,
+        running: status.running.map(|run| writ_proto::SyncRunning {
+            first: run.first,
+            waiting: run.waiting,
+            elapsed_seconds: seconds(run.elapsed),
+            limit_seconds: seconds(run.limit.duration),
+            limit_key: run.limit.key.to_owned(),
+            received_bytes: run.received,
+            max_bytes: run.max,
+            progress: run.progress.map(|p| writ_proto::SyncProgress {
+                phase: match p.phase {
+                    Phase::Preparing => writ_proto::SyncPhase::Preparing,
+                    Phase::Receiving => writ_proto::SyncPhase::Receiving,
+                    Phase::Resolving => writ_proto::SyncPhase::Resolving,
+                },
+                done: p.done,
+                total: p.total,
+            }),
+        }),
+        last: status.last.map(|last| writ_proto::SyncEnded {
+            ago_seconds: seconds(last.ago),
+            took_seconds: seconds(last.took),
+            first: last.first,
+            result: match last.outcome {
+                writ_mirror::SyncOutcome::Synced { moved } => writ_proto::SyncResult::Synced {
+                    moved: u64::try_from(moved).unwrap_or(u64::MAX),
+                },
+                writ_mirror::SyncOutcome::Failed { reason } => {
+                    writ_proto::SyncResult::Failed { reason }
+                }
+                writ_mirror::SyncOutcome::Interrupted => writ_proto::SyncResult::Interrupted,
+            },
+        }),
     }
 }
 

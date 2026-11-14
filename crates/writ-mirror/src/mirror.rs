@@ -10,7 +10,8 @@
 //! - [`access`]: how one operation reaches upstream, and git run through it;
 //! - [`sync`]: syncing from upstream; [`push`]: the upstream push; [`notes`]: the daemon's
 //!   notes, written and pushed upstream (`ticket_link: notes`);
-//! - [`classify`]: what a failure says, and upstream's words made safe to show.
+//! - [`classify`]: what a failure says, and upstream's words made safe to show;
+//! - [`status`]: each mirror's sync status, the one running and how the last one ended.
 
 mod access;
 mod check;
@@ -19,6 +20,7 @@ pub mod in_flight;
 mod notes;
 mod open;
 mod push;
+mod status;
 mod sync;
 
 use std::collections::BTreeMap;
@@ -39,6 +41,7 @@ use crate::upstream::{HttpsUrl, SshUrl};
 use crate::{MirrorError, Result};
 pub use check::CheckStep;
 pub(crate) use classify::redacted;
+pub use status::{LastSync, RunningSync, SyncOutcome, SyncStatus};
 
 pub use notes::{MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, NOTES_AUTHOR, Note, NotesPushed};
 
@@ -55,6 +58,9 @@ const MAX_HEAD_OUTPUT: usize = 4096;
 /// The longest local work done under a mirror's lock may take: a repack after a sync, or the
 /// gateway reading a push in its quarantine.
 pub const LOCAL_WORK_DEADLINE: Duration = Duration::from_secs(600);
+/// The longest the read of whether a mirror holds a branch or a tag may take, before a sync
+/// (local work under the mirror's lock).
+pub const EMPTINESS_DEADLINE: Duration = Duration::from_secs(10);
 /// How long a stop waits past an upstream operation's own deadline (`mirrors.timeout`), for
 /// its git and ssh to be killed and reaped and its failure said.
 pub const STOP_MARGIN: Duration = Duration::from_secs(5);
@@ -84,6 +90,9 @@ pub struct MirrorConfig {
     pub fresh_for: Duration,
     /// The longest one sync (or upstream push) may take; past it, git and ssh are killed.
     pub timeout: Duration,
+    /// The longest a sync may take while the mirror holds no branch or tag (its first): at
+    /// least `timeout`.
+    pub first_sync_timeout: Duration,
     /// The most bytes one sync may take from upstream.
     pub max_fetch_bytes: u64,
     /// The longest one handshake of a host key scan may take ([`crate::scan`]).
@@ -108,6 +117,32 @@ pub struct UpstreamUpdate {
     pub old: Option<String>,
     /// Where it goes (`None`: the ref is deleted).
     pub new: Option<String>,
+}
+
+/// An upstream operation's limit, and the key of `writd.yaml` that sets it (said when it is
+/// reached).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limit {
+    pub duration: Duration,
+    pub key: &'static str,
+}
+
+impl Limit {
+    /// Every upstream operation's but an empty mirror's sync (`mirrors.timeout`).
+    fn operation(config: &MirrorConfig) -> Self {
+        Self {
+            duration: config.timeout,
+            key: "mirrors.timeout",
+        }
+    }
+
+    /// A sync of a mirror holding no branch or tag (`mirrors.first_sync_timeout`).
+    fn first_sync(config: &MirrorConfig) -> Self {
+        Self {
+            duration: config.first_sync_timeout,
+            key: "mirrors.first_sync_timeout",
+        }
+    }
 }
 
 /// What a sync did.
@@ -157,6 +192,8 @@ struct Repo {
     dialer: crate::dial::Dialer,
     format: ObjectFormat,
     state: Arc<Mutex<SyncState>>,
+    /// Its sync status: kept with `state` across a registry change.
+    status: status::SharedStatus,
 }
 
 /// The operator's CA certificates, as git is given them: the file (`http.sslCAInfo`), and an
@@ -214,6 +251,9 @@ pub struct MirrorGuard {
     shared: Arc<Shared>,
     repo: Arc<Repo>,
     state: OwnedMutexGuard<SyncState>,
+    /// The limit of its upstream operations: `mirrors.timeout`, or the first sync's while
+    /// [`MirrorGuard::sync`] syncs an empty mirror.
+    limit: Limit,
 }
 
 impl Mirrors {
@@ -327,24 +367,48 @@ impl Mirrors {
                 seconds: deadline.as_secs(),
             })?;
         Ok(MirrorGuard {
+            limit: Limit::operation(&self.shared.config),
             shared: self.shared.clone(),
             repo: found,
             state,
         })
     }
 
-    /// How long [`Mirrors::lock`] waits: a holder doing its job keeps a mirror for a wait for a
-    /// sync slot (`timeout`), one upstream operation (`timeout`: a sync's gits, a notes push's,
-    /// an upstream push, share it) and the local work around it ([`LOCAL_WORK_DEADLINE`], all
-    /// of it together: a sync's `HEAD` and repack, a push's reading, a notes batch). `writ
-    /// admin repo check` takes the lock for each of its steps apart (the review after M7.6,
-    /// M-9: under one lock it held about four times `timeout`).
+    /// The sync status of `repo`, or of every registered repo (in name order).
+    pub fn status(&self, repo: Option<&RepoName>) -> Result<Vec<SyncStatus>> {
+        let read = |repo: &Repo| {
+            repo.status
+                .lock()
+                .map(|cell| cell.read(&repo.name))
+                .map_err(|_| MirrorError::StatusUnavailable)
+        };
+        match repo {
+            Some(name) => {
+                let found = self
+                    .shared
+                    .repos
+                    .get(name)
+                    .ok_or_else(|| MirrorError::UnknownRepo(name.clone()))?;
+                Ok(vec![read(found)?])
+            }
+            None => self.shared.repos.values().map(|repo| read(repo)).collect(),
+        }
+    }
+
+    /// How long [`Mirrors::lock`] waits: a holder doing its job keeps a mirror for the read of
+    /// whether it is empty ([`EMPTINESS_DEADLINE`]), a wait for a sync slot (`timeout`), one
+    /// upstream operation (`timeout`, or `first_sync_timeout` for an empty mirror's sync: a
+    /// sync's gits, a notes push's, an upstream push, share it) and the local work around it
+    /// ([`LOCAL_WORK_DEADLINE`], all of it together: a sync's `HEAD` and repack, a push's
+    /// reading, a notes batch). `writ admin repo check` takes the lock for each of its steps
+    /// apart (the review after M7.6, M-9: under one lock it held about four times `timeout`).
     pub fn lock_deadline(&self) -> Duration {
+        let config = &self.shared.config;
         // The holder's wait for a sync slot, its upstream operation, its local work.
-        self.shared
-            .config
+        config
             .timeout
-            .saturating_mul(2)
+            .saturating_add(config.timeout.max(config.first_sync_timeout))
+            .saturating_add(EMPTINESS_DEADLINE)
             .saturating_add(LOCAL_WORK_DEADLINE)
     }
 
@@ -378,8 +442,41 @@ impl MirrorGuard {
     /// Fetches upstream's branches and tags into the mirror, atomically: every ref moves, or
     /// none. A failed sync leaves the mirror's refs as they were and its partial pack removed,
     /// and marks it stale.
+    ///
+    /// A mirror holding no branch or tag (its first sync, whoever asks) has
+    /// `mirrors.first_sync_timeout`; every other sync `mirrors.timeout`. The sync is recorded in
+    /// the mirror's status while it runs, and how it ended once it does.
     pub async fn sync(&mut self) -> Result<SyncReport> {
         self.state.synced_at = None;
+        let config = &self.shared.config;
+        let first = self.holds_nothing().await;
+        let limit = if first {
+            Limit::first_sync(config)
+        } else {
+            Limit::operation(config)
+        };
+        let recording = status::Recording::begin(
+            self.repo.status.clone(),
+            first,
+            limit,
+            config.max_fetch_bytes,
+        );
+        self.limit = limit;
+        let synced = self.sync_recorded(&recording).await;
+        self.limit = Limit::operation(&self.shared.config);
+        match &synced {
+            Ok(SyncReport::Synced { moved, more }) => recording.end(status::SyncOutcome::Synced {
+                moved: moved.len().saturating_add(*more),
+            }),
+            Ok(SyncReport::Fresh) => recording.end(status::SyncOutcome::Synced { moved: 0 }),
+            Err(e) => recording.end(status::SyncOutcome::Failed {
+                reason: e.to_string(),
+            }),
+        }
+        synced
+    }
+
+    async fn sync_recorded(&mut self, recording: &status::Recording) -> Result<SyncReport> {
         // A slot waited for at most one upstream operation (the others' fetches end by then),
         // counted in what the mirror lock's waiters allow ([`Mirrors::lock_deadline`]).
         let wait = self.shared.config.timeout;
@@ -390,13 +487,14 @@ impl MirrorGuard {
                 seconds: wait.as_secs(),
             })?
             .map_err(|_| MirrorError::SyncSlotsClosed)?;
+        recording.fetching();
         // A fetch that fails, or whose sync is dropped (its caller gone), leaves no partial
         // pack (`tmp_*`): removed on the way out, unless the fetch succeeded.
         let mut partial = PartialPacks {
             guard: self,
             done: false,
         };
-        let fetched = partial.guard.fetch().await;
+        let fetched = partial.guard.fetch(recording).await;
         partial.done = fetched.is_ok();
         drop(partial);
         let (report, head) = fetched?;

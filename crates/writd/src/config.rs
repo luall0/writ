@@ -208,6 +208,10 @@ pub struct MirrorsConfig {
     pub sync_every: Duration,
     #[serde(default = "default_timeout")]
     pub timeout: Duration,
+    /// The longest a sync may take while the mirror holds no branch or tag (its first): the
+    /// whole history, once.
+    #[serde(default = "default_first_sync_timeout")]
+    pub first_sync_timeout: Duration,
     #[serde(default = "default_max_fetch")]
     pub max_fetch: ByteSize,
     /// The longest one handshake of a host key scan (`writ admin host add`) may take: some
@@ -226,6 +230,7 @@ impl Default for MirrorsConfig {
             fresh_for: default_fresh_for(),
             sync_every: default_sync_every(),
             timeout: default_timeout(),
+            first_sync_timeout: default_first_sync_timeout(),
             max_fetch: default_max_fetch(),
             scan_timeout: default_scan_timeout(),
         }
@@ -250,6 +255,10 @@ fn default_sync_every() -> Duration {
 
 fn default_timeout() -> Duration {
     Duration::from_seconds(300)
+}
+
+fn default_first_sync_timeout() -> Duration {
+    Duration::from_seconds(3_600)
 }
 
 fn default_scan_timeout() -> Duration {
@@ -286,6 +295,13 @@ impl MirrorsConfig {
         within("fresh_for", self.fresh_for, 0, 3_600)?;
         within("sync_every", self.sync_every, 10, 86_400)?;
         within("timeout", self.timeout, 10, 3_600)?;
+        within("first_sync_timeout", self.first_sync_timeout, 10, 86_400)?;
+        if self.first_sync_timeout.seconds() < self.timeout.seconds() {
+            return Err(format!(
+                "mirrors.first_sync_timeout: {}, must be at least mirrors.timeout ({})",
+                self.first_sync_timeout, self.timeout
+            ));
+        }
         within("scan_timeout", self.scan_timeout, 1, 300)?;
         let (min, max) = (1u64 << 20, 64u64 << 30);
         if !(min..=max).contains(&self.max_fetch.bytes()) {
@@ -845,6 +861,7 @@ mod tests {
         assert_eq!(mirrors.fresh_for.seconds(), 10);
         assert_eq!(mirrors.sync_every.seconds(), 300);
         assert_eq!(mirrors.timeout.seconds(), 300);
+        assert_eq!(mirrors.first_sync_timeout.seconds(), 3_600);
         assert_eq!(mirrors.max_fetch.bytes(), 1 << 30);
         assert_eq!(mirrors.scan_timeout.seconds(), 30);
         let with = |yaml: &str| load(&format!("{MINIMAL}mirrors: {{ {yaml} }}\n"));
@@ -855,6 +872,9 @@ mod tests {
             "sync_every: 1d",
             "timeout: 10s",
             "timeout: 1h",
+            "timeout: 10s, first_sync_timeout: 10s",
+            "first_sync_timeout: 1d",
+            "timeout: 1h, first_sync_timeout: 1h",
             "max_fetch: 1MiB",
             "max_fetch: 64GiB",
             "scan_timeout: 1s",
@@ -881,6 +901,18 @@ mod tests {
             (
                 "timeout: 61m",
                 "mirrors.timeout: 61m, must be from 10s to 1h",
+            ),
+            (
+                "timeout: 10s, first_sync_timeout: 9s",
+                "mirrors.first_sync_timeout: 9s, must be from 10s to 1d",
+            ),
+            (
+                "first_sync_timeout: 25h",
+                "mirrors.first_sync_timeout: 25h, must be from 10s to 1d",
+            ),
+            (
+                "timeout: 30m, first_sync_timeout: 29m",
+                "mirrors.first_sync_timeout: 29m, must be at least mirrors.timeout (30m)",
             ),
             (
                 "max_fetch: 1048575",

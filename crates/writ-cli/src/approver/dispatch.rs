@@ -21,6 +21,9 @@ pub(crate) async fn admin(paths: &Paths, command: &AdminCommand) -> anyhow::Resu
             RepoCommand::Check { repo, url } => {
                 approver::guided_check(paths, &url.get(paths)?, repo).await
             }
+            RepoCommand::Status { repo, url } => {
+                approver::repo_status(paths, &url.get(paths)?, repo.as_deref()).await
+            }
         },
         AdminCommand::Host { command } => match command {
             HostCommand::Entry(command) => {

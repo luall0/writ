@@ -805,6 +805,7 @@ fn mirror_config(
         ca_certs,
         fresh_for: Duration::from_secs(config.mirrors.fresh_for.seconds()),
         timeout: Duration::from_secs(config.mirrors.timeout.seconds()),
+        first_sync_timeout: Duration::from_secs(config.mirrors.first_sync_timeout.seconds()),
         max_fetch_bytes: config.mirrors.max_fetch.bytes(),
         scan_timeout: Duration::from_secs(config.mirrors.scan_timeout.seconds()),
     })

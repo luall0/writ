@@ -237,6 +237,7 @@ impl GitGateway {
                     // Every fetch and push syncs first: what upstream has, always.
                     fresh_for: std::time::Duration::ZERO,
                     timeout: std::time::Duration::from_secs(60),
+                    first_sync_timeout: std::time::Duration::from_secs(60),
                     max_fetch_bytes: 64 << 20,
                     scan_timeout: writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE,
                 },

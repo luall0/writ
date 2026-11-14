@@ -42,6 +42,7 @@ pub async fn no_repos(dir: &Path) -> Result<Mirrors> {
             ca_certs: None,
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
+            first_sync_timeout: Duration::from_secs(60),
             max_fetch_bytes: 1 << 20,
             scan_timeout: crate::scan::DEFAULT_HANDSHAKE_DEADLINE,
         },
@@ -73,6 +74,7 @@ mod tests {
             ca_certs: None,
             fresh_for: Duration::from_secs(1),
             timeout: Duration::from_secs(10),
+            first_sync_timeout: Duration::from_secs(10),
             max_fetch_bytes: 1 << 20,
             scan_timeout: crate::scan::DEFAULT_HANDSHAKE_DEADLINE,
         };
@@ -118,6 +120,7 @@ mod tests {
             ca_certs: None,
             fresh_for: Duration::from_secs(1),
             timeout: Duration::from_secs(10),
+            first_sync_timeout: Duration::from_secs(10),
             max_fetch_bytes: 1 << 20,
             scan_timeout: crate::scan::DEFAULT_HANDSHAKE_DEADLINE,
         };

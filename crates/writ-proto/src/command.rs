@@ -77,6 +77,9 @@ pub enum Command {
     /// and write access proven with nothing pushed, the mirror synced. Reply:
     /// [`UpstreamChecked`].
     RepoCheck { repo: RepoName },
+    /// `writ admin repo status [<repo>]`: each registered repo's sync status (the sync
+    /// running, how the last one ended), or the named one's. Reply: [`SyncStatuses`].
+    RepoStatus { repo: Option<RepoName> },
     /// `writ admin tls rotate`, first step: the HTTPS approval API's certificate in force
     /// (its fingerprint and backend) and the daemon a `writ-tls/1` names. Reply:
     /// [`TlsShown`].
@@ -138,6 +141,10 @@ impl Command {
                 ("scan-nonce", None) => Some(Self::ScanNonce),
                 ("check", Some(repo)) => Some(Self::RepoCheck {
                     repo: repo.parse().ok()?,
+                }),
+                ("status", None) => Some(Self::RepoStatus { repo: None }),
+                ("status", Some(repo)) => Some(Self::RepoStatus {
+                    repo: Some(repo.parse().ok()?),
                 }),
                 ("tls", Some("show")) => Some(Self::TlsShow),
                 ("tls", Some("rotate")) => Some(Self::TlsRotate),
@@ -209,6 +216,8 @@ impl Command {
             Self::ScanNonce => "writ admin scan-nonce".to_owned(),
             Self::Scan => "writ admin scan".to_owned(),
             Self::RepoCheck { repo } => format!("writ admin check {repo}"),
+            Self::RepoStatus { repo: None } => "writ admin status".to_owned(),
+            Self::RepoStatus { repo: Some(repo) } => format!("writ admin status {repo}"),
             Self::TlsShow => "writ admin tls show".to_owned(),
             Self::TlsRotate => "writ admin tls rotate".to_owned(),
             Self::CaShow => "writ admin ca show".to_owned(),
@@ -252,6 +261,7 @@ impl Command {
     /// | admin keys | `GET /v1/keys` |
     /// | admin scan-nonce, admin scan | `GET /v1/scan`, `POST /v1/scan` |
     /// | admin check | `POST /v1/repos/<repo>/check` |
+    /// | admin status | `GET /v1/repos/status`, `GET /v1/repos/<repo>/status` |
     /// | admin tls (show, rotate) | `GET /v1/tls`, `POST /v1/tls` |
     /// | recovery check | `GET /v1/recovery` |
     /// | admin ca (show, rotate) | `GET /v1/ca`, `POST /v1/ca` |
@@ -286,6 +296,10 @@ impl Command {
             Self::ScanNonce => Some(("GET", "/v1/scan".to_owned())),
             Self::Scan => Some(("POST", "/v1/scan".to_owned())),
             Self::RepoCheck { repo } => Some(("POST", format!("/v1/repos/{repo}/check"))),
+            Self::RepoStatus { repo: None } => Some(("GET", "/v1/repos/status".to_owned())),
+            Self::RepoStatus { repo: Some(repo) } => {
+                Some(("GET", format!("/v1/repos/{repo}/status")))
+            }
             Self::TlsShow => Some(("GET", "/v1/tls".to_owned())),
             Self::TlsRotate => Some(("POST", "/v1/tls".to_owned())),
             Self::CaShow => Some(("GET", "/v1/ca".to_owned())),
@@ -333,6 +347,10 @@ impl Command {
             ("POST", ["scan"], None) => Self::Scan,
             ("POST", ["repos", repo, "check"], None) => Self::RepoCheck {
                 repo: repo.parse().ok()?,
+            },
+            ("GET", ["repos", "status"], None) => Self::RepoStatus { repo: None },
+            ("GET", ["repos", repo, "status"], None) => Self::RepoStatus {
+                repo: Some(repo.parse().ok()?),
             },
             ("GET", ["tls"], None) => Self::TlsShow,
             ("POST", ["tls"], None) => Self::TlsRotate,

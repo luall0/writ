@@ -10,6 +10,8 @@ use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
+use crate::progress::{Progress, StderrSplit};
+
 /// What a finished process left.
 #[derive(Debug)]
 pub(crate) struct Finished {
@@ -57,10 +59,22 @@ impl Drop for GroupGuard {
 /// `deadline` passes (then the group is killed). At most `max_stdout` bytes of stdout are
 /// kept.
 pub(crate) async fn run(
+    cmd: Command,
+    stdin: Option<Vec<u8>>,
+    deadline: Duration,
+    max_stdout: usize,
+) -> Result<Finished, RunError> {
+    run_with_progress(cmd, stdin, deadline, max_stdout, None).await
+}
+
+/// [`run`], with git's stderr read as it comes when `on_progress` is given: each progress part
+/// handed to it, kept out of [`Finished::stderr`] ([`crate::progress`]).
+pub(crate) async fn run_with_progress(
     mut cmd: Command,
     stdin: Option<Vec<u8>>,
     deadline: Duration,
     max_stdout: usize,
+    on_progress: Option<&mut (dyn FnMut(Progress) + Send)>,
 ) -> Result<Finished, RunError> {
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()
@@ -78,7 +92,8 @@ pub(crate) async fn run(
             .and_then(|id| i32::try_from(id).ok())
             .and_then(Pid::from_raw),
     };
-    let result = tokio::time::timeout(deadline, finish(&mut child, stdin, max_stdout)).await;
+    let result =
+        tokio::time::timeout(deadline, finish(&mut child, stdin, max_stdout, on_progress)).await;
     match result {
         Ok(Ok(finished)) => {
             // Reaped: its group may still hold a child it left behind (ssh); kill that too.
@@ -98,6 +113,7 @@ async fn finish(
     child: &mut Child,
     stdin: Option<Vec<u8>>,
     max_stdout: usize,
+    on_progress: Option<&mut (dyn FnMut(Progress) + Send)>,
 ) -> std::io::Result<Finished> {
     let input = child.stdin.take();
     let feed = async move {
@@ -109,11 +125,13 @@ async fn finish(
     };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let ((), out, err) = tokio::join!(
-        feed,
-        read_capped(stdout, max_stdout),
-        read_capped(stderr, MAX_STDERR)
-    );
+    let errors = async move {
+        match on_progress {
+            Some(on_progress) => read_split(stderr, on_progress).await,
+            None => read_capped(stderr, MAX_STDERR).await,
+        }
+    };
+    let ((), out, err) = tokio::join!(feed, read_capped(stdout, max_stdout), errors);
     let status = child.wait().await?;
     Ok(Finished {
         status,
@@ -138,6 +156,26 @@ async fn read_capped(pipe: Option<impl AsyncRead + Unpin>, max: usize) -> std::i
         let chunk = buf.get(..n).unwrap_or_default();
         let room = max.saturating_sub(kept.len());
         kept.extend_from_slice(chunk.get(..room.min(chunk.len())).unwrap_or_default());
+    }
+}
+
+/// Reads git's stderr to its end as it comes, its progress handed to `on_progress` and the
+/// rest kept, at most [`MAX_STDERR`] bytes.
+async fn read_split(
+    pipe: Option<impl AsyncRead + Unpin>,
+    on_progress: &mut (dyn FnMut(Progress) + Send),
+) -> std::io::Result<Vec<u8>> {
+    let Some(mut pipe) = pipe else {
+        return Ok(Vec::new());
+    };
+    let mut split = StderrSplit::new(MAX_STDERR, on_progress);
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = pipe.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(split.finish());
+        }
+        split.push(buf.get(..n).unwrap_or_default());
     }
 }
 
@@ -181,6 +219,37 @@ mod tests {
         .unwrap();
         assert_eq!(done.stdout, b"abc");
         assert!(done.status.success());
+    }
+
+    #[tokio::test]
+    async fn progress_is_handed_on_as_it_comes_and_kept_out_of_stderr() {
+        // The second report is written only once the first was seen (the file it waits for
+        // is made by the callback): progress comes while the process runs, not at its end.
+        let dir = tempfile::tempdir().unwrap();
+        let seen_file = dir.path().join("seen");
+        let script = format!(
+            "printf 'Receiving objects:  50%% (1/2)\\r' >&2; \
+             while [ ! -e {seen} ]; do sleep 0.01; done; \
+             printf 'Receiving objects: 100%% (2/2), done.\\nfatal: boom\\n' >&2; exit 3",
+            seen = seen_file.display()
+        );
+        let mut seen = Vec::new();
+        let mut on = |p: Progress| {
+            std::fs::write(&seen_file, b"").unwrap();
+            seen.push((p.done, p.total));
+        };
+        let done = run_with_progress(
+            sh(&script),
+            None,
+            Duration::from_secs(30),
+            10,
+            Some(&mut on),
+        )
+        .await
+        .unwrap();
+        assert_eq!(seen, [(1, 2), (2, 2)]);
+        assert_eq!(done.stderr, b"fatal: boom\n");
+        assert_eq!(done.status.code(), Some(3));
     }
 
     #[tokio::test]

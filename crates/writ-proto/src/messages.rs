@@ -487,6 +487,90 @@ pub struct UpstreamChecked {
     pub steps: Vec<CheckStep>,
 }
 
+/// Reply to [`Command::RepoStatus`](crate::Command::RepoStatus): each repo asked, in name
+/// order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncStatuses {
+    pub repos: Vec<SyncStatus>,
+}
+
+/// A repo's sync status, since the daemon started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncStatus {
+    pub repo: RepoName,
+    /// The sync running now, if one is.
+    pub running: Option<SyncRunning>,
+    /// How the last one ended, if one did.
+    pub last: Option<SyncEnded>,
+}
+
+/// The sync running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncRunning {
+    /// The mirror holds no branch or tag yet.
+    pub first: bool,
+    /// Waiting for one of the daemon's sync slots.
+    pub waiting: bool,
+    pub elapsed_seconds: u64,
+    pub limit_seconds: u64,
+    /// The key of `writd.yaml` that set the limit.
+    pub limit_key: String,
+    /// The bytes upstream sent so far, and the most it may (`mirrors.max_fetch`).
+    pub received_bytes: u64,
+    pub max_bytes: u64,
+    /// git's last progress report.
+    pub progress: Option<SyncProgress>,
+}
+
+/// git's progress: a phase, how much of it is done, of how much (upstream's claim for the
+/// objects' total).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncProgress {
+    pub phase: SyncPhase,
+    pub done: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncPhase {
+    /// Upstream preparing the pack.
+    Preparing,
+    /// git receiving it.
+    Receiving,
+    /// git resolving its deltas.
+    Resolving,
+}
+
+/// How a sync ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncEnded {
+    pub ago_seconds: u64,
+    pub took_seconds: u64,
+    /// It was the mirror's first.
+    pub first: bool,
+    pub result: SyncResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum SyncResult {
+    Synced {
+        moved: u64,
+    },
+    /// Why, as the check says it.
+    Failed {
+        reason: String,
+    },
+    /// Dropped before its end (its caller gone, the daemon stopping).
+    Interrupted,
+}
+
 /// One step of an upstream check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::DryRun`], [`Command::Policy`], [`Command::Wait`], [`Command::Close`] |
-//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Watch`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`], [`Command::ScanNonce`], [`Command::Scan`], [`Command::RepoCheck`], [`Command::TlsShow`], [`Command::TlsRotate`], [`Command::CaShow`], [`Command::CaRotate`], [`Command::AutoUnsealShow`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Watch`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`], [`Command::ScanNonce`], [`Command::Scan`], [`Command::RepoCheck`], [`Command::RepoStatus`], [`Command::TlsShow`], [`Command::TlsRotate`], [`Command::CaShow`], [`Command::CaRotate`], [`Command::AutoUnsealShow`] |
 //!
 //! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
 //! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed".
@@ -37,7 +37,8 @@ pub use messages::{
     OtherLease, Others, PassphraseText, Phases, Previous, ProveRequest, Proved, RecoveryShown,
     RefuseRequest, Relation, RemovedKey, Renewal, RepoPolicy, Report, ReportCommit, ReportPush,
     RetiredCa, RevokeRequest, ScanNonce, ScanRequest, Scanned, ScannedKey, SealedBoot, Shown,
-    Submitted, Summary, TemplateView, TlsRequest, TlsRotated, TlsShown, TokenApplied, TokenRequest,
+    Submitted, Summary, SyncEnded, SyncPhase, SyncProgress, SyncResult, SyncRunning, SyncStatus,
+    SyncStatuses, TemplateView, TlsRequest, TlsRotated, TlsShown, TokenApplied, TokenRequest,
     TokenShown, UnsealRequest, UnsealWay, Unsealed, UpstreamChecked, Watched,
 };
 
@@ -92,6 +93,14 @@ mod tests {
             Command::Scan,
             Command::RepoCheck {
                 repo: "omega-code".parse().unwrap(),
+            },
+            Command::RepoStatus { repo: None },
+            Command::RepoStatus {
+                repo: Some("omega-code".parse().unwrap()),
+            },
+            // A repo named like the route's word for every repo is still that repo.
+            Command::RepoStatus {
+                repo: Some("status".parse().unwrap()),
             },
             // The six M7.x added (the review after M7.6, P-4).
             Command::RecoveryShow,
@@ -190,6 +199,14 @@ mod tests {
             Command::Scan,
             Command::RepoCheck {
                 repo: "omega-code".parse().unwrap(),
+            },
+            Command::RepoStatus { repo: None },
+            Command::RepoStatus {
+                repo: Some("omega-code".parse().unwrap()),
+            },
+            // A repo named like the route's word for every repo is still that repo.
+            Command::RepoStatus {
+                repo: Some("status".parse().unwrap()),
             },
             // The six M7.x added (the review after M7.6, P-4).
             Command::RecoveryShow,

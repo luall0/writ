@@ -671,6 +671,13 @@ pub(crate) enum RepoCommand {
         #[command(flatten)]
         url: ApprovalUrl,
     },
+    /// How each repo's mirror last synced (when, how long, what moved, or why it failed), and
+    /// the sync running now with how far it is; every repo one row, or the one named whole.
+    Status {
+        repo: Option<String>,
+        #[command(flatten)]
+        url: ApprovalUrl,
+    },
 }
 
 /// `writ admin template <verb>`.

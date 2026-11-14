@@ -114,6 +114,7 @@ impl Fixture {
             ca_certs: Some(self.remote.ca_pem.clone()),
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
+            first_sync_timeout: Duration::from_secs(60),
             max_fetch_bytes: 64 << 20,
             scan_timeout: writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE,
         }
@@ -452,6 +453,7 @@ fn an_upstream_that_never_answers_is_cut_at_the_deadline() {
     f.remote.set_mode(HttpsMode::Hang);
     let mut config = f.config();
     config.timeout = Duration::from_secs(2);
+    config.first_sync_timeout = Duration::from_secs(2);
     let mirrors = f.open_with(config);
     match f.sync(&mirrors) {
         Err(MirrorError::Timeout { seconds, .. }) => assert_eq!(seconds, 2),

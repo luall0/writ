@@ -328,6 +328,33 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     assert_eq!(String::from_utf8_lossy(&upstream.stdout).trim(), head);
     assert_eq!(daemon.audited("check", "allowed"), 1);
 
+    // The sync status: the check's sync ended, said in one row; every repo, or the one named;
+    // a read, no audit line; a repo not in the registry refused.
+    let audited = daemon.audit().len();
+    for args in [
+        &["admin", "repo", "status"][..],
+        &["admin", "repo", "status", "demo"],
+    ] {
+        let out = daemon.run(args, "");
+        assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+        let printed = stdout(&out);
+        let row = printed.lines().next().unwrap_or_default();
+        assert_eq!(printed.lines().count(), 1, "{printed}");
+        assert!(
+            row.starts_with("demo: ") && row.contains("synced ") && row.contains(" ago in "),
+            "{printed}"
+        );
+        assert!(row.chars().count() <= 78, "{row}");
+    }
+    let out = daemon.run(&["admin", "repo", "status", "nowhere"], "");
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("unknown repo nowhere"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(daemon.audit().len(), audited);
+
     // A repo whose credential the remote doesn't take: added without a terminal (the check
     // left to run by hand), then checked: read fails, nothing after it.
     let out = daemon.run(

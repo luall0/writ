@@ -27,8 +27,8 @@ use writ_integration::binaries::bin;
 use writ_integration::remote::{Mode, TestRemote};
 use writ_mirror::known_hosts::PinnedHosts;
 use writ_mirror::{
-    MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorError, Mirrors, Note, NotesPushed,
-    SyncReport,
+    Limit, MAX_LOOKUPS, MAX_NOTE_TEXT, MAX_NOTES, MirrorConfig, MirrorError, Mirrors, Note,
+    NotesPushed, SyncOutcome, SyncReport,
 };
 use writ_signer::Signer;
 use writ_signer::software::SoftwareSigner;
@@ -97,6 +97,7 @@ impl Fixture {
             ca_certs: None,
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
+            first_sync_timeout: Duration::from_secs(60),
             max_fetch_bytes: 64 << 20,
             scan_timeout: writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE,
         }
@@ -512,6 +513,7 @@ fn an_upstream_that_never_answers_is_cut_at_the_deadline() {
     f.remote.set_mode(Mode::Hang);
     let mut config = f.config();
     config.timeout = Duration::from_secs(2);
+    config.first_sync_timeout = Duration::from_secs(2);
     let mirrors = f.open_with(config, "sha1").unwrap();
     match f.sync(&mirrors) {
         Err(MirrorError::Timeout { seconds, .. }) => assert_eq!(seconds, 2),
@@ -523,6 +525,95 @@ fn an_upstream_that_never_answers_is_cut_at_the_deadline() {
     f.remote.set_mode(Mode::Serve);
     let report = f.runtime.block_on(mirrors.sync_if_stale(&demo())).unwrap();
     assert!(matches!(report, SyncReport::Synced { .. }), "{report:?}");
+}
+
+/// `mirrors.first_sync_timeout` bounds a sync while the mirror holds no branch or tag, and
+/// `mirrors.timeout` every one after: each failure names its limit and key, and the sync
+/// status shows the sync running with its limit, then how it ended.
+#[test]
+fn an_empty_mirror_s_sync_has_the_first_sync_limit_and_a_synced_one_the_other() {
+    let f = Fixture::new();
+    f.upstream_commit("main", "a");
+    let mut config = f.config();
+    config.timeout = Duration::from_secs(2);
+    config.first_sync_timeout = Duration::from_secs(4);
+    let mirrors = f.open_with(config, "sha1").unwrap();
+    let status = || mirrors.status(Some(&demo())).unwrap().remove(0);
+    assert_eq!((status().running, status().last), (None, None));
+    // The status of every repo: this one.
+    assert_eq!(mirrors.status(None).unwrap(), vec![status()]);
+    // A repo the registry doesn't name: refused.
+    match mirrors.status(Some(&"other".parse().unwrap())) {
+        Err(MirrorError::UnknownRepo(repo)) => assert_eq!(repo.as_str(), "other"),
+        other => panic!("expected UnknownRepo, got {other:?}"),
+    }
+
+    // The first sync, upstream never answering: the longer limit, read from the status while
+    // it runs (the status is never behind the mirror's lock, which the sync holds).
+    f.remote.set_mode(Mode::Hang);
+    let syncing = {
+        let mirrors = mirrors.clone();
+        f.runtime
+            .spawn(async move { mirrors.lock(&demo()).await?.sync().await })
+    };
+    writ_platform::testing::eventually("the first sync to be fetching", || {
+        status().running.is_some_and(|run| {
+            run.first
+                && !run.waiting
+                && run.limit
+                    == Limit {
+                        duration: Duration::from_secs(4),
+                        key: "mirrors.first_sync_timeout",
+                    }
+                && run.max == 64 << 20
+        })
+    });
+    match f.runtime.block_on(syncing).unwrap() {
+        Err(e @ MirrorError::Timeout { seconds: 4, .. }) => assert_eq!(
+            e.to_string(),
+            "repo demo: upstream did not finish within 4s (mirrors.first_sync_timeout)"
+        ),
+        other => panic!("expected the first sync's Timeout, got {other:?}"),
+    }
+    let last = status().last.unwrap();
+    assert!(last.first);
+    assert!(last.took >= Duration::from_secs(4), "{last:?}");
+    assert_eq!(
+        last.outcome,
+        SyncOutcome::Failed {
+            reason: "repo demo: upstream did not finish within 4s (mirrors.first_sync_timeout)"
+                .to_owned()
+        }
+    );
+    assert_eq!(status().running, None);
+    assert!(f.refs(&f.mirror()).is_empty());
+
+    // Upstream answers: the first sync lands, said as one.
+    f.remote.set_mode(Mode::Serve);
+    f.sync(&mirrors).unwrap();
+    let last = status().last.unwrap();
+    assert_eq!(
+        (last.first, last.outcome),
+        (true, SyncOutcome::Synced { moved: 1 })
+    );
+
+    // The mirror holds a branch: the next sync has mirrors.timeout.
+    f.remote.set_mode(Mode::Hang);
+    match f.sync(&mirrors) {
+        Err(e @ MirrorError::Timeout { seconds: 2, .. }) => assert_eq!(
+            e.to_string(),
+            "repo demo: upstream did not finish within 2s (mirrors.timeout)"
+        ),
+        other => panic!("expected the sync's Timeout, got {other:?}"),
+    }
+    let last = status().last.unwrap();
+    assert!(!last.first);
+    assert!(
+        matches!(&last.outcome, SyncOutcome::Failed { reason } if reason.ends_with("(mirrors.timeout)")),
+        "{last:?}"
+    );
+    // What it held is kept.
+    assert_eq!(f.refs(&f.mirror()).len(), 1);
 }
 
 #[test]
@@ -684,8 +775,20 @@ fn a_mirror_held_past_its_deadline_is_busy_never_waited_on_forever() {
     let deadline = mirrors.lock_deadline();
     assert_eq!(
         deadline,
-        Duration::from_secs(120) + writ_mirror::LOCAL_WORK_DEADLINE,
-        "a wait for a sync slot, one upstream operation and the local work around it"
+        Duration::from_secs(120)
+            + writ_mirror::EMPTINESS_DEADLINE
+            + writ_mirror::LOCAL_WORK_DEADLINE,
+        "the emptiness read, a wait for a sync slot, one upstream operation and the local work \
+         around it"
+    );
+    // A longer first sync's limit: the holder's upstream operation may last that long.
+    let mut config = f.config();
+    config.first_sync_timeout = Duration::from_secs(3_600);
+    assert_eq!(
+        f.open_with(config, "sha1").unwrap().lock_deadline(),
+        Duration::from_secs(60 + 3_600)
+            + writ_mirror::EMPTINESS_DEADLINE
+            + writ_mirror::LOCAL_WORK_DEADLINE,
     );
     // The clock is a fake from here: the mirror is open, nothing below starts a process.
     let paused = tokio::runtime::Builder::new_current_thread()

@@ -143,17 +143,34 @@ impl MirrorGuard {
         deadline: Duration,
         max_stdout: usize,
     ) -> Result<process::Finished> {
+        self.run_upstream_with_progress(access, args, quarantine, deadline, max_stdout, None)
+            .await
+    }
+
+    /// [`Self::run_upstream`], git's progress handed to `on_progress` as it comes when given
+    /// (its arguments then ask for it: `--progress`).
+    pub(super) async fn run_upstream_with_progress(
+        &self,
+        access: &Access,
+        args: &[&str],
+        quarantine: Option<&Quarantine>,
+        deadline: Duration,
+        max_stdout: usize,
+        on_progress: Option<&mut (dyn FnMut(crate::progress::Progress) + Send)>,
+    ) -> Result<process::Finished> {
         let mut cmd = git::command(&self.shared.config.git, Hooks::None);
         access.apply(&mut cmd);
         cmd.arg("--git-dir").arg(&self.repo.path).args(args);
         if let Some(quarantine) = quarantine {
             quarantine.objects_env(&mut cmd);
         }
-        match process::run(cmd, None, deadline, max_stdout).await {
+        match process::run_with_progress(cmd, None, deadline, max_stdout, on_progress).await {
             Ok(finished) => Ok(finished),
+            // The operation's limit, whatever was left of it for this git.
             Err(RunError::Timeout) => Err(MirrorError::Timeout {
                 repo: self.repo.name.clone(),
-                seconds: self.shared.config.timeout.as_secs(),
+                seconds: self.limit.duration.as_secs(),
+                key: self.limit.key,
             }),
             Err(RunError::Spawn(e) | RunError::Wait(e)) => Err(MirrorError::Spawn(e)),
         }

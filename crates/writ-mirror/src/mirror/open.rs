@@ -115,6 +115,7 @@ impl Mirrors {
                     // after M5.5, S10).
                     if let Some(old) = shared.repos.get(name).filter(|old| old.path == repo.path) {
                         repo.state = old.state.clone();
+                        repo.status = old.status.clone();
                     }
                     Arc::new(repo)
                 }
@@ -356,6 +357,7 @@ async fn open_repo(
         dialer,
         format: entry.object_format,
         state: Arc::new(Mutex::new(SyncState::default())),
+        status: Default::default(),
     })
 }
 

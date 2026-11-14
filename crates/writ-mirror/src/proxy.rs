@@ -59,7 +59,8 @@ struct Shared {
     address: Option<IpAddr>,
     port: u16,
     max: u64,
-    received: AtomicU64,
+    /// Shared with the mirror's sync status while a sync runs.
+    received: Arc<AtomicU64>,
     tunnels: AtomicUsize,
     /// Set once upstream sent more than `max`: every tunnel ends.
     over: watch::Sender<bool>,
@@ -95,7 +96,7 @@ impl UpstreamProxy {
             address: host.parse().ok(),
             port,
             max: max_bytes,
-            received: AtomicU64::new(0),
+            received: Arc::new(AtomicU64::new(0)),
             tunnels: AtomicUsize::new(0),
             over: watch::Sender::new(false),
             dialer,
@@ -122,6 +123,11 @@ impl UpstreamProxy {
     /// The bytes upstream sent through it.
     pub fn received(&self) -> u64 {
         self.shared.received.load(Ordering::Acquire)
+    }
+
+    /// The count of the bytes upstream sent through it, as it grows (the sync status reads it).
+    pub fn received_count(&self) -> Arc<AtomicU64> {
+        self.shared.received.clone()
     }
 
     /// The tunnels it opened to upstream.
@@ -470,7 +476,7 @@ mod tests {
             address: None,
             port: 443,
             max: 1,
-            received: AtomicU64::new(0),
+            received: Arc::new(AtomicU64::new(0)),
             tunnels: AtomicUsize::new(0),
             over: watch::Sender::new(false),
             dialer: Dialer::Direct,
@@ -553,7 +559,7 @@ mod tests {
             address: None,
             port: 22,
             max: 1 << 20,
-            received: AtomicU64::new(0),
+            received: Arc::new(AtomicU64::new(0)),
             tunnels: AtomicUsize::new(0),
             over: watch::Sender::new(false),
             dialer: Dialer::Proxy(Arc::new(ProxyRoute {

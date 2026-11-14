@@ -162,6 +162,7 @@ impl Fixture {
             ca_certs: None,
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
+            first_sync_timeout: Duration::from_secs(60),
             max_fetch_bytes: 64 << 20,
             scan_timeout: writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE,
         }
@@ -432,6 +433,7 @@ fn an_https_upstream_behind_a_proxy_is_synced_through_it() {
             ca_certs: Some(remote.ca_pem.clone()),
             fresh_for: Duration::from_secs(3600),
             timeout: Duration::from_secs(60),
+            first_sync_timeout: Duration::from_secs(60),
             max_fetch_bytes: 64 << 20,
             scan_timeout: writ_mirror::scan::DEFAULT_HANDSHAKE_DEADLINE,
         };

@@ -17,6 +17,7 @@ mod manage;
 mod narrowing;
 mod prove;
 mod signer;
+mod sync_status;
 pub mod ui;
 
 pub use admin::{
@@ -35,6 +36,7 @@ pub use manage::{
 pub use narrowing::Narrowing;
 pub use prove::{ProveKey, prove_key};
 pub use signer::{Signer, default_key};
+pub use sync_status::status as repo_status;
 
 use std::io::{BufRead, Write as _};
 

@@ -896,6 +896,30 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
     let (_, why) = expect(&missing, 1, "a repo not in the registry");
     assert!(why.contains("repo nowhere is not in the registry"), "{why}");
 
+    // The sync status: the check's sync ended for setup, said in one row; every repo, or the
+    // one named, through --approval-url too; a repo not in the registry refused.
+    let every = approver.ok("writ admin repo status");
+    let row = every
+        .lines()
+        .find(|row| row.starts_with("setup: "))
+        .unwrap_or_default();
+    assert!(
+        row.contains("synced ") && row.contains(" ago in ") && row.contains(" moved"),
+        "{every}"
+    );
+    assert!(
+        every.lines().all(|row| row.chars().count() <= 78),
+        "{every}"
+    );
+    let one = approver.ok("writ admin repo status setup --approval-url \"$WRIT_APPROVAL_URL\"");
+    assert!(
+        one.starts_with("setup: ") && one.contains(" ago in "),
+        "{one}"
+    );
+    let missing = approver.run("writ admin repo status nowhere");
+    let (_, why) = expect(&missing, 1, "a repo not in the registry");
+    assert!(why.contains("unknown repo nowhere"), "{why}");
+
     // A repo added step by step on a host with no pin: scanned in the same change, then
     // checked once Enter says its credential is registered (setup's, which is).
     let shown = on_terminal(
