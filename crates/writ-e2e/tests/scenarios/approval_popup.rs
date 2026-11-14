@@ -150,14 +150,9 @@ fn the_popup_shows_what_waits_in_order_and_signs_or_refuses_on_its_answer() {
     let (status, out, err) = refused.finish();
     assert_eq!(status.code(), Some(4), "{out}{err}");
     assert!(out.contains("One ticket is enough"), "{out}");
-    let grants = stack
-        .audit()
-        .into_iter()
-        .filter(|e| {
-            e["event"] == "grant" && e["result"] == "allowed" && e["ticket"] == older.as_str()
-        })
-        .count();
-    assert_eq!(grants, 1);
+    // One grant line for the lease (a grant names it as `lease`), one refusal for the other.
+    assert_eq!(stack.audited(older, "grant", "allowed").len(), 1);
+    assert_eq!(stack.audited(newer, "refuse", "done").len(), 1);
 
     // Withdrawn while shown: its window goes.
     let withdrawn = agent.submit("popup-c", &ticket("Withdrawn"));

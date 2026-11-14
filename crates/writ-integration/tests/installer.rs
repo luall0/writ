@@ -1327,7 +1327,9 @@ fn the_approval_popup_is_started_at_login_as_answered_and_taken_back() {
     let plist =
         fs::read_to_string(fake.home.join("Library/LaunchAgents/dev.writ.popup.plist")).unwrap();
     assert!(
-        plist.contains("<key>WRIT_APPROVAL_AGENT</key><string>/private/var/run/approval-agent.sock</string>"),
+        plist.contains(
+            "<key>WRIT_APPROVAL_AGENT</key><string>/private/var/run/approval-agent.sock</string>"
+        ),
         "{plist}"
     );
     let manifest = fake.shown(&fs::read_to_string(fake.manifest()).unwrap());
