@@ -300,6 +300,49 @@ The forks settled with the user at its start: [decision log](decisions.md), 2026
   [own Mac approver app](backlog/README.md#own-mac-approver-app), whose Touch ID prompt shows
   what it signs.
 
+Steps (each one commit, `make ci` green, its docs in the same commit):
+1. **The watch route** (`writ-proto`, `writ-approval`, `writ-gateway`): `writ watch
+   [<cursor>]` over SSH, `GET /v1/tickets/watch[?since=<cursor>]` over HTTPS; the cursor the
+   SHA-256 of the waiting tickets' ids, the reply the waiting tickets and their cursor, given
+   at once when the caller's cursor isn't the one now, else on the first change or after
+   240 s; at most 16 watches held at once (a gateway semaphore), past it refused and logged
+   (`command`, coalesced per source); over SSH ended with its channel, over HTTPS run in the
+   connection's future (it changes nothing), so it ends with its client. Tests: the grammar
+   (hostile cursors refused), the service under paused time (at once, on a submission, on a
+   ticket leaving the queue, at the limit, an expiry swept), the cap and its line, both
+   transports, a key not in `readers`. Docs: [approvals.md](architecture/approvals.md)'s
+   routes, [security.md](security.md)'s inventory.
+2. **`writ sign --ui`** (`writ-cli`, `approver/ui.rs`): the line protocol (one JSON object
+   per line each way, 64 KiB a line from the app, 8 MiB from `writ`), the queue of waiting
+   tickets shown one at a time with the display `writ sign --full` prints, `sign <id>` and
+   `refuse <id> [feedback]` (an empty feedback sent as a fixed line saying none was given),
+   `skip <id>` for a window closed; an answer naming another ticket, malformed or over its
+   bound signs nothing and is said; the connection made again after a loss; ends on the
+   app's end of input. `approve` and `refuse_with` return what they did instead of printing.
+   Tests: the protocol's parser (hostile lines), the display the same bytes as `writ sign`'s
+   (a guarantee test), an integration scenario with the daemon; the end-to-end scenario
+   `approval_popup` playing the app (sign, refuse with and without feedback, a ticket
+   withdrawn while shown, a malformed answer, an amendment and a renewal shown, an admin
+   change never shown), its row in the coverage registry. Docs:
+   [clients.md](architecture/clients.md), [approvals.md](architecture/approvals.md).
+3. **`writ-popup`, the Swift app** (`crates/writ-cli/macos/writ-popup.swift`, built by
+   `tool/build-writ-popup.sh` beside `writ`, from the Makefile's `test`, `run` and
+   `install`): an accessory app (no Dock icon) running `writ sign --ui`, the `NSPanel` above
+   every space and full-screen app, the display in a scrollable monospaced view, Sign and
+   Decline (a feedback field) with no default button and held for a second, a closed window a
+   `skip`; `writ` started again if it ends. Docs: the [manual check](guides/manual-checks.md)'s
+   popup section, the [threat model](threat-model.md)'s row, the
+   [overview](architecture/overview.md)'s layout, [stack.md](stack.md).
+4. **The installer** (`deploy/setups/local-macos.sh`): `writ-popup` in `/opt/writ/bin`,
+   signed like the others; a per-user LaunchAgent `dev.writ.popup`
+   (`~/Library/LaunchAgents/dev.writ.popup.plist`, the Aqua session, `WRIT_APPROVAL_AGENT`
+   from the new `APPROVAL_AGENT` answer, Secretive's socket by default) bootstrapped into
+   your GUI session, started again on upgrade, taken back by `make uninstall`; the fake-root
+   installer test. Docs: [install.md](operators/install.md),
+   [clients.md](operators/clients.md).
+5. **Closing:** the acceptance items ticked from what was run, the manual check run by the
+   user, the history page.
+
 Acceptance:
 - [ ] The watch route answers a reader as soon as a ticket starts waiting, and after its
       bounded time with nothing; a watch past the cap is refused with its reason and logged;
