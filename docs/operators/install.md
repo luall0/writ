@@ -36,7 +36,9 @@ means and what Enter keeps:
    from an earlier install, this isn't asked: the approval keys kept with it stay.
 3. On the Mac, **where the key of the HTTPS approval API is made**: `software`, or
    `se-cryptokit`, the Mac's Secure Enclave, which makes the key and never lets it out. HTTPS
-   is off in this setup; the key serves it if you turn it on later.
+   is off in this setup; the key serves it if you turn it on later. A key in the Secure
+   Enclave is made by the daemon itself when it first starts, never by the installer: one
+   made outside the daemon wouldn't sign for it.
 4. On the Mac, **where your agents' first signing key, `agent-01`, is made**: `software` (an
    Ed25519 key) or `se-cryptokit` (a P-256 key in the Secure Enclave). On Linux it is an
    Ed25519 key in software, the only backend there.

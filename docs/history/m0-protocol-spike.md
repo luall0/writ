@@ -191,5 +191,6 @@ daemon. Against agents running as my user, Plan A alone fails requirement 3.
 | Signing after a reboot | ✅ With FileVault on, nothing runs before the first login unlocks the disk (no "before login" state on this Mac). Booted 13:54:59Z; the daemon started at the login (13:56:14Z) and signed at once (console user still `none`), then every 10 s; first signatures 170–420 ms, then 17–30 ms |
 | Signing while nobody is logged in (after logging out) | ✅ logged out 13:59–14:02Z: 15 signatures, all ok (16–71 ms), console user `none` |
 | Copying the blob to another Mac fails | not run (no second Mac) |
+| A key made by `sudo -u _writd` from my session, used by the LaunchDaemon | not run here. **Found on the first real install (2026-11-14): ❌** the blob opens, every signature is refused ([macOS Secure Enclave](../architecture/macos-secure-enclave.md#m0-results)) |
 
 **Plan B is the local-mode signer.** Plan D wasn't needed.

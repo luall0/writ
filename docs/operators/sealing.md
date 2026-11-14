@@ -18,6 +18,19 @@ you unseal it.
 So keep the boot directory apart from the keys directory if you can: another volume, a Docker
 secret ([threat model](../threat-model.md#residual-risks-v1)).
 
+A key on the Mac's Secure Enclave (the CA, the TLS key or a signing key with
+`se-cryptokit`) isn't made by `writd init`: the Secure Enclave ties a key to where it is
+made, and one made by a command you run won't sign for the daemon. `writd init` says it is
+owed and the daemon makes it at its first start, before anything else. Its log then has a
+`key created` line with its public half, and `writd signing-keys` prints it. The same goes
+for a key `writd recover` adds.
+
+At each unseal, each Secure Enclave key signs one test message. A key that can't sign stays
+unusable and the audit log names it with the command that replaces it: `writ admin key
+rotate <id> --backend se-cryptokit`, `writ admin ca rotate --backend se-cryptokit` for the
+CA, `writ admin tls rotate --backend se-cryptokit` for the TLS key. A TLS key that can't
+sign leaves HTTPS refusing every connection and the rest of the daemon running.
+
 ## Unsealing
 
 After every start of the daemon, from your machine:

@@ -145,6 +145,16 @@ Measured on an M1 Pro, macOS 27.2, FileVault on; details in
   reboot and while nobody is logged in. My user can't read the blob, use it, attach to the
   daemon, signal it, or replace its binary or LaunchDaemon.
 - Not run: copying the blob to another Mac (no second Mac available).
+- **Found later, on the first real install (2026-11-14): a signing key must be made where it
+  is used.** A key made by `sudo -u _writd writd init`, run from my logged-in session, is
+  made and signs a probe there, and its blob opens under the LaunchDaemon, but the Secure
+  Enclave refuses every signature there (`sign-failed`, CryptoKit's error not passed on); a
+  key the running daemon made signs. The spike made and used each key from the
+  LaunchDaemon, so it never met this. Since then a key on a device is made only by `writd
+  run` ([signer](signer.md#keys-on-the-secure-enclave-in-the-daemon)), and each one signs a
+  probe at unseal. The keystore's key-agreement key, made the same way by `writd init`,
+  unwraps under the LaunchDaemon all the same: why the two differ is an
+  [open question](../decisions.md#open-questions) (Q41).
 
 Notes for M7 and M7.5:
 - **With FileVault on, there is no "before login" state:** nothing on the data volume runs

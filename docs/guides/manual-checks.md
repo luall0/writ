@@ -405,6 +405,16 @@ A fresh `make install` can ask all this up front: `se-cryptokit` for the CA key 
 `agent-01`, the keystore opened by `se-cryptokit` (Enter at the recovery key makes one, shown
 once), and `yes` to auto-unseal: the install ends with the daemon open, no `writ unseal`.
 
+**Device keys made by the daemon** (found on the first real install, 2026-11-14): a fresh
+`make install` with `se-cryptokit` for the TLS key, the CA and `agent-01`. `writd init`'s
+output says each is owed; the daemon's log at its first start has a `key created` line for
+each (`/Library/Logs/Writ/writd.log`), and no `to-make.json` is left in the keys directory.
+`writ unseal`, then a ticket signed in the popup and in `writ sign`: the lease is granted
+(before the fix: `internal error in the daemon`, `the helper refused: sign-failed` in the
+log), and the agent's first signed commit verifies. On an install made before the fix,
+the unseal's audit log names each Secure Enclave key `writd init` made as unusable, with its
+rotate command; after each rotation it signs.
+
 **4. The daemon is out of your reach:**
 
 ```sh
