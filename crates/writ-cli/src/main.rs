@@ -233,10 +233,17 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         }
         Commands::Ls { all, url } => approver::list(&paths, &url.get(&paths)?, *all).await,
         Commands::Sign {
+            ui: true,
+            url,
+            signer: args,
+            ..
+        } => approver::ui::run(&paths, &url.get(&paths)?, &signer(&paths, args)).await,
+        Commands::Sign {
             id,
             narrowing,
             yes,
             full,
+            ui: false,
             url,
             signer: args,
         } => {

@@ -298,6 +298,15 @@ pub(crate) enum Commands {
         /// Show every line of the agent's text (by default, 40 lines per field).
         #[arg(long)]
         full: bool,
+        /// For the approval popup (writ-popup, M7.8): watch for waiting tickets, show each
+        /// one through the app (one JSON line each way on stdin and stdout), sign or refuse
+        /// it on its answer. Runs until stdin ends. No narrowing: the terminal's `writ sign`.
+        #[arg(long, conflicts_with_all = [
+            "id", "yes", "full", "ttl", "drop_repos", "drop_ops", "branches", "drop_emails",
+            "max_signatures", "max_pushes", "max_ops_per_minute", "max_push_size",
+            "no_force_push", "revoke_on_violation",
+        ])]
+        ui: bool,
         #[command(flatten)]
         url: ApprovalUrl,
         #[command(flatten)]

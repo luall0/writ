@@ -17,6 +17,7 @@ mod manage;
 mod narrowing;
 mod prove;
 mod signer;
+pub mod ui;
 
 pub use admin::{
     apply as admin_apply, ca_rotate as admin_ca_rotate, ca_show as admin_ca_show, recovery_check,
@@ -281,13 +282,13 @@ fn render(reviewed: &Reviewed, signed: &Ticket, now: Timestamp, shown: display::
     out
 }
 
-/// Signs `signed` and sends the approval.
+/// Signs `signed` and sends the approval: what it did, in a line.
 async fn approve(
     session: &Approvals,
     signer: &Signer,
     id: &TicketId,
     signed: &Ticket,
-) -> anyhow::Result<Exit> {
+) -> anyhow::Result<String> {
     let bytes = signed.canonical_bytes()?;
     // Sign exactly what was displayed: the bytes must decode back to it.
     if &Ticket::from_canonical(&bytes)? != signed {
@@ -304,11 +305,10 @@ async fn approve(
             &writ_proto::encode_body(&request)?,
         )
         .await??;
-    match ack.state {
-        State::Applied => println!("Signed: amendment {id} now applies to its lease."),
-        _ => println!("Signed: lease {id} is active."),
-    }
-    Ok(Exit::Ok)
+    Ok(match ack.state {
+        State::Applied => format!("Signed: amendment {id} now applies to its lease."),
+        _ => format!("Signed: lease {id} is active."),
+    })
 }
 
 /// `writ sign`: shows the ticket, then signs it (narrowed if asked), refuses it, or not.
@@ -354,24 +354,27 @@ pub async fn sign(
                 read_line()?
             };
             // `y` signs as at every other "Sign …?" ([`signs`]); `r` is this one's own.
-            match answer.to_ascii_lowercase().as_str() {
-                _ if signs(&answer) => approve(session, signer, &id, &signed).await,
-                "r" | "refuse" => refuse_with(session, signer, &id, read_feedback()?).await,
+            let done = match answer.to_ascii_lowercase().as_str() {
+                _ if signs(&answer) => approve(session, signer, &id, &signed).await?,
+                "r" | "refuse" => refuse_with(session, signer, &id, read_feedback()?).await?,
                 _ => {
                     println!("Nothing signed.");
-                    Ok(Exit::NotSigned)
+                    return Ok(Exit::NotSigned);
                 }
-            }
+            };
+            println!("{done}");
+            Ok(Exit::Ok)
         })
         .await
 }
 
+/// Refuses `id` with `feedback`, signed when the daemon wants it: what it did, in a line.
 async fn refuse_with(
     session: &Approvals,
     signer: &Signer,
     id: &TicketId,
     feedback: String,
-) -> anyhow::Result<Exit> {
+) -> anyhow::Result<String> {
     if feedback.trim().is_empty() {
         bail!("a refusal needs feedback for the agent");
     }
@@ -386,8 +389,9 @@ async fn refuse_with(
             &writ_proto::encode_body(&request)?,
         )
         .await??;
-    println!("Refused: ticket {id}. The agent gets your feedback.");
-    Ok(Exit::Ok)
+    Ok(format!(
+        "Refused: ticket {id}. The agent gets your feedback."
+    ))
 }
 
 /// `writ refuse`.
@@ -405,7 +409,8 @@ pub async fn refuse(
                 Some(message) => message,
                 None => read_feedback()?,
             };
-            refuse_with(session, signer, id, feedback).await
+            println!("{}", refuse_with(session, signer, id, feedback).await?);
+            Ok(Exit::Ok)
         })
         .await
 }

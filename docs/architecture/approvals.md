@@ -406,7 +406,7 @@ commands, bodies and replies ([Q29](../decisions.md)):
   A watch is the exception: it changes nothing, so it runs in the connection's own future
   and ends with its client.
 
-**The watch** (M7.8, for the [approval popup](clients.md)): `writ watch [<cursor>]` over SSH,
+**The watch** (M7.8, for the [approval popup](clients.md#the-approval-popup-m78)): `writ watch [<cursor>]` over SSH,
 `GET /v1/tickets/watch[?since=<cursor>]` over HTTPS. Its reply is the tickets waiting for a
 signature, in id order, and their **cursor**, the SHA-256 of their ids one per line (64
 lowercase hex characters; anything else is no command). It answers at once when the caller

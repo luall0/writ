@@ -243,6 +243,66 @@ impl Host {
     }
 }
 
+impl Host {
+    /// Starts `script` to talk with it a line at a time (`writ sign --ui`, which the approval
+    /// popup drives): what it prints comes one line at a time from [`Talk::line`], what is
+    /// written with [`Talk::send`] reaches its stdin.
+    pub fn talk(&self, script: &str) -> Talk {
+        let mut child = self
+            .container
+            .exec(&self.user, &self.dir, &self.script(script))
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let (sender, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines() {
+                let Ok(line) = line else { return };
+                if sender.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        Talk {
+            child,
+            input,
+            lines,
+        }
+    }
+}
+
+/// A command talked with a line at a time ([`Host::talk`]).
+pub struct Talk {
+    child: Child,
+    input: Option<std::process::ChildStdin>,
+    lines: mpsc::Receiver<String>,
+}
+
+impl Talk {
+    /// Its next line, within [`TIMEOUT`].
+    pub fn line(&self) -> String {
+        self.lines
+            .recv_timeout(TIMEOUT)
+            .expect("the command printed no line")
+    }
+
+    /// Writes `line` and a newline to its stdin.
+    pub fn send(&mut self, line: &str) {
+        let input = self.input.as_mut().expect("its input is closed");
+        input.write_all(line.as_bytes()).unwrap();
+        input.write_all(b"\n").unwrap();
+        input.flush().unwrap();
+    }
+
+    /// Closes its stdin and waits for it to end: its status and its stderr.
+    pub fn finish(mut self) -> (ExitStatus, String) {
+        drop(self.input.take());
+        let output = finish(self.child);
+        (output.status, stderr(&output))
+    }
+}
+
 /// A command still running, after its first line.
 pub struct Running {
     child: Child,

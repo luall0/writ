@@ -314,7 +314,9 @@ Steps (each one commit, `make ci` green, its docs in the same commit):
    routes, [security.md](security.md)'s inventory.
 2. **`writ sign --ui`** (`writ-cli`, `approver/ui.rs`): the line protocol (one JSON object
    per line each way, 64 KiB a line from the app, 8 MiB from `writ`), the queue of waiting
-   tickets shown one at a time with the display `writ sign --full` prints, `sign <id>` and
+   tickets shown one at a time with the display `writ sign --full` prints, **the others
+   stacked behind it** (asked by the user: tickets that arrive together are all listed, the
+   window saying how many more wait, and the next comes up once one is decided), `sign <id>` and
    `refuse <id> [feedback]` (an empty feedback sent as a fixed line saying none was given),
    `skip <id>` for a window closed; an answer naming another ticket, malformed or over its
    bound signs nothing and is said; the connection made again after a loss; ends on the
@@ -351,6 +353,9 @@ Acceptance:
       field, agent text neutralized), signs on `sign`, refuses with the feedback on
       `refuse`, and signs nothing on a malformed, oversized or missing answer; an admin
       change or an unseal never reaches it; each case an end-to-end scenario.
+- [ ] Tickets that arrive together are stacked (asked by the user): the oldest shown, each
+      other one listed behind it with its title and repositories and the window saying how
+      many more wait; the next one shown once one is decided or gone.
 - [ ] The guarantees of the trusted display hold through the popup: the guarantee tests of
       `writ sign` (what is signed is what was displayed, every field shown, a relay naming
       another daemon refused) run against `writ sign --ui` too.

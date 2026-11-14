@@ -23,6 +23,7 @@ russh.workspace = true
 rustix.workspace = true
 rustls.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 zeroize.workspace = true

@@ -12,7 +12,7 @@ clients make the workflow pleasant, the daemon makes it safe.
 | `writ-sign` | `gpg.ssh.program` shim: `-Y sign` → daemon (the gateway's `writ-sign git <repo>` command for the repo in `writ.repo`, reached at `writ.url` with the SSH command git uses: `GIT_SSH_COMMAND`, then `core.sshCommand`, never a plain `ssh`), with the first parent commit and the trees the daemon needs to see which paths the commit touches ([Gateway](gateway.md#signing)); everything else (`-Y verify`, `find-principals`) → real `ssh-keygen`. Also `gpg.openpgp.program` for a lease whose key is OpenPGP: `--status-fd=2 -bsau <key>` → daemon (`writ-sign openpgp <repo>`, the object on stdin, the armored signature on stdout, `[GNUPG:] SIG_CREATED` on stderr; no GnuPG home, keyring or agent used), `--verify` → the real `gpg` (`WRIT_GPG`, an absolute path, `/usr/bin/gpg` by default), anything else refused |
 | Session agent ([M8.5](../roadmap.md#m85--non-exportable-session-keys), on when the host has the hardware) | Holds the session key so it can't be copied: a dedicated ssh-agent backed by the Secure Enclave, a TPM or a YubiKey |
 | Harness integration | Omega Code requests a lease when an agent session starts and wires the repo's git config |
-| Approvers | v1: `writ sign` + Secretive. Later: own Mac SE app, iPhone app |
+| Approvers | v1: `writ sign` + Secretive, and on the Mac the [approval popup](#the-approval-popup-m78) (`writ-popup` over `writ sign --ui`). Later: own Mac SE app, iPhone app |
 
 Code: `crates/writ-cli` (`writ`), `crates/writ-sign` (`writ-sign`), `skill/writ/` and
 `skill/writ-workspace/` (the skills). The approver side of the CLI is described in [Approvals](approvals.md).
@@ -46,6 +46,52 @@ rejection message after a push. When ssh itself fails (the gateway refuses an ex
 or unknown certificate during authentication, where SSH can't say why), `writ-sign` reads the
 session certificate named in the SSH command and says whether there is no lease, an expired
 one, or one the daemon refused: a convenience, the daemon decided already.
+
+## The approval popup (M7.8)
+
+A ticket waiting for my signature comes up in a window in front of every app, full-screen
+ones too, with the whole ticket and two buttons, **Sign** and **Decline**. Two programs:
+
+- **`writ sign --ui`** (`writ_cli::approver::ui`) is the approval client. It holds a
+  [watch](approvals.md#reaching-the-daemon) on the daemon, keeps the queue of waiting tickets
+  (in id order: the oldest first), fetches the one to show with `writ sign`'s own checks
+  (`fetch_reviewed`), builds its display with `writ sign`'s own code (the very text `writ sign
+  <id> --full` prints above its question), and signs with `writ sign`'s signer
+  (`ssh-keygen -Y sign` through the approval agent: Secretive's Touch ID). Nothing of that
+  exists anywhere else.
+- **`writ-popup`** (Swift, AppKit; `crates/writ-cli/macos/`) only shows what `writ` sends and
+  says what was clicked ([decision log](../decisions.md), 2026-11-14: before any richer UI,
+  or one on another platform, the approval client is linked into the app instead).
+
+They talk one JSON object per line each way, on `writ`'s stdout and stdin:
+
+| From `writ` (`type`) | What it carries | The window |
+|---|---|---|
+| `show` | `id`, `kind` (`ticket`, `revision`, `amendment`, `renewal`), `title`, `display`, `key` (the approval key's path), `waiting` (the others: `id`, `title`, `repos`, `skipped`) | shows the ticket, the others stacked behind it ("2 more waiting, newest last") |
+| `queue` | `waiting` | the stack behind the ticket shown changed |
+| `gone` | `id` | the ticket shown stopped waiting (signed or refused elsewhere, withdrawn, expired): its window closes |
+| `done` | `id`, `message` | what an answer did (`Signed: lease … is active.`) |
+| `failed` | `id` (or `null`), `message` | an answer that signed nothing, a ticket that couldn't be shown, a signature that failed (Touch ID cancelled: the ticket is shown again) |
+| `idle` | | nothing waits: the window goes |
+| `status` | `message` | the daemon lost or refused the watch: tried again after 1 s, then up to 30 s |
+
+| From the app (`answer`) | |
+|---|---|
+| `sign` | `id`: the ticket shown, signed as shown |
+| `refuse` | `id`, `feedback` (may be empty: the agent then reads *Declined in the approval popup, with no feedback.*), signed under `decisions: signed` like `writ refuse` |
+| `skip` | `id`: the window closed; the ticket stays waiting, put aside by this run (`writ sign` in a terminal reaches it) |
+
+Every text `writ` sends is cleaned of control and hidden characters, as for the terminal.
+An answer naming another ticket than the one shown, a line that isn't an answer (unknown
+fields included), one past 64 KiB (dropped to its end, never held whole) or one sent while
+the daemon is out of reach signs nothing and is said. Narrowing stays in the terminal: `--ui`
+takes no ticket, no narrowing flag, no `--yes` or `--full`. Admin changes and unseals never
+come to the popup: the watch lists tickets only. The end of the app's output ends `writ sign
+--ui` (exit 0).
+
+The tickets that arrive together are all listed: the window shows the oldest and the others
+behind it, each with its title and repositories; once the one shown is decided or gone, the
+next comes up, with no window to reopen.
 
 ## Repo setup on an agent host
 

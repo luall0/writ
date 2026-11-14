@@ -15,6 +15,7 @@
     clippy::cast_possible_truncation
 )]
 
+mod approval_popup;
 mod concurrency;
 mod daemon_management;
 mod hardening_limits;
