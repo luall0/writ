@@ -265,8 +265,8 @@ is made by the Secure Enclave and never leaves it.
   the development keystore too, `<id>.pub`). A key held on another backend than declared is
   refused like one of another algorithm.
 - **A blob refused at unseal** (its frame, its point, or its probe signature) leaves its key
-  listed and refusing: one `admin` audit line ("key <id> is unusable: its device refused it
-  at unseal (…); writ admin key rotate <id> replaces it", the CA's naming `writ admin ca
+  listed and refusing: one `admin` audit line ("key <id> is unusable: refused at unseal (…);
+  writ admin key rotate <id> replaces it", the CA's naming `writ admin ca
   rotate`), and the agent's sign request denied with that reason. A refused TLS key no longer
   stops the start (it did before 2026-11-14): the daemon runs, every HTTPS handshake is
   refused, and one `admin` audit line names `writ admin tls rotate`, which the SSH approval
@@ -493,7 +493,10 @@ session certificate through it (`writ_crypto::ca::CaSigner`; ECDSA's hash for a 
 `writd init --ca-backend se-cryptokit` puts it in the Secure Enclave (P-256): owed by
 `writd init`, made by the daemon at its first start ([owed keys](#keys-on-the-secure-enclave-in-the-daemon)).
 A blob the device refuses at unseal (its probe signature included) leaves every grant
-refused, the daemon running, the audit log naming `writ admin ca rotate`. Moving an existing
+refused, the daemon running: the approver is told why (refusal `ca`, "the daemon's CA key is
+unusable: …: writ admin ca rotate --backend <name> replaces it", the CA never asked to sign),
+the ticket stays pending for a signature after the rotation, and the audit log says it once
+at unseal. Moving an existing
 daemon's CA is [`writ admin ca rotate`](approvals.md#writ-admin-ca-rotate).
 
 Secrets held in memory (decrypted keys, the data key, tokens: `UpstreamToken`, `BotToken`) are zeroized on drop and never

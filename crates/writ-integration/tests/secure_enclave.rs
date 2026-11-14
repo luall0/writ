@@ -256,12 +256,12 @@ fn a_damaged_blob_leaves_its_key_unusable_and_the_daemon_running() {
     let log = daemon.log();
     let line = log
         .lines()
-        .find(|l| l.contains("a key's stored bytes were refused"))
+        .find(|l| l.contains("a key was refused when opened"))
         .unwrap_or_else(|| panic!("{log}"));
     assert!(line.contains("key=agent-se"), "{line}");
     let audit = daemon.audit();
     assert!(
-        audit.contains("key agent-se is unusable: its stored bytes were refused at unseal (its stored bytes don't match their digest (corrupted, or another key's))"),
+        audit.contains("key agent-se is unusable: refused at unseal (its stored bytes don't match their digest (corrupted, or another key's)); writ admin key rotate agent-se replaces it"),
         "{audit}"
     );
     assert_eq!(

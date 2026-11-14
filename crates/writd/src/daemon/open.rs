@@ -69,8 +69,7 @@ impl Opener {
                 );
             }
         }
-        let (ca, refused) = platform::ca(&inner.config, keys.ca)?;
-        unusable.extend(refused);
+        let (ca, ca_refused) = platform::ca(&inner.config, keys.ca)?;
         // The CAs the gateway takes: this one, and one a rotation replaced, while its leases
         // last (M7.6).
         let retired = match &inner.config.keystore {
@@ -116,12 +115,20 @@ impl Opener {
         .await
         .context("the unseal stopped")?
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-        // A key whose stored bytes its device refused is listed and signs nothing: said once in
-        // the audit log (the daemon's log has it too), its leases denied by name.
+        // A key its device refused (its stored bytes, its point or its probe) is listed and
+        // signs nothing: said once in the audit log (the daemon's log has it too), with what
+        // replaces it, its leases denied by name; the CA's, every grant refused.
         for (id, why) in &unusable {
             inner.service.admin_note(&format!(
-                "key {id} is unusable: its stored bytes were refused at unseal ({why}); writ \
-                 admin key rotate replaces it"
+                "key {id} is unusable: refused at unseal ({why}); writ admin key rotate {id} \
+                 replaces it"
+            ));
+        }
+        for (_, why) in &ca_refused {
+            inner.service.admin_note(&format!(
+                "the CA key is unusable: refused at unseal ({why}); writ admin ca \
+                 rotate --backend {} replaces it, every grant refused until then",
+                ca_backend.name()
             ));
         }
         // A rotation of the data key the unseal did (S-8): one line each in the audit log.

@@ -516,7 +516,8 @@ fn run(path: &Path) -> anyhow::Result<()> {
         // The daemon's name in every document an approver signs: what `writ` computes from
         // the host key it authenticated, with the same function.
         let daemon: KeyFingerprint = writ_crypto::keys::fingerprint(&host_public).parse()?;
-        let tls = Arc::new(platform::tls_identity(&config, boot.tls)?);
+        let (tls, tls_refused) = platform::tls_identity_at_start(&config, boot.tls)?;
+        let tls = Arc::new(tls);
         log_access(&loaded.approvers, &loaded.readers);
         let readers = writ_crypto::readers::ReaderSet::new(loaded.readers);
         let service = start_service(
@@ -533,6 +534,11 @@ fn run(path: &Path) -> anyhow::Result<()> {
         for note in &finished {
             tracing::warn!("{note}");
             service.admin_note(note);
+        }
+        if let Some(why) = &tls_refused {
+            let note = format!("the TLS key is unusable: {why}");
+            tracing::error!("{note}");
+            service.admin_note(&note);
         }
         // What `writ info` says of a rotation of the data key owed (S-8), before the unseal.
         service.set_keystore(

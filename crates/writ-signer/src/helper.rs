@@ -144,6 +144,34 @@ fn unframe(stored: &Stored, public: &PublicKey) -> Result<Stored, &'static str> 
 /// The bytes signed when a key is made, to prove the point answered is the key's.
 const PROBE: &[u8] = b"writ-se/1 probe: the key just made signs";
 
+/// The bytes each key signs when its signer is built: a blob that opens can still be one its
+/// device won't sign with where the daemon runs (a key made outside the LaunchDaemon, found on
+/// the first real install, 2026-11-14). The signature is checked, then thrown away.
+const OPEN_PROBE: &[u8] = b"writ-signer-probe/1: the key opened signs";
+
+/// Has the helper sign [`OPEN_PROBE`] with `blob`, checked against `public`: why it can't.
+/// A malformed or wrong answer ends that helper, as every other check's does.
+fn probe(helper: &Helper, blob: &Stored, public: &PublicKey) -> Result<(), String> {
+    let lied = |what: &str| {
+        helper.end();
+        format!("it does not sign: {what}")
+    };
+    let signature = match helper.call(Op::Sign, &[blob.as_bytes(), OPEN_PROBE], 1) {
+        Ok(fields) => match fields.as_slice() {
+            [signature] => signature.to_vec(),
+            _ => return Err(lied("not the fields the operation answers")),
+        },
+        Err(e @ HelperError::Malformed(_)) => return Err(lied(&e.to_string())),
+        Err(e) => return Err(format!("it does not sign: {e}")),
+    };
+    let raw =
+        RawSignature::new(PAIR.0, PAIR.1, signature).map_err(|_| lied("not a P-256 signature"))?;
+    if writ_crypto::keypair::verify(public, OPEN_PROBE, &raw).is_err() {
+        return Err(lied("a signature that doesn't verify"));
+    }
+    Ok(())
+}
+
 /// The (algorithm, signer hash) pairs a helper signs with: P-256 with SHA-256.
 pub fn pairs() -> Vec<(KeyAlgorithm, SignerHash)> {
     vec![PAIR]
@@ -518,8 +546,9 @@ pub fn check(config: &HelperConfig) -> Result<(), HelperError> {
 impl HelperSigner {
     /// A signer over the helper `config` starts, holding the keys `keys` gives back: each
     /// one's frame checked against the public half the daemon kept (before the helper sees
-    /// its blob), then the blob's point asked of the helper. One whose frame doesn't check,
-    /// or the helper refuses or answers another point for, is held unusable and said in
+    /// its blob), the blob's point asked of the helper, then a probe signed with it and
+    /// checked. One whose frame doesn't check, or the helper refuses, answers another point
+    /// for, or won't sign the probe with, is held unusable and said in
     /// [`HelperSigner::refused`] (and the daemon's log); two keys with one id are refused.
     pub fn new(
         config: HelperConfig,
@@ -548,7 +577,10 @@ impl HelperSigner {
                                 )),
                             });
                     match answered {
-                        Ok(answered) if answered.key_data() == public.key_data() => Ok(blob),
+                        // The point is the key's: then the key must sign where the daemon runs.
+                        Ok(answered) if answered.key_data() == public.key_data() => {
+                            probe(&helper, &blob, &public).map(|()| blob)
+                        }
                         // A well-formed answer that is wrong: that helper is no more trusted
                         // than a broken one, as on the agreement's side (the review after
                         // M7.6, K-8).
@@ -571,7 +603,7 @@ impl HelperSigner {
                         backend = %helper.config.backend,
                         key = %id,
                         why = %why,
-                        "a key's stored bytes were refused: it signs nothing until it is replaced"
+                        "a key was refused when opened: it signs nothing until it is replaced"
                     );
                     refused.push((id.clone(), why));
                     Held::Unusable { public }

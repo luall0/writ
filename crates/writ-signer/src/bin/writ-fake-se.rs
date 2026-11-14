@@ -2,8 +2,8 @@
 //! software P-256 keys (its stored bytes the key itself behind a header: a fake), and fails on
 //! demand, to hold the helper signer to what a hostile or broken helper may do.
 //!
-//! `writ-fake-se [--fault <op>:<fault>]… [--once <marker file>] [--record <file>]
-//! [--no-enclave]`: `op` is
+//! `writ-fake-se [--fault <op>:<fault>]… [--from <n>] [--once <marker file>] [--record <file>]
+//! [--context <name>] [--no-enclave]`: `op` is
 //! `hello`, `create`, `public`, `sign`, `create-agreement`, `public-agreement` or `agree`;
 //! `fault` is `crash` (exits mid-answer), `silent`
 //! (never answers), `no-read` (stops reading the request after its operation byte, and never
@@ -11,8 +11,13 @@
 //! `other-key` (another key's point), `bad-signature` (a signature of other bytes), `refuse`
 //! (refuses with a clean code), `dirty-code` (a code outside the alphabet), `extra-field`,
 //! `unknown-status`, and for an agreement `short-secret` (31 bytes) or `other-secret` (another
-//! key's shared secret). With `--once`, the faults hit only a process that finds no marker (it
-//! writes one): the next helper answers right. With `--record`, each request's operation and
+//! key's shared secret). With `--from <n>`, a fault hits an operation from its `n`th request in
+//! that process on (1, the default: every one), so a signer is built before a `sign` fault
+//! hits (its probe is the first). With `--once`, the faults hit only a process that finds no
+//! marker (it writes one): the next helper answers right. With `--context <name>`, each key it
+//! makes is bound to that name, and a signature with a key bound to another (or made by a
+//! helper with none) is refused, `sign-failed`, its point still answered: what the Secure
+//! Enclave did with a key made outside the LaunchDaemon (2026-11-14). With `--record`, each request's operation and
 //! its first field's length are appended to the file, one line each, before it is answered
 //! (what the tests check never reached the helper).
 
@@ -38,6 +43,8 @@ fn main() {
     let mut once = None;
     let mut record: Option<String> = None;
     let mut enclave = true;
+    let mut from = 1usize;
+    let mut context: Option<String> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -48,6 +55,8 @@ fn main() {
             "--once" => once = Some(it.next().unwrap().clone()),
             "--record" => record = Some(it.next().unwrap().clone()),
             "--no-enclave" => enclave = false,
+            "--from" => from = it.next().unwrap().parse().unwrap(),
+            "--context" => context = Some(it.next().unwrap().clone()),
             other => panic!("unknown argument {other}"),
         }
     }
@@ -60,6 +69,7 @@ fn main() {
     }
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
+    let mut seen: std::collections::BTreeMap<&'static str, usize> = Default::default();
     loop {
         let mut len = [0u8; 4];
         if stdin.read_exact(&mut len).is_err() {
@@ -70,7 +80,10 @@ fn main() {
         // left in the pipe (a writer to it blocks once the pipe's buffer is full).
         stdin.read_exact(&mut body[..1]).unwrap();
         let wanted = op_name(body[0]);
-        if faults.iter().any(|(o, f)| o == wanted && f == "no-read") {
+        let count = seen.entry(wanted).or_insert(0);
+        *count += 1;
+        let armed = *count >= from;
+        if armed && faults.iter().any(|(o, f)| o == wanted && f == "no-read") {
             loop {
                 std::thread::park();
             }
@@ -88,7 +101,7 @@ fn main() {
         }
         let fault = faults
             .iter()
-            .find(|(o, _)| o == op)
+            .find(|(o, _)| armed && o == op)
             .map(|(_, f)| f.as_str());
         let answer = match fault {
             Some("crash") => {
@@ -108,7 +121,7 @@ fn main() {
             Some("dirty-code") => refused(b"Bad Code\x1b[31m"),
             Some("unknown-status") => vec![7],
             Some("extra-field") => {
-                let mut ok = answer(op, &fields, enclave);
+                let mut ok = answer(op, &fields, enclave, context.as_deref());
                 ok.extend_from_slice(&field(b"more"));
                 ok
             }
@@ -117,7 +130,7 @@ fn main() {
                 | "other-secret"),
             ) => tampered(op, &fields, other),
             Some(other) => panic!("unknown fault {other}"),
-            None => answer(op, &fields, enclave),
+            None => answer(op, &fields, enclave, context.as_deref()),
         };
         stdout
             .write_all(&(answer.len() as u32).to_be_bytes())
@@ -172,8 +185,27 @@ fn refused(code: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The line binding a key to the context it was made in (`--context`).
+const CONTEXT: &[u8] = b"context: ";
+
+/// The key in `stored`, and the context it was made in.
+fn bound(stored: &[u8]) -> Option<(KeyPair, Option<String>)> {
+    let rest = stored.strip_prefix(HEADER)?;
+    let (context, pem) = match rest.strip_prefix(CONTEXT) {
+        Some(bound) => {
+            let end = bound.iter().position(|b| *b == b'\n')?;
+            (
+                Some(String::from_utf8(bound[..end].to_vec()).ok()?),
+                &bound[end + 1..],
+            )
+        }
+        None => (None, rest),
+    };
+    Some((KeyPair::from_pem(pem).ok()?, context))
+}
+
 fn key(stored: &[u8]) -> Option<KeyPair> {
-    KeyPair::from_pem(stored.strip_prefix(HEADER)?).ok()
+    bound(stored).map(|(key, _)| key)
 }
 
 fn point(key: &KeyPair) -> Vec<u8> {
@@ -185,7 +217,7 @@ fn point(key: &KeyPair) -> Vec<u8> {
         .to_vec()
 }
 
-fn answer(op: &str, fields: &[Vec<u8>], enclave: bool) -> Vec<u8> {
+fn answer(op: &str, fields: &[Vec<u8>], enclave: bool, context: Option<&str>) -> Vec<u8> {
     match op {
         "hello" if !enclave => refused(b"no-secure-enclave"),
         "hello" => ok(&[b"writ-se/1"]),
@@ -193,6 +225,11 @@ fn answer(op: &str, fields: &[Vec<u8>], enclave: bool) -> Vec<u8> {
         "create" => {
             let key = KeyPair::generate(KeyAlgorithm::P256).unwrap();
             let mut stored = HEADER.to_vec();
+            if let Some(context) = context {
+                stored.extend_from_slice(CONTEXT);
+                stored.extend_from_slice(context.as_bytes());
+                stored.push(b'\n');
+            }
             stored.extend_from_slice(key.to_pem().unwrap().as_bytes());
             ok(&[&stored, &point(&key)])
         }
@@ -200,8 +237,9 @@ fn answer(op: &str, fields: &[Vec<u8>], enclave: bool) -> Vec<u8> {
             Some(key) => ok(&[&point(&key)]),
             None => refused(b"invalid-blob"),
         },
-        "sign" => match key(&fields[0]) {
-            Some(key) => {
+        "sign" => match bound(&fields[0]) {
+            Some((_, Some(made))) if Some(made.as_str()) != context => refused(b"sign-failed"),
+            Some((key, _)) => {
                 let signature = key.sign(&fields[1], Some(Hash::Sha256)).unwrap();
                 ok(&[signature.as_bytes()])
             }

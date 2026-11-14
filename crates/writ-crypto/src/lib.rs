@@ -41,6 +41,9 @@ pub enum CryptoError {
     UnknownSigner(String),
     #[error("the key failed to sign")]
     SigningFailed,
+    /// The CA's key, refused by its backend when it was opened: no certificate is signed.
+    #[error("the CA key is unusable: {0}")]
+    CaUnusable(String),
     /// An algorithm, hash or key kind Writ doesn't sign with (named, never replaced).
     #[error("not supported: {0}")]
     Unsupported(String),

@@ -1586,3 +1586,57 @@ fn a_refused_amendment_approval_is_logged_as_amend() {
     assert_eq!(h.approve(&amendment).unwrap(), State::Applied);
     assert_eq!(h.events("amend", "allowed"), 1);
 }
+
+/// A CA key its backend refused when the keystore was opened (found on the first real
+/// install, 2026-11-14: a CA made in the Secure Enclave outside the LaunchDaemon): every
+/// approval is refused with `Ca` and the reason, never as an internal error, the CA never
+/// asked to sign; the ticket stays pending, so the approver signs it again once the CA is
+/// rotated.
+#[test]
+fn an_unusable_ca_refuses_each_approval_by_name_and_the_ticket_waits() {
+    struct Unusable {
+        public: writ_crypto::ssh_key::PublicKey,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+    impl writ_crypto::ca::CaSigner for Unusable {
+        fn public_key(&self) -> &writ_crypto::ssh_key::PublicKey {
+            &self.public
+        }
+        fn sign(&self, _: &[u8]) -> writ_crypto::Result<writ_crypto::keypair::RawSignature> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(writ_crypto::CryptoError::SigningFailed)
+        }
+        fn unusable(&self) -> Option<&str> {
+            Some("refused at unseal (it does not sign): writ admin ca rotate replaces it")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let test = TestServiceBuilder::new(POLICY).sealed().build(dir.path());
+    let unusable = Arc::new(Unusable {
+        public: test.ca_key.public_key().clone(),
+        asked: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut opened = test.opened();
+    opened.ca = writ_crypto::ca::CertificateAuthority::with_signer(unusable.clone());
+    test.service
+        .unseal(opened, None, &CallerFacts::default())
+        .unwrap();
+    let key = generate(KeyKind::Ed25519).unwrap();
+    let submitted = test
+        .service
+        .submit(key.public_key(), REQUEST.as_bytes(), &facts())
+        .unwrap();
+    let ticket = Ticket::from_canonical(submitted.canonical.as_bytes()).unwrap();
+    let approved = test
+        .service
+        .approve(&ticket.id, &test.approval(&ticket), &facts());
+    refused_as(
+        approved,
+        RefusalCode::Ca,
+        "the daemon's CA key is unusable: refused at unseal (it does not sign): writ admin ca \
+         rotate replaces it",
+    );
+    assert_eq!(unusable.asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(test.service.show(&ticket.id).unwrap().state, State::Pending);
+    assert_eq!(test.events("grant", "denied").len(), 1);
+}

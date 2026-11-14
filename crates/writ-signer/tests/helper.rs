@@ -137,10 +137,18 @@ fn sign_with_fault(fault: &str, deadline: Duration) -> SignerError {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("once");
     let fault = format!("sign:{fault}");
-    let args = ["--fault", &fault, "--once", marker.to_str().unwrap()];
+    let args = [
+        "--fault",
+        &fault,
+        "--from",
+        "2",
+        "--once",
+        marker.to_str().unwrap(),
+    ];
     let held = HelperSigner::new(config(&args, deadline), made(&["k"])).unwrap();
-    // `public` answered right when the key was loaded, by the first helper: its fault is
-    // armed for `sign`.
+    assert_eq!(held.refused(), []);
+    // `public` and the probe answered right when the key was loaded, by the first helper:
+    // its fault is armed for the next `sign`.
     let error = held
         .sign(&id("k"), b"data", Some(Hash::Sha256))
         .unwrap_err();
@@ -202,6 +210,8 @@ fn a_helper_that_never_reads_a_large_request_costs_one_deadline() {
     let args = [
         "--fault",
         "sign:no-read",
+        "--from",
+        "2",
         "--once",
         marker.to_str().unwrap(),
     ];
@@ -306,13 +316,13 @@ fn stored_bytes_not_framed_for_the_key_never_reach_the_helper() {
     loads.extend(made);
     let args = ["--record", record.to_str().unwrap()];
     let held = HelperSigner::new(config(&args, PATIENT), loads).unwrap();
-    // The helper was asked for the two good keys' points, and nothing else.
+    // The helper was asked for the two good keys' points and their probes, and nothing else.
     let requests = std::fs::read_to_string(&record).unwrap();
-    assert_eq!(requests.lines().count(), 2, "{requests}");
-    assert!(
-        requests.lines().all(|l| l.starts_with("public ")),
-        "{requests}"
-    );
+    let ops: Vec<&str> = requests
+        .lines()
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(ops, ["public", "sign", "public", "sign"], "{requests}");
     let mut expected: Vec<(KeyId, String)> = cases
         .iter()
         .map(|(name, _, why)| (id(name), (*why).to_owned()))
@@ -337,7 +347,7 @@ fn stored_bytes_not_framed_for_the_key_never_reach_the_helper() {
     held.sign(&id("other"), b"data", Some(Hash::Sha256))
         .unwrap();
     let asked = std::fs::read_to_string(&record).unwrap().lines().count();
-    assert_eq!(asked, 4, "two points, then two signatures");
+    assert_eq!(asked, 6, "two points and probes, then two signatures");
     // A public half kept that isn't P-256: refused before the helper too.
     let ed25519 = writ_crypto::keypair::KeyPair::generate(KeyAlgorithm::Ed25519)
         .unwrap()
@@ -387,6 +397,100 @@ fn a_framed_blob_the_helper_refuses_or_reads_as_another_key_is_unusable() {
             HelperSigner::new(config(&["--fault", fault], PATIENT), [made_one("k")]).unwrap();
         assert_eq!(held.refused(), [(id("k"), why.to_owned())], "{fault}");
     }
+}
+
+/// Found on the first real install (2026-11-14): a key made outside the LaunchDaemon opened
+/// there (its point answered) but its device refused every signature, which showed only at
+/// the first approval. Each key now signs a probe when its signer is built: one that can't is
+/// unusable from the start, said with why, and refuses every signature by name.
+#[test]
+fn a_key_its_device_won_t_sign_with_is_unusable_from_the_start() {
+    for (fault, why) in [
+        (
+            "refuse",
+            "it does not sign: the helper refused: refused-on-demand",
+        ),
+        (
+            "bad-signature",
+            "it does not sign: a signature that doesn't verify",
+        ),
+        ("bad-point", "it does not sign: not a P-256 signature"),
+        ("crash", "it does not sign: the helper died"),
+        (
+            "extra-field",
+            "it does not sign: the helper's answer is malformed: not the fields the operation \
+             answers",
+        ),
+        (
+            "dirty-code",
+            "it does not sign: the helper's answer is malformed: a refusal that isn't one code",
+        ),
+    ] {
+        let fault = format!("sign:{fault}");
+        let held =
+            HelperSigner::new(config(&["--fault", &fault], PATIENT), [made_one("k")]).unwrap();
+        assert_eq!(held.refused(), [(id("k"), why.to_owned())], "{fault}");
+        let error = held
+            .sign(&id("k"), b"data", Some(Hash::Sha256))
+            .unwrap_err();
+        assert!(
+            matches!(&error, SignerError::Unusable(k) if k == &id("k")),
+            "{fault}: {error:?}"
+        );
+        // Listed all the same, from the public half kept.
+        assert_eq!(held.list_keys().unwrap().len(), 1, "{fault}");
+    }
+    // The real install's case: a key made by a helper in one context (`writd init` run by
+    // hand) is refused by the device in another (the LaunchDaemon), its point still answered.
+    let maker = HelperSigner::new(config(&["--context", "by-hand"], PATIENT), []).unwrap();
+    let created = maker.create_key(id("ca"), KeyAlgorithm::P256).unwrap();
+    let load = || Load {
+        id: id("ca"),
+        stored: Stored::new(created.stored.as_bytes().to_vec()),
+        public: created.info.public_key.clone(),
+    };
+    let elsewhere = HelperSigner::new(config(&["--context", "daemon"], PATIENT), [load()]).unwrap();
+    assert_eq!(
+        elsewhere.refused(),
+        [(
+            id("ca"),
+            "it does not sign: the helper refused: sign-failed".to_owned()
+        )]
+    );
+    assert!(matches!(
+        elsewhere.sign(&id("ca"), b"data", Some(Hash::Sha256)),
+        Err(SignerError::Unusable(k)) if k == id("ca")
+    ));
+    // Where it was made, it signs.
+    let there = HelperSigner::new(config(&["--context", "by-hand"], PATIENT), [load()]).unwrap();
+    assert_eq!(there.refused(), []);
+    let signature = there.sign(&id("ca"), b"data", Some(Hash::Sha256)).unwrap();
+    writ_crypto::keypair::verify(&created.info.public_key, b"data", &signature).unwrap();
+}
+
+/// A helper whose probe answer lies is ended like one that answers another key's point: the
+/// next key's check runs on a new helper (with `--once`, one without the fault), and signs.
+#[test]
+fn a_helper_that_lies_on_a_probe_is_not_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("once");
+    let args = [
+        "--fault",
+        "sign:bad-signature",
+        "--once",
+        marker.to_str().unwrap(),
+    ];
+    let held = HelperSigner::new(config(&args, PATIENT), made(&["a", "b"])).unwrap();
+    assert_eq!(
+        held.refused(),
+        [(
+            id("a"),
+            "it does not sign: a signature that doesn't verify".to_owned()
+        )]
+    );
+    let signature = held.sign(&id("b"), b"data", Some(Hash::Sha256)).unwrap();
+    let public = writ_signer::public_key(&held, &id("b")).unwrap();
+    writ_crypto::keypair::verify(&public, b"data", &signature).unwrap();
 }
 
 #[test]

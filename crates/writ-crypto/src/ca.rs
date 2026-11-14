@@ -49,6 +49,12 @@ pub trait CaSigner: Send + Sync {
     /// The signature over `data`, as the CA's algorithm signs a certificate (Ed25519 the bytes
     /// themselves, ECDSA their curve's hash).
     fn sign(&self, data: &[u8]) -> Result<crate::keypair::RawSignature>;
+    /// Why this key signs nothing, when its backend refused it when it was opened (a device
+    /// that won't sign with it): every certificate is then refused with that reason
+    /// ([`crate::CryptoError::CaUnusable`]), never tried.
+    fn unusable(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// The CA's key in memory (software).
@@ -160,6 +166,9 @@ impl CertificateAuthority {
             builder.valid_principal(*principal)?;
         }
         let key = self.current();
+        if let Some(why) = key.unusable() {
+            return Err(crate::CryptoError::CaUnusable(why.to_owned()));
+        }
         Ok(builder.sign(&Through(&*key))?)
     }
 }

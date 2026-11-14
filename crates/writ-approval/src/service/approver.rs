@@ -556,6 +556,15 @@ impl Service {
                 Ok((cert.to_openssh()?, by))
             }) {
                 Ok(issued) => issued,
+                // Said to the approver, with what replaces it: never an internal error (found
+                // on the first real install, 2026-11-14, a CA its device wouldn't sign with).
+                Err(writ_crypto::CryptoError::CaUnusable(why)) => {
+                    return denied.deny(
+                        &mut inner,
+                        RefusalCode::Ca,
+                        format!("the daemon's CA key is unusable: {why}"),
+                    );
+                }
                 Err(e) => return denied.failed(&mut inner, internal(e)),
             };
             let found = inner.record(id);

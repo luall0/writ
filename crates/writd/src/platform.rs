@@ -252,12 +252,23 @@ pub fn ca(config: &Config, key: StoredKey) -> anyhow::Result<Ca> {
         other => bail!("a CA key of {other} is not supported"),
     };
     let id = key.id.clone();
+    let backend = match &key.key {
+        Material::Device { backend, .. } => backend.name(),
+        Material::Software(_) => crate::declared::Backend::Software.name(),
+    };
     let use_signer = use_signer(config, vec![key], "ca", CA_QUEUE, CA_DEADLINE)?;
+    let unusable = use_signer.refused.first().map(|(_, why)| {
+        format!(
+            "refused at unseal ({why}): writ admin ca rotate --backend {backend} \
+             replaces it"
+        )
+    });
     let signer = CaThrough {
         signer: use_signer.signer,
         id,
         public,
         hash,
+        unusable,
     };
     Ok((Arc::new(signer), use_signer.refused))
 }
@@ -268,6 +279,8 @@ struct CaThrough {
     id: KeyId,
     public: writ_crypto::ssh_key::PublicKey,
     hash: writ_crypto::algorithm::SignerHash,
+    /// Why its device refused it when it was opened, and what replaces it.
+    unusable: Option<String>,
 }
 
 impl writ_crypto::ca::CaSigner for CaThrough {
@@ -279,6 +292,10 @@ impl writ_crypto::ca::CaSigner for CaThrough {
         self.signer
             .sign(&self.id, data, self.hash)
             .map_err(|_| writ_crypto::CryptoError::SigningFailed)
+    }
+
+    fn unusable(&self) -> Option<&str> {
+        self.unusable.as_deref()
     }
 }
 
@@ -420,7 +437,23 @@ pub fn tls_identity(
     config: &Config,
     tls: crate::keystore::TlsKeyPair,
 ) -> anyhow::Result<TlsIdentity> {
+    let (identity, refused) = tls_identity_at_start(config, tls)?;
+    if let Some(why) = refused {
+        bail!("the TLS key: {why}");
+    }
+    Ok(identity)
+}
+
+/// [`tls_identity`] at a start: a key its device refuses (its blob, its point or its probe)
+/// leaves the identity in place, every handshake refused, and says why (with what replaces
+/// it) instead of stopping the start: `writ admin tls rotate`, the one way to replace it,
+/// needs the daemon running (2026-11-14).
+pub fn tls_identity_at_start(
+    config: &Config,
+    tls: crate::keystore::TlsKeyPair,
+) -> anyhow::Result<(TlsIdentity, Option<String>)> {
     let id: KeyId = crate::keystore::TLS_KEY.parse()?;
+    let mut refused = None;
     let queue = QueueConfig {
         name: "writ-tls".to_owned(),
         capacity: TLS_QUEUE,
@@ -437,7 +470,7 @@ pub fn tls_identity(
             public,
         } => {
             // The boot tier's key on a device: its blob checked as every device key's; one
-            // refused leaves no key to serve HTTPS with, so the start stops.
+            // refused signs no handshake.
             let held = HelperSigner::new(
                 check_device(config, backend)?,
                 [Load {
@@ -447,16 +480,19 @@ pub fn tls_identity(
                 }],
             )?;
             if let Some((_, why)) = held.refused().first() {
-                bail!("the TLS key on backend {}: refused ({why})", backend.name());
+                refused = Some(format!(
+                    "on backend {}, refused at start ({why}): writ admin tls rotate --backend {} \
+                     replaces it, every HTTPS handshake refused until then",
+                    backend.name(),
+                    backend.name()
+                ));
             }
             Arc::new(QueuedSigner::new(held, queue)?)
         }
     };
     let key = writ_signer::tls::TlsSigner::new(queued, id)?;
-    Ok(TlsIdentity::with_key(
-        &tls.cert_pem,
-        Arc::new(OffAsync(key)),
-    )?)
+    let identity = TlsIdentity::with_key(&tls.cert_pem, Arc::new(OffAsync(key)))?;
+    Ok((identity, refused))
 }
 
 /// The process hardening of this OS (docs/operators/hardening.md): Linux's or macOS's, or

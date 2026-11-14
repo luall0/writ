@@ -60,7 +60,11 @@ impl TlsKey for TlsSigner {
             .signer
             .sign(&self.id, message, Some(Hash::Sha256))
             .map_err(|e| {
-                tracing::warn!(key = %self.id, error = %e, "the TLS key did not sign");
+                // A key refused when it was opened is said once, at start: never a line per
+                // handshake, which anyone reaching the listener could flood.
+                if !matches!(e, crate::SignerError::Unusable(_)) {
+                    tracing::warn!(key = %self.id, error = %e, "the TLS key did not sign");
+                }
                 CryptoError::SigningFailed
             })?;
         ecdsa_p256_raw(&signature).ok_or(CryptoError::SigningFailed)
