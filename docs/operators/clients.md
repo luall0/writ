@@ -178,6 +178,42 @@ for outside `writ run`.
 
 `writ run` exits with the agent's status. A Ctrl-C reaches the agent as usual.
 
+## The approval popup on the Mac
+
+With a daemon on this Mac, `make install` starts the approval popup at each login (unless you
+answered `no`). When an agent's ticket waits for your signature, a window comes up in front of
+every app, full-screen ones too:
+
+- It shows the whole ticket, as `writ sign <id> --full` would in a terminal. Scroll to read
+  it all.
+- **Sign** signs it with your approval key: Secretive asks for Touch ID, as in a terminal.
+- **Decline** asks for a reason for the agent (you may leave it empty), then **Refuse** signs
+  the refusal.
+- Both buttons stay greyed for a second after the window comes up, and no key presses them:
+  a click or a Return meant for another app does nothing.
+- Several tickets at once: the window shows the oldest and lists the others behind it, each
+  with its title and repositories. When you have decided, the next one comes up.
+- Closing the window decides nothing: the ticket keeps waiting, and the popup doesn't show it
+  again until it restarts. Sign it in a terminal with `writ sign <id>`, where you can also
+  narrow it. The popup never narrows.
+
+The window goes by itself when the ticket stops waiting (you signed it in a terminal, the
+agent withdrew it, it expired). The popup never shows an admin change or an unseal: those stay
+in the terminal.
+
+It runs `writ sign --ui` with your settings, and two of them come from its LaunchAgent
+(`~/Library/LaunchAgents/dev.writ.popup.plist`): `WRIT_HOME`, and `WRIT_APPROVAL_AGENT`, the
+agent socket you gave at the install. To stop it until the next login, or start it again:
+
+```text
+launchctl bootout gui/$(id -u)/dev.writ.popup
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.writ.popup.plist
+```
+
+An agent running as you can stop the popup too, or draw a window that looks like it. Touch
+ID is what matters: touch it only for a signature you started from a window or a terminal
+you trust ([threat model](../threat-model.md#residual-risks-v1)).
+
 ## The agent skill
 
 `writ init` installs the skill where each agent looks for it. On a terminal it asks which

@@ -23,7 +23,11 @@ LOG=$LOGS/writd.log
 PLIST=$(sys /Library/LaunchDaemons/$LABEL.plist)
 WHOME=${WRIT_HOME:-$HOME/.writ}
 ME=$(id -un)
-BINARIES_SHIPPED="writd writ writ-sign writ-se"
+BINARIES_SHIPPED="writd writ writ-sign writ-se writ-popup"
+# The approval popup (M7.8): writ-popup in your session, started at login.
+POPUP_LABEL=dev.writ.popup
+POPUP_PLIST=$HOME/Library/LaunchAgents/$POPUP_LABEL.plist
+SECRETIVE_SOCKET=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 # The ids the role user and the sockets' group take: the hidden system range.
 ID_FIRST=450
 ID_LAST=499
@@ -34,6 +38,7 @@ setup_owns() {
     case $1 in
         "$(sys /opt)" | "$PREFIX" | "$PREFIX"/* | "$PATHS_D" | "$PLIST" | "$DATA" | "$APP"/* | "$LOGS" | "$LOGS"/*) return 0 ;;
         "$WHOME" | "$WHOME"/*) return 0 ;;
+        "$HOME/Library" | "$HOME/Library/LaunchAgents" | "$POPUP_PLIST") return 0 ;;
     esac
     return 1
 }
@@ -44,6 +49,7 @@ setup_undo() {
         group) as_root dscl . -delete "/Groups/$2" ;;
         member) as_root dseditgroup -o edit -d "${2#* }" -t user "${2%% *}" ;;
         daemon) as_root launchctl bootout "system/$2" || say "  (the daemon was not running)" ;;
+        agent) as_user launchctl bootout "gui/$(id -u)/$2" || say "  (the popup was not running)" ;;
     esac
 }
 
@@ -102,6 +108,7 @@ setup_questions() {
     AUTO_UNSEAL=${AUTO_UNSEAL:-}
     if [ -d "$DATA" ]; then
         approver_kept
+        popup_questions
         return 0
     fi
     choose_approver
@@ -133,6 +140,52 @@ setup_questions() {
     fi
     AGENT_BACKEND=$(choose_one AGENT_BACKEND "$AGENT_BACKEND" "Agent signing key" software software se-cryptokit)
     keystore_questions
+    popup_questions
+}
+
+# The approval popup (M7.8): whether it starts at login, and the agent socket it signs
+# through (your approval key's: Secretive's by default).
+popup_questions() {
+    POPUP=${POPUP:-}
+    APPROVAL_AGENT=${APPROVAL_AGENT:-}
+    if [ -z "$POPUP" ] && terminal; then
+        say ""
+        say "The approval popup: a window in front of every app, full-screen ones too, when a"
+        say "ticket waits for your signature, with the whole ticket, Sign and Decline. It signs"
+        say "as writ sign does (your approval key, Touch ID). Started at login in your session."
+    fi
+    POPUP=$(choose_one POPUP "$POPUP" "Approval popup" yes yes no)
+    if [ "$POPUP" = no ]; then
+        [ -z "$APPROVAL_AGENT" ] || fail "APPROVAL_AGENT is for POPUP=yes (writ sign reads WRIT_APPROVAL_AGENT)"
+        return 0
+    fi
+    if [ -z "$APPROVAL_AGENT" ] && terminal; then
+        say ""
+        say "The agent holding your approval key, which the popup signs through (Enter:"
+        say "Secretive's)."
+        APPROVAL_AGENT=$(expand_home "$(ask "Approval key's agent socket" "$SECRETIVE_SOCKET")")
+    fi
+    APPROVAL_AGENT=${APPROVAL_AGENT:-$SECRETIVE_SOCKET}
+    check_approval_agent
+}
+
+# APPROVAL_AGENT, checked: an absolute path, and none of what the LaunchAgent's XML would
+# read otherwise.
+check_approval_agent() {
+    case $APPROVAL_AGENT in
+        /*) ;;
+        *) fail "APPROVAL_AGENT=$APPROVAL_AGENT: an absolute path (the approval key's agent socket)" ;;
+    esac
+    case $APPROVAL_AGENT in
+        *[\<\>\&\"\']* | *"$TAB"*) fail "APPROVAL_AGENT=$APPROVAL_AGENT: no < > & \" ' or tab in the path" ;;
+    esac
+}
+
+popup_said() {
+    case $POPUP in
+        yes) say "  Approval popup: at login, signing through $APPROVAL_AGENT" ;;
+        *) say "  Approval popup: not started (writ-popup is installed; writ sign in a terminal)" ;;
+    esac
 }
 
 # What opens the keystore, the recovery key, and auto-unseal (M7.6).
@@ -191,6 +244,7 @@ keystore_questions() {
 setup_answers() {
     if [ -d "$DATA" ]; then
         say "  The daemon's data kept from before: its keystore and policy are used again"
+        popup_said
         return 0
     fi
     say "  TLS key: $TLS_BACKEND"
@@ -201,6 +255,7 @@ setup_answers() {
     esac
     say "  Auto-unseal: $AUTO_UNSEAL"
     say "  Agent signing key agent-01: $(agent_key_said)"
+    popup_said
 }
 
 # agent-01 as the starting policy declares it, and as the summary says it.
@@ -312,6 +367,51 @@ plist() {
 </dict>
 </plist>
 EOF
+}
+
+# The popup's LaunchAgent: writ-popup in your GUI session, its writ given your Writ home and
+# the approval key's agent.
+popup_plist() {
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$POPUP_LABEL</string>
+	<key>ProgramArguments</key>
+	<array><string>$BIN/writ-popup</string></array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>WRIT_HOME</key><string>$WHOME</string>
+		<key>WRIT_APPROVAL_AGENT</key><string>$APPROVAL_AGENT</string>
+	</dict>
+	<key>LimitLoadToSessionType</key><string>Aqua</string>
+	<key>ProcessType</key><string>Interactive</string>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+</dict>
+</plist>
+PLIST
+}
+
+# The approval popup started at login: its LaunchAgent written and started in your session.
+install_popup() {
+    step "The approval popup ($POPUP_PLIST), started in your session"
+    for dir in "$HOME/Library" "$HOME/Library/LaunchAgents"; do
+        if [ ! -d "$dir" ]; then
+            as_user mkdir -m 0755 "$dir"
+            record "userdir $dir"
+        fi
+    done
+    put_user "$POPUP_PLIST" "$(popup_plist)"
+    record "userfile $POPUP_PLIST"
+    as_user launchctl bootstrap "gui/$(id -u)" "$POPUP_PLIST"
+    record "agent $POPUP_LABEL"
+}
+
+# Whether this install started the popup (its manifest line).
+popup_installed() {
+    [ -f "$MANIFEST" ] && grep -qxF -- "agent $POPUP_LABEL" "$MANIFEST"
 }
 
 setup_install() {
@@ -458,6 +558,12 @@ approval_url = unix:$RUN/approvals.sock"
         record "userfile $WHOME/config"
     fi
     put_approver_pub
+    if [ "$POPUP" = no ]; then
+        # Remembered: an upgrade doesn't start the popup you declined.
+        record "choice popup no"
+    else
+        install_popup
+    fi
     CURRENT=
     [ "$DRY_RUN" = 1 ] && return 0
     say ""
@@ -470,6 +576,7 @@ approval_url = unix:$RUN/approvals.sock"
     esac
     say "  3. writ admin key/host/repo/template add, then writ init <repo> in a clone."
     say "  4. Start each agent with writ run -- <agent>."
+    [ "$POPUP" = no ] || say "  A ticket waiting for you comes up in the approval popup (writ sign in a terminal too)."
 }
 
 setup_upgrade() {
@@ -477,11 +584,26 @@ setup_upgrade() {
     old=$(cksum <"$BIN/writ" 2>/dev/null || printf none)
     step "The daemon stopped in order (SIGTERM: what is in flight finishes)"
     as_root launchctl bootout "system/$LABEL" || say "  (it was not running)"
+    if popup_installed; then
+        step "The approval popup stopped"
+        as_user launchctl bootout "gui/$(id -u)/$POPUP_LABEL" || say "  (it was not running)"
+    fi
     install_binaries
     step "The LaunchDaemon's plist written again ($PLIST): this version's settings"
     put_root "$PLIST" 0644 root:wheel "$(plist)"
     step "The daemon started again: the keystore, state, configuration and pins kept"
     as_root launchctl bootstrap system "$PLIST"
+    if popup_installed; then
+        step "The approval popup started again ($POPUP_PLIST kept: your answers)"
+        as_user launchctl bootstrap "gui/$(id -u)" "$POPUP_PLIST"
+    elif [ "${POPUP:-yes}" != no ] && ! grep -qxF -- "choice popup no" "$MANIFEST"; then
+        # An install from before M7.8: the popup added, Secretive's agent unless
+        # APPROVAL_AGENT says otherwise (POPUP=no, or the install's no, leaves it out).
+        POPUP=yes
+        APPROVAL_AGENT=${APPROVAL_AGENT:-$SECRETIVE_SOCKET}
+        check_approval_agent
+        install_popup
+    fi
     CURRENT=
     [ "$DRY_RUN" = 1 ] && return 0
     say "Upgraded. writ unseal opens it again."

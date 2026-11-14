@@ -190,13 +190,17 @@ impl Fake {
             for name in ["writd", "writ", "writ-sign"] {
                 std::os::unix::fs::symlink(built.join(name), dir.join(name)).unwrap();
             }
-            let helper = built.join("writ-se");
-            if helper.exists() {
-                std::os::unix::fs::symlink(helper, dir.join("writ-se")).unwrap();
-            } else {
-                fs::write(dir.join("writ-se"), "#!/bin/sh\nexit 1\n").unwrap();
-                fs::set_permissions(dir.join("writ-se"), fs::Permissions::from_mode(0o755))
-                    .unwrap();
+            // The Swift programs (the Secure Enclave helper, the approval popup): built on the
+            // Mac by `make test`, a stub elsewhere.
+            for swift in ["writ-se", "writ-popup"] {
+                let program = built.join(swift);
+                if program.exists() {
+                    std::os::unix::fs::symlink(program, dir.join(swift)).unwrap();
+                } else {
+                    fs::write(dir.join(swift), "#!/bin/sh\nexit 1\n").unwrap();
+                    fs::set_permissions(dir.join(swift), fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                }
             }
         }
         dir
@@ -374,8 +378,9 @@ fn the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_
     // On a terminal, the setup is asked.
     let mut asked = fake.command("install", &[("DRY_RUN", "1")]);
     asked.env("APPROVER", &fake.approver);
-    // The setup, then this setup's four questions (Enter: software, a passphrase).
-    let (status, shown) = on_terminal(asked, &["local", "", "", "", ""]);
+    // The setup, then this setup's six questions (Enter: software, a passphrase, the popup
+    // through Secretive's agent).
+    let (status, shown) = on_terminal(asked, &["local", "", "", "", "", "", ""]);
     assert!(status.success(), "{shown}");
     assert!(
         shown.contains("Which setup? Offered on Darwin: local"),
@@ -406,12 +411,30 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
             + &whoami()
             + "\ndir /opt\ndir /opt/writ\ndir /opt/writ/bin\nfile /opt/writ/bin/writd\n\
                file /opt/writ/bin/writ\nfile /opt/writ/bin/writ-sign\nfile /opt/writ/bin/writ-se\n\
+               file /opt/writ/bin/writ-popup\n\
                file /etc/paths.d/writ\n\
                tree /Library/Application Support/Writ/run\ntree /Library/Logs/Writ\n\
                userdir ~/.writ\nuserdata ~/.writ/reader\nnewdata /var/db/writ\ndata /var/db/writ\n\
                file /Library/LaunchDaemons/dev.writ.writd.plist\ndaemon dev.writ.writd\n\
-               userfile ~/.writ/known_hosts\nuserfile ~/.writ/config\nuserfile ~/.writ/approver.pub\n"
+               userfile ~/.writ/known_hosts\nuserfile ~/.writ/config\nuserfile ~/.writ/approver.pub\n\
+               userdir ~/Library\nuserdir ~/Library/LaunchAgents\n\
+               userfile ~/Library/LaunchAgents/dev.writ.popup.plist\nagent dev.writ.popup\n"
     );
+    // The popup's LaunchAgent: writ-popup in your session, your Writ home and Secretive's
+    // agent (no APPROVAL_AGENT given), started in your GUI session.
+    let popup = fake.shown(
+        &fs::read_to_string(fake.home.join("Library/LaunchAgents/dev.writ.popup.plist")).unwrap(),
+    );
+    for part in [
+        "<key>Label</key><string>dev.writ.popup</string>",
+        "<array><string>/opt/writ/bin/writ-popup</string></array>",
+        "<key>WRIT_HOME</key><string>~/.writ</string>",
+        "<key>WRIT_APPROVAL_AGENT</key><string>~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh</string>",
+        "<key>LimitLoadToSessionType</key><string>Aqua</string>",
+        "<key>KeepAlive</key><true/>",
+    ] {
+        assert!(popup.contains(part), "{part} not in {popup}");
+    }
     // The daemon's configuration: local mode, the sockets in the group's directory.
     let config = fs::read_to_string(fake.at("/var/db/writ/writd.yaml")).unwrap();
     assert!(
@@ -453,6 +476,11 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
         "dseditgroup -o edit -a ",
         "codesign --force --sign - --options runtime --identifier dev.writ.writ /opt/writ/bin/writ\n",
         "launchctl bootstrap system /Library/LaunchDaemons/dev.writ.writd.plist\n",
+        "codesign --force --sign - --options runtime --identifier dev.writ.writ-popup /opt/writ/bin/writ-popup\n",
+        &format!(
+            "launchctl bootstrap gui/{} ~/Library/LaunchAgents/dev.writ.popup.plist\n",
+            uid()
+        ),
     ] {
         assert!(calls.contains(call), "{call} not in {calls}");
     }
@@ -494,8 +522,13 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
             .filter(|l| l.starts_with("launchctl"))
             .collect::<Vec<_>>(),
         [
-            "launchctl bootout system/dev.writ.writd",
-            "launchctl bootstrap system /Library/LaunchDaemons/dev.writ.writd.plist",
+            "launchctl bootout system/dev.writ.writd".to_owned(),
+            format!("launchctl bootout gui/{}/dev.writ.popup", uid()),
+            "launchctl bootstrap system /Library/LaunchDaemons/dev.writ.writd.plist".to_owned(),
+            format!(
+                "launchctl bootstrap gui/{} ~/Library/LaunchAgents/dev.writ.popup.plist",
+                uid()
+            ),
         ]
     );
     let again = ok(&fake.run("install", &[], ""));
@@ -995,6 +1028,12 @@ fn on_linux_a_failed_install_stops_saying_where_and_the_uninstall_takes_back_wha
     assert_eq!(fake.directory(), "passwd writd 120\n");
 }
 
+/// Your user id (the GUI session's domain is `gui/<uid>`).
+fn uid() -> String {
+    let out = Command::new("id").arg("-u").output().unwrap();
+    stdout(&out).trim().to_owned()
+}
+
 fn whoami() -> String {
     String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout)
         .unwrap()
@@ -1036,6 +1075,8 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
             "",
             "",
             "",
+            "",
+            "",
             "n",
         ],
     );
@@ -1056,6 +1097,9 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         "Agent signing key [software]: ",
         "Keystore opened by [passphrase]: ",
         "not offered with these answers",
+        "The approval popup: a window in front of every app, full-screen ones too, when a",
+        "Approval popup [yes]: ",
+        "Approval key's agent socket [~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh]: ",
         "Your answers:",
         "  Setup: local (the daemon on this Mac",
         &format!(
@@ -1067,6 +1111,7 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         "  Keystore opened by: a passphrase",
         "  Auto-unseal: no",
         "  Agent signing key agent-01: Ed25519, in software",
+        "  Approval popup: at login, signing through ~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh",
         "The changes, in order (none is made yet):",
         "    (root) dscl . -create /Users/_writd UniqueID 450",
         "agent-01: { use: signing, format: ssh, algorithm: ed25519 }",
@@ -1085,6 +1130,8 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         &[
             "",
             &approver,
+            "",
+            "",
             "",
             "",
             "",
@@ -1187,6 +1234,24 @@ fn without_a_terminal_each_answer_is_a_variable_checked_like_a_typed_one() {
             ],
             "AUTO_UNSEAL=yes needs CA_BACKEND, AGENT_BACKEND and UNSEAL all se-cryptokit",
         ),
+        // The approval popup (M7.8): its two answers, checked like the others.
+        (vec![("POPUP", "maybe")], "POPUP=maybe: one of yes no"),
+        (
+            vec![("POPUP", "no"), ("APPROVAL_AGENT", "/tmp/agent.sock")],
+            "APPROVAL_AGENT is for POPUP=yes",
+        ),
+        (
+            vec![("APPROVAL_AGENT", "agent.sock")],
+            "APPROVAL_AGENT=agent.sock: an absolute path",
+        ),
+        (
+            vec![("APPROVAL_AGENT", "/tmp/a</string><key>x")],
+            "APPROVAL_AGENT=/tmp/a</string><key>x: no < > & \" ' or tab in the path",
+        ),
+        (
+            vec![("APPROVAL_AGENT", "/tmp/a&b")],
+            "no < > & \" ' or tab in the path",
+        ),
     ] {
         refused(&fake.install(&env), why);
         assert_eq!(fake.tree(), before, "{env:?}: nothing made");
@@ -1216,4 +1281,97 @@ fn without_a_terminal_each_answer_is_a_variable_checked_like_a_typed_one() {
         assert!(said.contains(change), "{change:?} not in:\n{said}");
     }
     assert_eq!(fake.tree(), before);
+}
+
+/// The approval popup's answers (M7.8): `POPUP=no` installs `writ-popup` and starts nothing;
+/// `APPROVAL_AGENT` is what the popup's `writ` signs through; an install made before M7.8
+/// gets the popup at its upgrade, and the uninstall takes it back.
+#[test]
+fn the_approval_popup_is_started_at_login_as_answered_and_taken_back() {
+    let fake = Fake::new();
+    let before = fake.tree();
+    ok(&fake.install(&[("POPUP", "no")]));
+    let manifest = fs::read_to_string(fake.manifest()).unwrap();
+    assert!(manifest.contains("file "), "{manifest}");
+    assert!(
+        manifest.contains(&format!(
+            "file {}",
+            fake.at("/opt/writ/bin/writ-popup").display()
+        )),
+        "{manifest}"
+    );
+    assert!(!manifest.contains("agent dev.writ.popup"), "{manifest}");
+    assert!(manifest.ends_with("choice popup no\n"), "{manifest}");
+    assert!(!fake.home.join("Library").exists());
+    assert!(!fake.calls().contains("gui/"), "{}", fake.calls());
+    // Its upgrade remembers the no.
+    ok(&fake.run("install", &[], ""));
+    assert!(!fake.home.join("Library").exists());
+    assert!(!fake.calls().contains("gui/"), "{}", fake.calls());
+
+    // An upgrade of an install made before M7.8 (no popup, no answer recorded): the popup
+    // added, through the agent APPROVAL_AGENT names.
+    let without = fs::read_to_string(fake.manifest())
+        .unwrap()
+        .replace("choice popup no\n", "");
+    fs::write(fake.manifest(), without).unwrap();
+    let said = fake.shown(&ok(&fake.run(
+        "install",
+        &[("APPROVAL_AGENT", "/private/var/run/approval-agent.sock")],
+        "",
+    )));
+    assert!(
+        said.contains("The approval popup (~/Library/LaunchAgents/dev.writ.popup.plist), started in your session"),
+        "{said}"
+    );
+    let plist =
+        fs::read_to_string(fake.home.join("Library/LaunchAgents/dev.writ.popup.plist")).unwrap();
+    assert!(
+        plist.contains("<key>WRIT_APPROVAL_AGENT</key><string>/private/var/run/approval-agent.sock</string>"),
+        "{plist}"
+    );
+    let manifest = fake.shown(&fs::read_to_string(fake.manifest()).unwrap());
+    assert!(
+        manifest.ends_with(
+            "userdir ~/Library\nuserdir ~/Library/LaunchAgents\n\
+             userfile ~/Library/LaunchAgents/dev.writ.popup.plist\nagent dev.writ.popup\n"
+        ),
+        "{manifest}"
+    );
+    // The next upgrade keeps that plist (your answers) and starts the popup again.
+    fs::write(fake.root.join(".calls"), "").unwrap();
+    ok(&fake.run("install", &[], ""));
+    assert_eq!(
+        fs::read_to_string(fake.home.join("Library/LaunchAgents/dev.writ.popup.plist")).unwrap(),
+        plist
+    );
+    let calls = fake.shown(&fake.calls());
+    assert!(
+        calls.contains(&format!("launchctl bootout gui/{}/dev.writ.popup\n", uid()))
+            && calls.contains(&format!(
+                "launchctl bootstrap gui/{} ~/Library/LaunchAgents/dev.writ.popup.plist\n",
+                uid()
+            )),
+        "{calls}"
+    );
+
+    // Uninstalled: the popup stopped, its plist and the folders the install made gone.
+    fs::write(fake.root.join(".calls"), "").unwrap();
+    ok(&fake.run("uninstall", &[("REPOS", "keep")], ""));
+    assert!(
+        fake.shown(&fake.calls())
+            .contains(&format!("launchctl bootout gui/{}/dev.writ.popup\n", uid())),
+        "{}",
+        fake.calls()
+    );
+    assert!(!fake.home.join("Library").exists(), "{:?}", fake.home());
+    let mut expected = before;
+    expected.extend(
+        listing(&fake.at("/var/db/writ"))
+            .iter()
+            .map(|p| format!("var/db/writ/{p}")),
+    );
+    expected.push("var/db/writ".to_owned());
+    expected.sort();
+    assert_eq!(fake.tree(), expected);
 }

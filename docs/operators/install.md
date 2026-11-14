@@ -40,6 +40,11 @@ means and what Enter keeps:
 4. On the Mac, **where your agents' first signing key, `agent-01`, is made**: `software` (an
    Ed25519 key) or `se-cryptokit` (a P-256 key in the Secure Enclave). On Linux it is an
    Ed25519 key in software, the only backend there.
+5. On the Mac, **the approval popup**: `yes` (Enter) starts it at each login. When a ticket
+   waits for your signature, a window comes up in front of every app, full-screen ones too,
+   with the whole ticket and two buttons, Sign and Decline. Then **the socket of the agent
+   that holds your approval key**: Enter takes Secretive's. `no` installs the popup's program
+   and starts nothing: you sign with `writ sign` in a terminal.
 
 Then it shows your answers and **every change it will make, in order**, and asks `Install?`.
 Nothing is done before you answer `y`; anything else leaves the machine as it was. It then
@@ -59,12 +64,13 @@ On the Mac:
 |---|---|
 | A user for the daemon, hidden, with no shell | `_writd` |
 | A group for the agents' sockets, with you in it | `_writ` |
-| The binaries, owned by root | `/opt/writ/bin` (`writd`, `writ`, `writ-sign`, and `writ-se`, the helper `writd` starts for keys in the Secure Enclave), on your `PATH` through `/etc/paths.d/writ` |
+| The binaries, owned by root | `/opt/writ/bin` (`writd`, `writ`, `writ-sign`, `writ-se`, the helper `writd` starts for keys in the Secure Enclave, and `writ-popup`, the approval popup), on your `PATH` through `/etc/paths.d/writ` |
 | The daemon's keys, state and configuration, readable by the daemon only | `/var/db/writ` |
 | The sockets the agents and you connect to | `/Library/Application Support/Writ/run` |
 | The daemon's log, readable by you | `/Library/Logs/Writ/writd.log` |
 | The daemon, started at boot | the LaunchDaemon `dev.writ.writd` |
 | Your client: the daemon's host key pinned, the endpoints set, your reader key | `~/.writ` (`known_hosts`, `config`, `reader`, `approver.pub`) |
+| The approval popup, started at each login in your session (unless you answered `no`) | the LaunchAgent `dev.writ.popup` (`~/Library/LaunchAgents/dev.writ.popup.plist`) |
 
 On Linux:
 
@@ -98,14 +104,19 @@ You add repositories from your machine with `writ admin`.
    ([Daily operations](sealing.md)), then run `writ init <repo>` in a clone.
 4. Start each agent through `writ run`, for example `writ run -- claude`. Its leases are then
    bound to that session ([Client settings](clients.md#binding-a-lease-to-its-session-local-mode)).
+5. On the Mac, the approval popup is already running: the next ticket an agent submits comes
+   up in its window ([The approval popup](clients.md#the-approval-popup-on-the-mac)).
 
 ## Upgrade
 
 Run `make install` again. It says what an upgrade does and lists its changes, then asks
 `Upgrade?`. Yes stops the daemon cleanly, replaces the binaries, writes the LaunchDaemon's
 plist (the systemd unit on Linux) again with this version's settings, and starts it again. The
-keystore, the state, the configuration and your pins are kept. Unseal again afterwards. If
-`writ` changed, it says so:
+keystore, the state, the configuration and your pins are kept. Unseal again afterwards. On the
+Mac, the approval popup is stopped and started again with its settings kept; an install made
+before the popup existed gets it, through Secretive's agent (or the one `APPROVAL_AGENT`
+names), unless you upgrade with `POPUP=no`, and an install where you answered `no` stays
+without it. If `writ` changed, it says so:
 
 - Agents started with `writ run` before the upgrade are bound to the old `writ`. Their leases
   are refused from then on. Start each agent again, then request a new lease.
@@ -127,7 +138,8 @@ make uninstall
 
 It asks its questions first, then lists what it takes back and asks `Uninstall?`. Nothing
 changes before you answer `y`. It stops the daemon and removes everything the install made,
-and nothing else: on Linux, your membership of the `writ` group too.
+and nothing else: on the Mac, the approval popup too (stopped, its LaunchAgent removed); on
+Linux, your membership of the `writ` group too.
 
 - **The repositories `writ init` set up**: it lists them and asks whether to take Writ out of
   them too. Once `writ` is gone, only a new install can take them back.
@@ -151,6 +163,8 @@ give every one.
 | `RECOVERY=<age1…>` | With `UNSEAL=se-cryptokit`: the recovery key's recipient, from `writ recovery new` (required then; on a terminal, Enter makes one) |
 | `AUTO_UNSEAL=no\|yes` | Whether the daemon opens itself at each start: only with `CA_BACKEND`, `AGENT_BACKEND` and `UNSEAL` all `se-cryptokit` (`no` when left out) |
 | `AGENT_BACKEND=software\|se-cryptokit` | Where `agent-01` is made (the Mac; `software` when left out) |
+| `POPUP=yes\|no` | Whether the approval popup starts at each login (the Mac; `yes` when left out) |
+| `APPROVAL_AGENT=<socket path>` | With `POPUP=yes`: the socket of the agent that holds your approval key, an absolute path (Secretive's when left out) |
 | `DRY_RUN=1` | Only list the changes, make none |
 | `REPOS=undo\|keep` | The uninstall's question about the repositories `writ init` set up |
 | `PURGE=1` | Delete the daemon's data at the uninstall: this one still needs a terminal, where you type `delete` |

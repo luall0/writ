@@ -511,7 +511,9 @@ undo_line() {
     kind=${1%% *}
     rest=${1#* }
     case $kind in
-        setup) return 0 ;;
+        # A setup's name, an answer an upgrade reads again (`choice <what> <answer>`):
+        # nothing to take back.
+        setup | choice) return 0 ;;
         userline)
             path=${rest%%"$TAB"*}
             text=${rest#*"$TAB"}
@@ -519,7 +521,7 @@ undo_line() {
         *) path=$rest ;;
     esac
     case $kind in
-        setup | user | group | member | daemon) ;;
+        user | group | member | daemon | agent) ;;
         *)
             setup_owns "$path" || {
                 say "  left as it is (not one of this installer's paths): $path"
