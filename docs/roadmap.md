@@ -342,7 +342,22 @@ Steps (each one commit, `make ci` green, its docs in the same commit):
    your GUI session, started again on upgrade, taken back by `make uninstall`; the fake-root
    installer test. Docs: [install.md](operators/install.md),
    [clients.md](operators/clients.md).
-5. **Closing:** the acceptance items ticked from what was run, the manual check run by the
+5. **The structured display** (`writ-cli`, asked by the user on seeing the first window):
+   `writ`'s display built once as sections of tagged rows (enforced, the agent's words, added,
+   removed, a warning, context), the terminal text rendered from it byte for byte as before;
+   the `show` event carrying that structure and a header (kind, title, repos, expiry); a
+   `pick <id>` answer showing any waiting ticket (fetched and checked like the others, one put
+   aside coming back). Tests: the structure and the terminal the same content, agent text only
+   ever tagged as the agent's, `pick` refused for a ticket not waiting; the end-to-end
+   scenario picks.
+6. **The SwiftUI window** (the same panel: above every space, no focus, held a second): a
+   sidebar of every waiting ticket (title, repos, a kind badge; a click picks it); a header
+   (kind, title, repos, a live expiry); **You are signing** as a card at the top; the agent's
+   words in a box marked untrusted; the details in sections that fold (who, the lease, each
+   repository, an amendment's changes in green and red, a renewal's chain, the source's other
+   leases); Sign the accent button, Decline the second; a Touch ID state, failures in a
+   banner; light and dark. The manual check updated.
+7. **Closing:** the acceptance items ticked from what was run, the manual check run by the
    user, the history page.
 
 Acceptance:
@@ -353,6 +368,9 @@ Acceptance:
       field, agent text neutralized), signs on `sign`, refuses with the feedback on
       `refuse`, and signs nothing on a malformed, oversized or missing answer; an admin
       change or an unseal never reaches it; each case an end-to-end scenario.
+- [ ] The window shows the ticket in sections, coloured by what each row is, from the
+      structure `writ` built (never parsed from text): what is signed first, the agent's
+      words apart and marked untrusted; any waiting ticket picked from the sidebar.
 - [ ] Tickets that arrive together are stacked (asked by the user): the oldest shown, each
       other one listed behind it with its title and repositories and the window saying how
       many more wait; the next one shown once one is decided or gone.
