@@ -407,8 +407,9 @@ once), and `yes` to auto-unseal: the install ends with the daemon open, no `writ
 
 **Device keys made by the daemon** (found on the first real install, 2026-11-14): a fresh
 `make install` with `se-cryptokit` for the TLS key, the CA and `agent-01`. `writd init`'s
-output says each is owed; the daemon's log at its first start has a `key created` line for
-each (`/Library/Logs/Writ/writd.log`), and no `to-make.json` is left in the keys directory.
+output says each is owed; the daemon's log at its first start says each one `made on
+se-cryptokit at the daemon's start` (`/Library/Logs/Writ/writd.log`), and `sudo ls
+/var/db/writ/keys` shows no `to-make.json` left.
 `writ unseal`, then a ticket signed in the popup and in `writ sign`: the lease is granted
 (before the fix: `internal error in the daemon`, `the helper refused: sign-failed` in the
 log), and the agent's first signed commit verifies. On an install made before the fix,

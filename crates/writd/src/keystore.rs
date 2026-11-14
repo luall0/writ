@@ -4,11 +4,12 @@
 
 pub mod ca;
 mod dev;
-mod init;
+pub(crate) mod init;
 pub mod recipients;
 pub mod rotation;
 mod sealed;
 pub mod tls;
+pub mod to_make;
 
 pub use init::init;
 pub use sealed::CA_ID;
@@ -285,18 +286,21 @@ pub struct TlsKeyPair {
 /// keystore they are read with no unseal.
 pub struct PublicKeys {
     pub host: PublicKey,
-    /// The HTTPS approval API certificate's fingerprint, as clients pin it.
-    pub tls_fingerprint: String,
+    /// The HTTPS approval API certificate's fingerprint, as clients pin it; `None` while the
+    /// TLS key is owed to the daemon's first start ([`to_make`]).
+    pub tls_fingerprint: Option<String>,
     /// Each declared signing key: its public half and what its file says it is.
     pub signing: Vec<(KeyId, PublicKey, KeyMeta)>,
     pub upstream: Vec<(KeyId, PublicKey)>,
+    /// What the daemon's first start still owes (none in the development keystore).
+    pub owed: to_make::Owed,
 }
 
 impl PublicKeys {
     fn of(boot: &Boot, keys: &Keys) -> anyhow::Result<Self> {
         Ok(Self {
             host: boot.host.public_key().clone(),
-            tls_fingerprint: writ_crypto::tls::fingerprint_pem(&boot.tls.cert_pem)?,
+            tls_fingerprint: Some(writ_crypto::tls::fingerprint_pem(&boot.tls.cert_pem)?),
             signing: keys
                 .signing
                 .iter()
@@ -307,6 +311,7 @@ impl PublicKeys {
                 .iter()
                 .map(|k| (k.id.clone(), k.key.public_key()))
                 .collect(),
+            owed: to_make::Owed::default(),
         })
     }
 }
@@ -384,17 +389,25 @@ pub fn read_certificate(config: &Config, id: &KeyId) -> anyhow::Result<Option<St
     )?))
 }
 
+/// What [`make_missing`] made, with each public half, and the device keys it left owed.
+pub type MadeMissing = (
+    Vec<(KeyId, KeyRole, PublicKey, KeyMeta)>,
+    Vec<to_make::OwedKey>,
+);
+
 /// Makes every key `declared` names that the keystore lacks (`writd recover`, on the host:
 /// a sealed key is encrypted to the keystore's public recipient, checked first to be the
 /// identity `key` opens), and checks each one it holds against its declaration. The keys
 /// made, with their public halves. A sealed keystore needs its data key; the development
-/// keystore has none.
+/// keystore has none. A key on a device is never made here, a command run by hand: it is owed
+/// to the daemon's next start ([`to_make`]), an OpenPGP key with its user ids from `policy`.
 pub fn make_missing(
     config: &Config,
     declared: &Declarations,
+    policy: &PolicyConfig,
     makers: &Makers,
     key: Option<&writ_platform::DataKey>,
-) -> anyhow::Result<Vec<(KeyId, KeyRole, PublicKey, KeyMeta)>> {
+) -> anyhow::Result<MadeMissing> {
     let recipient = match (&config.keystore, key) {
         (KeystoreConfig::Sealed(sealed), Some(key)) => Some(checked_recipient(sealed, key)?),
         (KeystoreConfig::Sealed(_), None) => {
@@ -403,6 +416,7 @@ pub fn make_missing(
         (KeystoreConfig::Dev(_), _) => None,
     };
     let mut made = Vec::new();
+    let mut owed = Vec::new();
     for (id, key) in declared {
         let (stored, new) = match &config.keystore {
             KeystoreConfig::Dev(dir) => dev::key_or_make(dir, id, key, makers)?,
@@ -411,6 +425,14 @@ pub fn make_missing(
                 if layout.key(key.role, id).exists() {
                     // Held: as declared, or the policy is refused (it would never start).
                     sealed::check_public(&layout, id, key)?;
+                    continue;
+                }
+                if key.backend.is_device() {
+                    owed.push(to_make::OwedKey {
+                        id: id.clone(),
+                        declared: *key,
+                        uids: policy.uids(id).to_vec(),
+                    });
                     continue;
                 }
                 let recipient = recipient
@@ -423,7 +445,16 @@ pub fn make_missing(
             made.push((id.clone(), key.role, stored.key.public_key(), stored.meta));
         }
     }
-    Ok(made)
+    if let (KeystoreConfig::Sealed(sealed), false) = (&config.keystore, owed.is_empty()) {
+        to_make::add(
+            sealed,
+            to_make::Owed {
+                keys: owed.clone(),
+                ..to_make::Owed::default()
+            },
+        )?;
+    }
+    Ok((made, owed))
 }
 
 /// What the daemon starts with: the boot tier alone (sealed), or every key (the development

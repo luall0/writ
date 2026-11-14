@@ -476,8 +476,11 @@ pub fn check_public(
 /// opened.
 pub fn public(sealed: &SealedConfig, declared: &Declarations) -> anyhow::Result<PublicKeys> {
     let layout = Layout(sealed);
+    // What the daemon's first start still owes has no files yet: left out, and said.
+    let owed = super::to_make::read(sealed)?.unwrap_or_default();
     let read = |role: KeyRole| -> anyhow::Result<Vec<(KeyId, PublicKey, KeyMeta)>> {
         of_role(declared, role)
+            .filter(|(id, _)| !owed.owes(role, id))
             .map(|(id, key)| {
                 let (public, meta) = stored_public(&layout, role, id)?;
                 crate::declared::check_key(id, key, &public, &meta)?;
@@ -487,12 +490,16 @@ pub fn public(sealed: &SealedConfig, declared: &Declarations) -> anyhow::Result<
     };
     Ok(PublicKeys {
         host: host_key(sealed)?.public_key().clone(),
-        tls_fingerprint: writ_crypto::tls::fingerprint_pem(&tls_cert(sealed)?)?,
+        tls_fingerprint: match owed.tls {
+            Some(_) => None,
+            None => Some(writ_crypto::tls::fingerprint_pem(&tls_cert(sealed)?)?),
+        },
         signing: read(KeyRole::Signing)?,
         upstream: read(KeyRole::Upstream)?
             .into_iter()
             .map(|(id, public, _)| (id, public))
             .collect(),
+        owed,
     })
 }
 
@@ -515,40 +522,6 @@ pub fn ca_key(files: &SecretFiles, layout: &Layout<'_>) -> anyhow::Result<Stored
         key: material,
         meta,
     })
-}
-
-/// Replaces the software CA `writd init` made with one made on the device `backend` (M7.6,
-/// `--ca-backend`): P-256, sealed to the keystore's identity like any key, its public half
-/// beside it.
-pub fn make_ca(
-    sealed: &SealedConfig,
-    key: &writ_platform::DataKey,
-    backend: crate::declared::Backend,
-    makers: &super::Makers,
-) -> anyhow::Result<()> {
-    let layout = Layout(sealed);
-    let declared = Declared {
-        role: KeyRole::Signing,
-        format: writ_crypto::algorithm::SignatureFormat::Ssh,
-        algorithm: writ_crypto::algorithm::KeyAlgorithm::P256,
-        hash: writ_crypto::algorithm::Hash::Sha256,
-        backend,
-    };
-    let (material, meta) = makers.make(&CA_ID.parse()?, &declared)?;
-    let text = material.encode(meta)?;
-    let recipient = key.recipient()?;
-    let to: [&dyn age::Recipient; 1] = [&recipient];
-    for path in [layout.ca(), layout.ca_public()] {
-        std::fs::remove_file(&path)
-            .with_context(|| format!("cannot replace {}", path.display()))?;
-    }
-    seal(&layout.ca(), text.as_bytes(), &to)?;
-    write_public(
-        &layout.ca_public(),
-        &format!("{}\n", material.public_key().to_openssh()?),
-    )?;
-    super::ca::set_backend(sealed, backend.name())?;
-    Ok(())
 }
 
 /// The CA key's id in its signer.
@@ -681,7 +654,7 @@ mod tests {
             &policy(),
             Some(&Passphrase::new(PASSPHRASE.to_owned())),
             &cheap,
-            crate::declared::Backend::Software,
+            crate::keystore::init::Backends::default(),
             &crate::keystore::Makers::default(),
         )
         .unwrap();
@@ -797,7 +770,7 @@ mod tests {
         assert_eq!(*boot.host.public_key(), made.keys.host);
         assert_eq!(boot.ca_public, keys.ca.key.public_key());
         assert_eq!(
-            writ_crypto::tls::fingerprint_pem(&boot.tls.cert_pem).unwrap(),
+            Some(writ_crypto::tls::fingerprint_pem(&boot.tls.cert_pem).unwrap()),
             made.keys.tls_fingerprint
         );
         let signing: Vec<String> = keys.signing.iter().map(|k| k.id.to_string()).collect();
@@ -1225,7 +1198,7 @@ templates:
             &policy(),
             Some(&Passphrase::new(PASSPHRASE.to_owned())),
             &cheap,
-            crate::declared::Backend::Software,
+            crate::keystore::init::Backends::default(),
             &crate::keystore::Makers::default(),
         );
         let error = again.err().unwrap().to_string();
@@ -1251,7 +1224,7 @@ templates:
             &policy(),
             Some(&Passphrase::new(PASSPHRASE.to_owned())),
             &failing,
-            crate::declared::Backend::Software,
+            crate::keystore::init::Backends::default(),
             &crate::keystore::Makers::default(),
         );
         assert_eq!(error.err().unwrap().to_string(), "no room left");
@@ -1263,7 +1236,7 @@ templates:
                 &policy(),
                 Some(&Passphrase::new(PASSPHRASE.to_owned())),
                 &cheap,
-                crate::declared::Backend::Software,
+                crate::keystore::init::Backends::default(),
                 &crate::keystore::Makers::default(),
             )
             .is_ok()

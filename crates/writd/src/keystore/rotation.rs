@@ -479,7 +479,13 @@ impl Rotation<'_> {
         let mut removes: Vec<Rel> = Vec::new();
 
         // The keys, sealed to the identity: opened by the old one, sealed to the new one.
-        let mut keys = vec![Rel::parse("authority.age")?, Rel::parse("ca.age")?];
+        let mut keys = vec![Rel::parse("authority.age")?];
+        // A CA owed to the daemon's first start has no file yet (`to-make.json`): the daemon
+        // seals it to the recipient in force when it makes it.
+        let ca_owed = super::to_make::read(sealed)?.is_some_and(|o| o.ca.is_some());
+        if !ca_owed {
+            keys.push(Rel::parse("ca.age")?);
+        }
         for role in [KeyRole::Signing, KeyRole::Upstream] {
             let dir = match role {
                 KeyRole::Signing => "signing",

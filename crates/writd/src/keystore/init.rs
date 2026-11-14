@@ -4,9 +4,10 @@
 //! It makes the keystore's identity (wrapped with the passphrase), the boot tier (the host
 //! key, the TLS key and its certificate), the CA key, and every key the policy declares (its
 //! signing keys and `ssh` upstream credentials, as `keys.<id>` describes each), each its own
-//! age file to the identity's recipient;
-//! then prints what the operator pins and registers. It refuses a keystore already there, and
-//! leaves nothing behind when it fails.
+//! age file to the identity's recipient; a key on a device (the TLS key, the CA, a declared
+//! key) it leaves owed to the daemon's first start ([`super::to_make`]: the device binds a key
+//! to where it is made, and this runs by hand). Then it prints what the operator pins and
+//! registers. It refuses a keystore already there, and leaves nothing behind when it fails.
 
 use std::path::Path;
 
@@ -108,7 +109,10 @@ pub fn init(path: &Path, tls_backend: &str, ca_backend: &str) -> anyhow::Result<
         &policy,
         passphrase.as_ref(),
         &crate::platform::enroll,
-        tls_backend,
+        Backends {
+            tls: tls_backend,
+            ca: ca_backend,
+        },
         &makers,
     )?;
     // From here every step can fail with the directories full: undone on any failure (the
@@ -118,9 +122,6 @@ pub fn init(path: &Path, tls_backend: &str, ca_backend: &str) -> anyhow::Result<
         dirs: [&sealed.dir, &sealed.boot],
         done: false,
     };
-    if ca_backend.is_device() {
-        super::sealed::make_ca(sealed, &made.data_key, ca_backend, &makers)?;
-    }
     // The recipients (M7.6): each hardware one made in its device, then the identity wrapped
     // to them and to the recovery recipient.
     let recipients = super::recipients::make_missing(&config, sealed, &policy)?;
@@ -155,6 +156,7 @@ pub struct Made {
     /// The authority MAC's key, to record the files' first versions with.
     pub authority: writ_crypto::authority::AuthorityKey,
     pub recipient: String,
+    /// What it made, and the device keys it left to the daemon's first start (`owed`).
     pub keys: PublicKeys,
     /// The keystore's data key (wiped on drop): its identity wrapped to the recipients next.
     pub data_key: DataKey,
@@ -211,6 +213,13 @@ impl Drop for Undo<'_> {
     }
 }
 
+/// Where the TLS key and the CA's key go: on a device, owed to the daemon's first start.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Backends {
+    pub tls: crate::declared::Backend,
+    pub ca: crate::declared::Backend,
+}
+
 /// Makes the keystore in `sealed`'s directories, which must be missing or empty.
 pub fn make(
     sealed: &SealedConfig,
@@ -218,9 +227,13 @@ pub fn make(
     policy: &PolicyConfig,
     passphrase: Option<&Passphrase>,
     enroll: Enroll<'_>,
-    tls_backend: crate::declared::Backend,
+    backends: Backends,
     makers: &super::Makers,
 ) -> anyhow::Result<Made> {
+    let Backends {
+        tls: tls_backend,
+        ca: ca_backend,
+    } = backends;
     refuse_existing(sealed)?;
     private_dir(&sealed.dir)?;
     private_dir(&sealed.boot)?;
@@ -240,13 +253,21 @@ pub fn make(
     write_public(&layout.recipient(), &format!("{recipient_text}\n"))?;
     let to: [&dyn age::Recipient; 1] = [&recipient];
 
+    // A key on a device is made by the daemon, never here (see the module): owed.
+    let mut owed = super::to_make::Owed::default();
+
     // The boot tier: read at a sealed start.
     let host = generate(KeyKind::Ed25519)?;
     write_private(&layout.host(), host.to_openssh(LineEnding::LF)?.as_bytes())?;
-    let tls = super::sealed::tls_files(sealed);
-    tls.make(tls_backend, makers)?;
-    let cert_pem = writ_platform::fs::read_authority(&tls.cert, "the TLS certificate")?;
-    let tls_fingerprint = writ_crypto::tls::fingerprint_pem(&cert_pem)?;
+    let tls_fingerprint = if tls_backend.is_device() {
+        owed.tls = Some(tls_backend);
+        None
+    } else {
+        let tls = super::sealed::tls_files(sealed);
+        tls.make(tls_backend, makers)?;
+        let cert_pem = writ_platform::fs::read_authority(&tls.cert, "the TLS certificate")?;
+        Some(writ_crypto::tls::fingerprint_pem(&cert_pem)?)
+    };
 
     // Sealed: each its own age file, its public half beside it.
     let sealed_key = |secret: &Path, public: &Path| -> anyhow::Result<PrivateKey> {
@@ -255,13 +276,25 @@ pub fn make(
         write_public(public, &format!("{}\n", key.public_key().to_openssh()?))?;
         Ok(key)
     };
-    sealed_key(&layout.ca(), &layout.ca_public())?;
+    if ca_backend.is_device() {
+        owed.ca = Some(ca_backend);
+    } else {
+        sealed_key(&layout.ca(), &layout.ca_public())?;
+    }
     let authority = writ_crypto::authority::AuthorityKey::generate()?;
     seal(&layout.authority(), authority.as_bytes(), &to)?;
     private_dir(&layout.signing_dir())?;
     private_dir(&layout.upstream_dir())?;
     let mut signing = Vec::new();
     for (id, key) in of_role(declared, KeyRole::Signing) {
+        if key.backend.is_device() {
+            owed.keys.push(super::to_make::OwedKey {
+                id: id.clone(),
+                declared: *key,
+                uids: policy.uids(id).to_vec(),
+            });
+            continue;
+        }
         let made = super::sealed::make_key(&layout, &recipient, id, key, makers)?;
         // An OpenPGP key's certificate, with the user ids the policy gives it.
         if let Some(certificate) =
@@ -276,9 +309,18 @@ pub fn make(
     }
     let mut upstream = Vec::new();
     for (id, key) in of_role(declared, KeyRole::Upstream) {
+        if key.backend.is_device() {
+            owed.keys.push(super::to_make::OwedKey {
+                id: id.clone(),
+                declared: *key,
+                uids: Vec::new(),
+            });
+            continue;
+        }
         let made = super::sealed::make_key(&layout, &recipient, id, key, makers)?;
         upstream.push((made.id, made.key.public_key()));
     }
+    super::to_make::write(sealed, &owed)?;
     undo.done = true;
     Ok(Made {
         authority,
@@ -289,6 +331,7 @@ pub fn make(
             tls_fingerprint,
             signing,
             upstream,
+            owed,
         },
     })
 }
@@ -304,7 +347,20 @@ fn print(sealed: &SealedConfig, policy: &PolicyConfig, made: &Made) {
     );
     println!("recipient: {}", made.recipient);
     println!("host key: {}", openssh(&made.keys.host));
-    println!("TLS fingerprint: {}", made.keys.tls_fingerprint);
+    let owed = |what: &str, backend: crate::declared::Backend, then: &str| {
+        println!(
+            "{what}: on {}, owed: the daemon makes it at its first start ({then})",
+            backend.name()
+        );
+    };
+    match (&made.keys.tls_fingerprint, made.keys.owed.tls) {
+        (Some(fingerprint), _) => println!("TLS fingerprint: {fingerprint}"),
+        (None, Some(backend)) => owed("TLS key", backend, "writd tls-fingerprint prints it then"),
+        (None, None) => {}
+    }
+    if let Some(backend) = made.keys.owed.ca {
+        owed("CA key", backend, "its log says so");
+    }
     for (id, key) in &made.keys.upstream {
         println!(
             "upstream key {id}: {} (repos: {})",
@@ -321,6 +377,17 @@ fn print(sealed: &SealedConfig, policy: &PolicyConfig, made: &Made) {
                 .strip_prefix(&format!("{id} "))
                 .unwrap_or(&described),
             crate::joined(&policy.key_users(id).templates)
+        );
+    }
+    for key in &made.keys.owed.keys {
+        let then = match key.declared.role {
+            KeyRole::Signing => "writd signing-keys prints it then",
+            KeyRole::Upstream => "writd upstream-keys prints it then",
+        };
+        owed(
+            &crate::declared::named(key.declared.role, &key.id),
+            key.declared.backend,
+            then,
         );
     }
 }

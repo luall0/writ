@@ -108,14 +108,15 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
     // Now the keystore. A policy's keys checked against their backends, and those the
     // keystore lacks made, before the version is recorded (a version naming keys the
     // keystore lacks would never start).
-    let made = match &declared {
+    let (made, owed) = match &declared {
         Some(declared) => crate::keystore::make_missing(
             &config,
             declared,
+            &policy,
             &crate::platform::makers(&config)?,
             unlocked.as_ref().map(|u| &u.key),
         )?,
-        None => Vec::new(),
+        None => (Vec::new(), Vec::new()),
     };
     let rotated = match (plan, &config.keystore, &unlocked) {
         (Some(plan), KeystoreConfig::Sealed(sealed), Some(unlocked)) => {
@@ -150,6 +151,23 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
             role.as_str(),
             public.to_openssh()?
         );
+    }
+    // A key on a device: owed, made by the daemon at its next start (a command run by hand
+    // never makes one: the device binds it to where it is made).
+    for key in &owed {
+        let line = format!(
+            "{} on {}: owed by writd recover, the daemon makes it at its next start",
+            crate::declared::named(key.declared.role, &key.id),
+            key.declared.backend.name()
+        );
+        audit
+            .append(
+                &AuditEvent::new(crate::now()?, EventKind::Key, Outcome::Allowed)
+                    .key(&key.id)
+                    .reason(line.clone()),
+            )
+            .context("the audit log can't be written: the key is owed all the same")?;
+        println!("{line} (writd signing-keys or upstream-keys prints it then)");
     }
     audit
         .append(

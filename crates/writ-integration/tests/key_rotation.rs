@@ -810,10 +810,13 @@ fn on_the_mac_a_replaced_recovery_key_or_a_removed_hardware_key_rotates_the_data
     ok(&daemon.run(&["recovery", "check"], &format!("{r2}\n")));
 }
 
-/// `writd init --ca-backend <device>` that fails making the CA leaves both directories empty,
-/// so it can run again (S-10): on the Mac, the fake `writ-se` refusing to make it.
+/// A CA owed by `writd init --ca-backend <device>` (2026-11-14: a device key is made only by
+/// the running daemon) whose device fails to make it at the first start: the start stops,
+/// naming it, nothing made and the CA still owed; the device back, the next start makes it
+/// (S-10 was `writd init` failing there and leaving a half-made keystore: it now never
+/// touches the device). On the Mac, the fake `writ-se` refusing to make it.
 #[test]
-fn on_the_mac_writd_init_with_a_ca_device_that_fails_leaves_nothing_behind() {
+fn on_the_mac_a_ca_device_that_fails_at_the_first_start_keeps_the_ca_owed() {
     if !writ_integration::on_the_mac("this test") {
         return;
     }
@@ -855,23 +858,53 @@ fn on_the_mac_writd_init_with_a_ca_device_that_fails_leaves_nothing_behind() {
         yaml.replace(&helper_line, &format!("helper: {}", faulty.display())),
     )
     .unwrap();
-    let init = |daemon: &Daemon| {
-        daemon.writd_with(
-            &["init", "writd.yaml", "--ca-backend", "se-cryptokit"],
-            &format!("{PASSPHRASE}\n"),
-        )
-    };
-    let out = init(&daemon);
-    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
-    for dir in ["s/keys", "s/boot"] {
-        assert_eq!(
-            fs::read_dir(root.join(dir)).unwrap().count(),
-            0,
-            "{dir} left: {}",
-            stderr(&out)
+    // `writd init` never asks the device to make it: it says it is owed.
+    let out = daemon.writd_with(
+        &["init", "writd.yaml", "--ca-backend", "se-cryptokit"],
+        &format!("{PASSPHRASE}\n"),
+    );
+    ok(&out);
+    assert!(
+        stdout(&out).contains(
+            "CA key: on se-cryptokit, owed: the daemon makes it at its first start (its log \
+             says so)"
+        ),
+        "{}",
+        stdout(&out)
+    );
+    let owed = root.join("s/keys/to-make.json");
+    assert!(owed.exists());
+    assert!(!root.join("s/keys/ca.age").exists());
+    // The first start: the device refuses, the start stops naming it, the CA still owed.
+    let refused = daemon.restart_refused();
+    assert!(
+        refused.contains("the helper refused: refused-on-demand"),
+        "{refused}"
+    );
+    assert!(owed.exists(), "{refused}");
+    for file in ["ca.age", "ca.pub", "ca.backend"] {
+        assert!(
+            !root.join("s/keys").join(file).exists(),
+            "{file}: {refused}"
         );
     }
-    // The device back: `writd init` runs again.
+    // The device back: the next start makes it, and the file is gone.
     fs::write(root.join("writd.yaml"), &yaml).unwrap();
-    ok(&init(&daemon));
+    daemon.restart();
+    assert!(!owed.exists());
+    let public = fs::read_to_string(root.join("s/keys/ca.pub")).unwrap();
+    assert!(public.starts_with("ecdsa-sha2-nistp256 "), "{public}");
+    assert_eq!(
+        fs::read_to_string(root.join("s/keys/ca.backend")).unwrap(),
+        "se-cryptokit\n"
+    );
+    assert!(
+        daemon.audit().contains(&format!(
+            "the CA's key made on se-cryptokit at the daemon's start (owed by a command run \
+             by hand): {}",
+            public.trim()
+        )),
+        "{}",
+        daemon.audit()
+    );
 }

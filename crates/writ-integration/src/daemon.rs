@@ -98,6 +98,9 @@ struct Setup {
     telegram: FakeTelegram,
     remote: TestRemote,
     remote_runtime: tokio::runtime::Runtime,
+    /// Whether the upstream credential is authorized on the remote yet: one on a device is
+    /// owed by `writd init` and made at the daemon's first start, then authorized.
+    authorized: bool,
 }
 
 impl Setup {
@@ -381,9 +384,7 @@ impl Daemon {
 
     fn launch(setup: Setup, approvals: Approvals, log: &str) -> Self {
         let root = setup.root();
-        let fingerprint = writd(root, "tls-fingerprint");
-        assert!(fingerprint.starts_with("SHA256:"), "{fingerprint}");
-
+        // Pinned once it runs ([`pin`]): a TLS key on a device is made at its first start.
         let mut child = setup.spawn(log);
         let (lines, ports) = announced_ports(&mut child, &root.join("writd.err"));
         let Some((agents_port, approvals_port, https_port)) = ports else {
@@ -394,6 +395,12 @@ impl Daemon {
             );
         };
         pin(root, agents_port, approvals_port, https_port);
+        if !setup.authorized {
+            assert!(
+                authorize_upstream(root, &setup.remote),
+                "the upstream credential is still owed once the daemon runs"
+            );
+        }
         let approval_url = approval_url(approvals, approvals_port, https_port);
         let agent = TestAgent::start();
         agent.add(&setup.approver);
@@ -707,6 +714,7 @@ fn local_yaml(yaml: &str) -> String {
 fn pin(root: &Path, agents: u16, approvals: u16, https: u16) {
     let host_key = writd(root, "host-key");
     let fingerprint = writd(root, "tls-fingerprint");
+    assert!(fingerprint.starts_with("SHA256:"), "{fingerprint}");
     fs::write(
         root.join("known_hosts"),
         format!(
@@ -855,11 +863,9 @@ fn setup_tls(policy: &str, edit: Option<Edit<'_>>, sealed: bool, init_args: &[&s
         assert!(out.status.success(), "writd init: {}", stderr(&out));
     }
     // The daemon's upstream credential (made by its dev keystore), authorized on the remote:
-    // read with the default configuration, so an edit the daemon refuses still gets here.
-    let keys = writd(root, "upstream-keys");
-    let line = keys.lines().next().expect("an upstream credential");
-    let key: Vec<&str> = line.split(' ').skip(1).take(2).collect();
-    remote.authorize(PublicKey::from_openssh(&key.join(" ")).unwrap());
+    // read with the default configuration, so an edit the daemon refuses still gets here. One
+    // on a device, owed to the daemon's first start, is authorized once it runs.
+    let authorized = authorize_upstream(root, &remote);
     if !edit_first && let Some(edit) = edit {
         let edited = edit(&yaml);
         assert_ne!(edited, yaml, "the edit left writd.yaml as it was");
@@ -871,7 +877,31 @@ fn setup_tls(policy: &str, edit: Option<Edit<'_>>, sealed: bool, init_args: &[&s
         telegram,
         remote,
         remote_runtime,
+        authorized,
     }
+}
+
+/// Authorizes the daemon's upstream credential on `remote`, as `writd upstream-keys` prints
+/// it: `false` while it is owed to the daemon's first start (on a device).
+fn authorize_upstream(root: &Path, remote: &TestRemote) -> bool {
+    let out = Command::new(bin("writd"))
+        .arg("upstream-keys")
+        .arg(root.join("writd.yaml"))
+        .output()
+        .unwrap();
+    if !out.status.success() && stderr(&out).contains("is owed to the daemon") {
+        return false;
+    }
+    assert!(
+        out.status.success(),
+        "writd upstream-keys: {}",
+        stderr(&out)
+    );
+    let keys = String::from_utf8(out.stdout).unwrap();
+    let line = keys.lines().next().expect("an upstream credential");
+    let key: Vec<&str> = line.split(' ').skip(1).take(2).collect();
+    remote.authorize(PublicKey::from_openssh(&key.join(" ")).unwrap());
+    true
 }
 
 /// `writd <command> <config>` (host-key, tls-fingerprint…): its output, trimmed.

@@ -69,7 +69,7 @@ fn staged(sealed: &SealedConfig) -> [PathBuf; 3] {
     ]
 }
 
-fn backend_path(sealed: &SealedConfig) -> PathBuf {
+pub(crate) fn backend_path(sealed: &SealedConfig) -> PathBuf {
     sealed.dir.join("ca.backend")
 }
 

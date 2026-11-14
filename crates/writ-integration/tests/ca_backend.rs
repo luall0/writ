@@ -8,15 +8,16 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::string_slice
 )]
 
 use std::fs;
 use std::process::{Command, Output};
 
 use writ_integration::binaries::bin;
-use writ_integration::daemon::{Approvals, Daemon, ssh_options};
-use writ_integration::stderr;
+use writ_integration::daemon::{Approvals, Daemon, PASSPHRASE, ssh_options};
+use writ_integration::{stderr, stdout};
 
 const POLICY: &str = r#"
 keys:
@@ -99,7 +100,7 @@ fn writd_init_refuses_a_ca_backend_it_lacks() {
 }
 
 #[test]
-fn on_the_mac_writd_init_makes_the_ca_on_the_device_and_it_signs_each_certificate() {
+fn on_the_mac_the_ca_writd_init_owes_is_made_on_the_device_and_signs_each_certificate() {
     if !writ_integration::on_the_mac("this test") {
         return;
     }
@@ -305,4 +306,253 @@ fn on_the_mac_device_keys_made_elsewhere_are_named_and_each_rotation_mends_one()
     for said in notes {
         assert_eq!(audit.matches(said).count(), 1, "{said}\n{audit}");
     }
+}
+
+/// Found on the first real install (2026-11-14): the keys `writd init` made on the device,
+/// run by hand, never signed for the daemon. The fake helper's wrapper binds each key to the
+/// command that made it (`writd init` or `writd run`, read from its parent): `writd init`
+/// owes the TLS key, the CA and the signing key (said, and refused by the commands that print
+/// them; `writd host-key` still works), the first start makes each, in the audit log, and
+/// they sign: a lease granted over HTTPS (the TLS key), its certificate (the CA).
+#[test]
+fn on_the_mac_writd_init_leaves_each_device_key_to_the_daemon_s_first_start() {
+    if !writ_integration::on_the_mac("this test") {
+        return;
+    }
+    let outside = tempfile::tempdir().unwrap();
+    let wrapper = outside.path().join("writ-se");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$(/bin/ps -o args= -p $PPID)\" in\n  *\" init \"*) c=init ;;\n  \
+             *) c=run ;;\nesac\nexec {} --context \"$c\" \"$@\"\n",
+            bin("writ-fake-se").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(
+        &wrapper,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let flags = [
+        "--ca-backend",
+        "se-cryptokit",
+        "--tls-backend",
+        "se-cryptokit",
+    ];
+    let mut daemon = Daemon::start_sealed_init(POLICY_SE, Approvals::Https, &flags, |yaml| {
+        format!(
+            "{yaml}signers:\n  se_cryptokit:\n    helper: {}\n",
+            wrapper.display()
+        )
+    });
+    // A keystore made again by hand, so what `writd init` leaves is seen before any start.
+    daemon.stop();
+    let root = daemon.root().to_owned();
+    for dir in ["s/keys", "s/boot"] {
+        fs::remove_dir_all(root.join(dir)).unwrap();
+        fs::create_dir(root.join(dir)).unwrap();
+    }
+    fs::remove_file(root.join("s/leases.db")).unwrap();
+    let mut args = vec!["init", "writd.yaml"];
+    args.extend(flags);
+    let out = daemon.writd_with(&args, &format!("{PASSPHRASE}\n"));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let said = stdout(&out);
+    for line in [
+        "TLS key: on se-cryptokit, owed: the daemon makes it at its first start (writd \
+         tls-fingerprint prints it then)",
+        "CA key: on se-cryptokit, owed: the daemon makes it at its first start (its log says so)",
+        "signing key agent-01: on se-cryptokit, owed: the daemon makes it at its first start \
+         (writd signing-keys prints it then)",
+    ] {
+        assert!(said.lines().any(|l| l == line), "{line}\n{said}");
+    }
+    assert!(!said.contains("TLS fingerprint:"), "{said}");
+    for file in ["ca.age", "signing/agent-01.age"] {
+        assert!(!root.join("s/keys").join(file).exists(), "{file}");
+    }
+    assert!(!root.join("s/boot/tls-01").exists());
+    // Before the first start: the host key prints, what is owed is refused by name.
+    let host = daemon.writd_with(&["host-key", "writd.yaml"], "");
+    assert_eq!(host.status.code(), Some(0), "{}", stderr(&host));
+    let owed = " is owed to the daemon: it makes it at its first start (a key on a device is \
+                made only by the running daemon); start it once, then run this again";
+    for (command, what) in [
+        ("tls-fingerprint", "the TLS key"),
+        ("signing-keys", "signing key agent-01"),
+    ] {
+        let out = daemon.writd_with(&[command, "writd.yaml"], "");
+        assert_eq!(out.status.code(), Some(1), "{command}: {}", stdout(&out));
+        assert_eq!(
+            stderr(&out).trim_end(),
+            format!("writd: {what}{owed}"),
+            "{command}"
+        );
+    }
+    let upstream = daemon.writd_with(&["upstream-keys", "writd.yaml"], "");
+    assert_eq!(upstream.status.code(), Some(0), "{}", stderr(&upstream));
+
+    // The first start makes each one, as `writd run`: in the audit log, the file gone. (The
+    // audit log outlived the keystore made again: only what follows counts.)
+    let before = daemon.audit().len();
+    daemon.restart();
+    assert!(!root.join("s/keys/to-make.json").exists());
+    let audit = daemon.audit()[before..].to_owned();
+    for made in [
+        "the CA's key made on se-cryptokit at the daemon's start",
+        "the TLS key made on se-cryptokit at the daemon's start",
+        "signing key agent-01 made on se-cryptokit at the daemon's start",
+    ] {
+        assert_eq!(audit.matches(made).count(), 1, "{made}\n{audit}");
+    }
+    let fingerprint = daemon.writd_with(&["tls-fingerprint", "writd.yaml"], "");
+    assert_eq!(
+        fingerprint.status.code(),
+        Some(0),
+        "{}",
+        stderr(&fingerprint)
+    );
+    let keys = daemon.writd_with(&["signing-keys", "writd.yaml"], "");
+    assert!(
+        stdout(&keys).starts_with("agent-01 ecdsa-sha2-nistp256 "),
+        "{}",
+        stdout(&keys)
+    );
+    // They sign for the daemon: nothing unusable at unseal, a lease granted over HTTPS.
+    let out = daemon.unseal();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let request = daemon.request("owed", TICKET);
+    let out = daemon.run(&["sign", &request.id, "--yes"], "");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(request.finish().0.code(), Some(0));
+    assert!(
+        !daemon.audit()[before..].contains("is unusable"),
+        "{}",
+        daemon.audit()
+    );
+    // A restart makes nothing again.
+    daemon.restart();
+    assert_eq!(
+        daemon.audit()[before..]
+            .matches("at the daemon's start (owed by a command run by hand)")
+            .count(),
+        3,
+        "{}",
+        daemon.audit()
+    );
+}
+
+/// `writd recover`, run by hand like `writd init`, never makes a key on a device either: a
+/// recovered policy declaring one leaves it owed (said, in the audit log, refused by `writd
+/// signing-keys`), and the next start makes it, signing for the daemon at unseal.
+#[test]
+fn on_the_mac_writd_recover_leaves_a_device_key_to_the_daemon_s_next_start() {
+    if !writ_integration::on_the_mac("this test") {
+        return;
+    }
+    let outside = tempfile::tempdir().unwrap();
+    let wrapper = outside.path().join("writ-se");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$(/bin/ps -o args= -p $PPID)\" in\n  *\" run \"*) c=run ;;\n  \
+             *) c=by-hand ;;\nesac\nexec {} --context \"$c\" \"$@\"\n",
+            bin("writ-fake-se").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(
+        &wrapper,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let mut daemon = Daemon::start_sealed_init(
+        POLICY_SE,
+        Approvals::Ssh,
+        &["--ca-backend", "se-cryptokit"],
+        |yaml| {
+            format!(
+                "{yaml}signers:\n  se_cryptokit:\n    helper: {}\n",
+                wrapper.display()
+            )
+        },
+    );
+    daemon.stop();
+    let root = daemon.root().to_owned();
+    let in_force = fs::read_to_string(root.join("policy.yaml")).unwrap();
+    let recovered = in_force.replacen(
+        "keys:\n",
+        "keys:\n  agent-02:\n    use: signing\n    format: ssh\n    algorithm: p256\n    \
+         backend: se-cryptokit\n",
+        1,
+    );
+    assert_ne!(recovered, in_force);
+    let file = root.join("recovered-policy.yaml");
+    fs::write(&file, &recovered).unwrap();
+    let out = daemon.writd_with(
+        &["recover", "writd.yaml", "policy", file.to_str().unwrap()],
+        &format!("{PASSPHRASE}\n"),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let owed = "signing key agent-02 on se-cryptokit: owed by writd recover, the daemon makes it \
+                at its next start";
+    assert!(
+        stdout(&out)
+            .lines()
+            .any(|l| l == format!("{owed} (writd signing-keys or upstream-keys prints it then)")),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        daemon.audit().matches(owed).count(),
+        1,
+        "{}",
+        daemon.audit()
+    );
+    assert!(!root.join("s/keys/signing/agent-02.age").exists());
+    let keys = daemon.writd_with(&["signing-keys", "writd.yaml"], "");
+    assert_eq!(keys.status.code(), Some(1), "{}", stdout(&keys));
+    assert!(
+        stdout(&keys).starts_with("agent-01 ecdsa-sha2-nistp256 "),
+        "the keys made are printed first: {}",
+        stdout(&keys)
+    );
+    assert!(
+        stderr(&keys).starts_with("writd: signing key agent-02 is owed to the daemon"),
+        "{}",
+        stderr(&keys)
+    );
+
+    // The next start makes it, as `writd run`: it signs for the daemon.
+    daemon.restart();
+    assert!(!root.join("s/keys/to-make.json").exists());
+    assert_eq!(
+        daemon
+            .audit()
+            .matches("signing key agent-02 made on se-cryptokit at the daemon's start")
+            .count(),
+        1,
+        "{}",
+        daemon.audit()
+    );
+    let out = daemon.unseal();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        !daemon.audit().contains("is unusable"),
+        "{}",
+        daemon.audit()
+    );
+    assert!(
+        daemon
+            .print("signing-keys")
+            .contains("agent-02 ecdsa-sha2-nistp256 ")
+    );
 }

@@ -74,6 +74,11 @@ never enough: on a keystore it opens, `writd recover` takes the recovery key onl
    or removed), every secret is sealed to a new internal key, as a signed change does
    ([what that takes back](sealing.md#removing-or-replacing-a-way-in)); if you gave the
    recovery key on a keystore that has a passphrase, it asks for a new passphrase for it.
+
+   A recovered `policy` that declares a key the keystore doesn't have yet gets it made. One in
+   the Mac's Secure Enclave is made by the daemon when it next starts, not by `writd
+   recover`: it says the key is owed, and `writd signing-keys` prints it once the daemon has
+   started.
 4. **Start the daemon and unseal it** with the new key: `writ unseal --key <new key>.pub`.
 5. **Check** from your machine: `writ admin show approvers` shows the new version.
 
@@ -82,7 +87,8 @@ never enough: on a keystore it opens, `writd recover` takes the recovery key onl
 Without the passphrase, the keystore is lost:
 
 1. Run `writd init` in empty directories, with a new `state_dir`.
-2. Register the new keys on the remotes: `writd upstream-keys`, `writd signing-keys`.
+2. Register the new keys on the remotes: `writd upstream-keys`, `writd signing-keys`. A key in
+   the Mac's Secure Enclave is made when the daemon first starts: start it first.
 3. Pin the daemon's new identity on every client ([setup, step 7](setup.md#on-the-daemon-host)).
 
 The leases are gone. With a [recovery key](sealing.md#the-recovery-key-and-the-secure-enclave)

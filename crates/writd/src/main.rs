@@ -220,11 +220,35 @@ fn init(path: &Path, options: &[&str]) -> anyhow::Result<()> {
 
 fn tls_fingerprint(path: &Path) -> anyhow::Result<()> {
     let (config, _, declared) = load_checked(path)?;
-    println!(
-        "{}",
-        keystore::public(&config, &declared, &platform::makers(&config)?)?.tls_fingerprint
-    );
+    let public = keystore::public(&config, &declared, &platform::makers(&config)?)?;
+    let Some(fingerprint) = public.tls_fingerprint else {
+        return Err(owed("the TLS key"));
+    };
+    println!("{fingerprint}");
     Ok(())
+}
+
+/// Why `what`, owed to the daemon's first start, can't be printed yet.
+fn owed(what: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{what} is owed to the daemon: it makes it at its first start (a key on a device is \
+         made only by the running daemon); start it once, then run this again"
+    )
+}
+
+/// Refuses, naming what is owed of `role` (after the keys made were printed).
+fn refuse_owed(
+    owed_keys: &keystore::to_make::Owed,
+    role: writ_proto::KeyRole,
+) -> anyhow::Result<()> {
+    let names: Vec<String> = owed_keys
+        .of_role(role)
+        .map(|k| declared::named(role, &k.id))
+        .collect();
+    match names.is_empty() {
+        true => Ok(()),
+        false => Err(owed(&names.join(", "))),
+    }
 }
 
 /// Names, joined for a line.
@@ -240,14 +264,15 @@ pub(crate) fn joined<T: AsRef<str>>(names: &[T]) -> String {
 /// each remote (as a deploy key, or on the account).
 fn upstream_keys(path: &Path) -> anyhow::Result<()> {
     let (config, policy, declared) = load_checked(path)?;
-    for (id, key) in keystore::public(&config, &declared, &platform::makers(&config)?)?.upstream {
+    let public = keystore::public(&config, &declared, &platform::makers(&config)?)?;
+    for (id, key) in public.upstream {
         println!(
             "{id} {} (repos: {})",
             key.to_openssh()?,
             joined(&policy.key_users(&id).repos)
         );
     }
-    Ok(())
+    refuse_owed(&public.owed, writ_proto::KeyRole::Upstream)
 }
 
 /// Prints each agent signing key and the templates that name it: what to register on an
@@ -255,9 +280,8 @@ fn upstream_keys(path: &Path) -> anyhow::Result<()> {
 /// key's fingerprint, then its certificate (as the daemon last made it).
 fn signing_keys(path: &Path) -> anyhow::Result<()> {
     let (config, policy, declared) = load_checked(path)?;
-    for (id, key, meta) in
-        keystore::public(&config, &declared, &platform::makers(&config)?)?.signing
-    {
+    let public = keystore::public(&config, &declared, &platform::makers(&config)?)?;
+    for (id, key, meta) in public.signing {
         println!(
             "{} (templates: {})",
             declared::describe(&id, &key, &meta)?,
@@ -274,7 +298,7 @@ fn signing_keys(path: &Path) -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
+    refuse_owed(&public.owed, writ_proto::KeyRole::Signing)
 }
 
 /// The configuration, the policy in force, and the keys it declares (each checked against
@@ -453,6 +477,31 @@ fn run(path: &Path) -> anyhow::Result<()> {
     // keystore's own record before anything below reads the keys directory.
     keystore::settle(&config)?;
     platform::check_devices(&config, &declared)?;
+    // The device keys a command run by hand left owed (`writd init`, `writd recover`): made
+    // here, by the daemon, before anything reads a key (a key on a device is made only where
+    // it is used: found on the first real install, 2026-11-14). Each one logged and in the
+    // audit log before its entry leaves the file.
+    if let config::KeystoreConfig::Sealed(sealed) = &config.keystore {
+        let audit_path = config.state_dir.join("audit.jsonl");
+        let mut audit: Option<writ_store::AuditLog> = None;
+        keystore::to_make::finish(sealed, &platform::makers(&config)?, &mut |made| {
+            tracing::info!(key = %made.id, "{}", made.line);
+            let log = match &mut audit {
+                Some(log) => log,
+                None => audit.insert(writ_store::AuditLog::open(&audit_path)?),
+            };
+            log.append(
+                &writ_store::AuditEvent::new(
+                    now()?,
+                    writ_store::EventKind::Key,
+                    writ_store::Outcome::Allowed,
+                )
+                .key(&made.id.parse()?)
+                .reason(made.line.clone()),
+            )
+            .context("the audit log can't be written: the key is said again at the next start")
+        })?;
+    }
     // Until the unseal checks their MAC (`keystore::open`), the versions in force are only
     // read and refused from, never acted on (the review after M7.6, S-1): what follows
     // checks the policy and reads the keystore's public files, and writes nothing from them.
