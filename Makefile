@@ -58,6 +58,7 @@ check:
 test:
 	CARGO_TARGET_DIR=target/bins $(RECORD) bins build --locked $(BINARIES) --features writd/dev-keystore
 	sh tool/build-writ-se.sh target/bins/debug
+	sh tool/build-writ-popup.sh target/bins/debug
 	CARGO_TARGET_DIR=target/bins $(RECORD) fake-se build --locked -q -p writ-signer --features testing --bin writ-fake-se
 	$(RECORD) test test --locked --workspace --no-run
 	WRIT_BIN_DIR=$(CURDIR)/target/bins/debug RUST_BACKTRACE=0 cargo nextest run --locked --workspace
@@ -78,6 +79,7 @@ test-agent:
 	@test -n "$(KEY)" || { echo "usage: make test-agent KEY=<public key .pub> [AGENT=<socket>]"; exit 2; }
 	CARGO_TARGET_DIR=target/bins $(RECORD) bins build --locked $(BINARIES) --features writd/dev-keystore
 	sh tool/build-writ-se.sh target/bins/debug
+	sh tool/build-writ-popup.sh target/bins/debug
 	CARGO_TARGET_DIR=target/bins $(RECORD) fake-se build --locked -q -p writ-signer --features testing --bin writ-fake-se
 	WRIT_TEST_AGENT_KEY="$(KEY)" SSH_AUTH_SOCK="$(or $(AGENT),$(SSH_AUTH_SOCK))" \
 		WRIT_BIN_DIR=$(CURDIR)/target/bins/debug cargo nextest run --locked --workspace --run-ignored only \
@@ -112,6 +114,7 @@ fmt:
 run:
 	$(RECORD) writd-dev build --locked -p writd --features dev-keystore
 	sh tool/build-writ-se.sh target/debug
+	sh tool/build-writ-popup.sh target/debug
 	cargo run --locked -p writd --features dev-keystore -- run dev/writd.yaml
 
 # Pins the development daemon's host key and TLS certificate for the client
@@ -141,6 +144,7 @@ hooks:
 install:
 	cargo build --release --locked $(BINARIES)
 	sh tool/build-writ-se.sh target/release
+	sh tool/build-writ-popup.sh target/release
 	sh deploy/install.sh install
 
 uninstall:

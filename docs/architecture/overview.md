@@ -121,7 +121,9 @@ crates/
   writ-approval/        the approval service: tickets, approvals, refusals, revocations,
                         the lease a certificate stands for, admin changes and unseal
   writd/                the daemon binary: config, keystore, wiring of the crates above
-  writ-cli/             the `writ` binary
+  writ-cli/             the `writ` binary; `macos/writ-popup.swift`, the approval popup
+                        (M7.8: a window over `writ sign --ui`, built by
+                        `tool/build-writ-popup.sh`)
   writ-sign/            the `writ-sign` shim
   writ-integration/     test-only: the crates working together, through the binaries
   writ-e2e/             test-only: the end-to-end scenarios, run by `make e2e` in a container,

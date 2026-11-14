@@ -1,8 +1,9 @@
 # Stack
 
 **Rust core** (decided, [Q9](decisions.md)): one codebase for the Linux container and the
-native Mac build. Swift only where the Secure Enclave needs it (CryptoKit, M7.5) and for the
-later approver apps.
+native Mac build. Swift only where the Secure Enclave needs it (CryptoKit, M7.5), for the
+approval popup's window (AppKit, M7.8: it shows what `writ sign --ui` sends and does nothing
+else) and for the later approver apps.
 
 | Layer | Choice | Status |
 |---|---|---|

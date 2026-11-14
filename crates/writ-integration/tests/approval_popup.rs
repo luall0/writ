@@ -7,7 +7,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::string_slice
 )]
 
 use std::fs;
@@ -53,6 +54,25 @@ templates:
 
 /// The feedback a refusal with none carries (`writ_cli`'s `NO_FEEDBACK`).
 const NO_FEEDBACK: &str = "Declined in the approval popup, with no feedback.";
+
+/// `text` with every relative time (` (in 59m59s)`) taken out: two displays made a second
+/// apart differ only there.
+fn timeless(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(" (in ") {
+        out.push_str(&rest[..at]);
+        match rest[at..].find(')') {
+            Some(end) => rest = &rest[at + end + 1..],
+            None => {
+                rest = &rest[at..];
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
 fn ticket(branch: &str, title: &str, extra: &str) -> String {
     format!(
@@ -185,7 +205,7 @@ fn the_popup_signs_refuses_and_follows_what_waits(approvals: Approvals) {
     let out = daemon.run(&["sign", older, "--full"], "n\n");
     assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
     assert!(
-        stdout(&out).starts_with(&format!("{display}\n")),
+        timeless(&stdout(&out)).starts_with(&format!("{}\n", timeless(&display))),
         "--- ui\n{display}\n--- terminal\n{}",
         stdout(&out)
     );

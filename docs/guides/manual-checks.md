@@ -113,6 +113,59 @@ rm -rf dev/data dev/approvers
 When it passes, note it under the acceptance item in
 [the M2 history page](../history/m2-ticket-flow.md).
 
+## The approval popup (M7.8)
+
+[M7.8](../roadmap.md#m78--approval-popup-on-the-mac)'s manual check: what only a person in
+front of the Mac sees. `make test` and `make e2e` prove `writ sign --ui` (what is shown, what
+an answer signs); this checks the window `writ-popup` draws around it. Set up steps 1 to 3 of
+[Approving with Secretive](#approving-with-secretive-touch-id) first (the daemon running in
+terminal 1).
+
+**1. Terminal 3: the popup**, against the development daemon, with your approval key:
+
+```text
+cargo build -q -p writ-cli && sh tool/build-writ-popup.sh target/debug
+source dev/client.env
+target/debug/writ-popup
+```
+
+No Dock icon and no window: nothing waits.
+
+**2. A ticket while an app is full screen.** Put any app full screen (a browser, the
+terminal), then in terminal 2 submit `dev/ticket.yaml` (`cargo run -q -p writ-cli -- request
+dev/ticket.yaml`). Check, one by one:
+
+- [ ] the window comes up over the full-screen app, and also on another space (switch to
+      one with Ctrl-→ while it is up);
+- [ ] it shows the whole ticket, scrollable, the same text `writ sign <id> --full` prints;
+- [ ] Sign and Decline are greyed for about a second, then usable;
+- [ ] Return and Space typed while it is up press nothing (no button takes the focus);
+- [ ] Sign brings Secretive's Touch ID prompt over the window; once touched, terminal 2 prints
+      `Lease wrt_… granted` and the window goes.
+
+**3. Several at once, and Decline.** Submit three tickets in a row (the same command three
+times, `--no-wait`):
+
+- [ ] the window shows the oldest and says 2 more wait, each listed with its title;
+- [ ] Decline, then Refuse with the feedback empty: Touch ID, then the next ticket comes up
+      with 1 more waiting; `writ wait <id>` for the refused one prints *Declined in the
+      approval popup, with no feedback.*;
+- [ ] Decline, type a reason, Refuse: the agent reads that reason;
+- [ ] Sign, then cancel Touch ID: the window says the signature failed and keeps the ticket,
+      its buttons back after a second.
+
+**4. A ticket that goes away.** Submit one, and while it is shown, withdraw it from terminal 2
+(`cargo run -q -p writ-cli -- revoke <id>`, with `dev/client.env`): the window goes. Submit one
+more and close the window with its close button: nothing is signed, `writ ls` still lists it,
+and the popup doesn't show it again (`writ sign` in a terminal still reaches it).
+
+**5. The daemon stopped and started again** (Ctrl-C in terminal 1, then `make run`): the popup
+says it can't reach the daemon, then picks up what waits once it is back. Quit it with Ctrl-C
+in terminal 3.
+
+When every box is ticked, note it under M7.8's acceptance items. The popup installed by `make
+install` (started at login) is checked with [M7.9](#local-mode-on-the-mac-m7).
+
 ## A throwaway GitHub repo (M4)
 
 [M4](../history/m4-gateway-push-and-fetch.md)'s acceptance against a real hosted remote:

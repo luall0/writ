@@ -12,6 +12,25 @@ use writ_e2e::Stack;
 use writ_e2e::agent::expect;
 use writ_e2e::docker::Talk;
 
+/// `text` with every relative time (` (in 59m59s)`) taken out: two displays made a second
+/// apart differ only there.
+fn timeless(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(" (in ") {
+        out.push_str(&rest[..at]);
+        match rest[at..].find(')') {
+            Some(end) => rest = &rest[at + end + 1..],
+            None => {
+                rest = &rest[at..];
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn ticket(title: &str) -> String {
     format!(
         "common:\n  committer_emails: [\"agent@writ.invalid\"]\n\
@@ -90,7 +109,7 @@ fn the_popup_shows_what_waits_in_order_and_signs_or_refuses_on_its_answer() {
         .run_with(&format!("writ sign {older} --full"), b"n\n");
     let (terminal, _) = expect(&out, 6, "the ticket shown, answered no in a terminal");
     assert!(
-        terminal.starts_with(&format!("{display}\n")),
+        timeless(&terminal).starts_with(&format!("{}\n", timeless(&display))),
         "--- the popup's\n{display}\n--- the terminal's\n{terminal}"
     );
 
