@@ -60,7 +60,7 @@ ones too, with the whole ticket and two buttons, **Sign** and **Decline**. Two p
   rows, written by the same calls: `display::Out`), and signs with `writ sign`'s signer
   (`ssh-keygen -Y sign` through the approval agent: Secretive's Touch ID). Nothing of that
   exists anywhere else.
-- **`writ-popup`** (Swift, AppKit; `crates/writ-cli/macos/`) only shows what `writ` sends and
+- **`writ-popup`** (Swift: SwiftUI in an AppKit `NSPanel`; `crates/writ-cli/macos/`) only shows what `writ` sends and
   says what was clicked ([decision log](../decisions.md), 2026-11-14: before any richer UI,
   or one on another platform, the approval client is linked into the app instead).
 
@@ -93,6 +93,18 @@ the same (`the_structure_says_what_the_text_says`); agent text only ever lands i
 tagged as the agent's, or quoted inside an enforced value (the caller's executable), or as
 recorded feedback (`agent_text_is_only_ever_in_the_agent_s_rows`). The app styles each kind
 and tag and reads nothing out of a value: it never parses the text.
+
+**The window.** A list on the left of every ticket waiting (its kind as a badge, its title, its
+repositories; the one shown highlighted; a click picks another). On the right, the ticket: a
+header (kind, id, title, repositories, the time left, counted live), then **You are signing**
+(the `signing` section) as the first card, an amendment's or a revision's changes (removed in
+red, added in green), the agent's words in a card of their own titled as untrusted, each row
+behind a coloured bar, the feedback and a renewal's chain, the source's other leases (orange
+when one overlaps), and the details (`ticket`, `who`, `lease`, each `repository`) in cards that
+fold, closed. **Copy as text** copies the terminal's text. At the bottom: what happened last
+(Touch ID awaited, signed, refused, a failure), the approval key's path, **Decline…** (a
+feedback field, then **Refuse**) and **Sign**. No button takes the keyboard's focus or is the
+default, and each is greyed for a second after a ticket shows.
 
 Every text `writ` sends is cleaned of control and hidden characters, as for the terminal.
 An answer naming another ticket than the one shown, a line that isn't an answer (unknown

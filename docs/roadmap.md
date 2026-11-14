@@ -255,7 +255,8 @@ signature: the whole ticket, scrollable, and two buttons, **Sign** and **Decline
 a UI for everything `writ` does is for later (the [backlog](backlog/README.md#mac-app-for-every-command)).
 The forks settled with the user at its start: [decision log](decisions.md), 2026-11-14.
 
-- **A thin native app over `writ`** (pure Swift, AppKit, no cross-platform toolkit). The app
+- **A thin native app over `writ`** (pure Swift: SwiftUI in an AppKit panel, no
+  cross-platform toolkit). The app
   only shows text and takes a click; `writ` stays the approval client and does everything a
   signature relies on: the transports and their pins, the checks of the review after M7.6
   (`L-1`), the canonical bytes decoded and the display built from them (every field, agent

@@ -137,7 +137,10 @@ dev/ticket.yaml`). Check, one by one:
 
 - [ ] the window comes up over the full-screen app, and also on another space (switch to
       one with Ctrl-→ while it is up);
-- [ ] it shows the whole ticket, scrollable, the same text `writ sign <id> --full` prints;
+- [ ] it shows the whole ticket: **You are signing** first, the agent's words in their own box,
+      the details folded (each opens); **Copy as text** gives the text `writ sign <id> --full`
+      prints; the time left counts down;
+- [ ] in light and in dark mode (System Settings, Appearance) it reads well;
 - [ ] Sign and Decline are greyed for about a second, then usable;
 - [ ] Return and Space typed while it is up press nothing (no button takes the focus);
 - [ ] Sign brings Secretive's Touch ID prompt over the window; once touched, terminal 2 prints
@@ -146,13 +149,16 @@ dev/ticket.yaml`). Check, one by one:
 **3. Several at once, and Decline.** Submit three tickets in a row (the same command three
 times, `--no-wait`):
 
-- [ ] the window shows the oldest and says 2 more wait, each listed with its title;
-- [ ] Decline, then Refuse with the feedback empty: Touch ID, then the next ticket comes up
-      with 1 more waiting; `writ wait <id>` for the refused one prints *Declined in the
+- [ ] the list on the left shows all three (title, repositories, kind), the oldest shown and
+      highlighted; a click on another shows it, and back;
+- [ ] Decline, then Refuse with the feedback empty: Touch ID, then the next ticket comes up,
+      two left in the list; `writ wait <id>` for the refused one prints *Declined in the
       approval popup, with no feedback.*;
 - [ ] Decline, type a reason, Refuse: the agent reads that reason;
 - [ ] Sign, then cancel Touch ID: the window says the signature failed and keeps the ticket,
       its buttons back after a second.
+- [ ] An amendment (`amends: <lease>` in a ticket) shows its changes, removed in red and added
+      in green.
 
 **4. A ticket that goes away.** Submit one, and while it is shown, withdraw it from terminal 2
 (`cargo run -q -p writ-cli -- revoke <id>`, with `dev/client.env`): the window goes. Submit one

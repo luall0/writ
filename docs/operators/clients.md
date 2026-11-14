@@ -184,15 +184,19 @@ With a daemon on this Mac, `make install` starts the approval popup at each logi
 answered `no`). When an agent's ticket waits for your signature, a window comes up in front of
 every app, full-screen ones too:
 
-- It shows the whole ticket, as `writ sign <id> --full` would in a terminal. Scroll to read
-  it all.
+- It shows the whole ticket, as `writ sign <id> --full` would in a terminal, laid out: what
+  you sign first, then what the agent wrote, in a box of its own (the agent's words, never
+  acted on), then any change since the ticket it follows (removed in red, added in green),
+  then the details, folded: click one to open it. **Copy as text** copies it as a terminal
+  shows it.
 - **Sign** signs it with your approval key: Secretive asks for Touch ID, as in a terminal.
 - **Decline** asks for a reason for the agent (you may leave it empty), then **Refuse** signs
   the refusal.
 - Both buttons stay greyed for a second after the window comes up, and no key presses them:
   a click or a Return meant for another app does nothing.
-- Several tickets at once: the window shows the oldest and lists the others behind it, each
-  with its title and repositories. When you have decided, the next one comes up.
+- Several tickets at once: the list on the left shows every one, with its title and
+  repositories, and the window shows the oldest. Click another to look at it first. When you
+  have decided, the oldest left comes up.
 - Closing the window decides nothing: the ticket keeps waiting, and the popup doesn't show it
   again until it restarts. Sign it in a terminal with `writ sign <id>`, where you can also
   narrow it. The popup never narrows.
