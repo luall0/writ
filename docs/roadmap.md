@@ -46,8 +46,8 @@ picked.
 | M7.5 | [Secure Enclave signer](history/m7.5-secure-enclave-signer.md) ✅ | The non-exportable local-mode signer the M0 spike picked: keys made in the Secure Enclave through a helper process, the TLS key rotated live, every key's backend from the CLI, the installer guided |
 | M7.6 | [Hardware-wrapped secrets](history/m7.6-hardware-wrapped-secrets.md) ✅ | Each secret unwrapped by a hardware key only when used: the common unwrap interface, the Secure Enclave as its first recipient, a recovery identity, unsealing with no passphrase, the CA behind the `Signer`, auto-unseal |
 | M7.7 | [Review after M7.6](history/m7.7-review-after-m7.6.md) ✅ | The security and code quality review of the whole code after M5.7 to M7.6 (the wiping allocator, the skill, amendments and renewals, workspaces, per-repository tickets, the CLI's admin commands, local mode on both systems, upstream proxies, the Secure Enclave signer, hardware-wrapped secrets) by thirteen reviewers: a report discussed with the user, then every finding fixed with its test, or moved to the milestone that owns it |
-| M7.8 | [Approval popup on the Mac](#m78--approval-popup-on-the-mac) | A small native window above every app, full-screen ones too, when a ticket waits for my signature: the whole ticket, Sign or Decline (with feedback), the signature still `writ`'s and Touch ID; a watch route on the approval API |
-| M7.9 | [Local mode checked on the Mac](#m79--local-mode-checked-on-the-mac) | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
+| M7.8 | [Approval popup on the Mac](history/m7.8-approval-popup-on-the-mac.md) ✅ | A small native window above every app, full-screen ones too, when a ticket waits for my signature: the whole ticket, Sign or Decline (with feedback), the signature still `writ`'s and Touch ID; a watch route on the approval API |
+| M7.9 | [Local mode checked on the Mac](history/m7.9-local-mode-checked-on-the-mac.md) ✅ | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 | M9 | [`proxy` push mode](#m9--proxy-push-mode) | Relayed pushes with the same checks, no mirror |
@@ -228,7 +228,7 @@ key scans through a proxy, scenario 25 with real proxies.
 `se-cryptokit` through the `writ-se` helper (each blob framed and checked before the device
 sees it), keys made by the device and sealed as blobs, a router over backends per use, every
 key's backend from the CLI, the TLS key rotated live (`writ admin tls rotate`), the installer
-guided. Its real-install items run with M7.9.
+guided. Its real-install items ran with M7.9.
 
 ## M7.6 — Hardware-wrapped secrets
 
@@ -236,7 +236,7 @@ guided. Its real-install items run with M7.9.
 the unwrap interface, tokens unwrapped per use, `piv-p256`, the Secure Enclave recipient, the
 keystore's recipients in the signed policy and the recovery key, unsealing with no passphrase,
 the SSH CA behind the `Signer` and rotated live, auto-unseal switched from the CLI, the
-installer asking all of it. Its real-install items run with M7.9.
+installer asking all of it. Its real-install items ran with M7.9.
 
 ## M7.7 — Review after M7.6
 
@@ -248,181 +248,19 @@ other finding fixed with its test, or moved with its line in the milestone that 
 
 ## M7.8 — Approval popup on the Mac
 
-What the real use of M7.9 lacks (asked by the user): today a waiting ticket is a Telegram
-message, then `writ sign` in a terminal. M7.8 brings a small window that comes up in front of
-every app, full-screen ones too (as Touch ID's prompt does), when a ticket waits for my
-signature: the whole ticket, scrollable, and two buttons, **Sign** and **Decline**. Only that:
-a UI for everything `writ` does is for later (the [backlog](backlog/README.md#mac-app-for-every-command)).
-The forks settled with the user at its start: [decision log](decisions.md), 2026-11-14.
-
-- **A thin native app over `writ`** (pure Swift: SwiftUI in an AppKit panel, no
-  cross-platform toolkit). The app
-  only shows text and takes a click; `writ` stays the approval client and does everything a
-  signature relies on: the transports and their pins, the checks of the review after M7.6
-  (`L-1`), the canonical bytes decoded and the display built from them (every field, agent
-  text neutralized, the bounds of `U-1`), the signature through `/usr/bin/ssh-keygen -Y sign`
-  and Secretive's Touch ID. Nothing of that is written again in Swift. **Before any richer UI,
-  or a UI on another platform, the approval client is linked into the app** (an FFI crate over
-  `writ-approval` and `writ-cli`'s client, its `unsafe` in one module): mandatory, never a
-  second implementation.
-- **A watch route on the approval API**, on both transports (an SSH command, `GET
-  /v1/tickets/watch` over HTTPS), for a reader key: a long poll that answers as soon as a
-  ticket starts waiting that the caller hasn't been told of, or after a bounded time with
-  nothing, under the listeners' idle limit; the client asks again. Watches are bounded
-  (a cap on those held at once, all readers together, on top of the per-source connection
-  limits), refused past it with their reason and logged as refusals; a watch is a read, like
-  `GET /v1/tickets`, and writes no line when allowed. It joins
-  [security.md](security.md)'s inventory with its bounds and a hostile-input test.
-- **`writ sign --ui`**: holds the watch and, for each waiting ticket, writes the display
-  `writ sign` builds to stdout in a line protocol (framed, bounded), then reads the app's
-  answer on stdin: `sign`, or `refuse` with optional feedback (signed under `decisions:
-  signed`, as `writ refuse -m`). Tickets only: new ones, amendments and renewals, all bounded
-  by templates; admin changes and `writ unseal` never come to the popup and stay in the
-  terminal. No narrowing in the popup (the terminal's `writ sign` keeps it). An answer the
-  protocol doesn't hold, or none, signs nothing (fail closed). Its scenario in `make e2e`
-  plays the app's part, with its row in the [coverage registry](end-to-end.md#coverage-every-command-and-flag).
-- **The app** (Swift sources under `crates/writ-cli/macos/`, built with `swiftc` like
-  `writ-se`, ad-hoc signed with the hardened runtime): an agent app with no Dock icon
-  (`LSUIElement`), an `NSPanel` at the modal level that joins every space and full-screen
-  ones (`canJoinAllSpaces`, `fullScreenAuxiliary`); the display in a scrollable monospaced
-  view, shown as `writ` gave it. **No approval by accident:** no default button (a Return
-  typed into another app presses nothing), both buttons disabled for about a second after
-  the window shows; one ticket at a time, the others queued; a ticket that stops waiting
-  (signed elsewhere, withdrawn, expired) closes its window. It starts at login as a per-user
-  LaunchAgent and restarts `writ sign --ui` if it ends.
-- **The installer**: `make install` puts the app and its LaunchAgent in place for the
-  `local` setup on the Mac, `make uninstall` takes them back (in the manifest);
-  [install.md](operators/install.md) and the [clients page](operators/clients.md) say so.
-  Linux gets no popup in M7.8; `writ sign --ui` and the watch route work everywhere.
-- **The threat model** (needs the user's go-ahead, given at the start): the popup doesn't
-  close the [residual risk](threat-model.md#residual-risks-v1) of an agent under my user, which
-  can draw the same window and ask Secretive for a signature itself; a popup also trains the
-  reflex "window, Sign, touch". The row says so and points at the
-  [own Mac approver app](backlog/README.md#own-mac-approver-app), whose Touch ID prompt shows
-  what it signs.
-
-Steps (each one commit, `make ci` green, its docs in the same commit):
-1. **The watch route** (`writ-proto`, `writ-approval`, `writ-gateway`): `writ watch
-   [<cursor>]` over SSH, `GET /v1/tickets/watch[?since=<cursor>]` over HTTPS; the cursor the
-   SHA-256 of the waiting tickets' ids, the reply the waiting tickets and their cursor, given
-   at once when the caller's cursor isn't the one now, else on the first change or after
-   240 s; at most 16 watches held at once (a gateway semaphore), past it refused and logged
-   (`command`, coalesced per source); over SSH ended with its channel, over HTTPS run in the
-   connection's future (it changes nothing), so it ends with its client. Tests: the grammar
-   (hostile cursors refused), the service under paused time (at once, on a submission, on a
-   ticket leaving the queue, at the limit, an expiry swept), the cap and its line, both
-   transports, a key not in `readers`. Docs: [approvals.md](architecture/approvals.md)'s
-   routes, [security.md](security.md)'s inventory.
-2. **`writ sign --ui`** (`writ-cli`, `approver/ui.rs`): the line protocol (one JSON object
-   per line each way, 64 KiB a line from the app, 8 MiB from `writ`), the queue of waiting
-   tickets shown one at a time with the display `writ sign --full` prints, **the others
-   stacked behind it** (asked by the user: tickets that arrive together are all listed, the
-   window saying how many more wait, and the next comes up once one is decided), `sign <id>` and
-   `refuse <id> [feedback]` (an empty feedback sent as a fixed line saying none was given),
-   `skip <id>` for a window closed; an answer naming another ticket, malformed or over its
-   bound signs nothing and is said; the connection made again after a loss; ends on the
-   app's end of input. `approve` and `refuse_with` return what they did instead of printing.
-   Tests: the protocol's parser (hostile lines), the display the same bytes as `writ sign`'s
-   (a guarantee test), an integration scenario with the daemon; the end-to-end scenario
-   `approval_popup` playing the app (sign, refuse with and without feedback, a ticket
-   withdrawn while shown, a malformed answer, an amendment and a renewal shown, an admin
-   change never shown), its row in the coverage registry. Docs:
-   [clients.md](architecture/clients.md), [approvals.md](architecture/approvals.md).
-3. **`writ-popup`, the Swift app** (`crates/writ-cli/macos/writ-popup.swift`, built by
-   `tool/build-writ-popup.sh` beside `writ`, from the Makefile's `test`, `run` and
-   `install`): an accessory app (no Dock icon) running `writ sign --ui`, the `NSPanel` above
-   every space and full-screen app, the display in a scrollable monospaced view, Sign and
-   Decline (a feedback field) with no default button and held for a second, a closed window a
-   `skip`; `writ` started again if it ends. Docs: the [manual check](guides/manual-checks.md)'s
-   popup section, the [threat model](threat-model.md)'s row, the
-   [overview](architecture/overview.md)'s layout, [stack.md](stack.md).
-4. **The installer** (`deploy/setups/local-macos.sh`): `writ-popup` in `/opt/writ/bin`,
-   signed like the others; a per-user LaunchAgent `dev.writ.popup`
-   (`~/Library/LaunchAgents/dev.writ.popup.plist`, the Aqua session, `WRIT_APPROVAL_AGENT`
-   from the new `APPROVAL_AGENT` answer, Secretive's socket by default) bootstrapped into
-   your GUI session, started again on upgrade, taken back by `make uninstall`; the fake-root
-   installer test. Docs: [install.md](operators/install.md),
-   [clients.md](operators/clients.md).
-5. **The structured display** (`writ-cli`, asked by the user on seeing the first window):
-   `writ`'s display written once as text and as sections of tagged rows (enforced, the agent's
-   words, added, removed, a warning, context) by the same calls, the text byte for byte as
-   before;
-   the `show` event carrying that structure and a header (kind, title, repos, expiry); a
-   `pick <id>` answer showing any waiting ticket (fetched and checked like the others, one put
-   aside coming back). Tests: the structure and the terminal the same content, agent text only
-   ever tagged as the agent's, `pick` refused for a ticket not waiting; the end-to-end
-   scenario picks.
-6. **The SwiftUI window** (the same panel: above every space, no focus, held a second): a
-   sidebar of every waiting ticket (title, repos, a kind badge; a click picks it); a header
-   (kind, title, repos, a live expiry); **You are signing** as a card at the top; the agent's
-   words in a box marked untrusted; the details in sections that fold (who, the lease, each
-   repository, an amendment's changes in green and red, a renewal's chain, the source's other
-   leases); Sign the accent button, Decline the second; a Touch ID state, failures in a
-   banner; light and dark. The manual check updated.
-7. **Closing:** the acceptance items ticked from what was run, the manual check run by the
-   user, the history page.
-
-Acceptance:
-- [ ] The watch route answers a reader as soon as a ticket starts waiting, and after its
-      bounded time with nothing; a watch past the cap is refused with its reason and logged;
-      a key that isn't a reader's is refused; over SSH and over HTTPS alike.
-- [ ] `writ sign --ui` writes exactly the display `writ sign` prints for that ticket (every
-      field, agent text neutralized), signs on `sign`, refuses with the feedback on
-      `refuse`, and signs nothing on a malformed, oversized or missing answer; an admin
-      change or an unseal never reaches it; each case an end-to-end scenario.
-- [ ] The window shows the ticket in sections, coloured by what each row is, from the
-      structure `writ` built (never parsed from text): what is signed first, the agent's
-      words apart and marked untrusted; any waiting ticket picked from the sidebar.
-- [ ] Tickets that arrive together are stacked (asked by the user): the oldest shown, each
-      other one listed behind it with its title and repositories and the window saying how
-      many more wait; the next one shown once one is decided or gone.
-- [ ] The guarantees of the trusted display hold through the popup: the guarantee tests of
-      `writ sign` (what is signed is what was displayed, every field shown, a relay naming
-      another daemon refused) run against `writ sign --ui` too.
-- [ ] The [manual check](guides/manual-checks.md) against the development daemon (`make
-      run`): the window comes up over a full-screen app and on another space, Touch ID's
-      prompt over it, Return typed in another app presses nothing, Sign gives the lease,
-      Decline with feedback reaches the agent's `writ wait`, a ticket withdrawn closes its
-      window.
-- [ ] `make install` puts the app and its LaunchAgent in place and `make uninstall` takes them
-      back (the fake-root installer test); the real install's popup runs with M7.9.
+**Done.** Moved to [history/m7.8-approval-popup-on-the-mac.md](history/m7.8-approval-popup-on-the-mac.md):
+the watch route on the approval API, `writ sign --ui` (the queue of waiting tickets, `writ
+sign`'s checks, display and signer, one JSON line each way), the display as a structure of
+tagged rows, `writ-popup` (SwiftUI in an `NSPanel` above every space and full-screen app, no
+approval by accident), started at login by the installer's LaunchAgent.
 
 ## M7.9 — Local mode checked on the Mac
 
-The acceptance items of [M7](history/m7-local-mode-on-the-mac.md) that only the real install
-can prove, moved here at the user's request: they run them once M7.5 and M7.6 are in place,
-the setup that fits their workflow, so the check covers the Secure Enclave signer and the
-hardware-wrapped secrets too (M7.6's three real-install items: the
-[manual check](guides/manual-checks.md#local-mode-on-the-mac-m7)'s step 3c). Nothing to build: the steps are the
-[manual check](guides/manual-checks.md#local-mode-on-the-mac-m7) (updated by M7.5 and M7.6
-for what they add), run on the user's Mac, with `sudo` and Touch ID. What it finds is fixed
-here, each fix with its test. The [install guide](operators/install.md)'s commands are the
-manual check's: the pipeline can't run them (`sudo`, launchd), so they are run here as
-written (found unchecked by the [M7.7 review](#m77--review-after-m76), `X-4`).
-
-Acceptance:
-- [ ] On a Mac without Writ, the guided `make install` (every question answered at the
-      prompt: the `local` setup, the approval key, the Secure Enclave for the TLS key and
-      `agent-01`) then `writ unseal` gives a working local daemon with nothing else done by
-      hand; the summary before the go lists exactly what the install then makes, and `n`
-      there changes nothing; a second `make install` upgrades the binaries and keeps the
-      keystore, state and pins.
-- [ ] An agent under `writ run -- <agent>` works on a real repository through the local
-      daemon (the GitHub throwaway repository of the manual checks), its ticket signed
-      through M7.8's popup (the app started at login by its LaunchAgent): its lease bound to the
-      agent `/opt/writ/bin/writ` started (M7.7), refused from outside the session, revoked
-      when the agent quits.
-- [ ] My user (so any agent) can't read the daemon's keystore or attach to the daemon
-      (`cat` and `lldb -p` refused), and the daemon starts again after a reboot.
-- [ ] A stop through launchd (`launchctl kill TERM system/dev.writ.writd`) is the orderly stop:
-      the `stopping` and `stopped` lines in `/Library/Logs/Writ/writd.log`, and the daemon
-      stays stopped.
-- [ ] The recovery guide's macOS steps run as written.
-- [ ] `make uninstall` leaves the Mac as before the install (the role user, the
-      LaunchDaemon, the binaries, the directories and `~/.writ/`'s pins gone, checked
-      against a listing taken before), the daemon's data kept unless `delete` is typed at
-      its question; the repositories `writ init` wired taken back when asked.
-- [ ] Every `sh` block of [install.md](operators/install.md) run as written along the way.
+**Done.** Moved to [history/m7.9-local-mode-checked-on-the-mac.md](history/m7.9-local-mode-checked-on-the-mac.md):
+the real install on the user's Mac with the Secure Enclave, the hardware-wrapped secrets and
+the popup; what it found fixed (a device key made only by the running daemon and probed when
+opened, guided scans asking their proxy first, a mirror's first sync with its own limit), and
+the real-install items of M7, M7.5 and M7.6 ticked.
 
 ## M8 — Detached deployment
 
@@ -459,6 +297,11 @@ LAN or VPN.
   [M7.7 review](#m77--review-after-m76), `X-4`): the page joins
   [commands the docs show](end-to-end.md#commands-the-docs-show), its every `sh` block a
   scenario's.
+- **`install.md` run by the pipeline** (owed since
+  [M7.9](history/m7.9-local-mode-checked-on-the-mac.md), which ran its `local` setup by hand:
+  `sudo`, launchd): its `make install` and `make uninstall` run by the scenarios that set the
+  agents' containers up with the `client` setup, and the page joins
+  [commands the docs show](end-to-end.md#commands-the-docs-show).
 - **The installer's `detached` setup**, on the daemon host, with M7's frame (the setup
   question, `DRY_RUN=1`, the manifest, the upgrade, `make uninstall`): the image built
   (`make docker`); one directory holding `deploy/compose.yaml` and a `writd.yaml` from the

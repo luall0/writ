@@ -59,7 +59,7 @@ implementations plugged in. Installed by the [installer](#installing-and-uninsta
 | Your client | `~/.writ`: `known_hosts` (`writ-local <host key>`), `config` (the two sockets), `reader`, `approver.pub` | yours |
 | The approval popup (M7.8, `POPUP=yes`, the default) | `~/Library/LaunchAgents/dev.writ.popup.plist`: `/opt/writ/bin/writ-popup`, `WRIT_HOME` and `WRIT_APPROVAL_AGENT` (the install's answer, Secretive's socket by default), `LimitLoadToSessionType Aqua`, `RunAtLoad`, `KeepAlive`; started in your GUI session (`gui/<uid>`); `POPUP=no` recorded in the manifest as `choice popup no`, so an upgrade doesn't start it | yours, 0600 |
 
-Built in [M7](../history/m7-local-mode-on-the-mac.md); the popup in [M7.8](../roadmap.md#m78--approval-popup-on-the-mac).
+Built in [M7](../history/m7-local-mode-on-the-mac.md); the popup in [M7.8](../history/m7.8-approval-popup-on-the-mac.md).
 
 ## Local (Linux)
 

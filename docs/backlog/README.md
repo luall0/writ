@@ -70,7 +70,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [A hardware-keyed MAC over stored blobs](#a-hardware-keyed-mac-over-stored-blobs) | Signers, Sealing | hardening | M | idea (the threat model named M7.6 for it, which shipped without it: the review after M7.6, K-6) |
 | [The authority MAC's key replaced with the data key](#the-authority-macs-key-replaced-with-the-data-key) | Sealing | hardening | M | idea (left out of M7.7) |
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
-| [Mac app for every command](#mac-app-for-every-command) | Approvals, Clients | feature | L | idea; after [M7.8](../roadmap.md#m78--approval-popup-on-the-mac)'s popup, the approval client linked into the app first |
+| [Mac app for every command](#mac-app-for-every-command) | Approvals, Clients | feature | L | idea; after [M7.8](../history/m7.8-approval-popup-on-the-mac.md)'s popup, the approval client linked into the app first |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
 | [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
 | [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | picked as [M7.1](../history/m7.1-local-mode-on-linux.md) |
@@ -191,13 +191,13 @@ mine.
 A Secure Enclave approver app that shows the ticket in its own UI and signs the same SSHSIG
 format: the Touch ID prompt finally shows what is signed. Adding it is adding a key to
 `approvers` ([Approvals](../architecture/approvals.md)). It would grow from
-[M7.8](../roadmap.md#m78--approval-popup-on-the-mac)'s popup, with the signature in the app,
+[M7.8](../history/m7.8-approval-popup-on-the-mac.md)'s popup, with the signature in the app,
 and close the residual risk the popup leaves (an agent under my user drawing the same window
 and asking Secretive itself, whose prompt says nothing of what is signed).
 
 ### Mac app for every command
 
-[M7.8](../roadmap.md#m78--approval-popup-on-the-mac)'s popup grown into a UI for everything
+[M7.8](../history/m7.8-approval-popup-on-the-mac.md)'s popup grown into a UI for everything
 `writ` does: the ticket list, narrowing, revoking, reports, the admin changes, unsealing.
 **Its precondition, decided with the user** ([decision log](../decisions.md), 2026-11-14):
 the approval client is linked into the app (an FFI crate over `writ-approval` and

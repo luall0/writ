@@ -115,7 +115,7 @@ When it passes, note it under the acceptance item in
 
 ## The approval popup (M7.8)
 
-[M7.8](../roadmap.md#m78--approval-popup-on-the-mac)'s manual check: what only a person in
+[M7.8](../history/m7.8-approval-popup-on-the-mac.md)'s manual check: what only a person in
 front of the Mac sees. `make test` and `make e2e` prove `writ sign --ui` (what is shown, what
 an answer signs); this checks the window `writ-popup` draws around it. Set up steps 1 to 3 of
 [Approving with Secretive](#approving-with-secretive-touch-id) first (the daemon running in
@@ -169,8 +169,10 @@ and the popup doesn't show it again (`writ sign` in a terminal still reaches it)
 says it can't reach the daemon, then picks up what waits once it is back. Quit it with Ctrl-C
 in terminal 3.
 
-When every box is ticked, note it under M7.8's acceptance items. The popup installed by `make
-install` (started at login) is checked with [M7.9](#local-mode-on-the-mac-m7).
+Run by the user to close M7.8 (2026-11-15, its acceptance items on
+[its history page](../history/m7.8-approval-popup-on-the-mac.md#acceptance)); run it again
+after a change to `writ-popup` or `writ sign --ui`. The popup installed by `make install`
+(started at login) is checked with [local mode on the Mac](#local-mode-on-the-mac-m7).
 
 ## A throwaway GitHub repo (M4)
 
@@ -329,9 +331,9 @@ own page: [manual checks with a real agent](manual-checks-e2e.md).
 
 The installer's frame and its `local` setup run in `make test` against a fake root; this is
 the real thing, on your Mac, with `sudo` and Touch ID. It changes your system: run it on a
-Mac where you can reboot. It is [M7.9](../roadmap.md#m79--local-mode-checked-on-the-mac),
-run once M7.5 and M7.6 are in place (they add their own steps here): when every step passes,
-tick M7.9's acceptance items.
+Mac where you can reboot. It was [M7.9](../history/m7.9-local-mode-checked-on-the-mac.md)
+(run by the user, 2026-11-15, with M7.5 and M7.6 in place, their steps here); run it again
+after a change to the installer, launchd's files or the Secure Enclave signer.
 
 **1. Before.** Keep what is there now, to compare with after the uninstall:
 

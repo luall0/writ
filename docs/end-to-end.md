@@ -473,7 +473,7 @@ not checked).
 | [Good practice](operators/good-practice.md) | `crates/writ-e2e/tests/scenarios/wrapper_mode.rs` |
 | [Sealing](operators/sealing.md) | `crates/writ-e2e/src/setup.rs`, `crates/writ-e2e/tests/scenarios/daemon_management.rs`, `crates/writ-e2e/tests/scenarios/keystore_recipients.rs` |
 | [Recovery](operators/recovery.md) | owed by M8 (the detached deployment it shows) |
-| [Install](operators/install.md) | owed by M7.9 (the real install, run by hand) |
+| [Install](operators/install.md) | owed by M8 (its `client` setup in the pipeline; the `local` setup run by hand in M7.9) |
 
 `make check` refuses an operator page that shows an `sh` block and has no row here, run
 whole or owed by a milestone still to come (`tool/check-e2e.py`).

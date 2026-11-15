@@ -15,8 +15,8 @@ file).
 **Status:** done (2026-11-12). `make ci` passes (912 tests, `shellcheck` included); `make e2e`
 passes (33 scenarios). All run on macOS; CI runs the same on Linux. The real install on the
 Mac (the acceptance items a fake root can't prove) moved to
-[M7.9](../roadmap.md#m79--local-mode-checked-on-the-mac), at the user's request: they will
-run it once M7.5 and M7.6 are in place, the setup that fits their workflow.
+[M7.9](m7.9-local-mode-checked-on-the-mac.md), at the user's request: they ran it once M7.5 and M7.6 were in place, the setup
+that fits their workflow (done 2026-11-15, every item ticked below).
 
 ## What was planned
 
@@ -258,20 +258,21 @@ real install's check to M7.9.
       uninstall, a failed install taken back), and shellcheck in `make check`.
       *`crates/writ-integration/tests/installer.rs`, four tests; `tool/shellcheck.sh` in
       `make check`.*
-- [ ] On a Mac without Writ, `make install` (the `local` setup picked at its question, then
+- [x] On a Mac without Writ, `make install` (the `local` setup picked at its question, then
       with `SETUP=local`) then `writ unseal` gives a working local daemon with nothing else
       done by hand; `DRY_RUN=1` lists exactly what the install then makes; a second
       `make install` upgrades the binaries and keeps the keystore, state and pins; a
       `SETUP` this OS doesn't offer is refused with the list.
       *Against the fake root: every part of it (`the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_offered`,
       `an_install_upgrades_and_uninstalls_leaving_the_mac_as_before`). For real on the Mac:
-      [M7.9](../roadmap.md#m79--local-mode-checked-on-the-mac).*
-- [ ] `make uninstall` leaves the Mac as before the install (the role user, the
+      run by the user in [M7.9](m7.9-local-mode-checked-on-the-mac.md) (2026-11-15), with the guided questions.*
+- [x] `make uninstall` leaves the Mac as before the install (the role user, the
       LaunchDaemon, the binaries, the directories and `~/.writ/`'s pins gone, checked
       against a listing taken before), the daemon's data kept unless `PURGE=1` is
       confirmed; after an install stopped half way, it takes back what was made.
       *Against the fake root, compared with a listing taken before (the users and groups
-      too), `PURGE=1` confirmed on a terminal, a failed install taken back. For real: M7.9.*
+      too), `PURGE=1` confirmed on a terminal, a failed install taken back. For real: run by the user in [M7.9](m7.9-local-mode-checked-on-the-mac.md),
+      compared with a listing taken before, then the purge.*
 - [x] The repos question: answered yes, every repo on the list (wrapper, whole-repo, a
       workspace) is back exactly as before its `writ init`, undone as my user; answered no,
       none is touched and each is named; with no terminal and no `REPOS`, the uninstall
@@ -291,17 +292,18 @@ real install's check to M7.9.
       recorded paths, what it skips named, escaped.
       *The same list test (a workspace root and a repository, the hostile lines skipped, a
       clone never wired untouched); scenario 21 end to end.*
-- [ ] My user (so any agent) can't read the daemon's keystore or attach to the daemon
+- [x] My user (so any agent) can't read the daemon's keystore or attach to the daemon
       (`cat` and `lldb -p` refused), and the daemon starts again after a reboot.
-      *Needs the real install: M7.9.*
+      *Run by the user on the real install in [M7.9](m7.9-local-mode-checked-on-the-mac.md) (the manual check's steps 4 and
+      5).*
 - [x] `launchctl stop` (SIGTERM) stops the daemon as Ctrl-C does: the `stopping` line, the
       listeners closed, an upstream operation in flight allowed its deadline.
       *`sigterm_stops_in_order_and_lets_an_upstream_push_in_flight_finish` and
       `sigint_stops_the_same_way` with the real binary (`kill -TERM`); through launchd
-      itself: M7.9.*
+      itself: run by the user in [M7.9](m7.9-local-mode-checked-on-the-mac.md).*
 - [x] `writd recover` refuses while the daemon runs, naming why, and works once it is
       stopped (both sides tested, a crashed daemon's leftover not
       blocking it); the recovery guide's macOS steps run as written.
       *`recover_is_refused_while_the_daemon_runs_and_a_crashed_one_leaves_no_lock` (and a
       second `writd run` refused); the recovery guide's macOS steps filled in with what
-      `make install` makes, run as written in M7.9.*
+      `make install` makes, run as written by the user in [M7.9](m7.9-local-mode-checked-on-the-mac.md).*
