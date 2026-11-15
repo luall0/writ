@@ -337,3 +337,93 @@ fn writ_git_fetch_with_no_lease_fetches_under_an_unsigned_lease_and_leaves_nothi
     assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
     assert_eq!(audit_events(&daemon.audit(), "grant", "allowed").len(), 3);
 }
+
+/// A ticket of the daemon's `demo` that signs and pushes but doesn't fetch.
+const NO_FETCH: &str = r#"
+repos:
+  demo:
+    operations: [commit_sign, push]
+    branches: ["agent/x"]
+    expected_paths: ["src/**"]
+ticket:
+  title: "Sign without fetching"
+  task: Commit and push, no fetch
+limits:
+  ttl: 1h
+"#;
+
+#[test]
+fn writ_git_fetch_with_no_lease_asks_none_when_no_template_has_the_switch() {
+    let policy = DAEMON_POLICY.replacen("    unsigned_fetch: 15m\n", "", 1);
+    assert_ne!(policy, DAEMON_POLICY);
+    let daemon = Daemon::start(&policy, Approvals::Ssh);
+    let repo = wired(&daemon);
+    let submitted = || audit_events(&daemon.audit(), "submit", "allowed").len();
+
+    // Run as before: git under no session, refused for want of a lease (no session key to
+    // authenticate with), and no ticket submitted.
+    let out = writ_in(&daemon, &repo, &["git", "fetch", "origin"], &[]);
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("writ/sessions/current/key not accessible"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("Permission denied (publickey)"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains("granted with no signature"));
+    assert_eq!(submitted(), 0, "{}", daemon.audit());
+    assert!(audit_events(&daemon.audit(), "grant", "allowed").is_empty());
+    // `pull` the same.
+    let out = writ_in(
+        &daemon,
+        &repo,
+        &["git", "pull", "--ff-only", "origin", "main"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("Permission denied (publickey)"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(submitted(), 0, "{}", daemon.audit());
+}
+
+#[test]
+fn writ_git_fetch_under_a_running_lease_without_fetch_is_refused_never_replaced() {
+    let daemon = Daemon::start(DAEMON_POLICY, Approvals::Ssh);
+    let repo = wired(&daemon);
+    let lease = daemon.lease("no-fetch", NO_FETCH);
+    let grants = || audit_events(&daemon.audit(), "grant", "allowed").len();
+    assert_eq!(grants(), 1);
+
+    // `current` names a running lease: git runs under it, the daemon refuses the fetch for
+    // the operation, and no lease is asked in its place, though the template has the switch.
+    let out = writ_in(&daemon, &repo, &["git", "fetch", "origin"], &[]);
+    assert_eq!(out.status.code(), Some(128), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!("outside ticket {lease}: fetch not allowed")),
+        "{}",
+        stderr(&out)
+    );
+    let denied = audit_events(&daemon.audit(), "fetch", "denied");
+    assert_eq!(denied.len(), 1, "{denied:?}");
+    assert_eq!(denied[0]["lease"], lease.as_str());
+    assert_eq!(denied[0]["code"], "operation");
+    assert_eq!(grants(), 1, "{}", daemon.audit());
+    assert_eq!(audit_events(&daemon.audit(), "submit", "allowed").len(), 1);
+    // `pull` the same, under the same lease.
+    let out = writ_in(
+        &daemon,
+        &repo,
+        &["git", "pull", "--ff-only", "origin", "main"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(audit_events(&daemon.audit(), "fetch", "denied").len(), 2);
+    assert_eq!(grants(), 1, "{}", daemon.audit());
+}

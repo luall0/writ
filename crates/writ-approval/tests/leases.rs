@@ -662,3 +662,87 @@ fn a_revocation_or_close_the_store_can_t_record_is_recorded_by_the_next_sweep() 
         "{revokes:?}"
     );
 }
+
+/// A fetch of omega-code alone, under feature-branch: with the switch on, granted with no
+/// signature (M7.9.7).
+const FETCH_ALONE: &str = r#"
+limits:
+  ttl: 10m
+repos:
+  omega-code:
+    template: feature-branch
+    operations: [fetch]
+ticket:
+  title: Fetch
+  task: Fetch before planning
+"#;
+
+#[test]
+fn unsigned_leases_count_against_the_submission_rate_not_the_active_leases() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock::at_unix(START));
+    let policy = POLICY.replacen(
+        "    max_ttl: 4h\n",
+        "    max_ttl: 4h\n    unsigned_fetch: 15m\n",
+        1,
+    );
+    assert_ne!(policy, POLICY);
+    let h = Harness {
+        test: TestServiceBuilder::new(&policy)
+            .clock(clock.clone())
+            .max_active_per_source(1)
+            .submissions(writ_approval::SubmissionLimits {
+                per_source: 3,
+                in_all: 60,
+            })
+            .build(dir.path()),
+        _dir: dir,
+        clock,
+    };
+    let here = from("192.0.2.7");
+    let fetch = || {
+        h.submit(&generate(KeyKind::Ed25519).unwrap(), FETCH_ALONE, &here)
+            .map(|ticket| ticket.id)
+    };
+
+    // At the rate: three unsigned leases from one source, each active at once, though
+    // `max_active_per_source` is 1: they don't hold its slots.
+    let mut unsigned = Vec::new();
+    for _ in 0..3 {
+        let id = fetch().unwrap();
+        assert_eq!(h.state(&id), State::Active);
+        unsigned.push(id);
+    }
+    // One past it: refused over the rate, like any ticket, and no lease granted.
+    refused(
+        fetch(),
+        RefusalCode::RateLimited,
+        "more than 3 submissions a minute from this address; try again later",
+    );
+    assert_eq!(h.events("grant", "allowed").len(), 3);
+    // A second before the window ends, still refused; at its end, one passes again.
+    h.clock.advance(59);
+    refused(
+        fetch(),
+        RefusalCode::RateLimited,
+        "more than 3 submissions a minute",
+    );
+    h.clock.advance(1);
+    unsigned.push(fetch().unwrap());
+
+    // The source's one slot is still free for a lease the approver signs, and taken by it:
+    // four unsigned leases held, one signed allowed, a second signed refused.
+    for id in &unsigned {
+        assert_eq!(h.state(id), State::Active);
+    }
+    h.lease(&feature("agent/a-*"), &here);
+    refused(
+        h.submit(
+            &generate(KeyKind::Ed25519).unwrap(),
+            &feature("agent/b-*"),
+            &here,
+        ),
+        RefusalCode::TooManyActive,
+        "this source (192.0.2.7) already holds 1 active leases (max_active_per_source: 1)",
+    );
+}
