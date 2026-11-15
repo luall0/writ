@@ -23,6 +23,9 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 - `writ --version`, `writd --version` and `writ-sign --version` print the version.
 - `writ` says once when the daemon's version isn't its own, and names both versions when it
   can't read a reply.
+- `make install` says which version it installs. Over an install, it says which version
+  replaces which and shows the changelog's Upgrading notes in between, before your go
+  ([install](docs/operators/install.md#upgrade)).
 
 ## 0.1.0 — 2026-11-15
 

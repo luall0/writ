@@ -323,9 +323,10 @@ never a release. Settled with the user ([decision log](decisions.md), 2026-11-15
   version isn't the daemon's, a hint only (rule 1: the daemon decides); a reply that doesn't
   parse names both versions when the daemon's can still be read, else as today.
 - **The installer:** `make install` over an install says `upgrading <from> → <to>` (the
-  installed `writd --version`, the new one) and shows the Upgrading blocks between the two
-  before the go, beside `writd check-upgrade`'s report; going back to an older version says
-  so and asks the same go. A fresh install names its version.
+  installed `writd --version`, or its `writ --version` for a `writd` before 0.2.0, which has
+  none; `0.0.0` is no version) and shows the Upgrading blocks between the two, and those not
+  released yet, before the go, beside `writd check-upgrade`'s report; going back to an older
+  version says so and asks the same go. A fresh install names its version.
 - Docs: the operator pages ([install](operators/install.md): the upgrade's from and to and its
   notes; the clients' settings: `--version`), [conventions](conventions.md) (the changelog's
   rules, when a version moves), [clients](architecture/clients.md) (the hint), the

@@ -277,6 +277,87 @@ upgrade_check() {
     [ "$checked" = 0 ] || fail "the new writd can't carry this install over (said above): nothing was changed"
 }
 
+# The version a Writ binary says it is (M7.9.8): MAJOR.MINOR.PATCH, or nothing when it names
+# none (a writd before 0.2.0 has no --version; a writ before 0.1.0 says 0.0.0).
+version_of() {
+    said=$("$1" --version 2>/dev/null) || return 0
+    v=${said#* }
+    case $v in
+        "" | 0.0.0 | *[!0-9.]* | .* | *. | *..*) return 0 ;;
+    esac
+    printf '%s' "$v"
+}
+
+# -1, 0 or 1 as version <a> is below, the same as, or above <b>.
+version_cmp() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        split(a, x, "."); split(b, y, ".")
+        for (i = 1; i <= 3; i++) {
+            if (x[i] + 0 < y[i] + 0) { print -1; exit }
+            if (x[i] + 0 > y[i] + 0) { print 1; exit }
+        }
+        print 0
+    }'
+}
+
+# The changelog's Upgrading notes from <from> (empty: before any version) to <to>, newest
+# first, and those of the changes not released yet.
+upgrading_notes() {
+    changelog=$DEPLOY/../CHANGELOG.md
+    [ -f "$changelog" ] || return 0
+    awk -v from="$1" -v to="$2" '
+        function cmp(a, b,   x, y, i) {
+            split(a, x, "."); split(b, y, ".")
+            for (i = 1; i <= 3; i++) {
+                if (x[i] + 0 < y[i] + 0) return -1
+                if (x[i] + 0 > y[i] + 0) return 1
+            }
+            return 0
+        }
+        /^## / {
+            section = ""
+            if ($0 == "## Unreleased") { take = 1; release = "not released yet" }
+            else { take = (from == "" || cmp($2, from) > 0) && cmp($2, to) <= 0; release = $2 }
+            next
+        }
+        /^### / {
+            section = substr($0, 5)
+            if (take && section == "Upgrading") print "  " release ":"
+            next
+        }
+        take && section == "Upgrading" && NF { print "    " $0 }
+    ' "$changelog"
+}
+
+# Which version replaces which (M7.9.8), and what the changelog says the upgrade asks, before
+# the check and the go: the installed writd's version (its writ's, for a writd before 0.2.0)
+# and the new one's.
+upgrade_versions() {
+    to=$(version_of "$BINARIES/writd")
+    [ -n "$to" ] || fail "the new writd names no version ($BINARIES/writd --version)"
+    # shellcheck disable=SC2153 # BIN is the setup's (sourced before)
+    from=$(version_of "$BIN/writd")
+    [ -n "$from" ] || from=$(version_of "$BIN/writ")
+    if [ -z "$from" ]; then
+        say "Upgrading Writ: a version before 0.1.0 → $to."
+    else
+        case $(version_cmp "$from" "$to") in
+            -1) say "Upgrading Writ: $from → $to." ;;
+            0) say "Installing Writ $to again: the version installed." ;;
+            1)
+                say "Going back: Writ $from → $to, an older version. writd check-upgrade (below)"
+                say "says whether it reads this install's state and policy."
+                return 0
+                ;;
+        esac
+    fi
+    notes=$(upgrading_notes "$from" "$to")
+    [ -z "$notes" ] || {
+        say "What it asks (the changelog's Upgrading):"
+        say "$notes"
+    }
+}
+
 # After an upgrade's restart (M7.9.6): on a terminal, the daemon unsealed (unless it opened
 # itself) and the policy's migration signed when one is owed, both as you, each its own
 # approval; declined or failed, what to run. Without a terminal, what to run.
@@ -457,6 +538,7 @@ do_install() {
         MANIFEST=$(printf '%s' "$found" | sed -n 2p)
         # shellcheck source=/dev/null
         . "$file"
+        upgrade_versions
         upgrade_check
         if [ "$DRY_RUN" != 1 ] && terminal; then
             say "Installed already ($MANIFEST): an upgrade replaces the binaries and restarts the"
@@ -477,6 +559,9 @@ do_install() {
     MANIFEST=$(manifest_of "$file")
     # shellcheck source=/dev/null
     . "$file"
+    to=$(version_of "$BINARIES/writd")
+    [ -n "$to" ] || fail "the new writd names no version ($BINARIES/writd --version)"
+    say "Installing Writ $to."
     setup_questions
     if [ "$DRY_RUN" = 1 ]; then
         say "Dry run: these are the changes; none is made."

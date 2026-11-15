@@ -26,7 +26,8 @@ takes it all back.
 make install
 ```
 
-It builds the release binaries, then asks its questions, one at a time, each with what it
+It builds the release binaries and says which version of Writ it installs. Then it asks its
+questions, one at a time, each with what it
 means and what Enter keeps. Where there is a choice, it is a menu: the arrow keys move, typing
 filters, Enter picks (the first highlighted is what Enter keeps); Esc stops the install with
 nothing changed:
@@ -116,18 +117,23 @@ You add repositories from your machine with `writ admin`.
 
 Run `make install` again. It goes in this order:
 
-1. **It checks the upgrade first.** The new `writd` reads your install while the old daemon
+1. **It says which version replaces which**, for example `Upgrading Writ: 0.1.0 → 0.2.0.` It
+   then shows what each version in between asks of an upgrade, from the
+   [changelog](../../CHANGELOG.md)'s Upgrading notes, and those of changes not released yet.
+   Installing an older version says `Going back` instead. The check below then says whether
+   that version can read your install.
+2. **It checks the upgrade.** The new `writd` reads your install while the old daemon
    still runs, and changes nothing (`writd check-upgrade`). It says what the new version will
    migrate, and whether your policy will need a signature. If something would stop the new
    daemon, it says what, and the upgrade stops there with nothing changed.
-2. **It lists its changes and asks `Upgrade?`.** Yes stops the daemon cleanly, replaces the
+3. **It lists its changes and asks `Upgrade?`.** Yes stops the daemon cleanly, replaces the
    binaries, writes the LaunchDaemon's plist (the systemd unit on Linux) again with this
    version's settings, and starts it again. The keystore, the state, the configuration and
    your pins are kept.
-3. **The new daemon migrates its state at its start**, when the version changed it. It copies
+4. **The new daemon migrates its state at its start**, when the version changed it. It copies
    the state into `backups/` in its state directory first.
-4. **It runs `writ unseal`** for you, unless the daemon opens itself (auto-unseal).
-5. **It runs `writ migrate`** if your policy was written for an older version. Until you sign
+5. **It runs `writ unseal`** for you, unless the daemon opens itself (auto-unseal).
+6. **It runs `writ migrate`** if your policy was written for an older version. Until you sign
    that migration, the daemon refuses every request, and each refusal says to run `writ
    migrate`. It shows the policy the new version would read, as a change, then asks for one
    approval.

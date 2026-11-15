@@ -1437,3 +1437,86 @@ fn the_approval_popup_is_started_at_login_as_answered_and_taken_back() {
     expected.sort();
     assert_eq!(fake.tree(), expected);
 }
+
+#[test]
+fn an_upgrade_names_the_versions_and_what_the_changelog_says_it_asks() {
+    let version = writ_proto::VERSION;
+    let fake = Fake::new();
+    // A fresh install names its version.
+    let said = ok(&fake.install(&[]));
+    assert!(
+        said.contains(&format!("Installing Writ {version}.\n")),
+        "{said}"
+    );
+    // Each upgrade below replaces the binaries: the installed ones are set again before each.
+    let installed = |writd: &str, writ: &str| {
+        for (name, script) in [("writd", writd), ("writ", writ)] {
+            let path = fake.at(&format!("/opt/writ/bin/{name}"));
+            fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    };
+    let upgrade = || ok(&fake.run("install", &[], ""));
+    let first = |said: &str, line: &str| {
+        let at = said.find(line);
+        let checked = said.find("Checking what the new writd carries over");
+        assert!(
+            at.is_some() && at < checked,
+            "{line:?} before the check, in:\n{said}"
+        );
+    };
+
+    // From an older version: both named, then the Upgrading notes of each release above it,
+    // this one's included (every release has them), never the older one's.
+    installed("echo 'writd 0.0.9'", "echo 'writ 0.0.9'");
+    let said = upgrade();
+    first(&said, &format!("Upgrading Writ: 0.0.9 → {version}.\n"));
+    first(&said, "What it asks (the changelog's Upgrading):\n");
+    assert!(said.contains(&format!("\n  {version}:\n    - ")), "{said}");
+    assert!(!said.contains("  0.0.9:"), "{said}");
+
+    // A writd before 0.2.0 has no --version: its writ's is read; 0.0.0 is no version at all.
+    installed("echo 'usage: writd …' >&2; exit 2", "echo 'writ 0.1.0'");
+    let said = upgrade();
+    if version != "0.1.0" {
+        first(&said, &format!("Upgrading Writ: 0.1.0 → {version}.\n"));
+        assert!(!said.contains("\n  0.1.0:\n"), "{said}");
+    }
+    installed("exit 2", "echo 'writ 0.0.0'");
+    let said = upgrade();
+    first(
+        &said,
+        &format!("Upgrading Writ: a version before 0.1.0 → {version}.\n"),
+    );
+    assert!(said.contains("\n  0.1.0:\n    - "), "{said}");
+
+    // The same version: said so (the binaries the last upgrade put there).
+    let said = upgrade();
+    first(
+        &said,
+        &format!("Installing Writ {version} again: the version installed.\n"),
+    );
+    assert!(!said.contains(&format!("\n  {version}:\n")), "{said}");
+
+    // A newer one: going back, said before the check, with no notes.
+    installed("echo 'writd 99.0.0'", "echo 'writ 99.0.0'");
+    let said = upgrade();
+    first(
+        &said,
+        &format!(
+            "Going back: Writ 99.0.0 → {version}, an older version. writd check-upgrade (below)\n\
+             says whether it reads this install's state and policy.\n"
+        ),
+    );
+    assert!(!said.contains("What it asks"), "{said}");
+    // Versions are compared as numbers: 0.10.0 is above 0.9.0.
+    installed("echo 'writd 0.10.0'", "echo 'writ 0.10.0'");
+    let said = upgrade();
+    let (major, minor) = {
+        let parts: Vec<u64> = version.split('.').map(|p| p.parse().unwrap()).collect();
+        (parts[0], parts[1])
+    };
+    if major == 0 && minor < 10 {
+        first(&said, &format!("Going back: Writ 0.10.0 → {version}"));
+    }
+}
