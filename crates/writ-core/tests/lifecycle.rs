@@ -528,6 +528,20 @@ fn templates_can_require_expected_paths() {
         "{error}"
     );
     assert!(fit::submit(&config, &request(REQUEST), &submission(1)).is_ok());
+    // A block that signs nothing has nothing to list (M7.9.7): a fetch alone fits without
+    // them, signed or, with the template's unsigned_fetch on, granted with no signature.
+    let fetch = "repos:\n  omega-code:\n    template: feature-branch\n    operations: [fetch]\n\
+                 ticket:\n  title: Fetch\n  task: Fetch before planning\nlimits:\n  ttl: 10m\n";
+    let signed = fit::submit(&config, &request(fetch), &submission(2)).unwrap();
+    assert!(!fit::unsigned(&config, &signed));
+    let switched = writ_core::config::PolicyConfig::from_yaml(&policy.replacen(
+        "    max_ttl: 4h\n",
+        "    max_ttl: 4h\n    unsigned_fetch: 15m\n",
+        1,
+    ))
+    .unwrap();
+    let unsigned = fit::submit(&switched, &request(fetch), &submission(3)).unwrap();
+    assert!(fit::unsigned(&switched, &unsigned));
 }
 
 #[test]

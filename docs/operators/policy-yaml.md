@@ -183,7 +183,7 @@ One ticket may use several templates, one per repo. Then:
 | `templates.<name>.max_ops_per_minute` | Count, at least 1 | **required** | The most signatures, pushes and fetches one lease may make per minute, all together and in every repo. A lease over several templates gets the smallest |
 | `templates.<name>.max_push_size` | Size | **required** | The largest pack one push may send in a repo under this template: at least 1 byte when the template allows `push` (git would read 0 as no limit). Lowering it applies to the leases already granted too |
 | `templates.<name>.paths_check` | `off`, `warn` or `deny` | `warn` | Compares the files each commit touches with the `expected_paths` of its repo in the ticket. [Paths check](#paths-check) |
-| `templates.<name>.require_expected_paths` | Boolean | `false` | Whether a repo's block must list `expected_paths` to fit this template |
+| `templates.<name>.require_expected_paths` | Boolean | `false` | Whether a repo's block that signs commits (`commit_sign`) must list `expected_paths` to fit this template. A block that only fetches or pushes has nothing to compare, and needs none |
 | `templates.<name>.require_session` | Boolean | `false` | Local mode: whether a ticket must be bound to an agent session (`caller`, written by `writ run`). Without one it is refused (`session`). The session is always one `writ run` started: a binding to any other process is refused too. Leave it off on a detached daemon: a bound lease is denied everything over TCP |
 | `templates.<name>.max_renewals` | Count | no limit | How many [renewals](ticket.md#renewals) one lease's chain may have. A lease over several templates gets the smallest. Each renewal is signed anyway; this caps how long one task can run |
 

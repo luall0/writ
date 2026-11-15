@@ -257,7 +257,10 @@ fn check_repo(
             terms.expected_paths.len()
         ));
     }
-    if template.require_expected_paths && terms.expected_paths.is_empty() {
+    // Paths are compared on the commits a block signs: one that signs nothing (a fetch, or a
+    // push of commits signed elsewhere) has nothing to list (M7.9.7, found by the user: the
+    // fetch `writ git` asks with no lease, under a template that requires them).
+    if signs && template.require_expected_paths && terms.expected_paths.is_empty() {
         reasons.push(format!(
             "{at}: the template {} requires expected_paths",
             terms.template

@@ -190,6 +190,8 @@ templates:
     max_pushes: 20
     max_ops_per_minute: 100
     max_push_size: 10MB
+    # The tickets that sign list their paths; the fetch `writ git` asks lists none (M7.9.7).
+    require_expected_paths: true
 "#;
 
 /// `writ` as the agent runs it, in `cwd`.
