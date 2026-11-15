@@ -50,7 +50,7 @@ picked.
 | M7.9 | [Local mode checked on the Mac](history/m7.9-local-mode-checked-on-the-mac.md) ✅ | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
 | M7.9.5 | [Operator experience](history/m7.9.5-operator-experience.md) ✅ | Asked by the user after the real install: amendments showing only what changed, the popup redesigned (its design validated first, as an artifact), every guided prompt and the installer's questions with arrow selection, colour and inline checks, a quick setup guide from `make install` to a first agent run |
 | M7.9.6 | [Upgrades](history/m7.9.6-upgrades.md) ✅ | Asked by the user before M8: the state migrated in steps with a backup first, the policy naming its format and every format change a signed migration (`writ migrate`), the daemon refusing everything else until it is signed, `writd check-upgrade` before the installer changes anything, the installer unsealing and migrating; the push modes `proxy` and `direct_ssh` dropped, their keys removed as format 2 |
-| M7.9.7 | [Fetch without a signature](#m797--fetch-without-a-signature) | Asked by the user before M8: a template's `unsigned_fetch: <time>` granting a fetch-only ticket with no approver, off by default, the template signing as before for the rest; `writ git fetch` and `pull` asking one themselves; the skills fetch before they plan |
+| M7.9.7 | [Fetch without a signature](history/m7.9.7-fetch-without-a-signature.md) ✅ | Asked by the user before M8: a template's `unsigned_fetch: <time>` granting a fetch-only ticket with no approver, off by default, the template signing as before for the rest; `writ git fetch` and `pull` asking one themselves; the skills fetch before they plan |
 | M7.9.8 | [Shell completion](#m798--shell-completion) | Asked by the user before M8: `writ`'s commands, flags and values completed in fish, zsh and bash, lease ids and the registry's names read live from the daemon with the reader key, silent when it can't answer; `writ completions <shell>`, installed and removed by the installer |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
@@ -281,106 +281,10 @@ before the installer changes anything, the installer unsealing and migrating, th
 
 ## M7.9.7 — Fetch without a signature
 
-Asked by the user before M8, from agents seen at work: before planning, an agent fetches to
-see whether upstream moved or to start from a clean tree, and it does so with plain `git`,
-outside the skill, because `writ git fetch` needs a lease and a lease needs a signed ticket.
-In wrapper mode plain `git fetch origin` goes through the operator's own remote and
-credentials. On a large repository the first fetch is needed almost every time, so the agent
-would ask a lease only to plan the real one. A fetch sends nothing upstream and can't write,
-and what it reads is the repository's ([scope](threat-model.md#looked-at-and-not-risks)): a
-fetch-only lease needs no approver. Settled with the user
-([decision log](decisions.md), 2026-11-15):
-
-- **A template's switch, not a kind of template** (reworked with the user once built: the
-  same template signs and pushes as before): `unsigned_fetch: <duration>` on any template that
-  allows `fetch` (from the daemon's `min_ttl` to 1 h; absent: off, the default). A new
-  ticket (amending and renewing nothing) whose every repository asks only `fetch`, each
-  under a template with it on, is granted with no signature, for at most the smallest
-  `unsigned_fetch`; every other ticket under the same templates is signed as before, and one
-  the approver narrows down to fetch only is signed by them. It is set like any template
-  field (`writ admin template set|edit`, asked after `max_ttl`, a signed admin change), and
-  applies to every repo naming the template (one repo alone gets a template of its own). The
-  signed policy change is the approval that stands for the missing SSHSIG.
-- **The grant:** granted when it is submitted, with no pending state and no notification, its
-  certificate issued as any lease's; never amended or renewed (refused with its code). Its
-  time is checked at submission, at the grant and on every request: a switch turned off, or
-  shortened below it, ends it. Unsigned leases count against the submission rates
-  (`submissions` in `writd.yaml`) like any ticket, not against `max_active_per_source`. The
-  state records how each lease was granted (signed by an approver, or by the policy), as a
-  state step (version 13). The grant's audit line names the template where a signed one
-  names the approver; `writ ls`, `writ report` and the approver's screen mark an unsigned
-  lease as such.
-- **Transparent for the agent:** `writ git fetch` and `writ git pull` with no lease named
-  (`WRIT_SESSION` unset, no active `current`) ask for one themselves: they read from
-  `writ policy` the first of the repository's templates with `unsigned_fetch`, make a throwaway
-  Ed25519 key file, submit a fetch-only ticket written by `writ` (that template, its
-  `unsigned_fetch` time, the title and task fixed), run git under it, close it
-  and remove the session's files, whatever git's exit. A close of an unsigned lease records no
-  run in the timings file. No such template: the denial a fetch without a lease has today,
-  with its reason. A lease named but ended, or one without `fetch`, is refused as today:
-  `writ git` never switches a running agent to another identity. A `pull` that would make a
-  merge commit fails at its signature (no `commit_sign`): the skill says `--ff-only`.
-- **Always a file key:** a lease granted with no signature has a file session key, whatever
-  the host's `session_key` setting or the template's ([M8.5](#m85--non-exportable-session-keys)
-  refuses a ticket for one that declares `hardware`; the template's mode is for the leases
-  the approver signs). A hardware key guards what an approver granted; anyone who may submit
-  from an allowed address gets the same fetch lease with no key to copy.
-- **The skills and the pointer line:** both skills gain a step before the ticket, "fetch
-  before you plan" (`writ git fetch origin`, `writ git pull --ff-only`; the work itself still
-  under a ticket the human signs), `writ policy` showing it as `fetch alone: no signature`,
-  and the line
-  `--agents-md` writes in `AGENTS.md` / `CLAUDE.md` names fetch and pull. `writ init` writes
-  them again in each wired repository.
-- Docs: the [lease model](lease-model.md) (the key, the grant, the lifecycle without
-  `pending`), [flows](flows.md) § 4, [approvals](architecture/approvals.md) (a grant with no
-  approval), [identity](architecture/identity.md) and [clients](architecture/clients.md)
-  (`writ git` with no lease), [policy and state](architecture/policy-and-state.md) (the
-  record, the audit line), the operator reference and the policy template (`unsigned_fetch`), the
-  [threat model](threat-model.md): a row in "looked at, and not risks" (a fetch-only lease
-  granted without a signature: it sends nothing and can't write, and what it reads is the
-  repository's; a risk if a fetch ever sent upstream something of the agent's, or if such a
-  lease could widen into one that signs or pushes), the guarantee that it only fetches, and
-  the sentences that say every lease was signed (boundary 4, the residual risks on leases
-  shared on one host and on submissions) made true of every lease that signs or pushes.
-
-Plan, each step leaving Writ working (`make ci`):
-1. This page and the decision.
-2. The template key and its checks when the policy is read (`writ-core`), the edit and the
-   guided `repo add` question, the operator reference and template, the configuration
-   registry's row.
-3. The grant without a signature: the policy and the lifecycle (`writ-core`), the state step
-   (version 13) and the record, the daemon's grant, the refusals, the audit line, the marks in
-   `writ ls` and `writ report`; the threat model and the guarantee tests.
-4. `writ git fetch` and `writ git pull` with no lease.
-5. The skills' step and the pointer line.
-6. The docs left, the end-to-end scenarios; the manual check: an agent on the Mac fetching
-   before its ticket.
-7. Reworked with the user once built: the switch on an ordinary template (`unsigned_fetch:
-   <duration>`), the guided `repo add` question dropped, `writ policy`'s row and the skills'
-   step 0 reworded.
-
-Acceptance:
-- [ ] `unsigned_fetch` on a template that also signs and pushes: read at 1 h and at `min_ttl`,
-      refused a second past either and on a template that allows no fetch, each naming the
-      template and the key.
-- [ ] A new fetch-only ticket under it is granted when submitted, with no approver, for its
-      `unsigned_fetch` at most (refused a second past it); it fetches; a signature, a push, an
-      amendment and a renewal under it are refused, each with its code; a ticket asking more,
-      or with a repository under a template without the switch, is signed as before; the
-      submission rates hold on both sides of their bounds; the switch turned off or shortened
-      ends it.
-- [ ] A version 12 state with rows in every table opens as version 13, every lease recorded as
-      signed by its approver; an unsigned grant is recorded with its template, in the audit
-      log as in the state.
-- [ ] `writ git fetch` and `writ git pull --ff-only` with no lease fetch under an unsigned
-      lease and leave no session behind (on git's failure too); with no template with the switch, with
-      `WRIT_SESSION` naming an ended lease, or with a lease without `fetch`, each is refused as
-      before, with its reason.
-- [ ] `make e2e`: an agent fetching before its ticket, against Forgejo; the `unsigned_fetch` key in
-      the configuration registry (rule 19).
-- [ ] By hand ([manual checks](guides/manual-checks.md)): on the Mac, an agent under `writ run`
-      in a repository whose template allows it fetches before writing its ticket, with no
-      prompt.
+**Done.** Moved to [history/m7.9.7-fetch-without-a-signature.md](history/m7.9.7-fetch-without-a-signature.md):
+a template's `unsigned_fetch: <duration>` granting a new fetch-only ticket with no approver,
+the template signing as before for the rest; `writ git fetch` and `pull` asking one
+themselves; the skills fetch before they plan.
 
 ## M7.9.8 — Shell completion
 
