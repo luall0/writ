@@ -483,8 +483,10 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     let shown = on_terminal(
         approver,
         &format!("writ admin template add guided --from managed {url}"),
-        &["", "3h", "", "", "", "", "", "", "y"],
+        // unsigned_fetch (M7.9.7) first, Enter keeping false; then operations kept, max_ttl.
+        &["", "", "3h", "", "", "", "", "", "", "y"],
     );
+    assert!(shown.contains("? unsigned_fetch"), "{shown}");
     // Each field a question (M7.9.5): its name, its help in brackets below it.
     assert!(shown.contains("? max_ttl"), "{shown}");
     assert!(shown.contains("[the longest lease"), "{shown}");
@@ -531,11 +533,14 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
             "",
             "",
             "",
+            // unsigned fetch (M7.9.7): Enter keeps no.
+            "",
             "y",
             "",
         ],
         1,
     );
+    assert!(shown.contains("unsigned fetch"), "{shown}");
     assert!(
         shown.contains(
             "New upstream credential guided-repo-upstream (register it on the remote): ssh-rsa "
@@ -589,7 +594,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     let shown = on_terminal(
         approver,
         &format!("writ admin template edit guided {url}"),
-        &["", "", "", "", "7", "", "", "", "y"],
+        &["", "", "", "", "", "7", "", "", "", "y"],
     );
     assert!(shown.contains("max_ops_per_minute=7"), "{shown}");
     // A host: given whole without a terminal (scanning one is `host add` with no keys), and

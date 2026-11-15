@@ -170,6 +170,7 @@ One ticket may use several templates, one per repo. Then:
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
+| `templates.<name>.unsigned_fetch` | Boolean | `false` | Whether a ticket under this template is granted with no signature from you. Only for fetching: the template must allow `operations: [fetch]` and nothing else, with a `max_ttl` of at most `1h`. A repo names at most one such template. [Fetching without a signature](#fetching-without-a-signature) |
 | `templates.<name>.operations` | `fetch`, `commit_sign`, `push`, at least one | **required** | The operations a ticket may ask for in a repo |
 | `templates.<name>.branches` | Branch patterns | `[]` | The branches a ticket may ask for: short names, at most one trailing `*` (`agent/*`, `agent/fix-*`). Required with `commit_sign` or `push` |
 | `templates.<name>.force_push` | Boolean | `false` | Whether a ticket may ask for force pushes and branch deletions |
@@ -194,6 +195,22 @@ compared. Each repo's commits are compared with that repo's paths.
 - **off**: no comparison.
 - **warn** (default): the commit is signed, and the `sign` audit line records a warning.
 - **deny**: the commit isn't signed (`paths`). Also when the touched paths can't be computed.
+
+### Fetching without a signature
+
+Agents fetch before they plan: to see whether upstream moved, or to start from a clean tree.
+Without this, each fetch needs a lease you sign. A template with `unsigned_fetch: true` lets
+a repo be fetched with no signature from you.
+
+- **Only fetching.** Such a lease can't sign a commit or push. A fetch sends nothing
+  upstream ([why it needs no signature](../threat-model.md#looked-at-and-not-risks)).
+- **You turn it on per repo.** Name the template in the repo's `templates`. A repo names at
+  most one. `writ admin repo add` asks whether to, and makes the template the first time.
+- **The agent asks nothing.** `writ git fetch` and `writ git pull` with no lease get one
+  under this template, fetch, and close it. It is never renewed or amended.
+- **One kind per ticket.** A ticket can't mix this template with one you sign.
+- **It shows as unsigned.** `writ ls`, `writ report` and the audit log name the template
+  where a signed lease names you.
 
 ## Its format: `format`
 

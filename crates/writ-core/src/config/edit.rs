@@ -193,6 +193,14 @@ const REPO_FIELDS: &[Field] = &[
 ];
 
 const TEMPLATE_FIELDS: &[Field] = &[
+    or(
+        field(
+            "unsigned_fetch",
+            Flag,
+            "whether a lease is granted with no signature: operations fetch only, max_ttl 1h at most",
+        ),
+        "false",
+    ),
     required("operations", List, "fetch, commit_sign, push"),
     field(
         "branches",

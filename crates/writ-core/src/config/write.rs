@@ -225,6 +225,9 @@ fn write_repo(out: &mut String, repo: &RepoEntry) {
 }
 
 fn write_template(out: &mut String, t: &Template) {
+    if t.unsigned_fetch {
+        field(out, "unsigned_fetch", "true");
+    }
     let operations: Vec<String> = t.operations.iter().map(|o| o.to_string()).collect();
     field(
         out,

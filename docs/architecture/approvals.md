@@ -206,6 +206,10 @@ declares for its URL's kind, or a new key declared in the same change (its id, a
 key's backend then its algorithm; a token's host is the URL's). `template add --from <template>` starts from
 another template's values. After the change, what to do next is said: a new key's public
 half to register (a deploy key with write access), a token to add with `writ admin token`.
+A guided `repo add` whose templates let no unsigned fetch asks last whether agents may fetch
+the repo with no signature (M7.9.7, no by default): a yes adds the policy's `unsigned_fetch`
+template to the repo, or makes one (`fetch_unsigned`, or the next free name: fetch only,
+`max_ttl: 15m`) in the same change, which names it.
 Without a terminal `add` asks nothing and refuses unless every required field is given,
 naming the missing ones; `edit` refuses (`set` changes fields without one).
 

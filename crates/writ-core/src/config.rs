@@ -47,6 +47,11 @@ use crate::yaml::{FieldError, parse_yaml};
 /// [`migrate`] and signed (`writ migrate`), never read.
 pub const POLICY_FORMAT: u32 = 2;
 
+/// The longest lease an `unsigned_fetch` template grants (M7.9.7): `writ git` closes it as
+/// soon as git returns, so this bounds only a lease a crash left behind, or a first fetch of
+/// a large repository.
+pub const MAX_UNSIGNED_FETCH_TTL: Duration = Duration::from_seconds(60 * 60);
+
 /// How a commit is linked to its ticket on the remote. `ledger_only` by default: many
 /// projects' commit conventions don't allow an extra trailer, and the ledger links every
 /// commit to its lease whatever this says.
@@ -235,6 +240,11 @@ pub struct Template {
     /// Before M6.2, the repos a template allowed: refused, naming `repos.<name>.templates`.
     #[serde(default)]
     repos: Option<Moved>,
+    /// Whether a ticket under it is granted with no approver's signature (M7.9.7): only with
+    /// `operations: [fetch]` and a `max_ttl` of at most [`MAX_UNSIGNED_FETCH_TTL`]; a repo
+    /// names at most one such template.
+    #[serde(default)]
+    pub unsigned_fetch: bool,
     pub operations: BTreeSet<Operation>,
     #[serde(default)]
     pub branches: BTreeSet<BranchPattern>,
@@ -879,6 +889,21 @@ fn validate_repo(
             format!("{unknown} is not a template"),
         ));
     }
+    // A fetch with no lease finds the one template to ask under, never a choice to make.
+    let unsigned: Vec<&TemplateName> = repo
+        .templates
+        .iter()
+        .filter(|t| templates.get(*t).is_some_and(|t| t.unsigned_fetch))
+        .collect();
+    if let [first, second, ..] = unsigned.as_slice() {
+        return Err(FieldError::at(
+            at("templates"),
+            format!(
+                "{first} and {second} are both unsigned_fetch templates: a repo names at most \
+                 one, so a fetch without a lease never has to choose"
+            ),
+        ));
+    }
     if repo.notes_ref.is_some() && repo.ticket_link != TicketLink::Notes {
         return Err(FieldError::at(
             at("notes_ref"),
@@ -967,6 +992,25 @@ fn validate_template(
             at("operations"),
             "must list at least one operation",
         ));
+    }
+    if template.unsigned_fetch {
+        if template.operations.len() != 1 || !template.operations.contains(&Operation::Fetch) {
+            return Err(FieldError::at(
+                at("operations"),
+                "an unsigned_fetch template allows fetch only: a lease that signs or pushes \
+                 needs an approver's signature",
+            ));
+        }
+        if template.max_ttl > MAX_UNSIGNED_FETCH_TTL {
+            return Err(FieldError::at(
+                at("max_ttl"),
+                format!(
+                    "{}: an unsigned_fetch template's leases last at most \
+                     {MAX_UNSIGNED_FETCH_TTL}",
+                    template.max_ttl
+                ),
+            ));
+        }
     }
     let signs = template.operations.contains(&Operation::CommitSign);
     let pushes = template.operations.contains(&Operation::Push);
