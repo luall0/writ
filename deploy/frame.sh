@@ -246,6 +246,81 @@ as_daemon() {
     if [ -n "$ROOT" ]; then "$@"; else sudo -u "$daemon_user" "$@"; fi
 }
 
+# As as_root and as_daemon, run in a dry run too: for what changes nothing (the upgrade's check).
+run_root() {
+    if [ -n "$ROOT" ]; then "$@"; else sudo "$@"; fi
+}
+run_daemon() {
+    daemon_user=$1
+    shift
+    if [ -n "$ROOT" ]; then "$@"; else sudo -u "$daemon_user" "$@"; fi
+}
+
+# The new writd's dry run on the installed daemon (M7.9.6), before anything changes, in a dry
+# run too (it changes nothing): `writd check-upgrade` as the daemon's user, from a copy in a
+# directory of root's (one you can write, an agent of yours could swap for a program that
+# then runs as that user). It says what the start will migrate and what waits for a
+# signature; a block stops the upgrade, nothing changed.
+upgrade_check() {
+    say "Checking what the new writd carries over (writd check-upgrade):"
+    # /tmp on the machine; a fake root's tests (no other user, no sudo) use their own.
+    base=/tmp
+    [ -z "$ROOT" ] || base=${TMPDIR:-/tmp}
+    check_dir=$(run_root mktemp -d "$base/writ-check-upgrade.XXXXXX") ||
+        fail "no directory for the check"
+    run_root chmod 0755 "$check_dir"
+    run_root install -m 0755 "$BINARIES/writd" "$check_dir/writd"
+    checked=0
+    # shellcheck disable=SC2153 # DAEMON_USER and CONFIG are the setup's (sourced before)
+    run_daemon "$DAEMON_USER" "$check_dir/writd" check-upgrade "$CONFIG" || checked=1
+    run_root rm -rf "$check_dir"
+    [ "$checked" = 0 ] || fail "the new writd can't carry this install over (said above): nothing was changed"
+}
+
+# After an upgrade's restart (M7.9.6): on a terminal, the daemon unsealed (unless it opened
+# itself) and the policy's migration signed when one is owed, both as you, each its own
+# approval; declined or failed, what to run. Without a terminal, what to run.
+after_upgrade() {
+    writ=$1
+    [ "$DRY_RUN" = 1 ] && return 0
+    if ! terminal; then
+        say "Upgraded. writ unseal opens it again; then writ migrate, if it says the policy's"
+        say "migration is owed (the daemon refuses every request until it is signed)."
+        return 0
+    fi
+    # Once it listens, the daemon answers: sealed, a migration owed, or open.
+    state=none
+    tries=0
+    while [ "$tries" -lt 60 ]; do
+        if out=$("$writ" ls 2>&1); then
+            state=open
+            break
+        fi
+        case $out in
+            *"daemon sealed"*) state=sealed && break ;;
+            *"older format"*) state=owed && break ;;
+        esac
+        sleep 1
+        tries=$((tries + 1))
+    done
+    case $state in
+        none)
+            say "Upgraded. The daemon didn't answer yet: writ unseal opens it, then writ migrate."
+            return 0
+            ;;
+        open) say "Upgraded: the daemon is open, nothing is owed." && return 0 ;;
+    esac
+    if [ "$state" = sealed ]; then
+        say "Upgraded. Unsealing it now (writ unseal):"
+        "$writ" unseal || {
+            say "Not unsealed: run writ unseal, then writ migrate."
+            return 0
+        }
+    fi
+    say "Signing the policy's migration if one is owed (writ migrate):"
+    "$writ" migrate || say "Not migrated: the daemon refuses every request until you run writ migrate."
+}
+
 # Runs <command…> as a dry run, in a subshell: the changes listed, none made, and DRY_RUN
 # that subshell's alone.
 planned() {
@@ -382,6 +457,7 @@ do_install() {
         MANIFEST=$(printf '%s' "$found" | sed -n 2p)
         # shellcheck source=/dev/null
         . "$file"
+        upgrade_check
         if [ "$DRY_RUN" != 1 ] && terminal; then
             say "Installed already ($MANIFEST): an upgrade replaces the binaries and restarts the"
             say "daemon, its keys, state and configuration kept. The changes, in order:"

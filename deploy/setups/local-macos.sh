@@ -611,7 +611,7 @@ setup_upgrade() {
     fi
     CURRENT=
     [ "$DRY_RUN" = 1 ] && return 0
-    say "Upgraded. writ unseal opens it again."
+    after_upgrade "$BIN/writ"
     new=$(cksum <"$BIN/writ")
     [ "$old" = "$new" ] || upgraded_writ
 }

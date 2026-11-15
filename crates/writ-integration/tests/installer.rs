@@ -507,6 +507,18 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
     let said = ok(&fake.run("install", &[], ""));
     assert!(said.contains("Upgrading the installed setup"), "{said}");
     assert!(!said.contains("keystore made"), "{said}");
+    // The new writd's dry run first (M7.9.6), then, with no terminal, what to run after.
+    let checked = said.find("Checking what the new writd carries over (writd check-upgrade):");
+    let upgrading = said.find("Upgrading the installed setup");
+    assert!(checked < upgrading && checked.is_some(), "{said}");
+    assert!(said.contains("Nothing blocks the upgrade.\n"), "{said}");
+    assert!(
+        said.contains(
+            "Upgraded. writ unseal opens it again; then writ migrate, if it says the policy's\n\
+             migration is owed (the daemon refuses every request until it is signed)."
+        ),
+        "{said}"
+    );
     assert_eq!(fs::read_to_string(&plist_path).unwrap(), plist);
     assert!(
         said.contains("writ changed: agents started with writ run before the upgrade are bound to the old writ,"),
@@ -533,6 +545,35 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
     );
     let again = ok(&fake.run("install", &[], ""));
     assert!(!again.contains("writ changed"), "the same writ: {again}");
+
+    // An install the new writd can't carry over: the upgrade stops before any change, the
+    // daemon left running (M7.9.6).
+    let config = fake.at("/var/db/writ/writd.yaml");
+    let yaml = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("{yaml}not_a_key: 1\n")).unwrap();
+    fs::write(fake.root.join(".calls"), "").unwrap();
+    let installed = fake.tree();
+    let writd = fs::read(fake.at("/opt/writ/bin/writd")).unwrap();
+    let out = fake.run("install", &[], "");
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    let said = stdout(&out) + &stderr(&out);
+    assert!(said.contains("Blocks the upgrade: "), "{said}");
+    assert!(said.contains("not_a_key"), "{said}");
+    assert!(
+        said.contains(
+            "the new writd can't carry this install over (said above): nothing was changed"
+        ),
+        "{said}"
+    );
+    assert!(!said.contains("Upgrading the installed setup"), "{said}");
+    assert_eq!(fake.tree(), installed);
+    assert_eq!(fs::read(fake.at("/opt/writ/bin/writd")).unwrap(), writd);
+    assert!(
+        !fake.calls().contains("launchctl"),
+        "the daemon was touched: {}",
+        fake.calls()
+    );
+    fs::write(&config, &yaml).unwrap();
     assert_eq!(
         fs::read(fake.at("/var/db/writ/keys/identity.age")).unwrap(),
         identity

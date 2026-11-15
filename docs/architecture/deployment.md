@@ -152,6 +152,12 @@ its own in `deploy/setups/`, whose header names it, its OS and its manifest's pa
   and what blocks: a `writd.yaml` key this binary doesn't read, a state newer than it or one no
   step migrates, a step that fails, a policy it can't start with. Exit 1 on a block, the state
   left as it was (the copy removed).
+  The installer runs it first on an upgrade, as the daemon's user, from a copy of the new
+  `writd` in a directory of root's under `/tmp` (one you can write, an agent of yours could
+  swap for a program that would run as the daemon's user), in a dry run too; a block stops the
+  upgrade, nothing changed. After the restart, on a terminal, it runs `writ unseal` (unless the
+  daemon opened itself) and `writ migrate` as you, each its own approval; declined, failed or
+  without a terminal, it says what to run.
 - `make uninstall` asks whether to delete the daemon's data (keystore, state, ledger, audit
   log, or the Docker volumes): kept on Enter, deleted once `delete` is typed (`PURGE=1`
   without a terminal is refused: a deletion needs a person); then lists what it takes back

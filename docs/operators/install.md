@@ -114,10 +114,30 @@ You add repositories from your machine with `writ admin`.
 
 ## Upgrade
 
-Run `make install` again. It says what an upgrade does and lists its changes, then asks
-`Upgrade?`. Yes stops the daemon cleanly, replaces the binaries, writes the LaunchDaemon's
-plist (the systemd unit on Linux) again with this version's settings, and starts it again. The
-keystore, the state, the configuration and your pins are kept. Unseal again afterwards. On the
+Run `make install` again. It goes in this order:
+
+1. **It checks the upgrade first.** The new `writd` reads your install while the old daemon
+   still runs, and changes nothing (`writd check-upgrade`). It says what the new version will
+   migrate, and whether your policy will need a signature. If something would stop the new
+   daemon, it says what, and the upgrade stops there with nothing changed.
+2. **It lists its changes and asks `Upgrade?`.** Yes stops the daemon cleanly, replaces the
+   binaries, writes the LaunchDaemon's plist (the systemd unit on Linux) again with this
+   version's settings, and starts it again. The keystore, the state, the configuration and
+   your pins are kept.
+3. **The new daemon migrates its state at its start**, when the version changed it. It copies
+   the state into `backups/` in its state directory first.
+4. **It runs `writ unseal`** for you, unless the daemon opens itself (auto-unseal).
+5. **It runs `writ migrate`** if your policy was written for an older version. Until you sign
+   that migration, the daemon refuses every request, and each refusal says to run `writ
+   migrate`. It shows the policy the new version would read, as a change, then asks for one
+   approval.
+
+Declined, or without a terminal, it tells you what to run. You can run `writ unseal` and `writ
+migrate` yourself at any time. When the daemon can't rewrite your policy, `writ migrate` says
+which keys and why: write the policy you want, then run `writ migrate --file <policy>`.
+
+A copy in `backups/` holds what the state holds. Guard it like the state, and delete it once
+the new version works. On the
 Mac, the approval popup is stopped and started again with its settings kept; an install made
 before the popup existed gets it, through the agent your terminal uses (or the one
 `APPROVAL_AGENT` names), unless you upgrade with `POPUP=no`, and an install where you answered `no` stays
