@@ -381,7 +381,8 @@ fn the_daily_operations_page_runs_as_written() {
             "upstream-setup",
             // proxy: none.
             "",
-            "managed",
+            // templates, a multi-select: managed ticked.
+            "managed ",
             "",
             "",
             "",
@@ -485,9 +486,11 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
         &format!("writ admin template add guided --from managed {url}"),
         &["", "3h", "", "", "", "", "", "", "y"],
     );
-    assert!(shown.contains("max_ttl (the longest lease"), "{shown}");
+    // Each field a question (M7.9.5): its name, its help in brackets below it.
+    assert!(shown.contains("? max_ttl"), "{shown}");
+    assert!(shown.contains("[the longest lease"), "{shown}");
     assert!(
-        !shown.contains("branches ("),
+        !shown.contains("? branches"),
         "a fetch-only template asks no branches: {shown}"
     );
     assert!(shown.contains("Applied: policy is version "), "{shown}");
@@ -525,7 +528,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
             "rsa3072",
             // proxy: none, upstream reached directly.
             "",
-            "managed",
+            "managed ",
             "",
             "",
             "",
@@ -554,7 +557,8 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
             "",
             "",
             "",
-            "managed,guided",
+            // templates: managed kept ticked, guided ticked too.
+            "guided ",
             "refs/heads/main",
             "",
             "",
@@ -564,7 +568,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     );
     assert!(
         shown.contains(
-            "with repo guided-repo edited: templates=managed,guided protected_refs=refs/heads/main"
+            "with repo guided-repo edited: templates=guided,managed protected_refs=refs/heads/main"
         ),
         "{shown}"
     );
@@ -782,11 +786,16 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
         &format!("writ admin host add forgejo-scan {url}"),
         &["", "y", "y"],
     );
+    // A select (M7.9.5): none first, then the proxies in force; Enter took none.
     assert!(
         shown.contains(
-            "proxy (the proxy the scan goes through, Enter for none (reached directly); in \
-             force: http, socks): "
+            "[the proxy the scan goes through, Enter for none (reached directly); in force: \
+             http, socks]"
         ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("> proxy none: the host reached directly"),
         "{shown}"
     );
     assert!(
@@ -931,7 +940,7 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
             "",
             "y",
             "upstream-setup",
-            "managed",
+            "managed ",
             "",
             "",
             "",

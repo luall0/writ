@@ -337,7 +337,7 @@ Steps (each one commit, `make ci` green, its docs in the same commit):
    manual check at closing.*
 5. **The prompt layer** on `inquire`, every guided flow moved onto it; the pty driver of the
    end-to-end pipeline sending keys; the scenarios that answer prompts updated. Tests: each
-   widget's plain fallback, hostile values cleaned before they are shown, `NO_COLOR`.
+   widget's plain fallback, hostile values cleaned before they are shown, `NO_COLOR`. *Done.*
 6. **The installer's questions in Rust**: the subcommand, its answers file and its strict
    reader in `frame.sh`, the fake-root installer tests, its scenario and its coverage row.
 7. **The operator docs**: the quick guide, the reorganised pages, the pipeline's table.

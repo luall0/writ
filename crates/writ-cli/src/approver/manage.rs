@@ -10,8 +10,6 @@ use writ_core::config::{PolicyConfig, Section};
 use writ_core::upstream::Upstream;
 use writ_proto::{AdminShown, Command, KeyShown, KeysShown};
 
-use std::io::Write as _;
-
 use writ_core::authority::AdminText;
 use writ_core::config::edit::FieldEdit;
 use writ_proto::Listing;
@@ -639,9 +637,15 @@ pub async fn remove(
                         clean(&key)
                     );
                     if !yes {
-                        print!("Type the key's id again to go on: ");
-                        std::io::stdout().flush()?;
-                        let again = super::read_line()?;
+                        let again = match crate::prompt::text(
+                            "Type the key's id again to go on",
+                            "anything else, or Esc, signs nothing",
+                            None,
+                            |_| Ok(()),
+                        )? {
+                            crate::prompt::Answer::Given(typed) => typed.trim().to_owned(),
+                            crate::prompt::Answer::Cancelled => String::new(),
+                        };
                         if again != name {
                             println!("Not signed: that is not {}.", clean(name));
                             return Ok(Exit::NotSigned);

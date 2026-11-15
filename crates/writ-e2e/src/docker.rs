@@ -95,6 +95,22 @@ impl Container {
     }
 }
 
+/// `command` run on a terminal by `script`, the terminal's `\r` left as typed (`stty -icrnl`):
+/// the prompts are widgets (M7.9.5) that read the keys in raw mode, where Enter is `\r` and a
+/// `\n` is Ctrl-J. Answers typed before a prompt starts wait in the terminal as typed, `\r`
+/// included, so the run doesn't depend on when each prompt comes up. Drawn without colour
+/// (`NO_COLOR`) on 200 columns, so what it shows reads the same in every run.
+pub fn on_terminal(command: &str) -> String {
+    format!("script -qec 'stty -icrnl cols 200 rows 50; export NO_COLOR=1; {command}' /dev/null")
+}
+
+/// The keys of `answers`: each one's text, then Enter (`\r`). On a select, the text filters the
+/// options to the one it names; on a multi-select, write `a b ` to tick `a` then `b` (each
+/// name typed, then space).
+pub fn typed(answers: &[&str]) -> String {
+    answers.iter().map(|a| format!("{a}\r")).collect()
+}
+
 /// One user on one container.
 #[derive(Debug, Clone)]
 pub struct Host {
@@ -159,8 +175,8 @@ impl Host {
         self.run_with(script, b"")
     }
 
-    /// `command` on a terminal (`script`), `answers` typed one per line, which must exit 0:
-    /// what it showed (the streams merged, rows ending in `\r\n`).
+    /// `command` on a terminal (`script`), `answers` typed one each, ended by Enter, which must
+    /// exit 0: what it showed (the streams merged, rows ending in `\r\n`). See [`typed`].
     pub fn on_terminal(&self, command: &str, answers: &[&str]) -> String {
         self.exits_on_terminal(command, answers, 0)
     }
@@ -170,11 +186,7 @@ impl Host {
     /// one that showed the right text (the review after M7.6, T-2).
     pub fn exits_on_terminal(&self, command: &str, answers: &[&str], code: i32) -> String {
         assert!(!command.contains('\''), "{command}");
-        let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
-        let out = self.run_with(
-            &format!("script -qec '{command}' /dev/null"),
-            typed.as_bytes(),
-        );
+        let out = self.run_with(&on_terminal(command), typed(answers).as_bytes());
         assert_eq!(out.status.code(), Some(code), "{command}: {}", stdout(&out));
         stdout(&out)
     }

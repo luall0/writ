@@ -23,6 +23,12 @@ lists them.
 | none | `WRIT_RUN_PID` | none | Set by `writ run` for the agent it starts: `writ request` binds each ticket to that session. Not yours to set. [Binding a lease to its session](#binding-a-lease-to-its-session-local-mode) |
 | none | `WRIT_SSH_KEYGEN` | `/usr/bin/ssh-keygen` | The `ssh-keygen` that signs your approvals: an absolute path, OpenSSH 8.9 or newer. Never looked up in `PATH`, where anything could sit first and change what gets signed |
 | none | `WRIT_GPG` | `/usr/bin/gpg` | `writ-sign`: the `gpg` it hands git's OpenPGP `--verify` calls to, an absolute path. It never runs gpg to sign: the key is the daemon's |
+| none | `NO_COLOR` | unset | Set to anything: `writ`'s questions without colour (<https://no-color.org>) |
+
+On a terminal, `writ`'s questions are menus: move with the arrow keys, type to filter, Enter
+to answer, space to tick in a list where several can be picked, Esc to stop with nothing
+changed. Where a value is kept, the first option keeps it. Without a terminal (a script, a
+pipe), each question is the plain line it always was.
 
 ### The settings file
 

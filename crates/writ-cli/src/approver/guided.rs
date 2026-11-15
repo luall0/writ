@@ -7,7 +7,7 @@
 //! The prompts are a convenience: nothing typed here is trusted by the daemon.
 
 use std::collections::BTreeMap;
-use std::io::{IsTerminal as _, Write as _};
+use std::io::IsTerminal as _;
 
 use anyhow::bail;
 use writ_core::authority::AdminText;
@@ -22,8 +22,9 @@ use writ_proto::{BackendShown, Command, ScanNonce, ScanRequest, Scanned, Upstrea
 
 use super::admin::{Signing, sign_applied};
 use super::manage::policy_in_force;
-use super::{Signer, confirm, connect, read_line};
+use super::{Signer, confirm, connect};
 use crate::display::clean;
+use crate::prompt::{self, Answer, Choice};
 use crate::{Exit, Paths};
 
 /// The lowest `min_ttl` any daemon takes: the daemon checks against its own.
@@ -34,14 +35,194 @@ fn terminal() -> bool {
     std::io::stdin().is_terminal()
 }
 
-/// Asks one line, showing `label`, `help` and what Enter keeps (`keeps`).
+/// Asks one value as text, showing `label`, `help` and what Enter keeps (`keeps`): the answer
+/// as typed (empty: Enter). On a terminal a text field ([`prompt::text`]), else the plain line.
 fn ask(label: &str, help: &str, keeps: Option<&str>) -> anyhow::Result<String> {
-    match keeps {
-        Some(keeps) => print!("{label} ({help}) [{}]: ", clean(keeps)),
-        None => print!("{label} ({help}): "),
+    ask_checked(label, help, keeps, FieldKind::Text)
+}
+
+/// [`ask`], a count checked as it is typed (a whole number, or Enter, or `!`).
+fn ask_checked(
+    label: &str,
+    help: &str,
+    keeps: Option<&str>,
+    kind: FieldKind,
+) -> anyhow::Result<String> {
+    let check = move |typed: &str| match kind {
+        FieldKind::Count
+            if !typed.is_empty() && typed != "!" && !typed.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            Err("a whole number (Enter keeps it)".to_owned())
+        }
+        _ => Ok(()),
+    };
+    match prompt::text(label, help, keeps, check)? {
+        Answer::Given(answer) => Ok(answer.trim().to_owned()),
+        Answer::Cancelled => bail!("stopped: nothing was changed or signed"),
     }
-    std::io::stdout().flush()?;
-    read_line()
+}
+
+/// One value among `options` (what it gives, how it is shown), asked as the answer [`asked`]
+/// reads: empty keeps `keeps` (Enter), `!` leaves an optional field out. On a terminal a select
+/// whose first option keeps; typing filters (the value typed picks it). Plainly: [`ask`].
+fn choose(
+    label: &str,
+    help: &str,
+    keeps: Option<&str>,
+    options: &[(String, String)],
+    optional: bool,
+) -> anyhow::Result<String> {
+    if !prompt::widgets() || options.is_empty() {
+        return ask(label, help, keeps);
+    }
+    let mut choices = Vec::new();
+    if let Some(keeps) = keeps {
+        choices.push(Choice::new("", format!("{keeps} (Enter keeps it)")));
+    }
+    choices.extend(
+        options
+            .iter()
+            .filter(|(value, _)| Some(value.as_str()) != keeps)
+            .map(|(value, shown)| Choice::new(value.clone(), shown.clone())),
+    );
+    if optional && keeps.is_some() {
+        choices.push(Choice::new("!", "! leave it out"));
+    }
+    match prompt::select(label, help, &choices, 0)? {
+        Answer::Given(answer) => Ok(answer),
+        Answer::Cancelled => bail!("stopped: nothing was changed or signed"),
+    }
+}
+
+/// Some values among `options`, asked as the answer [`asked`] reads: empty keeps `keeps` (the
+/// ticked ones unchanged), `none` an empty list, else the values ticked, joined by commas. On a
+/// terminal a multi-select, `keeps`'s values ticked at first. Plainly: [`ask`].
+fn choose_many(
+    label: &str,
+    help: &str,
+    keeps: Option<&str>,
+    options: &[(String, String)],
+) -> anyhow::Result<String> {
+    if !prompt::widgets() || options.is_empty() {
+        return ask(label, help, keeps);
+    }
+    let current: Vec<String> = keeps
+        .unwrap_or_default()
+        .split(',')
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .collect();
+    let mut all: Vec<(String, String)> = options.to_vec();
+    // A value in force the options don't name stays in sight, ticked.
+    for value in &current {
+        if !all.iter().any(|(v, _)| v == value) {
+            all.push((value.clone(), value.clone()));
+        }
+    }
+    let chosen: Vec<usize> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, (value, _))| current.contains(value))
+        .map(|(i, _)| i)
+        .collect();
+    let choices: Vec<Choice> = all
+        .iter()
+        .map(|(value, shown)| Choice::new(value.clone(), shown.clone()))
+        .collect();
+    match prompt::multi(label, help, &choices, &chosen)? {
+        Answer::Given(picked) => Ok(many_answer(&current, &picked)),
+        Answer::Cancelled => bail!("stopped: nothing was changed or signed"),
+    }
+}
+
+/// The answer a multi-select gives, as the plain prompt's: empty when the ticked values are
+/// the ones in force (Enter keeps), `none` when none is ticked, else them, joined by commas.
+fn many_answer(current: &[String], picked: &[String]) -> String {
+    let same = picked.len() == current.len() && picked.iter().all(|v| current.contains(v));
+    match () {
+        _ if same => String::new(),
+        _ if picked.is_empty() => "none".to_owned(),
+        _ => picked.join(","),
+    }
+}
+
+/// The values a field takes, when they are few and known (a select, or a multi-select for a
+/// list): fixed by the policy's format, or the names in force. None: typed as text.
+fn options(
+    policy: &PolicyConfig,
+    section: Section,
+    name: &str,
+    kind: FieldKind,
+    makes: Option<&BackendShown>,
+    backends: &[BackendShown],
+) -> Option<(Vec<(String, String)>, bool)> {
+    let plain = |values: &[&str]| -> Vec<(String, String)> {
+        values
+            .iter()
+            .map(|v| ((*v).to_owned(), (*v).to_owned()))
+            .collect()
+    };
+    let named = |names: Vec<String>| -> Option<Vec<(String, String)>> {
+        (!names.is_empty()).then(|| names.into_iter().map(|n| (n.clone(), n)).collect())
+    };
+    let one = match (section, name) {
+        _ if kind == FieldKind::Flag => Some(plain(&["true", "false"])),
+        (Section::Keys, "use") => Some(plain(&["signing", "upstream"])),
+        (Section::Keys, "kind") => Some(plain(&["ssh", "token"])),
+        (Section::Keys, "format") => Some(plain(&["ssh", "openpgp"])),
+        (Section::Keys, "hash") => Some(plain(&["sha256", "sha384", "sha512"])),
+        (Section::Keys, "algorithm") => Some(match makes {
+            Some(shown) => shown
+                .algorithms
+                .iter()
+                .map(|a| (a.clone(), a.clone()))
+                .collect(),
+            None => plain(&["ed25519", "p256", "p384", "rsa3072", "rsa4096"]),
+        }),
+        (Section::Keys, "backend") => Some(
+            backends
+                .iter()
+                .map(|b| (b.name.clone(), backend_choice(b)))
+                .collect(),
+        ),
+        (Section::Repos, "ticket_link") => Some(plain(&["ledger_only", "trailer", "notes"])),
+        (Section::Repos, "notes_ref") => Some(plain(&["commits", "writ"])),
+        (Section::Repos, "object_format") => Some(plain(&["sha1", "sha256"])),
+        (Section::Repos, "proxy") => named(policy.entry_names(Section::Proxies)),
+        (Section::Repos, "upstream_credential") => named(
+            policy
+                .upstream_keys()
+                .map(|(id, _)| id.to_string())
+                .collect(),
+        ),
+        (Section::Proxies, "credential") => named(
+            policy
+                .upstream_keys()
+                .filter(|(_, k)| matches!(k, writ_core::config::UpstreamKey::Token { .. }))
+                .map(|(id, _)| id.to_string())
+                .collect(),
+        ),
+        (Section::Templates, "signing_key") => named(
+            policy
+                .signing_keys()
+                .map(|(id, _)| id.to_string())
+                .collect(),
+        ),
+        (Section::Templates, "paths_check") => Some(plain(&["warn", "deny"])),
+        _ => None,
+    };
+    if let Some(values) = one {
+        return Some((values, false));
+    }
+    let many = match (section, name) {
+        (Section::Templates, "operations") => Some(plain(&["fetch", "commit_sign", "push"])),
+        (Section::Templates | Section::Repos, "push_modes") => {
+            Some(plain(&["gateway", "proxy", "direct_ssh"]))
+        }
+        (Section::Repos, "templates") => named(policy.entry_names(Section::Templates)),
+        _ => None,
+    };
+    many.map(|values| (values, true))
 }
 
 /// Whether the field `name` of `section` is asked, given the answers so far: only the fields
@@ -248,7 +429,13 @@ fn asked(
             .or(made_default)
             .or(field.default);
         loop {
-            let answer = ask(field.name, &help, keeps)?;
+            let answer = match options(policy, section, field.name, field.kind, makes, backends) {
+                Some((values, true)) => choose_many(field.name, &help, keeps, &values)?,
+                Some((values, false)) => {
+                    choose(field.name, &help, keeps, &values, !field.required)?
+                }
+                None => ask_checked(field.name, &help, keeps, field.kind)?,
+            };
             if let Some(why) = makes.and_then(|shown| unmade(shown, &answer)) {
                 println!("  {why}");
                 continue;
@@ -326,7 +513,9 @@ fn credential(
         false => format!("one of {}, or new: a key declared now", fitting.join(", ")),
     };
     loop {
-        let answer = ask("upstream_credential", &help, Some("new"))?;
+        let offered: Vec<(String, String)> =
+            fitting.iter().map(|k| (k.clone(), k.clone())).collect();
+        let answer = choose("upstream_credential", &help, Some("new"), &offered, false)?;
         let answer = if answer.is_empty() {
             "new".to_owned()
         } else {
@@ -358,10 +547,16 @@ fn credential(
                 let mut values = BTreeMap::new();
                 if backends.len() > 1 {
                     let offered: Vec<String> = backends.iter().map(backend_choice).collect();
-                    let backend = ask(
+                    let named: Vec<(String, String)> = backends
+                        .iter()
+                        .map(|b| (b.name.clone(), backend_choice(b)))
+                        .collect();
+                    let backend = choose(
                         "backend",
                         &format!("where the key lives: {}", offered.join(", ")),
                         Some("software"),
+                        &named,
+                        false,
                     )?;
                     if !backend.is_empty() && backend != "software" {
                         key.push(
@@ -383,7 +578,18 @@ fn credential(
                 };
                 let default = makes.and_then(default_algorithm).unwrap_or("ed25519");
                 let algorithm = loop {
-                    let answer = ask("algorithm", &help, Some(default))?;
+                    let made: Vec<(String, String)> = match makes {
+                        Some(shown) => shown
+                            .algorithms
+                            .iter()
+                            .map(|a| (a.clone(), a.clone()))
+                            .collect(),
+                        None => ["ed25519", "p256", "p384", "rsa3072", "rsa4096"]
+                            .iter()
+                            .map(|a| ((*a).to_owned(), (*a).to_owned()))
+                            .collect(),
+                    };
+                    let answer = choose("algorithm", &help, Some(default), &made, false)?;
                     match makes.and_then(|shown| unmade(shown, &answer)) {
                         Some(why) => println!("  {why}"),
                         None if answer.is_empty() => break default.to_owned(),
@@ -585,7 +791,9 @@ fn asked_scan_proxy(policy: &PolicyConfig) -> anyhow::Result<Option<ProxyName>> 
         names.join(", ")
     );
     loop {
-        match scan_proxy_answer(&names, &ask("proxy", &help, None)?) {
+        let mut offered = vec![(String::new(), "none: the host reached directly".to_owned())];
+        offered.extend(names.iter().map(|n| (n.clone(), n.clone())));
+        match scan_proxy_answer(&names, &choose("proxy", &help, None, &offered, false)?) {
             Ok(proxy) => return Ok(proxy),
             Err(why) => println!("  {why}"),
         }
@@ -1005,9 +1213,11 @@ pub async fn add(
             println!("Once its credential is registered: writ admin repo check {repo}");
             return Ok(Exit::Ok);
         }
-        print!("Press Enter once its credential is registered, to check its upstream: ");
-        std::io::stdout().flush()?;
-        read_line()?;
+        if !prompt::pause("Press Enter once its credential is registered, to check its upstream:")?
+        {
+            println!("Not checked: writ admin repo check {repo} once it is registered.");
+            return Ok(Exit::Ok);
+        }
         return connect(paths, url)
             .await?
             .run(async |session| run_check(session, &repo).await)
@@ -1176,15 +1386,17 @@ pub async fn rotate(
         Err(exit) => return Ok(exit),
     };
     if interactive && !yes {
-        print!(
+        let message = format!(
             "Once {} is registered (or added), press Enter to switch what uses {} to it \
-             (Ctrl-C stops here; {} stays in use): ",
+             (Esc stops here; {} stays in use):",
             clean(&fresh),
             clean(id),
             clean(id)
         );
-        std::io::stdout().flush()?;
-        read_line()?;
+        if !prompt::pause(&message)? {
+            println!("Stopped: {} stays in use.", clean(id));
+            return Ok(Exit::NotSigned);
+        }
     }
     let old: writ_core::names::KeyId = id.parse()?;
     let session = connect(paths, url).await?;
@@ -1599,5 +1811,52 @@ mod tests {
         let notes = values(&[("ticket_link", "notes")]);
         assert!(relevant(Section::Repos, "notes_ref", &notes, &[]));
         assert!(!relevant(Section::Repos, "direct_ssh.hosts", &notes, &[]));
+    }
+
+    /// M7.9.5: a select offers only values the policy takes. Each fixed option of a field is
+    /// one the core's own help for that field names, so the two can't drift apart.
+    #[test]
+    fn every_fixed_option_is_one_the_field_s_help_names() {
+        let policy = PolicyConfig::from_yaml("keys: {}\nrepos: {}\ntemplates: {}\n").unwrap();
+        for section in [
+            Section::Keys,
+            Section::Repos,
+            Section::Templates,
+            Section::Proxies,
+            Section::Recipients,
+            Section::UpstreamHosts,
+        ] {
+            for field in edit::fields(section) {
+                let Some((values, _)) =
+                    options(&policy, section, field.name, field.kind, None, &[])
+                else {
+                    continue;
+                };
+                for (value, _) in values {
+                    assert!(
+                        field.help.contains(&value) || field.kind == FieldKind::Flag,
+                        "{}.{} offers {value}, which its help doesn't name: {}",
+                        section.noun(),
+                        field.name,
+                        field.help
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_multi_select_answers_as_the_plain_prompt_did() {
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            many_answer(&s(&["fetch", "push"]), &s(&["push", "fetch"])),
+            ""
+        );
+        assert_eq!(many_answer(&s(&["fetch"]), &s(&[])), "none");
+        assert_eq!(
+            many_answer(&s(&["fetch"]), &s(&["fetch", "push"])),
+            "fetch,push"
+        );
+        assert_eq!(many_answer(&s(&[]), &s(&[])), "");
     }
 }

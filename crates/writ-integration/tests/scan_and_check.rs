@@ -19,7 +19,7 @@ use writ_crypto::keys::{KeyKind, generate};
 use writ_crypto::ssh_key::HashAlg;
 use writ_integration::daemon::{Approvals, Daemon};
 use writ_integration::remote::TestRemote;
-use writ_integration::terminal::on_terminal;
+use writ_integration::terminal::on_writ_terminal;
 use writ_integration::{audit_events, stderr, stdout};
 
 const POLICY: &str = r#"
@@ -106,7 +106,7 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     assert_eq!(daemon.audited("scan", "allowed"), 0);
 
     // On a terminal: scanned, shown, not matching (answered no): nothing pinned.
-    let (status, shown) = on_terminal(daemon.writ(&["admin", "host", "add", &host]), &["n"]);
+    let (status, shown) = on_writ_terminal(daemon.writ(&["admin", "host", "add", &host]), &["n"]);
     // Answered no: nothing signed, the exit says so (6).
     assert_eq!(status.code(), Some(6), "{shown}");
     assert!(
@@ -121,7 +121,7 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     assert_eq!(pins(&daemon, &host), None);
 
     // Matching: the second signed change pins exactly what was scanned.
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         daemon.writ(&["admin", "host", "add", &host, "--yes"]),
         &["y"],
     );
@@ -194,7 +194,7 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
         stderr(&out)
     );
     // A host not pinned: refused, naming add.
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         daemon.writ(&["admin", "host", "rescan", "[127.0.0.1]:1"]),
         &[],
     );
@@ -204,7 +204,8 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
         "{shown}"
     );
     // Not matching: nothing changed.
-    let (status, shown) = on_terminal(daemon.writ(&["admin", "host", "rescan", &host]), &["n"]);
+    let (status, shown) =
+        on_writ_terminal(daemon.writ(&["admin", "host", "rescan", &host]), &["n"]);
     assert_eq!(status.code(), Some(6), "{shown}");
     assert!(
         shown.contains(&format!(
@@ -219,7 +220,7 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     assert!(shown.contains("Nothing pinned."), "{shown}");
     assert_eq!(pins(&daemon, &host).unwrap().len(), 2);
     // Matching: the scanned key replaces the old one, the RSA one kept.
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         daemon.writ(&["admin", "host", "rescan", &host, "--yes"]),
         &["y"],
     );
@@ -241,7 +242,8 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     assert_eq!(now.len(), 2, "{now:?}");
     assert!(now.contains(&scanned_key) && now.contains(&rsa), "{now:?}");
     // Rescanned again: the pin holds them already.
-    let (status, shown) = on_terminal(daemon.writ(&["admin", "host", "rescan", &host]), &["y"]);
+    let (status, shown) =
+        on_writ_terminal(daemon.writ(&["admin", "host", "rescan", &host]), &["y"]);
     assert!(status.success(), "{shown}");
     assert!(
         shown.contains(&format!("  ssh-ed25519 {fingerprint}  (pinned)\r\n")),
@@ -256,7 +258,7 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let closed_port = closed.local_addr().unwrap().port();
     drop(closed);
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         daemon.writ(&[
             "admin",
             "host",
@@ -274,7 +276,7 @@ fn a_host_is_scanned_on_a_signature_pinned_once_compared_and_a_repo_checked() {
     );
     let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let silent_port = silent.local_addr().unwrap().port();
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         daemon.writ(&[
             "admin",
             "host",
@@ -488,7 +490,8 @@ fn a_host_behind_a_proxy_is_scanned_through_it_on_the_approver_s_signature() {
     });
 
     // A rescan with no --proxy goes through the one its repos share: the pin is current.
-    let (status, shown) = on_terminal(daemon.writ(&["admin", "host", "rescan", &pinned]), &["y"]);
+    let (status, shown) =
+        on_writ_terminal(daemon.writ(&["admin", "host", "rescan", &pinned]), &["y"]);
     assert!(status.success(), "{shown}");
     assert!(
         shown.contains(&format!(
@@ -509,7 +512,7 @@ fn a_host_behind_a_proxy_is_scanned_through_it_on_the_approver_s_signature() {
 
     // A new host, `proxy=` naming the proxy: scanned through it, pinned once compared.
     let added = format!("[added.invalid]:{}", remote.port);
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         daemon.writ(&["admin", "host", "add", &added, "proxy=p", "--yes"]),
         &["y"],
     );
@@ -531,11 +534,13 @@ fn a_host_behind_a_proxy_is_scanned_through_it_on_the_approver_s_signature() {
     // Directly (the proxy asked before the scan: none), the name reaches nothing: refused,
     // logged, and the refusal says how to go through a proxy.
     let other = format!("[other.invalid]:{}", remote.port);
-    let (_, shown) = on_terminal(daemon.writ(&["admin", "host", "add", &other]), &[""]);
+    let (_, shown) = on_writ_terminal(daemon.writ(&["admin", "host", "add", &other]), &[""]);
+    // The question, a select (M7.9.5): none first, the proxy in force after it; Enter: none.
+    assert!(shown.contains("? proxy"), "{shown}");
+    assert!(shown.contains("none: the host reached directly"), "{shown}");
     assert!(
         shown.contains(
-            "proxy (the proxy the scan goes through, Enter for none (reached directly); in \
-             force: p): "
+            "the proxy the scan goes through, Enter for none (reached directly); in force: p"
         ),
         "{shown}"
     );
@@ -549,7 +554,7 @@ fn a_host_behind_a_proxy_is_scanned_through_it_on_the_approver_s_signature() {
     );
     // A proxy the policy doesn't declare: refused by the daemon, nothing reached.
     let asked = proxy.asked().len();
-    let (_, shown) = on_terminal(
+    let (_, shown) = on_writ_terminal(
         daemon.writ(&["admin", "host", "add", &other, "proxy=nope"]),
         &["y"],
     );

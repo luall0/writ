@@ -10,8 +10,29 @@ use rustix::fs::{Mode, OFlags};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 
 /// Runs `command` with a terminal as its stdin, stdout and stderr, `answers` typed one per
-/// line: its exit status and what it showed (the streams merged, rows ending in `\r\n`).
-pub fn on_terminal(mut command: Command, answers: &[&str]) -> (ExitStatus, String) {
+/// line: its exit status and what it showed (the streams merged, rows ending in `\r\n`). For
+/// what reads lines (the installer's `read`); `writ`'s questions take [`on_writ_terminal`].
+pub fn on_terminal(command: Command, answers: &[&str]) -> (ExitStatus, String) {
+    run(command, answers, "\n", false)
+}
+
+/// [`on_terminal`] for `writ`, whose questions are widgets reading keys in raw mode (M7.9.5):
+/// the terminal keeps a typed `\r` as it is (no `ICRNL`), and each answer ends with `\r`,
+/// Enter there (a `\n` is Ctrl-J). Answers typed before a question starts wait as typed, so
+/// the run never depends on when each one comes up. On a select, an answer is the option's
+/// name (it filters the options to it); empty, Enter: the first option. Drawn without colour
+/// (`NO_COLOR`) on a terminal of 120 columns, so what it shows reads the same in every run.
+pub fn on_writ_terminal(mut command: Command, answers: &[&str]) -> (ExitStatus, String) {
+    command.env("NO_COLOR", "1");
+    run(command, answers, "\r", true)
+}
+
+fn run(
+    mut command: Command,
+    answers: &[&str],
+    enter: &str,
+    raw_enter: bool,
+) -> (ExitStatus, String) {
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
     grantpt(&master).unwrap();
     unlockpt(&master).unwrap();
@@ -22,6 +43,18 @@ pub fn on_terminal(mut command: Command, answers: &[&str]) -> (ExitStatus, Strin
         Mode::empty(),
     )
     .unwrap();
+    if raw_enter {
+        let mut modes = rustix::termios::tcgetattr(&slave).unwrap();
+        modes.input_modes.remove(rustix::termios::InputModes::ICRNL);
+        rustix::termios::tcsetattr(&slave, rustix::termios::OptionalActions::Now, &modes).unwrap();
+        let size = rustix::termios::Winsize {
+            ws_row: 40,
+            ws_col: 120,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        rustix::termios::tcsetwinsize(&slave, size).unwrap();
+    }
     let mut child = command
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
@@ -31,7 +64,7 @@ pub fn on_terminal(mut command: Command, answers: &[&str]) -> (ExitStatus, Strin
     // Drop the command (and its copies of the terminal's end): the reads end with the child.
     drop(command);
     let mut writer = std::fs::File::from(master.try_clone().unwrap());
-    let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
+    let typed: String = answers.iter().map(|a| format!("{a}{enter}")).collect();
     writer.write_all(typed.as_bytes()).unwrap();
     let mut reader = std::fs::File::from(master);
     let shown = std::thread::spawn(move || {

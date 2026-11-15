@@ -19,6 +19,7 @@ clap.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+inquire.workspace = true
 russh.workspace = true
 rustix.workspace = true
 rustls.workspace = true

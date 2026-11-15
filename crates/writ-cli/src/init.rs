@@ -135,6 +135,35 @@ fn choose_agents(
 
 /// The prompt: the agents, the detected ones marked; Enter takes them, 0 none.
 fn ask_agents(detected: &BTreeSet<Agent>) -> anyhow::Result<BTreeSet<Agent>> {
+    if crate::prompt::widgets() {
+        // The detected ones ticked; space ticks, Enter takes what is ticked (none: none).
+        let choices: Vec<crate::prompt::Choice> = Agent::ALL
+            .iter()
+            .map(|agent| {
+                let mark = if detected.contains(agent) {
+                    " (detected here)"
+                } else {
+                    ""
+                };
+                crate::prompt::Choice::new(agent.label(), format!("{}{mark}", agent.label()))
+            })
+            .collect();
+        let chosen: Vec<usize> = Agent::ALL
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| detected.contains(agent))
+            .map(|(i, _)| i)
+            .collect();
+        let help = "the agents that get the Writ skill";
+        return match crate::prompt::multi("Install the Writ skill for", help, &choices, &chosen)? {
+            crate::prompt::Answer::Given(picked) => Ok(Agent::ALL
+                .iter()
+                .filter(|agent| picked.iter().any(|p| p == agent.label()))
+                .copied()
+                .collect()),
+            crate::prompt::Answer::Cancelled => bail!("stopped: nothing was wired"),
+        };
+    }
     println!("Install the Writ skill for which agents? (* detected here)");
     for (i, agent) in Agent::ALL.iter().enumerate() {
         let mark = if detected.contains(agent) { " *" } else { "" };
@@ -719,11 +748,27 @@ fn ask_name(found: &Found) -> anyhow::Result<Option<RepoName>> {
     let from = found.origin.as_deref().map_or_else(String::new, |o| {
         format!(" (origin {})", wiring::shown_url(o))
     });
-    print!("  {what}{from} [{default}]: ");
-    std::io::Write::flush(&mut std::io::stdout()).context("cannot write to the terminal")?;
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
-        .context("cannot read the answer")?;
+    let line = if crate::prompt::widgets() {
+        let check = |typed: &str| match typed.trim() {
+            "" | "-" => Ok(()),
+            name => name
+                .parse::<RepoName>()
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+        };
+        let help = format!("its registry name; Enter: {default}; -: leave it out");
+        match crate::prompt::text(&format!("{what}{from}"), &help, Some(&default), check)? {
+            crate::prompt::Answer::Given(typed) => typed,
+            crate::prompt::Answer::Cancelled => bail!("stopped: nothing was wired"),
+        }
+    } else {
+        print!("  {what}{from} [{default}]: ");
+        std::io::Write::flush(&mut std::io::stdout()).context("cannot write to the terminal")?;
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
+            .context("cannot read the answer")?;
+        line
+    };
     let answer = line.trim();
     let answer = if answer.is_empty() {
         default.as_str()

@@ -63,6 +63,9 @@ base64ct = { version = "1.8.3", features = ["alloc"] }
 http-body-util = "0.1.5"
 hyper = { version = "1.12.0", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
+# The guided prompts of `writ` on a terminal (M7.9.5): select, multi-select, validated text,
+# confirm. crossterm alone: no fuzzy matcher (a typed answer filters by plain substring).
+inquire = { version = "0.9.4", default-features = false, features = ["crossterm"] }
 # `zeroize`: rcgen's copy of a key pair can be wiped (the reader's client certificate).
 # P-256 points checked on the curve (a helper's answer, writ_signer::helper): already in the
 # tree through ssh-key, with the same features.

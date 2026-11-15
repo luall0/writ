@@ -30,6 +30,7 @@ mod gitopts;
 mod https;
 mod init;
 mod policy;
+mod prompt;
 mod reader;
 mod repos;
 mod run;

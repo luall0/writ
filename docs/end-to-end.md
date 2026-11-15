@@ -519,6 +519,16 @@ The [hardened-test rules](testing.md#hardened-tests) hold here too:
   daemon's files as the operator reads them. No in-process shortcut: that is the integration
   level's job (`crates/writ-integration`).
 
+## Questions on a terminal
+
+A command a scenario runs on a terminal (`Host::on_terminal`, `doc_step_on_terminal`) runs
+under `script` with `stty -icrnl`, its answers typed one each and ended by `\r`: `writ`'s
+questions are widgets reading keys in raw mode, where Enter is `\r` and a `\n` is Ctrl-J, and
+answers typed before a question comes up wait in the terminal as typed, so a run never depends
+on when each question starts (M7.9.5). An answer is what a person types: on a select, the
+option's name (the text filters the options to it), on a multi-select `a b ` (each name, then
+space), an empty answer to keep.
+
 ## Adding a scenario
 
 When a milestone adds behavior a person or an agent reaches through a binary, or a bug is

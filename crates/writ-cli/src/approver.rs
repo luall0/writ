@@ -94,7 +94,7 @@ fn read_line() -> anyhow::Result<String> {
 
 /// Whether an answer to a "Sign …?" question signs: `y` or `yes`, in any case, the spaces
 /// around it ignored. Anything else, an empty line or the end of the input, signs nothing.
-fn signs(answer: &str) -> bool {
+pub(crate) fn signs(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
@@ -114,13 +114,29 @@ fn confirm_on(
     Ok(signs(&answer))
 }
 
-/// [`confirm_on`] on the standard streams.
+/// Every "Sign …?" asked of the approver ([`crate::prompt::confirm`]: on a terminal a field
+/// that signs only on `y` or `yes`, else [`confirm_on`]'s line).
 pub(crate) fn confirm(question: &str) -> anyhow::Result<bool> {
-    confirm_on(question, std::io::stdin().lock(), std::io::stdout())
+    if !crate::prompt::widgets() {
+        return confirm_on(question, std::io::stdin().lock(), std::io::stdout());
+    }
+    crate::prompt::confirm(question)
 }
 
-/// Feedback typed by the approver, ended by an empty line or end of input.
+/// Feedback typed by the approver, ended by an empty line or end of input (on a terminal, a
+/// field per line; Esc ends it too).
 fn read_feedback() -> anyhow::Result<String> {
+    if crate::prompt::widgets() {
+        let mut lines = Vec::new();
+        loop {
+            let help = "what the agent reads with the refusal; an empty line ends it";
+            match crate::prompt::text("Feedback", help, None, |_| Ok(()))? {
+                crate::prompt::Answer::Given(line) if !line.trim().is_empty() => lines.push(line),
+                _ => break,
+            }
+        }
+        return Ok(lines.join("\n"));
+    }
     println!("Feedback for the agent (end with an empty line):");
     let mut lines = Vec::new();
     for line in std::io::stdin().lock().lines() {
@@ -362,11 +378,24 @@ pub async fn sign(
                     "Approval key: ",
                     &display::clean(&signer.key.display().to_string()),
                 );
-                print!("{key}Sign this ticket? [y]es / [n]o / [r]efuse: ");
-                std::io::stdout()
-                    .flush()
-                    .context("cannot write to the terminal")?;
-                read_line()?
+                if crate::prompt::widgets() {
+                    print!("{key}");
+                    match crate::prompt::text(
+                        "Sign this ticket?",
+                        "y signs · r refuses it, with feedback · anything else signs nothing",
+                        None,
+                        |_| Ok(()),
+                    )? {
+                        crate::prompt::Answer::Given(answer) => answer,
+                        crate::prompt::Answer::Cancelled => String::new(),
+                    }
+                } else {
+                    print!("{key}Sign this ticket? [y]es / [n]o / [r]efuse: ");
+                    std::io::stdout()
+                        .flush()
+                        .context("cannot write to the terminal")?;
+                    read_line()?
+                }
             };
             // `y` signs as at every other "Sign …?" ([`signs`]); `r` is this one's own.
             let done = match answer.to_ascii_lowercase().as_str() {

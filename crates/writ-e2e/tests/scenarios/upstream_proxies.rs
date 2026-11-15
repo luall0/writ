@@ -311,10 +311,15 @@ fn proxies_are_managed_from_the_approver_s_machine_and_hosts_behind_them_scanned
 
     // Found on a real setup: a guided scan with no proxy named went direct. It asks which one
     // first. Direct, a name only the proxies resolve fails, saying how to go through one.
-    let asked = "proxy (the proxy the scan goes through, Enter for none (reached directly); in \
-                 force: http, socks): ";
+    // A select (M7.9.5): none first, then the proxies in force.
+    let asked = "[the proxy the scan goes through, Enter for none (reached directly); in force: \
+                 http, socks]";
     let said = exits_on_terminal(approver, "writ admin host add forgejo-behind-new", &[""], 1);
     assert!(said.contains(asked), "{said}");
+    assert!(
+        said.contains("> proxy none: the host reached directly"),
+        "{said}"
+    );
     assert!(
         said.contains("Scanning forgejo-behind-new:22 from the daemon: one signature"),
         "{said}"
@@ -326,19 +331,20 @@ fn proxies_are_managed_from_the_approver_s_machine_and_hosts_behind_them_scanned
         ),
         "{said}"
     );
-    // A guided `repo add` on that host: the proxy asked before the scan (a name not in force
-    // asked again), the scan through it, the answer the repo's own proxy (never asked again),
-    // then the repo checked through it.
+    // A guided `repo add` on that host: the proxy asked before the scan (a select of the ones
+    // in force: a name not in force can't be picked, and the plain prompt's refusal of one is
+    // `scan_proxy_answer`'s unit test), the scan through it, the answer the repo's own proxy
+    // (never asked again), then the repo checked through it.
     let said = on_terminal(
         approver,
         "writ admin repo add behind-asked",
         &[
             "ssh://git@forgejo-behind-new/writ/behind-socks.git",
-            "tor",
             "socks",
             "y",
             "upstream-behind-socks",
-            "feature",
+            // templates, a multi-select: feature ticked.
+            "feature ",
             "",
             "",
             "",
@@ -347,11 +353,9 @@ fn proxies_are_managed_from_the_approver_s_machine_and_hosts_behind_them_scanned
             "",
         ],
     );
-    assert_eq!(said.matches(asked).count(), 2, "{said}");
-    assert!(
-        said.contains("tor is not a proxy in force (in force: http, socks)."),
-        "{said}"
-    );
+    // Asked once, answered once: socks.
+    assert_eq!(said.matches("> proxy ").count(), 1, "{said}");
+    assert!(said.contains("> proxy socks"), "{said}");
     assert!(
         said.contains("Scanning forgejo-behind-new:22 from the daemon through proxy socks"),
         "{said}"

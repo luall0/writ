@@ -145,20 +145,19 @@ pub fn doc_step_fails(
     out
 }
 
-/// The same, on a terminal (`script`), `answers` typed one per line: what it showed (the
-/// streams merged, rows ending in `\r\n`). It must exit 0.
+/// The same, on a terminal ([`crate::docker::on_terminal`]), `answers` typed one each, ended by
+/// Enter: what it showed (the streams merged, rows ending in `\r\n`). It must exit 0.
 pub fn doc_step_on_terminal(
     host: &Host,
     command: &'static str,
     fill: &[(&str, &str)],
     answers: &[&str],
 ) -> String {
-    let typed: String = answers.iter().map(|a| format!("{a}\n")).collect();
     let filled = filled(command, fill);
     assert!(!filled.contains('\''), "{filled}");
     let out = host.run_with(
-        &format!("script -qec '{filled}' /dev/null"),
-        typed.as_bytes(),
+        &crate::docker::on_terminal(&filled),
+        crate::docker::typed(answers).as_bytes(),
     );
     assert_eq!(out.status.code(), Some(0), "{command}: {}", stdout(&out));
     stdout(&out)
@@ -400,12 +399,12 @@ pub fn run() -> Stack {
         "{added_host}"
     );
     // 11. Its template, each field asked (fetch only: the fields of signing and pushing not
-    // asked).
+    // asked). Its operations a multi-select: `fetch ` filters to fetch and ticks it.
     let said = doc_step_on_terminal(
         &approver,
         "writ admin template add <template>",
         &[("<template>", ADDED_TEMPLATE)],
-        &["fetch", "1h", "0", "0", "10", "0", "", "", "y"],
+        &["fetch ", "1h", "0", "0", "10", "0", "", "", "y"],
     );
     assert!(said.contains("Applied: policy is version "), "{said}");
     // 12. Its upstream key, made by the change that declares it, registered on Forgejo as a

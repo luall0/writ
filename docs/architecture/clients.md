@@ -40,6 +40,21 @@ no to a "Sign …?" question: `writ sign`, `writ prove-key`, every `writ admin` 
 scan's keys found not matching; every such question takes `y` or `yes`, in any case, and
 nothing else, the end of the input included).
 
+**The questions** (`writ-cli`'s `prompt` module, M7.9.5): on a terminal (stdin and stderr
+both, `TERM` not `dumb`), every question `writ` asks is a widget drawn by `inquire`: a select
+moved with the arrow keys and filtered by typing (a field whose values are few and known: a
+key's use, kind, format, backend, algorithm, hash; a repo's credential, proxy, ticket link,
+notes ref, object format; a template's signing key and paths check; every flag), a
+multi-select (a template's operations and push modes, a repo's templates, the agents `writ
+init` installs the skill for), text checked as it is typed (a count, a registry name), a
+confirm, a pause. Each gives the answer the plain prompt gave (Enter keeps, `!` leaves an
+optional field out, `none` empties a list), so the guided flows' logic is one; a select's
+fixed options are the ones the field's own help names (a test). Colour unless `NO_COLOR` is
+set. Everything drawn is cleaned first, a scanned host key or a name from the policy alike.
+Without a terminal the plain line prompts answer as before (scripts, the variables, the
+integration tests). Passphrases, the recovery key and tokens are never asked there:
+`writ_crypto::passphrase` reads them, echo off, into memory it wipes.
+
 Denial reasons from the daemon reach the agent: `writ-sign` prints them on stderr (escaped,
 like any text from elsewhere) before exiting 1, and git shows them; git shows the gateway's
 rejection message after a push. When ssh itself fails (the gateway refuses an expired, revoked
