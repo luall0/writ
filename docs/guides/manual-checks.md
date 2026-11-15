@@ -162,6 +162,9 @@ times, `--no-wait`):
 - [ ] An amendment (`amends: <lease>` in a ticket, one path added to its `expected_paths`)
       opens on what changes: that path alone added, in green, and how many stay; its task
       before and after in the right pane.
+- [ ] A ticket over two repositories: the lease's strip, then one card per repository with
+      its own terms and paths; an amendment changing one of them marks that card CHANGES and
+      folds the other, its changes captioned with the repository.
 - [ ] A ticket with many paths (a hundred, some long) and a long plan: the paths card
       scrolls inside itself, every path whole; the plan scrolls in its pane; Sign stays in
       sight.

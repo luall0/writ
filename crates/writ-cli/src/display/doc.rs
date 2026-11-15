@@ -18,6 +18,10 @@ pub struct Doc {
 pub struct Section {
     pub kind: SectionKind,
     pub title: String,
+    /// A repository's section: its name (cleaned), for the app to title its card without
+    /// reading the title (M7.9.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     pub rows: Vec<Row>,
 }
 
@@ -68,6 +72,9 @@ pub struct Row {
     /// app to show as a file browser without splitting a value itself; none otherwise.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tree: Vec<Node>,
+    /// A change to a per-repository term over several repositories: the repository it is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 /// One node of a path tree: a folder (its name ends with `/`, and may hold several
@@ -218,6 +225,7 @@ impl Out {
         self.doc.sections.push(Section {
             kind,
             title: title.to_owned(),
+            repo: None,
             rows: Vec::new(),
         });
     }
@@ -235,7 +243,23 @@ impl Out {
                 items: Vec::new(),
                 at: None,
                 tree: Vec::new(),
+                repo: None,
             });
+        }
+    }
+
+    /// The repository the section last started is (a repository's section).
+    pub(crate) fn section_repo(&mut self, repo: &str) {
+        if let Some(section) = self.doc.sections.last_mut() {
+            section.repo = Some(repo.to_owned());
+        }
+    }
+
+    /// The repository the row last written is about, when it is one's (a change across
+    /// several repositories).
+    pub(crate) fn repo(&mut self, repo: Option<&str>) {
+        if let (Some(row), Some(repo)) = (self.last_row(), repo) {
+            row.repo = Some(repo.to_owned());
         }
     }
 

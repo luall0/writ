@@ -37,6 +37,8 @@ struct DocRow: Decodable, Hashable {
     let at: String?
     /// For the expected paths: the same items as a tree, built by `writ`.
     let tree: [TreeNode]?
+    /// A change to a per-repository term over several repositories: its repository.
+    let repo: String?
 }
 
 /// One node of a path tree: a folder (its name ends with `/`) or a leaf (`file`, `pattern`,
@@ -52,6 +54,8 @@ struct TreeNode: Decodable, Hashable {
 struct DocSection: Decodable, Hashable {
     let kind: String
     let title: String
+    /// A repository's section: its name.
+    let repo: String?
     let rows: [DocRow]
 }
 
@@ -816,10 +820,11 @@ struct ChangesCard: View {
 
     private struct Change { let label: String; var rows: [DocRow] }
 
+    /// Consecutive rows of one term (and one repository, over several): one change.
     private func groups(_ rows: [DocRow]) -> [Change] {
         var out: [Change] = []
         for row in rows {
-            let label = row.label ?? ""
+            let label = row.repo.map { "\($0) · \(row.label ?? "")" } ?? (row.label ?? "")
             if out.last?.label == label { out[out.count - 1].rows.append(row) } else {
                 out.append(Change(label: label, rows: [row]))
             }
@@ -894,6 +899,14 @@ struct Terms: View {
     let shown: Shown
 
     var body: some View {
+        if shown.sections(["repository"]).count > 1 {
+            ManyRepositories(shown: shown)
+        } else {
+            one
+        }
+    }
+
+    private var one: some View {
         Card(tint: .accentColor) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -943,6 +956,176 @@ struct Terms: View {
             }
         }
         return out
+    }
+}
+
+/// A lease over several repositories (M7.9.5): the lease's own terms in one strip, then one
+/// card per repository with its terms and its paths; an amendment's cards it changes marked,
+/// the others folded to a line.
+struct ManyRepositories: View {
+    let shown: Shown
+
+    var body: some View {
+        Card(tint: .accentColor) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "signature").foregroundStyle(Color.accentColor)
+                    Text(shown.kind == "ticket" ? "You are signing" : "The lease if you sign: every term")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("enforced by the daemon, whatever the agent wrote")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                Caption(text: "The lease · for every repository")
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: 4),
+                    alignment: .leading, spacing: 8
+                ) {
+                    ForEach(Array(lease.enumerated()), id: \.offset) { _, tile in
+                        Tile(title: tile.0, row: tile.1)
+                    }
+                }
+                ForEach(shown.sections(["repository"]), id: \.self) { section in
+                    RepositoryCard(
+                        section: section,
+                        changed: changed.contains(section.repo ?? ""),
+                        folded: !changed.isEmpty && !changed.contains(section.repo ?? ""))
+                }
+            }
+        }
+    }
+
+    /// The lease's own terms, by `writ`'s labels.
+    private var lease: [(String, DocRow)] {
+        let wanted: [(String, String, String)] = [
+            ("lease", "committer name", "Commits as"), ("lease", "committer emails", "Commit email"),
+            ("lease", "signing key", "Signing key"), ("lease", "max ops per minute", "Per minute"),
+            ("lease", "on violation", "On violation"),
+        ]
+        return wanted.compactMap { kind, label, name in shown.row(kind, label).map { (name, $0) } }
+    }
+
+    /// The repositories an amendment's (or a revision's, a renewal's) changes name.
+    private var changed: Set<String> {
+        Set(shown.sections(["changes"]).flatMap(\.rows).compactMap(\.repo))
+    }
+}
+
+/// One tile: a caption, then the row's value (its items as chips).
+struct Tile: View {
+    let title: String
+    let row: DocRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Caption(text: title)
+            Value(row: row, mono: title == "Branches")
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.22)))
+    }
+}
+
+/// One repository of the lease: its name and template, its terms as tiles, its paths as a
+/// tree; marked when a change is in it, folded to one line when another one's are.
+struct RepositoryCard: View {
+    let section: DocSection
+    let changed: Bool
+    @State var folded: Bool
+    @State private var closed: Set<String> = []
+
+    init(section: DocSection, changed: Bool, folded: Bool) {
+        self.section = section
+        self.changed = changed
+        _folded = State(initialValue: folded)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                if folded {
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Text(section.repo ?? section.title).font(.system(size: 14, weight: .bold))
+                if let template = row("template") {
+                    Text("template \(template.value)").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                if changed {
+                    Text("CHANGES")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color.changeTint)
+                        .padding(.horizontal, 6)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.changeTint.opacity(0.15)))
+                }
+                if folded {
+                    Text("unchanged · \(summary)")
+                        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                if let paths = row("expected paths"), let items = paths.items {
+                    Text("\(items.count) path\(items.count == 1 ? "" : "s")")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+            .onTapGesture { if folded { withAnimation(.easeOut(duration: 0.15)) { folded = false } } }
+            if !folded {
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: 4),
+                        alignment: .leading, spacing: 8
+                    ) {
+                        ForEach(Array(tiles.enumerated()), id: \.offset) { _, tile in
+                            Tile(title: tile.0, row: tile.1)
+                        }
+                    }
+                    if let paths = row("expected paths"), let tree = paths.tree, !tree.isEmpty {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 0) {
+                                TreeRows(
+                                    nodes: tree, prefix: (section.repo ?? "") + "\u{0}", depth: 0, filter: "",
+                                    closed: $closed)
+                            }
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 240)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.22)))
+                    } else if let paths = row("expected paths") {
+                        Tile(title: "Paths it may touch", row: paths)
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(changed ? Color.changeTint.opacity(0.5) : Color.secondary.opacity(0.25)))
+    }
+
+    private func row(_ label: String) -> DocRow? {
+        section.rows.first { $0.label == label }
+    }
+
+    /// The repository's terms, by `writ`'s labels.
+    private var tiles: [(String, DocRow)] {
+        let wanted: [(String, String)] = [
+            ("operations", "May"), ("branches", "Branches"), ("max signatures", "Commits"),
+            ("max pushes", "Pushes"), ("max push size", "Largest push"), ("force push", "Force push"),
+        ]
+        return wanted.compactMap { label, name in row(label).map { (name, $0) } }
+    }
+
+    /// A folded card's line: its operations and branches, as `writ` sent them.
+    private var summary: String {
+        ["operations", "branches"].compactMap { row($0)?.value }.joined(separator: " · ")
     }
 }
 
@@ -1143,7 +1326,9 @@ struct Centre: View {
                     ChangesCard(shown: shown, section: $0)
                 }
                 Terms(shown: shown)
-                PathsCard(shown: shown)
+                if shown.sections(["repository"]).count <= 1 {
+                    PathsCard(shown: shown)
+                }
                 AskedBy(shown: shown)
                 ForEach(shown.sections(["feedback", "renewal"]), id: \.self) { section in
                     let rows = shown.writs(section)

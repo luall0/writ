@@ -301,7 +301,9 @@ user at its start: [decision log](decisions.md), 2026-11-15.
   filter; built by `writ` and sent as a structure, so the app never splits a value. An
   amendment opens on what changes (paths added and removed shown whole, the kept ones
   folded in the tree), its task before and after in the right pane; a renewal on now → if
-  signed, the counts carried over, and the chain.
+  signed, the counts carried over, and the chain. Over several repositories (validated on
+  mockups after the user's test): the lease's own terms in one strip, then a card per
+  repository with its terms and paths; each change names its repository.
 - **One prompt layer, on `inquire`** (`writ-cli`'s `prompt` module): a select with arrow keys
   and type-to-filter, a multi-select, text with inline validation and a help line, a confirm;
   colour, `NO_COLOR` honoured; every value shown cleaned first (a scanned host key, a name

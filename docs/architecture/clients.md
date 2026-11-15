@@ -118,7 +118,9 @@ the names on its way down, nothing added, dropped or reordered
 (`the_path_tree_gives_back_every_path_exactly`). In a `changes` section, a term that is a
 set (repos, committer emails, operations, branches, expected paths) is a row per item
 removed (`removed`) and added (`added`), then a `context` row saying how many stay; any other
-term, a row per side. The terminal's text and the structure are written by the same calls, so they say
+term, a row per side. Over several repositories, a per-repository term's rows carry the
+`repo` they are in, and each `repository` section its `repo` name, so the window places
+each change in its repository's card without reading a title or a value. The terminal's text and the structure are written by the same calls, so they say
 the same (`the_structure_says_what_the_text_says`); agent text only ever lands in a row
 tagged as the agent's, or quoted inside an enforced value (the caller's executable), or as
 recorded feedback (`agent_text_is_only_ever_in_the_agent_s_rows`). The app styles each kind
@@ -136,7 +138,10 @@ rail when more than one ticket waits.
   every enforced term as a tile, chosen by `writ`'s labels (the `signing` section, the lease's
   signing key, violation rule and rate, each repository's largest push), none folded away;
   the expected paths as a file tree from the rows' `tree` (a Tree / List switch, a filter,
-  scrolling past 320 points; every path whole); who asks, in a line; the feedback and a
+  scrolling past 320 points; every path whole). Over several repositories, the lease's own
+  terms in one strip (commits as, signing key, rate, on violation), then one card per
+  repository with its terms and its own path tree; an amendment's cards marked CHANGES where
+  its changes are, the others folded to a line; who asks, in a line; the feedback and a
   renewal's chain; the source's other leases, folded unless one overlaps (orange); **Details**,
   folded: the `ticket`, `who`, `lease` and `repository` sections, times shown as how far and
   the clock time, and **Copy as text** (the terminal's text).
