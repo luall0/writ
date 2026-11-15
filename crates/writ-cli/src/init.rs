@@ -620,6 +620,10 @@ fn agents_md(
         files.push(root.join("AGENTS.md"));
     }
     for file in &files {
+        // A line an earlier version added: today's in its place, its record standing.
+        for former in kind.former_pointers() {
+            skill::replace_line(file, former, kind.pointer())?;
+        }
         if let Some(added) = skill::add_line(file, kind.pointer())? {
             let shown = file.display().to_string();
             if added.joined {
@@ -1447,7 +1451,12 @@ fn undo_skill(
                     created,
                     joined: joined.contains(&file),
                 };
-                skill::remove_line(Path::new(file), kind.pointer(), added)?;
+                // Today's line, or one an earlier version added (M7.9.7).
+                for line in
+                    std::iter::once(kind.pointer()).chain(kind.former_pointers().iter().copied())
+                {
+                    skill::remove_line(Path::new(file), line, added)?;
+                }
             } else {
                 undone.left.push(format!(
                     "{}: not an AGENTS.md or CLAUDE.md, left as it is",

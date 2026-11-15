@@ -473,7 +473,16 @@ agents it is asked for (`writ_cli::skill`), in as few folders as possible:
 - A `SKILL.md` that isn't Writ's (no `Written by writ init` mark) is never written over; one
   that is is refreshed.
 - `--agents-md` appends one line pointing at the skill to `AGENTS.md` and `CLAUDE.md` (a new
-  `AGENTS.md` when the repo has neither); otherwise the summary prints the line.
+  `AGENTS.md` when the repo has neither); otherwise the summary prints the line. It names
+  fetch and pull, before any task (M7.9.7: agents fetched with plain `git` before planning,
+  outside the skill, through the operator's own remote). A line an earlier version added is
+  replaced in place by today's (`skill::replace_line`, its line break kept), and `--undo`
+  takes either back.
+- The skill starts with **fetching before planning** (step 0, M7.9.7): `writ git fetch` and
+  `writ git pull --ff-only` with no ticket, which a repository with an `unsigned_fetch`
+  template serves under a lease granted with no signature
+  ([fetching with no lease](#fetching-with-no-lease)); its description asks the agent to
+  load it before any git command, not only before a task that changes files.
 - What `writ init` creates and adds is recorded (`skill.created`, `skill.createddir`,
   `skill.exclude`, `skill.agentsmd`…), and `--undo` takes exactly that back: the skill files
   that are still Writ's, and the folders made for them once empty. `timings.md` stays. A

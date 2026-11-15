@@ -1,6 +1,6 @@
 ---
 name: writ
-description: Use at the start of every task that will change files in a repository wired for Writ (it has a `writ` remote, or `writ git` works in it), before editing anything, and again at each new request after an earlier one in this conversation had a lease (a small follow-up amends the running lease; a different task, or any request after a close, needs a new ticket). Writ gives you a signed, scoped, time-boxed lease to sign commits and push; this skill is how to see what the repository allows, ask for a lease, work under it, amend or renew it, and close it with a report.
+description: Use before running any git command, fetch and pull included, in a repository wired for Writ (it has a `writ` remote, or `writ git` works in it), and at the start of every task that will change files there, before editing anything, and again at each new request after an earlier one in this conversation had a lease (a small follow-up amends the running lease; a different task, or any request after a close, needs a new ticket). Writ gives you a signed, scoped, time-boxed lease to sign commits and push; this skill is how to see what the repository allows, ask for a lease, work under it, amend or renew it, and close it with a report.
 ---
 
 <!-- Written by `writ init` and replaced by the next one: never edit this file. What you learn
@@ -26,8 +26,9 @@ The timings file for this repository: `{{TIMINGS}}`. Read it before writing a ti
   running lease first (step 6). A closed lease is over: the next request, however small, is
   a new ticket. When unsure which it is, ask the human.
 - Run every git command through `writ git …` (`writ git commit`, `writ git push`,
-  `writ git fetch`, `writ git rebase` …). Plain `git` has no lease. In a clone wired with
-  `--whole-repo`, plain `git` is the same as `writ git`.
+  `writ git fetch`, `writ git rebase` …), **the fetch before any ticket too** (step 0).
+  Plain `git` has no lease and goes around Writ. In a clone wired with `--whole-repo`, plain
+  `git` is the same as `writ git`.
 - A program that runs git itself (a script, a release tool) runs as
   `writ exec -- <program> <args>`.
 - Work on a branch of your own, never on the default branch or a protected one.
@@ -38,6 +39,23 @@ The timings file for this repository: `{{TIMINGS}}`. Read it before writing a ti
 - Never try to reach the remote another way, or to work around a denial. A denial is the
   lease doing its job: amend, renew or ask the human.
 - Never edit this file. Add notes to the timings file only (see below).
+
+## 0. Fetch before you plan
+
+To see whether upstream moved, or to start from a clean tree, fetch through Writ before you
+read the code to plan, with no ticket:
+
+```sh
+writ git fetch origin
+writ git pull --ff-only origin <default branch>
+```
+
+With no lease, `writ git fetch` and `writ git pull` ask for a fetch-only lease themselves
+when the repository allows it (`writ policy` shows a template with `signature: none`),
+and close it once git returns: nothing to sign, nothing to close, nothing to record. Use
+`--ff-only`: a merge commit needs a signature, which only a lease gives. If the repository
+doesn't allow it, the fetch is refused: plan from what you have, and fetch once your lease
+is granted (step 4).
 
 ## 1. See what the repository allows
 

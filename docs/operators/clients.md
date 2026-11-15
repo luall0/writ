@@ -107,7 +107,9 @@ removes exactly what `writ init` wrote.
 - **`--skill-dir`** also installs the skill in that folder (`<folder>/writ/SKILL.md`).
 - **`--global`** installs the skill in your own folders (`~/.claude/skills`…) instead of the
   repo's.
-- **`--agents-md`** adds a line pointing at the skill to `AGENTS.md` and `CLAUDE.md`.
+- **`--agents-md`** adds a line pointing at the skill to `AGENTS.md` and `CLAUDE.md`. The
+  line asks the agent to use `writ git` for fetch and pull too, before any task. Running
+  `writ init` again replaces a line an older version added.
 - **`--repo <dir>=<name>`**, in a folder of repositories only: the registry name of the
   repository in `<dir>`, or `-` to leave it out. Give it once per repository.
 - **`--undo`** takes back what `writ init` did. The timings file stays.

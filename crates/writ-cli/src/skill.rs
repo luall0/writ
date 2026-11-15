@@ -30,11 +30,23 @@ const REPOS_MARK: &str = "{{REPOS}}";
 /// file).
 const OWNED: &str = "<!-- Written by `writ init`";
 
-/// The line `--agents-md` appends to `AGENTS.md` / `CLAUDE.md`.
-pub const POINTER: &str = "Git goes through `writ git …` here (Writ leases): read the `writ` skill before you start any task that changes files.";
+/// The line `--agents-md` appends to `AGENTS.md` / `CLAUDE.md`. Fetch and pull are named:
+/// agents fetched with plain git before planning, outside the skill (M7.9.7).
+pub const POINTER: &str = "Git goes through `writ git …` here (Writ leases), fetch and pull included, even before a task: read the `writ` skill before you run git or start any task that changes files.";
 
 /// The same line at a workspace root.
-pub const WORKSPACE_POINTER: &str = "Git goes through `writ git -C <repository> …` here (Writ leases): read the `writ-workspace` skill before you start any task that changes files.";
+pub const WORKSPACE_POINTER: &str = "Git goes through `writ git -C <repository> …` here (Writ leases), fetch and pull included, even before a task: read the `writ-workspace` skill before you run git or start any task that changes files.";
+
+/// The lines earlier versions added, replaced in place by `writ init` and taken back by
+/// `--undo` like today's (M7.9.7): a repository wired before keeps one line, never two.
+const FORMER_POINTERS: [&str; 1] = [
+    "Git goes through `writ git …` here (Writ leases): read the `writ` skill before you start any task that changes files.",
+];
+
+/// The same at a workspace root.
+const FORMER_WORKSPACE_POINTERS: [&str; 1] = [
+    "Git goes through `writ git -C <repository> …` here (Writ leases): read the `writ-workspace` skill before you start any task that changes files.",
+];
 
 /// The files `--agents-md` adds its line to.
 pub const AGENTS_MD: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
@@ -67,6 +79,14 @@ impl Kind {
         match self {
             Kind::Repo => POINTER,
             Kind::Workspace => WORKSPACE_POINTER,
+        }
+    }
+
+    /// The lines earlier versions of `--agents-md` added in its place.
+    pub fn former_pointers(self) -> &'static [&'static str] {
+        match self {
+            Kind::Repo => &FORMER_POINTERS,
+            Kind::Workspace => &FORMER_WORKSPACE_POINTERS,
         }
     }
 }
@@ -435,6 +455,31 @@ pub fn add_line(path: &Path, line: &str) -> anyhow::Result<Option<Added>> {
     Ok(Some(Added { created, joined }))
 }
 
+/// Replaces each line exactly `old` in `path` with `new`, its line break kept, nothing else
+/// of the file touched; whether one was. A file that isn't there has none.
+pub fn replace_line(path: &Path, old: &str, new: &str) -> anyhow::Result<bool> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut replaced = false;
+    for piece in lines_of(&bytes) {
+        if content(piece) == old.as_bytes() {
+            out.extend_from_slice(new.as_bytes());
+            out.extend_from_slice(piece.get(old.len()..).unwrap_or_default());
+            replaced = true;
+        } else {
+            out.extend_from_slice(piece);
+        }
+    }
+    if replaced {
+        std::fs::write(path, out).with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    Ok(replaced)
+}
+
 /// Takes back what [`add_line`] added: the lines exactly `line`, each with its own line break
 /// and nothing else of the file, so it comes back byte for byte; the line break added before
 /// it too (`added.joined`) when it is still the last line; the file when it is left empty and
@@ -773,6 +818,48 @@ mod tests {
         assert_eq!(crate::error_of(error), "the record can't be written");
         assert_eq!(seen, 3, "a/writ, a, then the skill");
         assert!(!other.path().join("a/writ/SKILL.md").exists());
+    }
+
+    /// M7.9.7: a pointer line an earlier version added is replaced in place by today's, its
+    /// line break and the rest of the file kept, and taken back by the undo as it came.
+    #[test]
+    fn a_former_pointer_line_is_replaced_in_place_and_taken_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("AGENTS.md");
+        let [former] = Kind::Repo.former_pointers() else {
+            panic!("one former line");
+        };
+        let before = b"# Agents\r\nBe kind.".to_vec();
+        std::fs::write(&file, &before).unwrap();
+        let added = add_line(&file, former).unwrap().unwrap();
+        std::fs::write(
+            &file,
+            [&std::fs::read(&file).unwrap()[..], b"mine\r\n"].concat(),
+        )
+        .unwrap();
+        assert!(replace_line(&file, former, POINTER).unwrap());
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            [&before[..], b"\r\n", POINTER.as_bytes(), b"\r\nmine\r\n"].concat()
+        );
+        // Once only: today's line is there, nothing to replace or add.
+        assert!(!replace_line(&file, former, POINTER).unwrap());
+        assert_eq!(add_line(&file, POINTER).unwrap(), None);
+        // Neither line there, or no file: nothing changes.
+        assert!(!replace_line(&dir.path().join("none.md"), former, POINTER).unwrap());
+        // The undo takes either line back, the user's own kept.
+        remove_line(&file, POINTER, added).unwrap();
+        remove_line(&file, former, added).unwrap();
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            [&before[..], b"\r\nmine\r\n"].concat()
+        );
+        // A workspace has its own, never today's repository line.
+        assert_ne!(
+            Kind::Workspace.former_pointers(),
+            Kind::Repo.former_pointers()
+        );
+        assert!(!Kind::Repo.former_pointers().contains(&POINTER));
     }
 
     #[test]

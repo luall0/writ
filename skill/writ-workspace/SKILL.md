@@ -1,6 +1,6 @@
 ---
 name: writ-workspace
-description: Use at the start of every task that will change files in this folder's repositories (a Writ workspace: `writ git -C <repository>` works in each), before editing anything, and again at each new request after an earlier one in this conversation had a lease (a small follow-up amends the running lease; a different task, or any request after a close, needs a new ticket). Writ gives you one signed, scoped, time-boxed lease to sign commits and push in the repositories your task needs; this skill is how to see what each repository allows, ask for the lease, work under it, amend or renew it, and close it with a report.
+description: Use before running any git command, fetch and pull included, in this folder's repositories (a Writ workspace: `writ git -C <repository>` works in each), and at the start of every task that will change files there, before editing anything, and again at each new request after an earlier one in this conversation had a lease (a small follow-up amends the running lease; a different task, or any request after a close, needs a new ticket). Writ gives you one signed, scoped, time-boxed lease to sign commits and push in the repositories your task needs; this skill is how to see what each repository allows, ask for the lease, work under it, amend or renew it, and close it with a report.
 ---
 
 <!-- Written by `writ init` and replaced by the next one: never edit this file. What you learn
@@ -34,8 +34,8 @@ The timings file for this workspace: `{{TIMINGS}}`. Read it before writing a tic
 - **One ticket for the task**, a block under `repos` for every repository it changes, and
   none for a repository it doesn't.
 - Run every git command through `writ git -C <folder> …`, the folder being the repository's
-  in the list above (`writ git -C api commit`, `writ git -C web push`…). Plain `git` has no
-  lease. From inside a repository's folder, `writ git …` works too. At this folder itself,
+  in the list above (`writ git -C api commit`, `writ git -C web push`…), **the fetch before
+  any ticket too** (step 0). Plain `git` has no lease and goes around Writ. From inside a repository's folder, `writ git …` works too. At this folder itself,
   `writ git` lists the repositories (it is no repository of its own unless the list above
   has `.`).
 - A program that runs git itself (a script, a release tool) runs in one repository at a time:
@@ -50,6 +50,23 @@ The timings file for this workspace: `{{TIMINGS}}`. Read it before writing a tic
 - Never try to reach a remote another way, or to work around a denial. A denial is the
   lease doing its job: amend, renew or ask the human.
 - Never edit this file. Add notes to the timings file only (see below).
+
+## 0. Fetch before you plan
+
+To see whether a remote moved, or to start from a clean tree, fetch each repository through
+Writ before you read the code to plan, with no ticket:
+
+```sh
+writ git -C <folder> fetch origin
+writ git -C <folder> pull --ff-only origin <default branch>
+```
+
+With no lease, `writ git fetch` and `writ git pull` ask for a fetch-only lease themselves
+when the repository allows it (`writ policy <repo>` shows a template with `signature:
+none`), and close it once git returns: nothing to sign, nothing to close, nothing to
+record. Use `--ff-only`: a merge commit needs a signature, which only a lease gives. If a
+repository doesn't allow it, the fetch is refused: plan from what you have, and fetch it
+once your lease is granted (step 4).
 
 ## 1. See what each repository allows
 
