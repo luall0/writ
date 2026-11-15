@@ -89,7 +89,7 @@ its `title` and its `rows`; a row has an optional `label`, a `value` (cleaned, o
 lines: the agent's text whole, as its lines, not cut into the terminal's rows), a `tag`:
 `enforced`, `agent`, `context`, `added`, `removed`, `agent_added`, `agent_removed`,
 `warning`, and for a term that is a list (repos, committer emails, operations, branches,
-expected paths) its `items`, each cleaned as the value shows it, which `writ` splits so the
+expected paths; and the agent's plan, step by step, M7.9.5) its `items`, each cleaned as the value shows it, which `writ` splits so the
 app never splits a value (none for a per-repository term over several repositories, whose
 value names each); for a row that shows a time, its `at` (RFC 3339, UTC), so the app says
 how far it is ("in 2h") beside the clock time without reading the value (M7.9.5); and for the
@@ -107,19 +107,30 @@ tagged as the agent's, or quoted inside an enforced value (the caller's executab
 recorded feedback (`agent_text_is_only_ever_in_the_agent_s_rows`). The app styles each kind
 and tag and reads nothing out of a value: it never parses the text.
 
-**The window.** A list on the left of every ticket waiting (its kind as a badge, its title, its
-repositories; the one shown highlighted; a click picks another). On the right, the ticket: a
-header (kind, id, title, repositories, the time left, counted live), then **You are signing**
-(the `signing` section) as the first card, an amendment's or a revision's changes (removed in
-red, added in green), the agent's words in a card of their own titled as untrusted, each row
-behind a coloured bar, the feedback and a renewal's chain, the source's other leases (orange
-when one overlaps), and under **Details** the rest (`ticket`, `who`, `lease`, each
-`repository`) in cards that fold, closed: each header says what it holds and its main terms in
-a line, and a click anywhere on it opens it. A list's items show as chips (a path, a branch,
-an operation each on its own). **Copy as text** copies the terminal's text. At the bottom: what happened last
-(Touch ID awaited, signed, refused, a failure), the approval key's path, **Decline…** (a
-feedback field, then **Refuse**) and **Sign**. No button takes the keyboard's focus or is the
-default, and each is greyed for a second after a ticket shows.
+**The window** (redesigned in M7.9.5, as the user validated it on mockups). Two panes, and a
+rail when more than one ticket waits.
+- **The rail** (only then), on the left, 58 points wide: the count, then a badge per ticket
+  waiting, oldest first, coloured and marked by its kind, the one shown ringed, one put aside
+  dimmed; hovering one shows its kind, title and repositories; a click picks it.
+- **The centre: what is signed.** A header (the kind, the lease an amendment or a renewal
+  touches, the title quoted and said to be the agent's, the time left counted live with the
+  clock time beside it); for an amendment, a revision or a renewal, what changes first (each
+  set's items removed and added, whole, then how many stay; a value's before → after); then
+  every enforced term as a tile, chosen by `writ`'s labels (the `signing` section, the lease's
+  signing key, violation rule and rate, each repository's largest push), none folded away;
+  the expected paths as a file tree from the rows' `tree` (a Tree / List switch, a filter,
+  scrolling past 320 points; every path whole); who asks, in a line; the feedback and a
+  renewal's chain; the source's other leases, folded unless one overlaps (orange); **Details**,
+  folded: the `ticket`, `who`, `lease` and `repository` sections, times shown as how far and
+  the clock time, and **Copy as text** (the terminal's text).
+- **The right pane: the agent's words.** Every row tagged as the agent's, from every section,
+  in `writ`'s order (task, plan, estimate, the origin hint, an amendment's task before and
+  after), marked untrusted, scrolling on its own: text of any length never moves what is
+  signed. The title is the header's, not repeated.
+- **The footer**, always in sight: what happened last (Touch ID awaited, signed, refused, a
+  failure), the approval key, **Decline…** (a feedback field, then **Refuse**) and **Sign**.
+  No button takes the keyboard's focus or is the default, and each is greyed for a second
+  after a ticket shows.
 
 Every text `writ` sends is cleaned of control and hidden characters, as for the terminal.
 An answer naming another ticket than the one shown, a line that isn't an answer (unknown

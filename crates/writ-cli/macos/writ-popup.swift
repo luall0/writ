@@ -1,4 +1,4 @@
-// writ-popup (M7.8): the approval popup on the Mac. A window over `writ sign --ui`: `writ`
+// writ-popup (M7.8, redesigned in M7.9.5): the approval popup on the Mac. A window over `writ sign --ui`: `writ`
 // fetches each waiting ticket, checks it, builds the trusted display (as text and as sections
 // of tagged rows, written by the same calls) and signs through ssh-keygen (Secretive's Touch
 // ID); this only shows what `writ` sends, styled by each section's kind and each row's tag,
@@ -33,6 +33,19 @@ struct DocRow: Decodable, Hashable {
     let value: String
     let tag: String
     let items: [String]?
+    /// The time the row shows (RFC 3339): the window says how far it is.
+    let at: String?
+    /// For the expected paths: the same items as a tree, built by `writ`.
+    let tree: [TreeNode]?
+}
+
+/// One node of a path tree: a folder (its name ends with `/`) or a leaf (`file`, `pattern`,
+/// `everything`). Every path is the names on its way down: the app never splits one.
+struct TreeNode: Decodable, Hashable {
+    let name: String
+    let kind: String
+    let paths: Int
+    let children: [TreeNode]?
 }
 
 /// One section of the structure.
@@ -220,12 +233,6 @@ final class Model: ObservableObject {
         }
     }
 
-    private static let dates: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-
     func handle(_ event: Event) {
         switch event.type {
         case "show": show(event)
@@ -259,7 +266,7 @@ final class Model: ObservableObject {
             kind: event.kind ?? "ticket",
             title: event.title ?? "",
             repos: event.repos ?? [],
-            expires: event.expires_at.flatMap { Model.dates.date(from: $0) },
+            expires: Times.date(event.expires_at),
             display: event.display ?? "",
             doc: doc,
             key: event.key ?? ""
@@ -331,53 +338,117 @@ extension Color {
     static let agentTint = Color.orange
     static let addedTint = Color.green
     static let removedTint = Color.red
+    static let changeTint = Color.purple
+}
+
+/// The tags of the agent's words: their rows go to the right pane, never among Writ's.
+let agentTags: Set<String> = ["agent", "agent_added", "agent_removed"]
+
+/// Times as people read them: how far ("in 2h", "3 min ago") and the clock time beside it.
+@MainActor
+enum Times {
+    static let iso: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+    private static let clockFormat: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .short
+        return f
+    }()
+    private static let dayFormat: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    static func date(_ text: String?) -> Date? { text.flatMap { iso.date(from: $0) } }
+
+    static func relative(_ date: Date, now: Date) -> String {
+        let seconds = Int(date.timeIntervalSince(now))
+        let span = abs(seconds)
+        let text: String
+        if span < 60 {
+            text = "\(span) s"
+        } else if span < 3600 {
+            text = "\(span / 60) min"
+        } else if span < 86_400 {
+            let h = span / 3600, m = (span % 3600) / 60
+            text = m == 0 ? "\(h)h" : "\(h)h \(String(format: "%02d", m))m"
+        } else {
+            let d = span / 86_400, h = (span % 86_400) / 3600
+            text = h == 0 ? "\(d)d" : "\(d)d \(h)h"
+        }
+        return seconds < 0 ? "\(text) ago" : "in \(text)"
+    }
+
+    static func clock(_ date: Date, now: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDate(date, inSameDayAs: now) { return "today at \(clockFormat.string(from: date))" }
+        if calendar.isDateInTomorrow(date) { return "tomorrow at \(clockFormat.string(from: date))" }
+        if calendar.isDateInYesterday(date) { return "yesterday at \(clockFormat.string(from: date))" }
+        return dayFormat.string(from: date)
+    }
 }
 
 /// A kind of ticket as a small coloured capsule.
 struct KindBadge: View {
     let kind: String
+    var long = false
 
     var body: some View {
-        Text(kind.uppercased())
-            .font(.system(size: 9, weight: .bold))
-            .tracking(0.6)
-            .padding(.horizontal, 6)
+        Text(text)
+            .font(.system(size: long ? 11 : 9, weight: .bold))
+            .tracking(0.5)
+            .padding(.horizontal, long ? 8 : 6)
             .padding(.vertical, 2)
             .foregroundStyle(color)
-            .background(Capsule().fill(color.opacity(0.16)))
+            .background(RoundedRectangle(cornerRadius: 5).fill(color.opacity(0.16)))
     }
 
-    private var color: Color {
+    private var text: String {
+        switch kind {
+        case "ticket": return long ? "NEW TICKET" : "NEW"
+        default: return kind.uppercased()
+        }
+    }
+
+    private var color: Color { KindBadge.color(kind) }
+
+    static func color(_ kind: String) -> Color {
         switch kind {
         case "amendment": return .purple
         case "renewal": return .teal
-        case "revision": return .blue
+        case "revision": return .indigo
         default: return .accentColor
         }
     }
 }
 
-/// One item (a repository, a branch, a path, an operation) as a chip.
+/// One item (a repository, a branch, an operation) as a chip.
 struct Chip: View {
     let text: String
     var tint: Color = .secondary
+    var mono = false
 
     var body: some View {
         Text(text)
-            .font(.system(size: 12, weight: .medium, design: .monospaced))
+            .font(.system(size: 12, design: mono ? .monospaced : .default))
             .foregroundStyle(.primary)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.16)))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(tint.opacity(0.25)))
+            .padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.14)))
             .textSelection(.enabled)
     }
 }
 
 /// Views laid out left to right, wrapping to the next line when the width runs out.
 struct Flow: Layout {
-    var spacing: CGFloat = 6
+    var spacing: CGFloat = 5
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
@@ -416,278 +487,248 @@ struct Flow: Layout {
     }
 }
 
-/// A rounded card around a section.
+/// A rounded card.
 struct Card<Content: View>: View {
-    let tint: Color?
+    var tint: Color? = nil
+    var padding: CGFloat = 12
     @ViewBuilder let content: Content
 
     var body: some View {
         content
-            .padding(14)
+            .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(tint.map { $0.opacity(0.07) } ?? Color(nsColor: .controlBackgroundColor))
+                    .fill(tint.map { $0.opacity(0.06) } ?? Color(nsColor: .controlBackgroundColor))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder((tint ?? Color.secondary).opacity(tint == nil ? 0.18 : 0.45))
+                    .strokeBorder((tint ?? Color.secondary).opacity(tint == nil ? 0.2 : 0.4))
             )
     }
 }
 
-/// One row of a section, styled by its tag: a list-valued term's items as chips.
-struct RowView: View {
+/// A small upper-case label.
+struct Caption: View {
+    let text: String
+    var body: some View {
+        Text(text.uppercased())
+            .font(.system(size: 10.5, weight: .semibold))
+            .tracking(0.3)
+            .foregroundStyle(.secondary)
+    }
+}
+
+/// A row's value: its items as chips, or its text; a time as how far and the clock time.
+struct Value: View {
     let row: DocRow
+    var mono = false
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
-            if let label = row.label {
-                Text(label)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 140, alignment: .trailing)
-                    .fixedSize(horizontal: false, vertical: true)
+        if let at = Times.date(row.at) {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                Text("\(Times.relative(at, now: context.date)) · \(Times.clock(at, now: context.date))")
+                    .font(.system(size: 13))
             }
-            value
-        }
-        .padding(.vertical, 1)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder private var value: some View {
-        if let items = row.items, !items.isEmpty, row.tag == "enforced" {
-            Flow(spacing: 6) {
+        } else if let items = row.items, !items.isEmpty {
+            Flow {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    Chip(text: item, tint: .accentColor)
+                    Chip(text: item, mono: mono)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            styled
+            Text(row.value)
+                .font(.system(size: 13, design: mono ? .monospaced : .default))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
+}
 
-    @ViewBuilder private var styled: some View {
-        switch row.tag {
-        case "agent":
-            quote(Color.agentTint)
-        case "agent_added":
-            quote(Color.addedTint, sign: "+")
-        case "agent_removed":
-            quote(Color.removedTint, sign: "−")
-        case "added":
-            mark(Color.addedTint, sign: "+")
-        case "removed":
-            mark(Color.removedTint, sign: "−")
-        case "warning":
-            Label {
-                Text(row.value).font(.system(size: 12, design: .monospaced))
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
-            }
-            .foregroundStyle(.orange)
-            .textSelection(.enabled)
-        case "context":
-            Text(row.value)
-                .font(.system(size: 13))
+/// A label and its value, side by side.
+struct LabelledRow: View {
+    let row: DocRow
+    var width: CGFloat = 140
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(row.label ?? "")
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        default:
-            Text(row.value)
-                .font(.system(size: 13, weight: .medium))
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
-    }
-
-    /// The agent's words: behind a bar of their own colour, never mistaken for Writ's rows.
-    private func quote(_ tint: Color, sign: String? = nil) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            RoundedRectangle(cornerRadius: 1.5).fill(tint).frame(width: 3)
-            if let sign { Text(sign).font(.system(size: 13, weight: .bold)).foregroundStyle(tint) }
-            Text(row.value)
-                .font(.system(size: 13))
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
-        .padding(.vertical, 2)
-    }
-
-    /// A term's side of a change.
-    private func mark(_ tint: Color, sign: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(sign).font(.system(size: 13, weight: .bold)).foregroundStyle(tint)
-            Text(row.value)
-                .font(.system(size: 12.5, design: .monospaced))
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.13)))
-    }
-}
-
-/// A section's rows, under a title.
-struct SectionView: View {
-    let section: DocSection
-    let title: String
-    let tint: Color?
-    var icon: String? = nil
-
-    var body: some View {
-        Card(tint: tint) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 7) {
-                    if let icon { Image(systemName: icon).foregroundStyle(tint ?? .secondary) }
-                    Text(title).font(.system(size: 14, weight: .semibold))
+                .frame(width: width, alignment: .leading)
+            if row.tag == "warning" {
+                Label {
+                    Text(row.value).font(.system(size: 12.5))
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
                 }
-                .padding(.bottom, 2)
-                ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
-                    RowView(row: row)
-                }
+                .foregroundStyle(.orange)
+                .textSelection(.enabled)
+            } else {
+                Value(row: row)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// A section of the details: closed at first, its header saying what it holds and, in a
-/// line, its main terms; a click anywhere on the header opens or closes it.
-struct FoldedSection: View {
-    let section: DocSection
-    @State private var open = false
+/// A section that folds: closed at first unless told otherwise; a click on its header opens it.
+struct Folding<Content: View>: View {
+    let title: String
+    let summary: String
+    var tint: Color? = nil
+    @State var open: Bool
+    @ViewBuilder let content: Content
 
     var body: some View {
-        Card(tint: nil) {
+        Card(tint: tint, padding: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(open ? 90 : 0))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(heading).font(.system(size: 13, weight: .semibold))
-                        if !open, let summary {
-                            Text(summary)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
-                    }
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Text(summary)
+                        .font(.system(size: 12))
+                        .foregroundStyle(tint ?? .secondary)
+                        .lineLimit(1)
                     Spacer()
-                    Text(open ? "Hide" : "Show")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
                 .contentShape(Rectangle())
                 .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } }
                 if open {
-                    VStack(alignment: .leading, spacing: 9) {
-                        ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
-                            RowView(row: row)
-                        }
-                    }
-                    .padding(.top, 12)
+                    content
+                        .padding(.horizontal, 12)
+                        .padding(.leading, 18)
+                        .padding(.bottom, 12)
                 }
             }
         }
-    }
-
-    /// What the section holds, in the window's words.
-    private var heading: String {
-        switch section.kind {
-        case "ticket": return "The ticket: revision, state, times"
-        case "who": return "Who asks: the session and the program behind it"
-        case "lease": return "The lease's terms, for every repository"
-        default: return section.title
-        }
-    }
-
-    /// The section's main terms in a line, from its rows by their labels.
-    private var summary: String? {
-        let wanted: [String]
-        switch section.kind {
-        case "ticket": wanted = ["revision", "created"]
-        case "who": wanted = ["caller"]
-        case "lease": wanted = ["signing key", "committer emails", "on violation"]
-        default: wanted = ["operations", "branches", "expected paths"]
-        }
-        let parts = wanted.compactMap { label -> String? in
-            guard let row = section.rows.first(where: { $0.label == label }) else { return nil }
-            var value = row.value
-            if let items = row.items, !items.isEmpty { value = items.joined(separator: ", ") }
-            return "\(label): \(value.replacingOccurrences(of: "\n", with: ", "))"
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
-// MARK: - The window
+// MARK: - The window: the rail
 
-struct Sidebar: View {
+/// The tickets waiting, as a narrow rail of badges, oldest first: only when more than one
+/// waits. Hovering a badge shows its kind, title and repositories; a click shows it.
+struct Rail: View {
     @ObservedObject var model: Model
+    @Binding var hovered: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(model.waiting.count == 1 ? "1 ticket waiting" : "\(model.waiting.count) tickets waiting")
-                .font(.system(size: 11, weight: .semibold))
+        VStack(spacing: 8) {
+            Text("\(model.waiting.count)")
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .padding(.horizontal, 14)
-                .padding(.top, 14)
-                .padding(.bottom, 8)
-            ScrollView {
-                VStack(spacing: 4) {
+                .accessibilityLabel("\(model.waiting.count) tickets waiting")
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 10) {
                     ForEach(model.waiting) { entry in
-                        EntryRow(entry: entry, selected: entry.id == model.shown?.id)
-                            .contentShape(Rectangle())
-                            .onTapGesture { model.pick(entry.id) }
+                        RailBadge(entry: entry, selected: entry.id == model.shown?.id, hovered: $hovered) {
+                            model.pick(entry.id)
+                        }
                     }
                 }
-                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
             }
         }
-        .frame(width: 240)
+        .padding(.top, 12)
+        .frame(width: 58)
         .background(Color(nsColor: .underPageBackgroundColor))
     }
 }
 
-struct EntryRow: View {
+/// Where each badge is, for the card shown beside the one hovered.
+struct BadgeBounds: PreferenceKey {
+    static let defaultValue: [String: Anchor<CGRect>] = [:]
+    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+/// The card beside a hovered badge: its kind, title and repositories. Drawn over the window
+/// and never hit: a click always reaches the badge under it (a popover took the first click).
+struct HoverCard: View {
     let entry: Entry
-    let selected: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
+            HStack(spacing: 6) {
                 KindBadge(kind: entry.kind)
-                Spacer()
                 if entry.skipped {
                     Text("put aside").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
-            Text(entry.title)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(2)
+            Text(entry.title).font(.system(size: 13, weight: .semibold)).lineLimit(3)
             Text(entry.repos.joined(separator: ", "))
-                .font(.system(size: 11, design: .monospaced))
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+            Text("Click to show it").font(.system(size: 11)).foregroundStyle(.secondary)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(selected ? Color.accentColor.opacity(0.18) : Color.clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(selected ? Color.accentColor.opacity(0.6) : Color.clear)
-        )
+        .padding(12)
+        .frame(width: 260, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.3)))
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+        .allowsHitTesting(false)
+    }
+}
+
+struct RailBadge: View {
+    let entry: Entry
+    let selected: Bool
+    @Binding var hovered: String?
+    let pick: () -> Void
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 9)
+            .fill(KindBadge.color(entry.kind).opacity(0.2))
+            .frame(width: 38, height: 38)
+            .overlay(
+                Image(systemName: symbol)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(KindBadge.color(entry.kind))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(Color.accentColor, lineWidth: selected ? 2 : 0)
+            )
+            .opacity(entry.skipped && !selected ? 0.45 : 1)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: pick)
+            .onHover { inside in hovered = inside ? entry.id : (hovered == entry.id ? nil : hovered) }
+            .anchorPreference(key: BadgeBounds.self, value: .bounds) { [entry.id: $0] }
+            .accessibilityLabel("\(entry.kind) \(entry.title)")
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private var symbol: String {
+        switch entry.kind {
+        case "amendment": return "pencil"
+        case "renewal": return "arrow.clockwise"
+        case "revision": return "arrow.uturn.backward"
+        default: return "plus"
+        }
+    }
+}
+
+// MARK: - The window: what is signed (the centre)
+
+/// The rows of `shown` from the sections of these kinds, the agent's left out.
+extension Shown {
+    func sections(_ kinds: [String]) -> [DocSection] {
+        doc.sections.filter { kinds.contains($0.kind) }
+    }
+
+    func row(_ kind: String, _ label: String) -> DocRow? {
+        sections([kind]).lazy.flatMap(\.rows).first { $0.label == label }
+    }
+
+    func writs(_ section: DocSection) -> [DocRow] {
+        section.rows.filter { !agentTags.contains($0.tag) }
     }
 }
 
@@ -695,32 +736,33 @@ struct Header: View {
     let shown: Shown
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                KindBadge(kind: shown.kind)
-                Text(shown.id)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                Spacer()
-                Button("Copy as text") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(shown.display, forType: .string)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    KindBadge(kind: shown.kind, long: true)
+                    if let lease = shown.row("ticket", "amends lease") ?? shown.row("ticket", "renews lease") {
+                        Text("\(lease.label == "amends lease" ? "to" : "of") lease \(lease.value)")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
-                .buttonStyle(.link)
-                .font(.system(size: 11))
-                .focusable(false)
+                Text("“\(shown.title)”")
+                    .font(.system(size: 19, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Text("Title written by the agent")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
-            Text(shown.title)
-                .font(.system(size: 20, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            HStack(spacing: 6) {
-                ForEach(shown.repos, id: \.self) { Chip(text: $0) }
-                if let expires = shown.expires {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(left(until: expires, now: context.date))
-                            .font(.system(size: 12))
+            Spacer(minLength: 8)
+            if let expires = shown.expires {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Label(ends(expires, context.date), systemImage: "clock")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text(Times.clock(expires, now: context.date))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -728,64 +770,549 @@ struct Header: View {
         }
     }
 
-    private func left(until: Date, now: Date) -> String {
-        let seconds = Int(until.timeIntervalSince(now))
-        if seconds <= 0 { return "expired" }
-        let h = seconds / 3600, m = (seconds % 3600) / 60, s = seconds % 60
-        return h > 0 ? "expires in \(h)h\(String(format: "%02d", m))m" : "expires in \(m)m\(String(format: "%02d", s))s"
+    private func ends(_ date: Date, _ now: Date) -> String {
+        date <= now ? "Expired" : "Ends \(Times.relative(date, now: now))"
     }
 }
 
-struct Detail: View {
-    @ObservedObject var model: Model
+/// What a change does, first for an amendment, a revision or a renewal: each term's items
+/// removed and added, each whole, and how many stay; a value's before → after.
+struct ChangesCard: View {
+    let shown: Shown
+    let section: DocSection
+
+    var body: some View {
+        let rows = shown.writs(section)
+        Card(tint: .changeTint) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "arrow.left.arrow.right").foregroundStyle(Color.changeTint)
+                    Text(heading).font(.system(size: 13, weight: .bold))
+                    Text(section.title).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if rows.isEmpty {
+                    Text("Only the agent's words change: see the right pane.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                ForEach(Array(groups(rows).enumerated()), id: \.offset) { _, group in
+                    Divider()
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Caption(text: group.label).frame(width: 140, alignment: .leading)
+                        GroupView(rows: group.rows)
+                    }
+                }
+            }
+        }
+    }
+
+    private var heading: String {
+        switch shown.kind {
+        case "amendment": return "What changes if you sign"
+        case "renewal": return "What the renewal changes"
+        case "revision": return "What changed since the refused revision"
+        default: return "What changes"
+        }
+    }
+
+    private struct Change { let label: String; var rows: [DocRow] }
+
+    private func groups(_ rows: [DocRow]) -> [Change] {
+        var out: [Change] = []
+        for row in rows {
+            let label = row.label ?? ""
+            if out.last?.label == label { out[out.count - 1].rows.append(row) } else {
+                out.append(Change(label: label, rows: [row]))
+            }
+        }
+        return out
+    }
+
+    private struct GroupView: View {
+        let rows: [DocRow]
+
+        var body: some View {
+            let removed = rows.filter { $0.tag == "removed" }
+            let added = rows.filter { $0.tag == "added" }
+            let kept = rows.filter { $0.tag == "context" }
+            VStack(alignment: .leading, spacing: 4) {
+                if removed.count == 1, added.count == 1, kept.isEmpty {
+                    // One value for another: before → after.
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        side(removed[0], added: false)
+                        Image(systemName: "arrow.right").font(.system(size: 11)).foregroundStyle(.secondary)
+                        side(added[0], added: true)
+                    }
+                } else {
+                    ForEach(Array((removed + added).enumerated()), id: \.offset) { _, row in
+                        line(row)
+                    }
+                    ForEach(Array(kept.enumerated()), id: \.offset) { _, row in
+                        Text("\(row.value), unchanged").font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+
+        private func side(_ row: DocRow, added: Bool) -> some View {
+            Group {
+                if let at = Times.date(row.at) {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text("\(Times.relative(at, now: context.date)) (\(Times.clock(at, now: context.date)))")
+                    }
+                } else {
+                    Text(row.value)
+                }
+            }
+            .font(.system(size: 13, weight: added ? .semibold : .regular))
+            .foregroundStyle(added ? Color.addedTint : Color.secondary)
+            .strikethrough(!added)
+            .textSelection(.enabled)
+        }
+
+        private func line(_ row: DocRow) -> some View {
+            let added = row.tag == "added"
+            let tint = added ? Color.addedTint : Color.removedTint
+            return HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(added ? "+" : "−").font(.system(size: 13, weight: .bold)).foregroundStyle(tint)
+                Text(row.value)
+                    .font(.system(size: 12.5, design: .monospaced))
+                    .strikethrough(!added)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.12)))
+        }
+    }
+}
+
+/// Every enforced term, as a tile: the summary's, the lease's key and violation rule, each
+/// repository's largest push. None folded away.
+struct Terms: View {
     let shown: Shown
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    Header(shown: shown)
-                    ForEach(sections(["signing"]), id: \.self) {
-                        SectionView(section: $0, title: "You are signing", tint: .accentColor, icon: "signature")
-                    }
-                    ForEach(sections(["changes"]), id: \.self) {
-                        SectionView(section: $0, title: $0.title, tint: .purple, icon: "arrow.left.arrow.right")
-                    }
-                    ForEach(sections(["agent"]), id: \.self) {
-                        SectionView(
-                            section: $0, title: "Written by the agent: untrusted, never acted on",
-                            tint: .agentTint, icon: "exclamationmark.bubble")
-                    }
-                    ForEach(sections(["feedback", "renewal"]), id: \.self) {
-                        SectionView(section: $0, title: $0.title, tint: nil)
-                    }
-                    ForEach(sections(["others"]), id: \.self) { section in
-                        let warn = section.rows.contains { $0.tag == "warning" }
-                        SectionView(section: section, title: section.title, tint: warn ? .orange : nil)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Details")
-                            .font(.system(size: 15, weight: .semibold))
-                        Text("Everything else writ sign shows. Click a section to open it.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 6)
-                    ForEach(sections(["ticket", "who", "lease", "repository"]), id: \.self) {
-                        FoldedSection(section: $0)
+        Card(tint: .accentColor) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "signature").foregroundStyle(Color.accentColor)
+                    Text(shown.kind == "ticket" ? "You are signing" : "The lease if you sign: every term")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("enforced by the daemon, whatever the agent wrote")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: 3),
+                    alignment: .leading, spacing: 8
+                ) {
+                    ForEach(Array(tiles.enumerated()), id: \.offset) { _, tile in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Caption(text: tile.0)
+                            Value(row: tile.1, mono: tile.0 == "Branches")
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.22)))
                     }
                 }
-                .padding(20)
             }
-            Divider()
-            Footer(model: model, shown: shown)
         }
     }
 
-    private func sections(_ kinds: [String]) -> [DocSection] {
-        shown.doc.sections.filter { kinds.contains($0.kind) }
+    /// The tiles, by `writ`'s labels: the app picks rows, it never reads a value.
+    private var tiles: [(String, DocRow)] {
+        let names: [(String, String)] = [
+            ("repos", "Repositories"), ("branches", "Branches"), ("operations", "May"),
+            ("limits", "Limits"), ("committer name", "Commits as"), ("committer emails", "Commit email"),
+            ("templates", "Template"), ("force push", "Force push"),
+        ]
+        var out: [(String, DocRow)] = names.compactMap { label, name in
+            shown.row("signing", label).map { (name, $0) }
+        }
+        if let key = shown.row("lease", "signing key") { out.append(("Signing key", key)) }
+        if let rule = shown.row("lease", "on violation") { out.append(("On violation", rule)) }
+        if let rate = shown.row("lease", "max ops per minute") { out.append(("Per minute", rate)) }
+        let repositories = shown.sections(["repository"])
+        for section in repositories {
+            if let size = section.rows.first(where: { $0.label == "max push size" }) {
+                let name = repositories.count > 1 ? "Largest push · \(section.title)" : "Largest push"
+                out.append((name, size))
+            }
+        }
+        return out
     }
 }
+
+/// The expected paths: a tree (or a list), filtered, scrolling past 320 points; every path
+/// whole. The tree is `writ`'s: the app never splits a path.
+struct PathsCard: View {
+    let shown: Shown
+    @State private var asTree = true
+    @State private var filter = ""
+    @State private var closed: Set<String> = []
+
+    var body: some View {
+        let sources = self.sources
+        let count = sources.reduce(0) { $0 + $1.items.count }
+        Card(padding: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    Caption(text: "Paths it may touch")
+                    Text("\(count)")
+                        .font(.system(size: 12, weight: .bold))
+                        .padding(.horizontal, 7)
+                        .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                    Text(count == 0 ? "none: not checked" : "each path whole, none cut")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    Spacer()
+                    if count > 0 {
+                        Picker("", selection: $asTree) {
+                            Text("Tree").tag(true)
+                            Text("List").tag(false)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 110)
+                        .focusable(false)
+                        TextField("Filter paths", text: $filter)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
+                            .frame(width: 140)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                if count > 0 {
+                    Divider()
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(sources.enumerated()), id: \.offset) { _, source in
+                                if sources.count > 1 {
+                                    Text(source.title)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .padding(.top, 6)
+                                }
+                                if asTree {
+                                    TreeRows(
+                                        nodes: source.tree, prefix: source.title + "\u{0}", depth: 0,
+                                        filter: filter.lowercased(), closed: $closed)
+                                } else {
+                                    ForEach(source.items.filter(matches), id: \.self) { item in
+                                        Text(item)
+                                            .font(.system(size: 12.5, design: .monospaced))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .textSelection(.enabled)
+                                            .padding(.vertical, 2)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 320)
+                }
+            }
+        }
+    }
+
+    private func matches(_ item: String) -> Bool {
+        filter.isEmpty || item.lowercased().contains(filter.lowercased())
+    }
+
+    private struct Source { let title: String; let items: [String]; let tree: [TreeNode] }
+
+    /// The summary's paths (one repository), else each repository's.
+    private var sources: [Source] {
+        if let row = shown.row("signing", "expected paths"), let tree = row.tree, !tree.isEmpty {
+            return [Source(title: "", items: row.items ?? [], tree: tree)]
+        }
+        return shown.sections(["repository"]).compactMap { section in
+            guard let row = section.rows.first(where: { $0.label == "expected paths" }),
+                let tree = row.tree, !tree.isEmpty
+            else { return nil }
+            return Source(title: section.title, items: row.items ?? [], tree: tree)
+        }
+    }
+}
+
+/// One level of a path tree; a folder opens and closes on a click.
+struct TreeRows: View {
+    let nodes: [TreeNode]
+    let prefix: String
+    let depth: Int
+    let filter: String
+    @Binding var closed: Set<String>
+
+    var body: some View {
+        ForEach(Array(nodes.enumerated()), id: \.offset) { _, node in
+            let key = prefix + node.name
+            if filter.isEmpty || TreeRows.matches(node, prefix: prefix, filter: filter) {
+                if node.kind == "folder" {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(closed.contains(key) ? 0 : 90))
+                            .frame(width: 10)
+                        Image(systemName: "folder.fill").font(.system(size: 12)).foregroundStyle(.blue.opacity(0.7))
+                        Text(node.name).font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                        Spacer()
+                        Text("\(node.paths)").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, CGFloat(depth) * 16)
+                    .frame(minHeight: 22)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if closed.contains(key) { closed.remove(key) } else { closed.insert(key) }
+                    }
+                    if !closed.contains(key) || !filter.isEmpty {
+                        TreeRows(
+                            nodes: node.children ?? [], prefix: key, depth: depth + 1, filter: filter,
+                            closed: $closed)
+                    }
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Spacer().frame(width: 10)
+                        Image(systemName: node.kind == "file" ? "doc" : "asterisk")
+                            .font(.system(size: 11))
+                            .foregroundStyle(node.kind == "file" ? Color.secondary : Color.orange)
+                        Text(node.name)
+                            .font(.system(size: 12.5, design: .monospaced))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                        if node.kind == "everything" {
+                            badge("everything inside")
+                        } else if node.kind == "pattern" {
+                            badge("pattern")
+                        }
+                    }
+                    .padding(.leading, CGFloat(depth) * 16)
+                    .frame(minHeight: 22)
+                }
+            }
+        }
+    }
+
+    private func badge(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.orange.opacity(0.14)))
+    }
+
+    /// Whether a path under `node` holds the filter (a folder: any of its paths).
+    static func matches(_ node: TreeNode, prefix: String, filter: String) -> Bool {
+        let path = (prefix.split(separator: "\u{0}").last.map(String.init) ?? "") + node.name
+        if node.kind != "folder" { return path.lowercased().contains(filter) }
+        return (node.children ?? []).contains { matches($0, prefix: prefix + node.name, filter: filter) }
+    }
+}
+
+/// Who asks, in a line: the program behind the session.
+struct AskedBy: View {
+    let shown: Shown
+
+    var body: some View {
+        if let caller = shown.row("who", "caller") {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "terminal").foregroundStyle(.secondary)
+                Text("Asked by").font(.system(size: 13)).foregroundStyle(.secondary)
+                Text(caller.value)
+                    .font(.system(size: 12.5))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+}
+
+struct Centre: View {
+    let shown: Shown
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Header(shown: shown)
+                ForEach(shown.sections(["changes"]), id: \.self) {
+                    ChangesCard(shown: shown, section: $0)
+                }
+                Terms(shown: shown)
+                PathsCard(shown: shown)
+                AskedBy(shown: shown)
+                ForEach(shown.sections(["feedback", "renewal"]), id: \.self) { section in
+                    let rows = shown.writs(section)
+                    if !rows.isEmpty {
+                        Card {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(section.title).font(.system(size: 13, weight: .semibold))
+                                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                                    if row.label == nil { Value(row: row) } else { LabelledRow(row: row) }
+                                }
+                            }
+                        }
+                    }
+                }
+                ForEach(shown.sections(["others"]), id: \.self) { section in
+                    let warn = section.rows.contains { $0.tag == "warning" }
+                    Folding(
+                        title: "Other leases from this source",
+                        summary: section.rows.isEmpty
+                            ? "none" : (warn ? "\(section.rows.count) active, one overlaps" : "\(section.rows.count) active, no overlap"),
+                        tint: warn ? .orange : nil, open: warn
+                    ) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
+                                LabelledRow(row: row, width: 240)
+                            }
+                        }
+                    }
+                }
+                Folding(title: "Details", summary: "everything else writ sign shows", open: false) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(shown.sections(["ticket", "who", "lease", "repository"]), id: \.self) { section in
+                            let rows = shown.writs(section)
+                            if !rows.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(section.title).font(.system(size: 12, weight: .bold))
+                                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                                        LabelledRow(row: row)
+                                    }
+                                }
+                            }
+                        }
+                        Button("Copy as text") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(shown.display, forType: .string)
+                        }
+                        .buttonStyle(.link)
+                        .font(.system(size: 12))
+                        .focusable(false)
+                    }
+                }
+            }
+            .padding(20)
+        }
+    }
+}
+
+// MARK: - The window: the agent's words (the right pane)
+
+/// Every row of the agent's, from every section, in the order `writ` wrote them: untrusted,
+/// shown whole, scrolling on its own so text of any length never moves what is signed.
+struct AgentPane: View {
+    let shown: Shown
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("The agent's words").font(.system(size: 13, weight: .bold))
+                HStack(spacing: 6) {
+                    Text("untrusted · never enforced")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.agentTint)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 1)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.agentTint.opacity(0.15)))
+                    Text("scrolls on its own").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, entry in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Caption(text: caption(entry.0, entry.1))
+                            words(entry.1)
+                        }
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 330)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
+    }
+
+    /// (caption, row): the section's name when it isn't the agent's own (a change, a renewal).
+    private var rows: [(String, DocRow)] {
+        shown.doc.sections.flatMap { section in
+            // The agent's own title is the header's, quoted: not repeated here.
+            section.rows.filter { agentTags.contains($0.tag) && !(section.kind == "agent" && $0.label == "title") }
+                .map { row -> (String, DocRow) in
+                    let label = row.label ?? ""
+                    switch row.tag {
+                    case "agent_removed": return ("\(label) · before", row)
+                    case "agent_added": return ("\(label) · after", row)
+                    default: return (label, row)
+                    }
+                }
+        }
+    }
+
+    /// A list of steps says how many: "plan · 9 steps".
+    private func caption(_ label: String, _ row: DocRow) -> String {
+        guard row.tag == "agent", let steps = row.items, !steps.isEmpty else { return label }
+        return "\(label) · \(steps.count) step\(steps.count == 1 ? "" : "s")"
+    }
+
+    @ViewBuilder private func words(_ row: DocRow) -> some View {
+        if row.tag == "agent", let steps = row.items, !steps.isEmpty {
+            // The steps `writ` sent one by one: numbered here, the value never split.
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(index + 1)")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, height: 20)
+                            .background(Circle().fill(Color.secondary.opacity(0.16)))
+                            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                        Text(step)
+                            .font(.system(size: 13))
+                            .lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        } else {
+            plain(row)
+        }
+    }
+
+    @ViewBuilder private func plain(_ row: DocRow) -> some View {
+        let text = Text(row.value)
+            .font(.system(size: 13))
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+        switch row.tag {
+        case "agent_removed":
+            text.strikethrough()
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.removedTint.opacity(0.1)))
+        case "agent_added":
+            text
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.addedTint.opacity(0.12)))
+        default:
+            text
+        }
+    }
+}
+
+// MARK: - The window: the footer
 
 struct Footer: View {
     @ObservedObject var model: Model
@@ -821,7 +1348,8 @@ struct Footer: View {
                 }
             } else {
                 HStack(spacing: 10) {
-                    Label(shown.key, systemImage: "key")
+                    Image(systemName: "touchid").foregroundStyle(.secondary)
+                    Text(model.armed ? "Signs with \(shown.key) · Touch ID" : "Just shown: the buttons wake in a second")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -831,7 +1359,7 @@ struct Footer: View {
                         .focusable(false)
                         .controlSize(.large)
                         .disabled(!model.armed || model.busy)
-                    Button("Sign") { model.sign() }
+                    Button(signLabel) { model.sign() }
                         .focusable(false)
                         .controlSize(.large)
                         .buttonStyle(.borderedProminent)
@@ -840,20 +1368,40 @@ struct Footer: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.vertical, 12)
         .background(.bar)
+    }
+
+    private var signLabel: String {
+        switch shown.kind {
+        case "amendment": return "Sign amendment"
+        case "renewal": return "Sign renewal"
+        default: return "Sign"
+        }
     }
 }
 
 struct Root: View {
     @ObservedObject var model: Model
+    @State private var hovered: String?
 
     var body: some View {
         HStack(spacing: 0) {
-            Sidebar(model: model)
-            Divider()
+            // The rail only when another ticket waits beside the one shown.
+            if model.waiting.count > 1 {
+                Rail(model: model, hovered: $hovered)
+                Divider()
+            }
             if let shown = model.shown {
-                Detail(model: model, shown: shown)
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        Centre(shown: shown)
+                        Divider()
+                        AgentPane(shown: shown)
+                    }
+                    Divider()
+                    Footer(model: model, shown: shown)
+                }
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "checkmark.seal").font(.system(size: 30)).foregroundStyle(.secondary)
@@ -863,7 +1411,19 @@ struct Root: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(minWidth: 780, minHeight: 520)
+        .frame(minWidth: 980, minHeight: 600)
+        .overlayPreferenceValue(BadgeBounds.self) { anchors in
+            GeometryReader { proxy in
+                if let id = hovered, let anchor = anchors[id],
+                    let entry = model.waiting.first(where: { $0.id == id })
+                {
+                    let badge = proxy[anchor]
+                    HoverCard(entry: entry)
+                        .offset(x: badge.maxX + 10, y: badge.minY)
+                }
+            }
+            .allowsHitTesting(false)
+        }
     }
 }
 
@@ -879,7 +1439,7 @@ final class Popup: NSObject, NSWindowDelegate {
     init(model: Model) {
         self.model = model
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false)
         super.init()

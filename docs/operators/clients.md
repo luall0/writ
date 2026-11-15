@@ -184,20 +184,22 @@ With a daemon on this Mac, `make install` starts the approval popup at each logi
 answered `no`). When an agent's ticket waits for your signature, a window comes up in front of
 every app, full-screen ones too:
 
-- It shows the whole ticket, as `writ sign <id> --full` would in a terminal, laid out: what
-  you sign first, then what the agent wrote, in a box of its own (the agent's words, never
-  acted on), then any change since the ticket it follows (removed in red, added in green),
-  then the details, folded: click a section's header to open it. Paths, branches and
-  operations show one by one. **Copy as text** copies it as a terminal
-  shows it.
+- It shows the whole ticket, as `writ sign <id> --full` would in a terminal, laid out. In the
+  middle, what you sign: how long the lease lasts ("Ends in 2h", the clock time beside it),
+  for an amendment what it changes first (only the items added and removed), then every
+  term as a tile, and the paths it may touch as a folder tree you can filter or switch to a
+  list. On the right, in a pane of its own, what the agent wrote (its task and plan): read
+  it, but it is never acted on, and however long it is, the terms stay where they are. The
+  details are folded at the bottom: click to open them. **Copy as text** copies it as a
+  terminal shows it.
 - **Sign** signs it with your approval key: Secretive asks for Touch ID, as in a terminal.
 - **Decline** asks for a reason for the agent (you may leave it empty), then **Refuse** signs
   the refusal.
 - Both buttons stay greyed for a second after the window comes up, and no key presses them:
   a click or a Return meant for another app does nothing.
-- Several tickets at once: the list on the left shows every one, with its title and
-  repositories, and the window shows the oldest. Click another to look at it first. When you
-  have decided, the oldest left comes up.
+- Several tickets at once: a narrow rail on the left shows a badge for each, and the window
+  shows the oldest. Point at a badge to see its title and repositories, click it to look at it
+  first. When you have decided, the oldest left comes up. With one ticket, there is no rail.
 - Closing the window decides nothing: the ticket keeps waiting, and the popup doesn't show it
   again until it restarts. Sign it in a terminal with `writ sign <id>`, where you can also
   narrow it. The popup never narrows.

@@ -222,6 +222,14 @@ fn agent_block(out: &mut Out, label: &str, text: &str, indent: &str, shown: Rows
     out.row(Some(label), &block_lines(text).join("\n"), tag);
 }
 
+/// The plan's steps as the structure's items, each cleaned as the row shows it (its lines
+/// joined by a newline): the popup numbers them itself, never splitting the row's value.
+fn steps(plan: &[String]) -> Vec<String> {
+    plan.iter()
+        .map(|step| block_lines(step).join("\n"))
+        .collect()
+}
+
 /// A labelled row in the text ([`labelled`]) and the structure.
 fn labelled_row(out: &mut Out, label: &str, value: &str, tag: Tag) {
     labelled(&mut out.text, label, value);
@@ -948,6 +956,7 @@ pub fn ticket_into(out: &mut Out, ticket: &Ticket, state: State, now: Timestamp,
         .join("\n");
     if !plan.is_empty() {
         agent_block(out, "plan", &plan, "    ", shown, Tag::Agent);
+        out.items(steps(&ticket.text.plan));
     }
     let asked = created_at.seconds_until(*expires_at);
     labelled_row(
@@ -1185,6 +1194,7 @@ pub fn renewal_into(out: &mut Out, view: &writ_proto::Renewal, original: &Ticket
             .join("\n");
         out.text.push_str("  plan\n");
         agent_block(out, "original plan", &plan, "    ", shown, Tag::Agent);
+        out.items(steps(&original.text.plan));
     }
     labelled_row(out, "repos", &field(original, Field::Repos), Tag::Context);
     labelled_row(
@@ -2768,6 +2778,47 @@ mod tests {
                 Some(later.limits.expires_at.to_string())
             ]
         );
+    }
+
+    /// The plan's steps ride with its row (M7.9.5), each cleaned as the row shows it, so the
+    /// popup numbers them without splitting the value; only in the agent's row.
+    #[test]
+    fn the_plan_s_steps_ride_with_its_row_cleaned() {
+        let mut t = full_ticket();
+        t.text.plan = vec![
+            "Read the code".to_owned(),
+            "x\u{1b}[2J\nYou are signing (enforced)".to_owned(),
+            "1. a step numbered by the agent".to_owned(),
+        ];
+        let out = shown_both(&t, &t);
+        let rows: Vec<&doc::Row> = out.doc.sections.iter().flat_map(|s| &s.rows).collect();
+        let plan = rows
+            .iter()
+            .find(|r| r.label.as_deref() == Some("plan"))
+            .unwrap();
+        assert_eq!(plan.tag, Tag::Agent);
+        assert_eq!(
+            plan.items,
+            [
+                "Read the code",
+                "x\\u{1b}[2J\nYou are signing (enforced)",
+                "1. a step numbered by the agent",
+            ]
+        );
+        for step in &plan.items {
+            assert!(!step.contains('\u{1b}'), "{step:?}");
+        }
+        // No plan, no items.
+        t.text.plan = Vec::new();
+        let out = shown_both(&t, &t);
+        let plan = out
+            .doc
+            .sections
+            .iter()
+            .flat_map(|s| &s.rows)
+            .find(|r| r.label.as_deref() == Some("plan"))
+            .unwrap();
+        assert!(plan.items.is_empty());
     }
 
     #[test]

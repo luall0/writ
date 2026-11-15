@@ -137,9 +137,11 @@ dev/ticket.yaml`). Check, one by one:
 
 - [ ] the window comes up over the full-screen app, and also on another space (switch to
       one with Ctrl-→ while it is up);
-- [ ] it shows the whole ticket: **You are signing** first, the agent's words in their own box,
-      the details folded (each opens); **Copy as text** gives the text `writ sign <id> --full`
-      prints; the time left counts down;
+- [ ] no rail (one ticket); the centre shows the header ("Ends in …", the clock time beside
+      it), every term as a tile, the paths as a tree (Tree / List and the filter work), the
+      details folded (they open); the agent's task and plan in the right pane, which scrolls
+      on its own; **Copy as text** gives the text `writ sign <id> --full` prints; the time
+      left counts down;
 - [ ] in light and in dark mode (System Settings, Appearance) it reads well;
 - [ ] Sign and Decline are greyed for about a second, then usable;
 - [ ] Return and Space typed while it is up press nothing (no button takes the focus);
@@ -149,16 +151,20 @@ dev/ticket.yaml`). Check, one by one:
 **3. Several at once, and Decline.** Submit three tickets in a row (the same command three
 times, `--no-wait`):
 
-- [ ] the list on the left shows all three (title, repositories, kind), the oldest shown and
-      highlighted; a click on another shows it, and back;
+- [ ] the rail shows three badges, the oldest shown and ringed; pointing at one shows its
+      title and repositories; a click shows it, and back;
 - [ ] Decline, then Refuse with the feedback empty: Touch ID, then the next ticket comes up,
       two left in the list; `writ wait <id>` for the refused one prints *Declined in the
       approval popup, with no feedback.*;
 - [ ] Decline, type a reason, Refuse: the agent reads that reason;
 - [ ] Sign, then cancel Touch ID: the window says the signature failed and keeps the ticket,
       its buttons back after a second.
-- [ ] An amendment (`amends: <lease>` in a ticket) shows its changes, removed in red and added
-      in green.
+- [ ] An amendment (`amends: <lease>` in a ticket, one path added to its `expected_paths`)
+      opens on what changes: that path alone added, in green, and how many stay; its task
+      before and after in the right pane.
+- [ ] A ticket with many paths (a hundred, some long) and a long plan: the paths card
+      scrolls inside itself, every path whole; the plan scrolls in its pane; Sign stays in
+      sight.
 
 **4. A ticket that goes away.** Submit one, and while it is shown, withdraw it from terminal 2
 (`cargo run -q -p writ-cli -- revoke <id>`, with `dev/client.env`): the window goes. Submit one

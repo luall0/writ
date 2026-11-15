@@ -287,7 +287,9 @@ user at its start: [decision log](decisions.md), 2026-11-15.
   iterated on until they validate it. Then built to it, the panel's rules kept (above every
   space and full-screen app, no default button, no button that takes the focus, both held a
   second, the app styling by tag and never by content). **Validated (2026-11-15): three
-  panes.** On the left the waiting tickets. In the centre what is signed: a header (the kind,
+  panes**, and a rail of the waiting tickets on the left only when more than one waits
+  (badges by kind, a card with the title and repositories on hover; chosen by the user over
+  tabs and a pager, to give the panes the width). In the centre what is signed: a header (the kind,
   the lease it touches, the title quoted as the agent's, the time left relative with the
   clock time beside it), every enforced term as a tile (none folded away), the expected
   paths as a file tree, who asks in one line, then the other leases and the details,
@@ -331,7 +333,8 @@ Steps (each one commit, `make ci` green, its docs in the same commit):
    a tree (folders, files, patterns), built from the paths without changing one. *Done.* Tests: the display's guarantee tests extended (every leaf
    still changes what is shown; lists that differ only in order or repetition; an item
    removed and another added); the end-to-end scenario's amendment.
-4. **The popup built to the validated design**; the manual check updated.
+4. **The popup built to the validated design**; the manual check updated. *Built; the user's
+   manual check at closing.*
 5. **The prompt layer** on `inquire`, every guided flow moved onto it; the pty driver of the
    end-to-end pipeline sending keys; the scenarios that answer prompts updated. Tests: each
    widget's plain fallback, hostile values cleaned before they are shown, `NO_COLOR`.
