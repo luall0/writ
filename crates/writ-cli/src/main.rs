@@ -38,6 +38,7 @@ mod session;
 mod settings;
 mod skill;
 mod timings;
+mod unsigned;
 mod wiring;
 mod workspace;
 mod wrap;
@@ -224,7 +225,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         Commands::Report { id, full, url } => {
             approver::report(&paths, &url.get(&paths)?, id, *full).await
         }
-        Commands::Git { args } => wrap::git(&paths, args),
+        Commands::Git { args } => wrap::git(&paths, args).await,
         Commands::Exec { dir, command } => wrap::exec(&paths, dir.as_deref(), command),
         // Handled by `main` before any runtime starts.
         Commands::Run { .. } => anyhow::bail!("writ run runs on its own"),

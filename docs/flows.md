@@ -161,7 +161,8 @@ grant is: decided under the lock (`lease::activate_unsigned`), the certificate s
 it, decided again against the policy in force, then recorded (`Store::insert_unsigned`) with
 its `grant` line. `writ request`'s wait then finds it active. It takes no slot of
 `max_active_per_source`, is never amended or renewed, and every fetch under it is denied once
-its templates stop granting that (`config`).
+its templates stop granting that (`config`). `writ git fetch` and `pull` with no lease ask for
+one themselves ([clients](architecture/clients.md#fetching-with-no-lease)).
 
 ## 5. Revoke / expire
 

@@ -74,6 +74,21 @@ pub fn together(policies: &[RepoPolicy]) -> String {
     use std::collections::BTreeSet;
     use writ_core::names::KeyId;
 
+    // A template that grants with no signature never shares a ticket with a signed one: it
+    // covers a fetch with no lease (`writ git fetch`), apart.
+    let signed: Vec<RepoPolicy> = policies
+        .iter()
+        .map(|p| RepoPolicy {
+            templates: p
+                .templates
+                .iter()
+                .filter(|t| !t.unsigned_fetch)
+                .cloned()
+                .collect(),
+            ..p.clone()
+        })
+        .collect();
+    let policies = signed.as_slice();
     let mut out = String::from("Together:\n");
     let names = |p: &RepoPolicy, keep: &dyn Fn(&TemplateView) -> bool| -> String {
         p.templates
@@ -229,6 +244,15 @@ fn template_rows(template: &TemplateView) -> String {
     let row = |out: &mut String, name: &str, value: String| {
         out.push_str(&format!("  {name:<20}{value}\n"));
     };
+    if template.unsigned_fetch {
+        row(
+            &mut out,
+            "signature",
+            "none: granted when submitted, fetch only, when a ticket names it alone (`writ git \
+             fetch` and `writ git pull` with no lease ask for it themselves)"
+                .to_owned(),
+        );
+    }
     let count = |n: u32| n.to_string();
     row(&mut out, "operations", display::list(&template.operations));
     row(&mut out, "branches", display::list(&template.branches));
@@ -340,6 +364,7 @@ mod tests {
             require_session: true,
             max_renewals: Some(2),
             signing_key: Some("agent-01".parse().unwrap()),
+            unsigned_fetch: false,
         }
     }
 
@@ -416,6 +441,7 @@ mod tests {
     fn keyed(name: &str, key: Option<&str>, ttl_hours: u64, rate: u32) -> TemplateView {
         TemplateView {
             signing_key: key.map(|k| k.parse().unwrap()),
+            unsigned_fetch: false,
             max_ttl: Duration::from_seconds(ttl_hours * 3600),
             max_ops_per_minute: rate,
             ..template(name)

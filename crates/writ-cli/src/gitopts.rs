@@ -25,6 +25,8 @@ pub enum Parsed {
         /// The options that say which repository it is, as given and in order (`-C`,
         /// `--git-dir`, `--work-tree`, `--bare`): what `git rev-parse` is run with.
         locate: Vec<OsString>,
+        /// The command git runs (`fetch`, `commit`…), when there is one and it is UTF-8.
+        command: Option<String>,
     },
     /// An option that prints and exits (`--version`, `--help`, `--exec-path`,
     /// `--html-path`…): no repository involved.
@@ -142,7 +144,11 @@ pub fn parse(cwd: &Path, args: &[OsString]) -> Result<Parsed, String> {
             crate::display::clean(option)
         ));
     }
-    Ok(Parsed::Command { dir, locate })
+    Ok(Parsed::Command {
+        dir,
+        locate,
+        command: rest.first().and_then(|c| c.to_str()).map(str::to_owned),
+    })
 }
 
 /// The repository's shared git directory, as git resolves it with `locate` (the options
@@ -175,7 +181,7 @@ mod tests {
 
     fn command(cwd: &str, args: &[&str]) -> (PathBuf, Vec<String>) {
         match parse(Path::new(cwd), &os(args)).unwrap() {
-            Parsed::Command { dir, locate } => (
+            Parsed::Command { dir, locate, .. } => (
                 dir,
                 locate
                     .iter()

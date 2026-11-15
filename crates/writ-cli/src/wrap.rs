@@ -71,21 +71,36 @@ fn run(paths: &Paths, wired: &Wiring, mut command: Command) -> anyhow::Result<Ex
 }
 
 /// `writ git <args>`.
-pub fn git(paths: &Paths, args: &[OsString]) -> anyhow::Result<Exit> {
+pub async fn git(paths: &Paths, args: &[OsString]) -> anyhow::Result<Exit> {
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
     // PATH: the agent host's own git, as the agent would run it.
     let mut command = Command::new("git");
     command.args(args);
-    let (dir, locate) = match gitopts::parse(&cwd, args).map_err(|e| anyhow::anyhow!(e))? {
-        Parsed::Command { dir, locate } => (dir, locate),
-        // `--version`, `--help`…: no repository, nothing signed or pushed.
-        Parsed::Informational => {
-            let error = command.exec();
-            bail!("cannot run git: {error}");
-        }
-    };
+    let (dir, locate, git_command) =
+        match gitopts::parse(&cwd, args).map_err(|e| anyhow::anyhow!(e))? {
+            Parsed::Command {
+                dir,
+                locate,
+                command,
+            } => (dir, locate, command),
+            // `--version`, `--help`…: no repository, nothing signed or pushed.
+            Parsed::Informational => {
+                let error = command.exec();
+                bail!("cannot run git: {error}");
+            }
+        };
     let common = gitopts::common_dir(&locate).map_err(|why| not_wired(&dir, Some(&why)))?;
     let wired = wiring::load_common(&common)?.ok_or_else(|| not_wired(&dir, None))?;
+    // A fetch with no lease (M7.9.7): under one granted with no signature, when the policy
+    // has a template for it; git's exit is the command's.
+    if crate::unsigned::applies(&paths.home, &wired, git_command.as_deref())? {
+        // PATH: the agent host's own git, as the agent would run it.
+        let mut fetching = Command::new("git");
+        fetching.args(args);
+        if let Some(code) = crate::unsigned::fetch(paths, &wired, fetching).await? {
+            std::process::exit(code);
+        }
+    }
     run(paths, &wired, command)
 }
 

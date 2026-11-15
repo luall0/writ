@@ -85,5 +85,6 @@ fn template_view(name: &TemplateName, template: &Template) -> TemplateView {
         require_session: template.require_session,
         max_renewals: template.max_renewals,
         signing_key: template.signing_key.clone(),
+        unsigned_fetch: template.unsigned_fetch,
     }
 }

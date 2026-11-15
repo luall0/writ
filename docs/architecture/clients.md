@@ -389,6 +389,34 @@ signs in another format, with no change to its config. Settings without `writ.se
 wiring from before M6) ask in git's way, and the daemon refuses the other format
 (`signature_format`).
 
+### Fetching with no lease
+
+Before it plans, an agent fetches: to see whether upstream moved, or to start from a clean
+tree (M7.9.7). `writ git fetch` and `writ git pull` with no lease named or running
+(`WRIT_SESSION` unset, the repo pinned to no lease, `current` pointing at no lease still
+running) ask for one themselves, when the repository's policy names an `unsigned_fetch`
+template (`writ policy`'s reply says which, `unsigned_fetch`; `writ policy` shows it as
+`signature: none`):
+
+1. a throwaway key, and a fetch-only ticket `writ` writes (`template: <it>`, `operations:
+   [fetch]`, its title and task fixed, the template's `max_ttl`; bound to the session under
+   `writ run`, as `writ request` binds one), submitted and granted with no signature
+   ([lease model](../lease-model.md#granted-with-no-signature-m797));
+2. its session written (`sessions/<lease>/`: the key, the certificate, `lease.json`), never
+   pointed at by `current`, and git run under it (the wrapper's settings and SSH command for
+   that session; in a whole-repo clone, the SSH command over the clone's), one line on
+   stderr naming the lease and its template;
+3. once git returns, whatever its exit, the lease closed with a fixed summary (no report
+   printed, no run in the timings file) and its session removed; a close that fails says so,
+   and the lease ends by itself at its `max_ttl`. The command exits with git's code.
+
+No such template, or the daemon refusing the ticket: git runs as before (the daemon refuses
+a fetch with no lease), or the refusal is printed with its reasons (exit 3). A lease named
+but ended, or one without `fetch`, is never replaced (`writ git` never moves a running agent
+to another identity). A `pull` that would make a merge commit fails at its signature: the
+lease has no `commit_sign` (the skill says `--ff-only`). A convenience: the daemon decides
+the grant, as for any ticket.
+
 ### What the agent reads before it asks
 
 Before it writes a ticket, the agent asks the daemon what a ticket for its repos may ask:
