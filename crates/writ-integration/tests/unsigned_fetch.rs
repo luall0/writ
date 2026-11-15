@@ -33,9 +33,8 @@ fn policy() -> String {
         .replacen("templates: [spike]", "templates: [spike, look]", 1)
         .replacen(
             "templates:\n  spike:",
-            "templates:\n  look:\n    unsigned_fetch: true\n    operations: [fetch]\n    \
-             max_ttl: 15m\n    max_signatures: 0\n    max_pushes: 0\n    max_ops_per_minute: 20\n    \
-             max_push_size: 0\n  spike:",
+            "templates:\n  look:\n    unsigned_fetch: true\n    max_ttl: 15m\n    \
+             max_ops_per_minute: 20\n  spike:",
             1,
         )
 }
@@ -184,12 +183,8 @@ repos:
 templates:
   look:
     unsigned_fetch: true
-    operations: [fetch]
     max_ttl: 15m
-    max_signatures: 0
-    max_pushes: 0
     max_ops_per_minute: 20
-    max_push_size: 0
   feature:
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]

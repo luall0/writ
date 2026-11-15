@@ -35,9 +35,8 @@ fn unsigned_text() -> String {
         )
         .replacen(
             "templates:\n  feature-branch:",
-            "templates:\n  fetch_unsigned:\n    unsigned_fetch: true\n    operations: [fetch]\n    \
-             max_ttl: 1h\n    max_signatures: 0\n    max_pushes: 0\n    max_ops_per_minute: 20\n    \
-             max_push_size: 0\n  feature-branch:",
+            "templates:\n  fetch_unsigned:\n    unsigned_fetch: true\n    max_ttl: 1h\n    \
+             max_ops_per_minute: 20\n  feature-branch:",
             1,
         )
 }
@@ -128,8 +127,12 @@ fn an_unsigned_lease_ends_when_its_template_stops_granting_without_a_signature()
     let fetch = FetchRequest {
         repo: repo("omega-code"),
     };
-    // unsigned_fetch turned off (the template otherwise the same): every fetch denied.
-    let off = unsigned_text().replacen("    unsigned_fetch: true\n", "", 1);
+    // unsigned_fetch turned off (the same fetch-only template, signed): every fetch denied.
+    let off = unsigned_text().replacen(
+        "    unsigned_fetch: true\n",
+        "    operations: [fetch]\n    max_signatures: 0\n    max_pushes: 0\n    max_push_size: 0\n",
+        1,
+    );
     let world = World {
         config: PolicyConfig::from_yaml(&off).unwrap(),
         ..World::new(lease.clone())

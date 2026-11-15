@@ -356,7 +356,7 @@ fn the_policy_template_parses_as_is_and_with_every_default_taken_in() {
             || line.contains("github_token:")
             || line.contains("proxy_password:")
             // An example template, with no repo naming it.
-            || line.contains("fetch_unsigned:")
+            || line.contains("prefetch:")
             || line.starts_with("  #   ")
             // The proxies and recipients sections are examples: none by default.
             || line.contains("proxies:")

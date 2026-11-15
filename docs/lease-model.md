@@ -425,8 +425,10 @@ narrowing away an operation never revives a used-up lease.
 
 ### Granted with no signature (M7.9.7)
 
-A template with `unsigned_fetch: true` allows `operations: [fetch]` and nothing else, with a
-`max_ttl` of at most 1 h; a repo names at most one (all checked when the policy is read). A
+A template with `unsigned_fetch: true` fetches only: it writes no `operations` (fetch,
+implied) and none of the counts (`max_signatures`, `max_pushes`, `max_push_size`: refused
+there, one way to write it), and its `max_ttl` is at most 1 h; a repo names at most one (all
+checked when the policy is read). A
 ticket whose every repository **names** such a template in its block (`template: <name>`) is
 granted when it is submitted: no pending state, no approver, its certificate issued as any
 lease's (`lease::activate_unsigned`, `GrantedBy::Policy`). The signed policy change that made

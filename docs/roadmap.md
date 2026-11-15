@@ -291,9 +291,10 @@ fetch-only lease needs no approver. Settled with the user
 ([decision log](decisions.md), 2026-11-15):
 
 - **A template can grant a fetch without a signature:** `unsigned_fetch: true` (default
-  `false`). Such a template allows `operations: [fetch]` exactly, a `max_ttl` of at
-  most 1 h, and no renewal; a policy that pairs it with `commit_sign` or `push`, or a longer
-  `max_ttl`, is refused when it is read, naming the template and the key. It is a template like
+  `false`). Such a template fetches only: it writes only `max_ttl` (at most 1 h) and
+  `max_ops_per_minute` (and `require_session`), its operation implied and the counts not
+  taken; `operations`, `max_signatures`, `max_pushes` or `max_push_size` written there, or a
+  longer `max_ttl`, is refused when it is read, naming the template and the key; no renewal. It is a template like
   the others (`writ admin template`, a signed admin change), its other terms (the rate,
   `require_session`) holding as in any one.
 - **Off by default, per repository:** a repository allows it by naming such a template in its
@@ -356,8 +357,8 @@ Plan, each step leaving Writ working (`make ci`):
    before its ticket.
 
 Acceptance:
-- [ ] A policy with an `unsigned_fetch` template that allows `commit_sign` or `push`, whose
-      `max_ttl` is above 1 h, or that a repository names beside another such template, is
+- [ ] A policy with an `unsigned_fetch` template that writes `operations` (even `[fetch]`) or
+      a count, whose `max_ttl` is above 1 h, or that a repository names beside another such template, is
       refused with its error naming the template and the key; at exactly 1 h it is read.
 - [ ] A fetch-only ticket under an unsigned template is granted when submitted, with no
       approver; it fetches; a signature, a push, an amendment and a renewal under it are

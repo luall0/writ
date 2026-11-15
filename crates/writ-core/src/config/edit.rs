@@ -197,7 +197,7 @@ const TEMPLATE_FIELDS: &[Field] = &[
         field(
             "unsigned_fetch",
             Flag,
-            "whether a lease is granted with no signature: operations fetch only, max_ttl 1h at most",
+            "whether a lease is granted with no signature: fetch only (no operations or counts written), max_ttl 1h at most",
         ),
         "false",
     ),
@@ -599,9 +599,15 @@ pub fn add(
 /// The fields `edits` don't name that `section` requires: what an `add` with no terminal
 /// refuses for, naming them.
 pub fn missing(section: Section, edits: &[FieldEdit]) -> Vec<&'static str> {
+    // An unsigned_fetch template writes none of these (M7.9.7).
+    let unsigned = section == Section::Templates
+        && edits.iter().any(|e| {
+            e.field == "unsigned_fetch" && matches!(&e.change, Change::Set(v) if v == "true")
+        });
     fields(section)
         .iter()
         .filter(|f| f.required && !edits.iter().any(|e| e.field == f.name))
+        .filter(|f| !(unsigned && crate::config::UNSIGNED_FETCH_IMPLIED.contains(&f.name)))
         .map(|f| f.name)
         .collect()
 }

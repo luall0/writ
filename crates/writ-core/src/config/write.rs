@@ -225,15 +225,18 @@ fn write_repo(out: &mut String, repo: &RepoEntry) {
 }
 
 fn write_template(out: &mut String, t: &Template) {
-    if t.unsigned_fetch {
+    // Fetch only: its operation implied, no count written (M7.9.7).
+    let unsigned = t.unsigned_fetch;
+    if unsigned {
         field(out, "unsigned_fetch", "true");
+    } else {
+        let operations: Vec<String> = t.operations.iter().map(|o| o.to_string()).collect();
+        field(
+            out,
+            "operations",
+            &list(operations.iter().map(String::as_str)),
+        );
     }
-    let operations: Vec<String> = t.operations.iter().map(|o| o.to_string()).collect();
-    field(
-        out,
-        "operations",
-        &list(operations.iter().map(String::as_str)),
-    );
     if !t.branches.is_empty() {
         field(
             out,
@@ -258,10 +261,14 @@ fn write_template(out: &mut String, t: &Template) {
         field(out, "signing_key", &scalar(key.as_str()));
     }
     field(out, "max_ttl", &scalar(&t.max_ttl.to_string()));
-    field(out, "max_signatures", &t.max_signatures.to_string());
-    field(out, "max_pushes", &t.max_pushes.to_string());
+    if !unsigned {
+        field(out, "max_signatures", &t.max_signatures.to_string());
+        field(out, "max_pushes", &t.max_pushes.to_string());
+    }
     field(out, "max_ops_per_minute", &t.max_ops_per_minute.to_string());
-    field(out, "max_push_size", &size(t.max_push_size));
+    if !unsigned {
+        field(out, "max_push_size", &size(t.max_push_size));
+    }
     if t.paths_check != PathsCheck::Warn {
         field(out, "paths_check", t.paths_check.as_str());
     }

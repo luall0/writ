@@ -76,13 +76,9 @@ templates:
     # require_session: false       # local mode: a ticket must be bound to a session (`writ run`)
     # max_renewals: null           # null: no limit on a lease's renewals (each one is signed)
     # committer_name: null         # e.g. "Writ agent": the name every commit must carry; null: not checked
-  # fetch_unsigned:                # a repo naming it lets agents fetch with no signature (writ git fetch)
-  #   unsigned_fetch: true         # granted with no approver: operations [fetch] only, max_ttl 1h at most
-  #   operations: [fetch]
-  #   max_ttl: 15m
-  #   max_signatures: 0
-  #   max_pushes: 0
+  # prefetch:                      # name it in a repo's templates to turn it on there (off by default)
+  #   unsigned_fetch: true         # agents fetch before their ticket, with no signature (writ git fetch)
+  #   max_ttl: 15m                 # 1h at most with unsigned_fetch
   #   max_ops_per_minute: 20
-  #   max_push_size: 1MB
 
 # unseal: approver                 # approver | auto: auto opens the daemon with no one (M7.6; writ admin auto-unseal)

@@ -921,12 +921,8 @@ repos:
 templates:
   unsigned:
     unsigned_fetch: true
-    operations: [fetch]
     max_ttl: 1h
-    max_signatures: 0
-    max_pushes: 0
     max_ops_per_minute: 5
-    max_push_size: 0
   "12":
     operations: [fetch]
     max_ttl: 1d
@@ -978,7 +974,10 @@ fn the_canonical_layout_reads_back_as_the_same_policy() {
         written.contains("\n  \"true\":\n    upstream: \"https://bot@github.com/user/true.git\"\n")
     );
     assert!(written.contains("    templates: [\"12\", quick, unsigned]\n"));
-    assert!(written.contains("\n  unsigned:\n    unsigned_fetch: true\n    operations: [fetch]\n"));
+    // An unsigned_fetch template's implied fields left out.
+    assert!(written.contains(
+        "\n  unsigned:\n    unsigned_fetch: true\n    max_ttl: 1h\n    max_ops_per_minute: 5\n"
+    ));
     assert!(written.contains("    max_ttl: \"1d\"\n"));
     assert!(written.contains("    max_ttl: 90m\n"));
     assert!(written.contains("    max_push_size: 50MiB\n"));
@@ -1013,8 +1012,7 @@ fn with_unsigned(fields: &str) -> String {
         )
 }
 
-const UNSIGNED: &str = "    operations: [fetch]\n    max_ttl: 1h\n    max_signatures: 0\n    \
-                        max_pushes: 0\n    max_ops_per_minute: 20\n    max_push_size: 0\n";
+const UNSIGNED: &str = "    max_ttl: 1h\n    max_ops_per_minute: 20\n";
 
 #[test]
 fn an_unsigned_fetch_template_fetches_only_for_an_hour_at_most_once_per_repo() {
@@ -1023,31 +1021,64 @@ fn an_unsigned_fetch_template_fetches_only_for_an_hour_at_most_once_per_repo() {
     let name = "fetch_unsigned".parse().unwrap();
     let template = config.template(&name).unwrap();
     assert!(template.unsigned_fetch);
+    assert_eq!(
+        template.operations,
+        std::collections::BTreeSet::from([Operation::Fetch])
+    );
+    assert_eq!(
+        (
+            template.max_signatures,
+            template.max_pushes,
+            template.max_push_size.bytes()
+        ),
+        (0, 0, 0)
+    );
     assert!(config.allows(&repo("omega-code"), &name));
+    // Any other template still writes them: one left out is missing.
+    assert_error(
+        &error_of(&POLICY.replacen("    max_pushes: 30\n", "", 1)),
+        "templates.feature-branch: missing field `max_pushes`",
+    );
     // Off by default: no template of the test policy grants without a signature.
     let plain = PolicyConfig::from_yaml(POLICY).unwrap();
     assert!(plain.templates().values().all(|t| !t.unsigned_fetch));
-    // Past the bound by a second, and every operation beside fetch, or none of it.
+    // Past the bound by a second; any field it implies written, even as fetch implies it
+    // (one way to write it), each named.
+    let implied = |field: &str| {
+        format!(
+            "templates.fetch_unsigned.{field}: not written with unsigned_fetch: true (fetch \
+             only: its operation is implied, and a fetch uses no count)"
+        )
+    };
     for (fields, expected) in [
         (
             UNSIGNED.replacen("max_ttl: 1h", "max_ttl: 3601s", 1),
             "templates.fetch_unsigned.max_ttl: 3601s: an unsigned_fetch template's leases last \
-             at most 1h",
+             at most 1h"
+                .to_owned(),
         ),
         (
-            UNSIGNED.replacen("[fetch]", "[fetch, push]", 1),
-            "templates.fetch_unsigned.operations: an unsigned_fetch template allows fetch only",
+            format!("{UNSIGNED}    operations: [fetch, push]\n"),
+            implied("operations"),
         ),
         (
-            UNSIGNED.replacen("[fetch]", "[fetch, commit_sign]", 1),
-            "templates.fetch_unsigned.operations: an unsigned_fetch template allows fetch only",
+            format!("{UNSIGNED}    operations: [fetch]\n"),
+            implied("operations"),
         ),
         (
-            UNSIGNED.replacen("[fetch]", "[push]", 1),
-            "templates.fetch_unsigned.operations: an unsigned_fetch template allows fetch only",
+            format!("{UNSIGNED}    max_signatures: 0\n"),
+            implied("max_signatures"),
+        ),
+        (
+            format!("{UNSIGNED}    max_pushes: 1\n"),
+            implied("max_pushes"),
+        ),
+        (
+            format!("{UNSIGNED}    max_push_size: 0\n"),
+            implied("max_push_size"),
         ),
     ] {
-        assert_error(&error_of(&with_unsigned(&fields)), expected);
+        assert_error(&error_of(&with_unsigned(&fields)), &expected);
     }
     // A second one named by the same repo: refused, naming both; named by another repo, read.
     let two = with_unsigned(UNSIGNED)
@@ -1346,7 +1377,7 @@ fn a_set_the_policy_refuses_or_a_field_that_cant_change_is_refused_with_its_reas
             Section::Templates,
             "feature-branch",
             &["unsigned_fetch=true"][..],
-            "templates.feature-branch.operations: an unsigned_fetch template allows fetch only",
+            "templates.feature-branch.operations: not written with unsigned_fetch: true",
         ),
         (
             Section::Repos,

@@ -386,6 +386,8 @@ fn the_daily_operations_page_runs_as_written() {
             "",
             "",
             "",
+            // unsigned fetch (M7.9.7): Enter keeps no.
+            "",
             "y",
             "",
         ],
@@ -712,7 +714,8 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
         (
             "template",
             "guided-yes",
-            vec!["", "", "", "", "8", "", "", ""],
+            // unsigned_fetch first (M7.9.7), Enter keeping false.
+            vec!["", "", "", "", "", "8", "", "", ""],
             "max_ops_per_minute=8".to_owned(),
         ),
         ("key", "guided-signing", vec![hash], format!("hash={hash}")),
@@ -945,6 +948,8 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
             "managed ",
             "",
             "",
+            "",
+            // unsigned fetch (M7.9.7): Enter keeps no.
             "",
             "y",
             "",

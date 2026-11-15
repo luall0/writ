@@ -249,6 +249,13 @@ fn relevant(
             }
         }
         Section::Templates => {
+            // Fetch only (M7.9.7): its time, its rate and its session asked, nothing else.
+            if value("unsigned_fetch") == "true" {
+                return matches!(
+                    name,
+                    "unsigned_fetch" | "max_ttl" | "max_ops_per_minute" | "require_session"
+                );
+            }
             let signs = has("operations", "commit_sign");
             let pushes = has("operations", "push");
             match name {
@@ -1240,17 +1247,13 @@ pub async fn add(
 }
 
 /// The template a repo's `unsigned_fetch` yes makes when the policy has none.
-const UNSIGNED_FETCH_TEMPLATE: &str = "fetch_unsigned";
+const UNSIGNED_FETCH_TEMPLATE: &str = "prefetch";
 
 /// The fields of the template [`asked_unsigned_fetch`] makes: fetch only, 15 minutes.
-const UNSIGNED_FETCH_FIELDS: [&str; 7] = [
+const UNSIGNED_FETCH_FIELDS: [&str; 3] = [
     "unsigned_fetch=true",
-    "operations=fetch",
     "max_ttl=15m",
-    "max_signatures=0",
-    "max_pushes=0",
     "max_ops_per_minute=20",
-    "max_push_size=0",
 ];
 
 /// The templates a repo names once `edits` are applied to a new one.
@@ -1662,10 +1665,10 @@ mod tests {
             ["b", "c"]
         );
         assert!(named_templates(&edits(&["upstream=x"])).is_empty());
-        // None in the policy: made as fetch_unsigned, read back as unsigned fetch only.
+        // None in the policy: made as prefetch, read back as unsigned fetch only.
         let plain = policy("", "feature");
         let (name, fields) = unsigned_fetch_template(&plain).unwrap();
-        assert_eq!(name, "fetch_unsigned");
+        assert_eq!(name, "prefetch");
         let fields = fields.unwrap();
         let made = edit::add(&plain, Section::Templates, &name, &fields, MIN_TTL).unwrap();
         let template = made.template(&name.parse().unwrap()).unwrap();
@@ -1680,20 +1683,15 @@ mod tests {
         );
         // The name taken by another template: the next free one.
         let taken = policy(
-            "  fetch_unsigned:\n    operations: [fetch]\n    max_ttl: 1h\n    \
+            "  prefetch:\n    operations: [fetch]\n    max_ttl: 1h\n    \
              max_signatures: 0\n    max_pushes: 0\n    max_ops_per_minute: 1\n    \
              max_push_size: 0\n",
             "feature",
         );
-        assert_eq!(
-            unsigned_fetch_template(&taken).unwrap().0,
-            "fetch_unsigned_2"
-        );
+        assert_eq!(unsigned_fetch_template(&taken).unwrap().0, "prefetch_2");
         // One in the policy: named, nothing made.
         let has = policy(
-            "  open:\n    unsigned_fetch: true\n    operations: [fetch]\n    max_ttl: 15m\n    \
-             max_signatures: 0\n    max_pushes: 0\n    max_ops_per_minute: 1\n    \
-             max_push_size: 0\n",
+            "  open:\n    unsigned_fetch: true\n    max_ttl: 15m\n    max_ops_per_minute: 1\n",
             "feature",
         );
         assert_eq!(

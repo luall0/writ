@@ -72,9 +72,8 @@ fn unsigned_config() -> PolicyConfig {
         )
         .replacen(
             "templates:\n  feature-branch:",
-            "templates:\n  fetch_unsigned:\n    unsigned_fetch: true\n    operations: [fetch]\n    \
-             max_ttl: 1h\n    max_signatures: 0\n    max_pushes: 0\n    max_ops_per_minute: 20\n    \
-             max_push_size: 0\n  feature-branch:",
+            "templates:\n  fetch_unsigned:\n    unsigned_fetch: true\n    max_ttl: 1h\n    \
+             max_ops_per_minute: 20\n  feature-branch:",
             1,
         );
     PolicyConfig::from_yaml(&text).unwrap()

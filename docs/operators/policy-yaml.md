@@ -151,7 +151,9 @@ visible link on the remote ([Q25](../decisions.md)):
 
 ## Templates: `templates.<name>`
 
-Every limit is required, so a template never caps anything by accident. A template doesn't
+Every limit is required, so a template never caps anything by accident. The one exception
+is a template with `unsigned_fetch: true`, which only fetches: it writes no `operations`,
+`max_signatures`, `max_pushes` or `max_push_size`, and the daemon refuses them there. A template doesn't
 list repos: each repo names the templates it allows (`repos.<name>.templates`). Each repo of a
 ticket is checked against a template that repo allows: the ticket names it in that repo's
 block, or the repo's terms fit exactly one. A repo that fits none rejects the ticket before
@@ -170,18 +172,18 @@ One ticket may use several templates, one per repo. Then:
 
 | Key | Accepts | Default | What it does |
 |---|---|---|---|
-| `templates.<name>.unsigned_fetch` | Boolean | `false` | Whether a ticket under this template is granted with no signature from you. Only for fetching: the template must allow `operations: [fetch]` and nothing else, with a `max_ttl` of at most `1h`. A repo names at most one such template. [Fetching without a signature](#fetching-without-a-signature) |
-| `templates.<name>.operations` | `fetch`, `commit_sign`, `push`, at least one | **required** | The operations a ticket may ask for in a repo |
+| `templates.<name>.unsigned_fetch` | Boolean | `false` | Whether a ticket under this template is granted with no signature from you. Only for fetching: the template then writes only `max_ttl` (at most `1h`) and `max_ops_per_minute`, and leaves out `operations` and the counts. A repo names at most one such template. [Fetching without a signature](#fetching-without-a-signature) |
+| `templates.<name>.operations` | `fetch`, `commit_sign`, `push`, at least one | **required** (none with `unsigned_fetch`) | The operations a ticket may ask for in a repo |
 | `templates.<name>.branches` | Branch patterns | `[]` | The branches a ticket may ask for: short names, at most one trailing `*` (`agent/*`, `agent/fix-*`). Required with `commit_sign` or `push` |
 | `templates.<name>.force_push` | Boolean | `false` | Whether a ticket may ask for force pushes and branch deletions |
 | `templates.<name>.committer_emails` | Emails | `[]` | The emails a ticket may use as a commit's committer and author (printable ASCII). Required with `commit_sign` |
 | `templates.<name>.committer_name` | A name, 1 to 100 characters | none | The name every commit signed under the template must carry, as author and committer, exactly. The agent's git is set to it from the lease (`writ git`, a whole-repo clone), and a commit with another name is refused (`committer_name`, `author_name`). No control, newline or invisible character, no `<` or `>`, and no space or `. , : ; " ' \` at either end (git strips them). Not set: the name isn't checked. A name doesn't decide whether a remote shows a commit as verified (the email and the key do); it keeps an agent from signing as someone else by name. With an OpenPGP key, each of its user ids for the template's emails must carry this name |
 | `templates.<name>.signing_key` | Key id | — | The key that signs commits under this template: declared in [`keys`](#keys-keysid) with `use: signing` (`writd signing-keys` prints it). Required with `commit_sign` |
 | `templates.<name>.max_ttl` | Duration, at least `writd.yaml`'s `min_ttl` | **required** | The longest lease, counted from submission: time waiting for you counts |
-| `templates.<name>.max_signatures` | Count | **required** | The most commits one lease may sign in each repo under this template |
-| `templates.<name>.max_pushes` | Count | **required** | The most pushes one lease may make in each repo under this template |
+| `templates.<name>.max_signatures` | Count | **required** (none with `unsigned_fetch`) | The most commits one lease may sign in each repo under this template |
+| `templates.<name>.max_pushes` | Count | **required** (none with `unsigned_fetch`) | The most pushes one lease may make in each repo under this template |
 | `templates.<name>.max_ops_per_minute` | Count, at least 1 | **required** | The most signatures, pushes and fetches one lease may make per minute, all together and in every repo. A lease over several templates gets the smallest |
-| `templates.<name>.max_push_size` | Size | **required** | The largest pack one push may send in a repo under this template: at least 1 byte when the template allows `push` (git would read 0 as no limit). Lowering it applies to the leases already granted too |
+| `templates.<name>.max_push_size` | Size | **required** (none with `unsigned_fetch`) | The largest pack one push may send in a repo under this template: at least 1 byte when the template allows `push` (git would read 0 as no limit). Lowering it applies to the leases already granted too |
 | `templates.<name>.paths_check` | `off`, `warn` or `deny` | `warn` | Compares the files each commit touches with the `expected_paths` of its repo in the ticket. [Paths check](#paths-check) |
 | `templates.<name>.require_expected_paths` | Boolean | `false` | Whether a repo's block must list `expected_paths` to fit this template |
 | `templates.<name>.require_session` | Boolean | `false` | Local mode: whether a ticket must be bound to an agent session (`caller`, written by `writ run`). Without one it is refused (`session`). The session is always one `writ run` started: a binding to any other process is refused too. Leave it off on a detached daemon: a bound lease is denied everything over TCP |
