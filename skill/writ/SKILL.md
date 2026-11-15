@@ -1,6 +1,6 @@
 ---
 name: writ
-description: Use at the start of any task that will change files in a repository wired for Writ (it has a `writ` remote, or `writ git` works in it), before editing anything. Writ gives you a signed, scoped, time-boxed lease to sign commits and push; this skill is how to see what the repository allows, ask for a lease, work under it, amend or renew it, and close it with a report.
+description: Use at the start of every task that will change files in a repository wired for Writ (it has a `writ` remote, or `writ git` works in it), before editing anything, and again at each new request after an earlier one in this conversation had a lease (a small follow-up amends the running lease; a different task, or any request after a close, needs a new ticket). Writ gives you a signed, scoped, time-boxed lease to sign commits and push; this skill is how to see what the repository allows, ask for a lease, work under it, amend or renew it, and close it with a report.
 ---
 
 <!-- Written by `writ init` and replaced by the next one: never edit this file. What you learn
@@ -19,6 +19,12 @@ The timings file for this repository: `{{TIMINGS}}`. Read it before writing a ti
 - **The ticket comes first.** Read the code as much as you need to scope the task, but edit
   no file before your lease is granted: the human approves the plan, not finished work, and
   the lease's time measures the work.
+- **Each new request starts here**, even in a conversation where an earlier one already
+  had a lease. While that lease still runs, a small follow-up to its work (a fix, a tweak,
+  one more file the human asks for) stays under it: if it needs more than the lease allows,
+  submit an amendment (section 5). A different task gets a ticket of its own: close the
+  running lease first (step 6). A closed lease is over: the next request, however small, is
+  a new ticket. When unsure which it is, ask the human.
 - Run every git command through `writ git …` (`writ git commit`, `writ git push`,
   `writ git fetch`, `writ git rebase` …). Plain `git` has no lease. In a clone wired with
   `--whole-repo`, plain `git` is the same as `writ git`.
@@ -149,11 +155,18 @@ until it ends.
   **renewal**, the same scope (or narrower) with `ticket.renews: <lease>` and a new `ttl` and
   counts. It works up to `writ policy`'s "renew within" after the lease ended. Once signed it is a new
   lease: set `WRIT_SESSION` to its id. It can push the commits your earlier lease signed.
+- **The session ended** (`writ git` refuses it: it ended, closed or renewed): if you closed
+  it, you are working without a lease; stop editing and start at step 1 with a new ticket.
+  If it was renewed, set `WRIT_SESSION` to the renewal's lease.
 - **Anything else** (`not_active`, `config`, the daemon sealed): stop and tell the human.
 
 ## 6. Close, and learn
 
-When the work is pushed (or you stop for good), close the lease with a short summary:
+Close the lease after the **final push**, once the task is finished and nothing is left
+to push: the remote's CI passed (or you were told not to wait for it) and no fix is pending.
+A push in the middle of the task (a CI round, a fix after review) is not the end: keep the
+lease, and a follow-up the human asks for before you close stays under it (amended if it
+needs more). Close too if you stop for good, always with a short summary:
 
 ```sh
 writ close --summary "What was done, what is left, anything the human should check"
@@ -175,3 +188,9 @@ writ check {{TIMINGS}}
 
 It names every line `writ close` would drop or rewrite (exit 3), so you can fix your note
 before it is lost.
+
+## 7. The next task
+
+A closed lease is over: `unset WRIT_SESSION`, and never set it back. The next request,
+whatever its size, starts again at step 1 with a new ticket, before any edit. (A follow-up
+that comes before the close stays under the running lease, amended if it needs more.)
