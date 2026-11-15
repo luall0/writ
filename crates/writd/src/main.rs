@@ -100,6 +100,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("upstream-tunnel", "<socket> <host> <port>"),
     // Started by `writd run` on Linux, never by hand (docs/architecture/platform.md).
     ("proc-reader", ""),
+    // The version this binary is (M7.9.8): what the installer compares.
+    ("--version", ""),
 ];
 
 /// The usage text: one line per command.
@@ -166,6 +168,10 @@ fn main() -> ExitCode {
         }
         // The process reader `writd run` starts on Linux: hardened first, quietly.
         ["proc-reader"] => platform::serve_process_reader(),
+        ["--version"] => {
+            println!("writd {}", writ_proto::VERSION);
+            return ExitCode::SUCCESS;
+        }
         ["init", config, rest @ ..] => init(Path::new(config), rest),
         ["run", config] => run(Path::new(config)),
         ["recover", config, target, file] => {

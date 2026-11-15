@@ -463,8 +463,9 @@ commands, bodies and replies ([Q29](../decisions.md)):
   `GET /v1/tickets/watch[?since=<cursor>]`, `GET /v1/tickets/<id>`,
   `POST /v1/tickets/<id>/approve`, `…/refuse`, `…/revoke`, `POST /v1/proofs`, and the admin
   routes (`writ_proto::Command::http_route`); JSON
-  bodies, replies in the `{"ok"}` / `{"error"}` envelope (HTTP 200, or 422 when the
-  command failed, 404 for an unknown route). Each request runs on its own task, to its end
+  bodies, replies in the `{"version", "ok"}` / `{"version", "error"}` envelope (the daemon's
+  version first, M7.9.8: [the daemon's version](clients.md#the-daemons-version); HTTP 200, or
+  422 when the command failed, 404 for an unknown route). Each request runs on its own task, to its end
   even when the client goes away (Ctrl-C during `writ unseal` or `writ admin apply`): a
   change is never left half applied, only its reply is lost (SSH commands run so already).
   A watch is the exception: it changes nothing, so it runs in the connection's own future

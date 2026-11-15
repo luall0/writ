@@ -125,6 +125,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 26 | `keystore_recipients` | — | The keystore's recipients (M7.6) on the passphrase keystore: a recovery key made on the approver's machine with `writ recovery new` (in no file), declared with `writ admin recipient add`, listed and shown (through `--approval-url` too), checked with `writ recovery check` (the right key opens the daemon's challenge; another is named by its recipient), replaced with `set` (the old key refused), edited on a terminal, removed (the check then says there is none); a hardware recipient refused by name, the daemon having no Secure Enclave; the policy put back; then `writ admin ca show` and `writ admin ca rotate` (every flag), live, the other scenarios' leases working on, a backend the daemon lacks refused; `writ admin auto-unseal status` (what is missing), `on` refused with it, `off`; `recipient edit` with every flag a real change applied with no question; the daily operations page's recovery steps run as written (`writ recovery new`, `recipient add`, `writ recovery check`) | alone |
 | 27 | `approval_popup` | — | The approval popup's side of `writ` (M7.8): `writ sign --ui` driven as `writ-popup` drives it, one JSON line each way; two tickets at once, the oldest shown with the other stacked behind it, its display the very text `writ sign --full` prints; an answer naming the ticket behind refused with nothing signed; the first signed (the agent's lease, one `grant` line), the second refused with feedback the agent reads; a ticket withdrawn while shown closing its window; the end of the app's input ending the command | alone |
 | 28 | `unsigned_fetch` | `planning` | A fetch with no signature (M7.9.7): a clone wired with no lease, its repo's template `prefetch` signing and pushing with `unsigned_fetch: 15m`; `writ policy` showing its operations and that a fetch alone needs no signature; `writ git fetch` getting Forgejo's new commit and `writ git pull --ff-only` moving the branch, each under its own lease granted when submitted (its `grant` line naming the template, no approver; its `fetch` and `close` lines), nothing left in the agent's sessions; then the agent's signed lease, under the same template, committing and pushing as any | shared |
+| 29 | `versions` | `setup` | Versions (M7.9.8): `writd --version` on the operator's host, `writ --version` on the approver's and the agents', `writ-sign --version` on the agents', each the workspace's version and nothing else; `writ ls` over the approval API and `writ policy` over the agents' listener, the daemon of the same version, saying nothing about versions | shared |
 
 Every scenario checks, where it applies: **what the agent reads** (the exit code and the
 words, never just "it failed"), **the audit line** (event, result, code), **Forgejo's state**
@@ -147,6 +148,7 @@ the scenarios (`tool/check-e2e.py`).
 | `writ --known-hosts` | `every_client_setting_works_as_a_flag` |
 | `writ --tls-pins` | `every_client_setting_works_as_a_flag` |
 | `writ --reader` | `every_client_setting_works_as_a_flag` |
+| `writ --version` | `every_binary_says_its_version_and_writ_says_nothing_of_the_daemon_s_own` |
 | `writ request` | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
 | `writ request -` (ticket on stdin) | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
 | `writ request --no-wait` | `tickets_are_requested_signed_refused_revised_amended_and_revoked`, `many_agents_and_a_busy_remote_share_one_daemon` |
@@ -466,10 +468,12 @@ the scenarios (`tool/check-e2e.py`).
 | `writd upstream-credential` (every sync and upstream push of an `https://` upstream) | `a_repo_behind_https_is_fetched_and_pushed_with_a_token_nobody_else_sees` |
 | `writd upstream-tunnel` (every sync and upstream push of an `ssh://` upstream behind a proxy) | `repos_behind_a_socks5_and_an_http_proxy_are_reached_through_them_alone` |
 | `writd proc-reader` (started by `writd run` on Linux with `CAP_SYS_PTRACE`) | `local_mode_on_linux_binds_a_lease_to_its_session_and_keeps_the_daemon_out_of_reach` |
+| `writd --version` | `every_binary_says_its_version_and_writ_says_nothing_of_the_daemon_s_own` |
 | `writ-sign -Y sign` (every commit under the wiring) | `an_agent_works_through_writ_git_beside_the_operator_s_own_git`, `a_dedicated_clone_is_wired_whole_and_undone_exactly` |
 | `writ-sign -Y verify` (handed to `ssh-keygen`) | `an_agent_works_through_writ_git_beside_the_operator_s_own_git` |
 | `writ-sign --status-fd=2 -bsau` (every commit under an OpenPGP lease) | `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
 | `writ-sign --verify` (handed to `gpg`) | `an_openpgp_key_is_proven_on_forgejo_and_its_commits_show_verified` |
+| `writ-sign --version` | `every_binary_says_its_version_and_writ_says_nothing_of_the_daemon_s_own` |
 
 ## Commands the docs show
 

@@ -39,6 +39,7 @@ mod settings;
 mod skill;
 mod timings;
 mod unsigned;
+mod version;
 mod wiring;
 mod workspace;
 mod wrap;
@@ -409,6 +410,9 @@ mod tests {
                 .collect()
         };
         features.extend(flags(&cli).into_iter().map(|flag| format!("writ {flag}")));
+        // clap's own `--version` (M7.9.8), on `writ` alone (no `propagate_version`).
+        assert!(cli.get_version().is_some(), "writ has its version");
+        features.push("writ --version".to_owned());
         // A group (`writ admin`, `writ admin repo`) is its subcommands, each a command of its
         // own, however deep.
         let mut groups: Vec<(String, &clap::Command)> = cli

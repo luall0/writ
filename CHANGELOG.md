@@ -11,10 +11,18 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+### Upgrading
+
+- **Install `writ` and `writd` together.** Every reply of `writd` now names its version, and
+  a `writ` before this release can't read those replies.
+
 ### Added
 
 - This changelog, and a version for Writ: 0.1.0 is the first one
   ([M7.9.8](docs/roadmap.md#m798--versions-and-changelog)).
+- `writ --version`, `writd --version` and `writ-sign --version` print the version.
+- `writ` says once when the daemon's version isn't its own, and names both versions when it
+  can't read a reply.
 
 ## 0.1.0 — 2026-11-15
 

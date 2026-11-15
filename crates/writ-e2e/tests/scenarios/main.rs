@@ -41,6 +41,7 @@ mod unsigned_fetch;
 mod upstream_moved;
 mod upstream_proxies;
 mod verified_commits;
+mod versions;
 mod whole_repo;
 mod workspaces;
 mod wrapper_mode;

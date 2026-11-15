@@ -52,11 +52,22 @@ const DEFAULT_GPG: &str = "/usr/bin/gpg";
 /// The calls `writ-sign` answers, as git makes them: what the end-to-end coverage registry
 /// must list (rule 18), checked by a test against docs/end-to-end.md. `main` answers these
 /// and refuses anything else.
-const CALLS: &[&str] = &["-Y sign", "-Y verify", "--status-fd=2 -bsau", "--verify"];
+const CALLS: &[&str] = &[
+    "-Y sign",
+    "-Y verify",
+    "--status-fd=2 -bsau",
+    "--verify",
+    "--version",
+];
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let rest = match args.as_slice() {
+        // Its version alone (M7.9.8): never a call git makes.
+        [flag] if flag == "--version" => {
+            println!("writ-sign {}", writ_proto::VERSION);
+            return ExitCode::SUCCESS;
+        }
         [y, sign, rest @ ..] if y == "-Y" && sign == "sign" => rest,
         [y, ..] if y == "-Y" => {
             // PATH: verify calls go to the agent host's own ssh-keygen, as git would call it;
@@ -88,8 +99,8 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "writ-sign: unsupported call: it answers {} (signing, or verification handed \
-                 to ssh-keygen or gpg)",
+                "writ-sign: unsupported call: it answers {} (signing, verification handed to \
+                 ssh-keygen or gpg, or its version)",
                 CALLS.join(", ")
             );
             return ExitCode::FAILURE;
@@ -495,7 +506,13 @@ mod tests {
         }
         // And each is one `main` answers: the words it matches on are there.
         let source = include_str!("main.rs");
-        for word in ["\"-Y\"", "\"sign\"", "is_gpg_sign", "\"--verify\""] {
+        for word in [
+            "\"-Y\"",
+            "\"sign\"",
+            "is_gpg_sign",
+            "\"--verify\"",
+            "\"--version\"",
+        ] {
             assert!(source.contains(word), "{word}");
         }
     }

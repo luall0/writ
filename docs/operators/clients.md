@@ -25,6 +25,10 @@ lists them.
 | none | `WRIT_GPG` | `/usr/bin/gpg` | `writ-sign`: the `gpg` it hands git's OpenPGP `--verify` calls to, an absolute path. It never runs gpg to sign: the key is the daemon's |
 | none | `NO_COLOR` | unset | Set to anything: `writ`'s questions without colour (<https://no-color.org>) |
 
+`writ --version` prints the version of this `writ`. When the daemon's version isn't the same,
+`writ` says so once on stderr: install the same version of both, as the
+[changelog](../../CHANGELOG.md)'s Upgrading notes say.
+
 On a terminal, `writ`'s questions are menus: move with the arrow keys, type to filter, Enter
 to answer, space to tick in a list where several can be picked, Esc to stop with nothing
 changed. Where a value is kept, the first option keeps it. Without a terminal (a script, a

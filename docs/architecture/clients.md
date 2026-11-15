@@ -64,6 +64,19 @@ or unknown certificate during authentication, where SSH can't say why), `writ-si
 session certificate named in the SSH command and says whether there is no lease, an expired
 one, or one the daemon refused: a convenience, the daemon decided already.
 
+### The daemon's version
+
+Every reply names the daemon's version first (`{"version": "0.2.0", "ok": …}`, M7.9.8), on
+every listener: `writ_proto::decode_versioned` reads it before the rest. It must be
+`MAJOR.MINOR.PATCH`, 32 bytes at most, or the reply is unreadable. `writ` compares it with its
+own (`writ-cli`'s `version` module): when they differ, or the daemon names none (a `writd`
+before 0.2.0), it says so once per process on stderr, `install the same version of both`. A
+hint only (hard rule 1): the reply is read as any, and the daemon decides. A reply that
+doesn't parse names both versions in its error, since the messages refuse fields they don't
+know and a version apart is the likely reason. `writ --version`, `writd --version` and
+`writ-sign --version` print the binary's version; `writ-sign` reads no envelope (the gateway
+sends it the signature itself).
+
 ## The approval popup (M7.8)
 
 A ticket waiting for my signature comes up in a window in front of every app, full-screen

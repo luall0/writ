@@ -17,8 +17,9 @@
 //! migration of the policy is owed (M7.9.6), it answers only those two, [`Command::MigrationShow`]
 //! and a policy's [`Command::AdminApply`]; every other request fails with its refusal.
 //!
-//! Replies are wrapped in an envelope, `{"ok": …}` or `{"error": {"message": …, "reasons": […]}}`
-//! ([`encode_reply`], [`decode_reply`]). Tickets travel as their canonical bytes in a string,
+//! Replies are wrapped in an envelope naming the daemon's version, `{"version": …, "ok": …}` or
+//! `{"version": …, "error": {"message": …, "reasons": […]}}` ([`encode_reply`],
+//! [`decode_versioned`]; M7.9.8). Tickets travel as their canonical bytes in a string,
 //! so a client can decode them strictly (`Ticket::from_canonical`) and sign exactly them.
 
 // This crate parses untrusted input and computes limits: every arithmetic operation is
@@ -31,7 +32,10 @@ mod messages;
 pub mod sign;
 
 pub use command::Command;
-pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_reply};
+pub use envelope::{
+    ApiError, FIRST_NAMED_VERSION, Reply, VERSION, decode_body, decode_reply, decode_versioned,
+    encode_body, encode_reply, is_version,
+};
 pub use messages::{
     Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, AutoUnsealShown, BackendShown,
     CaRequest, CaRotated, CaShown, ChainLink, CheckStep, Checked, CloseRequest, Count, CreatedKey,
@@ -318,7 +322,10 @@ mod tests {
             migration: None,
         });
         let bytes = encode_reply(&ok);
-        assert_eq!(bytes, b"{\"ok\":{\"decisions\":\"open\"}}\n");
+        assert_eq!(
+            bytes,
+            format!("{{\"version\":\"{VERSION}\",\"ok\":{{\"decisions\":\"open\"}}}}\n").as_bytes()
+        );
         assert_eq!(decode_reply::<Info>(&bytes), ok);
 
         let err: Result<Info, ApiError> = Err(ApiError::with_reasons("rejected", vec!["a".into()]));
@@ -335,9 +342,118 @@ mod tests {
         let bytes = encode_reply(&Ok::<_, ApiError>(decision.clone()));
         assert_eq!(
             bytes,
-            b"{\"ok\":{\"status\":\"refused\",\"feedback\":\"no\",\"signed_by\":null}}\n"
+            format!(
+                "{{\"version\":\"{VERSION}\",\"ok\":{{\"status\":\"refused\",\"feedback\":\"no\",\"signed_by\":null}}}}\n"
+            )
+            .as_bytes()
         );
         assert_eq!(decode_reply::<Decision>(&bytes), Ok(decision));
+    }
+
+    /// M7.9.8: every reply names the daemon's version, read before the rest; a reply with
+    /// none (a daemon before 0.2.0) is read as before; a version that isn't one makes the
+    /// reply unreadable; a reply that doesn't parse names both versions when they differ.
+    #[test]
+    fn a_reply_names_the_daemon_s_version_and_an_unreadable_one_names_both() {
+        assert!(is_version(VERSION), "{VERSION}");
+        let open = r#""ok":{"decisions":"open"}"#;
+        let info = |text: String| decode_versioned::<Info>(text.as_bytes());
+        // This build's, and another's: read, the version kept.
+        let ours = info(format!(r#"{{"version":"{VERSION}",{open}}}"#));
+        assert_eq!(ours.version.as_deref(), Some(VERSION));
+        assert!(ours.readable && ours.result.is_ok(), "{ours:?}");
+        let theirs = info(format!(r#"{{"version":"9.10.11",{open}}}"#));
+        assert_eq!(theirs.version.as_deref(), Some("9.10.11"));
+        assert!(theirs.result.is_ok(), "{theirs:?}");
+        // An error reply names it too.
+        let error = info(r#"{"version":"9.10.11","error":{"message":"no"}}"#.to_owned());
+        assert_eq!(error.version.as_deref(), Some("9.10.11"));
+        assert_eq!(error.result, Err(ApiError::new("no")));
+        assert!(error.readable);
+        // None: a daemon before the first version that names itself, read as before.
+        let before = info(format!("{{{open}}}"));
+        assert_eq!(before.version, None);
+        assert!(before.result.is_ok(), "{before:?}");
+
+        // A version that isn't one: the reply is unreadable, whatever else it holds.
+        let long = format!("{}.0.0", "1".repeat(29));
+        assert!(
+            is_version(&format!("{}.0.0", "1".repeat(28))),
+            "32 bytes is the bound"
+        );
+        for bad in [
+            r#""v0.1.0""#,
+            r#""0.1""#,
+            r#""0.1.0.0""#,
+            r#""01.0.0""#,
+            r#""0.1.0-rc.1""#,
+            r#""0..1""#,
+            r#""""#,
+            r#"1"#,
+            r#"null"#,
+            r#"["0.1.0"]"#,
+            &format!(r#""{long}""#),
+        ] {
+            let read = info(format!(r#"{{"version":{bad},{open}}}"#));
+            assert_eq!(read.version, None, "{bad}");
+            assert!(!read.readable, "{bad}");
+            assert_eq!(
+                read.result,
+                Err(ApiError::new(
+                    "unreadable reply from the daemon: its version is not MAJOR.MINOR.PATCH"
+                )),
+                "{bad}"
+            );
+        }
+
+        // A payload that doesn't parse: as before from this build's version; both named
+        // from another's, or from one that names none.
+        let changed = r#""ok":{"decisions":"open","new":1}"#;
+        let same = info(format!(r#"{{"version":"{VERSION}",{changed}}}"#));
+        let message = same.result.unwrap_err().message;
+        assert!(
+            message.starts_with("unreadable reply from the daemon: unknown field `new`"),
+            "{message}"
+        );
+        let other = info(format!(r#"{{"version":"9.10.11",{changed}}}"#));
+        assert!(!other.readable);
+        assert_eq!(other.version.as_deref(), Some("9.10.11"));
+        let message = other.result.unwrap_err().message;
+        assert!(
+            message.starts_with(&format!(
+                "unreadable reply from writd 9.10.11, and this writ is {VERSION}: install the \
+                 same version of both (the changelog's Upgrading): unknown field `new`"
+            )),
+            "{message}"
+        );
+        let unnamed = info(format!("{{{changed}}}"));
+        let message = unnamed.result.unwrap_err().message;
+        assert!(
+            message.starts_with(&format!(
+                "unreadable reply from a daemon that names no version (a writd before 0.2.0), \
+                 and this writ is {VERSION}: install the same version of both (the changelog's \
+                 Upgrading): unknown field `new`"
+            )),
+            "{message}"
+        );
+        // Any other field beside the version is refused as before, and so are a second
+        // variant and none at all: the envelope is one of `ok` and `error`, exactly.
+        for bad in [
+            format!(r#"{{"version":"{VERSION}",{open},"x":1}}"#),
+            format!(r#"{{"version":"{VERSION}",{open},"error":{{"message":"no"}}}}"#),
+            format!(r#"{{"version":"{VERSION}"}}"#),
+        ] {
+            let read = info(bad.clone());
+            assert!(!read.readable, "{bad}");
+            assert_eq!(
+                read.result,
+                Err(ApiError::new(
+                    "unreadable reply from the daemon: invalid value: map, expected map with a \
+                     single key"
+                )),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -380,7 +496,11 @@ mod tests {
             rotation_owed: Vec::new(),
             migration: None,
         }));
-        assert_eq!(open, b"{\"ok\":{\"decisions\":\"signed\"}}\n");
+        assert_eq!(
+            open,
+            format!("{{\"version\":\"{VERSION}\",\"ok\":{{\"decisions\":\"signed\"}}}}\n")
+                .as_bytes()
+        );
         // The rotation owed (the review after M7.6, S-8) on the wire, under its name.
         let bytes = String::from_utf8(bytes).unwrap();
         assert!(

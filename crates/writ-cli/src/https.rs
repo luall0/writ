@@ -186,7 +186,7 @@ impl Client {
         if bytes.is_empty() {
             bail!("no reply from the daemon (HTTP {status})");
         }
-        Ok(writ_proto::decode_reply(&bytes))
+        Ok(crate::version::read(&bytes))
     }
 }
 

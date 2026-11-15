@@ -344,7 +344,7 @@ impl Session {
                 }
             );
         }
-        Ok(writ_proto::decode_reply(&output.stdout))
+        Ok(crate::version::read(&output.stdout))
     }
 }
 
