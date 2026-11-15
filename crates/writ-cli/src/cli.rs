@@ -376,6 +376,22 @@ pub(crate) enum Commands {
         #[command(flatten)]
         signer: SignerArgs,
     },
+    /// Sign the migration the policy in force owes after an upgrade (until then the daemon
+    /// refuses every request): the daemon's rewrite of it, shown as the change it is, then one
+    /// signature with your approval key. Run it again at any time; nothing owed, nothing signed.
+    Migrate {
+        /// Sign this policy (in the current format) instead of the daemon's rewrite: when the
+        /// daemon can't rewrite it, it says which keys and why.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Sign without asking (the change is still shown first).
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        url: ApprovalUrl,
+        #[command(flatten)]
+        signer: SignerArgs,
+    },
 }
 
 #[derive(Subcommand)]

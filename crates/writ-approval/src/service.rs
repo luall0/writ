@@ -121,6 +121,11 @@ pub struct ServiceConfig {
     /// the path the kernel names it with: a session binding's root must be its child. `None`
     /// where there is no process chain (the network attestor): nothing can be bound.
     pub session_launcher: Option<std::path::PathBuf>,
+    /// The migration the policy in force owes (M7.9.6): its text is of an older format, and
+    /// `policy` is its rewrite with what it can't carry over dropped, used only to unseal and
+    /// to check the migration against. While one is owed, every request but `info`, an unseal
+    /// and the migration is refused.
+    pub migration_owed: Option<writ_proto::MigrationOwed>,
 }
 
 /// How each signing key signs, by id.
@@ -206,6 +211,9 @@ pub struct Service {
     /// after M7.6, S-8): set by the daemon at start, at unseal and when the recipients
     /// change (a rotation gives a new recipient).
     keystore_now: Mutex<(Option<String>, Vec<String>)>,
+    /// The migration the policy in force owes (M7.9.6): set at start, taken back once a
+    /// policy of the current format is signed and in force.
+    migration: RwLock<Option<writ_proto::MigrationOwed>>,
     /// Sessions that ended, their certificates refused, their revocations still to record
     /// (by the thread their notice started, or the next sweep): kept apart from the state
     /// lock, which a notice may come under ([`sweep`]).
@@ -312,6 +320,7 @@ fn as_denial(error: ServiceError) -> writ_core::policy::Denial {
     use writ_core::policy::{Denial, DenyCode};
     match error.code() {
         Some(RefusalCode::Sealed) => Denial::sealed(),
+        Some(RefusalCode::MigrationOwed) => Denial::migration_owed(),
         _ => Denial::new(DenyCode::Invalid, error.to_string()),
     }
 }
@@ -396,6 +405,7 @@ impl Service {
         let key_uses = RwLock::new(Arc::new(config.signing_keys.clone()));
         let in_force = RwLock::new(config.in_force.clone());
         let keystore_now = Mutex::new((config.recipient.clone(), Vec::new()));
+        let migration = RwLock::new(config.migration_owed);
         let (revocations, _) = broadcast::channel(256);
         let boot = SealedBoot {
             daemon: config.daemon.clone(),
@@ -432,6 +442,7 @@ impl Service {
             waiting: std::sync::atomic::AtomicUsize::new(0),
             token_recipients: Mutex::new(Vec::new()),
             keystore_now,
+            migration,
             ended_sessions: Mutex::new(Vec::new()),
             watcher: platform.watcher,
             clock: platform.clock,
@@ -439,6 +450,18 @@ impl Service {
         });
         service.sweep();
         service.rewatch_sessions()?;
+        if let Some(owed) = service.migration_owed() {
+            service.notify(Notification {
+                title: "Writ: a migration of the policy is owed".to_owned(),
+                message: format!(
+                    "The policy in force is format {}, this writd reads format {}: every \
+                     request is refused until it is signed. Run writ migrate.",
+                    owed.from, owed.to
+                ),
+                priority: writ_platform::Priority::High,
+                tags: vec!["writ".to_owned()],
+            });
+        }
         Ok(service)
     }
 
@@ -508,6 +531,34 @@ impl Service {
     /// What every request starts with: now, the state lock, and a sweep (so nothing past its
     /// time is acted on).
     fn begin(&self) -> Result<(Timestamp, MutexGuard<'_, Inner>), ServiceError> {
+        let begun = self.begin_any()?;
+        self.not_owed()?;
+        Ok(begun)
+    }
+
+    /// The migration the policy in force owes, if any (M7.9.6).
+    pub fn migration_owed(&self) -> Option<writ_proto::MigrationOwed> {
+        // poisoned: the last value written stands (it is written whole).
+        *self
+            .migration
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Refuses while a migration is owed (M7.9.6).
+    fn not_owed(&self) -> Result<(), ServiceError> {
+        match self.migration_owed() {
+            Some(_) => Err(ServiceError::refused(
+                RefusalCode::MigrationOwed,
+                writ_core::policy::MIGRATION_OWED,
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// [`Self::begin`], served while a migration is owed too: only for the migration itself
+    /// (its showing, the policy's admin change).
+    fn begin_any(&self) -> Result<(Timestamp, MutexGuard<'_, Inner>), ServiceError> {
         self.opened()?;
         let now = self.now()?;
         let mut inner = self.lock()?;
@@ -745,6 +796,7 @@ impl Service {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone(),
             },
+            migration: self.migration_owed(),
         }
     }
 

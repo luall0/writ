@@ -293,6 +293,21 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         Commands::Unseal { url, signer: args } => {
             approver::unseal(&paths, &url.get(&paths)?, &signer(&paths, args)).await
         }
+        Commands::Migrate {
+            file,
+            yes,
+            url,
+            signer: args,
+        } => {
+            approver::migrate(
+                &paths,
+                &url.get(&paths)?,
+                &signer(&paths, args),
+                file.as_deref(),
+                *yes,
+            )
+            .await
+        }
         Commands::ProveKey {
             key_id,
             namespace,

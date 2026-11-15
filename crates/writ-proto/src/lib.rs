@@ -10,10 +10,12 @@
 //! |---|---|---|
 //! | agents | a session certificate | git, `writ-sign git <repo>` (gateway, body: [`sign::SignInput`]) |
 //! | agents | a plain session key | [`Command::Request`], [`Command::DryRun`], [`Command::Policy`], [`Command::Wait`], [`Command::Close`] |
-//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Watch`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`], [`Command::ScanNonce`], [`Command::Scan`], [`Command::RepoCheck`], [`Command::RepoStatus`], [`Command::TlsShow`], [`Command::TlsRotate`], [`Command::CaShow`], [`Command::CaRotate`], [`Command::AutoUnsealShow`] |
+//! | approvals | a reader key | [`Command::Info`], [`Command::List`], [`Command::Show`], [`Command::Watch`], [`Command::Report`], [`Command::Approve`], [`Command::Refuse`], [`Command::Revoke`], [`Command::Prove`], [`Command::Unseal`], [`Command::AdminShow`], [`Command::AdminApply`], [`Command::TokenShow`], [`Command::TokenApply`], [`Command::RecoveryShow`], [`Command::AdminKeys`], [`Command::ScanNonce`], [`Command::Scan`], [`Command::RepoCheck`], [`Command::RepoStatus`], [`Command::TlsShow`], [`Command::TlsRotate`], [`Command::CaShow`], [`Command::CaRotate`], [`Command::AutoUnsealShow`], [`Command::MigrationShow`] |
 //!
 //! While the daemon is sealed, it answers only [`Command::Info`] (which then names the boot
-//! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed".
+//! to unseal) and [`Command::Unseal`]; every other request fails with "daemon sealed". While a
+//! migration of the policy is owed (M7.9.6), it answers only those two, [`Command::MigrationShow`]
+//! and a policy's [`Command::AdminApply`]; every other request fails with its refusal.
 //!
 //! Replies are wrapped in an envelope, `{"ok": …}` or `{"error": {"message": …, "reasons": […]}}`
 //! ([`encode_reply`], [`decode_reply`]). Tickets travel as their canonical bytes in a string,
@@ -33,13 +35,14 @@ pub use envelope::{ApiError, decode_body, decode_reply, encode_body, encode_repl
 pub use messages::{
     Ack, AdminApplied, AdminRequest, AdminShown, ApproveRequest, AutoUnsealShown, BackendShown,
     CaRequest, CaRotated, CaShown, ChainLink, CheckStep, Checked, CloseRequest, Count, CreatedKey,
-    Decision, Decisions, DenialCount, Info, KeyRole, KeyShown, KeysShown, Listing, OpenpgpShown,
-    OtherLease, Others, PassphraseText, Phases, Previous, ProveRequest, Proved, RecoveryShown,
-    RefuseRequest, Relation, RemovedKey, Renewal, RepoPolicy, Report, ReportCommit, ReportPush,
-    RetiredCa, RevokeRequest, ScanNonce, ScanRequest, Scanned, ScannedKey, SealedBoot, Shown,
-    Submitted, Summary, SyncEnded, SyncPhase, SyncProgress, SyncResult, SyncRunning, SyncStatus,
-    SyncStatuses, TemplateView, TlsRequest, TlsRotated, TlsShown, TokenApplied, TokenRequest,
-    TokenShown, UnsealRequest, UnsealWay, Unsealed, UpstreamChecked, Watched,
+    Decision, Decisions, DenialCount, Info, KeyRole, KeyShown, KeysShown, Listing, MigrationOwed,
+    MigrationShown, OpenpgpShown, OtherLease, Others, PassphraseText, Phases, Previous,
+    ProveRequest, Proved, RecoveryShown, RefuseRequest, Relation, RemovedKey, Renewal, RepoPolicy,
+    Report, ReportCommit, ReportPush, RetiredCa, RevokeRequest, ScanNonce, ScanRequest, Scanned,
+    ScannedKey, SealedBoot, Shown, Submitted, Summary, SyncEnded, SyncPhase, SyncProgress,
+    SyncResult, SyncRunning, SyncStatus, SyncStatuses, TemplateView, TlsRequest, TlsRotated,
+    TlsShown, TokenApplied, TokenRequest, TokenShown, UnsealRequest, UnsealWay, Unsealed,
+    UpstreamChecked, Watched,
 };
 
 /// The largest body a command reads on stdin (a ticket file, an approval).
@@ -114,6 +117,8 @@ mod tests {
             Command::Watch {
                 since: Some(writ_core::authority::TextDigest::of("wrt_x")),
             },
+            // M7.9.6.
+            Command::MigrationShow,
         ] {
             assert_eq!(Command::parse(&command.line()), Some(command));
         }
@@ -139,6 +144,8 @@ mod tests {
             "writ prove agent-01",
             "writ prove-key",
             "writ unseal now",
+            "writ migration now",
+            "writ migrate",
             "writ admin",
             "writ admin show",
             "writ admin show templates",
@@ -219,6 +226,7 @@ mod tests {
             Command::Watch {
                 since: Some(writ_core::authority::TextDigest::of("wrt_x")),
             },
+            Command::MigrationShow,
         ] {
             let (method, path) = command.http_route().unwrap();
             assert_eq!(Command::from_http(method, &path), Some(command));
@@ -232,6 +240,7 @@ mod tests {
             Command::CaRotate,
             Command::AutoUnsealShow,
             Command::Watch { since: None },
+            Command::MigrationShow,
         ] {
             assert!(command.is_approval() && !command.is_agent(), "{command:?}");
         }
@@ -306,6 +315,7 @@ mod tests {
             token_recipients: Vec::new(),
             unseal: None,
             rotation_owed: Vec::new(),
+            migration: None,
         });
         let bytes = encode_reply(&ok);
         assert_eq!(bytes, b"{\"ok\":{\"decisions\":\"open\"}}\n");
@@ -357,6 +367,7 @@ mod tests {
             token_recipients: vec!["age1se1example".to_owned()],
             unseal: Some(crate::UnsealWay::Hardware),
             rotation_owed: vec!["the recovery recipient age1example replaced".to_owned()],
+            migration: Some(crate::MigrationOwed { from: 1, to: 2 }),
         };
         let bytes = encode_reply(&Ok::<_, ApiError>(info.clone()));
         assert_eq!(decode_reply::<Info>(&bytes), Ok(info));
@@ -367,12 +378,18 @@ mod tests {
             token_recipients: Vec::new(),
             unseal: None,
             rotation_owed: Vec::new(),
+            migration: None,
         }));
         assert_eq!(open, b"{\"ok\":{\"decisions\":\"signed\"}}\n");
         // The rotation owed (the review after M7.6, S-8) on the wire, under its name.
         let bytes = String::from_utf8(bytes).unwrap();
         assert!(
             bytes.contains("\"rotation_owed\":[\"the recovery recipient age1example replaced\"]"),
+            "{bytes}"
+        );
+        // The migration owed (M7.9.6) too; none, left out (above).
+        assert!(
+            bytes.contains("\"migration\":{\"from\":1,\"to\":2}"),
             "{bytes}"
         );
     }

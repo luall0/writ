@@ -112,6 +112,12 @@ way to migrate it (`Older`); a state newer than the binary, or older than the fi
 (`OtherTicketFormat`): never a silent mix. `writd check-upgrade` reads the version and runs the
 steps on a copy (`Store::version_at`, `Store::copy_state`), never on the state.
 
+The policy's own format is a line of its text (`format: 2`, M7.9.6), read by the daemon at
+every start: a policy in force of an older format leaves a **migration owed** (the service's
+`migration_owed`), every request but `info`, `unseal` and the migration refused until a policy
+of the current format is signed ([`writ migrate`](approvals.md#writ-migrate)). No state step ever
+rewrites a signed text.
+
 | Table | Holds |
 |---|---|
 | `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with, the source it came from (`source`: an IPv4 address, an IPv6 /64 or `local`; what `max_active_per_source` and `writ sign`'s other leases are counted by) and the lease it renews (`renews`). A lease is the row of its first ticket, with the certificate serial, `current_ticket` (the row whose terms are in force: itself, or the last applied amendment), the certificate issued for it, and the closing summary (`summary`) |

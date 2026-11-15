@@ -166,6 +166,78 @@ pub async fn apply(
         .await
 }
 
+/// `writ migrate` (M7.9.6): the migration the policy in force owes, shown and signed. The
+/// daemon's rewrite of the text in force (or `file`, the operator's own policy, needed when
+/// the daemon has none) is shown as the change of the policy it is, line by line, then signed
+/// as its `writ-admin/2` naming the version in force: one approval. Nothing owed: said, and
+/// nothing signed. Declined: nothing changes, and it can be run again.
+pub async fn migrate(
+    paths: &Paths,
+    url: &str,
+    signer: &Signer,
+    file: Option<&Path>,
+    yes: bool,
+) -> anyhow::Result<Exit> {
+    let own = file
+        .map(|file| {
+            let text = std::fs::read_to_string(file)
+                .with_context(|| format!("cannot read {}", file.display()))?;
+            AdminText::try_from(text).with_context(|| file.display().to_string())
+        })
+        .transpose()?;
+    connect(paths, url)
+        .await?
+        .run(async |session| {
+            let shown: writ_proto::MigrationShown =
+                session.call(&Command::MigrationShow, b"").await??;
+            let Some(owed) = shown.owed else {
+                println!(
+                    "Nothing to migrate: the policy in force is of the format this daemon reads."
+                );
+                return Ok(Exit::Ok);
+            };
+            // The text in force checked as `writ admin apply` checks it: the daemon the
+            // connection authenticated, the policy, the text its digest names.
+            let in_force = checked_in_force(
+                &session.authenticated()?,
+                AdminTarget::Policy,
+                shown.in_force,
+            )?;
+            println!(
+                "The policy in force is format {}; this daemon reads format {} and refuses every \
+                 request until a policy of format {} is signed.",
+                owed.from, owed.to, owed.to
+            );
+            let (text, what) = match (own, shown.proposal) {
+                (Some(text), _) => {
+                    let what = match file {
+                        Some(file) => format!("replaced by {}", file.display()),
+                        None => "replaced".to_owned(),
+                    };
+                    (text, what)
+                }
+                (None, Some(proposal)) => (
+                    AdminText::try_from(proposal).context("the daemon's rewrite")?,
+                    format!("rewritten to format {} by the daemon", owed.to),
+                ),
+                (None, None) => {
+                    println!("The daemon can't rewrite it:");
+                    for reason in &shown.reasons {
+                        println!("  {}", clean(reason));
+                    }
+                    println!(
+                        "Write the policy you want in format {} (writ admin show policy, once \
+                         migrated, prints the layout), then: writ migrate --file <policy>",
+                        owed.to
+                    );
+                    return Ok(Exit::Error);
+                }
+            };
+            sign_change(session, signer, &in_force, &text, &what, yes).await
+        })
+        .await
+}
+
 /// Shows a change of the file in force (`shown`) to `text` line by line, asks (unless `yes`),
 /// signs a `writ-admin/2` naming the version it replaces, sends it, and prints what the
 /// daemon did: the version, the keys it made (to register) and deleted, the leases it

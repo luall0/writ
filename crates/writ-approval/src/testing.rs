@@ -296,6 +296,7 @@ impl TestServiceBuilder {
                     .map(|id| (id.parse().unwrap(), key_use))
                     .collect(),
                 session_launcher: Some(std::path::PathBuf::from(LAUNCHER)),
+                migration_owed: None,
             },
             NONCE,
             store,

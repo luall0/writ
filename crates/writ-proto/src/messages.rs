@@ -145,6 +145,10 @@ pub struct Info {
     /// passphrase is given. Empty when nothing is owed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rotation_owed: Vec<String>,
+    /// While the policy in force is of an older format (M7.9.6): the migration it owes, which
+    /// every request but `writ unseal` and `writ migrate` waits for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<MigrationOwed>,
 }
 
 /// What opens a sealed keystore.
@@ -307,6 +311,33 @@ impl KeyRole {
             Self::Upstream => "upstream credential",
         }
     }
+}
+
+/// The formats of a migration the policy in force owes (M7.9.6): from the one it is written
+/// in to the one this daemon reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MigrationOwed {
+    pub from: u32,
+    pub to: u32,
+}
+
+/// Reply to [`Command::MigrationShow`](crate::Command::MigrationShow) (M7.9.6): the policy in
+/// force (what the migration's `writ-admin/2` replaces) and, while a migration is owed, the
+/// daemon's rewrite of it or why there is none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MigrationShown {
+    /// The formats, while a migration is owed; none: nothing to migrate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owed: Option<MigrationOwed>,
+    pub in_force: AdminShown,
+    /// The rewrite in the current format, the canonical layout: what `writ migrate` signs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<String>,
+    /// Why there is no rewrite, each naming its key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
 }
 
 /// Reply to [`Command::RecoveryShow`](crate::Command::RecoveryShow) (M7.6): the recovery

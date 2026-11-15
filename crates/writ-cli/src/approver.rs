@@ -21,9 +21,9 @@ mod sync_status;
 pub mod ui;
 
 pub use admin::{
-    apply as admin_apply, ca_rotate as admin_ca_rotate, ca_show as admin_ca_show, recovery_check,
-    recovery_new, show as admin_show, target as admin_target, tls_rotate as admin_tls_rotate,
-    token as admin_token,
+    apply as admin_apply, ca_rotate as admin_ca_rotate, ca_show as admin_ca_show, migrate,
+    recovery_check, recovery_new, show as admin_show, target as admin_target,
+    tls_rotate as admin_tls_rotate, token as admin_token,
 };
 pub use guided::{
     add as guided_add, check as guided_check, edit_entry as guided_edit, rescan as guided_rescan,
@@ -506,6 +506,15 @@ pub async fn unseal(paths: &Paths, url: &str, signer: &Signer) -> anyhow::Result
             drop(request);
             let unsealed: Unsealed = session.call(&Command::Unseal, &body).await??;
             println!("Unsealed (signed by {}).", unsealed.signed_by);
+            // A policy of an older format in force (M7.9.6): the daemon serves nothing else
+            // until its migration is signed.
+            if let Some(owed) = info.migration {
+                println!(
+                    "The policy in force is format {}; this daemon reads format {}: every \
+                     request is refused until you sign its migration with writ migrate.",
+                    owed.from, owed.to
+                );
+            }
             Ok(Exit::Ok)
         })
         .await

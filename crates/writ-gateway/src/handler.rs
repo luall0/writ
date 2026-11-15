@@ -197,6 +197,11 @@ impl russh::server::Handler for Connection {
                         self.gateway.refused_sealed(self.facts.clone()).await;
                         Ok(Auth::reject())
                     }
+                    // Logged by the gateway too, coalesced (M7.9.6).
+                    Err(denial) if denial.code == writ_core::policy::DenyCode::MigrationOwed => {
+                        self.gateway.refused_owed(self.facts.clone()).await;
+                        Ok(Auth::reject())
+                    }
                     Err(_) => Ok(Auth::reject()),
                 }
             }

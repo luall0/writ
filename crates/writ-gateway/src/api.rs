@@ -32,6 +32,10 @@ pub(crate) async fn run_agent(
         gateway.refused_sealed(facts).await;
         return reply(tx, sealed()).await;
     }
+    if gateway.service().migration_owed().is_some() {
+        gateway.refused_owed(facts).await;
+        return reply(tx, owed()).await;
+    }
     let service = gateway.service().clone();
     let result = match command {
         Command::Request => match read_body(&mut rx).await {
@@ -117,6 +121,11 @@ fn sealed() -> (Vec<u8>, Option<String>) {
     encoded::<()>(Err(ApiError::new(writ_core::policy::SEALED)))
 }
 
+/// What every request but `info`, `unseal` and the migration gets while one is owed (M7.9.6).
+fn owed() -> (Vec<u8>, Option<String>) {
+    encoded::<()>(Err(ApiError::new(writ_core::policy::MIGRATION_OWED)))
+}
+
 /// Whether an approval command reads a JSON body.
 pub(crate) fn approval_has_body(command: &Command) -> bool {
     matches!(
@@ -147,6 +156,17 @@ pub(crate) async fn approval_reply(
     if service.is_sealed() && !matches!(command, Command::Info | Command::Unseal) {
         gateway.refused_sealed(facts).await;
         return sealed();
+    }
+    // A migration owed (M7.9.6): only what unseals and migrates. The service refuses an admin
+    // change of anything but the policy meanwhile.
+    if service.migration_owed().is_some()
+        && !matches!(
+            command,
+            Command::Info | Command::Unseal | Command::MigrationShow | Command::AdminApply
+        )
+    {
+        gateway.refused_owed(facts).await;
+        return owed();
     }
     let empty = body.iter().all(u8::is_ascii_whitespace);
     match command {
@@ -185,6 +205,7 @@ pub(crate) async fn approval_reply(
             encoded(blocking(move || service.admin_show(target)).await)
         }
         Command::AdminApply => admin_apply(gateway, facts, &body).await,
+        Command::MigrationShow => encoded(blocking(move || service.migration_show()).await),
         Command::TokenShow { id } => match gateway.shared.config.admin.clone() {
             Some(applier) => match applier.token_show(id).await {
                 Ok(shown) => encoded(Ok(shown)),

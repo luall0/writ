@@ -96,6 +96,9 @@ pub enum Command {
     /// `writ admin auto-unseal status|on|off` (M7.6): how the daemon unseals at start, and what
     /// keeps it from opening itself. Reply: [`AutoUnsealShown`].
     AutoUnsealShow,
+    /// `writ migrate` (M7.9.6): the migration the policy in force owes, its text in force and
+    /// the daemon's rewrite of it, or that none is owed. Reply: [`MigrationShown`].
+    MigrationShow,
 }
 
 impl Command {
@@ -181,6 +184,7 @@ impl Command {
             ("revoke", Some(_)) => Some(Self::Revoke { id: id()? }),
             ("prove", None) => Some(Self::Prove),
             ("unseal", None) => Some(Self::Unseal),
+            ("migration", None) => Some(Self::MigrationShow),
             _ => None,
         }
     }
@@ -223,6 +227,7 @@ impl Command {
             Self::CaShow => "writ admin ca show".to_owned(),
             Self::CaRotate => "writ admin ca rotate".to_owned(),
             Self::AutoUnsealShow => "writ admin auto-unseal show".to_owned(),
+            Self::MigrationShow => "writ migration".to_owned(),
         }
     }
 
@@ -266,6 +271,7 @@ impl Command {
     /// | recovery check | `GET /v1/recovery` |
     /// | admin ca (show, rotate) | `GET /v1/ca`, `POST /v1/ca` |
     /// | admin auto-unseal | `GET /v1/auto-unseal` |
+    /// | migrate | `GET /v1/migration` |
     pub fn http_route(&self) -> Option<(&'static str, String)> {
         match self {
             Self::Request
@@ -305,6 +311,7 @@ impl Command {
             Self::CaShow => Some(("GET", "/v1/ca".to_owned())),
             Self::CaRotate => Some(("POST", "/v1/ca".to_owned())),
             Self::AutoUnsealShow => Some(("GET", "/v1/auto-unseal".to_owned())),
+            Self::MigrationShow => Some(("GET", "/v1/migration".to_owned())),
         }
     }
 
@@ -357,6 +364,7 @@ impl Command {
             ("GET", ["ca"], None) => Self::CaShow,
             ("POST", ["ca"], None) => Self::CaRotate,
             ("GET", ["auto-unseal"], None) => Self::AutoUnsealShow,
+            ("GET", ["migration"], None) => Self::MigrationShow,
             _ => return None,
         };
         Some(command)

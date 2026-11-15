@@ -102,6 +102,9 @@ pub enum DenyCode {
     Invalid,
     /// The daemon is sealed: nothing is served until an approver unseals it (`sealed`).
     Sealed,
+    /// The policy in force is of an older format: nothing is served until an approver signs
+    /// its migration (`migration_owed`, M7.9.6).
+    MigrationOwed,
     /// git asked for a signature in another format than the lease's key signs in
     /// (`signature_format`). Not a violation: a client wired for the other format, never
     /// anything the ticket allowed.
@@ -162,6 +165,7 @@ impl DenyCode {
             DenyCode::Rate => "rate",
             DenyCode::Invalid => "invalid",
             DenyCode::Sealed => "sealed",
+            DenyCode::MigrationOwed => "migration_owed",
             DenyCode::SignatureFormat => "signature_format",
         }
     }
@@ -208,6 +212,11 @@ impl Denial {
         Self::new(DenyCode::Sealed, SEALED)
     }
 
+    /// The policy in force is of an older format (M7.9.6).
+    pub fn migration_owed() -> Self {
+        Self::new(DenyCode::MigrationOwed, MIGRATION_OWED)
+    }
+
     /// The daemon failed inside: all the agent reads (the cause goes to the daemon's log).
     pub fn internal() -> Self {
         Self::new(DenyCode::Invalid, INTERNAL_ERROR)
@@ -216,6 +225,12 @@ impl Denial {
 
 /// What a client reads of every request while the daemon is sealed.
 pub const SEALED: &str = "daemon sealed: an approver unseals it with `writ unseal`";
+
+/// What every request but `writ unseal` and `writ migrate` reads while the policy in force is
+/// of an older format (M7.9.6).
+pub const MIGRATION_OWED: &str = "the policy in force is of an older format, which this writd \
+                                  doesn't read: every request is refused until an approver \
+                                  signs its migration with `writ migrate`";
 
 /// What the agent reads when the daemon failed inside.
 pub const INTERNAL_ERROR: &str = "internal error in the daemon";

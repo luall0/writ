@@ -68,6 +68,31 @@ pub fn format_of(text: &str) -> Result<u32, FieldError> {
     Ok(parse_yaml::<FormatOnly>(text)?.format.unwrap_or(1))
 }
 
+/// What a daemon holds while a migration is owed: the policy in force, of an older format, read
+/// through its rewrite with what the rewrite can't carry over dropped (a `push_modes` without
+/// gateway too). Only its keys, recipients and `unseal` are used, to unseal and to check the
+/// migration against; every request is refused meanwhile, so nothing else in it decides
+/// anything. The current format is read as it is.
+pub fn baseline(text: &str, min_ttl: Duration) -> Result<PolicyConfig, MigrateError> {
+    match format_of(text).map_err(MigrateError::Unreadable)? {
+        POLICY_FORMAT => {
+            PolicyConfig::from_yaml_with_min_ttl(text, min_ttl).map_err(MigrateError::Unreadable)
+        }
+        1 => from_1(text, min_ttl, Reasons::Drop),
+        found if found > POLICY_FORMAT => Err(MigrateError::Newer { found }),
+        found => Err(MigrateError::Unknown { found }),
+    }
+}
+
+/// What a rewrite does with what it can't carry over.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reasons {
+    /// Refuses the rewrite, naming each: a proposal.
+    Refuse,
+    /// Drops it: a [`baseline`].
+    Drop,
+}
+
 /// `text` rewritten to the current format, step by step, checked with `min_ttl` as the
 /// daemon checks a policy; or why not.
 pub fn propose(text: &str, min_ttl: Duration) -> Result<Proposal, MigrateError> {
@@ -77,7 +102,7 @@ pub fn propose(text: &str, min_ttl: Duration) -> Result<Proposal, MigrateError> 
         1 => Ok(Proposal {
             from,
             to: POLICY_FORMAT,
-            text: from_1(text, min_ttl)?.to_yaml(),
+            text: from_1(text, min_ttl, Reasons::Refuse)?.to_yaml(),
         }),
         found if found > POLICY_FORMAT => Err(MigrateError::Newer { found }),
         found => Err(MigrateError::Unknown { found }),
@@ -85,7 +110,7 @@ pub fn propose(text: &str, min_ttl: Duration) -> Result<Proposal, MigrateError> 
 }
 
 /// Format 1 → 2: the push modes removed, where the policy means the same without them.
-fn from_1(text: &str, min_ttl: Duration) -> Result<PolicyConfig, MigrateError> {
+fn from_1(text: &str, min_ttl: Duration, what: Reasons) -> Result<PolicyConfig, MigrateError> {
     let mut raw: RawPolicyConfig = parse_yaml(text).map_err(MigrateError::Unreadable)?;
     let mut reasons = Vec::new();
     for (name, repo) in &mut raw.repos {
@@ -103,7 +128,7 @@ fn from_1(text: &str, min_ttl: Duration) -> Result<PolicyConfig, MigrateError> {
             );
         }
     }
-    if !reasons.is_empty() {
+    if !reasons.is_empty() && what == Reasons::Refuse {
         return Err(MigrateError::Reasons(reasons));
     }
     raw.format = Some(POLICY_FORMAT);

@@ -124,7 +124,38 @@ impl Service {
 
     /// The version of `target` in force, its text and its digest.
     pub fn admin_show(&self, target: AdminTarget) -> Result<AdminShown, ServiceError> {
-        let (_, inner) = self.begin()?;
+        self.not_owed()?;
+        self.shown(target)
+    }
+
+    /// The migration the policy in force owes (M7.9.6), its text in force and the daemon's
+    /// rewrite of it, or why there is none; served while one is owed (what `writ migrate`
+    /// signs), and after (nothing owed).
+    pub fn migration_show(&self) -> Result<writ_proto::MigrationShown, ServiceError> {
+        use writ_core::config::migrate::{self, MigrateError};
+        let in_force = self.shown(AdminTarget::Policy)?;
+        let owed = self.migration_owed();
+        let (proposal, reasons) = match owed {
+            None => (None, Vec::new()),
+            Some(_) => match migrate::propose(&in_force.text, self.config.min_ttl) {
+                Ok(proposal) => (Some(proposal.text), Vec::new()),
+                Err(MigrateError::Reasons(reasons)) => {
+                    (None, reasons.iter().map(ToString::to_string).collect())
+                }
+                Err(other) => (None, vec![other.to_string()]),
+            },
+        };
+        Ok(writ_proto::MigrationShown {
+            owed,
+            in_force,
+            proposal,
+            reasons,
+        })
+    }
+
+    /// [`Self::admin_show`], while a migration is owed too.
+    fn shown(&self, target: AdminTarget) -> Result<AdminShown, ServiceError> {
+        let (_, inner) = self.begin_any()?;
         let (version, _) = self
             .in_force()
             .versions
@@ -155,6 +186,19 @@ impl Service {
     ) -> Result<CheckedAdmin, ServiceError> {
         self.opened()?;
         let checked = self.admin_document(request);
+        // While a migration is owed, only the policy changes: it is the migration (M7.9.6).
+        let checked = match checked {
+            Ok(checked)
+                if checked.admin.target != AdminTarget::Policy
+                    && self.migration_owed().is_some() =>
+            {
+                Err(ServiceError::refused(
+                    RefusalCode::MigrationOwed,
+                    writ_core::policy::MIGRATION_OWED,
+                ))
+            }
+            other => other,
+        };
         if let Err(e) = &checked {
             self.admin_failed(None, None, &e.to_string(), caller);
         }
@@ -276,7 +320,7 @@ impl Service {
         let certified = openpgp.as_ref().map_or_else(String::new, |keys| {
             super::openpgp::changes(&self.openpgp().certified, &keys.certified)
         });
-        let (now, mut inner) = self.begin()?;
+        let (now, mut inner) = self.begin_any()?;
         // Checked again under the lock: two changes of one file never both apply.
         let old = match self.current(&checked.admin) {
             Ok(old) => old,
@@ -418,6 +462,23 @@ impl Service {
                     Arc::new(approvers.into_iter().map(|a| a.key).collect());
             }
             AdminParsed::Readers => {}
+        }
+        // A policy of the current format in force: the migration owed is done (M7.9.6).
+        if target == AdminTarget::Policy
+            && let Some(owed) = self.migration_owed()
+        {
+            *self
+                .migration
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            let done = AuditEvent::new(now, EventKind::Migrate, Outcome::Allowed)
+                .approver(&checked.approver)
+                .caller(caller)
+                .reason(format!(
+                    "policy: format {} migrated to format {} (version {version})",
+                    owed.from, owed.to
+                ));
+            Self::write_best_effort(&mut inner, &done);
         }
         // Their certificates refused before the lock goes (the review after M7.6, A-4): none
         // of them is usable while the revocations are recorded one by one.

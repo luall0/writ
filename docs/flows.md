@@ -246,7 +246,9 @@ sequenceDiagram
 ```
 
 Until unsealed, every request but `writ info` and `writ unseal` fails closed with "daemon
-sealed" (`sealed`), logged and coalesced per source; the sealed start is one `seal` line. The
+sealed" (`sealed`), logged and coalesced per source; a daemon whose policy in force is of an
+older format, once unsealed, refuses every request but those two and the migration until `writ
+migrate` signs it (`migration_owed`, M7.9.6: [approvals](architecture/approvals.md#writ-migrate)); the sealed start is one `seal` line. The
 signature is checked before the passphrase is tried, so only an approver can make the daemon
 spend scrypt's second; one unseal runs at a time. A wrong passphrase, a signature for another
 boot or another daemon, a key not in `approvers`: each refused, logged, the daemon still

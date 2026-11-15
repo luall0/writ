@@ -41,6 +41,9 @@ pub enum RefusalCode {
     Proof,
     /// The daemon is sealed: nothing but `info` and an unseal is served.
     Sealed,
+    /// The policy in force is of an older format (M7.9.6): nothing but `info`, an unseal and
+    /// the migration (its showing, the policy's admin change) is served.
+    MigrationOwed,
     /// An unseal that can't be accepted: not this boot's or this daemon's document, a
     /// signature not an approver's, a wrong passphrase, or a keystore that doesn't open.
     Unseal,

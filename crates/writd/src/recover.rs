@@ -75,7 +75,8 @@ pub fn recover(path: &Path, target: &str, file: &Path) -> anyhow::Result<()> {
     // new passphrase). Nothing is written before all of it answered.
     let declared = match target {
         AdminTarget::Policy => {
-            let policy = crate::authority::parse_policy(&text, config.min_ttl)
+            // An older format is taken too: the daemon then owes its migration (M7.9.6).
+            let (policy, _) = crate::authority::read_policy(&text, config.min_ttl)
                 .with_context(|| file.display().to_string())?;
             Some(
                 crate::declared::declarations(&policy)

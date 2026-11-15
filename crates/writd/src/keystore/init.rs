@@ -52,7 +52,8 @@ pub fn init(path: &Path, tls_backend: &str, ca_backend: &str) -> anyhow::Result<
     // The three files, read and checked before anything is made: they become the versions
     // in force.
     let texts = crate::authority::read_files(&config)?;
-    let policy = crate::authority::parse_policy(
+    // An older format is taken too: the daemon then owes its migration (M7.9.6).
+    let (policy, _) = crate::authority::read_policy(
         texts
             .get(&writ_core::authority::AdminTarget::Policy)
             .map(String::as_str)

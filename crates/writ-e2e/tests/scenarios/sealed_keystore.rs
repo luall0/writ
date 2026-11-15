@@ -536,6 +536,92 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     );
     expect(&out, 0, "unseal after recovery");
 
+    // An older policy in force (M7.9.6), as a writd before format 2 leaves one: put in force
+    // with `writd recover`, the daemon stopped. Started again and unsealed, it refuses every
+    // request until `writ migrate` signs a format 2 policy.
+    let current = dir.read("policy.yaml");
+    let older = current.replacen("format: 2\n", "", 1).replacen(
+        "templates: [feature] }",
+        "templates: [feature], push_modes: [gateway] }",
+        1,
+    );
+    assert!(older.len() > current.len(), "{older}");
+    dir.ok(
+        "kill $(cat writd.pid) && while kill -0 $(cat writd.pid) 2>/dev/null; do sleep 0.1; done",
+    );
+    dir.write("older-policy.yaml", &older, "0644");
+    let out = dir.run_with(
+        "writd recover writd.yaml policy older-policy.yaml",
+        format!("{passphrase}\n").as_bytes(),
+    );
+    expect(&out, 0, "writd recover an older policy");
+    dir.ok("nohup writd run writd.yaml > writd.log 2>&1 & echo $! > writd.pid");
+    eventually(
+        "the sealed daemon started on an older policy",
+        Duration::from_secs(30),
+        || {
+            dir.run("test $(grep -c 'sealed=true' writd.log) -ge 1")
+                .status
+                .success()
+        },
+    );
+    let out = approver.run_with(
+        &format!("{writ} unseal --approval-url {ssh} {signer}"),
+        format!("{passphrase}\n").as_bytes(),
+    );
+    let (said, _) = expect(&out, 0, "unseal with an older policy in force");
+    assert!(
+        said.contains(
+            "The policy in force is format 1; this daemon reads format 2: every request is \
+             refused until you sign its migration with writ migrate."
+        ),
+        "{said}"
+    );
+    let out = approver.run(&format!("{writ} ls --approval-url {ssh}"));
+    let (_, why) = expect(&out, 1, "ls while a migration is owed");
+    assert!(
+        why.contains(
+            "every request is refused until an approver signs its migration with `writ migrate`"
+        ),
+        "{why}"
+    );
+    // The daemon's rewrite shown, declined: nothing changes.
+    let out = approver.run_with(
+        &format!("{writ} migrate --approval-url {ssh} {signer}"),
+        b"n\n",
+    );
+    let (said, _) = expect(&out, 6, "writ migrate declined");
+    assert!(
+        said.contains("rewritten to format 2 by the daemon") && said.contains("Not signed."),
+        "{said}"
+    );
+    expect(
+        &approver.run(&format!("{writ} ls --approval-url {ssh}")),
+        1,
+        "ls still refused",
+    );
+    // The operator's own text signed instead: the format 2 policy from before.
+    approver.write("policy-format-2.yaml", &current, "0600");
+    let out = approver.run(&format!(
+        "{writ} migrate --file policy-format-2.yaml --yes --approval-url {ssh} {signer}"
+    ));
+    let (said, _) = expect(&out, 0, "writ migrate --file");
+    assert!(
+        said.contains("replaced by policy-format-2.yaml")
+            && said.contains("Applied: policy is version "),
+        "{said}"
+    );
+    approver.ok(&format!("{writ} ls --approval-url {ssh}"));
+    let out = approver.run(&format!("{writ} migrate --approval-url {ssh} {signer}"));
+    let (said, _) = expect(&out, 0, "writ migrate with nothing owed");
+    assert!(said.contains("Nothing to migrate"), "{said}");
+    let audit = dir.read("data/audit.jsonl");
+    assert!(
+        audit.contains("\"event\":\"migrate\",\"result\":\"allowed\""),
+        "{audit}"
+    );
+    assert_eq!(dir.read("policy.yaml"), current, "the file written back");
+
     // The HTTPS approval API's TLS key rotated live, from the approver's machine (M7.5): over
     // HTTPS the approver's pin replaced, the old one refused from then on.
     approver.ok("cp $HOME/.writ-sealed/tls_pins $HOME/.writ-sealed/tls_pins.old");

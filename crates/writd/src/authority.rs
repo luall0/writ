@@ -23,7 +23,10 @@ use crate::config::Config;
 
 /// The three files as the daemon runs with them.
 pub struct Loaded {
+    /// The policy; while a migration is owed, the older text's rewrite ([`read_policy`]).
     pub policy: PolicyConfig,
+    /// The migration the policy in force owes (M7.9.6): its text is of an older format.
+    pub migration_owed: Option<writ_proto::MigrationOwed>,
     pub approvers: Vec<AllowedSigner>,
     pub readers: Vec<Reader>,
     pub in_force: InForce,
@@ -47,6 +50,33 @@ pub fn parse_policy(text: &str, min_ttl: Duration) -> anyhow::Result<PolicyConfi
         PolicyConfig::from_yaml_with_min_ttl(text, min_ttl).map_err(|e| anyhow::anyhow!("{e}"))?;
     crate::declared::declarations(&policy)?;
     Ok(policy)
+}
+
+/// A policy in force, read as the daemon starts with it (M7.9.6): of the current format,
+/// [`parse_policy`]'s; of an older one, its rewrite with what can't be carried over dropped
+/// (`writ_core::config::migrate::baseline`), with the migration it owes. Only its keys,
+/// recipients and `unseal` serve then (to unseal and to check the migration): every request
+/// is refused until a policy of the current format is signed. A newer format is refused.
+/// What `writd init` and `writd recover` take too; an admin change takes only the current
+/// format ([`parse_policy`]).
+pub fn read_policy(
+    text: &str,
+    min_ttl: Duration,
+) -> anyhow::Result<(PolicyConfig, Option<writ_proto::MigrationOwed>)> {
+    use writ_core::config::{POLICY_FORMAT, migrate};
+    let format = migrate::format_of(text).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if format == POLICY_FORMAT {
+        return Ok((parse_policy(text, min_ttl)?, None));
+    }
+    let policy = migrate::baseline(text, min_ttl).map_err(|e| anyhow::anyhow!("{e}"))?;
+    crate::declared::declarations(&policy)?;
+    Ok((
+        policy,
+        Some(writ_proto::MigrationOwed {
+            from: format,
+            to: POLICY_FORMAT,
+        }),
+    ))
 }
 
 /// The approvers: none at all is refused (nothing could ever be signed).
@@ -96,13 +126,15 @@ fn parsed(
     min_ttl: Duration,
 ) -> anyhow::Result<Loaded> {
     let text = |target| texts.get(&target).map(String::as_str).unwrap_or_default();
-    let policy = parse_policy(text(AdminTarget::Policy), min_ttl).context("the policy in force")?;
+    let (policy, migration_owed) =
+        read_policy(text(AdminTarget::Policy), min_ttl).context("the policy in force")?;
     let approvers =
         parse_approvers(text(AdminTarget::Approvers)).context("the approvers in force")?;
     let readers = parse_readers(text(AdminTarget::Readers)).context("the readers in force")?;
     one_key_one_purpose(&approvers, &readers)?;
     Ok(Loaded {
         policy,
+        migration_owed,
         approvers,
         readers,
         in_force,

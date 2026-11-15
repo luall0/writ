@@ -334,7 +334,8 @@ fn load_registry(config: &Config) -> anyhow::Result<PolicyConfig> {
         return Ok(loaded.policy);
     }
     let policy_text = writ_platform::fs::read_authority(&config.policy, "policy")?;
-    authority::parse_policy(&policy_text, config.min_ttl)
+    authority::read_policy(&policy_text, config.min_ttl)
+        .map(|(policy, _)| policy)
         .map_err(|e| anyhow::anyhow!("{}: {e}", config.policy.display()))
 }
 
@@ -601,6 +602,7 @@ fn run(path: &Path) -> anyhow::Result<()> {
             loaded.policy.clone(),
             loaded.approvers,
             loaded.in_force,
+            loaded.migration_owed,
             boot.ca_public,
             daemon,
             &platform,
@@ -826,10 +828,19 @@ fn start_service(
     policy: PolicyConfig,
     approvers: Vec<AllowedSigner>,
     in_force: writ_approval::InForce,
+    migration_owed: Option<writ_proto::MigrationOwed>,
     ca_public: writ_crypto::ssh_key::PublicKey,
     daemon: KeyFingerprint,
     platform: &platform::Platform,
 ) -> anyhow::Result<Arc<Service>> {
+    if let Some(owed) = migration_owed {
+        tracing::warn!(
+            from = owed.from,
+            to = owed.to,
+            "the policy in force is of an older format: every request is refused until an \
+             approver signs its migration with writ migrate"
+        );
+    }
     let audit = AuditLog::open(&config.state_dir.join("audit.jsonl"))?;
     Ok(Service::new(
         ServiceConfig {
@@ -856,6 +867,7 @@ fn start_service(
             },
             signing_keys: declared::key_uses(declared),
             session_launcher: config.checked_session_launcher()?,
+            migration_owed,
         },
         writ_crypto::keys::random_array()?,
         store,

@@ -471,6 +471,21 @@ impl Gateway {
         }
     }
 
+    /// A request refused because a migration of the policy is owed (M7.9.6; event `command`,
+    /// denied), coalesced per source as a sealed daemon's refusals are.
+    pub(crate) async fn refused_owed(&self, caller: CallerFacts) {
+        if let Some(suppressed) = self
+            .shared
+            .throttle
+            .admit(caller.source_addr, "migration_owed")
+        {
+            let reason =
+                limits::with_suppressed(writ_core::policy::MIGRATION_OWED.to_owned(), suppressed);
+            let denial = GatewayDenial::new(EventKind::Command, reason);
+            self.log_denial(denial, caller).await;
+        }
+    }
+
     /// Brings the notes of `repo` up to date when it asks for notes (`ticket_link: notes`): the
     /// ledger's commits upstream has whose note was never recorded, and every note still
     /// waiting, written and pushed ([`notes`]). Run after each sync of the repo's mirror.

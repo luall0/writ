@@ -412,6 +412,30 @@ another daemon, it is refused. The passphrase travels in the request body only, 
 read on both sides, and is never logged; a wrong one is refused after the signature was
 checked. Both halves are needed: the passphrase alone, or the signature alone, opens nothing.
 
+## `writ migrate`
+
+After an upgrade that changed the policy's format (M7.9.6), the policy in force is of an
+older format, which the daemon never reads: it starts and unseals as before, then refuses every
+request but `writ info`, `writ unseal` and the migration with `migration_owed` ("every request
+is refused until an approver signs its migration with `writ migrate`"), agents and lease
+holders included, each refusal logged (coalesced per source, as a sealed daemon's). `writ
+unseal` says that one is owed. To unseal and to check the migration, the daemon holds the older
+text read through its rewrite (`writ_core::config::migrate::baseline`: what the rewrite can't
+carry over dropped); only its keys, recipients and `unseal` serve, since nothing else runs.
+
+`writ migrate [--file <policy>] [--yes] [--approval-url] [--key] [--agent]` asks the daemon for
+the migration (`MigrationShown`: the formats, the policy in force, and the daemon's rewrite of it
+in the current format, canonical, or the reasons there is none, each naming its key). The text
+in force is checked as `writ admin apply` checks it (the daemon the connection authenticated,
+the policy, the text its digest names); the rewrite, or `--file`'s text (needed when there is
+no rewrite: a `push_modes` without `gateway`), is shown as the change of the policy it is, line
+by line, cleaned, then signed on yes as the policy's `writ-admin/2` naming the version in force:
+one approval, the daemon's checks of any admin change (the current format only: an older text
+is refused). In force, the daemon serves again (the leases granted before included) and logs a
+`migrate` line beside the `admin` one. Declined (exit 6), nothing changes; it can be run again at
+any time. With nothing owed it says so and signs nothing. While one is owed, no other admin change
+is taken.
+
 ## Reaching the daemon
 
 The approval API has two transports, each enabled or disabled in `writd.yaml`

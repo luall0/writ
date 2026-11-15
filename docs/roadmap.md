@@ -348,12 +348,12 @@ Plan, each step leaving Writ working (`make ci`):
 1. This page, the decisions, the parked pages.
 2. The state's steps and the backup (`writ-store`), version 12.
 3. The policy's format (`format: 2`), `migrate`, the push modes removed.
-4. The owed state in the daemon: the start and unseal, the refusals, the approval API's
-   migration route; `writd init` and `writd recover` with an older format.
-5. `writ migrate`, and every client command's refusal.
-6. `writd check-upgrade`.
-7. The installer's upgrade.
-8. The docs left, the end-to-end scenarios and the registries' rows that weren't with their
+4. The owed state in the daemon (the start and unseal, the refusals, the approval API's
+   migration route; `writd init` and `writd recover` with an older format) and `writ migrate`,
+   in one commit: the state can't be tested end to end without the command.
+5. `writd check-upgrade`.
+6. The installer's upgrade.
+7. The docs left, the end-to-end scenarios and the registries' rows that weren't with their
    step; the manual check: the real install on the Mac upgraded.
 
 Acceptance:
