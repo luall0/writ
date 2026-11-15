@@ -28,7 +28,7 @@ Acceptance checklist, all must pass:
   trailer; caller = lease holder (`resolve_lease`); origin host advisory; process tree; files
   vs `expected_paths` (`warn`, `deny`, none). Every case asserts the exact `DenyCode`. The
   `direct_ssh` rows (repo through a deploy key, push host through `session-bind`) are checked
-  from [M10](../roadmap.md#m10--direct_ssh-push-mode); the plan check is in the backlog.*
+  from M10 (since dropped: [why](../backlog/parked/direct-ssh-push-mode.md)); the plan check is in the backlog.*
 - [x] Property tests: a narrowed ticket never grants anything the submitted one did not; no
       ticket outside every template is ever accepted; ambiguity (two matching leases) denies.
   *`crates/writ-core/tests/properties.rs` (proptest, 1,024 cases each), checked through the

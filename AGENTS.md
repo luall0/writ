@@ -16,7 +16,7 @@ know before touching the repo.
 If the repo has no `Cargo.toml` yet, the project is not initialized: follow
 [docs/guides/initialization.md](docs/guides/initialization.md) first.
 
-Work follows the [roadmap](docs/roadmap.md) **strictly in order**, the order of its table: M0 to M7.9.5, then M9, M10, M8, M8.5 (M8.5 completes v1); each milestone
+Work follows the [roadmap](docs/roadmap.md) **strictly in order**, M0 to M8.5 (M8.5 completes v1); each milestone
 ends with a working, tested commit. When a milestone is done, move its section from the
 roadmap to `docs/history/m<N>-<slug>.md`, tick its checklist with a note under each item on
 how it was verified, add a row at the end of the [history](docs/history/README.md), and leave

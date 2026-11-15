@@ -268,7 +268,7 @@ environment variable a binary reads, does in the same change (hard rule 19):
    or an end-to-end scenario, named in the
    [configuration coverage registry](testing.md#configuration-coverage-every-key); a parser's
    unit test is not enough. A key accepted for a later milestone names it there
-   (`planned: M9`) until its effect exists.
+   (`planned: M8`) until its effect exists.
 5. **The examples** that show it: the [development configuration](../dev/writd.yaml), the
    [lease model](lease-model.md), a guide.
 

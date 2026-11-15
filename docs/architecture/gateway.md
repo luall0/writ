@@ -479,7 +479,7 @@ a ref upstream doesn't have (a repo without notes yet), so the notes job keeps t
 notes ref in step itself. Agents fetch it from the mirror like any ref
 (`git fetch origin refs/notes/commits:refs/notes/commits` through the URL rewrite) and can
 never push it, nor any ref outside `refs/heads/` (`ref`). The job never needs the annotated commits, only a repository holding
-the notes ref: M9's `proxy` mode writes notes the same way, from a notes-only repository.
+the notes ref.
 
 What remotes do with notes: all keep them; Forgejo and Gitea show those under
 `refs/notes/commits` on the commit page, GitHub's web interface shows none

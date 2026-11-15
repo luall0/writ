@@ -17,10 +17,6 @@ Local mode (M7 on the Mac, M7.1 on Linux) and detached mode (M8) are then implem
 configuration plugged into an unchanged core, each installed by one installer where a setup is
 picked.
 
-The order is the table's, not the numbers': detached mode (M8) and the non-exportable session
-keys it calls for (M8.5) come after the push modes (M9, M10), since local mode covers what is
-needed now. The numbers are kept, because the docs, the code and the registries name them.
-
 | # | Milestone | What it brings |
 |---|---|---|
 | M0 | [Protocol spike](history/m0-protocol-spike.md) ✅ | Go for the gateway (certificates, git, daemon-signed commits, agent-held approval keys); local mode's signer: CryptoKit Secure Enclave key under a `_writd` user |
@@ -53,8 +49,9 @@ needed now. The numbers are kept, because the docs, the code and the registries 
 | M7.8 | [Approval popup on the Mac](history/m7.8-approval-popup-on-the-mac.md) ✅ | A small native window above every app, full-screen ones too, when a ticket waits for my signature: the whole ticket, Sign or Decline (with feedback), the signature still `writ`'s and Touch ID; a watch route on the approval API |
 | M7.9 | [Local mode checked on the Mac](history/m7.9-local-mode-checked-on-the-mac.md) ✅ | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
 | M7.9.5 | [Operator experience](history/m7.9.5-operator-experience.md) ✅ | Asked by the user after the real install: amendments showing only what changed, the popup redesigned (its design validated first, as an artifact), every guided prompt and the installer's questions with arrow selection, colour and inline checks, a quick setup guide from `make install` to a first agent run |
-| M9 | [`proxy` push mode](#m9--proxy-push-mode) | Relayed pushes with the same checks, no mirror |
-| M10 | [`direct_ssh` push mode](#m10--direct_ssh-push-mode) | Lent per-lease ssh-agent socket with a deploy key |
+| M7.9.6 | [Upgrades](#m796--upgrades) | Asked by the user before M8: the state migrated in steps with a backup first, the policy naming its format and every format change a signed migration (`writ migrate`), the daemon refusing everything else until it is signed, `writd check-upgrade` before the installer changes anything, the installer unsealing and migrating; the push modes `proxy` and `direct_ssh` dropped, their keys removed as format 2 |
+| M9 | `proxy` push mode, dropped | Dropped (2026-11-15): its keys go in M7.9.6's format 2, the idea [parked](backlog/parked/proxy-push-mode.md) with the spike's results; this row leaves with them |
+| M10 | `direct_ssh` push mode, dropped | Dropped (2026-11-15): its keys go in M7.9.6's format 2, the idea [parked](backlog/parked/direct-ssh-push-mode.md); this row leaves with them |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 
@@ -274,30 +271,116 @@ the rail, a card per repository), every question of `writ` and the installer a m
 terminal (`inquire`, `writ prompt`), a quick start from `make install` to a verified commit,
 and the operator pages naming no approval agent.
 
-## M9 — `proxy` push mode
+## M7.9.6 — Upgrades
 
-[Flows § 3b](flows.md#3b-push-proxy-mode), [Q22/Q23](decisions.md).
+Asked by the user before M8, with the decision to drop the `proxy` and `direct_ssh` push modes
+([decision log](decisions.md), 2026-11-15). Writ runs for real since M7.9, and an upgrade can't
+carry it over a format change today: the state refuses any other `STATE_VERSION` (an operator
+starts from a new state directory, losing the ledger, the leases and the policy's history), and
+the policy in force is signed text re-read at every start with unknown keys refused, so a key a
+version removes leaves the daemon unable to start. Settled with the user:
 
-- **The push facts as M7.7 leaves them** (found by its [review](#m77--review-after-m76),
-  `G-6`): each ref's old value read by the daemon, never the one the client's command claims,
-  so the fast-forward and case-twin checks hold without upstream's `--force-with-lease`
-  behind them; `proxy` mode reuses them.
+- **The state migrates in steps, a backup first.** `writ-store` holds one step per version
+  (N → N+1), applied in order at open, each in its own transaction, before anything else reads
+  the state. The state is first copied aside whole (`VACUUM INTO`,
+  `<state_dir>/backups/state-v<N>-<time>.db`, the daemon's user only, `0600`). A failed step
+  rolls back and the daemon refuses to start, naming the step, the copy untouched; a state newer
+  than the binary is refused as today (no downgrade). **Version 12 is the first step:** a
+  `migrations` table recording each one (from, to, when, the backup), and one audit line per
+  migration. Each step is tested from a database written by the schema it starts from, kept
+  frozen in the tests with rows in every table. A ticket format change (`writ-ticket/N`) brings
+  its step, never rewrites a ticket's signed bytes, and blocks the upgrade while a ticket of the
+  old format is pending or its lease active.
+- **The policy names its format:** `format: 2` as its first key, written by the canonical
+  writer and the template; a text without it is format 1 (every policy before M7.9.6). It is a
+  line of the signed text, so the approval and the authority MAC bind it as they bind the rest.
+  A format the binary doesn't know (newer) is refused at start. `writ admin apply` and the
+  `writ admin` edits only sign the current format (an older one refused with its code, naming
+  `writ migrate`).
+- **Every format change is a signed migration** (the user's choice: even when the text keeps
+  its meaning). A policy in force of an older format leaves a **migration owed**: the daemon
+  starts and unseals with the approvers and readers in force, but runs **no policy at all** (no
+  template, no repo, no key the policy declares, no mirror synced), and refuses every request
+  from every client, tickets, signatures, pushes, fetches, `writ ls`, the `writ admin` commands
+  and the rest, with the code `migration_owed` and the command to run (`writ migrate`); only
+  `writ unseal` and `writ migrate` are served. It notifies once, and leases in force keep
+  counting down. The daemon only ever runs the current format: an older one exists only as the
+  migration's rewrite, never as a reader to maintain. `writd init` and `writd recover` take an
+  older format too, leaving the migration owed.
+- **The daemon proposes the rewrite** (`writ_core::config::migrate`, pure): format N text to
+  format N+1 canonical text, one step per format, or the reasons it can't, each naming its
+  key. Format 1 → 2: `format: 2` added, `push_modes: [gateway]` dropped; any other `push_modes`,
+  and any `direct_ssh` section, is a reason (a repo or template without `gateway` accepted no
+  push, and the rewrite that keeps that meaning is the operator's call).
+- **`writ migrate`:** shows what is owed (the formats, the version in force), the proposed text
+  as the diff `writ admin apply` shows, and on yes signs it as the policy's admin change
+  (`writ-admin/2` naming the version in force, one approval); the daemon applies it as any admin
+  change (live, the files written back), loads the policy and serves again. `--file <policy>`
+  signs the operator's own text instead (needed when there is no proposal). Declined, nothing
+  changes and it can be run again at any time; with nothing owed it says so and exits 0.
+- **`writd check-upgrade <writd.yaml>`**: the new binary's dry run, before anything changes.
+  Run as the daemon's user while the old daemon runs, it reads `writd.yaml` as a start would,
+  copies the state (SQLite's backup) to a temporary file and runs the steps on the copy, and
+  reads the policy in force's format and the proposal. It prints what migrates (the state's
+  versions, the policy's format with its proposal or the keys to fix by hand) and what blocks (a
+  key `writd.yaml` no longer takes, a newer state, a step that fails, an open ticket of a changed
+  ticket format), and exits non-zero on a block. It reads the state sealed: a report, never acting
+  on what it read.
+- **The installer's upgrade** (both local setups): the new `writd` (copied where the daemon's
+  user can run it) runs `check-upgrade` before the summary; a block stops with nothing changed,
+  and the summary lists the migrations. After the restart, `writ unseal` (unless auto-unseal
+  opened it) and, when one is owed, `writ migrate`, both on the terminal as the user. A step
+  declined or failed says what to run later. `DRY_RUN=1` runs the check and stops.
+- **The push modes `proxy` and `direct_ssh` go**, as format 2: `push_modes` and `direct_ssh.*`
+  out of repos and templates (parsing, the canonical writer, the edits and guided prompts, the
+  `push_mode` denial), the [lease model](lease-model.md#constraints-and-how-much-to-trust-them)'s
+  rows, [flows](flows.md) § 3b and 3c, the gateway's push modes table, the threat model's row, the
+  operator reference and template, the registries; this roadmap's M9 and M10 rows leave.
+- Docs: the [install](operators/install.md) page's upgrade, [recovery](operators/recovery.md)
+  (restoring a backup of the state), [policy and state](architecture/policy-and-state.md)
+  (the steps, the record), [approvals](architecture/approvals.md) (the migration),
+  [clients](architecture/clients.md) (`writ migrate`, the refusal), the operator reference (the
+  `format` key), [security](security.md) (the proposal and `check-upgrade`'s reads in the
+  inventory), the [threat model](threat-model.md) (the owed state, the backup as sensitive as the
+  state), and the [conventions](conventions.md): how a format change brings its step, its frozen
+  schema or format, and its test.
+
+Plan, each step leaving Writ working (`make ci`):
+1. This page, the decisions, the parked pages.
+2. The state's steps and the backup (`writ-store`), version 12.
+3. The policy's format (`format: 2`), `migrate`, the push modes removed.
+4. The owed state in the daemon: the start and unseal, the refusals, the approval API's
+   migration route; `writd init` and `writd recover` with an older format.
+5. `writ migrate`, and every client command's refusal.
+6. `writd check-upgrade`.
+7. The installer's upgrade.
+8. The docs left, the end-to-end scenarios and the registries' rows that weren't with their
+   step; the manual check: the real install on the Mac upgraded.
 
 Acceptance:
-- [ ] A repo with `push_modes: [proxy]` pushes with no mirror, with the same denials as M4
-      (refs, protected refs, force push, ledger, size).
-- [ ] The pack is indexed in a temporary quarantine bounded by `max_push_size` and deleted
-      afterwards, accepted or not; `no-thin` is advertised.
-
-## M10 — `direct_ssh` push mode
-
-[Flows § 3c](flows.md#3c-push-direct_ssh-mode).
-
-Acceptance:
-- [ ] A per-lease ssh-agent socket holds only the repo's deploy key; signatures are refused
-      for another host (`session-bind`), after expiry or over the limits.
-- [ ] A repo whose credential is account-wide is refused unless `allow_account_wide: true`,
-      and then `writ sign` shows the warning.
+- [ ] A version 11 state with rows in every table opens as version 12: the rows kept, the
+      `migrations` table and the audit log recording it, the backup a version 11 database with
+      the same rows. A step that fails leaves the daemon refusing to start with the step named
+      and the backup untouched; a version 13 state is refused with its code.
+- [ ] A format 1 policy in force (with `push_modes: [gateway]`): the daemon starts and unseals
+      owed; every client command is refused with `migration_owed` and the command, each
+      checked (a ticket, a sign, a push, a fetch, `writ ls`, `writ admin show`); `writ migrate`
+      shows the diff and signs; format 2 is in force, a lease granted before works on, and a
+      new ticket is served. Declined, it stays owed and runs again.
+- [ ] A format 1 policy with `push_modes: [proxy]`: no proposal, the reason naming the key;
+      `writ migrate --file` with the operator's text resolves it. A format 1 text through
+      `writ admin apply`, and a migration naming another version than the one in force, are
+      refused with their codes.
+- [ ] `writd check-upgrade` reports each case (nothing to do, a state step, a policy owed, a
+      `writd.yaml` key gone, a newer state) as written, and leaves the state unchanged (its
+      digest before and after).
+- [ ] `make e2e`: `writ migrate` (proposed, `--file`, declined) and `writd check-upgrade` in
+      scenarios, with their rows in the registries (rules 18 and 19); the `format` key in the
+      configuration registry.
+- [ ] No `push_modes` or `direct_ssh` key is read in format 2: each refused with its error.
+- [ ] By hand ([manual checks](guides/manual-checks.md)): the real install on the Mac upgraded
+      with `make install`, the preflight, the restart, `writ unseal`, `writ migrate`: state
+      11 → 12, policy format 1 → 2, the leases, ledger and audit kept.
 
 ## M8 — Detached deployment
 

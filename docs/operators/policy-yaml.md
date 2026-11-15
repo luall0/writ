@@ -132,8 +132,8 @@ at `writ unseal` opens it. Recipients add other ways in:
 | `repos.<name>.ticket_link` | `ledger_only`, `trailer` or `notes` | `ledger_only` | How a commit shows its lease on the remote. [Linking commits](#linking-commits-to-leases-ticket_link) |
 | `repos.<name>.notes_ref` | `commits` or `writ` | `commits` | With `ticket_link: notes` only. `commits`: `refs/notes/commits`, git's own, shown by `git log`, Forgejo and Gitea. `writ`: `refs/notes/writ`, kept apart, read with `git log --notes=writ` |
 | `repos.<name>.object_format` | `sha1` or `sha256` | `sha1` | The repository's object format. A mirror whose upstream uses the other one is refused. Most remotes, GitHub included, only have `sha1` |
-| `repos.<name>.direct_ssh.hosts` | Host names | — | Required with the `direct_ssh` push mode, refused without it: the hosts the lent key may reach. **Not used yet** ([M10](../roadmap.md#m10--direct_ssh-push-mode)) |
-| `repos.<name>.direct_ssh.allow_account_wide` | Boolean | `false` | Whether `direct_ssh` may lend a key that isn't limited to this repo (the approver sees a warning). **Not used yet** ([M10](../roadmap.md#m10--direct_ssh-push-mode)) |
+| `repos.<name>.direct_ssh.hosts` | Host names | — | Required with the `direct_ssh` push mode, refused without it: the hosts the lent key may reach. **Dropped**, never used: leaves in [M7.9.6](../roadmap.md#m796--upgrades) ([why](../backlog/parked/direct-ssh-push-mode.md)) |
+| `repos.<name>.direct_ssh.allow_account_wide` | Boolean | `false` | Whether `direct_ssh` may lend a key that isn't limited to this repo (the approver sees a warning). **Dropped**, never used: leaves in [M7.9.6](../roadmap.md#m796--upgrades) ([why](../backlog/parked/direct-ssh-push-mode.md)) |
 
 ### Push modes
 
@@ -142,10 +142,11 @@ A lease may only use a mode both its repo and its template allow
 
 - **gateway**: through the daemon's mirror, with every check. The only one built today: a repo
   without it refuses every push (`push_mode`).
-- **proxy**: relayed by the daemon with the same checks, no mirror. **Not built yet**
-  ([M9](../roadmap.md#m9--proxy-push-mode)).
-- **direct_ssh**: the agent pushes itself with a lent deploy key. **Not built yet**
-  ([M10](../roadmap.md#m10--direct_ssh-push-mode)).
+- **proxy**: relayed by the daemon, no mirror. **Dropped**, never built: the key leaves in
+  [M7.9.6](../roadmap.md#m796--upgrades) ([why](../backlog/parked/proxy-push-mode.md)).
+- **direct_ssh**: the agent pushes itself with a lent deploy key. **Dropped**, never built:
+  the key leaves in [M7.9.6](../roadmap.md#m796--upgrades)
+  ([why](../backlog/parked/direct-ssh-push-mode.md)).
 
 ### Linking commits to leases (`ticket_link`)
 

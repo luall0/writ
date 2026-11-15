@@ -350,3 +350,5 @@ Looked at and set aside: each page says why it is a no-go for now and what would
 | Idea | Area | Kind | Parked on | Why |
 |---|---|---|---|---|
 | [Keychain Secure Enclave signer with a paid Apple account](parked/keychain-secure-enclave-signer.md) | Signers | feature | 2026-11-02 | Plan B under `_writd` already meets every goal, and a launchd daemon can't use the data protection keychain (TN3137) |
+| [`proxy` push mode](parked/proxy-push-mode.md) | Gateway, Upstream | feature | 2026-11-15 | A relay can't see upstream's history, so it can't keep the ledger check; the blobless mirror the spike ran needs git's protocol rewritten and four changes, for a disk saving nobody needs yet |
+| [`direct_ssh` push mode](parked/direct-ssh-push-mode.md) | Gateway, Upstream | feature | 2026-11-15 | The daemon would never see what is pushed: no ref, protected ref, force push or ledger check |
