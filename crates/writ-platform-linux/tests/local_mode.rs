@@ -2,9 +2,10 @@
 //! itself, and through the process reader's protocol), the pidfd watcher and the Unix socket
 //! transport with the pidfd peer, through their contract suites; the chain itself, whatever a
 //! process calls itself; a peer gone before it was read; and the process reader refusing for
-//! good once it can't be trusted. The tests run as one user, so `/proc` is readable without a
-//! capability; the helper's capability and other users are the end-to-end scenario's
-//! (`local_mode`).
+//! good once it can't be trusted. The tests run as one user, so `/proc` shows them their own
+//! processes without a capability (and no other user's: a chain read here ends at the last
+//! ancestor of theirs); the helper's capability and other users are the end-to-end
+//! scenario's (`local_mode`).
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -111,7 +112,7 @@ fn the_attestor_passes_the_contract_reading_proc_itself_and_through_the_process_
 #[test]
 fn the_chain_goes_from_the_caller_to_pid_1_each_with_its_start_time() {
     for reader in [direct(), Arc::new(served_helper()) as Arc<dyn ReadProcess>] {
-        let attestor = ProcessChain::new(reader).unwrap();
+        let attestor = ProcessChain::new(Arc::clone(&reader)).unwrap();
         let me = me();
         let facts = attestor
             .attest(&PeerInfo::Unix {
@@ -125,7 +126,21 @@ fn the_chain_goes_from_the_caller_to_pid_1_each_with_its_start_time() {
         let chain = facts.process_chain.unwrap();
         assert_eq!(chain[0], me);
         assert_eq!(chain[0].executable, std::env::current_exe().unwrap());
-        assert_eq!(chain.last().unwrap().pid, 1);
+        // Up to pid 1, or, with no capability, to the last ancestor of this user's: the next
+        // one up is another user's (on CI, the runner's agent and pid 1 are root's), whose
+        // executable `/proc` won't show; never stopped earlier. As root, every one is read.
+        let last = chain.last().unwrap();
+        if last.pid != 1 {
+            assert_ne!(rustix::process::geteuid().as_raw(), 0, "{chain:?}");
+            let parent = writ_platform_linux::procfs::stat(last.pid).unwrap().ppid;
+            match reader.read(parent) {
+                Err(ReadError::Unreadable(why)) => assert!(
+                    why.starts_with(&format!("pid {parent}: its executable: Permission denied")),
+                    "{why}"
+                ),
+                other => panic!("the chain stopped below pid {parent}, read as {other:?}"),
+            }
+        }
         assert!(chain.len() >= 2 && chain.len() <= MAX_CHAIN, "{chain:?}");
         for process in &chain {
             assert_eq!(attestor.current(process.pid).unwrap(), *process);

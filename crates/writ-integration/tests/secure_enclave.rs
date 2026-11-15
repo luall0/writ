@@ -107,7 +107,10 @@ fn a_build_without_the_secure_enclave_refuses_its_backend_by_name() {
     if std::env::consts::OS == "macos" {
         return;
     }
-    let error = Daemon::refused_policy(POLICY, POLICY);
+    // Set up on the software backend (its upstream credential authorized as for any test),
+    // then started on the Secure Enclave's.
+    let software = POLICY.replace("backend: se-cryptokit", "backend: software");
+    let error = Daemon::refused_policy(&software, POLICY);
     assert!(
         error.contains(
             "keys.agent-se.backend: this daemon has no backend se-cryptokit (it has: software)"
