@@ -97,11 +97,20 @@ took fills them), against the policy in force then (the review after M7.6, A-7).
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
 Tables (`writ_store::Store`). The state carries its version: `PRAGMA user_version` (the
-state version, `STATE_VERSION`, now 11: M6.2's policy shape, which the authority versions
-hold, and the token changes' counts of M7.7) and `formats.ticket_kind` (the ticket format it stores, `writ-ticket/3`). A new database gets the whole schema at once; a database of any other version
-or ticket format is refused at open, both versions named (`StoreError::OtherVersion`,
-`OtherTicketFormat`): no migration chain, never a silent mix. A format change bumps the version
-and the operator starts that version from a new state directory ([decisions](../decisions.md)).
+state version, `STATE_VERSION`, now 12: M6.2's policy shape, the token changes' counts of M7.7,
+the record of migrations of M7.9.6) and `formats.ticket_kind` (the ticket format it stores,
+`writ-ticket/3`). A new database gets the whole schema at once. **An older state is migrated
+in steps** (M7.9.6), by `writd run` only, before anything reads it (`Store::open_migrating`):
+the whole database is first copied into `<state_dir>/backups/state-v<N>-<time>.db`
+(`VACUUM INTO`, a new file made `0600` in a `0700` directory, a suffix added rather than a
+copy written over), then one step per version runs in its own transaction and is recorded
+in `migrations` (from, to, when, the copy); the start logs it and writes one `migrate` audit
+line. A step that fails is rolled back and stops the start, naming it
+(`StoreError::Migration`), the copy untouched. Every other open refuses an older state with the
+way to migrate it (`Older`); a state newer than the binary, or older than the first step
+(version 11), is refused by every open (`OtherVersion`), and so is another ticket format
+(`OtherTicketFormat`): never a silent mix. `writd check-upgrade` reads the version and runs the
+steps on a copy (`Store::version_at`, `Store::copy_state`), never on the state.
 
 | Table | Holds |
 |---|---|

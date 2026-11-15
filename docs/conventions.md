@@ -282,6 +282,22 @@ commented-out setting taken in (`writd`'s and `writ-core`'s `every_…_key_is_in
 and `the_…_template_parses_…`); `make check` fails when a test the registry names doesn't
 exist, or a planned milestone is already done (`tool/check-config.py`).
 
+## Format changes
+
+A change to what the daemon keeps across an upgrade comes with the way to carry it over, in
+the same change (M7.9.6):
+
+- **The state** (a table, a column, what a row holds): `STATE_VERSION` goes up by one, the
+  schema of a new database takes the change, and `writ-store`'s `STEPS` gains the step from
+  the version before, run in one transaction, never touching a ticket's signed bytes. The
+  schema it starts from is kept frozen in `crates/writ-store/tests/schemas/v<N>.sql` (never
+  edited afterwards), and a test migrates a database written by it, with rows in every table,
+  and reads every row back. A ticket format change (`writ-ticket/N`) is a state change too.
+- **The policy** (a key removed, renamed, or read differently): the policy's `format` goes up
+  by one, and `writ_core::config::migrate` gains the rewrite from the format before, or the
+  reason naming each key it can't carry over. The daemon never reads an older format: it is
+  only ever rewritten, and the rewrite is signed (`writ migrate`).
+
 ## Writing operator docs
 
 The [operator documentation](operators/README.md) is read by a person setting Writ up or

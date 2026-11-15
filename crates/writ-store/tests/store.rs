@@ -837,10 +837,258 @@ fn tampered_records_fail_closed() {
     ));
 }
 
+/// The schema of version 11, frozen: what the step to 12 starts from.
+const SCHEMA_V11: &str = include_str!("schemas/v11.sql");
+
+/// The tables of version 11, all of them.
+const TABLES_V11: [&str; 8] = [
+    "formats",
+    "tickets",
+    "usage",
+    "ops",
+    "ledger",
+    "authority",
+    "authority_head",
+    "token_versions",
+];
+
+/// A state with rows in every table, written through the store's own calls: an active lease
+/// with its counters and recent operations, a pending ticket, a refused one, ledger entries
+/// (one with a note pending), the authority versions and their head, a token's count.
+fn filled(path: &Path) -> (Lease, TicketId, TicketId) {
+    let store = Store::open(path).unwrap();
+    let lease = active_lease(&store, 1);
+    assert!(
+        store
+            .consume(&lease.id, &omega(), Counter::Signature, 3, t(20))
+            .unwrap()
+    );
+    assert!(
+        store
+            .consume(&lease.id, &omega(), Counter::Push, 2, t(21))
+            .unwrap()
+    );
+    let pending = ticket(2, REQUEST, None);
+    store.insert_pending(&pending, KEY, SOURCE, t(30)).unwrap();
+    let refused = ticket(3, REQUEST, None);
+    store.insert_pending(&refused, KEY, SOURCE, t(31)).unwrap();
+    store.refuse(&refused.id, "anyone", None, t(32)).unwrap();
+    for n in 1..=3 {
+        store
+            .ledger_append(&entry(n, &lease.id, "omega-code"))
+            .unwrap();
+    }
+    store
+        .notes_add_pending(
+            std::slice::from_ref(&lease.id),
+            &omega(),
+            &[commit(1)],
+            &"upstream".parse().unwrap(),
+        )
+        .unwrap();
+    let version = |target, text: &str| writ_store::AuthorityVersion {
+        target,
+        version: 1,
+        text: text.to_owned(),
+        digest: writ_core::authority::TextDigest::of(text),
+        how: writ_store::AuthorityHow::Init,
+        document: None,
+        signature: None,
+        approver: None,
+        applied_at: t(1),
+    };
+    use writ_core::authority::AdminTarget;
+    store
+        .record_authority(
+            &[
+                version(AdminTarget::Policy, POLICY),
+                version(AdminTarget::Approvers, "me ssh-ed25519 A\n"),
+                version(AdminTarget::Readers, "mac ssh-ed25519 B\n"),
+            ],
+            &writ_store::AuthorityHead {
+                versions: AdminTarget::ALL.into_iter().map(|t| (t, 1)).collect(),
+                mac: "mac".to_owned(),
+            },
+        )
+        .unwrap();
+    let token = "upstream".parse().unwrap();
+    assert_eq!(store.bump_token_version(&token, 0).unwrap(), 1);
+    (lease, pending.id, refused.id)
+}
+
+/// The rows of the state at `from` copied into a new database at `to` written by version
+/// 11's frozen schema: a state as a version 11 writd left it.
+fn as_version_11(from: &Path, to: &Path) {
+    let conn = rusqlite::Connection::open(to).unwrap();
+    conn.execute_batch(SCHEMA_V11).unwrap();
+    conn.execute("ATTACH DATABASE ?1 AS v12", [from.to_str().unwrap()])
+        .unwrap();
+    for table in TABLES_V11 {
+        conn.execute(
+            &format!("INSERT INTO main.{table} SELECT * FROM v12.{table}"),
+            [],
+        )
+        .unwrap();
+    }
+    conn.execute("DETACH DATABASE v12", []).unwrap();
+    conn.pragma_update(None, "user_version", 11).unwrap();
+}
+
+fn rows(path: &Path, table: &str) -> i64 {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap()
+}
+
+fn has_table(path: &Path, table: &str) -> bool {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+        == 1
+}
+
 #[test]
-fn a_state_of_another_version_is_refused_and_never_written_over() {
+fn a_version_11_state_migrates_to_12_after_a_copy_with_every_row_kept() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let current = dir.path().join("current.db");
+    let (lease, pending, refused) = filled(&current);
+    let old = dir.path().join("leases.db");
+    as_version_11(&current, &old);
+    let backups = dir.path().join("backups");
+
+    // Opened without migrating: refused, with the way to migrate it; nothing changed.
+    assert!(matches!(
+        Store::open(&old),
+        Err(StoreError::Older {
+            found: 11,
+            expected: 12
+        })
+    ));
+    assert_eq!(Store::version_at(&old).unwrap(), 11);
+    assert!(!backups.exists());
+
+    let (store, migrated) = Store::open_migrating(&old, &backups, t(1000)).unwrap();
+    let migrated = migrated.unwrap();
+    assert_eq!((migrated.from, migrated.to), (11, 12));
+    assert_eq!(
+        migrated.backup,
+        backups.join(format!("state-v11-{}.db", t(1000).unix()))
+    );
+    // The copy: a version 11 database with the same rows, private, in a private directory.
+    assert_eq!(Store::version_at(&migrated.backup).unwrap(), 11);
+    for table in TABLES_V11 {
+        assert_eq!(
+            rows(&migrated.backup, table),
+            rows(&current, table),
+            "{table}"
+        );
+    }
+    assert!(!has_table(&migrated.backup, "migrations"));
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&migrated.backup), 0o600);
+    assert_eq!(mode(&backups), 0o700);
+
+    // Every row read back as the version 12 store reads its own.
+    let reference = Store::open(&current).unwrap();
+    assert_eq!(
+        store.lease(&lease.id).unwrap(),
+        reference.lease(&lease.id).unwrap()
+    );
+    for id in [&lease.id, &pending, &refused] {
+        assert_eq!(store.ticket(id).unwrap(), reference.ticket(id).unwrap());
+        assert_eq!(
+            store.session_pubkey(id).unwrap(),
+            reference.session_pubkey(id).unwrap()
+        );
+    }
+    assert_eq!(
+        store.usage(&lease.id, t(40)).unwrap(),
+        reference.usage(&lease.id, t(40)).unwrap()
+    );
+    assert_eq!(
+        store.ledger_for_lease(&lease.id).unwrap(),
+        reference.ledger_for_lease(&lease.id).unwrap()
+    );
+    assert_eq!(
+        store.notes_pending(&omega(), 10).unwrap(),
+        reference.notes_pending(&omega(), 10).unwrap()
+    );
+    assert_eq!(
+        store.authority_in_force().unwrap(),
+        reference.authority_in_force().unwrap()
+    );
+    let token = "upstream".parse().unwrap();
+    assert_eq!(store.token_version(&token).unwrap(), 1);
+    assert_eq!(store.ops_rows().unwrap(), reference.ops_rows().unwrap());
+    // The migration recorded in the state.
+    assert_eq!(store.migrations().unwrap(), vec![migrated.clone()]);
+    drop(store);
+
+    // Opened again: at its version, nothing done, no other copy.
+    let (store, again) = Store::open_migrating(&old, &backups, t(2000)).unwrap();
+    assert_eq!(again, None);
+    assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
+    drop(store);
+    assert_eq!(
+        Store::open(&old).unwrap().migrations().unwrap(),
+        vec![migrated]
+    );
+}
+
+#[test]
+fn a_step_that_fails_is_rolled_back_and_the_copy_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let current = dir.path().join("current.db");
+    filled(&current);
+    let old = dir.path().join("leases.db");
+    as_version_11(&current, &old);
+    let backups = dir.path().join("backups");
+
+    let failed = Store::open_migrating_failing(&old, &backups, t(1000), 12);
+    assert!(
+        matches!(
+            &failed,
+            Err(StoreError::Migration {
+                from: 11,
+                to: 12,
+                ..
+            })
+        ),
+        "{:?}",
+        failed.err()
+    );
+    // Rolled back: still version 11, without the step's table; the copy there, whole.
+    assert_eq!(Store::version_at(&old).unwrap(), 11);
+    assert!(!has_table(&old, "migrations"));
+    let copy = backups.join(format!("state-v11-{}.db", t(1000).unix()));
+    assert_eq!(Store::version_at(&copy).unwrap(), 11);
+    for table in TABLES_V11 {
+        assert_eq!(rows(&copy, table), rows(&old, table), "{table}");
+    }
+
+    // Tried again in the same second: a second copy beside the first, never written over.
+    let (store, migrated) = Store::open_migrating(&old, &backups, t(1000)).unwrap();
+    let migrated = migrated.unwrap();
+    assert_eq!(
+        migrated.backup,
+        backups.join(format!("state-v11-{}-1.db", t(1000).unix()))
+    );
+    assert_eq!(Store::version_at(&copy).unwrap(), 11);
+    assert_eq!(store.migrations().unwrap(), vec![migrated]);
+}
+
+#[test]
+fn a_state_no_step_migrates_is_refused_and_never_written_over() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("writ.db");
+    let backups = dir.path().join("backups");
     drop(Store::open(&path).unwrap());
     let set = |version: i64| {
         rusqlite::Connection::open(&path)
@@ -848,7 +1096,9 @@ fn a_state_of_another_version_is_refused_and_never_written_over() {
             .pragma_update(None, "user_version", version)
             .unwrap();
     };
-    for version in [STATE_VERSION - 1, STATE_VERSION + 1, 0] {
+    // Newer than this writd (no downgrade), older than the first step, or a database with
+    // tables and no version: refused by both opens, nothing copied, nothing changed.
+    for version in [STATE_VERSION + 1, writ_store::FIRST_MIGRATABLE - 1, 0] {
         set(version);
         assert!(
             matches!(
@@ -857,11 +1107,21 @@ fn a_state_of_another_version_is_refused_and_never_written_over() {
             ),
             "version {version}"
         );
+        assert!(
+            matches!(
+                Store::open_migrating(&path, &backups, t(0)),
+                Err(StoreError::OtherVersion { found, expected: STATE_VERSION }) if found == version
+            ),
+            "version {version}"
+        );
+        assert_eq!(Store::version_at(&path).unwrap(), version);
+        assert!(!backups.exists(), "version {version}");
     }
     // Its version back: read again (the refusals above changed nothing).
     set(STATE_VERSION);
     let store = Store::open(&path).unwrap();
     assert_eq!(store.count(State::Pending).unwrap(), 0);
+    assert_eq!(store.migrations().unwrap(), vec![]);
     drop(store);
     // A state that holds tickets of another format is refused too.
     rusqlite::Connection::open(&path)
@@ -871,6 +1131,40 @@ fn a_state_of_another_version_is_refused_and_never_written_over() {
     assert!(matches!(
         Store::open(&path),
         Err(StoreError::OtherTicketFormat { found, expected: "writ-ticket/3" }) if found == "writ-ticket/2"
+    ));
+}
+
+#[test]
+fn a_new_state_is_written_whole_at_the_version_with_no_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("writ.db");
+    let backups = dir.path().join("backups");
+    let (store, migrated) = Store::open_migrating(&path, &backups, t(0)).unwrap();
+    assert_eq!(migrated, None);
+    assert_eq!(store.migrations().unwrap(), vec![]);
+    assert!(!backups.exists());
+    drop(store);
+    assert_eq!(Store::version_at(&path).unwrap(), STATE_VERSION);
+}
+
+#[test]
+fn a_copy_of_the_state_is_whole_private_and_never_written_over() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("writ.db");
+    filled(&path);
+    let copy = dir.path().join("copy.db");
+    Store::copy_state(&path, &copy).unwrap();
+    assert_eq!(
+        std::fs::metadata(&copy).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    for table in TABLES_V11 {
+        assert_eq!(rows(&copy, table), rows(&path, table), "{table}");
+    }
+    assert!(matches!(
+        Store::copy_state(&path, &copy),
+        Err(StoreError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists
     ));
 }
 

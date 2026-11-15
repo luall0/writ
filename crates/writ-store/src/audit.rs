@@ -79,6 +79,10 @@ pub enum EventKind {
     /// allowed, read and write access proven and the mirror synced; denied, with the step
     /// that failed).
     Check,
+    /// The state migrated to this writd's version at its start (`done`, with the versions and
+    /// the copy taken before), or the policy in force migrated to its format (an admin
+    /// change, signed: `allowed`).
+    Migrate,
 }
 
 /// How it ended.

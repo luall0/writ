@@ -18,7 +18,7 @@ mod tokens;
 
 pub use authority::{AuthorityHead, AuthorityHow, AuthorityVersion};
 pub use ledger::{LedgerEntry, PendingNote};
-pub use schema::STATE_VERSION;
+pub use schema::{FIRST_MIGRATABLE, Migrated, STATE_VERSION};
 
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -126,14 +126,74 @@ impl StoreBreaker {
 impl Store {
     /// Opens (or creates) the database at `path`.
     pub fn open(path: &Path) -> Result<Self> {
-        // Private from creation (0600), whatever the umask; SQLite gives its WAL and shared
-        // memory files the database file's mode.
+        Self::init(Self::connection(path)?)
+    }
+
+    /// The database at `path`, private from creation (0600, whatever the umask; SQLite gives
+    /// its WAL and shared memory files the database file's mode).
+    fn connection(path: &Path) -> Result<Connection> {
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(path)?;
-        Self::init(Connection::open(path)?)
+        Ok(Connection::open(path)?)
+    }
+
+    /// [`Store::open`], an older state migrated first ([`Migrated`]): the whole database
+    /// copied into `backups`, then one step per version, each in its own transaction. What
+    /// `writd run` opens the state with; nothing else migrates it.
+    pub fn open_migrating(
+        path: &Path,
+        backups: &Path,
+        now: Timestamp,
+    ) -> Result<(Self, Option<Migrated>)> {
+        let conn = Self::connection(path)?;
+        let migrated = schema::migrate(&conn, backups, now)?;
+        Ok((Self::ready(conn), migrated))
+    }
+
+    /// [`Store::open_migrating`], with the step to version `fails_at` failing after its own
+    /// work (feature `testing`): what a step that fails leaves behind.
+    #[cfg(feature = "testing")]
+    pub fn open_migrating_failing(
+        path: &Path,
+        backups: &Path,
+        now: Timestamp,
+        fails_at: i64,
+    ) -> Result<(Self, Option<Migrated>)> {
+        let conn = Self::connection(path)?;
+        let migrated = schema::migrate_with(&conn, backups, now, Some(fails_at))?;
+        Ok((Self::ready(conn), migrated))
+    }
+
+    /// The version of the state at `path`, read only (`writd check-upgrade`): 0 for a
+    /// database with nothing in it.
+    pub fn version_at(path: &Path) -> Result<i64> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        schema::version(&conn)
+    }
+
+    /// The whole state at `path` copied into `to`, a new private file, read only: what
+    /// `writd check-upgrade` runs the steps on, never the state itself.
+    pub fn copy_state(path: &Path, to: &Path) -> Result<()> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        schema::copy(&conn, to)
+    }
+
+    /// The migrations recorded in this state, oldest first.
+    pub fn migrations(&self) -> Result<Vec<Migrated>> {
+        let mut statement = self.conn.prepare(
+            "SELECT from_version, to_version, backup FROM migrations ORDER BY to_version",
+        )?;
+        let rows = statement.query_map([], |r| {
+            Ok(Migrated {
+                from: r.get(0)?,
+                to: r.get(1)?,
+                backup: std::path::PathBuf::from(r.get::<_, String>(2)?),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// A database in memory, for tests (feature `testing`).
@@ -158,11 +218,15 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self> {
         schema::prepare(&conn)?;
-        Ok(Self {
+        Ok(Self::ready(conn))
+    }
+
+    fn ready(conn: Connection) -> Self {
+        Self {
             conn,
             #[cfg(feature = "testing")]
             breaker: None,
-        })
+        }
     }
 
     /// Stores a freshly submitted ticket (`pending`), with the session public key it was

@@ -19,8 +19,8 @@ pub use audit::{
 #[cfg(feature = "testing")]
 pub use store::StoreBreaker;
 pub use store::{
-    AuthorityHead, AuthorityHow, AuthorityVersion, Counter, LeaseTimes, LedgerEntry,
-    OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, STATE_VERSION, Store,
+    AuthorityHead, AuthorityHow, AuthorityVersion, Counter, FIRST_MIGRATABLE, LeaseTimes,
+    LedgerEntry, Migrated, OPS_KEPT_PAST_WINDOW_SECONDS, PendingNote, STATE_VERSION, Store,
 };
 
 use writ_core::lease::{LifecycleError, State};
@@ -44,13 +44,23 @@ pub enum StoreError {
     Duplicate(TicketId),
     #[error(transparent)]
     Lifecycle(#[from] LifecycleError),
-    /// The state was written by a writd of another state version: never read, never
-    /// migrated (docs/decisions.md).
+    /// The state was written by a writd of a version no step migrates from: newer than this
+    /// writd (no downgrade), or older than the first step.
     #[error(
-        "the state is version {found}, this writd reads version {expected}: start this version \
-         from a new state directory"
+        "the state is version {found}, this writd reads version {expected} and can't migrate \
+         it (a newer state, or one older than its first step): run the writd that wrote it, or \
+         start from a new state directory"
     )]
     OtherVersion { found: i64, expected: i64 },
+    /// An older state, opened without migrating it: only `writd run` migrates.
+    #[error(
+        "the state is version {found}, this writd reads version {expected}: writd run migrates it \
+         at its start, after a copy of it (writd check-upgrade shows what changes)"
+    )]
+    Older { found: i64, expected: i64 },
+    /// A migration step that failed: rolled back, the copy taken before the first step kept.
+    #[error("the state's migration from version {from} to {to} failed, rolled back: {why}")]
+    Migration { from: i64, to: i64, why: String },
     #[error("the state holds tickets of format {found}, this writd reads {expected}")]
     OtherTicketFormat {
         found: String,

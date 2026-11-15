@@ -453,7 +453,32 @@ fn run(path: &Path) -> anyhow::Result<()> {
     keystore::private_dir(&config.state_dir)?;
     // Held until the daemon ends: `writd recover` refuses meanwhile.
     let _lock = lock::hold(&config.state_dir, lock::Holder::Daemon)?;
-    let store = Store::open(&config.state_dir.join("leases.db"))?;
+    // An older state migrated in steps, after a copy of it whole (M7.9.6): before anything
+    // reads it. A step that fails stops the start here, naming it, the copy kept.
+    let (store, migrated) = Store::open_migrating(
+        &config.state_dir.join("leases.db"),
+        &config.state_dir.join("backups"),
+        now()?,
+    )?;
+    if let Some(migrated) = &migrated {
+        let line = format!(
+            "the state migrated from version {} to {}; its copy from before: {}",
+            migrated.from,
+            migrated.to,
+            migrated.backup.display()
+        );
+        tracing::info!("{line}");
+        writ_store::AuditLog::open(&config.state_dir.join("audit.jsonl"))?
+            .append(
+                &writ_store::AuditEvent::new(
+                    now()?,
+                    writ_store::EventKind::Migrate,
+                    writ_store::Outcome::Done,
+                )
+                .reason(line),
+            )
+            .context("the audit log can't be written (the migration is recorded in the state)")?;
+    }
     let loaded = match (authority::load(&store, config.min_ttl)?, &config.keystore) {
         (Some(loaded), _) => loaded,
         // The development keystore's first start: the files as they are.
