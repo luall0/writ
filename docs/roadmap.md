@@ -50,6 +50,7 @@ picked.
 | M7.9 | [Local mode checked on the Mac](history/m7.9-local-mode-checked-on-the-mac.md) ✅ | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
 | M7.9.5 | [Operator experience](history/m7.9.5-operator-experience.md) ✅ | Asked by the user after the real install: amendments showing only what changed, the popup redesigned (its design validated first, as an artifact), every guided prompt and the installer's questions with arrow selection, colour and inline checks, a quick setup guide from `make install` to a first agent run |
 | M7.9.6 | [Upgrades](history/m7.9.6-upgrades.md) ✅ | Asked by the user before M8: the state migrated in steps with a backup first, the policy naming its format and every format change a signed migration (`writ migrate`), the daemon refusing everything else until it is signed, `writd check-upgrade` before the installer changes anything, the installer unsealing and migrating; the push modes `proxy` and `direct_ssh` dropped, their keys removed as format 2 |
+| M7.9.7 | [Fetch without a signature](#m797--fetch-without-a-signature) | Asked by the user before M8: a template with `unsigned_fetch: true` granting a lease with no approver, per repository and off by default; `writ git fetch` and `pull` asking one themselves; the skills fetch before they plan |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 
@@ -277,6 +278,104 @@ signed migration (`writ migrate`) while the daemon serves nothing else, `writd c
 before the installer changes anything, the installer unsealing and migrating, the push modes
 `proxy` and `direct_ssh` removed.
 
+## M7.9.7 — Fetch without a signature
+
+Asked by the user before M8, from agents seen at work: before planning, an agent fetches to
+see whether upstream moved or to start from a clean tree, and it does so with plain `git`,
+outside the skill, because `writ git fetch` needs a lease and a lease needs a signed ticket.
+In wrapper mode plain `git fetch origin` goes through the operator's own remote and
+credentials. On a large repository the first fetch is needed almost every time, so the agent
+would ask a lease only to plan the real one. A fetch sends nothing upstream and can't write,
+and what it reads is the repository's ([scope](threat-model.md#looked-at-and-not-risks)): a
+fetch-only lease needs no approver. Settled with the user
+([decision log](decisions.md), 2026-11-15):
+
+- **A template can grant a fetch without a signature:** `unsigned_fetch: true` (default
+  `false`). Such a template allows `operations: [fetch]` exactly, a `max_ttl` of at
+  most 1 h, and no renewal; a policy that pairs it with `commit_sign` or `push`, or a longer
+  `max_ttl`, is refused when it is read, naming the template and the key. It is a template like
+  the others (`writ admin template`, a signed admin change), its other terms (the rate,
+  `require_session`) holding as in any one.
+- **Off by default, per repository:** a repository allows it by naming such a template in its
+  `templates`, through a signed change, and names **at most one** (a policy where a repository
+  names two is refused when it is read), so a fetch never has to choose. The shipped policy
+  has none. The guided `writ admin repo add` asks whether agents may fetch the repository
+  without a signature (no by default), and on yes adds the template to it (made the first
+  time). The signed policy change is the approval that stands for the missing SSHSIG.
+- **The grant:** a ticket whose every repository is under an `unsigned_fetch` template is
+  granted when it is submitted, with no pending state and no notification, its certificate
+  issued as any lease's. A ticket that mixes such a template with a signed one is refused by
+  policy with its code (an unsigned template's `max_ttl` would otherwise cap a signed lease);
+  an amendment or a renewal of an unsigned lease is refused with its code. Unsigned leases
+  count against the submission rates (`submissions` in `writd.yaml`) like any ticket, not
+  against `max_active_per_source`. The state records how each lease was granted (signed by an
+  approver, or by a template, named), as a state step (version 13). The grant's audit line
+  names the template where a signed one names the approver; `writ ls`, `writ report` and the
+  approver's screen mark an unsigned lease as such.
+- **Transparent for the agent:** `writ git fetch` and `writ git pull` with no lease named
+  (`WRIT_SESSION` unset, no active `current`) ask for one themselves: they read the
+  repository's unsigned template from `writ policy`, make a throwaway Ed25519 key file, submit
+  a fetch-only ticket written by `writ` (the title and task fixed), run git under it, close it
+  and remove the session's files, whatever git's exit. A close of an unsigned lease records no
+  run in the timings file. No such template: the denial a fetch without a lease has today,
+  with its reason. A lease named but ended, or one without `fetch`, is refused as today:
+  `writ git` never switches a running agent to another identity. A `pull` that would make a
+  merge commit fails at its signature (no `commit_sign`): the skill says `--ff-only`.
+- **Always a file key:** an unsigned template's session key is a file, whatever the host's
+  `session_key` setting ([M8.5](#m85--non-exportable-session-keys) refuses
+  `session_key: hardware` on it when the policy is read). A hardware key guards what an
+  approver granted; anyone who may submit from an allowed address gets the same fetch lease
+  with no key to copy.
+- **The skills and the pointer line:** both skills gain a step before the ticket, "fetch
+  before you plan" (`writ git fetch origin`, `writ git pull --ff-only`), and the line
+  `--agents-md` writes in `AGENTS.md` / `CLAUDE.md` names fetch and pull. `writ init` writes
+  them again in each wired repository.
+- Docs: the [lease model](lease-model.md) (the key, the grant, the lifecycle without
+  `pending`), [flows](flows.md) § 4, [approvals](architecture/approvals.md) (a grant with no
+  approval), [identity](architecture/identity.md) and [clients](architecture/clients.md)
+  (`writ git` with no lease), [policy and state](architecture/policy-and-state.md) (the
+  record, the audit line), the operator reference and the policy template (`unsigned_fetch`), the
+  [threat model](threat-model.md): a row in "looked at, and not risks" (a fetch-only lease
+  granted without a signature: it sends nothing and can't write, and what it reads is the
+  repository's; a risk if a fetch ever sent upstream something of the agent's, or if such a
+  lease could widen into one that signs or pushes), the guarantee that it only fetches, and
+  the sentences that say every lease was signed (boundary 4, the residual risks on leases
+  shared on one host and on submissions) made true of every lease that signs or pushes.
+
+Plan, each step leaving Writ working (`make ci`):
+1. This page and the decision.
+2. The template key and its checks when the policy is read (`writ-core`), the edit and the
+   guided `repo add` question, the operator reference and template, the configuration
+   registry's row.
+3. The grant without a signature: the policy and the lifecycle (`writ-core`), the state step
+   (version 13) and the record, the daemon's grant, the refusals, the audit line, the marks in
+   `writ ls` and `writ report`; the threat model and the guarantee tests.
+4. `writ git fetch` and `writ git pull` with no lease.
+5. The skills' step and the pointer line.
+6. The docs left, the end-to-end scenarios; the manual check: an agent on the Mac fetching
+   before its ticket.
+
+Acceptance:
+- [ ] A policy with an `unsigned_fetch` template that allows `commit_sign` or `push`, whose
+      `max_ttl` is above 1 h, or that a repository names beside another such template, is
+      refused with its error naming the template and the key; at exactly 1 h it is read.
+- [ ] A fetch-only ticket under an unsigned template is granted when submitted, with no
+      approver; it fetches; a signature, a push, an amendment and a renewal under it are
+      refused, each with its code; a ticket mixing it with a signed template is refused with
+      its code; the submission rates hold on both sides of their bounds.
+- [ ] A version 12 state with rows in every table opens as version 13, every lease recorded as
+      signed by its approver; an unsigned grant is recorded with its template, in the audit
+      log as in the state.
+- [ ] `writ git fetch` and `writ git pull --ff-only` with no lease fetch under an unsigned
+      lease and leave no session behind (on git's failure too); with no unsigned template, with
+      `WRIT_SESSION` naming an ended lease, or with a lease without `fetch`, each is refused as
+      before, with its reason.
+- [ ] `make e2e`: an agent fetching before its ticket, against Forgejo; the `unsigned_fetch` key in
+      the configuration registry (rule 19).
+- [ ] By hand ([manual checks](guides/manual-checks.md)): on the Mac, an agent under `writ run`
+      in a repository whose template allows it fetches before writing its ticket, with no
+      prompt.
+
 ## M8 — Detached deployment
 
 [Deployment](architecture/deployment.md): the daemon on the homelab, agents anywhere on the
@@ -385,7 +484,9 @@ process chain already refuse a copied key.
 - **The template decides the mode, never the ticket:** a template term
   `session_key: hardware | file`, default `file` (today's key file, so templates written before
   M8.5 keep working), edited from the CLI like every template field (`writ admin template`, a
-  signed admin change). The ticket carries its key's kind (`hardware: secure-enclave`,
+  signed admin change). A template with `unsigned_fetch: true` ([M7.9.7](#m797--fetch-without-a-signature))
+  is always `file`: `hardware` on it is refused when the policy is read, and `writ git`'s fetch
+  without a lease makes a key file whatever the client setting says. The ticket carries its key's kind (`hardware: secure-enclave`,
   `hardware: tpm`, `file`), checked against the key (Ed25519 can't be `hardware`), and it must
   be the template's mode exactly: a `file` ticket under a `hardware` template, or a hardware
   one under a `file` template, is refused by policy with its code, before it reaches the
