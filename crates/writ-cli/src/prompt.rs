@@ -67,7 +67,7 @@ fn style_for(no_color: bool) -> RenderConfig<'static> {
         return RenderConfig::empty()
             .with_prompt_prefix(Styled::new("?"))
             .with_answered_prompt_prefix(Styled::new(">"))
-            .with_highlighted_option_prefix(Styled::new(">"))
+            .with_highlighted_option_prefix(Styled::new("›"))
             .with_selected_checkbox(Styled::new("[x]"))
             .with_unselected_checkbox(Styled::new("[ ]"));
     }
@@ -280,6 +280,70 @@ pub fn pause(message: &str) -> anyhow::Result<bool> {
         .with_render_config(style())
         .prompt();
     Ok(matches!(given(answer)?, Answer::Given(_)))
+}
+
+/// `writ prompt`: one question for a script (the installer), with the widgets above; refused
+/// without a terminal (a script answers its own questions). The answer on stdout, cleaned (a
+/// script reads it); Esc: exit 6, nothing printed.
+pub fn command(asked: &crate::cli::PromptCommand) -> anyhow::Result<crate::Exit> {
+    use crate::Exit;
+    use crate::cli::PromptCommand;
+    anyhow::ensure!(
+        widgets(),
+        "writ prompt asks on a terminal (stdin and stderr): without one, the script answers \
+         its own question"
+    );
+    let printed = |answer: Answer<String>| -> Exit {
+        match answer {
+            Answer::Given(value) => {
+                println!("{}", clean(&value));
+                Exit::Ok
+            }
+            Answer::Cancelled => Exit::NotSigned,
+        }
+    };
+    match asked {
+        PromptCommand::Select {
+            question,
+            hint,
+            default,
+            options,
+        } => {
+            let choices: Vec<Choice> = options
+                .iter()
+                .map(|o| Choice::new(o.clone(), o.clone()))
+                .collect();
+            let start = default
+                .as_ref()
+                .and_then(|d| options.iter().position(|o| o == d))
+                .unwrap_or(0);
+            let hint = hint
+                .as_deref()
+                .unwrap_or("↑↓ move, type to filter, Enter picks");
+            Ok(printed(select(question, hint, &choices, start)?))
+        }
+        PromptCommand::Text {
+            question,
+            hint,
+            default,
+        } => {
+            let hint = hint
+                .as_deref()
+                .unwrap_or("Enter on nothing keeps what is shown");
+            let answer = text(question, hint, default.as_deref(), |_| Ok(()))?;
+            Ok(printed(match answer {
+                Answer::Given(typed) if typed.trim().is_empty() => {
+                    Answer::Given(default.clone().unwrap_or_default())
+                }
+                Answer::Given(typed) => Answer::Given(typed.trim().to_owned()),
+                Answer::Cancelled => Answer::Cancelled,
+            }))
+        }
+        PromptCommand::Confirm { question } => Ok(match confirm(question)? {
+            true => Exit::Ok,
+            false => Exit::NotSigned,
+        }),
+    }
 }
 
 #[cfg(test)]

@@ -310,10 +310,12 @@ user at its start: [decision log](decisions.md), 2026-11-15.
   On it: `writ admin … add`, `edit` and `rotate`, `writ init`'s questions, `writ sign`'s
   prompt, `writ unseal`'s. The end-to-end pipeline drives the widgets through a pty with real
   keystrokes.
-- **The installer's questions in Rust**: a `writ` subcommand asks them all with the same
-  widgets and hands the answers to `deploy/frame.sh` (a file it reads strictly, like the
-  manifest), which still makes every change. Every choice still asked before anything
-  changes, the summary and its go kept; without a terminal the variables answer, as today.
+- **The installer's questions in Rust**: each question `deploy/frame.sh` asks on a terminal
+  is drawn by `writ prompt` (a select, text or a confirm, its answer on stdout) with the same
+  widgets; the frame keeps every check and makes every change. Every choice still asked
+  before anything changes, the summary and its go kept; without a terminal the variables
+  answer, as today. (Planned as one `writ` command asking them all into an answers file;
+  settled while building it: one question per call, so no new file to read strictly.)
 - **A quick setup guide** (`docs/operators/quick-start.md`, local mode on the Mac, from a
   finished `make install`): the upstream key (made by the daemon, added on the remote, the
   remote's host key pinned), the signing key (made, then proven on the remote with `writ
@@ -338,8 +340,9 @@ Steps (each one commit, `make ci` green, its docs in the same commit):
 5. **The prompt layer** on `inquire`, every guided flow moved onto it; the pty driver of the
    end-to-end pipeline sending keys; the scenarios that answer prompts updated. Tests: each
    widget's plain fallback, hostile values cleaned before they are shown, `NO_COLOR`. *Done.*
-6. **The installer's questions in Rust**: the subcommand, its answers file and its strict
-   reader in `frame.sh`, the fake-root installer tests, its scenario and its coverage row.
+6. **The installer's questions in Rust**: `writ prompt select|text|confirm`, the frame's
+   `ask`, `confirm`, `choose_one` and setup question through it, the fake-root installer
+   tests driving it on a terminal, its scenario and its coverage rows. *Done.*
 7. **The operator docs**: the quick guide, the reorganised pages, the pipeline's table.
 8. **Closing**: the acceptance ticked, the manual check run by the user, the history page.
 

@@ -169,6 +169,16 @@ the scenarios (`tool/check-e2e.py`).
 | `writ init --global` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ init --agents-md` | `a_lease_is_renewed_closed_and_learned_from` |
 | `writ init --repo` | `one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease` |
+| `writ prompt select` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt select --question` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt select --hint` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt select --default` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt text` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt text --question` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt text --hint` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt text --default` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt confirm` | `writ_prompt_asks_one_question_for_a_script` |
+| `writ prompt confirm --question` | `writ_prompt_asks_one_question_for_a_script` |
 | `writ skill update` | `a_lease_is_renewed_closed_and_learned_from`, `one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease` |
 | `writ skill update --all` | `one_agent_at_a_workspace_root_works_on_two_repositories_under_one_lease` |
 | `writ close` | `a_lease_is_renewed_closed_and_learned_from` |
@@ -527,7 +537,12 @@ questions are widgets reading keys in raw mode, where Enter is `\r` and a `\n` i
 answers typed before a question comes up wait in the terminal as typed, so a run never depends
 on when each question starts (M7.9.5). An answer is what a person types: on a select, the
 option's name (the text filters the options to it), on a multi-select `a b ` (each name, then
-space), an empty answer to keep.
+space), an empty answer to keep. The integration tests' terminal (`on_writ_terminal`) types
+each answer once the question before shows its answered line (`> question answer`), for a
+script that asks each question in a process of its own (the installer's `writ prompt`), and
+an answer ending in `\n` as a line (a passphrase); a command still asking a minute after its
+last answer is killed, its process group whole, so a missing answer fails with what it
+showed.
 
 ## Adding a scenario
 

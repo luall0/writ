@@ -46,9 +46,26 @@ sys() { printf '%s%s' "$ROOT" "$1"; }
 # Whether questions can be asked.
 terminal() { [ -t 0 ]; }
 
+# The writ that asks the questions on a terminal with its widgets (M7.9.5: arrow keys, typing
+# filters): the one this install built (`writ prompt`), on stdout; none when it isn't there
+# or stdin or stderr isn't a terminal, and the plain prompts below ask the same questions.
+asker() {
+    [ -t 0 ] && [ -t 2 ] && [ -x "$BINARIES/writ" ] || return 1
+    printf '%s' "$BINARIES/writ"
+}
+
 # ask <label> <default>: one answer from the terminal (the default on Enter), on stdout; the
-# prompt on stderr.
+# prompt on stderr. Esc stops the install, nothing done.
 ask() {
+    if w=$(asker); then
+        if [ -n "$2" ]; then
+            answer=$("$w" prompt text --question "$1" --default "$2") || fail "stopped: nothing done"
+        else
+            answer=$("$w" prompt text --question "$1") || fail "stopped: nothing done"
+        fi
+        printf '%s' "${answer:-$2}"
+        return 0
+    fi
     if [ -n "$2" ]; then
         printf '%s [%s]: ' "$1" "$2" >&2
     else
@@ -60,6 +77,10 @@ ask() {
 
 # confirm <question>: yes on y or yes, asked on the terminal; no otherwise.
 confirm() {
+    if w=$(asker); then
+        "$w" prompt confirm --question "$1" >&2
+        return
+    fi
     printf '%s [y/N] ' "$1" >&2
     read -r answer || answer=
     case $answer in
@@ -76,7 +97,13 @@ choose_one() {
     shift 4
     if [ -z "$value" ] && terminal; then
         while :; do
-            value=$(ask "$label" "$default")
+            if w=$(asker); then
+                # A select of the allowed values, the default first under the cursor.
+                value=$("$w" prompt select --question "$label" --default "$default" -- "$@") ||
+                    fail "stopped: nothing done"
+            else
+                value=$(ask "$label" "$default")
+            fi
             for one in "$@"; do
                 [ "$value" = "$one" ] && break 2
             done
@@ -310,7 +337,13 @@ choose_setup() {
         setups_here | while read -r name file; do
             say "  $name: $(about_of "$file")" >&2
         done
-        SETUP=$(ask "Setup" "${offered%% *}")
+        if w=$(asker); then
+            # shellcheck disable=SC2086 # one option per setup name (names have no space)
+            SETUP=$("$w" prompt select --question "Setup" --default "${offered%% *}" -- $offered) ||
+                fail "stopped: nothing done"
+        else
+            SETUP=$(ask "Setup" "${offered%% *}")
+        fi
     fi
     chosen=$(setups_here | while read -r name file; do
         if [ "$name" = "$SETUP" ]; then printf '%s' "$file"; fi
@@ -428,8 +461,7 @@ do_uninstall() {
         grep "^data \|^userdata " "$MANIFEST" | cut -d' ' -f2- | sed 's/^/  /'
         # Deleting it needs a person: PURGE=1 alone, without a terminal, deletes nothing.
         terminal || fail "PURGE=1 needs a terminal to confirm: nothing done"
-        printf 'Type delete to delete it, Enter keeps it: '
-        read -r typed || typed=
+        typed=$(ask "Type delete to delete it, Enter keeps it" "")
         case $typed in
             delete) purge_answer=yes ;;
             "") [ "$PURGE" != 1 ] || fail "not confirmed: nothing done" ;;
@@ -488,15 +520,12 @@ repos_question() {
         *) fail "REPOS=$REPOS: undo or keep" ;;
     esac
     terminal || fail "REPOS=undo or REPOS=keep is needed without a terminal: nothing done"
-    printf 'Take Writ out of them too? [y/N] ' >&2
-    read -r answer || answer=
-    case $answer in
-        y | Y | yes) printf undo ;;
-        *)
-            say "Kept wired." >&2
-            printf keep
-            ;;
-    esac
+    if confirm "Take Writ out of them too?"; then
+        printf undo
+    else
+        say "Kept wired." >&2
+        printf keep
+    fi
 }
 
 # Takes back every manifest line, newest first (<purge>: yes deletes the daemon's data).

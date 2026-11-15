@@ -974,3 +974,81 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
         approver.ok("cat scan-before.yaml")
     );
 }
+
+/// `writ prompt` (M7.9.5): one question for a script that asks a person (the installer, per
+/// question), with writ's widgets; its answer on stdout, Esc or a no exiting 6; refused
+/// without a terminal.
+#[test]
+#[ignore = "end to end: make e2e"]
+fn writ_prompt_asks_one_question_for_a_script() {
+    let stack = Stack::shared();
+    let approver = &stack.approver;
+
+    // A select: the option typed picked, printed; Enter: the default.
+    let out = approver.on_terminal(
+        "writ prompt select --question Setup --hint \"one of them\" --default b -- a b c",
+        &["c"],
+    );
+    assert!(out.contains("? Setup"), "{out}");
+    assert!(out.contains("[one of them]"), "{out}");
+    assert!(out.contains("> Setup c"), "{out}");
+    assert_eq!(printed(&out), "c", "{out:?}");
+    let out = approver.on_terminal(
+        "writ prompt select --question Setup --default b -- a b c",
+        &[""],
+    );
+    assert_eq!(printed(&out), "b", "{out:?}");
+
+    // Text: what is typed, or the default on Enter.
+    let out = approver.on_terminal(
+        "writ prompt text --question Path --hint \"a file\" --default ~/key.pub",
+        &["/tmp/other.pub"],
+    );
+    assert!(out.contains("[a file]"), "{out}");
+    assert_eq!(printed(&out), "/tmp/other.pub", "{out:?}");
+    let out = approver.on_terminal("writ prompt text --question Path --default dflt", &[""]);
+    assert_eq!(printed(&out), "dflt", "{out:?}");
+
+    // Confirm: y goes on (0), anything else stops (6).
+    approver.on_terminal("writ prompt confirm --question Install?", &["y"]);
+    approver.exits_on_terminal("writ prompt confirm --question Install?", &["n"], 6);
+
+    // Without a terminal, the script answers its own question.
+    let out = approver.run("writ prompt text --question Path");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        writ_e2e::docker::stderr(&out).contains("writ prompt asks on a terminal"),
+        "{}",
+        writ_e2e::docker::stderr(&out)
+    );
+}
+
+/// The last line a command printed, without the terminal's control sequences: what a script
+/// reading its stdout gets.
+fn printed(out: &str) -> String {
+    let plain: String = {
+        let mut s = String::new();
+        let mut chars = out.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    for f in chars.by_ref() {
+                        if ('@'..='~').contains(&f) {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            s.push(c);
+        }
+        s
+    };
+    plain
+        .split(['\r', '\n'])
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_owned()
+}

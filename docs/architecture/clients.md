@@ -52,7 +52,9 @@ optional field out, `none` empties a list), so the guided flows' logic is one; a
 fixed options are the ones the field's own help names (a test). Colour unless `NO_COLOR` is
 set. Everything drawn is cleaned first, a scanned host key or a name from the policy alike.
 Without a terminal the plain line prompts answer as before (scripts, the variables, the
-integration tests). Passphrases, the recovery key and tokens are never asked there:
+integration tests). `writ prompt select|text|confirm` asks one such question for a script
+(the installer's frame, per question: `--question`, `--hint`, `--default`, the options),
+its answer on stdout, Esc or a no exiting 6; refused without a terminal. Passphrases, the recovery key and tokens are never asked there:
 `writ_crypto::passphrase` reads them, echo off, into memory it wipes.
 
 Denial reasons from the daemon reach the agent: `writ-sign` prints them on stderr (escaped,

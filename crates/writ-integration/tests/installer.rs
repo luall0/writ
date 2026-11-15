@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use writ_crypto::keys::{KeyKind, generate};
-use writ_integration::terminal::on_terminal;
+use writ_integration::terminal::on_writ_terminal;
 use writ_integration::{stderr, stdout};
 
 /// The keystore's passphrase, typed twice (chosen, confirmed).
@@ -380,7 +380,7 @@ fn the_dry_run_lists_every_change_and_makes_none_and_a_setup_is_picked_from_the_
     asked.env("APPROVER", &fake.approver);
     // The setup, then this setup's six questions (Enter: software, a passphrase, the popup
     // through Secretive's agent).
-    let (status, shown) = on_terminal(asked, &["local", "", "", "", "", "", ""]);
+    let (status, shown) = on_writ_terminal(asked, &["local", "", "", "", "", "", ""]);
     assert!(status.success(), "{shown}");
     assert!(
         shown.contains("Which setup? Offered on Darwin: local"),
@@ -626,13 +626,13 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
         &fake.run("uninstall", &[("PURGE", "1"), ("REPOS", "keep")], ""),
         "PURGE=1 needs a terminal to confirm: nothing done",
     );
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         fake.command("uninstall", &[("PURGE", "1"), ("REPOS", "keep")]),
         &["delete", "y"],
     );
     assert!(status.success(), "{shown}");
     assert!(
-        shown.contains("Type delete to delete it, Enter keeps it:"),
+        shown.contains("> Type delete to delete it, Enter keeps it delete"),
         "{shown}"
     );
     assert_eq!(fake.tree(), before);
@@ -993,7 +993,7 @@ fn on_linux_an_install_upgrades_and_uninstalls_leaving_the_machine_as_before() {
     assert!(fake.calls().contains(&format!(" --uid {uid} ")));
 
     // PURGE=1 on a terminal: everything gone.
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         fake.command("uninstall", &[("PURGE", "1"), ("REPOS", "keep")]),
         &["delete", "y"],
     );
@@ -1062,15 +1062,15 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
     let fake = Fake::new();
     let before = fake.tree();
     let approver = fake.approver.display().to_string();
-    // No variable at all: every answer typed. A path that isn't a key and a backend that
-    // isn't one are asked again; then no at the go.
-    let (status, shown) = on_terminal(
+    // No variable at all: every answer typed. A path that isn't a key is asked again (a
+    // backend is a select of the ones offered: a wrong one can't be picked, and one given by
+    // its variable is refused by name); then no at the go.
+    let (status, shown) = on_writ_terminal(
         fake.command("install", &[]),
         &[
             "",
             "/nonexistent/key.pub",
             &approver,
-            "yubikey",
             "",
             "",
             "",
@@ -1086,20 +1086,20 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         "Writ's installer: a few questions, then every change it will make, then your go.",
         "Which setup? Offered on Darwin: local",
         "  local: the daemon on this Mac, under its own user, out of your reach; your agents run here",
-        "Setup [local]: ",
+        "> Setup local",
         "Give the path to its public half, the .pub",
-        "Approval key (.pub): ",
+        "? Approval key (.pub)",
         "  /nonexistent/key.pub: not a readable file",
         "se-cryptokit: in this Mac's Secure Enclave, which makes it and never lets it out",
-        "TLS key [software]: ",
-        "  yubikey: one of software se-cryptokit",
-        "SSH CA key [software]: ",
-        "Agent signing key [software]: ",
-        "Keystore opened by [passphrase]: ",
+        "> TLS key software",
+        "> SSH CA key software",
+        "> Agent signing key software",
+        "> Keystore opened by passphrase",
         "not offered with these answers",
         "The approval popup: a window in front of every app, full-screen ones too, when a",
-        "Approval popup [yes]: ",
-        "Approval key's agent socket [~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh]: ",
+        "> Approval popup yes",
+        "? Approval key's agent socket",
+        "~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh",
         "Your answers:",
         "  Setup: local (the daemon on this Mac",
         &format!(
@@ -1116,7 +1116,7 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         "    (root) dscl . -create /Users/_writd UniqueID 450",
         "agent-01: { use: signing, format: ssh, algorithm: ed25519 }",
         "/opt/writ/bin/writd init /var/db/writ/writd.yaml --tls-backend software --ca-backend software",
-        "Install? [y/N] ",
+        "> Install? n",
         "Nothing changed.",
     ] {
         assert!(shown.contains(said), "{said:?} not in:\n{shown}");
@@ -1125,7 +1125,7 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
     assert!(!fake.calls().contains("-create"), "{}", fake.calls());
 
     // The same answers and yes: installed, the passphrase asked by writd init.
-    let (status, shown) = on_terminal(
+    let (status, shown) = on_writ_terminal(
         fake.command("install", &[]),
         &[
             "",
@@ -1137,8 +1137,9 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
             "",
             "",
             "y",
-            "an installer test passphrase",
-            "an installer test passphrase",
+            // Read as lines by writd init (echo off): typed as they are.
+            "an installer test passphrase\n",
+            "an installer test passphrase\n",
         ],
     );
     assert!(status.success(), "{shown}");
@@ -1160,10 +1161,10 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
     // The uninstall, guided too: what it takes back shown, no at its go changing nothing,
     // then yes, the data kept (Enter at the question).
     let installed = fake.tree();
-    let (status, shown) = on_terminal(fake.command("uninstall", &[]), &["", "n"]);
+    let (status, shown) = on_writ_terminal(fake.command("uninstall", &[]), &["", "n"]);
     assert!(status.success(), "{shown}");
     assert!(
-        shown.contains("Type delete to delete it, Enter keeps it: "),
+        shown.contains("> Type delete to delete it, Enter keeps it"),
         "{shown}"
     );
     assert!(
@@ -1171,11 +1172,11 @@ fn a_guided_install_asks_everything_shows_every_change_and_waits_for_the_go() {
         "{shown}"
     );
     assert!(
-        shown.contains("Uninstall? [y/N] ") && shown.contains("Nothing changed."),
+        shown.contains("> Uninstall? n") && shown.contains("Nothing changed."),
         "{shown}"
     );
     assert_eq!(fake.tree(), installed);
-    let (status, shown) = on_terminal(fake.command("uninstall", &[]), &["", "y"]);
+    let (status, shown) = on_writ_terminal(fake.command("uninstall", &[]), &["", "y"]);
     assert!(status.success(), "{shown}");
     assert!(shown.contains("Uninstalled."), "{shown}");
     assert!(

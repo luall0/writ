@@ -220,7 +220,9 @@ is written for the person running it, who may not know Writ yet (asked by the us
 
 - **Every choice is asked on the terminal**, one question at a time, each with what it means
   in plain words, the values it takes and what Enter keeps (`ask`, `choose_one`,
-  `choose_approver` in `deploy/frame.sh`). A wrong answer is said and asked again, never a
+  `choose_approver` in `deploy/frame.sh`), drawn by `writ prompt` with `writ`'s widgets (a
+  select of the values it takes, text, a confirm; M7.9.5) when the build's `writ` is there,
+  else as plain lines. A wrong answer is said and asked again, never a
   failure the person has to start over from. Nothing the person must know beforehand (a
   variable, a flag, a path convention) is needed to get through.
 - **Nothing changes before one confirmation**: the answers and every change, in order (the

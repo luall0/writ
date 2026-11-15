@@ -145,6 +145,7 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             ..
         } => init::undo_all(&paths),
         Commands::Init { undo: true, .. } => init::undo(&paths),
+        Commands::Prompt { command } => prompt::command(command),
         Commands::Skill {
             command: SkillCommand::Update { all: true },
         } => init::update_skills_all(&paths),

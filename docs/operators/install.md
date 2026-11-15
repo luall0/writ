@@ -27,7 +27,9 @@ make install
 ```
 
 It builds the release binaries, then asks its questions, one at a time, each with what it
-means and what Enter keeps:
+means and what Enter keeps. Where there is a choice, it is a menu: the arrow keys move, typing
+filters, Enter picks (the first highlighted is what Enter keeps); Esc stops the install with
+nothing changed:
 
 1. **The setup**: the ones this machine can have, each said in a line (today, `local`).
 2. **Your approval key**: the path to its public half, the `.pub`. A path that isn't one is

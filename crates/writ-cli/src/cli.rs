@@ -191,6 +191,12 @@ pub(crate) enum Commands {
         #[arg(long, conflicts_with = "undo")]
         agents_md: bool,
     },
+    /// One question asked on the terminal with writ's widgets, its answer printed on stdout:
+    /// for a script that asks a person (the installer). Refused without a terminal.
+    Prompt {
+        #[command(subcommand)]
+        command: PromptCommand,
+    },
     /// The agent skill writ init installed here.
     Skill {
         #[command(subcommand)]
@@ -642,6 +648,42 @@ pub(crate) enum HostCommand {
         url: ApprovalUrl,
         #[command(flatten)]
         signer: SignerArgs,
+    },
+}
+
+/// `writ prompt <kind>`: the question on stderr, the answer on stdout; Esc exits 6, nothing
+/// printed.
+#[derive(Subcommand)]
+pub(crate) enum PromptCommand {
+    /// One of the options, moved with the arrow keys and filtered by typing: printed.
+    Select {
+        /// The question.
+        #[arg(long)]
+        question: String,
+        /// A line under it saying what the answer does.
+        #[arg(long)]
+        hint: Option<String>,
+        /// The option the cursor starts on (the first, if not one of them).
+        #[arg(long)]
+        default: Option<String>,
+        /// The options, each what it prints.
+        #[arg(required = true, num_args = 1..)]
+        options: Vec<String>,
+    },
+    /// A value typed: printed (Enter on nothing: --default, or nothing).
+    Text {
+        #[arg(long)]
+        question: String,
+        #[arg(long)]
+        hint: Option<String>,
+        /// What Enter on nothing gives.
+        #[arg(long)]
+        default: Option<String>,
+    },
+    /// Yes or no: exits 0 on y or yes (any case), 6 on anything else, Enter or Esc.
+    Confirm {
+        #[arg(long)]
+        question: String,
     },
 }
 
