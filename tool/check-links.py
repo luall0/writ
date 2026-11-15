@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks that every relative link and #anchor in AGENTS.md, README.md, docs/ and the crates'
+"""Checks that every relative link and #anchor in AGENTS.md, README.md, CHANGELOG.md, docs/ and the crates'
 README.md files resolves."""
 
 import glob
@@ -9,7 +9,7 @@ import sys
 
 root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 files = (
-    [os.path.join(root, "AGENTS.md"), os.path.join(root, "README.md")]
+    [os.path.join(root, "AGENTS.md"), os.path.join(root, "README.md"), os.path.join(root, "CHANGELOG.md")]
     + glob.glob(os.path.join(root, "docs/**/*.md"), recursive=True)
     + glob.glob(os.path.join(root, "crates/*/README.md"))
 )

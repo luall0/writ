@@ -1,7 +1,7 @@
 .PHONY: ci push check test test-props test-agent e2e bench-alloc github-check fmt run dev-client hooks install uninstall
 
 # Lint, format check, dependency directions, source rules, doc links, the guarantee,
-# end-to-end and configuration registries.
+# end-to-end and configuration registries, the changelog against the workspace's version.
 # Each library is also linted alone: the workspace build turns on the `testing` features the
 # tests ask for, which could hide code that only compiles with them.
 LIBRARIES := writ-alloc writ-core writ-proto writ-crypto writ-git writ-mirror writ-signer writ-platform writ-platform-linux writ-platform-macos writ-store writ-approval writ-gateway
@@ -45,6 +45,8 @@ check:
 	python3 -I tool/check-guarantees.py
 	python3 -I tool/check-e2e.py
 	python3 -I tool/check-config.py
+	python3 -I tool/check-changelog-test.py
+	python3 -I tool/check-changelog.py
 	sh tool/shellcheck.sh deploy/install.sh deploy/frame.sh deploy/setups/*.sh
 	cargo deny --locked check
 

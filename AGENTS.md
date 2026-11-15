@@ -19,8 +19,11 @@ If the repo has no `Cargo.toml` yet, the project is not initialized: follow
 Work follows the [roadmap](docs/roadmap.md) **strictly in order**, M0 to M8.5 (M8.5 completes v1); each milestone
 ends with a working, tested commit. When a milestone is done, move its section from the
 roadmap to `docs/history/m<N>-<slug>.md`, tick its checklist with a note under each item on
-how it was verified, add a row at the end of the [history](docs/history/README.md), and leave
-a one-line row pointing there in the roadmap's table. After v1, ideas live in
+how it was verified, add a row at the end of the [history](docs/history/README.md), leave
+a one-line row pointing there in the roadmap's table, and make its release: `## Unreleased`
+in [CHANGELOG.md](CHANGELOG.md) becomes the next minor version with its date and its
+Upgrading notes, and the workspace's version moves to it
+([versions](docs/conventions.md#versions-and-the-changelog)). After v1, ideas live in
 [docs/backlog/](docs/backlog/README.md); the user picks what comes next, and a picked idea
 gets its page (the template there) written up to its plan before any code.
 
@@ -154,7 +157,8 @@ answered, and the milestone's acceptance items touched by the change were exerci
 as integration scenarios in `crates/writ-integration` (real `git`, real `ssh`, the daemon
 running), as end-to-end scenarios when a binary's behavior changed (`make e2e` passes,
 rule 18), plus the [manual checks](docs/guides/manual-checks.md) for what needs a human
-(Touch ID). State in your summary what you ran.
+(Touch ID). A change people see has its line under `## Unreleased` in
+[CHANGELOG.md](CHANGELOG.md). State in your summary what you ran.
 
 ## Commands
 
@@ -164,7 +168,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 |---|---|
 | Everything CI runs (`check` then `test`); on a clean working tree, a pass stamps the tree for the `pre-push` hook | `make ci` |
 | `make ci` (skipped if it already passed on this tree), then `git push`; the way to push | `make push [ARGS="origin main"]` |
-| Lint, format check, dependency directions, source rules, doc links, no test-only feature in the binaries, the guarantee, end-to-end and configuration registries, `cargo deny` | `make check` |
+| Lint, format check, dependency directions, source rules, doc links, no test-only feature in the binaries, the guarantee, end-to-end and configuration registries, the changelog against the workspace's version, `cargo deny` | `make check` |
 | Tests under `cargo-nextest`: unit and integration, property tests with the fixed seed; then `target/` pruned to the last builds | `make test` |
 | Property tests with one seed (replay a failure; `random` is CI's pass) | `make test-props SEED=<number\|random>` |
 | Approval signature with a key in your own ssh-agent (by hand; may ask for Touch ID) | `make test-agent KEY=<public key .pub> [AGENT=<socket>]` |
@@ -209,5 +213,6 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Tests: levels, hardening rules, fixtures, guarantee tests, property-test seeds | [docs/testing.md](docs/testing.md) |
 | End-to-end scenarios: running, the stack, the coverage registry, adding a scenario | [docs/end-to-end.md](docs/end-to-end.md) |
 | Code conventions: crates, modules, errors, secrets, logging, docs | [docs/conventions.md](docs/conventions.md) |
+| What changed in each release, and the rules for versions | [CHANGELOG.md](CHANGELOG.md), [versions](docs/conventions.md#versions-and-the-changelog) |
 | Bootstrapping an empty repo | [docs/guides/initialization.md](docs/guides/initialization.md) |
 | Upgrading a crate, the toolchain, `cargo-deny` or a tool; answering an advisory | [docs/guides/dependency-upgrades.md](docs/guides/dependency-upgrades.md) |

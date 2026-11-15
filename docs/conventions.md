@@ -298,6 +298,46 @@ the same change (M7.9.6):
   reason naming each key it can't carry over. The daemon never reads an older format: it is
   only ever rewritten, and the rewrite is signed (`writ migrate`).
 
+Either one also gets its line under `### Upgrading` in the [changelog](#versions-and-the-changelog).
+
+## Versions and the changelog
+
+Writ has one version, `[workspace.package] version` in the root `Cargo.toml`; every crate
+takes it (`version.workspace = true`). It is SemVer (M7.9.8):
+
+- **Before 1.0**, a milestone's close is a minor version (`0.N.0`), and a fix released on
+  its own between two milestones a patch. **1.0.0** comes with M8.5, which completes v1.
+- **From 1.0**, a major version is an upgrade that owes a signed `writ migrate` (a policy
+  format change), or one where a `writ` of the previous major can't talk to the new `writd`.
+  A new feature is a minor version, a fix a patch. A state step alone is neither: it
+  migrates by itself after a copy.
+
+[`CHANGELOG.md`](../CHANGELOG.md), at the root, is written by hand for the person who runs
+Writ, under the [operator writing rules](#writing-operator-docs):
+
+- **A change people see adds its line under `## Unreleased`, in the same change**, as rule 15
+  asks of the docs: a command, flag, key, value, default or bound added, changed or removed;
+  a behavior or a refusal changed; a step an upgrade needs; a security fix. A refactor, a
+  test, or a page for developers adds none.
+- **The sections**, each `### <name>`, in this order, each once, each a list: Upgrading,
+  Added, Changed, Deprecated, Removed, Fixed, Security. A line says what changed for the
+  reader in a sentence or two, and links to its history page or doc for the rest.
+- **Every release starts with `### Upgrading`**: the state version, the policy format,
+  whether `writ migrate` is owed, whether a `writ` and a `writd` of the two versions can talk
+  (the protocol's messages refuse fields they don't know, so two versions talk only when no
+  message changed between them), and the steps, in order.
+- **A release** is made by a milestone's closing commit (or a patch's): `## Unreleased`
+  becomes `## <version> — <YYYY-MM-DD>`, a new empty `## Unreleased` goes above it, and the
+  workspace's version moves to it (`cargo update --workspace` then updates `Cargo.lock`),
+  all in that one commit.
+
+Checked: `make check` fails when the file is out of shape (its headings, an unknown section,
+one out of order or empty, a release without `### Upgrading` first), when a version is
+released twice or the releases aren't newest first in version and date, when the newest
+release isn't the workspace's version (so the version moves only with its release), or
+when a crate has a version of its own (`tool/check-changelog.py`, its tests in
+`tool/check-changelog-test.py`). That each change people see has its line is for review.
+
 ## Writing operator docs
 
 The [operator documentation](operators/README.md) is read by a person setting Writ up or
