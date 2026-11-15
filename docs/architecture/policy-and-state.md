@@ -23,7 +23,7 @@ Every request → find the single lease matching the caller's certificate → al
 |---|---|---|
 | `resolve_lease` | Certificate key id, serial, session key fingerprint | Exactly one lease matches all three |
 | `decide_sign` | Repo, object kind, committer and author emails and names, `Writ:` trailers, touched paths | Common checks, then: a commit (no tag, tree, blob or other object) in the repo's `object_format`, committer email in the lease, author email in the lease's committer emails (`author`), both names the lease's `committer_name` when it has one (`committer_name`, `author_name`), the trailer if the repo's `ticket_link` is `trailer`, `paths_check` and the expected paths of the repo's terms, the repo's `max_signatures`, rate |
-| `decide_push` | Repo, push mode, ref updates (old, new, fast-forward, a twin ignoring case), new commits with their ledger entries and the digest of the paths each touches (computed again from the objects git verified), pack size | Common checks, then: push mode allowed by registry and template (`direct_ssh` never here), each ref valid, updated once (ignoring case), without a twin ignoring case in the repo, not protected, a branch, within the repo's branches in the lease, no force push or deletion unless the repo's terms allow it; every new commit in the ledger for this lease and repo, touching the paths signing saw (when it saw them); size (the smaller of the repo's `max_push_size` and its template's); the repo's `max_pushes`; rate |
+| `decide_push` | Repo, ref updates (old, new, fast-forward, a twin ignoring case), new commits with their ledger entries and the digest of the paths each touches (computed again from the objects git verified), pack size | Common checks, then: each ref valid, updated once (ignoring case), without a twin ignoring case in the repo, not protected, a branch, within the repo's branches in the lease, no force push or deletion unless the repo's terms allow it; every new commit in the ledger for this lease and repo, touching the paths signing saw (when it saw them); size (the smaller of the repo's `max_push_size` and its template's); the repo's `max_pushes`; rate |
 | `decide_fetch` | Repo | Common checks, rate (`Service::fetch` then takes one operation of the rate window under the same lock) |
 
 The **common checks** come first in every decision: the lease is active and before
@@ -37,7 +37,7 @@ reason; one exception, a signature's path check comes after them (a request at i
 costs no path match under the lock), so a path refusal there is reported as the count or the
 rate, and `on_violation` doesn't fire.
 
-Each denial has a code (`DenyCode`). Out-of-scope codes (operation, repo, push mode, object
+Each denial has a code (`DenyCode`). Out-of-scope codes (operation, repo, object
 type, committer, author, ticket link, paths, ref, protected ref, force push, unsigned
 commit, paths changed since signing, size) are **violations** and trigger the lease's `on_violation`; running out of time, counts or
 rate, a wrong caller or a config change are not.

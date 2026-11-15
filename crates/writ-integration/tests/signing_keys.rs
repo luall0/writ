@@ -21,6 +21,7 @@ use writ_integration::gateway::GitGateway;
 use writ_integration::{stderr, stdout};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing
@@ -286,6 +287,7 @@ fn every_algorithm_and_hash_signs_commits_git_verifies() {
 
 /// A policy whose template signs with the harness's OpenPGP key, certified for its committer.
 const OPENPGP_POLICY: &str = r#"
+format: 2
 keys:
   agent-pgp:
     use: signing

@@ -30,6 +30,7 @@ use writ_platform::unlock::x25519::X25519Unwrap;
 use writ_platform::unlock::{OpenError, PassphraseFile};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

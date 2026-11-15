@@ -21,6 +21,7 @@ use writ_integration::daemon::{Approvals, Daemon};
 use writ_integration::{audit_events, eventually, stderr, stdout};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

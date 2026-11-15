@@ -46,8 +46,15 @@ fn ticket_error(doc: &str) -> String {
     TicketRequest::from_yaml(doc).unwrap_err().to_string()
 }
 
-/// The fields the parser reads only to refuse them, naming where they moved (M6.2): not keys.
-const MOVED: &[&str] = &["signing_keys", "templates.<name>.repos"];
+/// The fields the parser reads only to refuse them, naming where they moved (M6.2) or that
+/// format 2 removed them (M7.9.6; a format 1 policy is only rewritten): not keys.
+const MOVED: &[&str] = &[
+    "signing_keys",
+    "templates.<name>.repos",
+    "repos.<name>.push_modes",
+    "repos.<name>.direct_ssh",
+    "templates.<name>.push_modes",
+];
 
 /// Every key of `policy.yaml`, as the reference writes it (`repos.<name>.upstream`).
 fn policy_keys() -> BTreeSet<String> {
@@ -56,6 +63,7 @@ fn policy_keys() -> BTreeSet<String> {
     assert_eq!(
         top,
         [
+            "format",
             "keys",
             "upstream_hosts",
             "proxies",
@@ -68,36 +76,36 @@ fn policy_keys() -> BTreeSet<String> {
         "a new top-level section: probe it"
     );
     keys.extend(keys_of(
-        &policy_error("keys:\n  k:\n    __probe__: 0\nrepos: {}\ntemplates: {}"),
+        &policy_error("format: 2\nkeys:\n  k:\n    __probe__: 0\nrepos: {}\ntemplates: {}"),
         "keys.<id>.",
         &[],
     ));
     // A map of hosts, each to a list of keys: one row.
     keys.insert("upstream_hosts.<host>".to_owned());
-    // A top-level scalar (M7.6): one row.
+    // Top-level scalars (M7.6, M7.9.6): one row each.
     keys.insert("unseal".to_owned());
+    keys.insert("format".to_owned());
     keys.extend(keys_of(
-        &policy_error("keys: {}\nproxies:\n  p:\n    __probe__: 0\nrepos: {}\ntemplates: {}"),
+        &policy_error(
+            "format: 2\nkeys: {}\nproxies:\n  p:\n    __probe__: 0\nrepos: {}\ntemplates: {}",
+        ),
         "proxies.<name>.",
         &[],
     ));
     keys.extend(keys_of(
-        &policy_error("keys: {}\nrecipients:\n  r:\n    __probe__: 0\nrepos: {}\ntemplates: {}"),
+        &policy_error(
+            "format: 2\nkeys: {}\nrecipients:\n  r:\n    __probe__: 0\nrepos: {}\ntemplates: {}",
+        ),
         "recipients.<name>.",
         &[],
     ));
     keys.extend(keys_of(
-        &policy_error("keys: {}\nrepos:\n  r:\n    __probe__: 0\ntemplates: {}"),
+        &policy_error("format: 2\nkeys: {}\nrepos:\n  r:\n    __probe__: 0\ntemplates: {}"),
         "repos.<name>.",
-        &["direct_ssh"],
-    ));
-    keys.extend(keys_of(
-        &policy_error("keys: {}\nrepos:\n  r:\n    direct_ssh:\n      __probe__: 0\ntemplates: {}"),
-        "repos.<name>.direct_ssh.",
         &[],
     ));
     keys.extend(keys_of(
-        &policy_error("keys: {}\nrepos: {}\ntemplates:\n  t:\n    __probe__: 0"),
+        &policy_error("format: 2\nkeys: {}\nrepos: {}\ntemplates:\n  t:\n    __probe__: 0"),
         "templates.<name>.",
         &[],
     ));
@@ -210,18 +218,14 @@ fn every_policy_key_is_in_the_operator_reference() {
         &code,
         &registry("policy.yaml"),
     );
-    let repo = "keys: {}\nrepos:\n  r:\n    FIELD: __probe__\ntemplates: {}";
-    let key = "keys:\n  k:\n    FIELD: __probe__\nrepos: {}\ntemplates: {}";
+    let repo = "format: 2\nkeys: {}\nrepos:\n  r:\n    FIELD: __probe__\ntemplates: {}";
+    let key = "format: 2\nkeys:\n  k:\n    FIELD: __probe__\nrepos: {}\ntemplates: {}";
     for (name, doc) in [
         ("keys.<id>.use", key.replace("FIELD", "use")),
         ("keys.<id>.kind", key.replace("FIELD", "kind")),
         ("keys.<id>.format", key.replace("FIELD", "format")),
         ("keys.<id>.algorithm", key.replace("FIELD", "algorithm")),
         ("keys.<id>.hash", key.replace("FIELD", "hash")),
-        (
-            "repos.<name>.push_modes",
-            repo.replace("FIELD: __probe__", "push_modes: [__probe__]"),
-        ),
         (
             "repos.<name>.ticket_link",
             repo.replace("FIELD", "ticket_link"),
@@ -231,16 +235,14 @@ fn every_policy_key_is_in_the_operator_reference() {
             repo.replace("FIELD", "object_format"),
         ),
         (
-            "templates.<name>.push_modes",
-            "keys: {}\nrepos: {}\ntemplates:\n  t:\n    push_modes: [__probe__]".to_owned(),
-        ),
-        (
             "templates.<name>.operations",
-            "keys: {}\nrepos: {}\ntemplates:\n  t:\n    operations: [__probe__]".to_owned(),
+            "format: 2\nkeys: {}\nrepos: {}\ntemplates:\n  t:\n    operations: [__probe__]"
+                .to_owned(),
         ),
         (
             "templates.<name>.paths_check",
-            "keys: {}\nrepos: {}\ntemplates:\n  t:\n    paths_check: __probe__".to_owned(),
+            "format: 2\nkeys: {}\nrepos: {}\ntemplates:\n  t:\n    paths_check: __probe__"
+                .to_owned(),
         ),
     ] {
         assert!(doc.contains("__probe__"), "{doc}");
@@ -286,6 +288,7 @@ fn the_probe_reads_every_list_the_parser_writes() {
     assert_eq!(
         expected(&policy_error("__probe__: 0")),
         [
+            "format",
             "keys",
             "upstream_hosts",
             "proxies",
@@ -345,11 +348,8 @@ fn the_policy_template_parses_as_is_and_with_every_default_taken_in() {
     // commented out at its default.
     PolicyConfig::from_yaml(POLICY_TEMPLATE).unwrap();
     let taken = uncommented(POLICY_TEMPLATE, &|line| {
-        line.contains("direct_ssh:")
-            || line.contains("hosts:")
-            || line.contains("allow_account_wide:")
-            // Only with `ticket_link: notes`, not the default.
-            || line.contains("notes_ref:")
+        // Only with `ticket_link: notes`, not the default.
+        line.contains("notes_ref:")
             // Examples of other keys (`  # <id>:` and their `  #   <field>:` lines), and a
             // hash, which left out is the strongest rather than this one.
             || line.contains("agent_pgp:")
@@ -377,22 +377,15 @@ fn the_policy_template_parses_as_is_and_with_every_default_taken_in() {
         PolicyConfig::from_yaml(&all).unwrap_err().to_string(),
         "repos.my-repo.notes_ref: only allowed when ticket_link is notes"
     );
-    let with_notes = uncommented(POLICY_TEMPLATE, &|line| {
-        line.contains("direct_ssh:")
-            || line.contains("hosts:")
-            || line.contains("allow_account_wide:")
-    })
-    .replacen("ticket_link: ledger_only", "ticket_link: notes", 1);
+    let with_notes = uncommented(POLICY_TEMPLATE, &|_| false).replacen(
+        "ticket_link: ledger_only",
+        "ticket_link: notes",
+        1,
+    );
     let notes = PolicyConfig::from_yaml(&with_notes).unwrap();
     let repo = notes.repo(&"my-repo".parse().unwrap()).unwrap();
     assert_eq!(repo.notes_ref, Some(writ_core::config::NotesRef::Commits));
     assert_eq!(repo.notes_ref(), writ_core::config::NotesRef::default());
-    // The direct_ssh section too: refused only for want of the direct_ssh push mode.
-    let direct = uncommented(POLICY_TEMPLATE, &|line| line.contains("notes_ref:"));
-    assert_eq!(
-        PolicyConfig::from_yaml(&direct).unwrap_err().to_string(),
-        "repos.my-repo.direct_ssh: only allowed when push_modes has direct_ssh"
-    );
     assert_template_names(POLICY_TEMPLATE, &policy_keys());
 }
 

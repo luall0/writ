@@ -5,18 +5,17 @@
 //! keys one per line), and a scalar quoted unless it reads back as the same string. Read back,
 //! the text is the policy it was written from (the tests and a property test check it).
 
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::{
-    DirectSsh, Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, Proxy, PushMode, Recipient,
+    Key, NotesRef, ObjectFormat, POLICY_FORMAT, PathsCheck, PolicyConfig, Proxy, Recipient,
     RepoEntry, Section, Template, TicketLink, UpstreamKey,
 };
 use crate::units::ByteSize;
 
 /// The whole policy.
 pub(super) fn policy(policy: &PolicyConfig) -> String {
-    let mut out = String::new();
+    let mut out = format!("format: {POLICY_FORMAT}\n\n");
     section(&mut out, "keys", policy.keys.is_empty());
     for (id, key) in &policy.keys {
         entry(&mut out, id.as_str());
@@ -175,12 +174,6 @@ fn write_key(out: &mut String, key: &Key) {
     }
 }
 
-fn push_modes(modes: &BTreeSet<PushMode>) -> Option<String> {
-    let default = BTreeSet::from([PushMode::Gateway]);
-    let names: Vec<String> = modes.iter().map(|m| m.to_string()).collect();
-    (*modes != default).then(|| list(names.iter().map(String::as_str)))
-}
-
 fn write_proxy(out: &mut String, proxy: &Proxy) {
     field(out, "url", &scalar(proxy.url.as_str()));
     if let Some(credential) = &proxy.credential {
@@ -220,9 +213,6 @@ fn write_repo(out: &mut String, repo: &RepoEntry) {
             &list(repo.protected_refs.iter().map(|r| r.to_string())),
         );
     }
-    if let Some(modes) = push_modes(&repo.push_modes) {
-        field(out, "push_modes", &modes);
-    }
     if repo.ticket_link != TicketLink::default() {
         field(out, "ticket_link", repo.ticket_link.as_str());
     }
@@ -231,21 +221,6 @@ fn write_repo(out: &mut String, repo: &RepoEntry) {
     }
     if repo.object_format != ObjectFormat::default() {
         field(out, "object_format", repo.object_format.as_str());
-    }
-    if let Some(DirectSsh {
-        hosts,
-        allow_account_wide,
-    }) = &repo.direct_ssh
-    {
-        out.push_str("    direct_ssh:\n");
-        let _ = writeln!(
-            out,
-            "      hosts: {}",
-            list(hosts.iter().map(String::as_str))
-        );
-        if *allow_account_wide {
-            out.push_str("      allow_account_wide: true\n");
-        }
     }
 }
 
@@ -262,9 +237,6 @@ fn write_template(out: &mut String, t: &Template) {
             "branches",
             &list(t.branches.iter().map(|b| b.to_string())),
         );
-    }
-    if let Some(modes) = push_modes(&t.push_modes) {
-        field(out, "push_modes", &modes);
     }
     if t.force_push {
         field(out, "force_push", "true");

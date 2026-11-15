@@ -216,9 +216,6 @@ fn options(
     }
     let many = match (section, name) {
         (Section::Templates, "operations") => Some(plain(&["fetch", "commit_sign", "push"])),
-        (Section::Templates | Section::Repos, "push_modes") => {
-            Some(plain(&["gateway", "proxy", "direct_ssh"]))
-        }
         (Section::Repos, "templates") => named(policy.entry_names(Section::Templates)),
         _ => None,
     };
@@ -256,7 +253,7 @@ fn relevant(
             let pushes = has("operations", "push");
             match name {
                 "branches" => signs || pushes,
-                "push_modes" | "force_push" => pushes,
+                "force_push" => pushes,
                 "committer_emails"
                 | "committer_name"
                 | "signing_key"
@@ -267,7 +264,6 @@ fn relevant(
         }
         Section::Repos => match name {
             "notes_ref" => value("ticket_link") == "notes",
-            "direct_ssh.hosts" | "direct_ssh.allow_account_wide" => has("push_modes", "direct_ssh"),
             _ => true,
         },
         // A password goes with a user: asked only when the URL names one.
@@ -1627,7 +1623,7 @@ mod tests {
     #[test]
     fn a_rotation_switches_every_repo_proxy_and_template_that_used_the_key() {
         let policy = PolicyConfig::from_yaml(
-            "keys:\n  proxy-pass: { use: upstream, kind: token, host: \"127.0.0.1\" }\n  \
+            "format: 2\nkeys:\n  proxy-pass: { use: upstream, kind: token, host: \"127.0.0.1\" }\n  \
              proxy-pass-2: { use: upstream, kind: token, host: \"127.0.0.1\" }\n  \
              token-01: { use: upstream, kind: token, host: localhost }\n  \
              token-01-2: { use: upstream, kind: token, host: localhost }\n\
@@ -1666,7 +1662,7 @@ mod tests {
     #[test]
     fn a_rotated_key_takes_the_next_free_id() {
         let policy = PolicyConfig::from_yaml(
-            "keys:\n  forgejo-home: { use: upstream, kind: ssh, algorithm: ed25519 }\n  \
+            "format: 2\nkeys:\n  forgejo-home: { use: upstream, kind: ssh, algorithm: ed25519 }\n  \
              forgejo-home-2: { use: upstream, kind: ssh, algorithm: ed25519 }\n  \
              agent-01: { use: signing, format: ssh, algorithm: ed25519 }\nrepos: {}\n\
              templates: {}\n",
@@ -1708,14 +1704,15 @@ mod tests {
 
     #[test]
     fn a_failed_direct_scan_says_how_to_go_through_a_proxy() {
-        let none = PolicyConfig::from_yaml("keys: {}\nrepos: {}\ntemplates: {}\n").unwrap();
+        let none =
+            PolicyConfig::from_yaml("format: 2\nkeys: {}\nrepos: {}\ntemplates: {}\n").unwrap();
         assert_eq!(
             direct_hint(&none, "proxy=<name>"),
             "If the host is reachable only through a proxy: declare it first (writ admin proxy \
              add <name>), then give proxy=<name> to this command."
         );
         let some = PolicyConfig::from_yaml(
-            "keys: {}\nrepos: {}\ntemplates: {}\nproxies:\n  \
+            "format: 2\nkeys: {}\nrepos: {}\ntemplates: {}\nproxies:\n  \
              socks: { url: \"socks5://127.0.0.1:1080\" }\n  \
              office: { url: \"http://127.0.0.1:3128\" }\n",
         )
@@ -1810,14 +1807,15 @@ mod tests {
         assert!(!relevant(Section::Keys, "backend", &signing, &both[..1]));
         let notes = values(&[("ticket_link", "notes")]);
         assert!(relevant(Section::Repos, "notes_ref", &notes, &[]));
-        assert!(!relevant(Section::Repos, "direct_ssh.hosts", &notes, &[]));
+        assert!(!relevant(Section::Repos, "notes_ref", &values(&[]), &[]));
     }
 
     /// M7.9.5: a select offers only values the policy takes. Each fixed option of a field is
     /// one the core's own help for that field names, so the two can't drift apart.
     #[test]
     fn every_fixed_option_is_one_the_field_s_help_names() {
-        let policy = PolicyConfig::from_yaml("keys: {}\nrepos: {}\ntemplates: {}\n").unwrap();
+        let policy =
+            PolicyConfig::from_yaml("format: 2\nkeys: {}\nrepos: {}\ntemplates: {}\n").unwrap();
         for section in [
             Section::Keys,
             Section::Repos,

@@ -23,6 +23,7 @@ use writ_integration::{stderr, stdout};
 /// Two registry repos on the same test upstream (the placeholder is rewritten to it): `demo`
 /// as it is, `web` needing the `Writ:` trailer.
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

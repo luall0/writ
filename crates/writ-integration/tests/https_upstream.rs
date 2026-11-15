@@ -254,7 +254,7 @@ fn policy_yaml(upstream: &str) -> String {
         _ => "127.0.0.1".to_owned(),
     };
     format!(
-        "keys:\n  token-01: {{ use: upstream, kind: token, host: \"{host}\" }}\n\
+        "format: 2\nkeys:\n  token-01: {{ use: upstream, kind: token, host: \"{host}\" }}\n\
          repos:\n  demo:\n    upstream: {upstream}\n    upstream_credential: token-01\n    \
          templates: [t]\n\
          templates:\n  t:\n    operations: [fetch]\n    branches: [\"*\"]\n    \

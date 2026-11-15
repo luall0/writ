@@ -14,7 +14,6 @@
 mod common;
 
 use common::*;
-use writ_core::config::PushMode;
 use writ_core::lease::{self, State, TicketRecord, Usage};
 use writ_core::policy::{
     self, CertIdentity, Denial, DenyCode, LedgerRef, ObjectKind, PushedCommit,
@@ -119,16 +118,6 @@ fn pushes_only_to_allowed_repos_and_refs_no_force_push_unless_allowed() {
             "a deletion",
             |r| r.updates[0].new = None,
             DenyCode::ForcePush,
-        ),
-        (
-            "direct_ssh",
-            |r| r.mode = PushMode::DirectSsh,
-            DenyCode::PushMode,
-        ),
-        (
-            "proxy where the repo doesn't allow it",
-            |r| r.mode = PushMode::Proxy,
-            DenyCode::PushMode,
         ),
     ];
     assert!(policy::decide_push(&world.ctx(), &push_request(&world.lease)).is_ok());

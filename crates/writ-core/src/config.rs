@@ -15,6 +15,7 @@
 pub mod edit;
 pub mod hosts;
 pub mod keys;
+pub mod migrate;
 pub mod proxies;
 pub mod recipients;
 mod write;
@@ -39,24 +40,12 @@ use crate::units::{ByteSize, Duration};
 use crate::upstream::Upstream;
 use crate::yaml::{FieldError, parse_yaml};
 
-/// How pushes to a repo reach upstream (`docs/architecture/gateway.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PushMode {
-    Gateway,
-    Proxy,
-    DirectSsh,
-}
-
-impl fmt::Display for PushMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Gateway => "gateway",
-            Self::Proxy => "proxy",
-            Self::DirectSsh => "direct_ssh",
-        })
-    }
-}
+/// The policy's format (`format`, M7.9.6): what a policy text names at its top, so the
+/// approval and the authority MAC bind the format it is read in. Format 1 is every policy
+/// before M7.9.6 (no `format` key); format 2 removes the push modes (`push_modes`,
+/// `direct_ssh`). The daemon reads only this format: an older one is rewritten by
+/// [`migrate`] and signed (`writ migrate`), never read.
+pub const POLICY_FORMAT: u32 = 2;
 
 /// How a commit is linked to its ticket on the remote. `ledger_only` by default: many
 /// projects' commit conventions don't allow an extra trailer, and the ledger links every
@@ -170,6 +159,24 @@ impl NotesRef {
     }
 }
 
+/// Refuses format 1's push modes in a format 2 policy, naming the key.
+fn removed(at: &str, push_modes: bool, direct_ssh: bool) -> Result<(), FieldError> {
+    let gone = |key: &str| {
+        FieldError::at(
+            format!("{at}.{key}"),
+            "removed in format 2 (M7.9.6): every push goes through the gateway, the only push \
+             mode",
+        )
+    };
+    if push_modes {
+        return Err(gone("push_modes"));
+    }
+    if direct_ssh {
+        return Err(gone("direct_ssh"));
+    }
+    Ok(())
+}
+
 /// A field that moved in M6.2: read so its refusal can name its new place, never kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Moved;
@@ -178,15 +185,6 @@ impl<'de> Deserialize<'de> for Moved {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         serde::de::IgnoredAny::deserialize(d).map(|_| Moved)
     }
-}
-
-/// Settings for `direct_ssh` pushes (checked from M10).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DirectSsh {
-    pub hosts: Vec<String>,
-    #[serde(default)]
-    pub allow_account_wide: bool,
 }
 
 /// A repo in the registry: hard limits no lease can exceed.
@@ -204,8 +202,10 @@ pub struct RepoEntry {
     pub templates: BTreeSet<TemplateName>,
     #[serde(default)]
     pub protected_refs: BTreeSet<RefPattern>,
-    #[serde(default = "default_push_modes")]
-    pub push_modes: BTreeSet<PushMode>,
+    /// Format 1's push modes (removed in format 2): read only so a format 1 policy can be
+    /// rewritten ([`migrate`]), refused in a format 2 one.
+    #[serde(default)]
+    push_modes: Option<Vec<String>>,
     #[serde(default)]
     pub ticket_link: TicketLink,
     /// Where notes go with `ticket_link: notes` ([`RepoEntry::notes_ref`]); only allowed then.
@@ -214,8 +214,9 @@ pub struct RepoEntry {
     /// The repository's object format (`sha1`, the default, or `sha256`).
     #[serde(default)]
     pub object_format: ObjectFormat,
+    /// Format 1's `direct_ssh` settings (removed in format 2), as `push_modes`.
     #[serde(default)]
-    pub direct_ssh: Option<DirectSsh>,
+    direct_ssh: Option<Moved>,
 }
 
 impl RepoEntry {
@@ -237,8 +238,9 @@ pub struct Template {
     pub operations: BTreeSet<Operation>,
     #[serde(default)]
     pub branches: BTreeSet<BranchPattern>,
-    #[serde(default = "default_push_modes")]
-    pub push_modes: BTreeSet<PushMode>,
+    /// Format 1's push modes (removed in format 2), as a repo's.
+    #[serde(default)]
+    push_modes: Option<Vec<String>>,
     /// Whether a ticket under this template may ask for force pushes.
     #[serde(default)]
     pub force_push: bool,
@@ -270,10 +272,6 @@ pub struct Template {
     pub max_renewals: Option<u32>,
 }
 
-fn default_push_modes() -> BTreeSet<PushMode> {
-    BTreeSet::from([PushMode::Gateway])
-}
-
 fn default_paths_check() -> PathsCheck {
     PathsCheck::Warn
 }
@@ -282,6 +280,9 @@ fn default_paths_check() -> PathsCheck {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPolicyConfig {
+    /// The format the text is written in ([`POLICY_FORMAT`]); none: format 1.
+    #[serde(default)]
+    format: Option<u32>,
     keys: BTreeMap<KeyId, keys::RawKey>,
     #[serde(default)]
     upstream_hosts: BTreeMap<UpstreamHost, Vec<HostKey>>,
@@ -446,6 +447,39 @@ impl PolicyConfig {
 
     /// Cross-checks a parsed document. The first problem is the error, naming its field.
     fn validate(raw: RawPolicyConfig, min_ttl: Duration) -> Result<Self, FieldError> {
+        match raw.format {
+            Some(POLICY_FORMAT) => {}
+            None => {
+                return Err(FieldError::at(
+                    "format",
+                    format!(
+                        "missing: a policy names its format (`format: {POLICY_FORMAT}` at its \
+                         top); without it, it is format 1, from before M7.9.6, which writ \
+                         migrate rewrites"
+                    ),
+                ));
+            }
+            Some(other) => {
+                return Err(FieldError::at(
+                    "format",
+                    format!("format {other}: this Writ reads format {POLICY_FORMAT} only"),
+                ));
+            }
+        }
+        for (name, repo) in &raw.repos {
+            removed(
+                &format!("repos.{name}"),
+                repo.push_modes.is_some(),
+                repo.direct_ssh.is_some(),
+            )?;
+        }
+        for (name, template) in &raw.templates {
+            removed(
+                &format!("templates.{name}"),
+                template.push_modes.is_some(),
+                false,
+            )?;
+        }
         if raw.signing_keys.is_some() {
             return Err(FieldError::at(
                 "signing_keys",
@@ -845,44 +879,13 @@ fn validate_repo(
             format!("{unknown} is not a template"),
         ));
     }
-    if repo.push_modes.is_empty() {
-        return Err(FieldError::at(
-            at("push_modes"),
-            "must list at least one push mode",
-        ));
-    }
     if repo.notes_ref.is_some() && repo.ticket_link != TicketLink::Notes {
         return Err(FieldError::at(
             at("notes_ref"),
             "only allowed when ticket_link is notes",
         ));
     }
-    let wants_direct = repo.push_modes.contains(&PushMode::DirectSsh);
-    match &repo.direct_ssh {
-        None if wants_direct => Err(FieldError::at(
-            at("direct_ssh"),
-            "required when push_modes has direct_ssh",
-        )),
-        Some(_) if !wants_direct => Err(FieldError::at(
-            at("direct_ssh"),
-            "only allowed when push_modes has direct_ssh",
-        )),
-        Some(direct) if direct.hosts.is_empty() => Err(FieldError::at(
-            at("direct_ssh.hosts"),
-            "must list at least one host",
-        )),
-        Some(direct)
-            if direct.hosts.iter().any(|h| {
-                h.is_empty() || h.starts_with('-') || !h.bytes().all(|b| b.is_ascii_graphic())
-            }) =>
-        {
-            Err(FieldError::at(
-                at("direct_ssh.hosts"),
-                "each host is printable ASCII, not empty, not starting with '-'",
-            ))
-        }
-        _ => Ok(()),
-    }
+    Ok(())
 }
 
 /// A proxy: a credential exactly when the URL names a user, a token on the proxy's host; a
@@ -971,12 +974,6 @@ fn validate_template(
         return Err(FieldError::at(
             at("branches"),
             "required with commit_sign or push",
-        ));
-    }
-    if template.push_modes.is_empty() {
-        return Err(FieldError::at(
-            at("push_modes"),
-            "must list at least one push mode",
         ));
     }
     if signs && template.committer_emails.is_empty() {

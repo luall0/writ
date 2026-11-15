@@ -133,6 +133,7 @@ policy_yaml() {
     cat <<'EOF'
 # The starting policy: your agents' first signing key, no repository yet. Add keys, hosts,
 # repos and templates with `writ admin` (docs/operators/policy-yaml.md).
+format: 2
 keys:
   agent-01: { use: signing, format: ssh, algorithm: ed25519 }
 upstream_hosts: {}

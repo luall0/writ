@@ -26,7 +26,7 @@ use proptest::prelude::*;
 use proptest::sample::{select, subsequence};
 use proptest::strategy::ValueTree;
 use writ_core::caller::{CallerConstraint, CallerFacts, ProcessMatch, ProcessRef};
-use writ_core::config::{ObjectFormat, PolicyConfig, PushMode};
+use writ_core::config::{ObjectFormat, PolicyConfig};
 use writ_core::fit;
 use writ_core::lease::{self, Lease, LifecycleError, State, TicketRecord, Usage};
 use writ_core::narrow;
@@ -447,20 +447,13 @@ fn arb_op() -> impl Strategy<Value = Op> {
         });
     let push = (
         select(REPOS.to_vec()),
-        select(vec![
-            PushMode::Gateway,
-            PushMode::Gateway,
-            PushMode::Proxy,
-            PushMode::DirectSsh,
-        ]),
         prop::collection::vec(update, 0..=2),
         prop::collection::vec(pushed, 0..=3),
         0u64..60_000_000,
     )
-        .prop_map(|(repo_name, mode, updates, commits, pack_size)| {
+        .prop_map(|(repo_name, updates, commits, pack_size)| {
             Op::Push(PushRequest {
                 repo: repo(repo_name),
-                mode,
                 updates,
                 commits,
                 pack_size,
@@ -594,7 +587,6 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
         select(emails),
         touched_paths,
         select(sizes),
-        select(vec![PushMode::Gateway, PushMode::Proxy]),
         (0..=max_sig, 0..=max_push, 0..=max_rate),
         0..span,
         select(chains),
@@ -608,7 +600,6 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
                 email,
                 touched,
                 size,
-                mode,
                 usage,
                 offset,
                 chain,
@@ -628,7 +619,6 @@ fn arb_probe(a: &Ticket, b: &Ticket) -> impl Strategy<Value = Facts> + use<> {
                     }),
                     1 => Op::Push(PushRequest {
                         repo: repo_name.clone(),
-                        mode,
                         updates: vec![RefUpdate {
                             name: ref_name,
                             old: (!create).then(|| commit(1)),
@@ -864,11 +854,9 @@ proptest! {
             prop_assert_eq!(&first(&ticket).template, &named);
         }
         // The largest ticket the template accepts with the same identity, text and operations
-        // (operations beyond the template are the next property's job). With push, only the
-        // repos the template can push to.
+        // (operations beyond the template are the next property's job).
         let template = config.template(&first(&ticket).template).unwrap();
         let mut largest = ticket.clone();
-        let pushes = ticket.allows_anywhere(Operation::Push);
         let mut terms = first(&ticket).clone();
         terms.branches = template.branches.clone();
         terms.force_push = template.force_push;
@@ -880,7 +868,6 @@ proptest! {
         largest.repos = config
             .template_users(&first(&ticket).template)
             .iter()
-            .filter(|r| !pushes || !fit::push_modes(&config.repo(r).unwrap().push_modes, template).is_empty())
             .map(|r| (r.clone(), terms.clone()))
             .collect();
         largest.common.committer_emails = template.committer_emails.clone();

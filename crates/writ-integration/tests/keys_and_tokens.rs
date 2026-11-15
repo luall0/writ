@@ -26,6 +26,7 @@ use writ_integration::telegram::TOKEN as BOT_TOKEN;
 use writ_integration::{audit_events, stderr, stdout};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

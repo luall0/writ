@@ -67,7 +67,7 @@ flowchart LR
 | Component | What it does | Page |
 |---|---|---|
 | Gateway (SSH server) | Single entry point for agents: git fetch/push, `sign`, lease commands | [gateway.md](gateway.md) |
-| Repo mirrors, upstream pusher, push modes | Serve fetches, quarantine pushes, push upstream with the daemon's credentials | [gateway.md](gateway.md#repo-mirrors) |
+| Repo mirrors, upstream pusher | Serve fetches, quarantine pushes, push upstream with the daemon's credentials | [gateway.md](gateway.md#repo-mirrors) |
 | Policy engine | Every request → the single matching lease → allow / deny + notify | [policy-and-state.md](policy-and-state.md) |
 | Lease store + ledger | SQLite: leases, their state, every commit signed per lease | [policy-and-state.md](policy-and-state.md#lease-store--ledger-sqlite) |
 | Audit log | Append-only JSONL of every event | [policy-and-state.md](policy-and-state.md#audit-log) |

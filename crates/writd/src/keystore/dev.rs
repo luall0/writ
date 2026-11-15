@@ -348,7 +348,7 @@ mod tests {
     /// Two signing keys (one used, one not), an RSA upstream key, a token.
     fn policy() -> PolicyConfig {
         PolicyConfig::from_yaml(&format!(
-            "keys:
+            "format: 2\nkeys:
   agent-01: {{ use: signing, format: ssh, algorithm: ed25519 }}
   agent-unused: {{ use: signing, format: openpgp, algorithm: p256 }}
   key-01: {{ use: upstream, kind: ssh, algorithm: rsa3072 }}

@@ -13,7 +13,7 @@ mod common;
 
 use common::*;
 use writ_core::config::{
-    Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, PushMode, TicketLink, UpstreamKey,
+    Key, NotesRef, ObjectFormat, PathsCheck, PolicyConfig, TicketLink, UpstreamKey,
 };
 use writ_core::ticket::Operation;
 use writ_core::ticket::TicketRequest;
@@ -39,7 +39,6 @@ fn the_test_policy_parses_with_defaults() {
         ObjectFormat::Sha256
     );
     let dotfiles = config.repo(&repo("dotfiles")).unwrap();
-    assert!(dotfiles.direct_ssh.is_some());
     // Not written: the ledger only (a project's commit conventions may not allow a trailer).
     assert!(!POLICY.contains("dotfiles:\n    ticket_link"));
     assert_eq!(dotfiles.ticket_link, TicketLink::LedgerOnly, "the default");
@@ -69,11 +68,7 @@ fn the_test_policy_parses_with_defaults() {
     }
     let quick = config.template(&"quick-fix".parse().unwrap()).unwrap();
     assert_eq!(quick.paths_check, PathsCheck::Deny);
-    // Defaults: push modes gateway only, no force push, expected paths not required.
-    assert_eq!(
-        quick.push_modes.iter().copied().collect::<Vec<_>>(),
-        vec![PushMode::Gateway]
-    );
+    // Defaults: no force push, expected paths not required.
     assert!(!quick.force_push && !quick.require_expected_paths);
     let read_only = config.template(&"read-only".parse().unwrap()).unwrap();
     assert_eq!(
@@ -227,9 +222,53 @@ fn errors_name_the_field() {
             "templates.feature-branch.committer_emails[0]: ",
         ),
         (
-            "unknown push mode",
-            POLICY.replacen("push_modes: [gateway]", "push_modes: [ftp]", 1),
-            "repos.omega-code.push_modes[0]: ",
+            "a repo's push modes, removed in format 2",
+            POLICY.replacen(
+                "    ticket_link: trailer",
+                "    push_modes: [gateway]\n    ticket_link: trailer",
+                1,
+            ),
+            "repos.omega-code.push_modes: removed in format 2 (M7.9.6): every push goes \
+             through the gateway",
+        ),
+        (
+            "a template's push modes, removed in format 2",
+            POLICY.replacen(
+                "    paths_check: warn\n",
+                "    paths_check: warn\n    push_modes: [gateway]\n",
+                1,
+            ),
+            "templates.feature-branch.push_modes: removed in format 2",
+        ),
+        (
+            "a repo's direct_ssh, removed in format 2",
+            POLICY.replacen(
+                "    templates: [quick-fix]\n",
+                "    templates: [quick-fix]\n    direct_ssh:\n      hosts: [github.com]\n",
+                1,
+            ),
+            "repos.dotfiles.direct_ssh: removed in format 2",
+        ),
+        (
+            "no format: format 1",
+            POLICY.replacen("format: 2\n", "", 1),
+            "format: missing: a policy names its format (`format: 2` at its top); without it, \
+             it is format 1, from before M7.9.6, which writ migrate rewrites",
+        ),
+        (
+            "format 1 named",
+            POLICY.replacen("format: 2\n", "format: 1\n", 1),
+            "format: format 1: this Writ reads format 2 only",
+        ),
+        (
+            "a newer format",
+            POLICY.replacen("format: 2\n", "format: 3\n", 1),
+            "format: format 3: this Writ reads format 2 only",
+        ),
+        (
+            "a format that isn't a number",
+            POLICY.replacen("format: 2\n", "format: two\n", 1),
+            "format: ",
         ),
         (
             "unknown ticket link",
@@ -329,11 +368,6 @@ fn errors_name_the_field() {
             "templates.feature-branch.operations: must list at least one operation",
         ),
         (
-            "empty push modes",
-            POLICY.replacen("push_modes: [gateway]", "push_modes: []", 1),
-            "repos.omega-code.push_modes: must list at least one push mode",
-        ),
-        (
             "http upstream",
             POLICY.replacen(
                 "ssh://git@github.com/user/omega-code.git",
@@ -374,21 +408,6 @@ fn errors_name_the_field() {
             "a space in the upstream",
             POLICY.replacen(UPSTREAM, "ssh://git@github.com/omega code.git", 1),
             "repos.omega-code.upstream: printable ASCII only",
-        ),
-        (
-            "a direct_ssh host read as an ssh option",
-            POLICY.replacen("hosts: [github.com]", "hosts: [\"-oProxyCommand=sh\"]", 1),
-            "repos.dotfiles.direct_ssh.hosts: each host",
-        ),
-        (
-            "direct_ssh without its section",
-            POLICY.replacen("    direct_ssh:\n      hosts: [github.com]\n", "", 1),
-            "repos.dotfiles.direct_ssh: required",
-        ),
-        (
-            "direct_ssh section unused",
-            POLICY.replacen("push_modes: [direct_ssh]", "push_modes: [gateway]", 1),
-            "repos.dotfiles.direct_ssh: only allowed",
         ),
         (
             "unknown top-level key",
@@ -452,7 +471,8 @@ const PIN: &str =
 /// the whole `keys:` section.
 fn signing_text(keys: &str) -> String {
     format!(
-        r#"keys:
+        r#"format: 2
+keys:
 {keys}
   upstream-01: {{ use: upstream, kind: ssh, algorithm: ed25519 }}
 upstream_hosts:
@@ -873,7 +893,8 @@ fn repos_name_their_templates_and_an_empty_list_closes_one() {
 }
 
 /// A policy using every field with a value other than its default.
-const EVERYTHING: &str = r#"keys:
+const EVERYTHING: &str = r#"format: 2
+keys:
   agent-pgp:
     use: signing
     format: openpgp
@@ -895,10 +916,8 @@ repos:
     upstream_credential: azure
     templates: [quick, "12"]
     protected_refs: ["refs/heads/main", "refs/tags/*"]
-    push_modes: [gateway, direct_ssh]
     ticket_link: notes
     notes_ref: writ
-    direct_ssh: { hosts: [github.com], allow_account_wide: true }
 templates:
   "12":
     operations: [fetch]
@@ -910,7 +929,6 @@ templates:
   quick:
     operations: [fetch, commit_sign, push]
     branches: ["agent/fix-*", main]
-    push_modes: [gateway, proxy]
     force_push: true
     committer_emails: [user+agent@example.org, bot@example.org]
     committer_name: Writ agent
@@ -937,7 +955,11 @@ fn the_canonical_layout_reads_back_as_the_same_policy() {
     }
     // The layout itself, for the reader of a diff.
     let written = PolicyConfig::from_yaml(EVERYTHING).unwrap().to_yaml();
-    assert!(written.starts_with("keys:\n  agent-pgp:\n    use: signing\n    format: openpgp\n"));
+    assert!(
+        written.starts_with(
+            "format: 2\n\nkeys:\n  agent-pgp:\n    use: signing\n    format: openpgp\n"
+        )
+    );
     assert!(written.contains(
         "\n  azure:\n    use: upstream\n    kind: ssh\n    algorithm: rsa3072\n  gh-token:"
     ));
@@ -955,10 +977,13 @@ fn the_canonical_layout_reads_back_as_the_same_policy() {
     // Defaults are left out.
     let plain = PolicyConfig::from_yaml(POLICY).unwrap().to_yaml();
     assert!(!plain.contains("backend:") && !plain.contains("paths_check: warn"));
-    assert!(plain.contains("  dotfiles:\n    upstream: \"ssh://git@github.com/user/dotfiles.git\"\n    upstream_credential: deploy-dotfiles-01\n    templates: [quick-fix]\n    push_modes: [direct_ssh]\n    direct_ssh:\n      hosts: [github.com]\n"));
+    assert!(plain.contains("  dotfiles:\n    upstream: \"ssh://git@github.com/user/dotfiles.git\"\n    upstream_credential: deploy-dotfiles-01\n    templates: [quick-fix]\n"));
     // An empty policy.
-    let empty = PolicyConfig::from_yaml("keys: {}\nrepos: {}\ntemplates: {}\n").unwrap();
-    assert_eq!(empty.to_yaml(), "keys: {}\n\nrepos: {}\n\ntemplates: {}\n");
+    let empty = PolicyConfig::from_yaml("format: 2\nkeys: {}\nrepos: {}\ntemplates: {}\n").unwrap();
+    assert_eq!(
+        empty.to_yaml(),
+        "format: 2\n\nkeys: {}\n\nrepos: {}\n\ntemplates: {}\n"
+    );
 }
 
 #[test]
@@ -991,8 +1016,7 @@ fn one_entry_is_written_alone_as_the_whole_policy_writes_it() {
     assert_eq!(
         policy.entry_yaml(Section::Repos, "dotfiles").unwrap(),
         "dotfiles:\n  upstream: \"ssh://git@github.com/user/dotfiles.git\"\n  \
-         upstream_credential: deploy-dotfiles-01\n  templates: [quick-fix]\n  push_modes: \
-         [direct_ssh]\n  direct_ssh:\n    hosts: [github.com]\n"
+         upstream_credential: deploy-dotfiles-01\n  templates: [quick-fix]\n"
     );
     assert_eq!(
         policy
@@ -1115,22 +1139,15 @@ fn set_changes_exactly_the_fields_named_in_every_syntax() {
             .templates
             .is_empty()
     );
-    // A comma-separated list replaces one; nested fields; a host's keys.
+    // A comma-separated list replaces one; a host's keys.
     let repo_edit = edited(
         Section::Repos,
         "dotfiles",
-        &[
-            "templates=quick-fix,feature-branch",
-            "direct_ssh.hosts+=gitlab.com",
-            "direct_ssh.allow_account_wide=true",
-        ],
+        &["templates=quick-fix,feature-branch"],
     )
     .unwrap();
     let dotfiles = repo_edit.repo(&repo("dotfiles")).unwrap();
     assert_eq!(dotfiles.templates.len(), 2);
-    let direct = dotfiles.direct_ssh.as_ref().unwrap();
-    assert_eq!(direct.hosts, ["github.com", "gitlab.com"]);
-    assert!(direct.allow_account_wide);
     let key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC=";
     let host = edited(
         Section::UpstreamHosts,
@@ -1392,7 +1409,7 @@ fn add_makes_an_entry_from_its_fields_and_says_which_required_ones_are_missing()
     assert_eq!(values["templates"], "fetch-only");
     assert_eq!(values["upstream_credential"], "codeberg-01");
     assert!(
-        !values.contains_key("push_modes"),
+        !values.contains_key("ticket_link"),
         "a default isn't a value"
     );
     let values = current(&config(), Section::Templates, "feature-branch").unwrap();
@@ -1408,7 +1425,7 @@ fn repo_name(name: &str) -> writ_core::names::RepoName {
 #[test]
 fn a_policy_with_no_entry_is_one_to_start_from() {
     // What the setup guide starts from: entries added later by signed changes.
-    let empty = "keys: {}\nrepos: {}\ntemplates: {}\n";
+    let empty = "format: 2\nkeys: {}\nrepos: {}\ntemplates: {}\n";
     let config = PolicyConfig::from_yaml(empty).unwrap();
     assert!(config.keys().is_empty());
     assert!(config.upstream_hosts().is_empty());

@@ -50,8 +50,6 @@ picked.
 | M7.9 | [Local mode checked on the Mac](history/m7.9-local-mode-checked-on-the-mac.md) ✅ | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
 | M7.9.5 | [Operator experience](history/m7.9.5-operator-experience.md) ✅ | Asked by the user after the real install: amendments showing only what changed, the popup redesigned (its design validated first, as an artifact), every guided prompt and the installer's questions with arrow selection, colour and inline checks, a quick setup guide from `make install` to a first agent run |
 | M7.9.6 | [Upgrades](#m796--upgrades) | Asked by the user before M8: the state migrated in steps with a backup first, the policy naming its format and every format change a signed migration (`writ migrate`), the daemon refusing everything else until it is signed, `writd check-upgrade` before the installer changes anything, the installer unsealing and migrating; the push modes `proxy` and `direct_ssh` dropped, their keys removed as format 2 |
-| M9 | `proxy` push mode, dropped | Dropped (2026-11-15): its keys go in M7.9.6's format 2, the idea [parked](backlog/parked/proxy-push-mode.md) with the spike's results; this row leaves with them |
-| M10 | `direct_ssh` push mode, dropped | Dropped (2026-11-15): its keys go in M7.9.6's format 2, the idea [parked](backlog/parked/direct-ssh-push-mode.md); this row leaves with them |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 
@@ -245,7 +243,7 @@ installer asking all of it. Its real-install items ran with M7.9.
 thirteen reviewers over everything M5.7 to M7.6 added, two highs (the unseal acting on a policy
 before its MAC was checked; the approval client signing what a relay showed it) and every
 other finding fixed with its test, or moved with its line in the milestone that owns it
-(below: M7.9, M8, M8.5, M9; the multi-user page and the backlog).
+(below: M7.9, M8, M8.5; the multi-user page and the backlog).
 
 ## M7.8 — Approval popup on the Mac
 
@@ -309,9 +307,10 @@ version removes leaves the daemon unable to start. Settled with the user:
   older format too, leaving the migration owed.
 - **The daemon proposes the rewrite** (`writ_core::config::migrate`, pure): format N text to
   format N+1 canonical text, one step per format, or the reasons it can't, each naming its
-  key. Format 1 → 2: `format: 2` added, `push_modes: [gateway]` dropped; any other `push_modes`,
-  and any `direct_ssh` section, is a reason (a repo or template without `gateway` accepted no
-  push, and the rewrite that keeps that meaning is the operator's call).
+  key. Format 1 → 2: `format: 2` added, a `push_modes` that lists `gateway` dropped (only gateway
+  pushes ever ran), `direct_ssh` settings dropped (their mode never pushed); a `push_modes`
+  without `gateway` is a reason (its repo or template accepted no push, and the rewrite that
+  keeps that meaning is the operator's call).
 - **`writ migrate`:** shows what is owed (the formats, the version in force), the proposed text
   as the diff `writ admin apply` shows, and on yes signs it as the policy's admin change
   (`writ-admin/2` naming the version in force, one approval); the daemon applies it as any admin
@@ -335,7 +334,7 @@ version removes leaves the daemon unable to start. Settled with the user:
   out of repos and templates (parsing, the canonical writer, the edits and guided prompts, the
   `push_mode` denial), the [lease model](lease-model.md#constraints-and-how-much-to-trust-them)'s
   rows, [flows](flows.md) § 3b and 3c, the gateway's push modes table, the threat model's row, the
-  operator reference and template, the registries; this roadmap's M9 and M10 rows leave.
+  operator reference and template, the registries.
 - Docs: the [install](operators/install.md) page's upgrade, [recovery](operators/recovery.md)
   (restoring a backup of the state), [policy and state](architecture/policy-and-state.md)
   (the steps, the record), [approvals](architecture/approvals.md) (the migration),

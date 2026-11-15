@@ -16,9 +16,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::caller::{self, CallerFacts};
-use crate::config::{
-    ObjectFormat, PathsCheck, PolicyConfig, PushMode, RepoEntry, Template, TicketLink,
-};
+use crate::config::{ObjectFormat, PathsCheck, PolicyConfig, RepoEntry, Template, TicketLink};
 use crate::fit;
 use crate::lease::{Lease, State, Usage, is_exhausted};
 use crate::names::{CommitId, KeyFingerprint, RepoName, TicketId};
@@ -62,8 +60,6 @@ pub enum DenyCode {
     Repo,
     /// The lease no longer fits the configuration: its template or repo changed (`config`).
     Config,
-    /// The push mode is not allowed for the repo (`push_mode`, a violation).
-    PushMode,
     /// Only commits are signed: not a tag, tree or blob (`object_type`, a violation).
     ObjectType,
     /// The committer email is not in the lease (`committer`, a violation).
@@ -120,7 +116,6 @@ impl DenyCode {
             self,
             DenyCode::Operation
                 | DenyCode::Repo
-                | DenyCode::PushMode
                 | DenyCode::ObjectType
                 | DenyCode::Committer
                 | DenyCode::Author
@@ -149,7 +144,6 @@ impl DenyCode {
             DenyCode::Operation => "operation",
             DenyCode::Repo => "repo",
             DenyCode::Config => "config",
-            DenyCode::PushMode => "push_mode",
             DenyCode::ObjectType => "object_type",
             DenyCode::ObjectFormat => "object_format",
             DenyCode::Committer => "committer",
@@ -381,7 +375,6 @@ pub struct SignRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushRequest {
     pub repo: RepoName,
-    pub mode: PushMode,
     pub updates: Vec<RefUpdate>,
     /// Every commit the push brings that the daemon's mirror didn't have.
     pub commits: Vec<PushedCommit>,
@@ -763,25 +756,6 @@ pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, 
     let lease = ctx.lease;
     let id = &lease.id;
 
-    match request.mode {
-        PushMode::Gateway | PushMode::Proxy => {}
-        PushMode::DirectSsh => {
-            return Err(deny(
-                DenyCode::PushMode,
-                "direct_ssh pushes don't go through the gateway",
-            ));
-        }
-    }
-    if !fit::push_modes(&entry.push_modes, template).contains(&request.mode) {
-        return Err(outside(
-            id,
-            DenyCode::PushMode,
-            format_args!(
-                "push mode {} not allowed for repo {}",
-                request.mode, request.repo
-            ),
-        ));
-    }
     if request.updates.is_empty() {
         return Err(deny(DenyCode::Invalid, "the push updates no ref"));
     }

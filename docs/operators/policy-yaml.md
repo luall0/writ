@@ -30,7 +30,10 @@ How they combine with tickets: [lease model](../lease-model.md). Start from the
   declares is made at once.
 - **Unknown keys are refused**, and every error names its key:
   `templates.quick-fix.max_ttl: invalid duration "1 hour"`. The fields that moved in M6.2
-  (`templates.<name>.repos`, a top-level `signing_keys`) are refused naming their new place.
+  (`templates.<name>.repos`, a top-level `signing_keys`) are refused naming their new place,
+  and the push modes format 2 removed (`push_modes`, `direct_ssh`) naming that: every push goes
+  through the gateway.
+- **The format comes first** (`format: 2`, [below](#its-format-format)).
 - **Names** are the map keys (`keys.<id>`, `proxies.<name>`, `recipients.<name>`, `repos.<name>`,
   `templates.<name>`). Repo names must be unique ignoring case.
 - **Patterns, durations, sizes:** [patterns and units](../lease-model.md#patterns-and-units).
@@ -128,25 +131,9 @@ at `writ unseal` opens it. Recipients add other ways in:
 | `repos.<name>.proxy` | Proxy name | none | The [proxy](#proxies-proxiesname) everything the daemon sends `upstream` goes through. Not set: the daemon connects to upstream itself |
 | `repos.<name>.templates` | Template names | **required** | The templates whose tickets may reach the repo: each must exist. `[]` closes the repo (registered, with its mirror and credential, while every ticket for it is refused, and `writ policy` says so). A template no repo names is valid, unused |
 | `repos.<name>.protected_refs` | Ref patterns | `[]` | Refs no lease may push, whatever its branches: full refs (`refs/heads/main`, `refs/tags/*`), ignoring case |
-| `repos.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | How pushes may reach upstream. [Push modes](#push-modes) |
 | `repos.<name>.ticket_link` | `ledger_only`, `trailer` or `notes` | `ledger_only` | How a commit shows its lease on the remote. [Linking commits](#linking-commits-to-leases-ticket_link) |
 | `repos.<name>.notes_ref` | `commits` or `writ` | `commits` | With `ticket_link: notes` only. `commits`: `refs/notes/commits`, git's own, shown by `git log`, Forgejo and Gitea. `writ`: `refs/notes/writ`, kept apart, read with `git log --notes=writ` |
 | `repos.<name>.object_format` | `sha1` or `sha256` | `sha1` | The repository's object format. A mirror whose upstream uses the other one is refused. Most remotes, GitHub included, only have `sha1` |
-| `repos.<name>.direct_ssh.hosts` | Host names | — | Required with the `direct_ssh` push mode, refused without it: the hosts the lent key may reach. **Dropped**, never used: leaves in [M7.9.6](../roadmap.md#m796--upgrades) ([why](../backlog/parked/direct-ssh-push-mode.md)) |
-| `repos.<name>.direct_ssh.allow_account_wide` | Boolean | `false` | Whether `direct_ssh` may lend a key that isn't limited to this repo (the approver sees a warning). **Dropped**, never used: leaves in [M7.9.6](../roadmap.md#m796--upgrades) ([why](../backlog/parked/direct-ssh-push-mode.md)) |
-
-### Push modes
-
-A lease may only use a mode both its repo and its template allow
-([details](../architecture/gateway.md#push-modes-per-repo)).
-
-- **gateway**: through the daemon's mirror, with every check. The only one built today: a repo
-  without it refuses every push (`push_mode`).
-- **proxy**: relayed by the daemon, no mirror. **Dropped**, never built: the key leaves in
-  [M7.9.6](../roadmap.md#m796--upgrades) ([why](../backlog/parked/proxy-push-mode.md)).
-- **direct_ssh**: the agent pushes itself with a lent deploy key. **Dropped**, never built:
-  the key leaves in [M7.9.6](../roadmap.md#m796--upgrades)
-  ([why](../backlog/parked/direct-ssh-push-mode.md)).
 
 ### Linking commits to leases (`ticket_link`)
 
@@ -185,7 +172,6 @@ One ticket may use several templates, one per repo. Then:
 |---|---|---|---|
 | `templates.<name>.operations` | `fetch`, `commit_sign`, `push`, at least one | **required** | The operations a ticket may ask for in a repo |
 | `templates.<name>.branches` | Branch patterns | `[]` | The branches a ticket may ask for: short names, at most one trailing `*` (`agent/*`, `agent/fix-*`). Required with `commit_sign` or `push` |
-| `templates.<name>.push_modes` | `gateway`, `proxy`, `direct_ssh` | `[gateway]` | The [push modes](#push-modes) its leases may use, within each repo's |
 | `templates.<name>.force_push` | Boolean | `false` | Whether a ticket may ask for force pushes and branch deletions |
 | `templates.<name>.committer_emails` | Emails | `[]` | The emails a ticket may use as a commit's committer and author (printable ASCII). Required with `commit_sign` |
 | `templates.<name>.committer_name` | A name, 1 to 100 characters | none | The name every commit signed under the template must carry, as author and committer, exactly. The agent's git is set to it from the lease (`writ git`, a whole-repo clone), and a commit with another name is refused (`committer_name`, `author_name`). No control, newline or invisible character, no `<` or `>`, and no space or `. , : ; " ' \` at either end (git strips them). Not set: the name isn't checked. A name doesn't decide whether a remote shows a commit as verified (the email and the key do); it keeps an agent from signing as someone else by name. With an OpenPGP key, each of its user ids for the template's emails must carry this name |
@@ -208,6 +194,12 @@ compared. Each repo's commits are compared with that repo's paths.
 - **off**: no comparison.
 - **warn** (default): the commit is signed, and the `sign` audit line records a warning.
 - **deny**: the commit isn't signed (`paths`). Also when the touched paths can't be computed.
+
+## Its format: `format`
+
+| Key | Accepts | Default | What it does |
+|---|---|---|---|
+| `format` | `2` | **required** | The format the policy is written in, the first line of every policy since M7.9.6. A policy without it is format 1, from before: a daemon with one in force refuses everything until you sign its rewrite with `writ migrate` ([upgrading](install.md#upgrade)). Any other number is refused |
 
 ## Starting on its own: `unseal`
 

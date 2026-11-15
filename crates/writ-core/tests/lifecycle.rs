@@ -511,19 +511,6 @@ fn expected_paths_and_branches_are_bounded_on_both_sides() {
 }
 
 #[test]
-fn push_needs_a_push_mode_allowed_by_both() {
-    // dotfiles only allows direct_ssh; quick-fix only gateway.
-    let yaml = REQUEST
-        .replace("template: feature-branch", "template: quick-fix")
-        .replace("  omega-code:\n", "  dotfiles:\n")
-        .replace("agent/oauth-*", "agent/fix-*")
-        .replace("ttl: 2h", "ttl: 1h");
-    assert!(rejection(&yaml).contains("repo dotfiles has no push mode allowed"));
-    let no_push = yaml.replace("[fetch, commit_sign, push]", "[fetch, commit_sign]");
-    assert!(fit::submit(&config(), &request(&no_push), &submission(1)).is_ok());
-}
-
-#[test]
 fn templates_can_require_expected_paths() {
     let policy = POLICY.replacen(
         "    paths_check: warn\n",

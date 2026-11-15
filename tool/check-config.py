@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks the configuration coverage registry (docs/testing.md#configuration-coverage-every-key):
 
-- every row names at least one test, or the milestone its effect comes with (`planned: M9`);
+- every row names at least one test, or the milestone its effect comes with (`planned: M8`);
 - every test named is a test function of the integration crate (crates/writ-integration/tests/,
   not `#[ignore]`d) or an end-to-end scenario (crates/writ-e2e/tests/): a parser's unit test
   doesn't show a key's effect;

@@ -334,7 +334,7 @@ fixing it, often in a hurry. It must stay readable by a human. The design pages 
   holds the type, the bounds and every enumerated value; "Default" the default, or
   **required**.
 - **Short cells**: one or two sentences. An explanation longer than that goes in a list or a
-  short subsection under the table, linked from the cell (push modes, `ticket_link`,
+  short subsection under the table, linked from the cell (`ticket_link`,
   `paths_check`, `allow`).
 - **The page's common rules first**, as a short bulleted list: when the file is read, unknown
   keys refused, units, who may write it.

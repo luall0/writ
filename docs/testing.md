@@ -201,7 +201,7 @@ binary reads, is set by a test that checks its effect: an integration test
 (`crates/writ-integration/tests/`, the real binaries, or the in-process gateway and mirrors
 for the mirror bounds) or an end-to-end scenario. A parser's unit test doesn't count: it shows
 the key is read, not that it does anything. A key whose effect comes with a later milestone
-names it (`planned: M10`); one this build refuses at start names the test that shows the
+names it (`planned: M8`); one this build refuses at start names the test that shows the
 refusal. Hard rule 19; the [conventions](conventions.md#configuration-keys) say what else a
 key change touches.
 
@@ -269,19 +269,16 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `policy.yaml: proxies.<name>.connect_timeout` | `every_way_a_proxy_refuses_or_fails_refuses_the_sync_with_its_reason` |
 | `policy.yaml: recipients.<name>.backend` | `on_the_mac_a_hardware_recipient_takes_the_keystore_live_and_unwraps_the_token_per_use`, `the_recovery_key_is_made_declared_checked_and_replaced_from_the_approver_s_machine` (refused without the device) |
 | `policy.yaml: recipients.<name>.recipient` | `a_recovery_key_on_a_passphrase_keystore_opens_it_and_is_checked_from_the_approver_s_machine`, `on_the_mac_a_hardware_recipient_takes_the_keystore_live_and_unwraps_the_token_per_use`, `the_recovery_key_is_made_declared_checked_and_replaced_from_the_approver_s_machine` |
+| `policy.yaml: format` | planned: M7.9.6 |
 | `policy.yaml: unseal` | `auto_unseal_says_what_is_missing_and_is_refused_until_everything_is_in_hardware`, `on_the_mac_a_daemon_with_everything_in_hardware_opens_itself_at_each_start` |
 | `policy.yaml: repos.<name>.proxy` | `an_ssh_upstream_behind_a_proxy_is_synced_and_written_through_it_by_a_name_it_alone_resolves`, `a_changed_proxy_reopens_the_repo_and_the_new_one_is_used_at_once`, `repos_behind_a_socks5_and_an_http_proxy_are_reached_through_them_alone` |
 | `policy.yaml: repos.<name>.templates` | `writ_policy_and_a_dry_run_tell_the_agent_what_fits_before_it_asks`, `the_policy_is_changed_field_by_field_and_entries_removed_from_the_approver_s_machine` |
 | `policy.yaml: repos.<name>.protected_refs` | `fetch_and_push_through_the_gateway`, `every_push_denial_leaves_forgejo_and_the_mirror_unchanged` |
-| `policy.yaml: repos.<name>.push_modes` | `push_modes_without_gateway_refuse_a_gateway_push`; the value proxy planned: M9, the value direct_ssh planned: M10 |
 | `policy.yaml: repos.<name>.notes_ref` | `a_push_leaves_a_note_per_commit_upstream_the_commits_untouched`, `notes_go_under_refs_notes_writ_when_the_repo_says_so` |
 | `policy.yaml: repos.<name>.ticket_link` | `ticket_link_trailer_is_required_only_when_the_repo_asks`, `what_the_commit_says_is_checked`, `a_push_leaves_a_note_per_commit_upstream_the_commits_untouched`, `a_repo_without_notes_gets_none` |
 | `policy.yaml: repos.<name>.object_format` | `an_upstream_in_another_object_format_is_refused`, `a_sync_mirrors_branches_and_tags_only_and_follows_upstream` |
-| `policy.yaml: repos.<name>.direct_ssh.hosts` | planned: M10 |
-| `policy.yaml: repos.<name>.direct_ssh.allow_account_wide` | planned: M10 |
 | `policy.yaml: templates.<name>.operations` | `a_ticket_past_its_template_is_rejected_with_each_reason` |
 | `policy.yaml: templates.<name>.branches` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
-| `policy.yaml: templates.<name>.push_modes` | `push_modes_without_gateway_refuse_a_gateway_push` |
 | `policy.yaml: templates.<name>.force_push` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
 | `policy.yaml: templates.<name>.committer_emails` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `what_the_commit_says_is_checked` |
 | `policy.yaml: templates.<name>.signing_key` | `ed25519_commits_signed_by_the_daemon_verify_and_are_in_the_ledger`, `p256_commits_signed_by_the_daemon_verify_and_are_in_the_ledger`, `commits_are_verified_once_the_signing_key_is_registered_and_proven` |

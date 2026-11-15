@@ -26,6 +26,7 @@ use writ_integration::{stderr, stdout};
 use writ_store::looks_secret;
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing
@@ -509,6 +510,7 @@ fn require_expected_paths_rejects_a_ticket_without_them() {
 
 /// A registry of two repos, a template for one of them and without `push`.
 const CAPPED: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing
@@ -729,6 +731,7 @@ fn a_ticket_past_its_template_is_rejected_with_each_reason() {
 
 /// Two templates a plain ticket fits, one of them for any branch.
 const TWO_TEMPLATES: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

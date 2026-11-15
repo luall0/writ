@@ -39,8 +39,8 @@ triggering the signature; it is the trusted display
 
 - The ticket text is agent-written and possibly prompt-injected. Before printing it, `writ
   sign` neutralizes terminal control sequences and other invisible characters so an agent
-  can't hide or overwrite part of the ticket on screen. Warnings (e.g. `direct_ssh` with an
-  account-wide key) are printed by `writ sign` itself, never taken from the ticket.
+  can't hide or overwrite part of the ticket on screen. Warnings (e.g. an expected path
+  outside the repository's terms) are printed by `writ sign` itself, never taken from the ticket.
 - The display is bounded in both directions. Every row fits 78 columns (a non-ASCII
   character counted as two), so an 80-column terminal never wraps one: a longer line is cut
   into rows by `writ sign`, between words (only a word longer than a row is cut inside, so

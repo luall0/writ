@@ -29,7 +29,7 @@ pub enum FieldKind {
 /// A field of a section's entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Field {
-    /// Its name, as the policy writes it (`max_ttl`, `direct_ssh.hosts`).
+    /// Its name, as the policy writes it (`max_ttl`, `upstream_credential`).
     pub name: &'static str,
     pub kind: FieldKind,
     /// Required: never unset.
@@ -182,10 +182,6 @@ const REPO_FIELDS: &[Field] = &[
         "full refs no lease may push (refs/heads/main, refs/tags/*)",
     ),
     or(
-        field("push_modes", List, "gateway, proxy, direct_ssh"),
-        "gateway",
-    ),
-    or(
         field("ticket_link", Text, "ledger_only, trailer or notes"),
         "ledger_only",
     ),
@@ -194,19 +190,6 @@ const REPO_FIELDS: &[Field] = &[
         "commits",
     ),
     or(field("object_format", Text, "sha1 or sha256"), "sha1"),
-    field(
-        "direct_ssh.hosts",
-        List,
-        "with push mode direct_ssh: the hosts the lent key reaches",
-    ),
-    or(
-        field(
-            "direct_ssh.allow_account_wide",
-            Flag,
-            "with push mode direct_ssh: lend a key not limited to the repo",
-        ),
-        "false",
-    ),
 ];
 
 const TEMPLATE_FIELDS: &[Field] = &[
@@ -215,10 +198,6 @@ const TEMPLATE_FIELDS: &[Field] = &[
         "branches",
         List,
         "branch patterns, one trailing * at most (required with commit_sign or push)",
-    ),
-    or(
-        field("push_modes", List, "gateway, proxy, direct_ssh"),
-        "gateway",
     ),
     or(
         field(
@@ -489,21 +468,10 @@ fn apply(
             ),
         ));
     }
-    // A host's entry is its list; any other entry a mapping, `direct_ssh.*` one level down.
+    // A host's entry is its list; any other entry a mapping of its fields.
     let slot: &mut Value = match (section, entry) {
         (Section::UpstreamHosts, list) => list,
-        (_, Value::Object(map)) => match edit.field.split_once('.') {
-            Some((outer, inner)) => {
-                let outer = map
-                    .entry(outer.to_owned())
-                    .or_insert_with(|| Value::Object(Map::new()));
-                let Value::Object(inner_map) = outer else {
-                    return Err(FieldError::at(&at, "not a section"));
-                };
-                inner_map.entry(inner.to_owned()).or_insert(Value::Null)
-            }
-            None => map.entry(edit.field.clone()).or_insert(Value::Null),
-        },
+        (_, Value::Object(map)) => map.entry(edit.field.clone()).or_insert(Value::Null),
         (_, _) => return Err(FieldError::at(&at, "not a mapping")),
     };
     match &edit.change {
@@ -659,10 +627,7 @@ pub fn current(
     for spec in fields(section) {
         let value = match (section, &entry) {
             (Section::UpstreamHosts, list) => Some(list),
-            (_, Value::Object(map)) => match spec.name.split_once('.') {
-                Some((outer, inner)) => map.get(outer).and_then(|o| o.get(inner)),
-                None => map.get(spec.name),
-            },
+            (_, Value::Object(map)) => map.get(spec.name),
             _ => None,
         };
         if let Some(text) = value.and_then(shown) {
@@ -715,8 +680,8 @@ mod tests {
             ),
             ("max_renewals!", "max_renewals", Change::Unset),
             (
-                "direct_ssh.hosts=a,b",
-                "direct_ssh.hosts",
+                "protected_refs=a,b",
+                "protected_refs",
                 Change::Set("a,b".into()),
             ),
             (

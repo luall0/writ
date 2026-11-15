@@ -3,6 +3,7 @@
 # only), but `https`, reached with a token. A new scenario adds its repo here, and to the `feature` template. The wrapper-mode
 # scenario's repo is `demo`, like the development policy's, so it runs the manual check's
 # commands as they are written.
+format: 2
 keys:
   agent-e2e:
     use: signing

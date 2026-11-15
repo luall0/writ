@@ -19,6 +19,7 @@ use writ_integration::daemon::{Approvals, Daemon, ssh_options};
 use writ_integration::{stderr, stdout};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

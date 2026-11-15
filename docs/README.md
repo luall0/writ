@@ -35,14 +35,14 @@ conventions, hard rules and commands, and points here for details.
 ## Domain
 - [Lease model](lease-model.md): repo registry, templates, ticket / lease schema, trust of
   each constraint, lifecycle, rules.
-- [Flows](flows.md): ticket submit/sign/refuse, signed commit, push (`gateway`, `proxy`,
-  `direct_ssh`), fetch, revoke, out-of-ticket, close, sealed startup.
+- [Flows](flows.md): ticket submit/sign/refuse, signed commit, push, fetch, revoke,
+  out-of-ticket, close, sealed startup.
 
 ## Architecture
 - [Overview](architecture/overview.md): deployment modes, component map, repository layout
   and dependency directions.
 - [Gateway, mirrors and upstream](architecture/gateway.md): SSH gateway, mirrors, upstream
-  pusher, push modes, URL rewrite.
+  pusher, URL rewrite.
 - [Policy, state and audit](architecture/policy-and-state.md): policy engine, lease store and
   ledger, audit log.
 - [Platform interfaces](architecture/platform.md): the platform-agnostic core, its interfaces

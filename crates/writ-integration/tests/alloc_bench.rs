@@ -262,6 +262,7 @@ const LARGE_FILES: usize = 4;
 const LARGE_FILE_BYTES: usize = 6 << 20;
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

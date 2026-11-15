@@ -380,7 +380,10 @@ mod tests {
     }
 
     fn policy(keys: &str) -> PolicyConfig {
-        PolicyConfig::from_yaml(&format!("keys:\n{keys}\nrepos: {{}}\ntemplates: {{}}\n")).unwrap()
+        PolicyConfig::from_yaml(&format!(
+            "format: 2\nkeys:\n{keys}\nrepos: {{}}\ntemplates: {{}}\n"
+        ))
+        .unwrap()
     }
 
     #[test]
@@ -389,7 +392,7 @@ mod tests {
              age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p }";
         let text = |backend: &str| {
             format!(
-                "keys: {{}}\nrecipients:\n  {recovery}\n  hw: {{ backend: {backend} }}\nrepos: {{}}\n\
+                "format: 2\nkeys: {{}}\nrecipients:\n  {recovery}\n  hw: {{ backend: {backend} }}\nrepos: {{}}\n\
                  templates: {{}}\n"
             )
         };

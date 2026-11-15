@@ -22,6 +22,7 @@ use writ_integration::{audit_events, stderr, stdout};
 use writ_store::looks_secret;
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

@@ -486,24 +486,6 @@ What remotes do with notes: all keep them; Forgejo and Gitea show those under
 (`git fetch origin refs/notes/commits:refs/notes/commits`, then `git log`; for
 `refs/notes/writ`, `git log --notes=writ`).
 
-## Push modes (per repo)
-
-Each repo in the [registry](../lease-model.md#repo-registry-admin-approved)
-chooses which push modes are allowed. Default: `gateway` only.
-
-| Mode | How the agent pushes | What the daemon sees and checks | Needs |
-|---|---|---|---|
-| `gateway` (default) | To the daemon's mirror; the daemon pushes upstream | Repo, refs, force push, **every commit against the ledger**, size | Repo registered with a mirror |
-| `proxy` | SSH to the daemon, which relays the stream to the remote with its own key | Repo path (from the `git-receive-pack '<path>'` command), ref updates (old → new, so force push too), size, and **every commit against the ledger** (pack buffered and indexed in a temporary quarantine before relaying) | No mirror; temporary disk for the pack |
-| `direct_ssh` | The daemon lends a per-lease ssh-agent socket; the agent talks to the remote itself | Destination host (`session-bind`), user, limits, TTL. **Not** the repo, refs or content | Upstream key that the remote scopes to this repo (deploy key), or explicit `allow_account_wide: true` |
-
-Why `direct_ssh` needs a repo-scoped key: the repo path is sent inside the encrypted SSH
-session, after authentication. The agent socket only sees "sign this auth challenge for
-github.com", so with an account-wide key the agent could push to any of my repos on that
-remote. Only the remote can scope it, through a deploy key.
-
-The step-by-step of each mode is in [Flows](../flows.md#3-push) (3, 3b, 3c).
-
 ## URL rewrite
 
 `gateway` and `proxy` keep the plain `git push origin` habit with a URL rewrite written by

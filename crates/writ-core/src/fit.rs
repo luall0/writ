@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::caller::{CallerConstraint, ProcessMatch, ProcessRef};
-use crate::config::{PolicyConfig, PushMode, Template};
+use crate::config::{PolicyConfig, Template};
 use crate::lease::{Lease, Renewed, State, TicketRecord};
 use crate::names::{CommitterName, Email, KeyFingerprint, KeyId, RepoName, TemplateName, TicketId};
 use crate::ticket::Operation;
@@ -224,14 +224,6 @@ fn check_repo(
             ));
         }
     }
-    if pushes
-        && let Some(entry) = config.repo(repo)
-        && push_modes(&entry.push_modes, template).is_empty()
-    {
-        reasons.push(format!(
-            "{at}: repo {repo} has no push mode allowed by both the registry and the template"
-        ));
-    }
     let limits = &terms.limits;
     let mut cap = |name: &str, value: u64, max: u64| {
         if value > max {
@@ -271,14 +263,6 @@ fn check_repo(
             terms.template
         ));
     }
-}
-
-/// The push modes a lease under `template` may use on a repo with `registry_modes`.
-pub fn push_modes(registry_modes: &BTreeSet<PushMode>, template: &Template) -> BTreeSet<PushMode> {
-    registry_modes
-        .intersection(&template.push_modes)
-        .copied()
-        .collect()
 }
 
 /// The lease's terms that must agree across its templates: the committer emails (needed when

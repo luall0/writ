@@ -16,7 +16,7 @@ use std::path::Path;
 use std::process::Output;
 
 use writ_crypto::keys::KeyKind;
-use writ_integration::gateway::{GitGateway, Listen, POLICY};
+use writ_integration::gateway::{GitGateway, Listen};
 use writ_integration::{audit_events, stderr};
 
 /// A clone of the seeded repo, wired for signing.
@@ -402,78 +402,6 @@ fn a_push_is_refused_when_its_hook_is_missing() {
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
     }
     gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
-}
-
-/// The harness's policy with `repo` added to the repo `demo` and `template` to the template.
-fn push_modes_policy(repo: &str, template: &str) -> String {
-    let protected = "    protected_refs: [\"refs/heads/main\", \"refs/tags/*\"]\n";
-    let size = "    max_push_size: 50MB\n";
-    let policy = POLICY
-        .replace(protected, &format!("{protected}{repo}"))
-        .replace(size, &format!("{size}{template}"));
-    assert_eq!(
-        policy.len(),
-        POLICY.len() + repo.len() + template.len(),
-        "both lines added"
-    );
-    policy
-}
-
-#[test]
-fn push_modes_without_gateway_refuse_a_gateway_push() {
-    for (repo, template) in [
-        // The registry has no gateway mode for the repo.
-        ("    push_modes: [proxy]\n", "    push_modes: [proxy]\n"),
-        (
-            "    push_modes: [direct_ssh]\n    \
-             direct_ssh: { hosts: [github.com], allow_account_wide: false }\n",
-            "    push_modes: [direct_ssh]\n",
-        ),
-        // The registry has it, the template doesn't.
-        (
-            "    push_modes: [gateway, proxy]\n",
-            "    push_modes: [proxy]\n",
-        ),
-    ] {
-        let gateway = GitGateway::start_with(
-            KeyKind::Ed25519,
-            Listen::Tcp,
-            &push_modes_policy(repo, template),
-        );
-        gateway.seed_repo();
-        let work = gateway.clone("work");
-        gateway.commit_signed(&work, "f", "x\n");
-        let out = push(&gateway, &work, "HEAD:refs/heads/agent/x");
-        assert_refused(
-            &gateway,
-            &out,
-            &format!(
-                "writ: outside ticket {}: push mode gateway not allowed for repo demo",
-                gateway.lease
-            ),
-            "push_mode",
-        );
-        assert_eq!(
-            gateway.bare_ref("refs/heads/agent/x"),
-            None,
-            "{repo}{template}"
-        );
-        assert_eq!(gateway.upstream_ref("refs/heads/agent/x"), None);
-    }
-    // Both with gateway: the same push goes through.
-    let gateway = GitGateway::start_with(
-        KeyKind::Ed25519,
-        Listen::Tcp,
-        &push_modes_policy(
-            "    push_modes: [gateway, proxy]\n",
-            "    push_modes: [gateway, proxy]\n",
-        ),
-    );
-    gateway.seed_repo();
-    let work = gateway.clone("work");
-    let id = gateway.commit_signed(&work, "f", "x\n");
-    gateway.git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/agent/x"]);
-    assert_eq!(gateway.upstream_ref("refs/heads/agent/x"), Some(id));
 }
 
 /// The review after M5.5 (L10): the gateway checked the hook was a file, not that git could run

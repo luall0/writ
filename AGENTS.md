@@ -192,7 +192,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | Which constraint is checked from what, and how far to trust it | [lease-model.md](docs/lease-model.md#constraints-and-how-much-to-trust-them) |
 | Step-by-step sequences (sign, push, fetch, revoke, close, unseal) | [docs/flows.md](docs/flows.md) |
 | Component map, crate layout, dependency rules | [docs/architecture/overview.md](docs/architecture/overview.md) |
-| SSH gateway, mirrors, quarantine, upstream, push modes (`writ-gateway`, `writ-git`) | [docs/architecture/gateway.md](docs/architecture/gateway.md) |
+| SSH gateway, mirrors, quarantine, upstream (`writ-gateway`, `writ-git`) | [docs/architecture/gateway.md](docs/architecture/gateway.md) |
 | Policy engine, SQLite store, ledger, audit log (`writ-core`, `writ-store`) | [docs/architecture/policy-and-state.md](docs/architecture/policy-and-state.md) |
 | Modes as configuration, platform traits, macOS/Linux implementations (`writ-platform*`, `writd/src/platform.rs`) | [docs/architecture/platform.md](docs/architecture/platform.md) |
 | `Signer` trait, key backends, keystore, sealed start (`writ-signer`) | [docs/architecture/signer.md](docs/architecture/signer.md) |

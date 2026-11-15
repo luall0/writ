@@ -953,7 +953,8 @@ mod tests {
     }
 
     fn policy_text() -> String {
-        r#"keys:
+        r#"format: 2
+keys:
   agent-01: { use: signing, format: ssh, algorithm: ed25519 }
   key-01: { use: upstream, kind: ssh, algorithm: ed25519 }
   token-01: { use: upstream, kind: token, host: example.org }

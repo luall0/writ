@@ -22,6 +22,7 @@ use writ_integration::https_remote::HttpsRemote;
 use writ_integration::{audit_events, stderr, stdout};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

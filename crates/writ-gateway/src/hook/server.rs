@@ -543,6 +543,7 @@ mod tests {
         use writ_proto::Decision;
 
         const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing
@@ -755,6 +756,7 @@ ticket:
         use writ_platform::clock::system::SystemClock;
 
         const POLICY: &str = r#"
+format: 2
 keys:
   upstream-01:
     use: upstream

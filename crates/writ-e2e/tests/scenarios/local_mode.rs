@@ -50,7 +50,7 @@ notifiers: []
 /// The policy: one repository, under a template that requires a session binding.
 fn policy(forgejo_key: &str) -> String {
     format!(
-        "keys:
+        "format: 2\nkeys:
   agent-local: {{ use: signing, format: ssh, algorithm: ed25519 }}
   upstream-local: {{ use: upstream, kind: ssh, algorithm: ed25519 }}
 upstream_hosts:

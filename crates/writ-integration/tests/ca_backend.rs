@@ -20,6 +20,7 @@ use writ_integration::daemon::{Approvals, Daemon, PASSPHRASE, ssh_options};
 use writ_integration::{stderr, stdout};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing
@@ -142,6 +143,7 @@ fn on_the_mac_the_ca_writd_init_owes_is_made_on_the_device_and_signs_each_certif
 /// The policy of [`on_the_mac_device_keys_made_elsewhere_are_named_and_each_rotation_mends_one`]:
 /// its signing key on the device too.
 const POLICY_SE: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

@@ -41,6 +41,7 @@ pub const HTTPS_TOKEN: &str = "writ-test-gateway-https-token-0123456789";
 
 /// The policy: one repo, `main` and tags protected, one wide template.
 pub const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

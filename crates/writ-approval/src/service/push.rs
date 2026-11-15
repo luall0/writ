@@ -11,7 +11,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use writ_core::caller::CallerFacts;
-use writ_core::config::PushMode;
 use writ_core::lease::Lease;
 use writ_core::names::{CommitId, RepoName, TicketId};
 use writ_core::policy::{
@@ -317,7 +316,6 @@ impl Service {
         }
         Ok(PushRequest {
             repo: pushing.repo.clone(),
-            mode: PushMode::Gateway,
             updates: pushing.updates.clone(),
             commits,
             pack_size: pushing.pack_size,

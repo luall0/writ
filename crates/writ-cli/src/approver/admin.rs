@@ -942,7 +942,7 @@ mod tests {
         };
         let policy = |second: u32| {
             format!(
-                "keys:\n  k: {{ use: signing }}\n\nrepos: {{}}\n\ntemplates:\n{}{}",
+                "format: 2\nkeys:\n  k: {{ use: signing }}\n\nrepos: {{}}\n\ntemplates:\n{}{}",
                 entry("first", 5),
                 entry("second", second)
             )

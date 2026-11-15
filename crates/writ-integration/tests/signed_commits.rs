@@ -29,6 +29,7 @@ const COMMIT_TREE_FAILED: i32 = 1;
 /// One repo, `main` and tags protected, its commits carrying their `Writ:` trailer; a
 /// template that refuses paths outside the ticket's.
 const STRICT: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

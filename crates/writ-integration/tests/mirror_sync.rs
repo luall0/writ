@@ -721,7 +721,7 @@ fn policy_yaml(upstream: &str, credential: &str, format: &str) -> String {
         ),
     };
     format!(
-        "keys:\n  {credential}: {declaration}\n{pins}\
+        "format: 2\nkeys:\n  {credential}: {declaration}\n{pins}\
          repos:\n  demo:\n    upstream: {upstream}\n    upstream_credential: {credential}\n    \
          templates: [t]\n    object_format: {format}\n\
          templates:\n  t:\n    operations: [fetch]\n    branches: [\"*\"]\n    \

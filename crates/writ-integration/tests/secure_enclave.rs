@@ -25,6 +25,7 @@ use writ_integration::daemon::{Approvals, Daemon};
 use writ_integration::{stderr, stdout};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-se:
     use: signing
@@ -323,6 +324,7 @@ fn a_damaged_blob_leaves_its_key_unusable_and_the_daemon_running() {
 /// A software policy with two signing keys: Ed25519 (which the Secure Enclave doesn't make)
 /// and P-256.
 const SOFTWARE: &str = r#"
+format: 2
 keys:
   agent-ed:
     use: signing

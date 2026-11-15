@@ -45,7 +45,7 @@ both, `TERM` not `dumb`), every question `writ` asks is a widget drawn by `inqui
 moved with the arrow keys and filtered by typing (a field whose values are few and known: a
 key's use, kind, format, backend, algorithm, hash; a repo's credential, proxy, ticket link,
 notes ref, object format; a template's signing key and paths check; every flag), a
-multi-select (a template's operations and push modes, a repo's templates, the agents `writ
+multi-select (a template's operations, a repo's templates, the agents `writ
 init` installs the skill for), text checked as it is typed (a count, a registry name), a
 confirm, a pause. Each gives the answer the plain prompt gave (Enter keeps, `!` leaves an
 optional field out, `none` empties a list), so the guided flows' logic is one; a select's

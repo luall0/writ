@@ -34,6 +34,7 @@ use writ_platform::testing::{FakeAttestor, FakeConnector, FakeTransport, eventua
 use writ_proto::{Ack, ApiError, Command, Decision, Decisions, Info, Listing, Submitted};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

@@ -118,7 +118,7 @@ mod tests {
 
     fn policy(agent_backend: &str, recipients: &str) -> PolicyConfig {
         PolicyConfig::from_yaml(&format!(
-            "keys:\n  agent-01:\n    use: signing\n    format: ssh\n    algorithm: p256\n    \
+            "format: 2\nkeys:\n  agent-01:\n    use: signing\n    format: ssh\n    algorithm: p256\n    \
              backend: {agent_backend}\n  upstream-01:\n    use: upstream\n    kind: ssh\n    \
              algorithm: p256\n    backend: se-cryptokit\n{recipients}repos: {{}}\ntemplates: {{}}\n"
         ))

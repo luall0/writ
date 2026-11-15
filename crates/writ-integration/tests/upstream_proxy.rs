@@ -141,7 +141,7 @@ impl Fixture {
         let proxies = proxy.map(|p| p.yaml("p")).unwrap_or_default();
         let via = proxy.map(|_| "    proxy: p\n").unwrap_or_default();
         PolicyConfig::from_yaml(&format!(
-            "keys:\n  upstream-01: {{ use: upstream, kind: ssh, algorithm: ed25519 }}\n  \
+            "format: 2\nkeys:\n  upstream-01: {{ use: upstream, kind: ssh, algorithm: ed25519 }}\n  \
              proxy-pass: {{ use: upstream, kind: token, host: \"127.0.0.1\" }}\n\
              upstream_hosts:\n  \"{pin_host}\": [\"{pin_key}\"]\n{proxies}\
              repos:\n  demo:\n    upstream: {}\n    upstream_credential: upstream-01\n{via}    \
@@ -403,7 +403,7 @@ fn an_https_upstream_behind_a_proxy_is_synced_through_it() {
         let proxy = TestProxy::start(&runtime, kind, Some(("writ", PASSWORD)));
         proxy.map(name, ([127, 0, 0, 1], port.parse::<u16>().unwrap()).into());
         let policy = PolicyConfig::from_yaml(&format!(
-            "keys:\n  token-01: {{ use: upstream, kind: token, host: {name} }}\n  \
+            "format: 2\nkeys:\n  token-01: {{ use: upstream, kind: token, host: {name} }}\n  \
              proxy-pass: {{ use: upstream, kind: token, host: \"127.0.0.1\" }}\n\
              proxies:\n  p: {{ url: \"{}\", credential: proxy-pass }}\n\
              repos:\n  demo:\n    upstream: {url}\n    upstream_credential: token-01\n    \

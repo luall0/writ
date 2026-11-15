@@ -276,7 +276,8 @@ fn writd_init_makes_a_sealed_keystore_that_reveals_no_key_at_rest() {
 
 /// The second daemon's policy: an `ssh://` repo, and an `https://` one whose token only an
 /// approver adds (`writ admin token`); one template.
-const SEALED_POLICY: &str = r#"keys:
+const SEALED_POLICY: &str = r#"format: 2
+keys:
   agent-sealed: { use: signing, format: ssh, algorithm: ed25519 }
   upstream-sealed: { use: upstream, kind: ssh, algorithm: ed25519 }
   token-sealed: { use: upstream, kind: token, host: forgejo-https }

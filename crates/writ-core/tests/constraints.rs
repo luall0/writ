@@ -1,6 +1,5 @@
 //! One table per row of docs/lease-model.md § Constraints that the daemon checks, each case
-//! allowed or denied with its code. (The `direct_ssh` rows are checked from M10, the LLM
-//! plan check is in the backlog.)
+//! allowed or denied with its code. (The LLM plan check is in the backlog.)
 
 #![allow(
     clippy::unwrap_used,
@@ -17,7 +16,7 @@ use std::path::PathBuf;
 
 use common::*;
 use writ_core::caller::{CallerConstraint, CodeIdentity, ProcessMatch, ProcessRef};
-use writ_core::config::{ObjectFormat, PushMode};
+use writ_core::config::ObjectFormat;
 use writ_core::lease::{Lease, State};
 use writ_core::policy::{
     self, CertIdentity, DenyCode, LedgerRef, ObjectKind, PushRequest, PushedCommit, RefUpdate,
@@ -372,16 +371,6 @@ fn destination_ref_and_protected_refs() {
             Some(DenyCode::Invalid),
         ),
         ("branch creation", |_, r| r.updates[0].old = None, None),
-        (
-            "proxy mode, not allowed for omega-code",
-            |_, r| r.mode = PushMode::Proxy,
-            Some(DenyCode::PushMode),
-        ),
-        (
-            "direct_ssh never goes through here",
-            |_, r| r.mode = PushMode::DirectSsh,
-            Some(DenyCode::PushMode),
-        ),
     ]);
 }
 
@@ -450,8 +439,8 @@ fn force_push() {
 #[test]
 fn force_push_when_the_lease_allows_it() {
     let policy = POLICY.replacen(
-        "    push_modes: [gateway, proxy]\n    committer_emails",
-        "    push_modes: [gateway, proxy]\n    force_push: true\n    committer_emails",
+        "    branches: [\"agent/*\"]\n    committer_emails",
+        "    branches: [\"agent/*\"]\n    force_push: true\n    committer_emails",
         1,
     );
     let config = writ_core::config::PolicyConfig::from_yaml(&policy).unwrap();
@@ -1196,19 +1185,4 @@ fn a_lease_that_no_longer_fits_its_template_is_refused() {
             "{policy}"
         );
     }
-}
-
-#[test]
-fn proxy_mode_where_allowed() {
-    let lease = lease_of(submitted(
-        &REQUEST.replace("  omega-code:\n", "  homelab-scripts:\n"),
-    ));
-    let world = World::new(lease);
-    let mut push = push_request(&world.lease);
-    push.repo = repo("homelab-scripts");
-    push.mode = PushMode::Proxy;
-    for commit in &mut push.commits {
-        commit.signed_under[0].repo = repo("homelab-scripts");
-    }
-    assert!(policy::decide_push(&world.ctx(), &push).is_ok());
 }

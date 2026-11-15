@@ -25,6 +25,7 @@ use writ_core::units::Duration;
 /// minute, 3 renewals), `frontend` for web (commit_sign on review/*, key k1, 2h, 30 a minute,
 /// 1 renewal), `docs-own-key` for docs (key k2), `read-only` for api and docs (no key).
 const POLICY: &str = r#"
+format: 2
 keys:
   k1: { use: signing, format: ssh, algorithm: ed25519 }
   k2: { use: signing, format: ssh, algorithm: ed25519 }

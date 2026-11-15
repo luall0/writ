@@ -22,6 +22,7 @@ use writ_integration::process::ends_within;
 use writ_integration::{WAIT_LIMIT, stderr, stdout};
 
 const POLICY: &str = r#"
+format: 2
 keys:
   agent-01:
     use: signing

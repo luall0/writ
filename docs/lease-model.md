@@ -9,7 +9,7 @@ Three layers, from fixed to per-task:
 | Layer | Written by | Changes |
 |---|---|---|
 | **Keys and host pins** | Me (admin approval) | Rarely. Every key the policy names, declared with its use; each `ssh://` upstream's host keys |
-| **Repo registry** | Me (admin approval) | Rarely. Hard limits per repo: protected refs, push modes, upstream, the templates it allows |
+| **Repo registry** | Me (admin approval) | Rarely. Hard limits per repo: protected refs, upstream, the templates it allows |
 | **Templates** | Me (admin approval) | Rarely. The maximum shape a ticket can take in a repo that names it |
 | **Ticket** | The agent | Per task. Each repository's terms fit a template that allows it; I sign or refuse it |
 
@@ -22,6 +22,7 @@ status: the operator reference ([`policy.yaml`](operators/policy-yaml.md),
 ## Keys and host pins (admin-approved)
 
 ```yaml
+format: 2
 keys:
   agent-ed25519-01: { use: signing, format: ssh, algorithm: ed25519 }
   upstream-github-01: { use: upstream, kind: ssh, algorithm: ed25519 }
@@ -48,7 +49,6 @@ repos:
     upstream_credential: upstream-github-01   # SSH key on my GitHub account (account-wide access)
     templates: [feature-branch, quick-fix]    # the templates its tickets may use; []: closed
     protected_refs: ["refs/heads/main", "refs/tags/*"]   # never pushable by any lease
-    push_modes: [gateway]                     # default
     ticket_link: trailer                      # ledger_only (default) | trailer | notes
     object_format: sha1                       # sha1 (default) | sha256: commits signed only in it
   homelab-scripts:
@@ -56,27 +56,20 @@ repos:
     upstream_credential: upstream-forgejo-01
     templates: [feature-branch, quick-fix]
     protected_refs: ["refs/heads/main"]
-    push_modes: [gateway, proxy]              # proxy: no mirror, refs and commits still checked
   some-https-only-repo:
     upstream: https://git.example.org/user/some-repo.git   # https://[user@]host[:port]/path
     upstream_credential: token-example-01     # a token in the keystore (`writ admin token token-example-01`)
     templates: [quick-fix]
-    push_modes: [gateway]
   dotfiles:
     upstream: ssh://git@github.com/user/dotfiles.git
     upstream_credential: deploy-dotfiles-01   # deploy key: the remote limits it to this repo
     templates: [quick-fix]
-    push_modes: [direct_ssh]                  # agent pushes to GitHub itself
-    direct_ssh:
-      hosts: [github.com]
-      allow_account_wide: false               # refuse if the credential isn't repo-scoped
 ```
 
-Defaults: `protected_refs: []`, `push_modes: [gateway]`, `ticket_link: ledger_only` (many
+Defaults: `protected_refs: []`, `ticket_link: ledger_only` (many
 projects' commit conventions don't allow an extra trailer),
 `object_format: sha1` (GitHub and most remotes have only SHA-1 repositories; a commit is
-signed only in its repo's format, so a SHA-256 repository never gets SHA-1 objects signed). The
-`direct_ssh` section is required with the `direct_ssh` push mode and refused without it.
+signed only in its repo's format, so a SHA-256 repository never gets SHA-1 objects signed).
 The `upstream` URL picks how the daemon reaches it: `ssh://` with a key in its signer,
 `https://` with a token from its keystore (never `http://`, never a password in the URL)
 ([gateway](architecture/gateway.md#upstream)). `templates` names the templates whose
@@ -85,9 +78,10 @@ every ticket for it is refused as closed.
 Repo names are unique ignoring case: a repo's mirror is `<name>.git`, and on a
 case-insensitive file system (local mode's APFS) `Demo` and `demo` would be one directory.
 
-A lease can only use a push mode that its repo allows. `direct_ssh` with an account-wide key
-requires `allow_account_wide: true` in the registry **and** is shown as a warning in the
-approval prompt. Push modes are described in [Gateway](architecture/gateway.md#push-modes-per-repo).
+Every push goes through the gateway: the daemon's mirror, then upstream
+([gateway](architecture/gateway.md#push-checks-in-gits-quarantine)). The `proxy` and
+`direct_ssh` push modes of format 1 were dropped in M7.9.6, never built
+([parked](backlog/README.md#parked)).
 
 Changing the registry is an admin change and needs a signed approval.
 
@@ -98,7 +92,6 @@ templates:
   feature-branch:                          # no repos here: each repo names its templates
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
-    push_modes: [gateway, proxy]           # default [gateway]; never direct_ssh here
     force_push: false                      # default false: tickets can't ask for it
     committer_emails: ["user+agent@example.org"]   # required with commit_sign
     committer_name: "Writ agent"           # optional: the name on every commit; unset, not checked
@@ -130,9 +123,7 @@ each limit. Its `committer_name`, when set, is not something a ticket asks for: 
 copies it into every lease that signs, and every commit's author and committer must carry
 exactly that name (git's `user.name`, which `writ git` and a whole-repo clone set from the
 lease). Unset, the name isn't checked. It doesn't make a remote show a commit as verified
-(the email and the key do); it keeps an agent from signing as someone else by name. `dotfiles` allows `quick-fix`, but `dotfiles` only allows `direct_ssh` and the
-template only `gateway` (the default), so a quick-fix ticket can sign for `dotfiles` but not
-push to it.
+(the email and the key do); it keeps an agent from signing as someone else by name.
 
 A ticket with a repository that fits no template, or whose templates disagree (the signing
 key, the committer name), is rejected by the daemon before it reaches me, with every reason
@@ -346,11 +337,9 @@ any field changes the bytes. A new format gets a new `kind`.
 |---|---|---|
 | TTL, counts (per repository), rate | Daemon state | 🟢 Strong |
 | Repo | Gateway endpoint | 🟢 Strong |
-| Destination ref, protected refs | Push commands received by the gateway / proxy | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
-| Force push | Ref update (old → new) | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
-| Pushed commits signed under this lease | Pack vs ledger | 🟢 Strong (`gateway`, `proxy`) · 🔴 invisible (`direct_ssh`) |
-| Repo (direct_ssh) | Remote, via a repo-scoped deploy key | 🟢 if deploy key · 🔴 account-wide otherwise |
-| Push host (direct_ssh) | `session-bind` host key | 🟢 Strong |
+| Destination ref, protected refs | Push commands received by the gateway | 🟢 Strong |
+| Force push | Ref update (old → new) | 🟢 Strong |
+| Pushed commits signed under this lease | Pack vs ledger | 🟢 Strong |
 | Committer and author identity (both emails in `committer_emails`; both names the lease's `committer_name` when it has one) | Commit bytes parsed by the daemon | 🟢 Strong |
 | Caller = lease holder | Session certificate | 🟡 Strong-ish (bearer; bounded by scope + TTL) |
 | Origin host | Source address / hint | 🟠 Advisory |

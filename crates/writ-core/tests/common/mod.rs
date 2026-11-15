@@ -2,7 +2,7 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use writ_core::caller::CallerFacts;
-use writ_core::config::{ObjectFormat, PolicyConfig, PushMode};
+use writ_core::config::{ObjectFormat, PolicyConfig};
 use writ_core::fit::{self, Submission};
 use writ_core::lease::{self, APPROVAL_NAMESPACE, Approval, Lease, TicketRecord, Usage};
 use writ_core::names::{CommitId, KeyFingerprint, RepoName, TicketId};
@@ -231,7 +231,6 @@ pub fn push_request(lease: &Lease) -> PushRequest {
     };
     PushRequest {
         repo: repo("omega-code"),
-        mode: PushMode::Gateway,
         updates: vec![RefUpdate {
             name: "refs/heads/agent/oauth-login".to_owned(),
             old: Some(commit(1)),

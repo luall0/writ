@@ -142,37 +142,6 @@ signed again under the same lease. The notes of a `ticket_link: notes` repo
 fails never undoes the branch's. A push already decided keeps its slot of the repo's count
 and rate when the remote refuses it.
 
-### 3b. Push, `proxy` mode
-The agent connects to the daemon (same URL rewrite).
-
-1. The daemon reads `git-receive-pack '<path>'` and the ref update lines: checks repo, refs,
-   protected refs and force push.
-2. It buffers the pack into a temporary quarantine (bounded by `max_push_size`) and indexes it
-   with `git index-pack`.
-3. It walks the new commits and checks each one against the ledger for this lease.
-4. Only then does it open its own SSH session to the remote and relay the ref updates and the
-   pack.
-5. The quarantine is deleted; the remote's answer goes back to the agent. Any rejection shows
-   in the agent's terminal, as with `gateway`.
-
-To find which commits are "new" without a mirror, the daemon first asks the remote for its
-current refs (the advertisement at the start of the upstream session), relays them to the
-agent, and uses them as the boundary.
-
-The daemon advertises the `no-thin` capability to the agent, so the pack is self-contained: it
-can be indexed and every commit object in it read without having the remote's objects locally.
-Commits in the pack are exactly the new commits to check.
-
-Notes (`ticket_link: notes`) go the same way as in `gateway` mode, from a small notes-only
-repository per repo instead of the mirror: the notes job needs only the notes ref, never
-the annotated commits.
-
-### 3c. Push, `direct_ssh` mode
-At lease grant, the daemon also exposes a per-lease ssh-agent socket (reachable through the
-session channel) holding only the repo's deploy key. Each signature request is checked for
-host (`session-bind`), user, limits and TTL. The remote enforces the repo; nothing enforces
-refs.
-
 ## 4. Fetch
 
 `git fetch writ` → `Service::fetch`: the certificate's single active lease, the policy's

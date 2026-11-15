@@ -1,4 +1,5 @@
 # The development policy: one throwaway repo, one template.
+format: 2
 keys:
   agent-dev-01: { use: signing, format: ssh, algorithm: ed25519 }
   upstream-dev-01: { use: upstream, kind: ssh, algorithm: ed25519 }
