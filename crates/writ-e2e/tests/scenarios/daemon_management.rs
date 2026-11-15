@@ -1,5 +1,5 @@
 //! Scenario 23, managing the daemon from the approver's machine (M6.2,
-//! docs/backlog/daemon-management-from-the-cli.md): `writ admin repo|template|key|host`,
+//! docs/history/m6.2-managing-the-daemon-from-the-cli-design.md): `writ admin repo|template|key|host`,
 //! with the reader key only for the reads. Every entry of the policy in force listed and shown
 //! as the policy writes it; each key's public half as the daemon's signers hold it (the same
 //! the operator registered from `writd upstream-keys` and `writd signing-keys`), a token's

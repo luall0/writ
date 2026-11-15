@@ -43,7 +43,7 @@ audit log names the user on every line.
 One or more users are **admins**: they make admin changes (users, templates, the repo
 registry, the approvers and readers files) and unseal the daemon. An admin's approval key
 signs those like it signs an approval today ([hard rule 5](../../AGENTS.md#hard-rules)), and
-so are the signed requests of [M6.2](daemon-management-from-the-cli.md) that make the daemon
+so are the signed requests of [M6.2](../history/m6.2-managing-the-daemon-from-the-cli-design.md) that make the daemon
 reach the network (the host key scan): only an admin's key may sign one.
 
 Repos can be shared: one registry entry, one mirror, several users each with their own

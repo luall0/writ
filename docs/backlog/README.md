@@ -65,7 +65,6 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |
 | [x509 commit signatures](#x509-commit-signatures) | Signers | feature | M | idea |
 | [Developer ID signed binaries](#developer-id-signed-binaries) | Packaging | improvement | S | idea |
-| [Hardware-wrapped secrets](../history/m7.6-hardware-wrapped-secrets.md) | Sealing, Credentials | feature | M | done in [M7.6](../history/m7.6-hardware-wrapped-secrets.md) |
 | [SSH host key behind the `Signer`](#ssh-host-key-behind-the-signer) | Signers | hardening | M | idea; waits for a signer hook in russh (left out of M7.6) |
 | [A hardware-keyed MAC over stored blobs](#a-hardware-keyed-mac-over-stored-blobs) | Signers, Sealing | hardening | M | idea (the threat model named M7.6 for it, which shipped without it: the review after M7.6, K-6) |
 | [The authority MAC's key replaced with the data key](#the-authority-macs-key-replaced-with-the-data-key) | Sealing | hardening | M | idea (left out of M7.7) |
@@ -73,7 +72,6 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Mac app for every command](#mac-app-for-every-command) | Approvals, Clients | feature | L | idea; after [M7.8](../history/m7.8-approval-popup-on-the-mac.md)'s popup, the approval client linked into the app first |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
 | [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
-| [Local mode on Linux](#local-mode-on-linux) | Identity | feature | M | picked as [M7.1](../history/m7.1-local-mode-on-linux.md) |
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Per-session submission rates](#per-session-submission-rates) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
@@ -82,9 +80,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Omega Code plugin](#omega-code-plugin) | Clients | feature | M | idea |
 | [One program, several repositories](#one-program-several-repositories) | Clients | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
 | [Submodules](#submodules) | Clients, Gateway | feature | M | idea (left out of [M6.1](../history/m6.1-multi-repo-workspaces.md)) |
-| [Per-repository tickets](per-repository-tickets.md) | Lease model, Approvals, Clients | feature | L | done in [M6.1.5](../history/m6.1.5-per-repository-tickets.md) |
 | [A signing key per repository in one lease](#a-signing-key-per-repository-in-one-lease) | Signers, Clients | feature | M | idea (left out of [M6.1.5](../history/m6.1.5-per-repository-tickets.md)) |
-| [Managing the daemon from the CLI](daemon-management-from-the-cli.md) | Administration, Signers, Upstream, Clients | improvement | L | done in [M6.2](../history/m6.2-managing-the-daemon-from-the-cli.md) |
 | [Pending hand edits](#pending-hand-edits) | Administration | improvement | M | idea |
 | [Old upstream histories](#old-upstream-histories) | Upstream | improvement | M | idea; lowest priority, waits for a real repository that needs it |
 
@@ -93,10 +89,10 @@ The commits, each leaving Writ working. Added when the idea is picked.
 ### YubiKey PIV signer backend
 
 Agent keys and upstream credentials on a YubiKey (P-256, P-384, ed25519 on recent firmware),
-touch policy `never`, USB passthrough to the container. Removes the main v1 residual risk:
-software keys extractable on the daemon host ([Signer](../architecture/signer.md)). Built in
-[M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac) instead if the M0 spike falls back
-to Plan D for local mode. The Secure Enclave signer itself is on the roadmap (M7.5).
+touch policy `never`, USB passthrough to the container. Removes the main v1 residual risk
+for a detached daemon: software keys extractable on the daemon host
+([Signer](../architecture/signer.md)). Local mode on the Mac already has the Secure Enclave
+signer ([M7.5](../history/m7.5-secure-enclave-signer.md)).
 
 ### TPM signer backend
 
@@ -131,7 +127,7 @@ HSM, the daemon only asks it for signatures ([Signer](../architecture/signer.md)
 
 The gateway's SSH host key (the boot tier's `host`) on a hardware backend like the TLS key
 (M7.5), so a copy of the boot tier reveals no key at all. Left out of
-[M7.6](../roadmap.md#m76--hardware-wrapped-secrets) with the user: russh 0.65 signs its host
+[M7.6](../history/m7.6-hardware-wrapped-secrets.md) with the user: russh 0.65 signs its host
 key proofs in the key exchange with an in-memory `PrivateKey` (`server::Config::keys`) and has
 no hook for an external signer. Reopens when russh grows one (an issue or a pull request
 upstream; a patched copy carried in the tree was ruled out: a fork on the security path that
@@ -167,7 +163,7 @@ backup kept elsewhere, M8's volumes).
 ### x509 commit signatures
 
 Git's third signature format (`gpg.format = x509`, `gpgsm`: a CMS signature with an X.509
-certificate), after SSH and OpenPGP ([M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms)
+certificate), after SSH and OpenPGP ([M5.5](../history/m5.5-signature-formats-and-key-algorithms.md)
 leaves the seam: one encoder per format, `format` an open enum). To settle: where the
 certificate comes from (a CA the operator runs, an S/MIME certificate from a public CA, which
 GitHub shows as verified, or self-made), its renewal, which remotes verify it, and
@@ -177,7 +173,7 @@ GitHub shows as verified, or self-made), its renewal, which remotes verify it, a
 
 Pay for the Apple Developer Program only to sign `writd`, `writ` and `writ-sign` with a
 Developer ID certificate and notarize them, instead of the self-signed certificate M7
-plans. What it brings: binaries that install on any Mac without Gatekeeper warnings or a
+uses. What it brings: binaries that install on any Mac without Gatekeeper warnings or a
 self-signed certificate to trust, and a code identity anchored in Apple (team ID) for the
 process chain's `CodeIdentity`. Not a security gain for this Mac: Plan B's isolation comes
 from the `_writd` user, not from the signature. Not coupled with the keychain signer, which is
@@ -213,14 +209,6 @@ Same, on the iPhone (Secure Enclave + Face ID), to approve away from the Mac.
 
 ## Identity
 
-### Local mode on Linux
-
-`writ-platform-linux`: a `CallerAttestor` from `SO_PEERCRED` and `/proc` (executable path,
-start time as the pid's generation) and a pidfd `SessionWatcher`, so leases bound to a session
-work for agents on a Linux workstation too. Only implementations and a config preset
-([Platform interfaces](../architecture/platform.md)). Picked: the plan is
-[M7.1](../history/m7.1-local-mode-on-linux.md).
-
 ### Source-address pinning
 
 Bind a session certificate to the source address it was requested from (SSH certificate
@@ -232,7 +220,7 @@ In local mode every caller on the Unix socket is one source, so all local agents
 submission rate (`submissions.per_source`): a runaway agent uses up the others'. The
 attestor's facts (the caller's session root, its process chain) could key the rate per
 session instead. M7 closed without it (found by the
-[M7.7 review](../roadmap.md#m77--review-after-m76), `L-9`).
+[M7.7 review](../history/m7.7-review-after-m7.6.md), `L-9`).
 
 ## Upstream
 
@@ -244,7 +232,7 @@ repo registry is no longer the only per-repo boundary
 
 ### A TLS link to an upstream proxy
 
-Since [M7.2](../roadmap.md#m72--upstream-proxies), a repo's upstream can be reached through a
+Since [M7.2](../history/m7.2-upstream-proxies.md), a repo's upstream can be reached through a
 SOCKS5 or HTTP CONNECT proxy, the link to the proxy in clear: its password crosses the network
 to it as both protocols send it. An `https://` proxy (CONNECT inside TLS, the proxy's
 certificate verified against the system's CAs or a pinned one) would keep the password off the
@@ -285,8 +273,10 @@ owner can (`git filter-repo`). Ways to serve them, in order of preference
 
 ### Omega Code plugin
 
-Request the lease automatically when an agent tab opens, bind it to that tab's session (process
-chain in local mode), and wire the repo's git config ([Q10](../decisions.md)).
+Request the lease automatically when an agent tab opens and bind it to that tab's session
+([Q10](../decisions.md)). What is left: the skill already asks for the lease (M6), `writ init`
+wires the repo, and `writ run` binds a lease to the program it starts (M7); the plugin would
+bind each lease to one tab rather than to the whole program, with no `writ run` in front.
 
 ### One program, several repositories
 
