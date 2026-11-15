@@ -28,6 +28,9 @@ BINARIES_SHIPPED="writd writ writ-sign writ-se writ-popup"
 POPUP_LABEL=dev.writ.popup
 POPUP_PLIST=$HOME/Library/LaunchAgents/$POPUP_LABEL.plist
 SECRETIVE_SOCKET=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
+# The agent the popup signs through when none is given: the one your terminal uses
+# (SSH_AUTH_SOCK, as writ sign does), else Secretive's on this Mac.
+DEFAULT_AGENT=${SSH_AUTH_SOCK:-$SECRETIVE_SOCKET}
 # The ids the role user and the sockets' group take: the hidden system range.
 ID_FIRST=450
 ID_LAST=499
@@ -144,7 +147,7 @@ setup_questions() {
 }
 
 # The approval popup (M7.8): whether it starts at login, and the agent socket it signs
-# through (your approval key's: Secretive's by default).
+# through (your approval key's: DEFAULT_AGENT unless given).
 popup_questions() {
     POPUP=${POPUP:-}
     APPROVAL_AGENT=${APPROVAL_AGENT:-}
@@ -152,7 +155,8 @@ popup_questions() {
         say ""
         say "The approval popup: a window in front of every app, full-screen ones too, when a"
         say "ticket waits for your signature, with the whole ticket, Sign and Decline. It signs"
-        say "as writ sign does (your approval key, Touch ID). Started at login in your session."
+        say "as writ sign does (your approval key, through its agent). Started at login in your"
+        say "session."
     fi
     POPUP=$(choose_one POPUP "$POPUP" "Approval popup" yes yes no)
     if [ "$POPUP" = no ]; then
@@ -161,11 +165,11 @@ popup_questions() {
     fi
     if [ -z "$APPROVAL_AGENT" ] && terminal; then
         say ""
-        say "The agent holding your approval key, which the popup signs through (Enter:"
-        say "Secretive's)."
-        APPROVAL_AGENT=$(expand_home "$(ask "Approval key's agent socket" "$SECRETIVE_SOCKET")")
+        say "The socket of the ssh-agent holding your approval key, which the popup signs through"
+        say "(Enter: the one this terminal uses)."
+        APPROVAL_AGENT=$(expand_home "$(ask "Approval key's agent socket" "$DEFAULT_AGENT")")
     fi
-    APPROVAL_AGENT=${APPROVAL_AGENT:-$SECRETIVE_SOCKET}
+    APPROVAL_AGENT=${APPROVAL_AGENT:-$DEFAULT_AGENT}
     check_approval_agent
 }
 
@@ -193,8 +197,8 @@ keystore_questions() {
     if [ -z "$UNSEAL" ] && terminal; then
         say ""
         say "What opens the daemon's keystore, which holds every secret, after each start:"
-        say "  passphrase: one you choose now, typed at writ unseal with Touch ID"
-        say "  se-cryptokit: this Mac's Secure Enclave: writ unseal is Touch ID alone. It needs a"
+        say "  passphrase: one you choose now, typed at writ unseal with your approval"
+        say "  se-cryptokit: this Mac's Secure Enclave: writ unseal is your approval alone. It needs a"
         say "  recovery key, kept offline, that opens everything if this Mac is lost"
     fi
     UNSEAL=$(choose_one UNSEAL "$UNSEAL" "Keystore opened by" passphrase passphrase se-cryptokit)
@@ -571,8 +575,8 @@ approval_url = unix:$RUN/approvals.sock"
     say "  1. Open a new terminal (for /opt/writ/bin on your PATH)."
     case $AUTO_UNSEAL:$UNSEAL in
         yes:*) say "  2. Nothing to unseal: the daemon opened itself (auto-unseal), and will at each start." ;;
-        *:se-cryptokit) say "  2. writ unseal (Touch ID: the Secure Enclave opens the keystore)." ;;
-        *) say "  2. writ unseal (the passphrase you chose, then Touch ID)." ;;
+        *:se-cryptokit) say "  2. writ unseal (your approval: the Secure Enclave opens the keystore)." ;;
+        *) say "  2. writ unseal (the passphrase you chose, then your approval)." ;;
     esac
     say "  3. writ admin key/host/repo/template add, then writ init <repo> in a clone."
     say "  4. Start each agent with writ run -- <agent>."
@@ -597,10 +601,10 @@ setup_upgrade() {
         step "The approval popup started again ($POPUP_PLIST kept: your answers)"
         as_user launchctl bootstrap "gui/$(id -u)" "$POPUP_PLIST"
     elif [ "${POPUP:-yes}" != no ] && ! grep -qxF -- "choice popup no" "$MANIFEST"; then
-        # An install from before M7.8: the popup added, Secretive's agent unless
+        # An install from before M7.8: the popup added, through DEFAULT_AGENT unless
         # APPROVAL_AGENT says otherwise (POPUP=no, or the install's no, leaves it out).
         POPUP=yes
-        APPROVAL_AGENT=${APPROVAL_AGENT:-$SECRETIVE_SOCKET}
+        APPROVAL_AGENT=${APPROVAL_AGENT:-$DEFAULT_AGENT}
         check_approval_agent
         install_popup
     fi

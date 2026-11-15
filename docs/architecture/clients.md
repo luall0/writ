@@ -75,7 +75,7 @@ ones too, with the whole ticket and two buttons, **Sign** and **Decline**. Two p
   (`fetch_reviewed`), builds its display with `writ sign`'s own code (the very text `writ sign
   <id> --full` prints above its question, and the same as a structure of sections and tagged
   rows, written by the same calls: `display::Out`), and signs with `writ sign`'s signer
-  (`ssh-keygen -Y sign` through the approval agent: Secretive's Touch ID). Nothing of that
+  (`ssh-keygen -Y sign` through the approval agent, which asks its own confirmation). Nothing of that
   exists anywhere else.
 - **`writ-popup`** (Swift: SwiftUI in an AppKit `NSPanel`; `crates/writ-cli/macos/`) only shows what `writ` sends and
   says what was clicked ([decision log](../decisions.md), 2026-11-14: before any richer UI,

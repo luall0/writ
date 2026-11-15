@@ -14,7 +14,7 @@ Three kinds of signature are involved. Knowing which is which makes every step b
 
 | Signature | Made by | With | Proves |
 |---|---|---|---|
-| An **approval** | You, confirmed in your agent (Touch ID with Secretive) | Your approval key | You agreed to a ticket, a change of the policy, or a proof. Its SSH namespace is `writ-approval`, so it can never pass for a commit signature or a login |
+| An **approval** | You, confirmed in your ssh-agent | Your approval key | You agreed to a ticket, a change of the policy, or a proof. Its SSH namespace is `writ-approval`, so it can never pass for a commit signature or a login |
 | A **commit signature** | The daemon, when the agent commits | An agent signing key (`agent-01`, made by the install) | The commit was made under a lease you signed. The remote shows it as verified |
 | The **upstream login** | The daemon, when it fetches or pushes | An upstream key, one per repository | The daemon may read and push that repository on the remote. The agent never holds it |
 

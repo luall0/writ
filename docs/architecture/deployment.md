@@ -57,7 +57,7 @@ implementations plugged in. Installed by the [installer](#installing-and-uninsta
 | The LaunchDaemon | `/Library/LaunchDaemons/dev.writ.writd.plist`: `UserName _writd`, `RunAtLoad`, `KeepAlive` on an unsuccessful exit only (an orderly stop stays stopped), `ExitTimeOut` 330 s (the orderly stop waits once, at most `mirrors.timeout` and 5 s, never past 320 s: [flows § 8](../flows.md#8-daemon-stop); a `mirrors.timeout` over 315 s is cut there, said at start), `Umask` 077 | root:wheel 0644 |
 | The installer's manifest | `/Library/Application Support/Writ/install.manifest` | root:wheel 0644 |
 | Your client | `~/.writ`: `known_hosts` (`writ-local <host key>`), `config` (the two sockets), `reader`, `approver.pub` | yours |
-| The approval popup (M7.8, `POPUP=yes`, the default) | `~/Library/LaunchAgents/dev.writ.popup.plist`: `/opt/writ/bin/writ-popup`, `WRIT_HOME` and `WRIT_APPROVAL_AGENT` (the install's answer, Secretive's socket by default), `LimitLoadToSessionType Aqua`, `RunAtLoad`, `KeepAlive`; started in your GUI session (`gui/<uid>`); `POPUP=no` recorded in the manifest as `choice popup no`, so an upgrade doesn't start it | yours, 0600 |
+| The approval popup (M7.8, `POPUP=yes`, the default) | `~/Library/LaunchAgents/dev.writ.popup.plist`: `/opt/writ/bin/writ-popup`, `WRIT_HOME` and `WRIT_APPROVAL_AGENT` (the install's answer, the installer's `SSH_AUTH_SOCK` by default, else Secretive's socket), `LimitLoadToSessionType Aqua`, `RunAtLoad`, `KeepAlive`; started in your GUI session (`gui/<uid>`); `POPUP=no` recorded in the manifest as `choice popup no`, so an upgrade doesn't start it | yours, 0600 |
 
 Built in [M7](../history/m7-local-mode-on-the-mac.md); the popup in [M7.8](../history/m7.8-approval-popup-on-the-mac.md).
 

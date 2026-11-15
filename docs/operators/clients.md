@@ -19,7 +19,7 @@ lists them.
 | `--approval-url` | `WRIT_APPROVAL_URL` | none | The approval listener, `https://host:port`, `ssh://host:port`, or `unix:<path>` for a daemon on this Mac (local mode). Used by `ls`, `sign`, `refuse`, `revoke`, `report`, `prove-key`, `unseal`, `recovery check` and every `admin` command |
 | none | `WRIT_SESSION` | none | The lease an agent works under: `writ git`, `writ exec`, `writ close`, `writ mark` and `writ-sign` use its session, whatever `current` points at. Set it to the line `writ request` prints. A lease this host doesn't have, or that ended, is refused, never replaced by `current`. [Several agents](#several-agents-on-one-host) |
 | `--key` | `WRIT_APPROVAL_KEY` | `<home>/approver.pub` | Your approval key's **public** half (a private key file is refused) |
-| `--agent` | `WRIT_APPROVAL_AGENT` | `$SSH_AUTH_SOCK` | The ssh-agent holding your approval key: Secretive's socket, or any other agent's |
+| `--agent` | `WRIT_APPROVAL_AGENT` | `$SSH_AUTH_SOCK` | The socket of the ssh-agent holding your approval key |
 | none | `WRIT_RUN_PID` | none | Set by `writ run` for the agent it starts: `writ request` binds each ticket to that session. Not yours to set. [Binding a lease to its session](#binding-a-lease-to-its-session-local-mode) |
 | none | `WRIT_SSH_KEYGEN` | `/usr/bin/ssh-keygen` | The `ssh-keygen` that signs your approvals: an absolute path, OpenSSH 8.9 or newer. Never looked up in `PATH`, where anything could sit first and change what gets signed |
 | none | `WRIT_GPG` | `/usr/bin/gpg` | `writ-sign`: the `gpg` it hands git's OpenPGP `--verify` calls to, an absolute path. It never runs gpg to sign: the key is the daemon's |
@@ -198,8 +198,8 @@ every app, full-screen ones too:
   it, but it is never acted on, and however long it is, the terms stay where they are. The
   details are folded at the bottom: click to open them. **Copy as text** copies it as a
   terminal shows it.
-- **Sign** signs it with your approval key: your agent asks you to confirm (Touch ID with
-  Secretive), as in a terminal.
+- **Sign** signs it with your approval key: your ssh-agent asks you to confirm, as in a
+  terminal.
 - **Decline** asks for a reason for the agent (you may leave it empty), then **Refuse** signs
   the refusal.
 - Both buttons stay greyed for a second after the window comes up, and no key presses them:

@@ -308,14 +308,14 @@ final class Model: ObservableObject {
     func sign() {
         guard let id = shown?.id, armed, !busy else { return }
         busy = true
-        say(Banner(kind: .info, text: "Signing: confirm with Touch ID…"))
+        say(Banner(kind: .info, text: "Signing: confirm in your ssh-agent…"))
         bridge.send(["answer": "sign", "id": id])
     }
 
     func refuse() {
         guard let id = shown?.id, armed, !busy else { return }
         busy = true
-        say(Banner(kind: .info, text: "Refusing: confirm with Touch ID…"))
+        say(Banner(kind: .info, text: "Refusing: confirm in your ssh-agent…"))
         bridge.send(["answer": "refuse", "id": id, "feedback": feedback])
     }
 
@@ -1349,7 +1349,7 @@ struct Footer: View {
             } else {
                 HStack(spacing: 10) {
                     Image(systemName: "touchid").foregroundStyle(.secondary)
-                    Text(model.armed ? "Signs with \(shown.key) · Touch ID" : "Just shown: the buttons wake in a second")
+                    Text(model.armed ? "Signs with \(shown.key), through your ssh-agent" : "Just shown: the buttons wake in a second")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

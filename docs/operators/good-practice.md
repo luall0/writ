@@ -39,13 +39,30 @@ usual. In wrapper mode, your own `git push origin` still goes straight to the re
   script that commits in another clone gets refused, and its SSH remotes fail. Run only the
   work on the wired repo under `writ exec`.
 
+## Choosing your approval key
+
+Any SSH key in any ssh-agent can be your approval key: Writ asks the agent on `SSH_AUTH_SOCK`
+(or the one you name) for each signature, and never sees the key itself. What matters is that
+the agent **asks you every time**. Your agents run as you and can reach the same agent: a key
+that signs without asking would sign their tickets too.
+
+| Key | Asks you | Good to know |
+|---|---|---|
+| A key in [Secretive](https://github.com/maxgoedjen/secretive) (Mac) | Touch ID, each signature ("Require authentication" on) | Made in the Secure Enclave: it can't be copied |
+| A security key, FIDO (`ssh-keygen -t ed25519-sk`) | A touch, each signature | Works with the plain `ssh-agent`; the key never leaves the device |
+| A YubiKey in PIV mode (`yubikey-agent`, or PKCS#11 in `ssh-agent`) | Its PIN, and a touch if its touch policy says so | Set the touch policy to `always`: a cached PIN alone signs without you |
+| A key file with a passphrase | The passphrase through pin-entry (`gpg-agent`), or a confirmation each use (`ssh-add -c`) | Loaded without `-c`, an unlocked key signs whenever asked: avoid |
+
+Keep it dedicated to Writ: not your login key, not your commit signing key. Its public half is
+what you give the installer, and what the daemon's `approvers` holds.
+
 ## Protect your own credentials
 
 An agent running as your user can run anything you can: `git`, `ssh`, `ssh-keygen`, your
 tools. Your keys stay yours only if using them needs **you**:
 
-- **Your commit signing key** requires your presence: Secretive with "Require
-  authentication" (Touch ID), or a security key (`sk-ssh-ed25519`, a touch per signature).
+- **Your commit signing key** requires your presence, like your approval key: a key that
+  asks every time ([the same choices](#choosing-your-approval-key)).
 - **Your push key** too, the same way.
 - **No credential that answers silently:**
   - no credential helper that hands out a token without asking (`osxkeychain`,
@@ -61,8 +78,8 @@ ssh-add -l                                              # every key here should 
 env | grep -iE 'token|secret'                           # nothing a remote accepts
 ```
 
-Then an agent running plain `git commit -S` or `git push origin` gets a Touch ID prompt you
-won't approve, or nothing.
+Then an agent running plain `git commit -S` or `git push origin` gets a prompt you won't
+approve, or nothing.
 
 ## Guardrails in the agent's configuration
 

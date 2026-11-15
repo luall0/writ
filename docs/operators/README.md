@@ -33,15 +33,12 @@ In the templates, required keys are set and optional ones are commented out at t
 ## Words used in these pages
 
 - **Approver**: you, signing with your approval key.
-- **Approval key**: a dedicated SSH key that an ssh-agent holds for you: on the Mac, a key in
-  Secretive (it asks for Touch ID); or any agent on `SSH_AUTH_SOCK`, such as a key with a
-  passphrase that your agent asks for through pin-entry, or a security key that asks for a
-  touch. Writ only sees its public half, and asks the agent for each signature. Pick one that
-  asks you every time (Touch ID, a touch, or `ssh-add -c` to confirm each use): your agents
-  run as you, and could use a key that signs without asking.
-- **An approval**: one signature with your approval key. Your agent asks you to confirm it
-  (Touch ID with Secretive, your passphrase or a touch with others). The pages say "one
-  approval" where you will be asked.
+- **Approval key**: a dedicated SSH key held by an ssh-agent, the one on `SSH_AUTH_SOCK` or the
+  one you name. Writ only sees its public half, and asks the agent for each signature. Any
+  key and agent work; pick one that asks you every time
+  ([choosing your approval key](good-practice.md#choosing-your-approval-key)).
+- **An approval**: one signature with your approval key, confirmed the way your agent asks
+  for it. The pages say "one approval" where you will be asked.
 - **Upstream key**: the key the daemon reaches one repository on your remote with (a deploy
   key there). Agents never hold it.
 - **Signing key**: the key the daemon signs your agents' commits with (`agent-01`). On your

@@ -170,8 +170,8 @@ load_approver() {
 # read once (load_approver).
 choose_approver() {
     if [ -z "${APPROVER:-}" ] && terminal; then
-        say "Your approval key: the key whose signature turns an agent's ticket into a lease (a" >&2
-        say "Secretive key on a Mac, say). Give the path to its public half, the .pub: the" >&2
+        say "Your approval key: the key whose signature turns an agent's ticket into a lease, held" >&2
+        say "by your ssh-agent. Give the path to its public half, the .pub: the" >&2
         say "installer reads that file alone, and Writ never uses your other keys." >&2
         while :; do
             APPROVER=$(expand_home "$(ask "Approval key (.pub)" "")")

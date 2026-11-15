@@ -64,12 +64,14 @@ impl Signer {
                 .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from))
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "no ssh-agent: set WRIT_APPROVAL_AGENT (Secretive's socket) or SSH_AUTH_SOCK"
+                        "no ssh-agent: set WRIT_APPROVAL_AGENT, or SSH_AUTH_SOCK, to the socket of the \
+                         ssh-agent holding your approval key"
                     )
                 })?;
             command.env("SSH_AUTH_SOCK", agent);
             // Its chatter ("Signing file …") would clutter the trusted display: shown only on
-            // failure. Touch ID is Secretive's own prompt, not a terminal one.
+            // failure. The agent asks its own confirmation (Touch ID, a touch, a pin-entry), not
+            // a terminal prompt.
             let mut child = command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())

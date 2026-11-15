@@ -7,11 +7,9 @@ takes it all back.
 ## Before you start
 
 - Your [approval key](README.md#words-used-in-these-pages) in its ssh-agent, and its public
-  half in a file. On the Mac, Secretive is the simplest: its key asks for Touch ID
-  ([Approving with Secretive](../guides/manual-checks.md#approving-with-secretive-touch-id)).
-  Any agent works, such as a key with a passphrase asked through pin-entry. On Linux, a key
-  that asks for a touch (a FIDO key such as `sk-ssh-ed25519`, or one on a
-  YubiKey) is best: your agents run as you, and could use a key that doesn't ask.
+  half in a file. Pick one that asks you for every signature
+  ([choosing your approval key](good-practice.md#choosing-your-approval-key)): your agents run
+  as you, and could use a key that doesn't ask.
 - The repository checked out, with Rust installed (the build uses the version the repository
   pins).
 - `sudo` that asks for your password. It must ask, or your agents, which run as you, could
@@ -49,8 +47,7 @@ nothing changed:
 5. On the Mac, **the approval popup**: `yes` (Enter) starts it at each login. When a ticket
    waits for your signature, a window comes up in front of every app, full-screen ones too,
    with the whole ticket and two buttons, Sign and Decline. Then **the socket of the agent
-   that holds your approval key**: Enter takes Secretive's; give your agent's socket otherwise
-   (the `SSH_AUTH_SOCK` it sets). `no` installs the popup's program
+   that holds your approval key**: Enter takes the one your terminal uses (`SSH_AUTH_SOCK`). `no` installs the popup's program
    and starts nothing: you sign with `writ sign` in a terminal.
 
 Then it shows your answers and **every change it will make, in order**, and asks `Install?`.
@@ -122,8 +119,8 @@ Run `make install` again. It says what an upgrade does and lists its changes, th
 plist (the systemd unit on Linux) again with this version's settings, and starts it again. The
 keystore, the state, the configuration and your pins are kept. Unseal again afterwards. On the
 Mac, the approval popup is stopped and started again with its settings kept; an install made
-before the popup existed gets it, through Secretive's agent (or the one `APPROVAL_AGENT`
-names), unless you upgrade with `POPUP=no`, and an install where you answered `no` stays
+before the popup existed gets it, through the agent your terminal uses (or the one
+`APPROVAL_AGENT` names), unless you upgrade with `POPUP=no`, and an install where you answered `no` stays
 without it. If `writ` changed, it says so:
 
 - Agents started with `writ run` before the upgrade are bound to the old `writ`. Their leases
@@ -172,7 +169,7 @@ give every one.
 | `AUTO_UNSEAL=no\|yes` | Whether the daemon opens itself at each start: only with `CA_BACKEND`, `AGENT_BACKEND` and `UNSEAL` all `se-cryptokit` (`no` when left out) |
 | `AGENT_BACKEND=software\|se-cryptokit` | Where `agent-01` is made (the Mac; `software` when left out) |
 | `POPUP=yes\|no` | Whether the approval popup starts at each login (the Mac; `yes` when left out) |
-| `APPROVAL_AGENT=<socket path>` | With `POPUP=yes`: the socket of the agent that holds your approval key, an absolute path (Secretive's when left out) |
+| `APPROVAL_AGENT=<socket path>` | With `POPUP=yes`: the socket of the agent that holds your approval key, an absolute path (your `SSH_AUTH_SOCK` when left out) |
 | `DRY_RUN=1` | Only list the changes, make none |
 | `REPOS=undo\|keep` | The uninstall's question about the repositories `writ init` set up |
 | `PURGE=1` | Delete the daemon's data at the uninstall: this one still needs a terminal, where you type `delete` |

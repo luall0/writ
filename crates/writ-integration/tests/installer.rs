@@ -1284,6 +1284,24 @@ fn without_a_terminal_each_answer_is_a_variable_checked_like_a_typed_one() {
     assert_eq!(fake.tree(), before);
 }
 
+/// The popup signs through the ssh-agent your terminal uses (M7.9.5): with no
+/// `APPROVAL_AGENT`, `SSH_AUTH_SOCK` at the install, whatever agent holds the approval key
+/// (Secretive's socket only when none is set: the tests above, their environment cleared).
+#[test]
+fn the_popup_signs_through_the_agent_your_terminal_uses() {
+    let fake = Fake::new();
+    ok(&fake.install(&[("SSH_AUTH_SOCK", "/private/var/run/terminal-agent.sock")]));
+    let plist =
+        fs::read_to_string(fake.home.join("Library/LaunchAgents/dev.writ.popup.plist")).unwrap();
+    assert!(
+        plist.contains(
+            "<key>WRIT_APPROVAL_AGENT</key><string>/private/var/run/terminal-agent.sock</string>"
+        ),
+        "{plist}"
+    );
+    assert!(!plist.contains("Secretive"), "{plist}");
+}
+
 /// The approval popup's answers (M7.8): `POPUP=no` installs `writ-popup` and starts nothing;
 /// `APPROVAL_AGENT` is what the popup's `writ` signs through; an install made before M7.8
 /// gets the popup at its upgrade, and the uninstall takes it back.
