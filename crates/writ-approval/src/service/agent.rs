@@ -47,7 +47,8 @@ impl Service {
             .ticket(&ticket.id)
             .lease(ticket.lease_id())
             .caller(caller);
-        // Under unsigned_fetch templates (M7.9.7): granted now, never pending, no notification.
+        // A new fetch-only ticket under templates with unsigned_fetch (M7.9.7): granted now,
+        // never pending, no notification.
         if fit::unsigned(&self.policy(), &ticket) {
             Self::logged(&mut inner, event, |_| Ok(()))?;
             drop(inner);

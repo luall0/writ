@@ -153,15 +153,15 @@ upstream unless it is fresh (`mirrors.fresh_for`), outside the state lock, and s
 …`, what failed and never upstream's address or words), its whole reason logged. Requires a lease with `fetch` (or a read-only template). Agents never
 hold remote credentials, even read-only ones.
 
-**A fetch with no signature** (M7.9.7): a ticket that names an `unsigned_fetch` template for
-each of its repositories is granted when it is submitted, with no pending state and no
-notification. `Service::submit` admits it as any ticket (the rates, the templates: fetch only,
-within the template's hour), logs its `submit` line, then grants it in phases as a signed
+**A fetch with no signature** (M7.9.7): a new ticket whose every repository asks only
+`fetch`, under a template whose `unsigned_fetch` is on, is granted when it is submitted, with
+no pending state and no notification. `Service::submit` admits it as any ticket (the rates,
+the templates, its time within their `unsigned_fetch`), logs its `submit` line, then grants it in phases as a signed
 grant is: decided under the lock (`lease::activate_unsigned`), the certificate signed without
 it, decided again against the policy in force, then recorded (`Store::insert_unsigned`) with
 its `grant` line. `writ request`'s wait then finds it active. It takes no slot of
 `max_active_per_source`, is never amended or renewed, and every fetch under it is denied once
-its templates stop granting that (`config`). `writ git fetch` and `pull` with no lease ask for
+its templates stop granting that, or grant it for less than its time (`config`). `writ git fetch` and `pull` with no lease ask for
 one themselves ([clients](architecture/clients.md#fetching-with-no-lease)).
 
 ## 5. Revoke / expire

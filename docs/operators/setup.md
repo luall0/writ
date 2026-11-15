@@ -189,9 +189,7 @@ machine with `writ admin`, one signed change at a time (steps 10 to 14).
 
     On a terminal, `writ admin repo add <repo>` alone asks each field instead, can declare a
     new key in the same change, scans a host with no pin, and checks the repo once you press
-    Enter. It also asks whether agents may fetch the repo with no signature from you, to
-    plan before their ticket ([fetching without a signature](policy-yaml.md#fetching-without-a-signature)).
-    The answer is no unless you say yes.
+    Enter.
 
 14. **Check it**, once its key is registered on the remote:
 

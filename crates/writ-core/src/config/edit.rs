@@ -193,14 +193,6 @@ const REPO_FIELDS: &[Field] = &[
 ];
 
 const TEMPLATE_FIELDS: &[Field] = &[
-    or(
-        field(
-            "unsigned_fetch",
-            Flag,
-            "whether a lease is granted with no signature: fetch only (no operations or counts written), max_ttl 1h at most",
-        ),
-        "false",
-    ),
     required("operations", List, "fetch, commit_sign, push"),
     field(
         "branches",
@@ -233,6 +225,14 @@ const TEMPLATE_FIELDS: &[Field] = &[
         "max_ttl",
         Text,
         "the longest lease (2h, 1d), at least the daemon's min_ttl",
+    ),
+    or(
+        field(
+            "unsigned_fetch",
+            Text,
+            "a fetch-only ticket needs no signature, its lease this long at most (15m; 1h at most)",
+        ),
+        "off",
     ),
     required(
         "max_signatures",
@@ -599,15 +599,9 @@ pub fn add(
 /// The fields `edits` don't name that `section` requires: what an `add` with no terminal
 /// refuses for, naming them.
 pub fn missing(section: Section, edits: &[FieldEdit]) -> Vec<&'static str> {
-    // An unsigned_fetch template writes none of these (M7.9.7).
-    let unsigned = section == Section::Templates
-        && edits.iter().any(|e| {
-            e.field == "unsigned_fetch" && matches!(&e.change, Change::Set(v) if v == "true")
-        });
     fields(section)
         .iter()
         .filter(|f| f.required && !edits.iter().any(|e| e.field == f.name))
-        .filter(|f| !(unsigned && crate::config::UNSIGNED_FETCH_IMPLIED.contains(&f.name)))
         .map(|f| f.name)
         .collect()
 }

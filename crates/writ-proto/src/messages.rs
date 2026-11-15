@@ -78,9 +78,10 @@ pub struct TemplateView {
     /// The id of the key its commits are signed with (none without `commit_sign`): a name,
     /// never the key. One ticket's repositories must share it (M6.1.5).
     pub signing_key: Option<KeyId>,
-    /// A ticket naming it is granted with no signature, fetch only (M7.9.7).
+    /// A fetch-only ticket under it is granted with no signature, its lease this long at most
+    /// (M7.9.7); none: every ticket under it is signed.
     #[serde(default)]
-    pub unsigned_fetch: bool,
+    pub unsigned_fetch: Option<Duration>,
 }
 
 /// Reply to [`Command::Wait`]: how the ticket was decided.

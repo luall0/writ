@@ -27,22 +27,20 @@ use writ_integration::daemon::{Approvals, Daemon};
 use writ_integration::gateway::{GitGateway, Listen, POLICY};
 use writ_integration::{audit_events, stderr, stdout};
 
-/// The gateway's policy with `demo` naming an unsigned_fetch template beside its signed one.
+/// The gateway's policy with unsigned_fetch on `spike`, the template `demo` names: it also
+/// signs and pushes, and only a fetch-only ticket under it is granted with no signature.
 fn policy() -> String {
-    POLICY
-        .replacen("templates: [spike]", "templates: [spike, look]", 1)
-        .replacen(
-            "templates:\n  spike:",
-            "templates:\n  look:\n    unsigned_fetch: true\n    max_ttl: 15m\n    \
-             max_ops_per_minute: 20\n  spike:",
-            1,
-        )
+    POLICY.replacen(
+        "    max_ttl: 1h\n",
+        "    max_ttl: 1h\n    unsigned_fetch: 15m\n",
+        1,
+    )
 }
 
 const FETCH: &str = r#"
 repos:
   demo:
-    template: look
+    template: spike
     operations: [fetch]
 ticket:
   title: Fetch demo
@@ -73,7 +71,7 @@ fn an_unsigned_fetch_lease_is_granted_with_no_signature_and_only_fetches() {
     assert_eq!(grants.len(), 1, "{grants:?}");
     assert_eq!(
         grants[0]["reason"],
-        "granted with no signature (unsigned_fetch): template look"
+        "granted with no signature (unsigned_fetch): template spike"
     );
     assert!(grants[0].get("approver").is_none(), "{grants:?}");
 
@@ -179,18 +177,15 @@ repos:
   demo:
     upstream: ssh://git@remote.invalid/demo.git
     upstream_credential: upstream-01
-    templates: [feature, look]
+    templates: [feature]
 templates:
-  look:
-    unsigned_fetch: true
-    max_ttl: 15m
-    max_ops_per_minute: 20
   feature:
     operations: [fetch, commit_sign, push]
     branches: ["agent/*"]
     committer_emails: ["agent@writ"]
     signing_key: agent-01
     max_ttl: 2h
+    unsigned_fetch: 15m
     max_signatures: 40
     max_pushes: 20
     max_ops_per_minute: 100
@@ -258,7 +253,7 @@ fn writ_git_fetch_with_no_lease_fetches_under_an_unsigned_lease_and_leaves_nothi
     let out = writ_in(&daemon, &repo, &["git", "fetch", "-q", "origin"], &[]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(
-        stderr(&out).contains("granted with no signature (template look)"),
+        stderr(&out).contains("granted with no signature (template feature)"),
         "{}",
         stderr(&out)
     );
@@ -270,7 +265,7 @@ fn writ_git_fetch_with_no_lease_fetches_under_an_unsigned_lease_and_leaves_nothi
     let lease = grants[0]["lease"].as_str().unwrap().to_owned();
     assert_eq!(
         grants[0]["reason"],
-        "granted with no signature (unsigned_fetch): template look"
+        "granted with no signature (unsigned_fetch): template feature"
     );
     assert!(
         audit_events(&daemon.audit(), "fetch", "allowed")

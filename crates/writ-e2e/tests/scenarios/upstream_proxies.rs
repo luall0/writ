@@ -348,8 +348,6 @@ fn proxies_are_managed_from_the_approver_s_machine_and_hosts_behind_them_scanned
             "",
             "",
             "",
-            // unsigned fetch (M7.9.7): Enter keeps no.
-            "",
             "y",
             "",
         ],

@@ -1,5 +1,6 @@
-//! M7.9.7: a fetch-only ticket under `unsigned_fetch` templates is granted with no signature,
-//! and nothing else is: these tests try to get more out of one, or to get one by chance.
+//! M7.9.7: a new fetch-only ticket under templates whose `unsigned_fetch` is on is granted
+//! with no signature, for that time at most; every other ticket under the same templates is
+//! signed as before. These tests try to get more out of an unsigned lease, or one by chance.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,80 +18,77 @@ use writ_core::config::PolicyConfig;
 use writ_core::fit::{self, Submission};
 use writ_core::lease::{self, GrantedBy, Lease, LifecycleError, Renewed, State, TicketRecord};
 use writ_core::policy::{self, DenyCode, FetchRequest};
+use writ_core::ticket::Ticket;
 use writ_core::units::Duration;
 
-/// The test policy with omega-code naming `fetch_unsigned` beside its signed templates, and
-/// dotfiles naming it alone.
-fn unsigned_text() -> String {
-    POLICY
-        .replacen(
-            "templates: [feature-branch, quick-fix, read-only]",
-            "templates: [feature-branch, quick-fix, read-only, fetch_unsigned]",
-            1,
-        )
-        .replacen(
-            "    templates: [quick-fix]\n",
-            "    templates: [fetch_unsigned]\n",
-            1,
-        )
-        .replacen(
-            "templates:\n  feature-branch:",
-            "templates:\n  fetch_unsigned:\n    unsigned_fetch: true\n    max_ttl: 1h\n    \
-             max_ops_per_minute: 20\n  feature-branch:",
-            1,
-        )
-}
-
-fn unsigned_config() -> PolicyConfig {
-    PolicyConfig::from_yaml(&unsigned_text()).unwrap()
-}
-
-/// A fetch of omega-code under `fetch_unsigned`, for `ttl`.
-fn fetch_ticket(ttl: &str) -> String {
-    format!(
-        "repos:\n  omega-code:\n    template: fetch_unsigned\n    operations: [fetch]\n\
-         ticket:\n  title: Fetch omega-code\n  task: Fetch before planning\nlimits:\n  ttl: {ttl}\n"
+/// The test policy with `unsigned_fetch: <switch>` on feature-branch (fetch, commit_sign,
+/// push), which omega-code and homelab-scripts name; dotfiles names quick-fix only (no switch).
+fn text_with(switch: &str) -> String {
+    POLICY.replacen(
+        "    max_ttl: 4h\n",
+        &format!("    max_ttl: 4h\n    unsigned_fetch: {switch}\n"),
+        1,
     )
 }
 
-fn submit(
+fn switched() -> PolicyConfig {
+    PolicyConfig::from_yaml(&text_with("15m")).unwrap()
+}
+
+/// A fetch of each of `repos` under feature-branch, for `ttl`.
+fn fetch_ticket(repos: &[&str], ttl: &str) -> String {
+    let blocks: String = repos
+        .iter()
+        .map(|repo| format!("  {repo}:\n    template: feature-branch\n    operations: [fetch]\n"))
+        .collect();
+    format!(
+        "repos:\n{blocks}ticket:\n  title: Fetch\n  task: Fetch before planning\nlimits:\n  ttl: {ttl}\n"
+    )
+}
+
+fn submit_to(
+    config: &PolicyConfig,
     yaml: &str,
     submission: &Submission<'_>,
-) -> Result<writ_core::ticket::Ticket, Vec<String>> {
-    fit::submit(&unsigned_config(), &request(yaml), submission).map_err(|r| r.reasons)
+) -> Result<Ticket, Vec<String>> {
+    fit::submit(config, &request(yaml), submission).map_err(|r| r.reasons)
 }
 
 fn unsigned_lease() -> Lease {
-    let ticket = submit(&fetch_ticket("10m"), &submission(1)).unwrap();
-    lease::activate_unsigned(
-        &unsigned_config(),
-        &TicketRecord::pending(ticket),
-        7,
-        later(1),
+    let config = switched();
+    let ticket = submit_to(
+        &config,
+        &fetch_ticket(&["omega-code"], "10m"),
+        &submission(1),
     )
-    .unwrap()
+    .unwrap();
+    lease::activate_unsigned(&config, &TicketRecord::pending(ticket), 7, later(1)).unwrap()
 }
 
-fn world(lease: Lease) -> World {
+fn world(config: PolicyConfig, lease: Lease) -> World {
     World {
-        config: unsigned_config(),
+        config,
         ..World::new(lease)
     }
 }
 
+fn fetch(repo_name: &str) -> FetchRequest {
+    FetchRequest {
+        repo: repo(repo_name),
+    }
+}
+
 #[test]
-fn a_fetch_named_under_an_unsigned_template_is_granted_with_no_signature_and_only_fetches() {
-    let config = unsigned_config();
+fn a_fetch_only_ticket_under_the_switch_is_granted_with_no_signature_and_only_fetches() {
+    let config = switched();
     let lease = unsigned_lease();
     assert_eq!(lease.granted_by, GrantedBy::Policy);
     assert_eq!(lease.granted_by.approver(), None);
     assert!(fit::unsigned(&config, &lease.ticket));
-    let world = world(lease.clone());
-    let fetch = FetchRequest {
-        repo: repo("omega-code"),
-    };
-    assert!(policy::decide_fetch(&world.ctx(), &fetch).is_ok());
-    // Its terms allow nothing else: a signature and a push are refused for the operation.
+    let world = world(config, lease.clone());
+    assert!(policy::decide_fetch(&world.ctx(), &fetch("omega-code")).is_ok());
+    // The template signs and pushes; this lease's terms don't: both refused for the
+    // operation, the hint a ticket of its own (never an amendment, which is refused).
     assert_eq!(
         policy::decide_sign(&world.ctx(), &sign_request(&lease))
             .unwrap_err()
@@ -99,7 +97,6 @@ fn a_fetch_named_under_an_unsigned_template_is_granted_with_no_signature_and_onl
     );
     let denial = policy::decide_push(&world.ctx(), &push_request(&lease)).unwrap_err();
     assert_eq!(denial.code, DenyCode::Operation);
-    // Never told to amend it: that is refused.
     assert_eq!(
         denial.hint.as_deref(),
         Some(
@@ -107,143 +104,158 @@ fn a_fetch_named_under_an_unsigned_template_is_granted_with_no_signature_and_onl
              more, submit a ticket of its own"
         )
     );
-    // A repo it doesn't name.
     assert_eq!(
-        policy::decide_fetch(
-            &world.ctx(),
-            &FetchRequest {
-                repo: repo("homelab-scripts")
-            }
-        )
-        .unwrap_err()
-        .code,
+        policy::decide_fetch(&world.ctx(), &fetch("homelab-scripts"))
+            .unwrap_err()
+            .code,
         DenyCode::Repo
     );
 }
 
 #[test]
-fn an_unsigned_lease_ends_when_its_template_stops_granting_without_a_signature() {
-    let lease = unsigned_lease();
-    let fetch = FetchRequest {
-        repo: repo("omega-code"),
-    };
-    // unsigned_fetch turned off (the same fetch-only template, signed): every fetch denied.
-    let off = unsigned_text().replacen(
-        "    unsigned_fetch: true\n",
-        "    operations: [fetch]\n    max_signatures: 0\n    max_pushes: 0\n    max_push_size: 0\n",
+fn every_other_ticket_under_the_same_template_is_signed_as_before() {
+    let config = switched();
+    // Asking more than fetch: signed, never through the unsigned grant.
+    let full = submit_to(&config, REQUEST, &submission(1)).unwrap();
+    assert!(!fit::unsigned(&config, &full));
+    assert!(matches!(
+        lease::activate_unsigned(&config, &TicketRecord::pending(full.clone()), 8, later(1)),
+        Err(LifecycleError::NotUnsigned)
+    ));
+    let signed = lease::activate(
+        &config,
+        &TicketRecord::pending(full.clone()),
+        full.clone(),
+        approval(),
+        8,
+        later(1),
+    )
+    .unwrap();
+    assert_eq!(signed.granted_by, GrantedBy::Approver(approval()));
+    // Every repository fetch-only, every template with the switch: unsigned, for the
+    // smallest switch.
+    let both = submit_to(
+        &config,
+        &fetch_ticket(&["omega-code", "homelab-scripts"], "10m"),
+        &submission(2),
+    )
+    .unwrap();
+    assert_eq!(
+        fit::unsigned_bound(&config, &both).map(|d| d.seconds()),
+        Some(15 * 60)
+    );
+    // One repository under a template without it: signed.
+    let mixed = fetch_ticket(&["omega-code"], "10m").replacen(
+        "ticket:",
+        "  dotfiles:\n    template: quick-fix\n    operations: [fetch]\nticket:",
         1,
     );
-    let world = World {
-        config: PolicyConfig::from_yaml(&off).unwrap(),
-        ..World::new(lease.clone())
-    };
-    let denial = policy::decide_fetch(&world.ctx(), &fetch).unwrap_err();
-    assert_eq!(denial.code, DenyCode::Config);
-    assert!(
-        denial.reason.contains("granted with no signature"),
-        "{}",
-        denial.reason
-    );
-    // The same terms signed by an approver keep fetching under that policy.
-    let signed = Lease {
-        granted_by: GrantedBy::Approver(approval()),
-        ..lease
-    };
-    let world = World {
-        config: PolicyConfig::from_yaml(&off).unwrap(),
-        ..World::new(signed)
-    };
-    assert!(policy::decide_fetch(&world.ctx(), &fetch).is_ok());
+    let mixed = submit_to(&config, &mixed, &submission(3)).unwrap();
+    assert!(!fit::unsigned(&config, &mixed));
+    // The switch off: the same fetch-only ticket is signed.
+    let off = PolicyConfig::from_yaml(POLICY).unwrap();
+    let plain = submit_to(&off, &fetch_ticket(&["omega-code"], "10m"), &submission(4)).unwrap();
+    assert!(!fit::unsigned(&off, &plain));
+    // An approver who narrows a signed ticket to fetch only signs it: a signed lease, for its
+    // own time (2h), never held to the switch's.
+    let mut narrowed = full.clone();
+    omega(&mut narrowed).operations = [writ_core::ticket::Operation::Fetch].into();
+    omega(&mut narrowed).branches.clear();
+    let lease = lease::activate(
+        &config,
+        &TicketRecord::pending(full),
+        narrowed,
+        approval(),
+        9,
+        later(1),
+    )
+    .unwrap();
+    assert_eq!(lease.granted_by, GrantedBy::Approver(approval()));
+    let world = world(config, lease);
+    assert!(policy::decide_fetch(&world.ctx(), &fetch("omega-code")).is_ok());
 }
 
 #[test]
-fn an_unsigned_template_is_used_only_when_a_ticket_names_it() {
-    // Not named: only the signed templates are candidates, never the unsigned one.
-    let unnamed = fetch_ticket("10m").replacen("    template: fetch_unsigned\n", "", 1);
-    assert_eq!(
-        submit(&unnamed, &submission(1)).unwrap_err(),
-        [
-            "repos.omega-code fits several templates (feature-branch, quick-fix, read-only): name \
-          one in repos.omega-code.template"
-        ]
+fn an_unsigned_lease_lasts_its_switch_s_time_at_most_on_both_sides() {
+    let config = switched();
+    assert!(
+        submit_to(
+            &config,
+            &fetch_ticket(&["omega-code"], "15m"),
+            &submission(1)
+        )
+        .is_ok()
     );
-    let signed = unnamed.replacen("operations:", "template: read-only\n    operations:", 1);
-    let ticket = submit(&signed, &submission(1)).unwrap();
-    assert_eq!(
-        ticket.templates().into_iter().cloned().collect::<Vec<_>>(),
-        [ticket_template("read-only")]
-    );
-    assert!(!fit::unsigned(&unsigned_config(), &ticket));
-    // A repo whose only template is the unsigned one: refused, saying how to name it.
-    let only = unnamed.replace("omega-code", "dotfiles");
-    let reasons = submit(&only, &submission(1)).unwrap_err();
+    let reasons = submit_to(
+        &config,
+        &fetch_ticket(&["omega-code"], "901s"),
+        &submission(1),
+    )
+    .unwrap_err();
     assert_eq!(
         reasons,
         [
-            "repos.dotfiles: its only template, fetch_unsigned, grants fetches with no signature \
-          (unsigned_fetch) and is used only when the ticket names it (repos.dotfiles.template: \
-          fetch_unsigned)"
+            "the lease would last 901s: a fetch-only ticket under these templates is granted with \
+          no signature, for at most 15m (unsigned_fetch)"
         ]
     );
-    // Named there: granted unsigned.
-    let named = fetch_ticket("10m").replace("omega-code", "dotfiles");
-    assert!(fit::unsigned(
-        &unsigned_config(),
-        &submit(&named, &submission(1)).unwrap()
+    // Its grant checks it again, against the policy in force then.
+    let ticket = submit_to(
+        &config,
+        &fetch_ticket(&["omega-code"], "15m"),
+        &submission(2),
+    )
+    .unwrap();
+    let shorter = PolicyConfig::from_yaml(&text_with("10m")).unwrap();
+    assert!(matches!(
+        lease::activate_unsigned(&shorter, &TicketRecord::pending(ticket), 7, later(1)),
+        Err(LifecycleError::Fit(_))
     ));
 }
 
-fn ticket_template(name: &str) -> writ_core::names::TemplateName {
-    name.parse().unwrap()
-}
-
 #[test]
-fn an_unsigned_ticket_lasts_at_most_its_template_s_hour_and_never_mixes_with_a_signed_one() {
-    // At the template's max_ttl, read; a second past, refused.
-    assert!(submit(&fetch_ticket("1h"), &submission(1)).is_ok());
-    let reasons = submit(&fetch_ticket("3601s"), &submission(1)).unwrap_err();
-    assert!(reasons.iter().any(|r| r.contains("max_ttl")), "{reasons:?}");
-    // A second repo under a signed template: refused, naming both.
-    let mixed = fetch_ticket("10m").replacen(
-        "ticket:",
-        "  homelab-scripts:\n    template: feature-branch\n    operations: [fetch]\nticket:",
-        1,
-    );
-    let reasons = submit(&mixed, &submission(1)).unwrap_err();
-    assert!(
-        reasons.iter().any(|r| r
-            == "repos.omega-code: template fetch_unsigned grants fetches with no signature \
-                (unsigned_fetch): it can't share a ticket with templates you sign (feature-branch)"),
-        "{reasons:?}"
-    );
-    // Asking for more than fetch under it.
-    let more =
-        fetch_ticket("10m").replacen("[fetch]", "[fetch, push]\n    branches: [\"agent/x\"]", 1);
-    assert_eq!(
-        submit(&more, &submission(1)).unwrap_err(),
-        [
-            "repos.omega-code: operation push is not allowed by the template",
-            "repos.omega-code: branch agent/x is not within the template's branches ()",
-            "repos.omega-code.limits.max_push_size must be at least 1 byte",
-        ]
-    );
-}
-
-#[test]
-fn an_unsigned_lease_is_never_amended_renewed_or_signed() {
-    let config = unsigned_config();
+fn an_unsigned_lease_ends_when_its_switch_is_turned_off_or_shortened_below_it() {
     let lease = unsigned_lease();
+    for (config, why) in [
+        (
+            PolicyConfig::from_yaml(POLICY).unwrap(),
+            "its templates no longer grant that (unsigned_fetch)",
+        ),
+        (
+            PolicyConfig::from_yaml(&text_with("5m")).unwrap(),
+            "for at most 5m (unsigned_fetch)",
+        ),
+    ] {
+        let unsigned = world(config.clone(), lease.clone());
+        let denial = policy::decide_fetch(&unsigned.ctx(), &fetch("omega-code")).unwrap_err();
+        assert_eq!(denial.code, DenyCode::Config);
+        assert!(
+            denial.reason.contains("was granted with no signature") && denial.reason.contains(why),
+            "{}",
+            denial.reason
+        );
+        // The same terms signed by an approver keep fetching under that policy.
+        let signed = Lease {
+            granted_by: GrantedBy::Approver(approval()),
+            ..lease.clone()
+        };
+        let signed = world(config, signed);
+        assert!(policy::decide_fetch(&signed.ctx(), &fetch("omega-code")).is_ok());
+    }
+}
+
+#[test]
+fn an_unsigned_lease_is_never_amended_or_renewed_and_a_new_fetch_alone_is_the_only_one() {
+    let config = switched();
+    let lease = unsigned_lease();
+    let base = fetch_ticket(&["omega-code"], "10m").replacen("limits:\n  ttl: 10m\n", "", 1);
     // An amendment of it, at submission.
-    let amendment = format!(
-        "{}  amends: {}\n",
-        fetch_ticket("10m").replacen("limits:\n  ttl: 10m\n", "", 1),
-        lease.id
-    );
     let amends = Submission {
         amends: Some(&lease),
         ..submission(2)
     };
-    let reasons = submit(&amendment, &amends).unwrap_err();
+    let reasons =
+        submit_to(&config, &format!("{base}  amends: {}\n", lease.id), &amends).unwrap_err();
     assert!(
         reasons
             .iter()
@@ -255,11 +267,6 @@ fn an_unsigned_lease_is_never_amended_renewed_or_signed() {
         state: State::Expired,
         ..lease.clone()
     };
-    let renewal = format!(
-        "{}  renews: {}\n",
-        fetch_ticket("10m").replacen("limits:\n  ttl: 10m\n", "", 1),
-        lease.id
-    );
     let renews = Submission {
         renews: Some(Renewed {
             lease: &expired,
@@ -268,52 +275,49 @@ fn an_unsigned_lease_is_never_amended_renewed_or_signed() {
         }),
         ..submission(3)
     };
-    let reasons = submit(&format!("{renewal}limits:\n  ttl: 10m\n"), &renews).unwrap_err();
+    let reasons = submit_to(
+        &config,
+        &format!("{base}  renews: {}\nlimits:\n  ttl: 10m\n", lease.id),
+        &renews,
+    )
+    .unwrap_err();
     assert!(
         reasons
             .iter()
             .any(|r| r.contains("never amended or renewed")),
         "{reasons:?}"
     );
-    // At signing too: an amendment applied to it, a renewal activated from it.
+    // At signing too.
     let signed_ticket = submitted(REQUEST);
-    let record = TicketRecord::pending(signed_ticket.clone());
-    let with_amends = TicketRecord {
-        ticket: writ_core::ticket::Ticket {
+    let with = |amends: bool| TicketRecord {
+        ticket: Ticket {
             text: writ_core::ticket::TicketText {
-                amends: Some(lease.id.clone()),
+                amends: amends.then(|| lease.id.clone()),
+                renews: (!amends).then(|| lease.id.clone()),
                 ..signed_ticket.text.clone()
             },
             ..signed_ticket.clone()
         },
-        ..record.clone()
+        ..TicketRecord::pending(signed_ticket.clone())
     };
+    let amendment = with(true);
     assert!(matches!(
         lease::apply_amendment(
             &config,
             &lease,
-            &with_amends,
-            with_amends.ticket.clone(),
+            &amendment,
+            amendment.ticket.clone(),
             approval(),
             later(2)
         ),
         Err(LifecycleError::Unsigned(_))
     ));
-    let with_renews = TicketRecord {
-        ticket: writ_core::ticket::Ticket {
-            text: writ_core::ticket::TicketText {
-                renews: Some(lease.id.clone()),
-                ..signed_ticket.text.clone()
-            },
-            ..signed_ticket.clone()
-        },
-        ..record
-    };
+    let renewal = with(false);
     assert!(matches!(
         lease::activate_renewal(
             &config,
-            &with_renews,
-            with_renews.ticket.clone(),
+            &renewal,
+            renewal.ticket.clone(),
             approval(),
             8,
             Renewed {
@@ -325,32 +329,25 @@ fn an_unsigned_lease_is_never_amended_renewed_or_signed() {
         ),
         Err(LifecycleError::Unsigned(_))
     ));
-    // A ticket under unsigned_fetch templates, signed by an approver: refused, never a second
-    // path to the grant.
-    let unsigned_ticket = lease.ticket.clone();
-    assert!(matches!(
-        lease::activate(
-            &config,
-            &TicketRecord::pending(unsigned_ticket.clone()),
-            unsigned_ticket,
-            approval(),
-            9,
-            later(2)
-        ),
-        Err(LifecycleError::Fit(_))
-    ));
-    // And a signed ticket through the unsigned grant.
-    assert!(matches!(
-        lease::activate_unsigned(
-            &config,
-            &TicketRecord::pending(submitted(REQUEST)),
-            10,
-            later(2)
-        ),
-        Err(LifecycleError::NotUnsigned)
-    ));
-    // Nor once expired.
-    let ticket = submit(&fetch_ticket("10m"), &submission(4)).unwrap();
+    // A fetch-only amendment of a signed lease: not unsigned, signed as any amendment.
+    let signed = lease_of(submitted(REQUEST));
+    let fetch_amendment = submit_to(
+        &config,
+        &format!("{base}  amends: {}\n", signed.id),
+        &Submission {
+            amends: Some(&signed),
+            ..submission(4)
+        },
+    )
+    .unwrap();
+    assert!(!fit::unsigned(&config, &fetch_amendment));
+    // An unsigned grant past its end.
+    let ticket = submit_to(
+        &config,
+        &fetch_ticket(&["omega-code"], "10m"),
+        &submission(5),
+    )
+    .unwrap();
     assert!(matches!(
         lease::activate_unsigned(&config, &TicketRecord::pending(ticket), 11, later(11 * 60)),
         Err(LifecycleError::ExpiredBeforeApproval)

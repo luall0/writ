@@ -501,14 +501,16 @@ make install    # the check's report first: the state 12 → 13; then the summar
 
 Check: after the restart, `writ unseal` (Touch ID). `writ ls` lists the same leases.
 
-**2. Turn it on for one repo** (each a signed change, Touch ID):
+**2. Turn it on** on the template the repo names (a signed change, Touch ID):
 
 ```sh
-writ admin template add prefetch unsigned_fetch=true max_ttl=15m max_ops_per_minute=20
-writ admin repo set <repo> templates+=prefetch
+writ admin template set <template> unsigned_fetch=15m
 ```
 
-Check: `writ admin template show prefetch` has no `operations` and no counts.
+Check: `writ admin template show <template>` keeps its operations and counts, with
+`unsigned_fetch: 15m` after its `max_ttl`. `writ policy <repo>`, from the agent's side, shows
+`fetch alone  no signature: … for 15m at most` under that template. Every repo naming the
+template gets it: for one repo only, give it a template of its own first.
 
 **3. Wire the repo again**, in its clone:
 
@@ -522,9 +524,10 @@ gone.
 **4. An agent plans.** Under `writ run`, ask the agent for a task in that repo. Check: before
 it writes its ticket, it runs `writ git fetch origin` (or `pull --ff-only`), and no popup or
 Touch ID prompt comes up for it. `sudo grep '"event":"grant"' /var/db/writ/state/audit.jsonl`
-shows its grant with `granted with no signature (unsigned_fetch): template prefetch`, no
-`approver`. `ls ~/.writ/sessions` shows no session left for it. The ticket that follows comes
-up in the popup as before.
+shows its grant with `granted with no signature (unsigned_fetch): template <template>`, no
+`approver`. `ls ~/.writ/sessions` shows no session left for it. The ticket that follows,
+under the same template, comes up in the popup as before, and its session key is the one
+the template asks for.
 
 ## Local mode on Linux (M7.1)
 

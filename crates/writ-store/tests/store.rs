@@ -62,27 +62,20 @@ fn config() -> PolicyConfig {
     PolicyConfig::from_yaml(POLICY).unwrap()
 }
 
-/// The test policy with omega-code naming an unsigned_fetch template (M7.9.7).
+/// The test policy with unsigned_fetch on feature-branch, which omega-code names (M7.9.7).
 fn unsigned_config() -> PolicyConfig {
-    let text = POLICY
-        .replacen(
-            "templates: [feature-branch, quick-fix, read-only]",
-            "templates: [feature-branch, quick-fix, read-only, fetch_unsigned]",
-            1,
-        )
-        .replacen(
-            "templates:\n  feature-branch:",
-            "templates:\n  fetch_unsigned:\n    unsigned_fetch: true\n    max_ttl: 1h\n    \
-             max_ops_per_minute: 20\n  feature-branch:",
-            1,
-        );
+    let text = POLICY.replacen(
+        "    max_ttl: 4h\n",
+        "    max_ttl: 4h\n    unsigned_fetch: 15m\n",
+        1,
+    );
     PolicyConfig::from_yaml(&text).unwrap()
 }
 
 const UNSIGNED_REQUEST: &str = r#"
 repos:
   omega-code:
-    template: fetch_unsigned
+    template: feature-branch
     operations: [fetch]
 ticket:
   title: Fetch omega-code

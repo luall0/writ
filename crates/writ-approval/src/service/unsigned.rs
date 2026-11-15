@@ -1,7 +1,8 @@
-//! A ticket under `unsigned_fetch` templates (M7.9.7) becomes an active lease when it is
-//! submitted, with no approver's signature: the signed policy that made those templates stands
-//! for it. Fetch only, never amended or renewed (`writ_core::fit` and `lease` refuse both),
-//! not counted against `max_active_per_source`, no notification.
+//! A new fetch-only ticket under templates with `unsigned_fetch` on (M7.9.7) becomes an active
+//! lease when it is submitted, with no approver's signature: the signed policy change that set
+//! the switch stands for it. Fetch only by its own terms, for the switch's time at most, never
+//! amended or renewed (`writ_core::fit` and `lease` refuse both), not counted against
+//! `max_active_per_source`, no notification.
 //!
 //! In phases, like a signed grant ([`Service::approve`]): decided under the lock, the
 //! certificate signed without it (the CA may be a device), then decided again under the lock

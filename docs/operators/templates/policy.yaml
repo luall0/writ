@@ -66,6 +66,7 @@ templates:
     committer_emails: ["me+agent@example.org"]   # required with commit_sign
     signing_key: agent-ed25519-01  # required with commit_sign: a key declared with use: signing
     max_ttl: 4h                    # at least writd.yaml's min_ttl (5m by default)
+    # unsigned_fetch: null         # e.g. 15m: a fetch-only ticket needs no signature, its lease that long at most (1h); null: off
     max_signatures: 50
     max_pushes: 30
     max_ops_per_minute: 20         # at least 1
@@ -76,9 +77,5 @@ templates:
     # require_session: false       # local mode: a ticket must be bound to a session (`writ run`)
     # max_renewals: null           # null: no limit on a lease's renewals (each one is signed)
     # committer_name: null         # e.g. "Writ agent": the name every commit must carry; null: not checked
-  # prefetch:                      # name it in a repo's templates to turn it on there (off by default)
-  #   unsigned_fetch: true         # agents fetch before their ticket, with no signature (writ git fetch)
-  #   max_ttl: 15m                 # 1h at most with unsigned_fetch
-  #   max_ops_per_minute: 20
 
 # unseal: approver                 # approver | auto: auto opens the daemon with no one (M7.6; writ admin auto-unseal)

@@ -10,8 +10,9 @@
 //! Every other transition is refused ([`State::can_become`]). Approving needs a verified
 //! approver signature over the signed ticket's canonical bytes: the caller of [`activate`],
 //! [`activate_renewal`] and [`apply_amendment`] (the approval service) verifies it before
-//! calling them. The one lease granted with no signature is a fetch-only ticket under
-//! `unsigned_fetch` templates ([`activate_unsigned`], M7.9.7), never amended or renewed.
+//! calling them. The one lease granted with no signature is a new fetch-only ticket under
+//! templates whose `unsigned_fetch` is on ([`activate_unsigned`], M7.9.7), never amended or
+//! renewed.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -168,7 +169,7 @@ pub enum LifecycleError {
     /// Only a ticket whose every repository is under an `unsigned_fetch` template is granted
     /// with no signature.
     #[error(
-        "the ticket is not under unsigned_fetch templates only: it needs an approver's signature"
+        "the ticket isn't a new fetch-only one under templates whose unsigned_fetch is on: it needs an approver's signature"
     )]
     NotUnsigned,
     /// Why the lease can't be renewed (any more), or the renewal doesn't stay within it.
@@ -374,9 +375,9 @@ pub fn activate(
     })
 }
 
-/// Turns a ticket just submitted under `unsigned_fetch` templates into an active lease with
-/// no signature (M7.9.7): fetch only (the templates allow nothing else), never an amendment
-/// or a renewal, within its templates under `config`.
+/// Turns a ticket just submitted into an active lease with no signature (M7.9.7): a new one
+/// whose every repository asks only `fetch` under a template with `unsigned_fetch` on
+/// ([`fit::unsigned`]), within its templates and their `unsigned_fetch` time under `config`.
 pub fn activate_unsigned(
     config: &PolicyConfig,
     record: &TicketRecord,
@@ -394,6 +395,8 @@ pub fn activate_unsigned(
     if !fit::unsigned(config, &record.ticket) {
         return Err(LifecycleError::NotUnsigned);
     }
+    fit::check_unsigned_ttl(config, &record.ticket)
+        .map_err(|why| LifecycleError::Fit(fit::FitError { reasons: vec![why] }))?;
     if record.ticket.is_expired(now) {
         return Err(LifecycleError::ExpiredBeforeApproval);
     }
@@ -522,17 +525,6 @@ fn check_approval(
     }
     narrow::check(submitted, signed)?;
     fit::fits(config, signed)?;
-    if fit::unsigned(config, signed) {
-        // Granted when submitted, never pending, so never signed: a signature over one would
-        // be a second path to a grant that needs none (M7.9.7).
-        return Err(LifecycleError::Fit(fit::FitError {
-            reasons: vec![
-                "the ticket is under unsigned_fetch templates: it is granted when submitted, \
-                 never signed"
-                    .to_owned(),
-            ],
-        }));
-    }
     if signed.is_expired(now) {
         return Err(LifecycleError::ExpiredBeforeApproval);
     }

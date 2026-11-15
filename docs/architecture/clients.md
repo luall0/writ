@@ -394,21 +394,23 @@ wiring from before M6) ask in git's way, and the daemon refuses the other format
 Before it plans, an agent fetches: to see whether upstream moved, or to start from a clean
 tree (M7.9.7). `writ git fetch` and `writ git pull` with no lease named or running
 (`WRIT_SESSION` unset, the repo pinned to no lease, `current` pointing at no lease still
-running) ask for one themselves, when the repository's policy names an `unsigned_fetch`
-template (`writ policy`'s reply says which, `unsigned_fetch`; `writ policy` shows it as
-`signature: none`):
+running) ask for one themselves, when one of the repository's templates has
+`unsigned_fetch` on (`writ policy`'s reply carries each template's, and `writ policy` shows it
+as `fetch alone: no signature …`); the first one it lists (the policy's order, by name):
 
 1. a throwaway key, and a fetch-only ticket `writ` writes (`template: <it>`, `operations:
-   [fetch]`, its title and task fixed, the template's `max_ttl`; bound to the session under
-   `writ run`, as `writ request` binds one), submitted and granted with no signature
-   ([lease model](../lease-model.md#granted-with-no-signature-m797));
+   [fetch]`, its title and task fixed, the template's `unsigned_fetch` as its time; bound to
+   the session under `writ run`, as `writ request` binds one), submitted and granted with no
+   signature ([lease model](../lease-model.md#granted-with-no-signature-m797)), always with a
+   file key (M8.5's hardware session keys are for the leases a human signs);
 2. its session written (`sessions/<lease>/`: the key, the certificate, `lease.json`), never
    pointed at by `current`, and git run under it (the wrapper's settings and SSH command for
    that session; in a whole-repo clone, the SSH command over the clone's), one line on
    stderr naming the lease and its template;
 3. once git returns, whatever its exit, the lease closed with a fixed summary (no report
    printed, no run in the timings file) and its session removed; a close that fails says so,
-   and the lease ends by itself at its `max_ttl`. The command exits with git's code.
+   and the lease ends by itself at its `unsigned_fetch` time. The command exits with git's
+   code.
 
 No such template, or the daemon refusing the ticket: git runs as before (the daemon refuses
 a fetch with no lease), or the refusal is printed with its reasons (exit 3). A lease named
@@ -479,10 +481,11 @@ agents it is asked for (`writ_cli::skill`), in as few folders as possible:
   replaced in place by today's (`skill::replace_line`, its line break kept), and `--undo`
   takes either back.
 - The skill starts with **fetching before planning** (step 0, M7.9.7): `writ git fetch` and
-  `writ git pull --ff-only` with no ticket, which a repository with an `unsigned_fetch`
-  template serves under a lease granted with no signature
-  ([fetching with no lease](#fetching-with-no-lease)); its description asks the agent to
-  load it before any git command, not only before a task that changes files.
+  `writ git pull --ff-only` with no ticket, which a repository whose template has
+  `unsigned_fetch` on serves under a lease granted with no signature
+  ([fetching with no lease](#fetching-with-no-lease)), the work itself still under a ticket
+  the human signs, even under the same template; its description asks the agent to load it
+  before any git command, not only before a task that changes files.
 - What `writ init` creates and adds is recorded (`skill.created`, `skill.createddir`,
   `skill.exclude`, `skill.agentsmd`…), and `--undo` takes exactly that back: the skill files
   that are still Writ's, and the folders made for them once empty. `timings.md` stays. A

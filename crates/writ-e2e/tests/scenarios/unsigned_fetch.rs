@@ -1,9 +1,10 @@
 //! Scenario 28, a fetch with no signature (M7.9.7): an agent in a clone wired with no lease
 //! runs `writ git fetch` and `writ git pull --ff-only` before writing its ticket, and gets
 //! Forgejo's new commits under leases the daemon granted with no approver (the repo names
-//! the `prefetch` template), each granted, fetched and closed in the audit log, nothing left
-//! on the agent's host; `writ policy` says the template asks no signature; the same agent's
-//! signed lease then works as before.
+//! `unsigned_fetch` on its template, `prefetch`, which also signs and pushes), each granted,
+//! fetched and closed in the audit log, nothing left on the agent's host; `writ policy` says a
+//! fetch alone needs no signature; the same agent's signed lease, under the same template,
+//! then commits and pushes as before.
 
 use writ_e2e::Stack;
 use writ_e2e::agent::{expect, ticket};
@@ -28,7 +29,14 @@ fn an_agent_fetches_before_its_ticket_with_no_signature_and_leaves_nothing() {
     let policy = agent.ok_in("work", "writ policy");
     assert!(policy.contains("Template prefetch:\n"), "{policy}");
     assert!(
-        policy.contains("signature           none: granted when submitted, fetch only"),
+        policy.contains(
+            "fetch alone         no signature: a fetch-only ticket is granted when submitted, \
+             for 15m at most"
+        ),
+        "{policy}"
+    );
+    assert!(
+        policy.contains("  operations          fetch, commit_sign, push\n"),
         "{policy}"
     );
 
@@ -80,7 +88,15 @@ fn an_agent_fetches_before_its_ticket_with_no_signature_and_leaves_nothing() {
     assert_eq!(stack.audited(&pulled, "close", "done").len(), 1);
 
     // Then the ticket, signed: the agent's lease works as any.
-    let signed = agent.lease(&stack, &ticket(&["planning"], &["agent/*"], "1h", ""));
+    // The helper's tickets name `feature`: here the repo's own template, which signs too.
+    let signed = agent.lease(
+        &stack,
+        &ticket(&["planning"], &["agent/*"], "1h", "").replacen(
+            "template: feature\n",
+            "template: prefetch\n",
+            1,
+        ),
+    );
     agent.ok_in("work", "git checkout -q -b agent/plan");
     let commit = agent.commit("work", &signed, "plan.txt", "the plan");
     expect(

@@ -386,8 +386,6 @@ fn the_daily_operations_page_runs_as_written() {
             "",
             "",
             "",
-            // unsigned fetch (M7.9.7): Enter keeps no.
-            "",
             "y",
             "",
         ],
@@ -485,8 +483,8 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     let shown = on_terminal(
         approver,
         &format!("writ admin template add guided --from managed {url}"),
-        // unsigned_fetch (M7.9.7) first, Enter keeping false; then operations kept, max_ttl.
-        &["", "", "3h", "", "", "", "", "", "", "y"],
+        // operations kept, max_ttl, then unsigned_fetch (M7.9.7): Enter leaves it off.
+        &["", "3h", "", "", "", "", "", "", "", "y"],
     );
     assert!(shown.contains("? unsigned_fetch"), "{shown}");
     // Each field a question (M7.9.5): its name, its help in brackets below it.
@@ -535,14 +533,11 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
             "",
             "",
             "",
-            // unsigned fetch (M7.9.7): Enter keeps no.
-            "",
             "y",
             "",
         ],
         1,
     );
-    assert!(shown.contains("unsigned fetch"), "{shown}");
     assert!(
         shown.contains(
             "New upstream credential guided-repo-upstream (register it on the remote): ssh-rsa "
@@ -714,7 +709,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
         (
             "template",
             "guided-yes",
-            // unsigned_fetch first (M7.9.7), Enter keeping false.
+            // unsigned_fetch after max_ttl (M7.9.7), Enter leaving it off.
             vec!["", "", "", "", "", "8", "", "", ""],
             "max_ops_per_minute=8".to_owned(),
         ),
@@ -948,8 +943,6 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
             "managed ",
             "",
             "",
-            "",
-            // unsigned fetch (M7.9.7): Enter keeps no.
             "",
             "y",
             "",

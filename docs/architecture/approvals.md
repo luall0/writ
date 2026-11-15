@@ -29,14 +29,15 @@ file (same format as git's `allowed_signers`) ([Q20](../decisions.md)).
   notification click is never an approval ([Q7/Q13](../decisions.md)).
 - Admin changes (approvers, readers, templates, repo registry) and unsealing also require a
   signed approval ([admin changes](#admin-changes), [`writ unseal`](#writ-unseal)).
-- **The one grant with no approval** (M7.9.7): a fetch-only ticket that names an
-  `unsigned_fetch` template for each of its repositories is granted when submitted, never
+- **The one grant with no approval** (M7.9.7): a new ticket whose every repository asks only
+  `fetch`, under a template whose `unsigned_fetch` is on, is granted when submitted, never
   pending, so never shown to `writ sign` or the popup and never notified. Its approval is the
-  signed policy change that made the template and named it in the repo
-  ([lease model](../lease-model.md#granted-with-no-signature-m797)). Approving one is refused
-  (it isn't pending), and so is any signature over such a ticket. Removing an approver revokes
-  the leases that approver signed; an unsigned lease has none, and ends when its template stops
-  allowing it.
+  signed policy change that set `unsigned_fetch` on the template
+  ([lease model](../lease-model.md#granted-with-no-signature-m797)). Every other ticket under
+  the same template comes to you as before; one you narrow down to fetch only is signed by you
+  (a signed lease, held to the template's `max_ttl`, not to `unsigned_fetch`). Removing an
+  approver revokes the leases that approver signed; an unsigned lease has none, and ends when
+  its template stops allowing it.
 
 ## `writ sign`: the trusted display
 
@@ -215,10 +216,8 @@ declares for its URL's kind, or a new key declared in the same change (its id, a
 key's backend then its algorithm; a token's host is the URL's). `template add --from <template>` starts from
 another template's values. After the change, what to do next is said: a new key's public
 half to register (a deploy key with write access), a token to add with `writ admin token`.
-A guided `repo add` whose templates let no unsigned fetch asks last whether agents may fetch
-the repo with no signature (M7.9.7, no by default): a yes adds the policy's `unsigned_fetch`
-template to the repo, or makes one (`prefetch`, or the next free name: fetch only,
-`max_ttl: 15m`) in the same change, which names it.
+A template's `unsigned_fetch` (M7.9.7) is asked after its `max_ttl`, only when it allows
+`fetch`; Enter leaves it off.
 Without a terminal `add` asks nothing and refuses unless every required field is given,
 naming the missing ones; `edit` refuses (`set` changes fields without one).
 

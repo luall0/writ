@@ -249,16 +249,11 @@ fn relevant(
             }
         }
         Section::Templates => {
-            // Fetch only (M7.9.7): its time, its rate and its session asked, nothing else.
-            if value("unsigned_fetch") == "true" {
-                return matches!(
-                    name,
-                    "unsigned_fetch" | "max_ttl" | "max_ops_per_minute" | "require_session"
-                );
-            }
             let signs = has("operations", "commit_sign");
             let pushes = has("operations", "push");
             match name {
+                // M7.9.7: only where a fetch-only ticket can be.
+                "unsigned_fetch" => has("operations", "fetch"),
                 "branches" => signs || pushes,
                 "force_push" => pushes,
                 "committer_emails"
@@ -1078,8 +1073,6 @@ pub async fn add(
                 .collect();
             let mut new_key: Option<NewKey> = None;
             let mut pin: Option<(String, FieldEdit)> = None;
-            // The unsigned_fetch template a repo's yes makes, when the policy has none.
-            let mut unsigned: Option<(String, Vec<FieldEdit>)> = None;
             if let (Some((host, port, _)), true) = (&host, interactive)
                 && !given.iter().any(|g| g.field == "keys")
             {
@@ -1164,9 +1157,6 @@ pub async fn add(
                 let more = asked(&policy, section, &asked_given, &start, true, &backends)?;
                 edits.extend(asked_given);
                 edits.extend(more);
-                if section == Section::Repos {
-                    unsigned = asked_unsigned_fetch(&policy, &mut edits)?;
-                }
             } else {
                 edits.extend(given.clone());
                 let missing = edit::missing(section, &edits);
@@ -1195,25 +1185,13 @@ pub async fn add(
                     .map_err(|e| anyhow::anyhow!("not added: {}", clean(&e.to_string())))?;
                 made.push(id.clone());
             }
-            if let Some((template, fields)) = &unsigned {
-                next = edit::add(&next, Section::Templates, template, fields, MIN_TTL)
-                    .map_err(|e| anyhow::anyhow!("not added: {}", clean(&e.to_string())))?;
-            }
             let next = edit::add(&next, section, name, &edits, MIN_TTL)
                 .map_err(|e| anyhow::anyhow!("not added: {}", clean(&e.to_string())))?;
             if section == Section::Keys {
                 made.push(name.to_owned());
             }
             let text = AdminText::try_from(next.to_yaml())?;
-            let what = match &unsigned {
-                Some((template, _)) => format!(
-                    "with {} {} and template {} added",
-                    section.noun(),
-                    clean(name),
-                    clean(template)
-                ),
-                None => format!("with {} {} added", section.noun(), clean(name)),
-            };
+            let what = format!("with {} {} added", section.noun(), clean(name));
             match sign_applied(session, signer, &shown, &text, &what, yes).await? {
                 Signing::Applied => {}
                 other => return Ok(Err(other.exit())),
@@ -1244,96 +1222,6 @@ pub async fn add(
             .await;
     }
     Ok(Exit::Ok)
-}
-
-/// The template a repo's `unsigned_fetch` yes makes when the policy has none.
-const UNSIGNED_FETCH_TEMPLATE: &str = "prefetch";
-
-/// The fields of the template [`asked_unsigned_fetch`] makes: fetch only, 15 minutes.
-const UNSIGNED_FETCH_FIELDS: [&str; 3] = [
-    "unsigned_fetch=true",
-    "max_ttl=15m",
-    "max_ops_per_minute=20",
-];
-
-/// The templates a repo names once `edits` are applied to a new one.
-fn named_templates(edits: &[FieldEdit]) -> Vec<String> {
-    let mut named: Vec<String> = Vec::new();
-    for one in edits.iter().filter(|e| e.field == "templates") {
-        match &one.change {
-            Change::Set(list) => {
-                named = list
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .map(str::to_owned)
-                    .collect();
-            }
-            Change::Add(t) => named.push(t.trim().to_owned()),
-            Change::Remove(t) => named.retain(|n| n != t.trim()),
-            Change::Unset => named.clear(),
-        }
-    }
-    named
-}
-
-/// The `unsigned_fetch` template a repo would name: the policy's own (none made), or a new
-/// one under a free name, with its fields.
-fn unsigned_fetch_template(
-    policy: &PolicyConfig,
-) -> anyhow::Result<(String, Option<Vec<FieldEdit>>)> {
-    if let Some((name, _)) = policy.templates().iter().find(|(_, t)| t.unsigned_fetch) {
-        return Ok((name.to_string(), None));
-    }
-    let taken = policy.entry_names(Section::Templates);
-    let name = (1..=10_000u32)
-        .map(|n| match n {
-            1 => UNSIGNED_FETCH_TEMPLATE.to_owned(),
-            n => format!("{UNSIGNED_FETCH_TEMPLATE}_{n}"),
-        })
-        .find(|candidate| !taken.contains(candidate))
-        .ok_or_else(|| anyhow::anyhow!("no free template name"))?;
-    let fields = UNSIGNED_FETCH_FIELDS
-        .iter()
-        .map(|arg| FieldEdit::parse(arg).map_err(anyhow::Error::msg))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok((name, Some(fields)))
-}
-
-/// A repo being added (on a terminal): whether agents may fetch it with no signature, unless
-/// a template it names already lets them. On yes, the policy's `unsigned_fetch` template is
-/// added to its templates, and returned with its fields when it is to be made (M7.9.7).
-fn asked_unsigned_fetch(
-    policy: &PolicyConfig,
-    edits: &mut Vec<FieldEdit>,
-) -> anyhow::Result<Option<(String, Vec<FieldEdit>)>> {
-    let named = named_templates(edits);
-    let lets_already = named.iter().any(|name| {
-        name.parse()
-            .ok()
-            .and_then(|name| policy.template(&name))
-            .is_some_and(|t| t.unsigned_fetch)
-    });
-    if lets_already {
-        return Ok(None);
-    }
-    let answer = choose(
-        "unsigned fetch",
-        "let agents fetch this repo with no signature from you, to plan before their ticket \
-         (fetch only: no commit, no push)",
-        Some("no"),
-        &[("yes".to_owned(), "yes".to_owned())],
-        false,
-    )?;
-    if !matches!(answer.trim(), "yes" | "y") {
-        return Ok(None);
-    }
-    let (name, fields) = unsigned_fetch_template(policy)?;
-    edits.push(FieldEdit {
-        field: "templates".to_owned(),
-        change: Change::Add(name.clone()),
-    });
-    Ok(fields.map(|fields| (name, fields)))
 }
 
 /// `writ admin <noun> edit <name>`: each field asked, Enter keeping its current value; only
@@ -1640,65 +1528,6 @@ fn check_backend(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn policy(templates: &str, repo_templates: &str) -> PolicyConfig {
-        PolicyConfig::from_yaml(&format!(
-            "format: 2\nkeys:\n  up: {{ use: upstream, kind: token, host: example.org }}\n\
-             repos:\n  r:\n    upstream: https://example.org/r.git\n    \
-             upstream_credential: up\n    templates: [{repo_templates}]\n\
-             templates:\n  feature:\n    operations: [fetch]\n    max_ttl: 1h\n    \
-             max_signatures: 0\n    max_pushes: 0\n    max_ops_per_minute: 1\n    \
-             max_push_size: 0\n{templates}"
-        ))
-        .unwrap()
-    }
-
-    /// M7.9.7: a yes adds the policy's unsigned_fetch template to the repo, or makes one under
-    /// a free name; the template made is one the policy reads, fetch only.
-    #[test]
-    fn a_yes_names_the_unsigned_fetch_template_or_makes_one() {
-        let edits = |args: &[&str]| -> Vec<FieldEdit> {
-            args.iter().map(|a| FieldEdit::parse(a).unwrap()).collect()
-        };
-        assert_eq!(
-            named_templates(&edits(&["templates=a, b", "templates+=c", "templates-=a"])),
-            ["b", "c"]
-        );
-        assert!(named_templates(&edits(&["upstream=x"])).is_empty());
-        // None in the policy: made as prefetch, read back as unsigned fetch only.
-        let plain = policy("", "feature");
-        let (name, fields) = unsigned_fetch_template(&plain).unwrap();
-        assert_eq!(name, "prefetch");
-        let fields = fields.unwrap();
-        let made = edit::add(&plain, Section::Templates, &name, &fields, MIN_TTL).unwrap();
-        let template = made.template(&name.parse().unwrap()).unwrap();
-        assert!(template.unsigned_fetch);
-        assert_eq!(
-            template
-                .operations
-                .iter()
-                .map(|o| o.to_string())
-                .collect::<Vec<_>>(),
-            ["fetch"]
-        );
-        // The name taken by another template: the next free one.
-        let taken = policy(
-            "  prefetch:\n    operations: [fetch]\n    max_ttl: 1h\n    \
-             max_signatures: 0\n    max_pushes: 0\n    max_ops_per_minute: 1\n    \
-             max_push_size: 0\n",
-            "feature",
-        );
-        assert_eq!(unsigned_fetch_template(&taken).unwrap().0, "prefetch_2");
-        // One in the policy: named, nothing made.
-        let has = policy(
-            "  open:\n    unsigned_fetch: true\n    max_ttl: 15m\n    max_ops_per_minute: 1\n",
-            "feature",
-        );
-        assert_eq!(
-            unsigned_fetch_template(&has).unwrap(),
-            ("open".to_owned(), None)
-        );
-    }
 
     /// The review after M7.6 (U-7): what the approver compares is computed here from the keys
     /// that get pinned, for the host asked; a reply that says otherwise is refused.

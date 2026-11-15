@@ -47,9 +47,9 @@ use crate::yaml::{FieldError, parse_yaml};
 /// [`migrate`] and signed (`writ migrate`), never read.
 pub const POLICY_FORMAT: u32 = 2;
 
-/// The longest lease an `unsigned_fetch` template grants (M7.9.7): `writ git` closes it as
-/// soon as git returns, so this bounds only a lease a crash left behind, or a first fetch of
-/// a large repository.
+/// The longest a lease granted with no signature may last (`unsigned_fetch`, M7.9.7): `writ
+/// git` closes it as soon as git returns, so this bounds only a lease a crash left behind, or
+/// a first fetch of a large repository.
 pub const MAX_UNSIGNED_FETCH_TTL: Duration = Duration::from_seconds(60 * 60);
 
 /// How a commit is linked to its ticket on the remote. `ledger_only` by default: many
@@ -233,143 +233,54 @@ impl RepoEntry {
 }
 
 /// A template: the largest ticket it accepts in a repo that names it. Every limit is
-/// required, except in an `unsigned_fetch` template, which fetches only: its operations are
-/// fetch, implied, and the counts a fetch never uses don't apply ([`RawTemplate::check`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// required.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Template {
-    /// Whether a ticket under it is granted with no approver's signature (M7.9.7): fetch only
-    /// (`operations` implied), a `max_ttl` of at most [`MAX_UNSIGNED_FETCH_TTL`]; a repo names
-    /// at most one such template.
-    pub unsigned_fetch: bool,
+    /// Before M6.2, the repos a template allowed: refused, naming `repos.<name>.templates`.
+    #[serde(default)]
+    repos: Option<Moved>,
     pub operations: BTreeSet<Operation>,
+    #[serde(default)]
     pub branches: BTreeSet<BranchPattern>,
+    /// Format 1's push modes (removed in format 2), as a repo's.
+    #[serde(default)]
+    push_modes: Option<Vec<String>>,
     /// Whether a ticket under this template may ask for force pushes.
+    #[serde(default)]
     pub force_push: bool,
     /// Committer emails a ticket may use (required with `commit_sign`).
+    #[serde(default)]
     pub committer_emails: BTreeSet<Email>,
     /// The name every commit's author and committer must carry (none: not checked). It goes
     /// into each lease's terms, and the agent's git is set to it.
+    #[serde(default)]
     pub committer_name: Option<CommitterName>,
     /// The signer key that signs commits under this template (required with `commit_sign`).
+    #[serde(default)]
     pub signing_key: Option<KeyId>,
     pub max_ttl: Duration,
+    /// A ticket under it asking only `fetch` is granted with no approver's signature, for at
+    /// most this long (M7.9.7; none: never). From the daemon's `min_ttl` to
+    /// [`MAX_UNSIGNED_FETCH_TTL`], on a template that allows `fetch`; every other ticket under
+    /// it is signed as before.
+    #[serde(default)]
+    pub unsigned_fetch: Option<Duration>,
     pub max_signatures: u32,
     pub max_pushes: u32,
     pub max_ops_per_minute: u32,
     pub max_push_size: ByteSize,
+    #[serde(default = "default_paths_check")]
     pub paths_check: PathsCheck,
+    #[serde(default)]
     pub require_expected_paths: bool,
     /// Whether a ticket must be bound to a session (`caller`, local mode: `writ run`).
+    #[serde(default)]
     pub require_session: bool,
     /// How many renewals one lease's chain may have (none: no limit). Each is signed anyway;
     /// this caps how long one task can run under the template.
+    #[serde(default)]
     pub max_renewals: Option<u32>,
-}
-
-/// A template as written: the fields an `unsigned_fetch` template leaves out are optional
-/// here, and [`RawTemplate::check`] says which a template must or mustn't write.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawTemplate {
-    /// Before M6.2, the repos a template allowed: refused, naming `repos.<name>.templates`.
-    #[serde(default)]
-    repos: Option<Moved>,
-    #[serde(default)]
-    unsigned_fetch: bool,
-    #[serde(default)]
-    operations: Option<BTreeSet<Operation>>,
-    #[serde(default)]
-    branches: BTreeSet<BranchPattern>,
-    /// Format 1's push modes (removed in format 2), as a repo's.
-    #[serde(default)]
-    push_modes: Option<Vec<String>>,
-    #[serde(default)]
-    force_push: bool,
-    #[serde(default)]
-    committer_emails: BTreeSet<Email>,
-    #[serde(default)]
-    committer_name: Option<CommitterName>,
-    #[serde(default)]
-    signing_key: Option<KeyId>,
-    max_ttl: Duration,
-    #[serde(default)]
-    max_signatures: Option<u32>,
-    #[serde(default)]
-    max_pushes: Option<u32>,
-    max_ops_per_minute: u32,
-    #[serde(default)]
-    max_push_size: Option<ByteSize>,
-    #[serde(default = "default_paths_check")]
-    paths_check: PathsCheck,
-    #[serde(default)]
-    require_expected_paths: bool,
-    #[serde(default)]
-    require_session: bool,
-    #[serde(default)]
-    max_renewals: Option<u32>,
-}
-
-/// The fields an `unsigned_fetch` template doesn't write (M7.9.7): fetch is its only
-/// operation, and the counts and push size are a signature's and a push's.
-pub const UNSIGNED_FETCH_IMPLIED: [&str; 4] = [
-    "operations",
-    "max_signatures",
-    "max_pushes",
-    "max_push_size",
-];
-
-impl RawTemplate {
-    /// The template `name`: every field it must write written, and an `unsigned_fetch` one
-    /// writing none of [`UNSIGNED_FETCH_IMPLIED`] (one way to write it), each refusal naming
-    /// its field.
-    fn check(self, name: &TemplateName) -> Result<Template, FieldError> {
-        let given = [
-            self.operations.is_some(),
-            self.max_signatures.is_some(),
-            self.max_pushes.is_some(),
-            self.max_push_size.is_some(),
-        ];
-        for (field, given) in UNSIGNED_FETCH_IMPLIED.into_iter().zip(given) {
-            match (self.unsigned_fetch, given) {
-                (true, true) => {
-                    return Err(FieldError::at(
-                        format!("templates.{name}.{field}"),
-                        "not written with unsigned_fetch: true (fetch only: its operation is \
-                         implied, and a fetch uses no count)",
-                    ));
-                }
-                (false, false) => {
-                    return Err(FieldError::at(
-                        format!("templates.{name}"),
-                        format!("missing field `{field}`"),
-                    ));
-                }
-                _ => {}
-            }
-        }
-        let operations = match self.operations {
-            Some(operations) => operations,
-            None => BTreeSet::from([Operation::Fetch]),
-        };
-        Ok(Template {
-            unsigned_fetch: self.unsigned_fetch,
-            operations,
-            branches: self.branches,
-            force_push: self.force_push,
-            committer_emails: self.committer_emails,
-            committer_name: self.committer_name,
-            signing_key: self.signing_key,
-            max_ttl: self.max_ttl,
-            max_signatures: self.max_signatures.unwrap_or(0),
-            max_pushes: self.max_pushes.unwrap_or(0),
-            max_ops_per_minute: self.max_ops_per_minute,
-            max_push_size: self.max_push_size.unwrap_or(ByteSize::from_bytes(0)),
-            paths_check: self.paths_check,
-            require_expected_paths: self.require_expected_paths,
-            require_session: self.require_session,
-            max_renewals: self.max_renewals,
-        })
-    }
 }
 
 fn default_paths_check() -> PathsCheck {
@@ -391,7 +302,7 @@ struct RawPolicyConfig {
     #[serde(default)]
     recipients: BTreeMap<KeyId, recipients::RawRecipient>,
     repos: BTreeMap<RepoName, RepoEntry>,
-    templates: BTreeMap<TemplateName, RawTemplate>,
+    templates: BTreeMap<TemplateName, Template>,
     /// How the daemon unseals at start (M7.6): by an approver (the default), or by itself.
     #[serde(default)]
     unseal: Unseal,
@@ -664,11 +575,6 @@ impl PolicyConfig {
             validate_proxy(name, proxy, &keys)?;
         }
         let recipients = recipients::check(raw.recipients)?;
-        let mut templates = BTreeMap::new();
-        for (name, template) in raw.templates {
-            let template = template.check(&name)?;
-            templates.insert(name, template);
-        }
         for (name, repo) in &raw.repos {
             validate_repo(
                 name,
@@ -676,10 +582,10 @@ impl PolicyConfig {
                 &keys,
                 &raw.upstream_hosts,
                 &raw.proxies,
-                &templates,
+                &raw.templates,
             )?;
         }
-        for (name, template) in &templates {
+        for (name, template) in &raw.templates {
             validate_template(name, template, &keys, min_ttl)?;
         }
         Ok(Self {
@@ -689,7 +595,7 @@ impl PolicyConfig {
             recipients,
             unseal: raw.unseal,
             repos: raw.repos,
-            templates,
+            templates: raw.templates,
         })
     }
 
@@ -984,21 +890,6 @@ fn validate_repo(
             format!("{unknown} is not a template"),
         ));
     }
-    // A fetch with no lease finds the one template to ask under, never a choice to make.
-    let unsigned: Vec<&TemplateName> = repo
-        .templates
-        .iter()
-        .filter(|t| templates.get(*t).is_some_and(|t| t.unsigned_fetch))
-        .collect();
-    if let [first, second, ..] = unsigned.as_slice() {
-        return Err(FieldError::at(
-            at("templates"),
-            format!(
-                "{first} and {second} are both unsigned_fetch templates: a repo names at most \
-                 one, so a fetch without a lease never has to choose"
-            ),
-        ));
-    }
     if repo.notes_ref.is_some() && repo.ticket_link != TicketLink::Notes {
         return Err(FieldError::at(
             at("notes_ref"),
@@ -1088,16 +979,26 @@ fn validate_template(
             "must list at least one operation",
         ));
     }
-    if template.unsigned_fetch {
-        // Fetch only, by construction (`RawTemplate::check`); its time bounded here.
-        if template.max_ttl > MAX_UNSIGNED_FETCH_TTL {
+    if let Some(unsigned) = template.unsigned_fetch {
+        if !template.operations.contains(&Operation::Fetch) {
             return Err(FieldError::at(
-                at("max_ttl"),
+                at("unsigned_fetch"),
+                "the template allows no fetch: a fetch-only ticket can't be under it",
+            ));
+        }
+        if unsigned > MAX_UNSIGNED_FETCH_TTL {
+            return Err(FieldError::at(
+                at("unsigned_fetch"),
                 format!(
-                    "{}: an unsigned_fetch template's leases last at most \
-                     {MAX_UNSIGNED_FETCH_TTL}",
-                    template.max_ttl
+                    "{unsigned}: a lease granted with no signature lasts at most \
+                     {MAX_UNSIGNED_FETCH_TTL}"
                 ),
+            ));
+        }
+        if unsigned < min_ttl {
+            return Err(FieldError::at(
+                at("unsigned_fetch"),
+                format!("{unsigned}: must be at least {min_ttl} (the daemon's min_ttl)"),
             ));
         }
     }

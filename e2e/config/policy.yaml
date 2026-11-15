@@ -92,7 +92,7 @@ repos:
   pr-api:     { upstream: "ssh://git@forgejo/writ/pr-api.git",     upstream_credential: upstream-pr-api, templates: [feature, pr-backend],     protected_refs: ["refs/heads/main", "refs/tags/*"] }
   pr-web:     { upstream: "ssh://git@forgejo/writ/pr-web.git",     upstream_credential: upstream-pr-web, templates: [pr-frontend],     protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Fetched with no signature before a ticket (scenario 28): `prefetch` beside `feature`.
-  planning:   { upstream: "ssh://git@forgejo/writ/planning.git",   upstream_credential: upstream-planning, templates: [feature, prefetch], protected_refs: ["refs/heads/main", "refs/tags/*"] }
+  planning:   { upstream: "ssh://git@forgejo/writ/planning.git",   upstream_credential: upstream-planning, templates: [prefetch], protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # Over HTTPS, with a Forgejo token the operator puts in the keystore (no deploy key).
   https:      { upstream: "https://forgejo-https:3443/writ/https.git", upstream_credential: token-https, templates: [feature], protected_refs: ["refs/heads/main", "refs/tags/*"] }
   # The same Forgejo repository behind a front whose certificate only the system trusts, not
@@ -114,11 +114,20 @@ templates:
     max_ops_per_minute: 200
     max_push_size: 50MB
     max_renewals: 3                  # scenario 20 renews once
-  # A ticket naming it is granted with no signature, fetch only (M7.9.7, scenario 28).
+  # `feature` with unsigned_fetch on (M7.9.7, scenario 28): a fetch-only ticket under it
+  # needs no signature; every other ticket is signed as under `feature`. Its own, so no
+  # other scenario's repo gets it.
   prefetch:
-    unsigned_fetch: true
-    max_ttl: 15m
-    max_ops_per_minute: 20
+    operations: [fetch, commit_sign, push]
+    branches: ["agent/*"]
+    committer_emails: ["agent@writ.invalid", "second@writ.invalid"]
+    signing_key: agent-e2e
+    max_ttl: 4h
+    unsigned_fetch: 15m
+    max_signatures: 100
+    max_pushes: 50
+    max_ops_per_minute: 200
+    max_push_size: 50MB
   # Per-repository tickets (scenario 22): pr-api fits `feature` too (a ticket must name
   # one), pr-web only this one's review branches, its paths checked, a shorter lease.
   pr-backend:

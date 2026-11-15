@@ -516,16 +516,20 @@ fn admit_counted<'a>(
             format!("lease {id} no longer fits its templates: {why}"),
         )
     })?;
-    // Granted with no signature: only while its templates in force still grant that (an
-    // operator who turns unsigned_fetch off ends every such lease at once, M7.9.7).
-    if lease.granted_by.is_unsigned() && !fit::unsigned(ctx.config, &lease.ticket) {
-        return Err(deny(
-            DenyCode::Config,
-            format!(
-                "lease {id} was granted with no signature, and its templates no longer grant \
-                 that (unsigned_fetch)"
-            ),
-        ));
+    // Granted with no signature: only while its templates in force still grant that, for its
+    // time (an operator who turns unsigned_fetch off, or shortens it, ends such a lease at
+    // once, M7.9.7).
+    if lease.granted_by.is_unsigned() {
+        let still = match fit::unsigned(ctx.config, &lease.ticket) {
+            true => fit::check_unsigned_ttl(ctx.config, &lease.ticket).err(),
+            false => Some("its templates no longer grant that (unsigned_fetch)".to_owned()),
+        };
+        if let Some(why) = still {
+            return Err(deny(
+                DenyCode::Config,
+                format!("lease {id} was granted with no signature, and {why}"),
+            ));
+        }
     }
     Ok((template, entry, terms))
 }

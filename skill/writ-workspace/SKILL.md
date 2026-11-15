@@ -62,11 +62,12 @@ writ git -C <folder> pull --ff-only origin <default branch>
 ```
 
 With no lease, `writ git fetch` and `writ git pull` ask for a fetch-only lease themselves
-when the repository allows it (`writ policy <repo>` shows a template with `signature:
-none`), and close it once git returns: nothing to sign, nothing to close, nothing to
-record. Use `--ff-only`: a merge commit needs a signature, which only a lease gives. If a
-repository doesn't allow it, the fetch is refused: plan from what you have, and fetch it
-once your lease is granted (step 4).
+when the repository allows it (a template `writ policy <repo>` lists says `fetch alone: no
+signature`), and close it once git returns: nothing to sign, nothing to close, nothing to
+record. That fetch is for planning only: the work itself still needs a ticket the human
+signs (step 2), even under the same templates. Use `--ff-only`: a merge commit needs a
+signature, which only a lease gives. If a repository doesn't allow it, the fetch is refused:
+plan from what you have, and fetch it once your lease is granted (step 4).
 
 ## 1. See what each repository allows
 

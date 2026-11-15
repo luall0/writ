@@ -90,7 +90,8 @@ fn the_operator_sets_the_daemon_up_from_nothing_as_the_guide_says() {
     assert_eq!(report.signing_keys.len(), 4, "{:?}", report.signing_keys);
     assert!(report.signing_keys[0].starts_with("agent-e2e ssh-ed25519 "));
     assert!(
-        report.signing_keys[0].ends_with(" (templates: feature, pr-backend, pr-frontend)"),
+        report.signing_keys[0]
+            .ends_with(" (templates: feature, pr-backend, pr-frontend, prefetch)"),
         "{:?}",
         report.signing_keys
     );

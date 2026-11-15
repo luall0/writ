@@ -419,8 +419,8 @@ pub fn run() -> Stack {
         &approver,
         "writ admin template add <template>",
         &[("<template>", ADDED_TEMPLATE)],
-        // unsigned_fetch first (M7.9.7): Enter keeps false.
-        &["", "fetch ", "1h", "0", "0", "10", "0", "", "", "y"],
+        // unsigned_fetch after max_ttl (M7.9.7): Enter leaves it off.
+        &["fetch ", "1h", "", "0", "0", "10", "0", "", "", "y"],
     );
     assert!(said.contains("Applied: policy is version "), "{said}");
     // 12. Its upstream key, made by the change that declares it, registered on Forgejo as a

@@ -1,6 +1,6 @@
-//! `writ git fetch` and `writ git pull` with no lease (M7.9.7): when the repository's policy
-//! names an `unsigned_fetch` template, `writ` asks the daemon for a fetch-only lease under it
-//! (granted with no signature), runs git under that lease, then closes it and removes its
+//! `writ git fetch` and `writ git pull` with no lease (M7.9.7): when one of the repository's
+//! templates has `unsigned_fetch` on (the first `writ policy` lists), `writ` asks the daemon
+//! for a fetch-only lease under it (granted with no signature, for that time), runs git under that lease, then closes it and removes its
 //! session files, whatever git's exit. Nothing points `current` at it and no run goes in the
 //! timings file: the agent sees a fetch, not a lease.
 //!
@@ -56,8 +56,8 @@ fn endpoint(wired: &Wiring) -> anyhow::Result<Endpoint> {
     }
 }
 
-/// The repository's `unsigned_fetch` template, as `writ policy` reads it; none when the
-/// policy has none for it (or the daemon refuses the read).
+/// The first of the repository's templates whose `unsigned_fetch` is on, as `writ policy`
+/// lists them; none when it has none (or the daemon refuses the read).
 async fn template(
     paths: &Paths,
     endpoint: &Endpoint,
@@ -78,20 +78,27 @@ async fn template(
         })
         .await?;
     Ok(match reply {
-        Ok(policy) => policy.templates.into_iter().find(|t| t.unsigned_fetch),
+        Ok(policy) => policy
+            .templates
+            .into_iter()
+            .find(|t| t.unsigned_fetch.is_some()),
         Err(_) => None,
     })
 }
 
-/// The fetch-only ticket `writ` writes for `wired`'s repository under `template`.
+/// The fetch-only ticket `writ` writes for `wired`'s repository under `template`, for its
+/// `unsigned_fetch` time.
 fn ticket(wired: &Wiring, template: &writ_proto::TemplateView) -> anyhow::Result<String> {
+    let ttl = template
+        .unsigned_fetch
+        .context("the template grants no fetch with no signature")?;
     let text = format!(
         "repos:\n  {repo}:\n    template: {template}\n    operations: [fetch]\n\
          ticket:\n  title: \"Fetch {repo} with no lease (writ git)\"\n  task: \"Fetched by writ \
          git before a ticket: fetch only, closed when git returns.\"\nlimits:\n  ttl: \"{ttl}\"\n",
         repo = wired.repo,
         template = template.name,
-        ttl = template.max_ttl,
+        ttl = ttl,
     );
     // Under `writ run`: bound to its session, as `writ request` binds a ticket.
     Ok(match crate::run::session()? {
