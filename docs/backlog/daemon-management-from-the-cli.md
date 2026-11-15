@@ -156,7 +156,7 @@ On the approval API, counted against the approval API's rates and each logged (h
 - **A host key scan** (`writ admin host add`), **signed by an approver**: the request is a
   `writ-scan/1` document naming the daemon (its host key's fingerprint), the host, the port
   and a one-use nonce the daemon handed out, signed in the `writ-approval` namespace by a key
-  in `approvers` (hard rule 5); in M11, only an admin's key. A reader key alone can't make
+  in `approvers` (hard rule 5); with [multi-user](multi-user.md), only an admin's key. A reader key alone can't make
   the daemon reach a host, so the scan can't be used to probe the daemon's network. The
   daemon opens an SSH connection to that host and port, reads the host keys it offers and
   closes, bounded in time (`mirrors.scan_timeout`, 30 s a handshake) and size: one handshake
@@ -257,7 +257,7 @@ checks whole, like any other change.
 - **New reads on the approval API:** the public halves (not secret; readers already see the
   policy with `writ admin show`), and two operations that make the daemon open outbound
   connections, each bounded in time, size and rate, and logged: a scan, only with an
-  approver's signature over its host and port (an admin's in M11), so a reader key can't
+  approver's signature over its host and port (an admin's with multi-user), so a reader key can't
   probe the daemon's network; and a check, only to an upstream the signed policy names.
 - **A signed removal deletes a key for good:** a mistaken one loses it (an upstream key is
   made again and registered again; a signing key's old commits stay verifiable from the
@@ -271,7 +271,7 @@ checks whole, like any other change.
 
 Settled with the user before writing the plan:
 
-- **The host key scan** needs an approver's signature (`writ-scan/1`), an admin's in M11;
+- **The host key scan** needs an approver's signature (`writ-scan/1`), an admin's with multi-user;
   not limited to some ports, since no reader key can ask for one.
 - **A removed key is deleted**, after its id is typed again; `--yes` answers that question
   too, for scripts and the end-to-end scenarios.

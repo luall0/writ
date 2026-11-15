@@ -59,7 +59,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 |---|---|---|---|---|
 | [LLM task-conformance check](llm-task-conformance.md) | Policy | feature | L | idea, sketched |
 | [HTTP credential proxy (v2)](http-credential-proxy.md) | Credentials | feature | L | idea, sketched |
-| [Multi-user daemon](multi-user.md) | Identity, Approvals, Upstream | feature | L | specified up to its open questions; picked as [M11](../roadmap.md#m11--multi-user-daemon) |
+| [Multi-user daemon](multi-user.md) | Identity, Approvals, Upstream | feature | L | specified up to its open questions; not on the roadmap |
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
 | [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |

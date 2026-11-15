@@ -1,11 +1,11 @@
 # Multi-user daemon
 
-**Status:** specified up to its open questions; picked as
-[M11](../roadmap.md#m11--multi-user-daemon), after v1. **Area:** Identity, Approvals, Upstream.
+**Status:** specified up to its open questions; after v1, not on the
+[roadmap](../roadmap.md). **Area:** Identity, Approvals, Upstream.
 **Kind:** feature. **Size:** L.
 
-Multi-user is a [v1 non-goal](../product.md#non-goals); this page is its design, built after
-v1's last milestone (M8.5).
+Multi-user is a [v1 non-goal](../product.md#non-goals); this page is its design, for when it is
+picked after v1.
 
 ## Problem
 
@@ -174,5 +174,5 @@ Drafted; final with the plan.
 
 ## Plan
 
-Written when M11 starts, once the open questions are settled; each commit leaves Writ
+Written when it is picked, once the open questions are settled; each commit leaves Writ
 working.

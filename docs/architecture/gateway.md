@@ -431,7 +431,7 @@ separate ref, which names the commits it annotates by their ids and never contai
 1. **Waiting.** Once upstream took a push, `Service::notes_to_write` marks its commits (the
    ledger's entries for that lease and repo; every one of a push is) as waiting for their note,
    with the credential of that push, which will push the note (the repo's `upstream_credential`
-   today, [M11](../roadmap.md#m11--multi-user-daemon) may make it the user's). A note already
+   today, [multi-user](../backlog/multi-user.md) may make it the user's). A note already
    written stays written.
 2. **The notes job** (`writ-gateway/src/notes.rs`) starts after the push and takes the
    repo's mirror lock, so it runs once the push's `receive-pack` gave the mirror back, and

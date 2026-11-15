@@ -57,10 +57,9 @@ needed now. The numbers are kept, because the docs, the code and the registries 
 | M10 | [`direct_ssh` push mode](#m10--direct_ssh-push-mode) | Lent per-lease ssh-agent socket with a deploy key |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
-| M11 | [Multi-user daemon](#m11--multi-user-daemon) (after v1) | Several people on one daemon: users with their own approvers, readers, templates and upstream credentials, admins for admin changes and unsealing |
 
-M8.5 completes v1. M11 is the first idea picked from the [backlog](backlog/README.md) after
-it; new work after M11 comes from there too.
+M8.5 completes v1. Work after it comes from the [backlog](backlog/README.md), each idea
+picked by the user ([multi-user](backlog/multi-user.md) among them).
 
 ## M0 — Protocol spike (go/no-go)
 
@@ -249,7 +248,7 @@ installer asking all of it. Its real-install items ran with M7.9.
 thirteen reviewers over everything M5.7 to M7.6 added, two highs (the unseal acting on a policy
 before its MAC was checked; the approval client signing what a relay showed it) and every
 other finding fixed with its test, or moved with its line in the milestone that owns it
-(below: M7.9, M8, M8.5, M9, M11; and the backlog).
+(below: M7.9, M8, M8.5, M9; the multi-user page and the backlog).
 
 ## M7.8 — Approval popup on the Mac
 
@@ -473,19 +472,3 @@ Acceptance:
       set and cleared with `writ admin template`.
 - [ ] On the Mac, by hand ([manual checks](guides/manual-checks.md)): a Secure Enclave
       session key works with no prompt, with the screen locked, and can't be exported.
-
-## M11 — Multi-user daemon
-
-After v1. [The backlog page](backlog/multi-user.md) holds the design: users declared in the
-daemon's configuration, each with their approver and reader keys, the templates they own and
-their upstream credential per repo; a lease belongs to one user, whose authority decides who
-may approve, refuse, revoke and read it and which credential pushes it; admins make admin
-changes and unseal. Its open questions are settled with the user, and its plan written, before
-any code; the acceptance below is final then.
-
-Acceptance (draft):
-- [ ] Two users push to the same repo at once under their own credentials: the remote shows
-      each push as its user's, and both get their notes.
-- [ ] Every cross-user attempt (approve, refuse, revoke, `ls`, `show`, push, an admin change
-      by a non-admin) is refused with its exact code and logged with both users named.
-- [ ] A v1 single-user configuration starts unchanged and behaves as before.
