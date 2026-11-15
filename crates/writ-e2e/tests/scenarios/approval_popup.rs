@@ -13,8 +13,8 @@ use writ_e2e::Stack;
 use writ_e2e::agent::expect;
 use writ_e2e::docker::Talk;
 
-/// `text` with every relative time (` (in 59m59s)`) taken out: two displays made a second
-/// apart differ only there.
+/// `text` with every relative time (` (in 59m59s)`, `59m22s left`) taken out: two displays
+/// made a second apart differ only there.
 fn timeless(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
@@ -29,7 +29,27 @@ fn timeless(text: &str) -> String {
         }
     }
     out.push_str(rest);
-    out
+    // And each other lease's time left (`59m22s left`): shown only while another scenario
+    // holds leases from this source, and a second apart between the two displays.
+    out.split('\n')
+        .map(|line| {
+            match line
+                .strip_suffix(" left")
+                .and_then(|head| head.rsplit_once(' '))
+            {
+                Some((before, time))
+                    if !time.is_empty()
+                        && time
+                            .chars()
+                            .all(|c| c.is_ascii_digit() || "hms".contains(c)) =>
+                {
+                    format!("{before} … left")
+                }
+                _ => line.to_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn ticket(title: &str) -> String {
