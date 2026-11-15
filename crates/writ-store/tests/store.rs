@@ -62,6 +62,63 @@ fn config() -> PolicyConfig {
     PolicyConfig::from_yaml(POLICY).unwrap()
 }
 
+/// The test policy with omega-code naming an unsigned_fetch template (M7.9.7).
+fn unsigned_config() -> PolicyConfig {
+    let text = POLICY
+        .replacen(
+            "templates: [feature-branch, quick-fix, read-only]",
+            "templates: [feature-branch, quick-fix, read-only, fetch_unsigned]",
+            1,
+        )
+        .replacen(
+            "templates:\n  feature-branch:",
+            "templates:\n  fetch_unsigned:\n    unsigned_fetch: true\n    operations: [fetch]\n    \
+             max_ttl: 1h\n    max_signatures: 0\n    max_pushes: 0\n    max_ops_per_minute: 20\n    \
+             max_push_size: 0\n  feature-branch:",
+            1,
+        );
+    PolicyConfig::from_yaml(&text).unwrap()
+}
+
+const UNSIGNED_REQUEST: &str = r#"
+repos:
+  omega-code:
+    template: fetch_unsigned
+    operations: [fetch]
+ticket:
+  title: Fetch omega-code
+  task: Fetch before planning
+limits:
+  ttl: 10m
+"#;
+
+/// A lease granted with no signature, recorded as the daemon records one.
+fn unsigned_lease(store: &Store, n: u64) -> Lease {
+    let config = unsigned_config();
+    let submission = Submission {
+        id: id(n),
+        now: t(0),
+        session_key: fp('S'),
+        amends: None,
+        renews: None,
+        revises: None,
+        min_ttl: fit::DEFAULT_MIN_TTL,
+        chain: None,
+        launcher: None,
+    };
+    let ticket = fit::submit(
+        &config,
+        &TicketRequest::from_yaml(UNSIGNED_REQUEST).unwrap(),
+        &submission,
+    )
+    .unwrap();
+    let lease = lease::activate_unsigned(&config, &TicketRecord::pending(ticket), n, t(1)).unwrap();
+    store
+        .insert_unsigned(&lease, KEY, SOURCE, CERT, t(1))
+        .unwrap();
+    lease
+}
+
 fn t(offset: i64) -> Timestamp {
     Timestamp::from_unix(1_793_455_331 + offset).unwrap()
 }
@@ -916,22 +973,64 @@ fn filled(path: &Path) -> (Lease, TicketId, TicketId) {
     (lease, pending.id, refused.id)
 }
 
-/// The rows of the state at `from` copied into a new database at `to` written by version
-/// 11's frozen schema: a state as a version 11 writd left it.
-fn as_version_11(from: &Path, to: &Path) {
+/// The schema of version 12, frozen: what the step to 13 starts from.
+const SCHEMA_V12: &str = include_str!("schemas/v12.sql");
+
+/// The tables of version 12: version 11's and the record of migrations.
+const TABLES_V12: [&str; 9] = [
+    "formats",
+    "tickets",
+    "usage",
+    "ops",
+    "ledger",
+    "authority",
+    "authority_head",
+    "token_versions",
+    "migrations",
+];
+
+/// The rows of the state at `from` copied into a new database at `to` written by an older
+/// version's frozen `schema` (its `tables`, their columns as that schema has them): a state
+/// as a writd of `version` left it.
+fn as_version(from: &Path, to: &Path, schema: &str, tables: &[&str], version: i64) {
     let conn = rusqlite::Connection::open(to).unwrap();
-    conn.execute_batch(SCHEMA_V11).unwrap();
-    conn.execute("ATTACH DATABASE ?1 AS v12", [from.to_str().unwrap()])
+    conn.execute_batch(schema).unwrap();
+    conn.execute("ATTACH DATABASE ?1 AS current", [from.to_str().unwrap()])
         .unwrap();
-    for table in TABLES_V11 {
+    for table in tables {
+        let columns: Vec<String> = conn
+            .prepare(&format!(
+                "SELECT name FROM main.pragma_table_info('{table}')"
+            ))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let columns = columns.join(", ");
         conn.execute(
-            &format!("INSERT INTO main.{table} SELECT * FROM v12.{table}"),
+            &format!("INSERT INTO main.{table} ({columns}) SELECT {columns} FROM current.{table}"),
             [],
         )
         .unwrap();
     }
-    conn.execute("DETACH DATABASE v12", []).unwrap();
-    conn.pragma_update(None, "user_version", 11).unwrap();
+    conn.execute("DETACH DATABASE current", []).unwrap();
+    conn.pragma_update(None, "user_version", version).unwrap();
+}
+
+fn as_version_11(from: &Path, to: &Path) {
+    as_version(from, to, SCHEMA_V11, &TABLES_V11, 11);
+}
+
+/// Each step's record of one migration from `from` to the current version, copied to `backup`.
+fn steps(from: i64, backup: &Path) -> Vec<writ_store::Migrated> {
+    (from..writ_store::STATE_VERSION)
+        .map(|at| writ_store::Migrated {
+            from: at,
+            to: at + 1,
+            backup: backup.to_path_buf(),
+        })
+        .collect()
 }
 
 fn rows(path: &Path, table: &str) -> i64 {
@@ -954,7 +1053,7 @@ fn has_table(path: &Path, table: &str) -> bool {
 }
 
 #[test]
-fn a_version_11_state_migrates_to_12_after_a_copy_with_every_row_kept() {
+fn a_version_11_state_migrates_to_the_current_one_after_a_copy_with_every_row_kept() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let current = dir.path().join("current.db");
@@ -968,7 +1067,7 @@ fn a_version_11_state_migrates_to_12_after_a_copy_with_every_row_kept() {
         Store::open(&old),
         Err(StoreError::Older {
             found: 11,
-            expected: 12
+            expected: 13
         })
     ));
     assert_eq!(Store::version_at(&old).unwrap(), 11);
@@ -976,7 +1075,7 @@ fn a_version_11_state_migrates_to_12_after_a_copy_with_every_row_kept() {
 
     let (store, migrated) = Store::open_migrating(&old, &backups, t(1000)).unwrap();
     let migrated = migrated.unwrap();
-    assert_eq!((migrated.from, migrated.to), (11, 12));
+    assert_eq!((migrated.from, migrated.to), (11, 13));
     assert_eq!(
         migrated.backup,
         backups.join(format!("state-v11-{}.db", t(1000).unix()))
@@ -995,7 +1094,7 @@ fn a_version_11_state_migrates_to_12_after_a_copy_with_every_row_kept() {
     assert_eq!(mode(&migrated.backup), 0o600);
     assert_eq!(mode(&backups), 0o700);
 
-    // Every row read back as the version 12 store reads its own.
+    // Every row read back as the current store reads its own.
     let reference = Store::open(&current).unwrap();
     assert_eq!(
         store.lease(&lease.id).unwrap(),
@@ -1027,8 +1126,8 @@ fn a_version_11_state_migrates_to_12_after_a_copy_with_every_row_kept() {
     let token = "upstream".parse().unwrap();
     assert_eq!(store.token_version(&token).unwrap(), 1);
     assert_eq!(store.ops_rows().unwrap(), reference.ops_rows().unwrap());
-    // The migration recorded in the state.
-    assert_eq!(store.migrations().unwrap(), vec![migrated.clone()]);
+    // Each step recorded in the state, with the one copy taken before the first.
+    assert_eq!(store.migrations().unwrap(), steps(11, &migrated.backup));
     drop(store);
 
     // Opened again: at its version, nothing done, no other copy.
@@ -1038,8 +1137,64 @@ fn a_version_11_state_migrates_to_12_after_a_copy_with_every_row_kept() {
     drop(store);
     assert_eq!(
         Store::open(&old).unwrap().migrations().unwrap(),
-        vec![migrated]
+        steps(11, &migrated.backup)
     );
+}
+
+#[test]
+fn a_version_12_state_migrates_to_13_every_lease_signed_by_its_approver() {
+    let dir = tempfile::tempdir().unwrap();
+    let current = dir.path().join("current.db");
+    let (lease, pending, refused) = filled(&current);
+    let old = dir.path().join("leases.db");
+    as_version(&current, &old, SCHEMA_V12, &TABLES_V12, 12);
+    let backups = dir.path().join("backups");
+
+    // The step fails: rolled back, still version 12 without the column.
+    let failed = Store::open_migrating_failing(&old, &backups, t(1000), 13);
+    assert!(
+        matches!(
+            &failed,
+            Err(StoreError::Migration {
+                from: 12,
+                to: 13,
+                ..
+            })
+        ),
+        "{:?}",
+        failed.err()
+    );
+    assert_eq!(Store::version_at(&old).unwrap(), 12);
+    let columns = |path: &Path| -> Vec<String> {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .prepare("SELECT name FROM pragma_table_info('tickets')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    assert!(!columns(&old).contains(&"unsigned".to_owned()));
+
+    let (store, migrated) = Store::open_migrating(&old, &backups, t(1001)).unwrap();
+    let migrated = migrated.unwrap();
+    assert_eq!((migrated.from, migrated.to), (12, 13));
+    assert_eq!(store.migrations().unwrap(), steps(12, &migrated.backup));
+    assert!(columns(&old).contains(&"unsigned".to_owned()));
+    // Every lease before version 13 was signed: read back with its approval, unsigned none.
+    let reference = Store::open(&current).unwrap();
+    let read = store.lease(&lease.id).unwrap().unwrap();
+    assert_eq!(read, reference.lease(&lease.id).unwrap().unwrap());
+    assert_eq!(read.granted_by, lease::GrantedBy::Approver(approval()));
+    for id in [&lease.id, &pending, &refused] {
+        let record = store.ticket(id).unwrap().unwrap();
+        assert!(!record.unsigned);
+        assert_eq!(record, reference.ticket(id).unwrap().unwrap());
+    }
+    // A lease granted with no signature records after it.
+    let unsigned = unsigned_lease(&store, 9);
+    assert_eq!(store.lease(&unsigned.id).unwrap().unwrap(), unsigned);
 }
 
 #[test]
@@ -1081,7 +1236,7 @@ fn a_step_that_fails_is_rolled_back_and_the_copy_kept() {
         backups.join(format!("state-v11-{}-1.db", t(1000).unix()))
     );
     assert_eq!(Store::version_at(&copy).unwrap(), 11);
-    assert_eq!(store.migrations().unwrap(), vec![migrated]);
+    assert_eq!(store.migrations().unwrap(), steps(11, &migrated.backup));
 }
 
 #[test]
@@ -1482,4 +1637,79 @@ fn a_token_s_change_count_only_grows_and_survives_a_reopen() {
         matches!(refused, Err(rusqlite::Error::SqliteFailure(..))),
         "the schema refuses it: {refused:?}"
     );
+}
+
+/// M7.9.7: a lease granted with no signature is recorded active at once, with no approval and
+/// `unsigned` set; read back as granted by the policy; a row whose flag and approval disagree
+/// is corrupt, never read as one or the other; each insert takes only its own kind.
+#[test]
+fn an_unsigned_lease_is_recorded_with_no_approval_and_a_mismatch_is_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("writ.db");
+    let store = Store::open(&path).unwrap();
+    let unsigned = unsigned_lease(&store, 1);
+    assert_eq!(unsigned.granted_by, lease::GrantedBy::Policy);
+    let read = store.lease(&unsigned.id).unwrap().unwrap();
+    assert_eq!(read, unsigned);
+    let record = store.ticket(&unsigned.id).unwrap().unwrap();
+    assert!(record.unsigned);
+    assert_eq!((record.state, record.approval), (State::Active, None));
+    assert_eq!(
+        store.certificate(&unsigned.id).unwrap().as_deref(),
+        Some(CERT)
+    );
+    assert_eq!(store.active_from(SOURCE).unwrap(), vec![unsigned.clone()]);
+    // Twice: a duplicate.
+    assert!(matches!(
+        store.insert_unsigned(&unsigned, KEY, SOURCE, CERT, t(2)),
+        Err(StoreError::Duplicate(_))
+    ));
+    // A signed lease through insert_unsigned, an unsigned one through activate: refused.
+    let signed = active_lease(&store, 2);
+    let as_unsigned = Lease {
+        id: id(3),
+        ticket: ticket(3, REQUEST, None),
+        ..signed.clone()
+    };
+    assert!(matches!(
+        store.insert_unsigned(&as_unsigned, KEY, SOURCE, CERT, t(2)),
+        Err(StoreError::Corrupt { .. })
+    ));
+    let pending = ticket(4, REQUEST, None);
+    store.insert_pending(&pending, KEY, SOURCE, t(3)).unwrap();
+    let as_signed = Lease {
+        id: pending.id.clone(),
+        ticket: pending.clone(),
+        granted_by: lease::GrantedBy::Policy,
+        ..signed.clone()
+    };
+    assert!(matches!(
+        store.activate(&as_signed, CERT, t(4)),
+        Err(StoreError::Corrupt { .. })
+    ));
+    drop(store);
+    // The flag set on a signed lease, or cleared on the unsigned one: corrupt either way.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute(
+        "UPDATE tickets SET unsigned = 1 WHERE id = ?1",
+        [signed.id.as_str()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE tickets SET unsigned = 0 WHERE id = ?1",
+        [unsigned.id.as_str()],
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    for id in [&signed.id, &unsigned.id] {
+        assert!(
+            matches!(store.lease(id), Err(StoreError::Corrupt { .. })),
+            "{id}"
+        );
+    }
+    assert!(matches!(
+        store.ticket(&signed.id),
+        Err(StoreError::Corrupt { .. })
+    ));
 }

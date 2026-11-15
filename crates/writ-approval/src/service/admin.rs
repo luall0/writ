@@ -342,7 +342,13 @@ impl Service {
             Some(kept) => match inner.store.leases(writ_core::lease::State::Active) {
                 Ok(active) => active
                     .into_iter()
-                    .filter(|lease| !kept.contains(&lease.approval.approver))
+                    // A lease granted with no signature has no approver to remove (M7.9.7).
+                    .filter(|lease| {
+                        lease
+                            .granted_by
+                            .approver()
+                            .is_some_and(|approver| !kept.contains(approver))
+                    })
                     .collect(),
                 Err(e) => {
                     tracing::error!(error = %e, "cannot list the leases the approvers signed");
@@ -510,10 +516,12 @@ impl Service {
     fn revoke_unapproved(&self, leases: Vec<Lease>, version: u64) -> Vec<TicketId> {
         let mut revoked = Vec::new();
         for lease in leases {
-            let reason = format!(
-                "its approver {} was removed from approvers (version {version})",
-                lease.approval.approver
-            );
+            let approver = lease
+                .granted_by
+                .approver()
+                .map_or_else(|| "?".to_owned(), ToString::to_string);
+            let reason =
+                format!("its approver {approver} was removed from approvers (version {version})");
             // Refused first, whatever the store does.
             self.bar_serial(lease.cert_serial);
             match self.revoke_by_daemon(&lease.id, &reason, super::sweep::Announce::Now) {
@@ -553,7 +561,12 @@ impl Service {
         };
         let orphaned: Vec<Lease> = leases
             .into_iter()
-            .filter(|lease| !approvers.contains(&lease.approval.approver))
+            .filter(|lease| {
+                lease
+                    .granted_by
+                    .approver()
+                    .is_some_and(|approver| !approvers.contains(approver))
+            })
             .collect();
         if !orphaned.is_empty() {
             let version = self

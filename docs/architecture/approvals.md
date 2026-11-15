@@ -29,6 +29,14 @@ file (same format as git's `allowed_signers`) ([Q20](../decisions.md)).
   notification click is never an approval ([Q7/Q13](../decisions.md)).
 - Admin changes (approvers, readers, templates, repo registry) and unsealing also require a
   signed approval ([admin changes](#admin-changes), [`writ unseal`](#writ-unseal)).
+- **The one grant with no approval** (M7.9.7): a fetch-only ticket that names an
+  `unsigned_fetch` template for each of its repositories is granted when submitted, never
+  pending, so never shown to `writ sign` or the popup and never notified. Its approval is the
+  signed policy change that made the template and named it in the repo
+  ([lease model](../lease-model.md#granted-with-no-signature-m797)). Approving one is refused
+  (it isn't pending), and so is any signature over such a ticket. Removing an approver revokes
+  the leases that approver signed; an unsigned lease has none, and ends when its template stops
+  allowing it.
 
 ## `writ sign`: the trusted display
 
@@ -97,7 +105,8 @@ triggering the signature; it is the trusted display
 - **The other active leases from the ticket's source** (the daemon's record of where each
   ticket came from, never the agent's claim): 10 of them (`MAX_OTHERS`) with their id, time
   left, repos, branches and operations, `OVERLAP` on those with a repo in common and branch
-  patterns that meet, and how many more. Overlapping leases come first: one is never the
+  patterns that meet, `no signature (unsigned_fetch)` on a lease granted with none, and how
+  many more. Overlapping leases come first: one is never the
   lease left out. Display only: `max_active_per_source` is what limits
   them.
 

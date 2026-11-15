@@ -97,8 +97,8 @@ took fills them), against the policy in force then (the review after M7.6, A-7).
 Active leases persist across restarts and are reloaded after unsealing ([Q8](../decisions.md)).
 
 Tables (`writ_store::Store`). The state carries its version: `PRAGMA user_version` (the
-state version, `STATE_VERSION`, now 12: M6.2's policy shape, the token changes' counts of M7.7,
-the record of migrations of M7.9.6) and `formats.ticket_kind` (the ticket format it stores,
+state version, `STATE_VERSION`, now 13: M6.2's policy shape, the token changes' counts of M7.7,
+the record of migrations of M7.9.6, how each lease was granted of M7.9.7) and `formats.ticket_kind` (the ticket format it stores,
 `writ-ticket/3`). A new database gets the whole schema at once. **An older state is migrated
 in steps** (M7.9.6), by `writd run` only, before anything reads it (`Store::open_migrating`):
 the whole database is first copied into `<state_dir>/backups/state-v<N>-<time>.db`
@@ -120,7 +120,7 @@ rewrites a signed text.
 
 | Table | Holds |
 |---|---|
-| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with, the source it came from (`source`: an IPv4 address, an IPv6 /64 or `local`; what `max_active_per_source` and `writ sign`'s other leases are counted by) and the lease it renews (`renews`). A lease is the row of its first ticket, with the certificate serial, `current_ticket` (the row whose terms are in force: itself, or the last applied amendment), the certificate issued for it, and the closing summary (`summary`) |
+| `tickets` | One row per ticket: its canonical bytes (as submitted, then as signed), state, feedback, approval (approver fingerprint, namespace, SSHSIG), the session public key it was submitted with, the source it came from (`source`: an IPv4 address, an IPv6 /64 or `local`; what `max_active_per_source` and `writ sign`'s other leases are counted by) and the lease it renews (`renews`), and `unsigned` (M7.9.7, version 13: 1 for a lease granted with no signature, under `unsigned_fetch` templates, inserted active with no approval and never amended; 0 for every other row, every lease before version 13 included). A lease is the row of its first ticket, with the certificate serial, `current_ticket` (the row whose terms are in force: itself, or the last applied amendment), the certificate issued for it, and the closing summary (`summary`) |
 | `usage` | `(lease, repo)` → the `signatures` and `pushes` counters of that lease in that repo (M6.1.5, version 9: each repo counted against its own terms; a repo with nothing used yet has no row) |
 | `formats` | One row: the ticket format the state holds |
 | `token_versions` | A credential id (ASCII lowercase: one count per token file, on a file system that folds case) → how many token changes (`writ-token/3`) were applied for it (version 11, the review after M7.6, A-6). Never deleted, not even when the id leaves the policy and its token file goes: a change names the count it replaces, so it applies once. An id never given a token has no row (count 0) |
@@ -128,7 +128,12 @@ rewrites a signed text.
 | `ledger` | `(commit, lease, repo)` → signer key id, time, the digest of the paths the commit touched as signing computed them (`writ_git::paths::digest`; none when unknown, schema 4). The commit is the id of the commit git writes with the daemon's signature in it (`writ_git::signed`), never the unsigned bytes' id. Signing the same commit again for the same lease and repo keeps the first entry. Under `ticket_link: notes` (schema 5), each entry's `note`: none (not asked for), `pending` once upstream took the commit (with `note_credential`, the credential of that push, which pushes the note), `written` once the note is upstream; a written note stays written |
 
 - Stored tickets are decoded strictly (canonical bytes only), and an approval must be complete
-  and under `writ-approval`: a record edited by hand fails closed.
+  and under `writ-approval`: a record edited by hand fails closed. A lease is read as granted
+  by an approver (`GrantedBy::Approver`) only with `unsigned` 0 and its approval, as granted
+  by the policy (`GrantedBy::Policy`) only with `unsigned` 1, no approval and no amendment:
+  any other mix is corrupt, never read as one or the other. `Store::insert_unsigned` records
+  an unsigned lease (inserted active with its certificate, in one statement), and `activate`
+  refuses one.
 - State changes are compare-and-set (`… WHERE state = <expected>`) and follow the lifecycle;
   applying an amendment updates the amendment and its lease in one transaction, and so does
   granting a renewal (the new lease active, the renewed one `renewed`).
@@ -152,7 +157,7 @@ caller ([Identity](identity.md#local-mode-process-chain-checks)).
 ```
 
 Fields (`writ_store::AuditEvent`, empty ones left out): `time`, `event` (`submit`, `grant`
-(a renewal's grant names the lease it renews in `reason`), `refuse`, `amend`, `renew` (a lease
+(a renewal's grant names the lease it renews in `reason`; a lease granted with no signature, M7.9.7, has no `approver` and says so in `reason`: `granted with no signature (unsigned_fetch): template <name>`), `refuse`, `amend`, `renew` (a lease
 ended by its renewal's grant), `dry_run` (a ticket checked as a submission, nothing stored: allowed with the template it fits, or denied with the reasons), `policy` (what a ticket for a repo may ask was read: allowed with the repo, denied for a repo not in the registry), `revoke`, `expire`, `exhaust`, `close` (done: the agent closed
 its lease, or added its summary to one that had ended: `reason` says `already <state>`), `connect` (a session certificate presented to the gateway, or a caller turned away), `command` (an exec request the gateway doesn't serve for this caller), `sign`, `push`, `fetch`, `prove` (an agent
 signing key's [proof for a remote](approvals.md#proving-a-signing-key-to-a-remote)), `notes`

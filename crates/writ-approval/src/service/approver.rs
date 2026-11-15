@@ -205,6 +205,7 @@ impl Service {
                     operations: operations.into_iter().collect(),
                     expires_at: lease.ticket.limits.expires_at,
                     overlap,
+                    unsigned: lease.granted_by.is_unsigned(),
                 }
             })
             .collect();
@@ -1013,5 +1014,6 @@ pub(super) fn summary(record: &TicketRecord) -> Summary {
         created_at: ticket.created_at,
         expires_at: ticket.limits.expires_at,
         title: ticket.text.title.clone(),
+        unsigned: record.unsigned,
     }
 }

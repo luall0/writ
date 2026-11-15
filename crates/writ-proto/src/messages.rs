@@ -746,6 +746,9 @@ pub struct Summary {
     pub created_at: Timestamp,
     pub expires_at: Timestamp,
     pub title: String,
+    /// Granted with no signature (an `unsigned_fetch` template, M7.9.7).
+    #[serde(default)]
+    pub unsigned: bool,
 }
 
 /// Reply to [`Command::Show`].
@@ -813,6 +816,9 @@ pub struct OtherLease {
     pub expires_at: Timestamp,
     /// A repo in common with the ticket shown, and branch patterns that intersect.
     pub overlap: bool,
+    /// Granted with no signature (an `unsigned_fetch` template, M7.9.7).
+    #[serde(default)]
+    pub unsigned: bool,
 }
 
 /// The ticket a revision or an amendment follows, for the diff `writ sign` shows.
@@ -853,6 +859,9 @@ pub struct Report {
     pub lease: TicketId,
     pub state: State,
     pub title: String,
+    /// Granted with no signature (an `unsigned_fetch` template, M7.9.7).
+    #[serde(default)]
+    pub unsigned: bool,
     /// Each repository's template, each once (in repository order).
     pub templates: Vec<TemplateName>,
     pub repos: Vec<RepoName>,

@@ -43,11 +43,23 @@ impl Service {
             caller,
             EventKind::Submit,
         )?;
-        let pubkey = session_key.to_openssh().map_err(internal)?;
         let event = AuditEvent::new(now, EventKind::Submit, Outcome::Allowed)
             .ticket(&ticket.id)
             .lease(ticket.lease_id())
             .caller(caller);
+        // Under unsigned_fetch templates (M7.9.7): granted now, never pending, no notification.
+        if fit::unsigned(&self.policy(), &ticket) {
+            Self::logged(&mut inner, event, |_| Ok(()))?;
+            drop(inner);
+            let submitted = Submitted {
+                id: ticket.id.clone(),
+                canonical: canonical_text(&ticket)?,
+            };
+            self.grant_unsigned(ticket, session_key, source, caller)?;
+            self.changed.notify_waiters();
+            return Ok(submitted);
+        }
+        let pubkey = session_key.to_openssh().map_err(internal)?;
         Self::logged(&mut inner, event, |inner| {
             inner
                 .store
@@ -201,14 +213,11 @@ impl Service {
             None => None,
         };
         let source = Source::of(caller.source_addr);
-        if let Err(error) = self.within_active(inner, source, &request, &session, renews.as_ref()) {
-            return reject(inner, error);
-        }
         let random = keys::random_array::<10>().map_err(internal)?;
         let submission = Submission {
             id: TicketId::from_parts(self.clock.now_ms(), random),
             now,
-            session_key: session,
+            session_key: session.clone(),
             amends: amends.as_ref(),
             renews: renews.as_ref().map(|(lease, renewals)| Renewed {
                 lease,
@@ -222,7 +231,14 @@ impl Service {
         };
         let policy = self.policy();
         match fit::submit(&policy, &request, &submission) {
-            Ok(ticket) => Ok((ticket, source)),
+            // A lease granted with no signature takes no slot of max_active_per_source.
+            Ok(ticket) if fit::unsigned(&policy, &ticket) => Ok((ticket, source)),
+            Ok(ticket) => {
+                match self.within_active(inner, source, &request, &session, renews.as_ref()) {
+                    Ok(()) => Ok((ticket, source)),
+                    Err(error) => reject(inner, error),
+                }
+            }
             Err(rejection) if rejection.session => reject(
                 inner,
                 ServiceError::Refused {
@@ -274,7 +290,7 @@ impl Service {
             .active_from(source)
             .map_err(internal)?
             .iter()
-            .filter(|lease| Some(&lease.id) != replaced)
+            .filter(|lease| Some(&lease.id) != replaced && !lease.granted_by.is_unsigned())
             .count();
         if u32::try_from(held).map_or(true, |held| held >= max) {
             return Err(ServiceError::refused(
@@ -464,7 +480,7 @@ impl Service {
 
 /// The templates a ticket fits, for a line of the log or a notification: `template t`, or
 /// `templates a, b` (each repository's, each once).
-fn fitted(ticket: &writ_core::ticket::Ticket) -> String {
+pub(super) fn fitted(ticket: &writ_core::ticket::Ticket) -> String {
     let names: Vec<String> = ticket.templates().iter().map(ToString::to_string).collect();
     match names.as_slice() {
         [one] => format!("template {one}"),

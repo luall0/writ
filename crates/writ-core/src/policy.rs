@@ -240,24 +240,34 @@ fn deny(code: DenyCode, reason: impl Into<String>) -> Denial {
 }
 
 /// An out-of-scope denial, with the amendment hint.
-fn outside(lease: &TicketId, code: DenyCode, what: impl fmt::Display) -> Denial {
+fn outside(lease: &Lease, code: DenyCode, what: impl fmt::Display) -> Denial {
+    let id = &lease.id;
     Denial {
         code,
-        reason: format!("outside ticket {lease}: {what}"),
-        hint: Some(format!(
-            "If needed, submit an amendment (ticket.amends: {lease})"
-        )),
+        reason: format!("outside ticket {id}: {what}"),
+        hint: Some(match lease.granted_by.is_unsigned() {
+            // Never amended (M7.9.7): the work it plans gets a ticket of its own.
+            true => UNSIGNED_HINT.to_owned(),
+            false => format!("If needed, submit an amendment (ticket.amends: {id})"),
+        }),
     }
 }
 
+/// What a denial under a lease granted with no signature says to do instead of amending or
+/// renewing it, which is refused.
+const UNSIGNED_HINT: &str = "This lease was granted with no signature (unsigned_fetch) and only fetches: for more, \
+     submit a ticket of its own";
+
 /// The lease ran out (of time or of counts): a denial with the renewal hint.
-fn ran_out(lease: &TicketId, code: DenyCode, what: impl fmt::Display) -> Denial {
+fn ran_out(lease: &Lease, code: DenyCode, what: impl fmt::Display) -> Denial {
+    let id = &lease.id;
     Denial {
         code,
-        reason: format!("lease {lease} {what}"),
-        hint: Some(format!(
-            "If the work isn't done, submit a renewal (ticket.renews: {lease})"
-        )),
+        reason: format!("lease {id} {what}"),
+        hint: Some(match lease.granted_by.is_unsigned() {
+            true => UNSIGNED_HINT.to_owned(),
+            false => format!("If the work isn't done, submit a renewal (ticket.renews: {id})"),
+        }),
     }
 }
 
@@ -268,7 +278,7 @@ pub fn check_allowed_anywhere(lease: &Lease, operation: Operation) -> Result<(),
         Ok(())
     } else {
         Err(outside(
-            &lease.id,
+            lease,
             DenyCode::Operation,
             format_args!("{operation} not allowed"),
         ))
@@ -282,7 +292,7 @@ pub fn check_operation(lease: &Lease, repo: &RepoName, operation: Operation) -> 
         Ok(())
     } else {
         Err(outside(
-            &lease.id,
+            lease,
             DenyCode::Operation,
             format_args!("{operation} not allowed in repo {repo}"),
         ))
@@ -296,7 +306,7 @@ pub fn check_repo(lease: &Lease, repo: &RepoName) -> Result<(), Denial> {
         Ok(())
     } else {
         Err(outside(
-            &lease.id,
+            lease,
             DenyCode::Repo,
             format_args!("repo {repo} not allowed"),
         ))
@@ -469,15 +479,15 @@ fn admit_counted<'a>(
     let id = &lease.id;
     match lease.state {
         State::Active => {}
-        State::Expired => return Err(ran_out(id, DenyCode::Expired, "expired")),
-        State::Exhausted => return Err(ran_out(id, DenyCode::Exhausted, "is used up")),
+        State::Expired => return Err(ran_out(lease, DenyCode::Expired, "expired")),
+        State::Exhausted => return Err(ran_out(lease, DenyCode::Exhausted, "is used up")),
         other => return Err(deny(DenyCode::NotActive, format!("lease {id} is {other}"))),
     }
     if lease.ticket.is_expired(ctx.now) {
-        return Err(ran_out(id, DenyCode::Expired, "expired"));
+        return Err(ran_out(lease, DenyCode::Expired, "expired"));
     }
     if counted == Counted::No && is_exhausted(&lease.ticket, ctx.usage) {
-        return Err(ran_out(id, DenyCode::Exhausted, "is used up"));
+        return Err(ran_out(lease, DenyCode::Exhausted, "is used up"));
     }
     caller::check(lease.ticket.subject.caller.as_ref(), ctx.caller)
         .map_err(|e| deny(DenyCode::Caller, e.to_string()))?;
@@ -487,7 +497,7 @@ fn admit_counted<'a>(
     check_operation(lease, repo, operation)?;
     let Some(terms) = lease.ticket.terms(repo) else {
         return Err(outside(
-            id,
+            lease,
             DenyCode::Repo,
             format_args!("repo {repo} not allowed"),
         ));
@@ -506,6 +516,17 @@ fn admit_counted<'a>(
             format!("lease {id} no longer fits its templates: {why}"),
         )
     })?;
+    // Granted with no signature: only while its templates in force still grant that (an
+    // operator who turns unsigned_fetch off ends every such lease at once, M7.9.7).
+    if lease.granted_by.is_unsigned() && !fit::unsigned(ctx.config, &lease.ticket) {
+        return Err(deny(
+            DenyCode::Config,
+            format!(
+                "lease {id} was granted with no signature, and its templates no longer grant \
+                 that (unsigned_fetch)"
+            ),
+        ));
+    }
     Ok((template, entry, terms))
 }
 
@@ -603,7 +624,7 @@ fn decide_sign_counted(
         .any(|e| e.as_str() == request.committer_email);
     if !email_allowed {
         return Err(outside(
-            id,
+            lease,
             DenyCode::Committer,
             format_args!(
                 "committer email {:?} not allowed",
@@ -619,7 +640,7 @@ fn decide_sign_counted(
         .any(|e| e.as_str() == request.author_email);
     if !author_allowed {
         return Err(outside(
-            id,
+            lease,
             DenyCode::Author,
             format_args!(
                 "author email {:?} not allowed (the author, like the committer, must be one \
@@ -703,11 +724,11 @@ fn check_paths(
     request: &SignRequest,
     allowed: &mut Allowed,
 ) -> Result<(), Denial> {
+    let lease = ctx.lease;
     let expected = &terms.expected_paths;
     if template.paths_check == PathsCheck::Off || expected.is_empty() {
         return Ok(());
     }
-    let id = &ctx.lease.id;
     let set = PathSet::new(expected).map_err(|e| deny(DenyCode::Config, e.to_string()))?;
     let outside_paths: Vec<&str> = match &request.touched_paths {
         None => {
@@ -736,7 +757,7 @@ fn check_paths(
     let listed = list_paths(&outside_paths);
     match template.paths_check {
         PathsCheck::Deny => Err(outside(
-            id,
+            lease,
             DenyCode::Paths,
             format_args!("files outside expected_paths: {listed}"),
         )),
@@ -769,12 +790,11 @@ fn list_paths(paths: &[&str]) -> String {
 pub fn decide_push(ctx: &Context<'_>, request: &PushRequest) -> Result<Allowed, Denial> {
     let (template, entry, scope) = admit(ctx, Operation::Push, &request.repo)?;
     let lease = ctx.lease;
-    let id = &lease.id;
 
     if request.updates.is_empty() {
         return Err(deny(DenyCode::Invalid, "the push updates no ref"));
     }
-    check_ref_updates(id, entry, scope, &request.repo, &request.updates)?;
+    check_ref_updates(lease, entry, scope, &request.repo, &request.updates)?;
     // The chain must start with the lease this one says it renews: anything else is a fault
     // in the daemon's lookup, never a reason to accept more.
     if request.predecessors.first() != lease.renews.as_ref() {
@@ -800,12 +820,12 @@ pub fn check_push_refs(
     let (Some(scope), Some(entry)) = (lease.ticket.terms(repo), config.repo(repo)) else {
         return Ok(());
     };
-    check_ref_updates(&lease.id, entry, scope, repo, updates)
+    check_ref_updates(lease, entry, scope, repo, updates)
 }
 
 /// The ref loop of [`decide_push`] and [`check_push_refs`].
 fn check_ref_updates(
-    id: &TicketId,
+    lease: &Lease,
     entry: &RepoEntry,
     scope: &RepoTerms,
     repo: &RepoName,
@@ -835,7 +855,7 @@ fn check_ref_updates(
         }
         if name.branch().is_none() {
             return Err(outside(
-                id,
+                lease,
                 DenyCode::Ref,
                 format_args!("{name} is not a branch"),
             ));
@@ -843,7 +863,7 @@ fn check_ref_updates(
         if !scope.branches.iter().any(|b| b.matches_ref(&name)) {
             let branch = name.branch().unwrap_or(name.as_str());
             return Err(outside(
-                id,
+                lease,
                 DenyCode::Ref,
                 format_args!("branch {branch} not allowed"),
             ));
@@ -854,14 +874,14 @@ fn check_ref_updates(
             }
             (Some(_), None) if !scope.force_push => {
                 return Err(outside(
-                    id,
+                    lease,
                     DenyCode::ForcePush,
                     format_args!("deleting {name} needs force_push"),
                 ));
             }
             (Some(_), Some(_)) if !update.fast_forward && !scope.force_push => {
                 return Err(outside(
-                    id,
+                    lease,
                     DenyCode::ForcePush,
                     format_args!("force push to {name} not allowed"),
                 ));
@@ -880,14 +900,15 @@ fn decide_push_commits(
     template: &Template,
     scope: &RepoTerms,
 ) -> Result<Allowed, Denial> {
-    let id = &ctx.lease.id;
+    let lease = ctx.lease;
+    let id = &lease.id;
     for commit in &request.commits {
         let Some(entry) = commit.signed_under.iter().find(|entry| {
             (&entry.lease == id || request.predecessors.contains(&entry.lease))
                 && entry.repo == request.repo
         }) else {
             return Err(outside(
-                id,
+                lease,
                 DenyCode::Unsigned,
                 format_args!(
                     "commit {} was not signed under this lease (or a lease it renews) for repo {}",
@@ -901,7 +922,7 @@ fn decide_push_commits(
             && commit.paths.as_ref() != Some(signed)
         {
             return Err(outside(
-                id,
+                lease,
                 DenyCode::PathsChanged,
                 format_args!(
                     "commit {}: the paths it touches are not the ones checked when it was signed",
@@ -913,7 +934,7 @@ fn decide_push_commits(
     let max_size = max_push_size(scope, template);
     if request.pack_size > max_size {
         return Err(outside(
-            id,
+            lease,
             DenyCode::Size,
             format_args!("the push is {} bytes, over {max_size}", request.pack_size),
         ));

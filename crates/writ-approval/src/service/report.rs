@@ -313,6 +313,7 @@ fn build(gathered: Gathered, lines: &[AuditLine], truncated: bool) -> Report {
         lease: gathered.lease.id.clone(),
         state: gathered.lease.state,
         title: ticket.text.title.clone(),
+        unsigned: gathered.lease.granted_by.is_unsigned(),
         templates: ticket.templates().into_iter().cloned().collect(),
         repos: ticket.repos.keys().cloned().collect(),
         expected_paths: ticket

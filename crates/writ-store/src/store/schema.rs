@@ -15,9 +15,10 @@ use crate::{Result, StoreError};
 
 /// The version of the state's format: the schema below and the ticket format it stores
 /// ([`Ticket::KIND`]) (10: M6.2's policy shape; 11: each credential's count of token changes,
-/// the review after M7.6's A-6; 12: the record of migrations, M7.9.6). Kept in
-/// `PRAGMA user_version`, and the ticket format in `formats`.
-pub const STATE_VERSION: i64 = 12;
+/// the review after M7.6's A-6; 12: the record of migrations, M7.9.6; 13: how each lease was
+/// granted, `tickets.unsigned`, M7.9.7). Kept in `PRAGMA user_version`, and the ticket format
+/// in `formats`.
+pub const STATE_VERSION: i64 = 13;
 
 /// The oldest version a step starts from: an older state can't be migrated (it predates the
 /// steps, M7.9.6).
@@ -32,10 +33,21 @@ pub(super) struct Step {
 /// Every step, in order: one per version after [`FIRST_MIGRATABLE`]. A version's step comes
 /// with a test that migrates a database written by the schema it starts from (kept frozen in
 /// the tests) and reads every row back.
-pub(super) const STEPS: &[Step] = &[Step {
-    to: 12,
-    run: |tx| tx.execute_batch(MIGRATIONS_TABLE),
-}];
+pub(super) const STEPS: &[Step] = &[
+    Step {
+        to: 12,
+        run: |tx| tx.execute_batch(MIGRATIONS_TABLE),
+    },
+    Step {
+        to: 13,
+        run: |tx| tx.execute_batch(UNSIGNED_COLUMN),
+    },
+];
+
+/// How each lease was granted (version 13): every lease before it was signed by an approver.
+const UNSIGNED_COLUMN: &str = "
+ALTER TABLE tickets ADD COLUMN unsigned INTEGER NOT NULL DEFAULT 0 CHECK (unsigned IN (0, 1));
+";
 
 /// The record of every migration (version 12).
 const MIGRATIONS_TABLE: &str = "
@@ -82,7 +94,8 @@ CREATE TABLE tickets (
     renews         TEXT REFERENCES tickets(id),
     summary        TEXT,
     created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL
+    updated_at     INTEGER NOT NULL,
+    unsigned       INTEGER NOT NULL DEFAULT 0 CHECK (unsigned IN (0, 1))
 ) STRICT;
 CREATE INDEX tickets_state ON tickets(state);
 CREATE INDEX tickets_source ON tickets(source, state);

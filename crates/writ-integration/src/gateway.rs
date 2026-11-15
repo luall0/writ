@@ -381,6 +381,30 @@ impl GitGateway {
         submitted.id
     }
 
+    /// A lease under `unsigned_fetch` templates (M7.9.7): submitted, never approved, active
+    /// once submitted. Writes `keys/<name>` and its certificate, returns the lease id.
+    pub fn unsigned_session(&self, name: &str, ticket: &str) -> TicketId {
+        let key = generate(KeyKind::Ed25519).unwrap();
+        let submitted = self
+            .service
+            .submit(key.public_key(), ticket.as_bytes(), &CallerFacts::default())
+            .unwrap();
+        let decision = self
+            .runtime
+            .block_on(self.service.wait(&submitted.id, key.public_key()))
+            .unwrap();
+        let Decision::Active { certificate, .. } = decision else {
+            panic!("expected an active lease, got {decision:?}");
+        };
+        write_key(&self.root().join("keys").join(name), &key);
+        fs::write(
+            self.root().join("keys").join(format!("{name}-cert.pub")),
+            certificate,
+        )
+        .unwrap();
+        submitted.id
+    }
+
     /// Revokes a lease with a signed revocation.
     pub fn revoke(&self, id: &TicketId) {
         self.service

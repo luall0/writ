@@ -63,10 +63,12 @@ fn version(path: &Path) -> i64 {
         .unwrap()
 }
 
-/// The state as a version 11 writd left it: version 12 only added the `migrations` table.
+/// The state as a version 11 writd left it: version 12 only added the `migrations` table,
+/// version 13 the `unsigned` column of `tickets`.
 fn as_version_11(path: &Path) {
     let conn = rusqlite::Connection::open(path).unwrap();
-    conn.execute_batch("DROP TABLE migrations").unwrap();
+    conn.execute_batch("DROP TABLE migrations; ALTER TABLE tickets DROP COLUMN unsigned")
+        .unwrap();
     conn.pragma_update(None, "user_version", 11).unwrap();
 }
 
@@ -82,7 +84,7 @@ fn a_start_on_an_older_state_migrates_it_after_a_copy_and_serves_as_before() {
 
     daemon.restart();
     // Migrated before anything read it: the copy, the log line, the audit line, the record.
-    assert_eq!(version(&db(&daemon)), 12);
+    assert_eq!(version(&db(&daemon)), 13);
     let copies: Vec<_> = fs::read_dir(&backups)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -92,7 +94,7 @@ fn a_start_on_an_older_state_migrates_it_after_a_copy_and_serves_as_before() {
     assert!(
         daemon
             .log()
-            .contains("the state migrated from version 11 to 12"),
+            .contains("the state migrated from version 11 to 13"),
         "{}",
         daemon.log()
     );
@@ -101,19 +103,20 @@ fn a_start_on_an_older_state_migrates_it_after_a_copy_and_serves_as_before() {
     assert_eq!(
         lines[0]["reason"].as_str().unwrap(),
         format!(
-            "the state migrated from version 11 to 12; its copy from before: {}",
+            "the state migrated from version 11 to 13; its copy from before: {}",
             copies[0].display()
         )
     );
     let recorded: i64 = rusqlite::Connection::open(db(&daemon))
         .unwrap()
         .query_row(
-            "SELECT COUNT(*) FROM migrations WHERE from_version = 11 AND to_version = 12",
+            "SELECT COUNT(*) FROM migrations WHERE (from_version, to_version) IN \
+             (VALUES (11, 12), (12, 13))",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(recorded, 1);
+    assert_eq!(recorded, 2);
 
     // Serves as before, sealed then unsealed.
     assert!(daemon.unseal().status.success(), "{}", daemon.log());
@@ -131,15 +134,15 @@ fn a_state_newer_than_the_binary_is_refused_at_the_start_and_left_as_it_is() {
     daemon.stop();
     rusqlite::Connection::open(db(&daemon))
         .unwrap()
-        .pragma_update(None, "user_version", 13)
+        .pragma_update(None, "user_version", 14)
         .unwrap();
     let refused = daemon.restart_refused();
     assert!(
         refused
-            .contains("the state is version 13, this writd reads version 12 and can't migrate it"),
+            .contains("the state is version 14, this writd reads version 13 and can't migrate it"),
         "{refused}"
     );
-    assert_eq!(version(&db(&daemon)), 13);
+    assert_eq!(version(&db(&daemon)), 14);
     assert!(!daemon.root().join("s/backups").exists());
 }
 
@@ -427,7 +430,7 @@ fn writd_check_upgrade_says_what_the_start_will_do_and_changes_nothing() {
     assert_eq!(
         said,
         "writd.yaml: read as this writd reads it.\n\
-         The state: version 12, this writd's: nothing to migrate.\n\
+         The state: version 13, this writd's: nothing to migrate.\n\
          The policy in force: format 2, this writd's: nothing to migrate.\n\
          Nothing blocks the upgrade.\n"
     );
@@ -440,7 +443,7 @@ fn writd_check_upgrade_says_what_the_start_will_do_and_changes_nothing() {
     assert_eq!(code, Some(0), "{said}");
     assert!(
         said.contains(&format!(
-            "The state: version 11; this writd migrates it to version 12 at its start, after a \
+            "The state: version 11; this writd migrates it to version 13 at its start, after a \
              copy of it in {} (the steps ran on a copy here).\n",
             fs::canonicalize(daemon.root())
                 .unwrap()
@@ -467,14 +470,14 @@ fn writd_check_upgrade_says_what_the_start_will_do_and_changes_nothing() {
     // A newer state blocks it, nothing changed.
     rusqlite::Connection::open(db(&daemon))
         .unwrap()
-        .pragma_update(None, "user_version", 13)
+        .pragma_update(None, "user_version", 14)
         .unwrap();
     let (code, said, err) = check_upgrade(&daemon, "writd.yaml");
     assert_eq!(code, Some(1), "{said}");
     assert!(
         said.contains(
-            "Blocks the upgrade: the state (version 13): the state is version 13, this writd \
-             reads version 12 and can't migrate it"
+            "Blocks the upgrade: the state (version 14): the state is version 14, this writd \
+             reads version 13 and can't migrate it"
         ),
         "{said}"
     );
@@ -482,7 +485,7 @@ fn writd_check_upgrade_says_what_the_start_will_do_and_changes_nothing() {
         err.contains("writd: the upgrade is blocked (1 reason): nothing was changed"),
         "{err}"
     );
-    assert_eq!(version(&db(&daemon)), 13);
+    assert_eq!(version(&db(&daemon)), 14);
 
     // A `writd.yaml` this writd doesn't read blocks it too; no state yet: nothing to migrate.
     let yaml = fs::read_to_string(daemon.root().join("writd.yaml")).unwrap();

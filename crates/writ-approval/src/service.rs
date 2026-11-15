@@ -24,6 +24,7 @@ mod sweep;
 mod tls;
 mod token;
 mod unseal;
+mod unsigned;
 mod watch;
 
 pub use admin::{AdminParsed, AlteredAtRest, CheckedAdmin, InForce};

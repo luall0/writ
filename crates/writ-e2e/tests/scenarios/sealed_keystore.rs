@@ -560,7 +560,7 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
     let out = dir.run("writd check-upgrade writd.yaml");
     let (said, _) = expect(&out, 0, "writd check-upgrade");
     assert!(
-        said.contains("The state: version 12, this writd's: nothing to migrate.")
+        said.contains("The state: version 13, this writd's: nothing to migrate.")
             && said.contains("The policy in force: format 1; this writd reads format 2.")
             && said.contains("The daemon's rewrite is ready")
             && said.ends_with("Nothing blocks the upgrade.\n"),

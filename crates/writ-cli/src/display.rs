@@ -302,6 +302,7 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
         // Every template shown, the rows past the first behind the gutter: nothing cut, so
         // no hint names a command (the review after M7.6, U-5: it named `writ show`, which
         // isn't one).
+        let templates = format!("{templates}{}", unsigned_mark(t.unsigned));
         rows_after(
             &mut out,
             &head,
@@ -317,6 +318,14 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
         out.push_str(&block(&t.title, "    ", Rows::All));
     }
     out
+}
+
+/// What follows a lease's templates when it was granted with no signature (M7.9.7).
+fn unsigned_mark(unsigned: bool) -> &'static str {
+    match unsigned {
+        true => " · no signature (unsigned_fetch)",
+        false => "",
+    }
 }
 
 /// `2h05m`, `45s`.
@@ -1287,10 +1296,11 @@ pub fn others_into(out: &mut Out, others: &writ_proto::Others, now: Timestamp) {
         let left = duration(now.seconds_until(lease.expires_at));
         let _ = writeln!(out.text, "  {}  {left} left{flag}", lease.id);
         let scope = format!(
-            "repos {} · branches {} · {}",
+            "repos {} · branches {} · {}{}",
             list(&lease.repos),
             list(&lease.branches),
-            list(&lease.operations)
+            list(&lease.operations),
+            unsigned_mark(lease.unsigned)
         );
         rows_after(&mut out.text, "    ", &scope);
         let tag = match lease.overlap {
@@ -1336,13 +1346,17 @@ pub fn report(
     labelled(
         &mut out,
         "templates",
-        &clean(
-            &report
-                .templates
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
+        &format!(
+            "{}{}",
+            clean(
+                &report
+                    .templates
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            unsigned_mark(report.unsigned)
         ),
     );
     labelled(&mut out, "repos", &list(&report.repos));
@@ -1838,6 +1852,7 @@ mod tests {
         let lease: TicketId = "wrt_01M6J0KMVRMFR7DNP0ZXD6DYPQ".parse().unwrap();
         let now = Timestamp::from_unix(1_000_000).unwrap();
         let summary = |repos: Vec<RepoName>, lease: TicketId| writ_proto::Summary {
+            unsigned: false,
             id: id.clone(),
             lease,
             state: State::Pending,
@@ -1943,6 +1958,7 @@ mod tests {
         let others = writ_proto::Others {
             shown: (0..10)
                 .map(|_| writ_proto::OtherLease {
+                    unsigned: false,
                     id: id.clone(),
                     repos: t.repos.keys().cloned().collect(),
                     branches: om(&t).branches.iter().map(ToString::to_string).collect(),
@@ -1954,6 +1970,7 @@ mod tests {
             more: u32::MAX,
         };
         let report = writ_proto::Report {
+            unsigned: false,
             lease: id.clone(),
             state: State::Exhausted,
             title: t.text.title.clone(),
@@ -2438,6 +2455,7 @@ mod tests {
         let t = full_ticket();
         let warnings: Vec<String> = (0..50).map(|i| format!("src/file-{i}.rs")).collect();
         let report = writ_proto::Report {
+            unsigned: false,
             lease: t.id.clone(),
             state: State::Closed,
             title: "t".to_owned(),
@@ -2488,6 +2506,7 @@ mod tests {
             .collect();
         let listing = writ_proto::Listing {
             tickets: vec![writ_proto::Summary {
+                unsigned: false,
                 id: t.id.clone(),
                 lease: t.id.clone(),
                 state: State::Pending,

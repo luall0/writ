@@ -114,8 +114,11 @@ async fn run_git(
     match ready {
         Ok((lease, prepared)) => {
             // The smaller of the lease's and the template's in force, as the hook decides it;
-            // never 0, which git reads as no limit (refused at load and at submission).
+            // never 0 for a push, which git reads as no limit (refused at load and at
+            // submission). A fetch takes no pack in: a fetch-only template's 0 is no bound to
+            // refuse it for (M7.9.7, found with the first unsigned_fetch template).
             let policy = refusing.gateway.service().policy();
+            let pushes = prepared.push.is_some();
             let max_push_size = lease
                 .ticket
                 .terms(repo)
@@ -124,7 +127,7 @@ async fn run_git(
                         .template(&terms.template)
                         .map(|template| writ_core::policy::max_push_size(terms, template))
                 })
-                .filter(|max| *max > 0);
+                .filter(|max| *max > 0 || !pushes);
             match max_push_size {
                 Some(max) => run_prepared(refusing, repo, max, prepared, channel).await,
                 None => {

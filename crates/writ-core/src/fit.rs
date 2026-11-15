@@ -136,6 +136,7 @@ pub fn fits(config: &PolicyConfig, ticket: &Ticket) -> Result<(), FitError> {
         &ticket.repos,
         ticket.subject.caller.is_some(),
     ));
+    check_unsigned(&named, &mut reasons);
     check_common(ticket, &named, &mut reasons);
     check_lease_limits(ticket, &named, &mut reasons);
     check_text(ticket, &mut reasons);
@@ -726,9 +727,17 @@ pub fn submit(
             }
             (_, Some(kept)) => vec![kept],
             (Some(name), None) => vec![name],
+            // An unsigned_fetch template only when the ticket names it (M7.9.7): a ticket that
+            // names none is never granted without a signature by chance.
             (None, None) => config
                 .repo(repo)
-                .map(|entry| entry.templates.iter().collect())
+                .map(|entry| {
+                    entry
+                        .templates
+                        .iter()
+                        .filter(|t| !config.template(t).is_some_and(|t| t.unsigned_fetch))
+                        .collect()
+                })
                 .unwrap_or_default(),
         };
         // Named by the ticket, or kept by a renewal: that template's own reasons, nothing to
@@ -777,7 +786,15 @@ pub fn submit(
             0 if chosen => {}
             0 if candidates.is_empty() => reasons.push(match config.repo(repo) {
                 None => format!("repos.{repo}: repo {repo} is not in the registry"),
-                Some(_) => closed(repo),
+                Some(entry) => match entry.templates.iter().next() {
+                    // Its only template grants unsigned fetches: used when named.
+                    Some(only) if entry.templates.len() == 1 => format!(
+                        "repos.{repo}: its only template, {only}, grants fetches with no \
+                         signature (unsigned_fetch) and is used only when the ticket names it \
+                         (repos.{repo}.template: {only})"
+                    ),
+                    _ => closed(repo),
+                },
             }),
             0 => reasons.push(format!("repos.{repo} fits no template: {}", why.join("; "))),
             _ => {
@@ -819,6 +836,27 @@ pub fn submit(
             lease.id
         )));
     }
+    // A lease granted with no signature is never amended or renewed, and a ticket under
+    // unsigned_fetch templates never amends or renews one (M7.9.7).
+    for lease in submission
+        .amends
+        .into_iter()
+        .chain(submission.renews.map(|r| r.lease))
+    {
+        if lease.granted_by.is_unsigned() {
+            return Err(Rejection::one(format!(
+                "lease {} was granted with no signature (unsigned_fetch): it is never amended \
+                 or renewed; submit a ticket of its own",
+                lease.id
+            )));
+        }
+    }
+    if unsigned(config, &ticket) && (ticket.text.amends.is_some() || ticket.text.renews.is_some()) {
+        return Err(Rejection::one(
+            "a ticket under unsigned_fetch templates is granted with no signature: it never \
+             amends or renews a lease",
+        ));
+    }
     if let Some(renewed) = submission.renews {
         check_renewal(config, &ticket, renewed, submission.now).map_err(|reasons| Rejection {
             reasons,
@@ -826,6 +864,33 @@ pub fn submit(
         })?;
     }
     Ok(ticket)
+}
+
+/// Whether a ticket is granted with no signature (M7.9.7): every repository under an
+/// `unsigned_fetch` template, as the policy has them. [`fits`] refuses a ticket that mixes
+/// them with signed ones, so this is all or nothing.
+pub fn unsigned(config: &PolicyConfig, ticket: &Ticket) -> bool {
+    !ticket.repos.is_empty()
+        && ticket.repos.values().all(|terms| {
+            config
+                .template(&terms.template)
+                .is_some_and(|t| t.unsigned_fetch)
+        })
+}
+
+/// A ticket's templates are all `unsigned_fetch` ones or none: the strictest-of rules would
+/// otherwise cap a signed lease at an unsigned template's hour, and the grant has one kind.
+fn check_unsigned(named: &[Named<'_>], reasons: &mut Vec<String>) {
+    let (unsigned, signed): (Vec<&Named<'_>>, Vec<&Named<'_>>) =
+        named.iter().partition(|(_, _, t)| t.unsigned_fetch);
+    if let (Some((repo, name, _)), false) = (unsigned.first(), signed.is_empty()) {
+        let others: Vec<String> = signed.iter().map(|(_, n, _)| n.to_string()).collect();
+        reasons.push(format!(
+            "repos.{repo}: template {name} grants fetches with no signature (unsigned_fetch): \
+             it can't share a ticket with templates you sign ({})",
+            join(others)
+        ));
+    }
 }
 
 /// Checks `amends` and `revises` against what the store found; returns the revision number

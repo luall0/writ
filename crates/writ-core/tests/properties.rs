@@ -674,7 +674,7 @@ fn as_lease(ticket: Ticket) -> Lease {
     Lease {
         id: ticket.id.clone(),
         ticket,
-        approval: approval(),
+        granted_by: lease::GrantedBy::Approver(approval()),
         state: State::Active,
         cert_serial: 7,
         renews: ticket_renews,

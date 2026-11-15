@@ -354,6 +354,7 @@ stateDiagram-v2
   [*] --> submitted: agent submits ticket (writ request)
   submitted --> rejected_by_policy: a repository fits no template, or the templates disagree
   submitted --> pending: every repository fits a template, waiting for me
+  submitted --> active: every repository under an unsigned_fetch template it names (M7.9.7), no signature
   pending --> refused: I refuse, with feedback
   pending --> expired: expires_at reached before signing
   pending --> revoked: withdrawn
@@ -422,6 +423,31 @@ repository that allows it never becomes exhausted (it ends by expiry, close or r
 its signing and pushing still stop at their limits. This keeps exhaustion monotone:
 narrowing away an operation never revives a used-up lease.
 
+### Granted with no signature (M7.9.7)
+
+A template with `unsigned_fetch: true` allows `operations: [fetch]` and nothing else, with a
+`max_ttl` of at most 1 h; a repo names at most one (all checked when the policy is read). A
+ticket whose every repository **names** such a template in its block (`template: <name>`) is
+granted when it is submitted: no pending state, no approver, its certificate issued as any
+lease's (`lease::activate_unsigned`, `GrantedBy::Policy`). The signed policy change that made
+the template and named it in the repo is the approval that stands for it.
+
+- **Only when named.** A ticket that names no template never fits an `unsigned_fetch` one by
+  chance: those are left out of the candidates (a repo whose only template is one says how to
+  name it).
+- **One kind per ticket.** A ticket that mixes such a template with a signed one is rejected
+  (`fit::fits`): an unsigned template's hour would otherwise cap a signed lease, and a grant
+  has one kind.
+- **Never widened.** An unsigned lease is never amended or renewed, a ticket under these
+  templates never amends or renews one, and an approver's signature over one is refused
+  (`LifecycleError::Unsigned`, the `fit` reasons): there is no path from it to a lease that
+  signs or pushes.
+- **Only while its templates allow it.** Every fetch under it is denied (`config`) once its
+  templates in force no longer grant unsigned fetches.
+- It counts against the submission rates, not against `max_active_per_source`, and is
+  recorded as unsigned (the store's `unsigned`), shown so in `writ ls`, `writ report` and
+  `writ sign`'s other leases.
+
 ## Rules
 
 - A request must match **exactly one** lease (certificate key id, serial and session key);
@@ -429,6 +455,8 @@ narrowing away an operation never revives a used-up lease.
 - A lease is used only while it still fits its templates **under the current config**: if an
   admin change tightens or removes one of them or a repo, its leases are denied (fail
   closed) until amended.
+- Every lease is signed by an approver, except a fetch-only one under `unsigned_fetch`
+  templates ([granted with no signature](#granted-with-no-signature-m797)).
 - Leases are **never extended silently**. More time is a renewal: a new signed approval, a
   new lease.
 - `max_active_per_source` (`writd.yaml`, no limit by default): the active leases one source may

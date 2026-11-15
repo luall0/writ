@@ -735,6 +735,7 @@ mod tests {
         let id: writ_core::names::TicketId = "wrt_01JD8X0000000000000000000A".parse().unwrap();
         let at = writ_core::units::Timestamp::from_unix(1_800_000_000).unwrap();
         Report {
+            unsigned: false,
             lease: id.clone(),
             state: writ_core::lease::State::Closed,
             title: "t".to_owned(),

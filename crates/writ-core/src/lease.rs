@@ -10,7 +10,8 @@
 //! Every other transition is refused ([`State::can_become`]). Approving needs a verified
 //! approver signature over the signed ticket's canonical bytes: the caller of [`activate`],
 //! [`activate_renewal`] and [`apply_amendment`] (the approval service) verifies it before
-//! calling them.
+//! calling them. The one lease granted with no signature is a fetch-only ticket under
+//! `unsigned_fetch` templates ([`activate_unsigned`], M7.9.7), never amended or renewed.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -158,6 +159,18 @@ pub enum LifecycleError {
     RenewalWithoutLease,
     #[error("ticket {ticket} does not renew lease {lease}")]
     RenewsAnotherLease { ticket: TicketId, lease: TicketId },
+    /// A lease granted with no signature (M7.9.7) is never amended or renewed: the work it
+    /// plans gets a ticket of its own.
+    #[error(
+        "lease {0} was granted with no signature (unsigned_fetch): it is never amended or renewed; submit a ticket of its own"
+    )]
+    Unsigned(TicketId),
+    /// Only a ticket whose every repository is under an `unsigned_fetch` template is granted
+    /// with no signature.
+    #[error(
+        "the ticket is not under unsigned_fetch templates only: it needs an approver's signature"
+    )]
+    NotUnsigned,
     /// Why the lease can't be renewed (any more), or the renewal doesn't stay within it.
     #[error("{}", .0.join("; "))]
     Renewal(Vec<String>),
@@ -183,6 +196,35 @@ pub struct Approval {
     pub sshsig: String,
 }
 
+/// What granted a lease: an approver's verified signature, or the policy itself, for a
+/// fetch-only ticket under `unsigned_fetch` templates (M7.9.7), whose terms name them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrantedBy {
+    Approver(Approval),
+    /// No signature: the signed policy's `unsigned_fetch` templates stand for it.
+    Policy,
+}
+
+impl GrantedBy {
+    /// The approval, when an approver signed.
+    pub fn approval(&self) -> Option<&Approval> {
+        match self {
+            GrantedBy::Approver(approval) => Some(approval),
+            GrantedBy::Policy => None,
+        }
+    }
+
+    /// The approver who signed, if one did.
+    pub fn approver(&self) -> Option<&KeyFingerprint> {
+        self.approval().map(|a| &a.approver)
+    }
+
+    /// Whether it was granted with no signature.
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self, GrantedBy::Policy)
+    }
+}
+
 /// A submitted ticket and where it stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketRecord {
@@ -196,6 +238,9 @@ pub struct TicketRecord {
     pub feedback_by: Option<KeyFingerprint>,
     /// Once approved.
     pub approval: Option<Approval>,
+    /// Granted with no signature (M7.9.7): a lease under `unsigned_fetch` templates, never
+    /// pending, with no approval. The daemon's own record, not read back from the policy.
+    pub unsigned: bool,
     /// Where it was submitted from: the daemon's own fact, never signed (`None` where nobody
     /// recorded one, as in a test's record).
     pub source: Option<Source>,
@@ -210,6 +255,7 @@ impl TicketRecord {
             feedback: None,
             feedback_by: None,
             approval: None,
+            unsigned: false,
             source: None,
         }
     }
@@ -222,7 +268,7 @@ pub struct Lease {
     pub id: TicketId,
     /// The terms in force: the first signed ticket, or the last applied amendment.
     pub ticket: Ticket,
-    pub approval: Approval,
+    pub granted_by: GrantedBy,
     pub state: State,
     /// Serial of the session certificate issued for it.
     pub cert_serial: u64,
@@ -321,7 +367,40 @@ pub fn activate(
     Ok(Lease {
         id: signed.id.clone(),
         ticket: signed,
-        approval,
+        granted_by: GrantedBy::Approver(approval),
+        state: State::Active,
+        cert_serial,
+        renews: None,
+    })
+}
+
+/// Turns a ticket just submitted under `unsigned_fetch` templates into an active lease with
+/// no signature (M7.9.7): fetch only (the templates allow nothing else), never an amendment
+/// or a renewal, within its templates under `config`.
+pub fn activate_unsigned(
+    config: &PolicyConfig,
+    record: &TicketRecord,
+    cert_serial: u64,
+    now: Timestamp,
+) -> Result<Lease, LifecycleError> {
+    transition(record.state, State::Active)?;
+    if record.ticket.text.amends.is_some() {
+        return Err(LifecycleError::ActivatingAmendment);
+    }
+    if record.ticket.text.renews.is_some() {
+        return Err(LifecycleError::RenewalWithoutLease);
+    }
+    fit::fits(config, &record.ticket)?;
+    if !fit::unsigned(config, &record.ticket) {
+        return Err(LifecycleError::NotUnsigned);
+    }
+    if record.ticket.is_expired(now) {
+        return Err(LifecycleError::ExpiredBeforeApproval);
+    }
+    Ok(Lease {
+        id: record.ticket.id.clone(),
+        ticket: record.ticket.clone(),
+        granted_by: GrantedBy::Policy,
         state: State::Active,
         cert_serial,
         renews: None,
@@ -363,12 +442,15 @@ pub fn activate_renewal(
         });
     }
     transition(renewed.lease.state, State::Renewed)?;
+    if renewed.lease.granted_by.is_unsigned() {
+        return Err(LifecycleError::Unsigned(renewed.lease.id.clone()));
+    }
     check_approval(config, &record.ticket, &signed, &approval, now)?;
     fit::check_renewal(config, &signed, renewed, now).map_err(LifecycleError::Renewal)?;
     Ok(Lease {
         id: signed.id.clone(),
         ticket: signed,
-        approval,
+        granted_by: GrantedBy::Approver(approval),
         state: State::Active,
         cert_serial,
         renews: Some(renewed.lease.id.clone()),
@@ -395,6 +477,9 @@ pub fn apply_amendment(
     if !lease.is_in_force(now) {
         return Err(LifecycleError::LeaseNotActive(lease.id.clone()));
     }
+    if lease.granted_by.is_unsigned() {
+        return Err(LifecycleError::Unsigned(lease.id.clone()));
+    }
     if signed.subject.session_key != lease.ticket.subject.session_key {
         return Err(LifecycleError::SessionKeyChanged);
     }
@@ -414,11 +499,12 @@ pub fn apply_amendment(
         feedback: None,
         feedback_by: None,
         approval: Some(approval.clone()),
+        unsigned: false,
         source: amendment.source,
     };
     let updated = Lease {
         ticket: signed,
-        approval,
+        granted_by: GrantedBy::Approver(approval),
         ..lease.clone()
     };
     Ok((updated, applied))
@@ -436,6 +522,17 @@ fn check_approval(
     }
     narrow::check(submitted, signed)?;
     fit::fits(config, signed)?;
+    if fit::unsigned(config, signed) {
+        // Granted when submitted, never pending, so never signed: a signature over one would
+        // be a second path to a grant that needs none (M7.9.7).
+        return Err(LifecycleError::Fit(fit::FitError {
+            reasons: vec![
+                "the ticket is under unsigned_fetch templates: it is granted when submitted, \
+                 never signed"
+                    .to_owned(),
+            ],
+        }));
+    }
     if signed.is_expired(now) {
         return Err(LifecycleError::ExpiredBeforeApproval);
     }

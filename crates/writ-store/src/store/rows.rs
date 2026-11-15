@@ -4,7 +4,7 @@
 
 use rusqlite::Row;
 use writ_core::canonical::Canonical;
-use writ_core::lease::{APPROVAL_NAMESPACE, Approval, Lease, State, TicketRecord};
+use writ_core::lease::{APPROVAL_NAMESPACE, Approval, GrantedBy, Lease, State, TicketRecord};
 use writ_core::names::TicketId;
 use writ_core::ticket::Ticket;
 
@@ -12,7 +12,7 @@ use crate::{Result, StoreError};
 
 /// The columns [`raw_record`] reads, in order.
 pub(super) const RECORD_COLUMNS: &str =
-    "id, canonical, state, feedback, approver, namespace, sshsig, feedback_by, source";
+    "id, canonical, state, feedback, approver, namespace, sshsig, feedback_by, source, unsigned";
 
 pub(super) fn corrupt(id: &str, why: impl std::fmt::Display) -> StoreError {
     StoreError::Corrupt {
@@ -33,6 +33,7 @@ pub(super) struct RawRecord {
     feedback_by: Option<String>,
     source: Option<String>,
     approval: RawApproval,
+    unsigned: i64,
 }
 
 struct RawApproval {
@@ -73,6 +74,7 @@ pub(super) fn raw_record(row: &Row<'_>) -> rusqlite::Result<RawRecord> {
             namespace: row.get(5)?,
             sshsig: row.get(6)?,
         },
+        unsigned: row.get(9)?,
     })
 }
 
@@ -83,16 +85,29 @@ impl RawRecord {
             return Err(corrupt(&self.id, "the stored ticket has another id"));
         }
         let state: State = self.state.parse().map_err(|e| corrupt(&self.id, e))?;
+        let approval = self.approval.decode(&self.id)?;
+        let unsigned = match (self.unsigned, &approval) {
+            (0, _) => false,
+            (1, None) => true,
+            (1, Some(_)) => {
+                return Err(corrupt(
+                    &self.id,
+                    "a lease granted unsigned has an approval",
+                ));
+            }
+            _ => return Err(corrupt(&self.id, "unknown grant")),
+        };
         Ok(TicketRecord {
             ticket,
             state,
+            unsigned,
             feedback: self.feedback,
             feedback_by: self
                 .feedback_by
                 .map(|f| f.parse())
                 .transpose()
                 .map_err(|e| corrupt(&self.id, e))?,
-            approval: self.approval.decode(&self.id)?,
+            approval,
             source: self
                 .source
                 .map(|s| s.parse())
@@ -106,7 +121,7 @@ impl RawRecord {
 pub(super) fn lease_query(condition: &str) -> String {
     format!(
         "SELECT l.id, l.state, l.cert_serial, c.id, c.canonical, c.approver, c.namespace, c.sshsig,
-                l.renews
+                l.renews, l.unsigned
          FROM tickets l JOIN tickets c ON c.id = l.current_ticket
          WHERE {condition} AND l.cert_serial IS NOT NULL ORDER BY l.id"
     )
@@ -120,6 +135,7 @@ pub(super) struct RawLease {
     canonical: Vec<u8>,
     approval: RawApproval,
     renews: Option<String>,
+    unsigned: i64,
 }
 
 pub(super) fn raw_lease(row: &Row<'_>) -> rusqlite::Result<RawLease> {
@@ -135,6 +151,7 @@ pub(super) fn raw_lease(row: &Row<'_>) -> rusqlite::Result<RawLease> {
             sshsig: row.get(7)?,
         },
         renews: row.get(8)?,
+        unsigned: row.get(9)?,
     })
 }
 
@@ -149,14 +166,25 @@ impl RawLease {
         if matches!(state, State::Pending | State::Refused | State::Applied) {
             return Err(corrupt(&self.id, format!("a lease can't be {state}")));
         }
-        let approval = self
-            .approval
-            .decode(&self.id)?
-            .ok_or_else(|| corrupt(&self.id, "a lease without an approval"))?;
+        // Granted with no signature exactly when no approval is recorded: anything else is
+        // corrupt, never read as one or the other.
+        let granted_by = match (self.unsigned, self.approval.decode(&self.id)?) {
+            (0, Some(approval)) => GrantedBy::Approver(approval),
+            (0, None) => return Err(corrupt(&self.id, "a lease without an approval")),
+            (1, None) if self.current_id == self.id => GrantedBy::Policy,
+            (1, None) => return Err(corrupt(&self.id, "a lease granted unsigned was amended")),
+            (1, Some(_)) => {
+                return Err(corrupt(
+                    &self.id,
+                    "a lease granted unsigned has an approval",
+                ));
+            }
+            _ => return Err(corrupt(&self.id, "unknown grant")),
+        };
         Ok(Lease {
             id,
             ticket,
-            approval,
+            granted_by,
             state,
             cert_serial: u64::try_from(self.cert_serial).map_err(|e| corrupt(&self.id, e))?,
             renews: self

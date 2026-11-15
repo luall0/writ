@@ -379,6 +379,12 @@ impl Store {
         if lease.state != State::Active || lease.ticket.id != lease.id {
             return Err(corrupt(lease.id.as_str(), "not a new active lease"));
         }
+        let Some(approval) = lease.granted_by.approval() else {
+            return Err(corrupt(
+                lease.id.as_str(),
+                "a lease granted with no signature is recorded by insert_unsigned",
+            ));
+        };
         let bytes = lease
             .ticket
             .canonical_bytes()
@@ -392,9 +398,9 @@ impl Store {
                 lease.id.as_str(),
                 State::Active.as_str(),
                 bytes,
-                lease.approval.approver.as_str(),
-                lease.approval.namespace,
-                lease.approval.sshsig,
+                approval.approver.as_str(),
+                approval.namespace,
+                approval.sshsig,
                 serial_to_sql(lease.cert_serial)?,
                 now.unix(),
                 State::Pending.as_str(),
@@ -402,6 +408,52 @@ impl Store {
             ],
         )?;
         self.expect_changed(changed, &lease.id, State::Pending)
+    }
+
+    /// Records a lease granted with no signature (M7.9.7): its ticket inserted and active with
+    /// its certificate in one transaction, never pending, no approval recorded, `unsigned`
+    /// set. Only a lease granted by the policy (`GrantedBy::Policy`) that renews and amends nothing.
+    pub fn insert_unsigned(
+        &self,
+        lease: &Lease,
+        session_pubkey: &str,
+        source: Source,
+        certificate: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        if lease.state != State::Active
+            || lease.ticket.id != lease.id
+            || !lease.granted_by.is_unsigned()
+            || lease.renews.is_some()
+            || lease.ticket.text.renews.is_some()
+            || lease.ticket.text.amends.is_some()
+        {
+            return Err(corrupt(lease.id.as_str(), "not a new unsigned lease"));
+        }
+        self.broken_change()?;
+        let bytes = lease
+            .ticket
+            .canonical_bytes()
+            .map_err(|e| corrupt(lease.id.as_str(), e))?;
+        let inserted = self.conn.execute(
+            "INSERT INTO tickets (id, canonical, state, lease_id, session_pubkey, source,
+                 cert_serial, current_ticket, certificate, unsigned, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?1, ?4, ?5, ?6, ?1, ?7, 1, ?8, ?8) ON CONFLICT (id) DO NOTHING",
+            params![
+                lease.id.as_str(),
+                bytes,
+                State::Active.as_str(),
+                session_pubkey,
+                source.to_string(),
+                serial_to_sql(lease.cert_serial)?,
+                certificate,
+                now.unix()
+            ],
+        )?;
+        if inserted == 0 {
+            return Err(StoreError::Duplicate(lease.id.clone()));
+        }
+        Ok(())
     }
 
     /// Records a renewal's new lease (as [`Store::activate`]) and ends the lease it renews
