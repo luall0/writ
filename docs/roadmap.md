@@ -17,6 +17,10 @@ Local mode (M7 on the Mac, M7.1 on Linux) and detached mode (M8) are then implem
 configuration plugged into an unchanged core, each installed by one installer where a setup is
 picked.
 
+The order is the table's, not the numbers': detached mode (M8) and the non-exportable session
+keys it calls for (M8.5) come after the push modes (M9, M10), since local mode covers what is
+needed now. The numbers are kept, because the docs, the code and the registries name them.
+
 | # | Milestone | What it brings |
 |---|---|---|
 | M0 | [Protocol spike](history/m0-protocol-spike.md) ✅ | Go for the gateway (certificates, git, daemon-signed commits, agent-held approval keys); local mode's signer: CryptoKit Secure Enclave key under a `_writd` user |
@@ -49,13 +53,13 @@ picked.
 | M7.8 | [Approval popup on the Mac](history/m7.8-approval-popup-on-the-mac.md) ✅ | A small native window above every app, full-screen ones too, when a ticket waits for my signature: the whole ticket, Sign or Decline (with feedback), the signature still `writ`'s and Touch ID; a watch route on the approval API |
 | M7.9 | [Local mode checked on the Mac](history/m7.9-local-mode-checked-on-the-mac.md) ✅ | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
 | M7.9.5 | [Operator experience](history/m7.9.5-operator-experience.md) ✅ | Asked by the user after the real install: amendments showing only what changed, the popup redesigned (its design validated first, as an artifact), every guided prompt and the installer's questions with arrow selection, colour and inline checks, a quick setup guide from `make install` to a first agent run |
-| M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
-| M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 | M9 | [`proxy` push mode](#m9--proxy-push-mode) | Relayed pushes with the same checks, no mirror |
 | M10 | [`direct_ssh` push mode](#m10--direct_ssh-push-mode) | Lent per-lease ssh-agent socket with a deploy key |
+| M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
+| M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 | M11 | [Multi-user daemon](#m11--multi-user-daemon) (after v1) | Several people on one daemon: users with their own approvers, readers, templates and upstream credentials, admins for admin changes and unsealing |
 
-M10 completes v1. M11 is the first idea picked from the [backlog](backlog/README.md) after
+M8.5 completes v1. M11 is the first idea picked from the [backlog](backlog/README.md) after
 it; new work after M11 comes from there too.
 
 ## M0 — Protocol spike (go/no-go)
@@ -271,6 +275,31 @@ the rail, a card per repository), every question of `writ` and the installer a m
 terminal (`inquire`, `writ prompt`), a quick start from `make install` to a verified commit,
 and the operator pages naming no approval agent.
 
+## M9 — `proxy` push mode
+
+[Flows § 3b](flows.md#3b-push-proxy-mode), [Q22/Q23](decisions.md).
+
+- **The push facts as M7.7 leaves them** (found by its [review](#m77--review-after-m76),
+  `G-6`): each ref's old value read by the daemon, never the one the client's command claims,
+  so the fast-forward and case-twin checks hold without upstream's `--force-with-lease`
+  behind them; `proxy` mode reuses them.
+
+Acceptance:
+- [ ] A repo with `push_modes: [proxy]` pushes with no mirror, with the same denials as M4
+      (refs, protected refs, force push, ledger, size).
+- [ ] The pack is indexed in a temporary quarantine bounded by `max_push_size` and deleted
+      afterwards, accepted or not; `no-thin` is advertised.
+
+## M10 — `direct_ssh` push mode
+
+[Flows § 3c](flows.md#3c-push-direct_ssh-mode).
+
+Acceptance:
+- [ ] A per-lease ssh-agent socket holds only the repo's deploy key; signatures are refused
+      for another host (`session-bind`), after expiry or over the limits.
+- [ ] A repo whose credential is account-wide is refused unless `allow_account_wide: true`,
+      and then `writ sign` shows the warning.
+
 ## M8 — Detached deployment
 
 [Deployment](architecture/deployment.md): the daemon on the homelab, agents anywhere on the
@@ -412,31 +441,6 @@ Acceptance:
       `hardware`) is refused with its code.
 - [ ] On the Mac, by hand ([manual checks](guides/manual-checks.md)): a Secure Enclave
       session key works with no prompt, with the screen locked, and can't be exported.
-
-## M9 — `proxy` push mode
-
-[Flows § 3b](flows.md#3b-push-proxy-mode), [Q22/Q23](decisions.md).
-
-- **The push facts as M7.7 leaves them** (found by its [review](#m77--review-after-m76),
-  `G-6`): each ref's old value read by the daemon, never the one the client's command claims,
-  so the fast-forward and case-twin checks hold without upstream's `--force-with-lease`
-  behind them; `proxy` mode reuses them.
-
-Acceptance:
-- [ ] A repo with `push_modes: [proxy]` pushes with no mirror, with the same denials as M4
-      (refs, protected refs, force push, ledger, size).
-- [ ] The pack is indexed in a temporary quarantine bounded by `max_push_size` and deleted
-      afterwards, accepted or not; `no-thin` is advertised.
-
-## M10 — `direct_ssh` push mode
-
-[Flows § 3c](flows.md#3c-push-direct_ssh-mode).
-
-Acceptance:
-- [ ] A per-lease ssh-agent socket holds only the repo's deploy key; signatures are refused
-      for another host (`session-bind`), after expiry or over the limits.
-- [ ] A repo whose credential is account-wide is refused unless `allow_account_wide: true`,
-      and then `writ sign` shows the warning.
 
 ## M11 — Multi-user daemon
 

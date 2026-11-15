@@ -5,7 +5,7 @@
 **Kind:** feature. **Size:** L.
 
 Multi-user is a [v1 non-goal](../product.md#non-goals); this page is its design, built after
-M10.
+v1's last milestone (M8.5).
 
 ## Problem
 
