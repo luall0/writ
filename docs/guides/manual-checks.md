@@ -455,6 +455,37 @@ make install && make uninstall      # installed as in step 2; then type delete, 
 After the purge, the diff with `~/writ-before.txt` shows only directory times, and the
 repository wired in step 3 is as it was before its `writ init`.
 
+## An upgrade on the Mac (M7.9.6)
+
+The real install upgraded across a format change: run it once the milestone's commits are in,
+on the Mac that runs the install from M7.9 (state version 11, a policy of format 1, with no
+`format` line).
+
+**1. Before.** Keep what the daemon holds now:
+
+```sh
+writ ls > ~/writ-before-upgrade.txt; writ admin show policy >> ~/writ-before-upgrade.txt
+```
+
+**2. Upgrade**, from the checkout:
+
+```sh
+make install    # the check's report first: the state 11 → 12, the policy format 1 → 2,
+                # its rewrite ready; "Nothing blocks the upgrade."; then the summary: y
+```
+
+Check: after the restart it runs `writ unseal` (Touch ID), then `writ migrate`. The diff adds
+`format: 2` and nothing else (your policy had no push modes). Sign it (Touch ID).
+
+**3. After.** `writ ls` lists the same leases. `writ admin show policy` starts with `format: 2`.
+`sudo ls -la /var/db/writ/state/backups` shows the version 11 copy (`0600`, the daemon's).
+`sudo grep '"event":"migrate"' /var/db/writ/state/audit.jsonl` shows two lines: the state's
+(`done`) and the policy's (`allowed`). An agent under `writ run` works as before.
+
+**4. Declined, then again.** On another upgrade, or by putting a format 1 policy in force with
+`writd recover`: answer n to `writ migrate`. `writ ls` then says to run `writ migrate`. Run it
+again and sign.
+
 ## Local mode on Linux (M7.1)
 
 The `local` setup on Linux runs in `make test` against a fake root (its unit checked by

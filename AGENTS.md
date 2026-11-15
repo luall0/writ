@@ -101,6 +101,9 @@ records every commit signed per lease. Use these words in code, logs and docs.
 12. **Every guarantee has a test** that tries to break it ([guarantee tests](docs/testing.md#guarantee-tests)).
     A change that weakens a guarantee or adds a residual risk updates the
     [threat model](docs/threat-model.md) in the same change, and needs the user's go-ahead.
+    Before raising a risk, check the threat model's
+    [looked at, and not risks](docs/threat-model.md#looked-at-and-not-risks): what is settled
+    there isn't raised again.
     **Tests are hardened** ([rules](docs/testing.md#hardened-tests)): deterministic (never
     `sleep` then assert, wait on a signal; no real clock where a fake fits; no fixed ports;
     property tests seeded) and adversarial (a denial asserts its exact code or error variant,
@@ -187,7 +190,7 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | What was built, in order | [docs/history/](docs/history/README.md) |
 | Ideas beyond v1 (LLM check, HTTP proxy, hardware signers, apps) | [docs/backlog/](docs/backlog/README.md) |
 | Why something is the way it is, open questions | [docs/decisions.md](docs/decisions.md) |
-| Attackers, trust boundaries, guarantees, residual risks | [docs/threat-model.md](docs/threat-model.md) |
+| Attackers, trust boundaries, guarantees, residual risks, concerns set aside as not risks | [docs/threat-model.md](docs/threat-model.md) |
 | Tickets, leases, templates, repo registry, lifecycle (`writ-core`) | [docs/lease-model.md](docs/lease-model.md) |
 | Which constraint is checked from what, and how far to trust it | [lease-model.md](docs/lease-model.md#constraints-and-how-much-to-trust-them) |
 | Step-by-step sequences (sign, push, fetch, revoke, close, unseal) | [docs/flows.md](docs/flows.md) |

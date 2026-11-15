@@ -30,8 +30,12 @@ be fixed afterwards.
 | Lost the Mac's Secure Enclave key (a new Mac, a wiped one), and you declared a recovery key | [`writd recover`](#writd-recover-step-by-step) `policy`, with the recovery key and a policy that no longer names the lost key: it asks for a new passphrase, and the keystore opens with it from then on |
 | Lost the passphrase and had no recovery key | It can't be recovered, by design. [Start over](#starting-over) |
 | Lost the keys directory, the boot directory or the host, and you have backups | Restore them at the same paths, same owner, same modes. Then start and unseal |
+| An upgrade's new version doesn't work, and you go back to the older one | [Go back to the state from before the upgrade](#going-back-after-an-upgrade) |
+| The daemon refuses everything: "the policy in force is of an older format" | Your policy was written for an older version. Run `writ migrate` and sign it ([install](install.md#upgrade)) |
 
-**About backups:** restoring an older `state_dir` also restores the older policy, approvers
+### About backups
+
+Restoring an older `state_dir` also restores the older policy, approvers
 and readers it held. That's how a backup works, and why it must be guarded like the state
 itself.
 
@@ -81,6 +85,20 @@ never enough: on a keystore it opens, `writd recover` takes the recovery key onl
    started.
 4. **Start the daemon and unseal it** with the new key: `writ unseal --key <new key>.pub`.
 5. **Check** from your machine: `writ admin show approvers` shows the new version.
+
+## Going back after an upgrade
+
+An upgrade that migrated the state left a copy of it from before, in `backups/` in the state
+directory: `state-v<version>-<time>.db`. The older `writd` reads only that version, so go back
+with it:
+
+1. **Stop the daemon.**
+2. **Put the copy in place of `leases.db`**, as the daemon's user, with the same owner and
+   mode (`0600`), and remove `leases.db-wal` and `leases.db-shm` beside it.
+3. **Install the older version again**, from its checkout, with `make install`.
+
+Leases granted and commits signed after the upgrade are not in the copy. The copy holds what
+the state holds: guard it like the state, and delete it once the new version works.
 
 ## Starting over
 
