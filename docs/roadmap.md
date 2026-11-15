@@ -286,7 +286,20 @@ user at its start: [decision log](decisions.md), 2026-11-15.
   tickets in light and dark: a new ticket, an amendment, a renewal, several waiting) and
   iterated on until they validate it. Then built to it, the panel's rules kept (above every
   space and full-screen app, no default button, no button that takes the focus, both held a
-  second, the app styling by tag and never by content).
+  second, the app styling by tag and never by content). **Validated (2026-11-15): three
+  panes.** On the left the waiting tickets. In the centre what is signed: a header (the kind,
+  the lease it touches, the title quoted as the agent's, the time left relative with the
+  clock time beside it), every enforced term as a tile (none folded away), the expected
+  paths as a file tree, who asks in one line, then the other leases and the details,
+  folded. On the right the agent's words alone (task, plan, estimate, origin hint), marked
+  untrusted, scrolling on its own so text of any length never moves the terms. The paths'
+  tree: one path per row under its folder, a folder holding only one folder merged into one
+  row, a count per folder (which folds), a pattern badged (`**` "everything inside"), a long
+  name wrapped and never cut, the card scrolling past 320 px, a Tree / List switch and a
+  filter; built by `writ` and sent as a structure, so the app never splits a value. An
+  amendment opens on what changes (paths added and removed shown whole, the kept ones
+  folded in the tree), its task before and after in the right pane; a renewal on now → if
+  signed, the counts carried over, and the chain.
 - **One prompt layer, on `inquire`** (`writ-cli`'s `prompt` module): a select with arrow keys
   and type-to-filter, a multi-select, text with inline validation and a help line, a confirm;
   colour, `NO_COLOR` honoured; every value shown cleaned first (a scanned host key, a name
@@ -311,10 +324,11 @@ user at its start: [decision log](decisions.md), 2026-11-15.
 Steps (each one commit, `make ci` green, its docs in the same commit):
 1. **The plan**: this section, the decision log's rows, the [stack](stack.md)'s line.
 2. **The popup's design**: an artifact with the redesigned window, reviewed and iterated with
-   the user until validated; nothing built before.
-3. **Changes as items, times as fields** (`writ-cli`'s display and `writ sign --ui`'s
-   events): the item-level diff in the text and the structure, each item tagged; the expiry
-   and other times structured. Tests: the display's guarantee tests extended (every leaf
+   the user until validated; nothing built before. *Done: three panes, above.*
+3. **Changes as items, times as fields, paths as a tree** (`writ-cli`'s display and `writ
+   sign --ui`'s events): the item-level diff in the text and the structure, each item
+   tagged; the expiry and other times structured; each repository's expected paths sent as
+   a tree (folders, files, patterns), built from the paths without changing one. Tests: the display's guarantee tests extended (every leaf
    still changes what is shown; lists that differ only in order or repetition; an item
    removed and another added); the end-to-end scenario's amendment.
 4. **The popup built to the validated design**; the manual check updated.
@@ -330,8 +344,10 @@ Acceptance:
 - [ ] An amendment adding one item to a list shows that item alone as added, in `writ sign`
       and in the popup; one removing an item shows it removed; reordering a list whose order
       is enforced shows; the guarantee tests of the trusted display pass on the new display.
-- [ ] The popup matches the design the user validated; every time relative ("in 2h"), its
-      date on hover or in the details; the panel's rules held (the manual check).
+- [ ] The popup matches the design the user validated (three panes, every enforced term a
+      tile, the paths a tree that never cuts a path, the agent's words in their own pane);
+      every time relative ("in 2h") with its clock time beside it; the panel's rules held
+      (the manual check, with a 100-path ticket and a long plan).
 - [ ] Every guided question of `writ` is a select, multi-select, validated text or confirm,
       with colour and a help line; arrow keys and filtering work; without a terminal the
       plain prompts answer as before; with `NO_COLOR` nothing is coloured; a hostile value
