@@ -19,6 +19,7 @@ conventions, hard rules and commands, and points here for details.
 - [Roadmap](roadmap.md): milestones M0–M8.5 (with M4.5, M4.7, M7.5…) to v1, in order, with acceptance checklists.
 - [Backlog](backlog/README.md): ideas beyond v1 and how one becomes work.
 - [History](history/README.md): what was built, in order.
+- [Changelog](../CHANGELOG.md): what changed in each release, and what an upgrade asks.
 - [Decisions](decisions.md): decision log (Q1–Q32) and open questions.
 
 ## Operators
