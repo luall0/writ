@@ -432,7 +432,8 @@ impl Gateway {
     /// The orderly stop's wait, once the listeners are closed: from now on a lease holder's
     /// git operation or signature is refused, and nothing more is sent upstream, both closed
     /// at once (the review after M7.6, D-5); then those in flight are waited for (each git
-    /// operation's answer reaching its client, the upstream operations: the notes), once, at
+    /// operation until its client has hung up, so its answer is never cut; the upstream
+    /// operations: the notes), once, at
     /// most one upstream operation's deadline ([`writ_mirror::Mirrors::stop_wait`]) and never
     /// past `limit` (what the service manager allows). How many still ran then.
     pub async fn stop(&self, limit: Duration) -> usize {

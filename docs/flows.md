@@ -279,6 +279,7 @@ sequenceDiagram
   A->>D: a push already in flight goes on
   D->>UP: its upstream push, within mirrors.timeout
   D-->>A: its answer
+  A->>D: hangs up (the stop waits for it: its answer never cut)
   D->>D: the notes in flight waited for, in the same wait
   D->>D: log "stopped"; the state's lock released as the process ends
 ```
@@ -287,14 +288,16 @@ Both signals stop the daemon the same way, and so does anything it can't run wit
 listener that ends, an open that fails once the gateway runs, a background task (the sweeper,
 the mirrors' sync) that keeps ending after three restarts; then it logs `stopping` with the
 reason and exits with an error once stopped (a service manager restarts it). The stop waits
-once, for the lease holders' git operations and signatures and the upstream operations left
+once, for the lease holders' git operations and signatures (each until its client has hung up,
+so the answer and the client's own disconnect are never cut) and the upstream operations left
 together: at most `mirrors.timeout` and a 5 s margin, and never past 320 s, ahead of the
 service managers' 330 s (the review after M7.6, D-5). An operation still running then is cut,
 and the last line says how many (`stopped with operations still running past their
 deadline`). A second SIGINT or SIGTERM while it waits is said (`a second signal while
-stopping`) and the daemon exits at once, with an error, what is in flight cut. Idle sessions
-and requests waiting for a decision (`writ request`) are dropped: the ticket stays pending in
-the store.
+stopping`) and the daemon exits at once, with an error, what is in flight cut. Sessions that
+ran no git operation or signature and requests waiting for a decision (`writ request`) are
+dropped: the ticket stays pending in the store. A client that keeps its connection open after
+its answer is waited for to the same deadline, then cut.
 
 `writd run` holds an exclusive lock on `<state_dir>/writd.lock` (its pid written in it) for
 its whole life: a second `writd run` and `writd recover` on the same state are refused while

@@ -12,6 +12,7 @@ use writ_core::caller::CallerFacts;
 use writ_core::policy::CertIdentity;
 use writ_crypto::ca::validate_user_certificate;
 use writ_crypto::ssh_key::{Certificate, HashAlg, PublicKey};
+use writ_mirror::in_flight::Running;
 
 use crate::channel::refuse;
 use crate::command::{Command, LeaseCommand};
@@ -43,6 +44,11 @@ pub(crate) struct Connection {
     channel_slots: Arc<Semaphore>,
     /// Set once authenticated: the gateway disconnects a connection that isn't in time.
     authenticated: Arc<AtomicBool>,
+    /// Once a lease holder's command ran here, a share of its operation in flight, held until
+    /// the connection ends: an orderly stop waits for the client to hang up, not only for the
+    /// command's task to queue its answer. Exiting between the two cut the answer, or the
+    /// client's own disconnect, and `ssh` failed a push upstream had taken (exit 255).
+    answering: Option<Arc<Running>>,
 }
 
 impl Connection {
@@ -62,6 +68,7 @@ impl Connection {
             channels: HashMap::new(),
             channel_slots: Arc::new(Semaphore::new(MAX_CHANNELS)),
             authenticated,
+            answering: None,
         }
     }
 
@@ -305,6 +312,12 @@ impl russh::server::Handler for Connection {
                     });
                     return Ok(());
                 };
+                // Shared with the connection: in flight until both the command and the
+                // connection have ended (one share is enough: the first command's).
+                let running = Arc::new(running);
+                if self.answering.is_none() {
+                    self.answering = Some(running.clone());
+                }
                 let request = exec::LeaseRequest {
                     cert,
                     facts,

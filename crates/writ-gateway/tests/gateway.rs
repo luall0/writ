@@ -761,6 +761,39 @@ async fn revoking_drops_open_sessions_and_refuses_the_next_connection() {
     );
 }
 
+/// The orderly stop waits for a lease holder's connection to end, not only for its command's
+/// answer to be queued: exiting between the two cut the answer, or the client's own
+/// disconnect, and `ssh` failed a push upstream had taken (exit 255, "send disconnect: Broken
+/// pipe"). The clock is paused once the answer is in: a stop still waiting reaches its
+/// deadline at once and counts what it waited for, one with nothing left returns 0.
+#[tokio::test]
+async fn an_orderly_stop_waits_for_a_lease_holder_to_hang_up_after_its_answer() {
+    let daemon = Daemon::start(FakeAttestor::fixed(CallerFacts::default())).await;
+    let (key, cert) = lease(&daemon).await;
+    let holder = Daemon::with_cert(&daemon.agents, &key, &cert)
+        .await
+        .unwrap();
+    // Connected and authenticated, but running nothing: never waited for.
+    let idle = Daemon::with_cert(&daemon.agents, &key, &cert)
+        .await
+        .unwrap();
+    // Answered in full: the exit status, then the channel's close, read by the client.
+    let (_, err, status) = exec(&holder, "git-upload-pack 'other.git'", b"").await;
+    assert_eq!(status, Some(1), "{err}");
+
+    tokio::time::pause();
+    // The client still connected: the stop waits for it, to its deadline.
+    assert_eq!(daemon.gateway.stop(Duration::from_secs(30)).await, 1);
+    // Hung up: nothing left in flight, and nothing waited for; the idle connection, still
+    // open, holds nothing.
+    holder
+        .disconnect(russh::Disconnect::ByApplication, "", "en")
+        .await
+        .unwrap();
+    assert_eq!(daemon.gateway.stop(Duration::from_secs(30)).await, 0);
+    assert!(!idle.is_closed());
+}
+
 // ----- HTTPS ----------------------------------------------------------------------------
 
 /// One HTTPS request to the daemon's approval API: (status, body). Errors if TLS fails.
