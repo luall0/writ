@@ -916,21 +916,7 @@ struct Terms: View {
                     Text("enforced by the daemon, whatever the agent wrote")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: 3),
-                    alignment: .leading, spacing: 8
-                ) {
-                    ForEach(Array(tiles.enumerated()), id: \.offset) { _, tile in
-                        VStack(alignment: .leading, spacing: 5) {
-                            Caption(text: tile.0)
-                            Value(row: tile.1, mono: tile.0 == "Branches")
-                        }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.22)))
-                    }
-                }
+                TileGrid(tiles: tiles, perRow: 3)
             }
         }
     }
@@ -976,14 +962,7 @@ struct ManyRepositories: View {
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Caption(text: "The lease · for every repository")
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: 4),
-                    alignment: .leading, spacing: 8
-                ) {
-                    ForEach(Array(lease.enumerated()), id: \.offset) { _, tile in
-                        Tile(title: tile.0, row: tile.1)
-                    }
-                }
+                TileGrid(tiles: lease)
                 ForEach(shown.sections(["repository"]), id: \.self) { section in
                     RepositoryCard(
                         section: section,
@@ -1010,7 +989,84 @@ struct ManyRepositories: View {
     }
 }
 
-/// One tile: a caption, then the row's value (its items as chips).
+/// Tiles in balanced rows that fill the width (five as three and two, never four and a lone
+/// one), every tile as tall as the tallest, so the strip reads as one block.
+struct TileGrid: View {
+    let tiles: [(String, DocRow)]
+    var perRow = 4
+
+    var body: some View {
+        TileRows(perRow: perRow, spacing: 8) {
+            ForEach(Array(tiles.enumerated()), id: \.offset) { _, tile in
+                Tile(title: tile.0, row: tile.1)
+            }
+        }
+    }
+}
+
+/// The layout behind `TileGrid`: rows of at most `perRow`, the first rows taking one more
+/// when they can't all hold as many; each view as wide as its row shares and as tall as the
+/// tallest view at its width.
+struct TileRows: Layout {
+    var perRow: Int
+    var spacing: CGFloat
+
+    /// How many views each row holds.
+    private func rows(_ count: Int) -> [Int] {
+        guard count > 0 else { return [] }
+        let most = max(perRow, 1)
+        let lines = (count + most - 1) / most
+        let base = count / lines, extra = count % lines
+        return (0..<lines).map { $0 < extra ? base + 1 : base }
+    }
+
+    /// Each view's width in a row of `count` across `width`.
+    private func width(_ width: CGFloat, _ count: Int) -> CGFloat {
+        max((width - spacing * CGFloat(count - 1)) / CGFloat(count), 0)
+    }
+
+    /// The width, each view's width, and the common height.
+    private func measure(_ proposal: ProposedViewSize, _ subviews: Subviews) -> (CGFloat, [CGFloat], CGFloat) {
+        let total = proposal.replacingUnspecifiedDimensions().width
+        var widths: [CGFloat] = []
+        for count in rows(subviews.count) {
+            widths.append(contentsOf: Array(repeating: width(total, count), count: count))
+        }
+        var tallest: CGFloat = 0
+        for (view, wide) in zip(subviews, widths) {
+            tallest = max(tallest, view.sizeThatFits(ProposedViewSize(width: wide, height: nil)).height)
+        }
+        return (total, widths, tallest)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let (total, _, tallest) = measure(proposal, subviews)
+        let lines = CGFloat(rows(subviews.count).count)
+        return CGSize(width: total, height: lines == 0 ? 0 : tallest * lines + spacing * (lines - 1))
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        let (_, widths, tallest) = measure(ProposedViewSize(width: bounds.width, height: nil), subviews)
+        var views = Array(zip(subviews, widths))[...]
+        var y = bounds.minY
+        for count in rows(subviews.count) {
+            var x = bounds.minX
+            for (view, wide) in views.prefix(count) {
+                view.place(
+                    at: CGPoint(x: x, y: y), anchor: .topLeading,
+                    proposal: ProposedViewSize(width: wide, height: tallest))
+                x += wide + spacing
+            }
+            views = views.dropFirst(count)
+            y += tallest + spacing
+        }
+    }
+}
+
+/// One tile: a caption, then the row's value (its items as chips); in a `TileGrid`, as tall as
+/// the row it is in.
 struct Tile: View {
     let title: String
     let row: DocRow
@@ -1021,7 +1077,7 @@ struct Tile: View {
             Value(row: row, mono: title == "Branches")
         }
         .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 58, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.22)))
     }
@@ -1076,16 +1132,9 @@ struct RepositoryCard: View {
             if !folded {
                 Divider()
                 VStack(alignment: .leading, spacing: 10) {
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: 4),
-                        alignment: .leading, spacing: 8
-                    ) {
-                        ForEach(Array(tiles.enumerated()), id: \.offset) { _, tile in
-                            Tile(title: tile.0, row: tile.1)
-                        }
-                    }
+                    TileGrid(tiles: tiles)
                     if let paths = row("expected paths"), let tree = paths.tree, !tree.isEmpty {
-                        ScrollView {
+                        ClickToScroll(height: 240, fade: Color(nsColor: .textBackgroundColor), corner: 8) {
                             VStack(alignment: .leading, spacing: 0) {
                                 TreeRows(
                                     nodes: tree, prefix: (section.repo ?? "") + "\u{0}", depth: 0, filter: "",
@@ -1094,7 +1143,6 @@ struct RepositoryCard: View {
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxHeight: 240)
                         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.22)))
                     } else if let paths = row("expected paths") {
@@ -1129,8 +1177,8 @@ struct RepositoryCard: View {
     }
 }
 
-/// The expected paths: a tree (or a list), filtered, scrolling past 320 points; every path
-/// whole. The tree is `writ`'s: the app never splits a path.
+/// The expected paths: a tree (or a list), filtered, scrolling past 320 points once clicked;
+/// every path whole. The tree is `writ`'s: the app never splits a path.
 struct PathsCard: View {
     let shown: Shown
     @State private var asTree = true
@@ -1170,7 +1218,7 @@ struct PathsCard: View {
                 .padding(.vertical, 9)
                 if count > 0 {
                     Divider()
-                    ScrollView {
+                    ClickToScroll(height: 320, fade: Color(nsColor: .controlBackgroundColor), corner: 10) {
                         VStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(sources.enumerated()), id: \.offset) { _, source in
                                 if sources.count > 1 {
@@ -1197,7 +1245,6 @@ struct PathsCard: View {
                         .padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxHeight: 320)
                 }
             }
         }
@@ -1220,6 +1267,85 @@ struct PathsCard: View {
             else { return nil }
             return Source(title: section.title, items: row.items ?? [], tree: tree)
         }
+    }
+}
+
+/// A box that scrolls only once clicked, so the wheel over it keeps scrolling the page: macOS
+/// gives a nested scroll view every wheel event under the pointer. Past `height`, a fade and a
+/// label say there is more to read and how to reach it; clicked, it takes the wheel (an accent
+/// border shows it) until the pointer leaves.
+struct ClickToScroll<Content: View>: View {
+    let height: CGFloat
+    let fade: Color
+    let corner: CGFloat
+    @ViewBuilder let content: Content
+    @State private var active = false
+    @State private var place = Place()
+
+    /// Where the view is: whether it overflows, and what is hidden above and below.
+    struct Place: Equatable {
+        var overflows = false
+        var above = false
+        var below = false
+    }
+
+    var body: some View {
+        ScrollView {
+            content
+        }
+        .scrollDisabled(!active)
+        .scrollIndicators(active ? .automatic : .never)
+        .frame(maxHeight: height)
+        .onScrollGeometryChange(for: Place.self) { geometry in
+            let visible = geometry.visibleRect
+            return Place(
+                overflows: geometry.contentSize.height > geometry.containerSize.height + 1,
+                above: visible.minY > 1,
+                below: visible.maxY < geometry.contentSize.height - 1)
+        } action: { _, now in
+            place = now
+        }
+        .simultaneousGesture(TapGesture().onEnded { if place.overflows { active = true } })
+        .onHover { inside in if !inside { active = false } }
+        .overlay(alignment: .top) {
+            if place.overflows && place.above {
+                LinearGradient(colors: [fade, fade.opacity(0)], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 22)
+                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: corner, topTrailingRadius: corner))
+                    .allowsHitTesting(false)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if place.overflows && (place.below || !active) {
+                ZStack(alignment: .bottom) {
+                    if place.below {
+                        LinearGradient(colors: [fade.opacity(0), fade], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 44)
+                            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: corner, bottomTrailingRadius: corner))
+                            .allowsHitTesting(false)
+                    }
+                    Label(
+                        active ? "More below" : (place.below ? "More below · click to scroll" : "Click to scroll"),
+                        systemImage: active || place.below ? "chevron.down" : "cursorarrow.click"
+                    )
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(active ? Color.secondary : Color.accentColor)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(.regularMaterial))
+                    .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.25)))
+                    .padding(.bottom, 6)
+                    .onTapGesture { active = true }
+                }
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: corner)
+                .strokeBorder(Color.accentColor.opacity(active ? 0.7 : 0), lineWidth: 1.5)
+                .allowsHitTesting(false)
+        )
+        .animation(.easeOut(duration: 0.15), value: active)
+        .animation(.easeOut(duration: 0.15), value: place)
     }
 }
 

@@ -136,9 +136,11 @@ rail when more than one ticket waits.
   clock time beside it); for an amendment, a revision or a renewal, what changes first (each
   set's items removed and added, whole, then how many stay; a value's before → after); then
   every enforced term as a tile, chosen by `writ`'s labels (the `signing` section, the lease's
-  signing key, violation rule and rate, each repository's largest push), none folded away;
+  signing key, violation rule and rate, each repository's largest push), none folded away,
+  in balanced rows that fill the width, every tile as tall as the tallest;
   the expected paths as a file tree from the rows' `tree` (a Tree / List switch, a filter,
-  scrolling past 320 points; every path whole). Over several repositories, the lease's own
+  scrolling past 320 points once clicked, so the wheel over it scrolls the window until then,
+  a fade and a label saying there is more below; every path whole). Over several repositories, the lease's own
   terms in one strip (commits as, signing key, rate, on violation), then one card per
   repository with its terms and its own path tree; an amendment's cards marked CHANGES where
   its changes are, the others folded to a line; who asks, in a line; the feedback and a
