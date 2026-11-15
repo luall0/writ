@@ -41,8 +41,8 @@ writ unseal
 ```
 
 It shows which daemon and which start you are unsealing, then asks for the passphrase and one
-Touch ID. Both are needed. With a [Secure Enclave key](#the-recovery-key-and-the-secure-enclave),
-it says so and asks for no passphrase: the Touch ID alone, and the Mac's Secure Enclave opens
+approval. Both are needed. With a [Secure Enclave key](#the-recovery-key-and-the-secure-enclave),
+it says so and asks for no passphrase: the approval alone, and the Mac's Secure Enclave opens
 the keystore.
 
 - Until then, everything but `writ info` and `writ unseal` is refused with "daemon sealed".
@@ -271,7 +271,7 @@ every automatic start is logged and notified ("writd unsealed automatically").
 
    ```text
    writ admin auto-unseal status      # "Everything is in hardware"
-   writ admin auto-unseal on          # one Touch ID
+   writ admin auto-unseal on          # one approval
    ```
 
 6. **Check the daemon took it:** restart it (`sudo launchctl kickstart -k system/dev.writ.writd`);

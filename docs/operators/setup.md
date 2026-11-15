@@ -1,9 +1,11 @@
 # Setup
 
-From nothing to a running, unsealed `writd`. Two machines are involved (they can be the same):
+From nothing to a running, unsealed `writd`, file by file. On a Mac, `make install` does the
+daemon host's part for you: follow the [quick start](quick-start.md) instead. Two machines
+are involved (they can be the same):
 
 - **The daemon host**, where `writd` runs and keeps its files.
-- **Your machine**, the approver's: `writ`, and your approval key in Secretive.
+- **Your machine**, the approver's: `writ`, and your [approval key](README.md#words-used-in-these-pages) in its ssh-agent.
 
 These are the exact commands `make e2e` runs before every scenario, so they are known to work
 ([end-to-end](../end-to-end.md#commands-the-docs-show)).
@@ -146,7 +148,7 @@ machine with `writ admin`, one signed change at a time (steps 10 to 14).
    writ unseal
    ```
 
-   It asks for the passphrase, then one Touch ID.
+   It asks for the passphrase, then one approval.
 
 10. **Pin a remote's host**, on a terminal:
 
@@ -154,7 +156,7 @@ machine with `writ admin`, one signed change at a time (steps 10 to 14).
     writ admin host add <host>
     ```
 
-    The daemon scans the host (one Touch ID) and shows its keys with their fingerprints.
+    The daemon scans the host (one approval) and shows its keys with their fingerprints.
     Compare them with the ones the remote publishes, answer `y`, then sign the change that
     pins them. `<host>:<port>` for another port than 22. When the policy declares proxies,
     it first asks which one to scan through: press Enter to reach the host directly, or see

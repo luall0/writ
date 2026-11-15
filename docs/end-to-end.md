@@ -477,6 +477,7 @@ not checked).
 
 | Page | Run by |
 |---|---|
+| [Quick start](operators/quick-start.md) | `crates/writ-e2e/src/setup.rs`, `crates/writ-e2e/tests/scenarios/verified_commits.rs`, `crates/writ-e2e/tests/scenarios/daemon_management.rs`, `crates/writ-e2e/tests/scenarios/wrapper_mode.rs` |
 | [Setup](operators/setup.md) | `crates/writ-e2e/src/setup.rs`, `crates/writ-e2e/tests/scenarios/notes.rs` |
 | [Clients](operators/clients.md) | `crates/writ-e2e/tests/scenarios/workspaces.rs` |
 | [Hardening](operators/hardening.md) | `crates/writ-e2e/tests/scenarios/local_mode.rs` |

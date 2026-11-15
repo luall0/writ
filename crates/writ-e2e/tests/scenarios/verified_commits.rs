@@ -8,7 +8,7 @@
 
 use writ_e2e::Stack;
 use writ_e2e::agent::{expect, ticket};
-use writ_e2e::setup::{APPROVALS_SSH, split_key_line};
+use writ_e2e::setup::{APPROVALS_SSH, doc_step, doc_step_tty, split_key_line};
 
 /// The armored signature in what a terminal showed (`script` merges the streams and ends
 /// lines with `\r\n`).
@@ -67,6 +67,13 @@ fn commits_are_verified_once_the_signing_key_is_registered_and_proven() {
     let (key, templates) = split_key_line(line, "templates");
     assert_eq!(templates, ["verified"]);
     assert_eq!(key, agent.session_file(&lease, "signing_key.pub").trim());
+    // The quick start's step 3: the signing key's public half, from the approver's machine.
+    let shown = doc_step(
+        &stack.approver,
+        "writ admin key show <key> --public",
+        &[("<key>", "agent-e2e-verify")],
+    );
+    assert_eq!(shown.trim(), key.trim(), "the key the lease signs with");
     let fingerprint = stack.forgejo.add_account_key(&key);
     let second = push("two.txt");
     let (verified, why) = stack.forgejo.verification("verified", &second);
@@ -81,14 +88,16 @@ fn commits_are_verified_once_the_signing_key_is_registered_and_proven() {
     assert!(err.contains("invalid proof namespace"), "{err}");
 
     // On a terminal, answered no: nothing signed, nothing sent.
-    let on_terminal = |token: &str| {
-        format!(
-            "script -qec \"printf %s {token} | writ prove-key agent-e2e-verify --namespace gitea\" /dev/null"
+    // The quick start's proof, as it shows it, on a terminal (the confirm reads /dev/tty).
+    let on_terminal = |token: &str, answer: &[u8]| {
+        doc_step_tty(
+            &stack.approver,
+            "printf %s <token> | writ prove-key <key> --namespace gitea",
+            &[("<token>", token), ("<key>", "agent-e2e-verify")],
+            answer,
         )
     };
-    let out = stack
-        .approver
-        .run_with(&on_terminal("not-the-token"), b"n\n");
+    let out = on_terminal("not-the-token", b"n\n");
     let (screen, _) = expect(&out, 6, "a proof answered no");
     assert!(
         // On a terminal (`script`): rows end with `\r\n`, so no newline is matched.
@@ -103,7 +112,7 @@ fn commits_are_verified_once_the_signing_key_is_registered_and_proven() {
     // Proven: Forgejo's challenge, signed on a terminal (yes), and with --yes over SSH.
     let mut by_flag = String::new();
     let token = stack.forgejo.prove_key(&fingerprint, |token| {
-        let out = stack.approver.run_with(&on_terminal(token), b"y\n");
+        let out = on_terminal(token, b"y\n");
         let (screen, _) = expect(&out, 0, "the proof, signed on a terminal");
         assert!(screen.contains(&format!("│ {token}")), "{screen}");
         assert!(screen.contains("namespace  gitea"), "{screen}");
@@ -119,7 +128,7 @@ fn commits_are_verified_once_the_signing_key_is_registered_and_proven() {
     });
     assert_eq!(armored(&by_flag), by_flag, "only the signature on stdout");
     assert_eq!(armored(&by_flag), {
-        let out = stack.approver.run_with(&on_terminal(&token), b"y\n");
+        let out = on_terminal(&token, b"y\n");
         armored(&expect(&out, 0, "the same proof again").0)
     });
 

@@ -907,7 +907,7 @@ fn a_host_is_scanned_from_the_daemon_rescanned_and_a_repo_checked_against_forgej
 
     // The sync status: the check's sync ended for setup, said in one row; every repo, or the
     // one named, through --approval-url too; a repo not in the registry refused.
-    let every = approver.ok("writ admin repo status");
+    let every = doc_step(approver, "writ admin repo status", &[]);
     let row = every
         .lines()
         .find(|row| row.starts_with("setup: "))

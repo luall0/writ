@@ -163,6 +163,20 @@ pub fn doc_step_on_terminal(
     stdout(&out)
 }
 
+/// The same for a command that reads its answer as a line on the terminal (`/dev/tty`: stdin
+/// holds its input, like `writ prove-key`'s message): run by `script` as the terminal's own
+/// lines, `typed` written to it. Its output, whatever its exit (the caller checks it).
+pub fn doc_step_tty(
+    host: &Host,
+    command: &'static str,
+    fill: &[(&str, &str)],
+    typed: &[u8],
+) -> std::process::Output {
+    let filled = filled(command, fill);
+    assert!(!filled.contains('"'), "{filled}");
+    host.run_with(&format!("script -qec \"{filled}\" /dev/null"), typed)
+}
+
 /// The same, started in the background (the daemon), its stderr appended to `log`.
 pub fn doc_step_detached(host: &Host, command: &'static str, fill: &[(&str, &str)], log: &str) {
     let script = format!("{} 2>>{log} >/dev/null", filled(command, fill));
@@ -175,7 +189,8 @@ pub fn doc_step_detached(host: &Host, command: &'static str, fill: &[(&str, &str
     assert_eq!(out.status.code(), Some(0), "{script}: {}", stderr(&out));
 }
 
-fn filled(command: &str, fill: &[(&str, &str)]) -> String {
+/// `command` with each placeholder replaced by its value (each must be there).
+pub fn filled(command: &str, fill: &[(&str, &str)]) -> String {
     let mut text = command.to_owned();
     for (placeholder, value) in fill {
         assert!(text.contains(placeholder), "{command} has no {placeholder}");

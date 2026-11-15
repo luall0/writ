@@ -343,7 +343,7 @@ Steps (each one commit, `make ci` green, its docs in the same commit):
 6. **The installer's questions in Rust**: `writ prompt select|text|confirm`, the frame's
    `ask`, `confirm`, `choose_one` and setup question through it, the fake-root installer
    tests driving it on a terminal, its scenario and its coverage rows. *Done.*
-7. **The operator docs**: the quick guide, the reorganised pages, the pipeline's table.
+7. **The operator docs**: the quick guide, the reorganised pages, the pipeline's table. *Done.*
 8. **Closing**: the acceptance ticked, the manual check run by the user, the history page.
 
 Acceptance:

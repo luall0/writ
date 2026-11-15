@@ -6,9 +6,11 @@ takes it all back.
 
 ## Before you start
 
-- Your approval key, and its public half in a file. On the Mac, in Secretive
+- Your [approval key](README.md#words-used-in-these-pages) in its ssh-agent, and its public
+  half in a file. On the Mac, Secretive is the simplest: its key asks for Touch ID
   ([Approving with Secretive](../guides/manual-checks.md#approving-with-secretive-touch-id)).
-  On Linux, a key that asks for a touch (a FIDO key such as `sk-ssh-ed25519`, or one on a
+  Any agent works, such as a key with a passphrase asked through pin-entry. On Linux, a key
+  that asks for a touch (a FIDO key such as `sk-ssh-ed25519`, or one on a
   YubiKey) is best: your agents run as you, and could use a key that doesn't ask.
 - The repository checked out, with Rust installed (the build uses the version the repository
   pins).
@@ -47,7 +49,8 @@ nothing changed:
 5. On the Mac, **the approval popup**: `yes` (Enter) starts it at each login. When a ticket
    waits for your signature, a window comes up in front of every app, full-screen ones too,
    with the whole ticket and two buttons, Sign and Decline. Then **the socket of the agent
-   that holds your approval key**: Enter takes Secretive's. `no` installs the popup's program
+   that holds your approval key**: Enter takes Secretive's; give your agent's socket otherwise
+   (the `SSH_AUTH_SOCK` it sets). `no` installs the popup's program
    and starts nothing: you sign with `writ sign` in a terminal.
 
 Then it shows your answers and **every change it will make, in order**, and asks `Install?`.
@@ -104,8 +107,9 @@ You add repositories from your machine with `writ admin`.
    new logins only.
 2. Unseal the daemon: `writ unseal`. It asks for the passphrase, then your approval key (Touch
    ID on the Mac). You do this again after each restart of the machine.
-3. Add a key, a host, a repo and a template with `writ admin`
-   ([Daily operations](sealing.md)), then run `writ init <repo>` in a clone.
+3. Follow the [quick start](quick-start.md): the signing key on your account, an upstream
+   key, a template, a repo (the remote's host key is pinned as it is added), then `writ init`
+   in a clone.
 4. Start each agent through `writ run`, for example `writ run -- claude`. Its leases are then
    bound to that session ([Client settings](clients.md#binding-a-lease-to-its-session-local-mode)).
 5. On the Mac, the approval popup is already running: the next ticket an agent submits comes
