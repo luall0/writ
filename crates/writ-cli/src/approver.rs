@@ -654,8 +654,9 @@ mod tests {
         assert!(at("task") < at("plan"), "{section}");
         assert!(at("plan") < at("branches"), "{section}");
         assert!(at("plan") < at("expected paths"), "{section}");
+        // A set's change is its items (M7.9.5): the branch added, alone.
         assert!(
-            section.contains("    + agent/oauth-*, release/*\n"),
+            section.contains("  branches\n    + release/*\n      (1 kept)\n"),
             "{section}"
         );
         // The task's and the plan's new sides cut, saying how to see the rest.
@@ -680,14 +681,13 @@ mod tests {
                     .unwrap()
             })
             .collect();
-        assert_eq!(
-            added.replace(' ', ""),
-            display::field(
-                &amendment,
-                display::Field::Repo(display::RepoField::ExpectedPaths)
-            )
-            .replace(' ', "")
-        );
+        let want: String = amendment
+            .repos
+            .values()
+            .flat_map(|terms| terms.expected_paths.iter())
+            .map(|p| format!("\"{}\"", p.as_str()))
+            .collect();
+        assert_eq!(added.replace(' ', ""), want);
         for line in shown.lines() {
             assert!(
                 display::width(line) <= display::WIDTH,

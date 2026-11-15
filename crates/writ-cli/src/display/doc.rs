@@ -60,6 +60,119 @@ pub struct Row {
     /// otherwise, or for a term over several repositories (its value names each).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<String>,
+    /// The time the row shows (RFC 3339, UTC), for the app to say how far it is ("in 2h")
+    /// beside the clock time; none for a row that shows no time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// For the expected paths: the same items as a tree of folders ([`path_tree`]), for the
+    /// app to show as a file browser without splitting a value itself; none otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tree: Vec<Node>,
+}
+
+/// One node of a path tree: a folder (its name ends with `/`, and may hold several
+/// segments merged) or a leaf (the rest of one path). Every path is the names on its way
+/// down, joined as they are: nothing is added, dropped or reordered within a path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Node {
+    pub name: String,
+    pub kind: NodeKind,
+    /// The paths under a folder (1 for a leaf).
+    pub paths: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<Node>,
+}
+
+/// What a node is: the app picks its icon and badge from this, never from the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeKind {
+    Folder,
+    /// A leaf with no glob character: one file.
+    File,
+    /// A leaf with a glob character (`*`, `?`, `[`, `{`): several files may match.
+    Pattern,
+    /// The leaf `**`: everything under its folder.
+    Everything,
+}
+
+/// The paths (each already [`clean`](super::clean)ed, as the row's items) as a tree: split
+/// at each `/`, folders first then leaves, each by name; a folder holding only one folder,
+/// and nothing else, merged with it into one node (`writ-integration/tests/`). Built from
+/// the items alone, so the leaves are exactly the items: [`leaves`] gives them back.
+pub fn path_tree(items: &[String]) -> Vec<Node> {
+    #[derive(Default)]
+    struct Dir {
+        dirs: std::collections::BTreeMap<String, Dir>,
+        leaves: std::collections::BTreeSet<String>,
+    }
+    let mut root = Dir::default();
+    for item in items {
+        let mut segments: Vec<&str> = item.split('/').collect();
+        let leaf = segments.pop().unwrap_or_default();
+        let mut at = &mut root;
+        for segment in segments {
+            at = at.dirs.entry(format!("{segment}/")).or_default();
+        }
+        at.leaves.insert(leaf.to_owned());
+    }
+    fn nodes(dir: Dir) -> Vec<Node> {
+        let mut out = Vec::new();
+        for (name, sub) in dir.dirs {
+            let mut name = name;
+            let mut sub = sub;
+            // One folder and nothing else: merged, its name carried whole.
+            while sub.leaves.is_empty() && sub.dirs.len() == 1 {
+                let Some((inner, below)) = sub.dirs.pop_first() else {
+                    break;
+                };
+                name.push_str(&inner);
+                sub = below;
+            }
+            let children = nodes(sub);
+            let paths = children.iter().map(|c| c.paths).sum();
+            out.push(Node {
+                name,
+                kind: NodeKind::Folder,
+                paths,
+                children,
+            });
+        }
+        for leaf in dir.leaves {
+            let kind = if leaf == "**" {
+                NodeKind::Everything
+            } else if leaf.contains(['*', '?', '[', '{']) {
+                NodeKind::Pattern
+            } else {
+                NodeKind::File
+            };
+            out.push(Node {
+                name: leaf,
+                kind,
+                paths: 1,
+                children: Vec::new(),
+            });
+        }
+        out
+    }
+    nodes(root)
+}
+
+/// The paths a tree holds, each the names on its way down joined: [`path_tree`] undone.
+#[cfg(test)]
+pub fn leaves(tree: &[Node]) -> Vec<String> {
+    fn walk(nodes: &[Node], prefix: &str, out: &mut Vec<String>) {
+        for node in nodes {
+            let name = format!("{prefix}{}", node.name);
+            match node.kind {
+                NodeKind::Folder => walk(&node.children, &name, out),
+                _ => out.push(name),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(tree, "", &mut out);
+    out
 }
 
 /// What a row is.
@@ -120,8 +233,31 @@ impl Out {
                 value: value.to_owned(),
                 tag,
                 items: Vec::new(),
+                at: None,
+                tree: Vec::new(),
             });
         }
+    }
+
+    /// The time the row last written shows.
+    pub(crate) fn at(&mut self, at: writ_core::units::Timestamp) {
+        if let Some(row) = self.last_row() {
+            row.at = Some(at.to_string());
+        }
+    }
+
+    /// The row last written's items as a path tree ([`path_tree`]): the expected paths.
+    pub(crate) fn tree(&mut self) {
+        if let Some(row) = self.last_row() {
+            row.tree = path_tree(&row.items);
+        }
+    }
+
+    fn last_row(&mut self) -> Option<&mut Row> {
+        self.doc
+            .sections
+            .last_mut()
+            .and_then(|section| section.rows.last_mut())
     }
 
     /// The items of the row last written (a list-valued term's).

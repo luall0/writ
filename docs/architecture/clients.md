@@ -91,7 +91,17 @@ lines: the agent's text whole, as its lines, not cut into the terminal's rows), 
 `warning`, and for a term that is a list (repos, committer emails, operations, branches,
 expected paths) its `items`, each cleaned as the value shows it, which `writ` splits so the
 app never splits a value (none for a per-repository term over several repositories, whose
-value names each). The terminal's text and the structure are written by the same calls, so they say
+value names each); for a row that shows a time, its `at` (RFC 3339, UTC), so the app says
+how far it is ("in 2h") beside the clock time without reading the value (M7.9.5); and for the
+expected paths, their `tree`: nodes with a `name` (a folder's ends with `/`, a folder holding
+only one folder and nothing else merged with it: `writ-integration/tests/`), a `kind`
+(`folder`, `file`, `pattern` for a leaf with a glob character, `everything` for `**`), the
+`paths` under it and its `children`, built by `writ` from the items alone so every path is
+the names on its way down, nothing added, dropped or reordered
+(`the_path_tree_gives_back_every_path_exactly`). In a `changes` section, a term that is a
+set (repos, committer emails, operations, branches, expected paths) is a row per item
+removed (`removed`) and added (`added`), then a `context` row saying how many stay; any other
+term, a row per side. The terminal's text and the structure are written by the same calls, so they say
 the same (`the_structure_says_what_the_text_says`); agent text only ever lands in a row
 tagged as the agent's, or quoted inside an enforced value (the caller's executable), or as
 recorded feedback (`agent_text_is_only_ever_in_the_agent_s_rows`). The app styles each kind

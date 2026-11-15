@@ -656,27 +656,110 @@ pub const FIELDS: [Field; 22] = [
     Field::Repo(RepoField::ExpectedPaths),
 ];
 
-/// A field that differs between two tickets, each side as [`field`] shows it.
+/// A field that differs between two tickets, each side as [`field`] shows it. For a term
+/// that is a set (repos, committer emails, operations, branches, expected paths), the items
+/// removed and added too, each as the value shows it: the change is shown as those alone,
+/// never as both whole lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changed {
     pub field: Field,
     pub before: String,
     pub after: String,
+    /// The set's items in `before` only (empty for a term that isn't a set).
+    pub removed: Vec<String>,
+    /// The set's items in `after` only.
+    pub added: Vec<String>,
+    /// How many of the set's items both sides hold.
+    pub kept: usize,
+    /// Each side's time, for a time (the expiry).
+    pub times: Option<(Timestamp, Timestamp)>,
+}
+
+impl Changed {
+    /// Whether the change is shown item by item: a set's.
+    pub fn by_items(&self) -> bool {
+        !self.removed.is_empty() || !self.added.is_empty()
+    }
 }
 
 /// The fields that differ between two tickets.
 pub fn diff(before: &Ticket, after: &Ticket) -> Vec<Changed> {
+    // A per-repository term over several repositories, or over a repository renamed: each
+    // item says its repository (`web: push`), so the sets compare item for item.
+    let qualify = before.repos.len() > 1
+        || after.repos.len() > 1
+        || !before.repos.keys().eq(after.repos.keys());
     FIELDS
         .into_iter()
         .filter_map(|f| {
             let (a, b) = (field(before, f), field(after, f));
-            (a != b).then_some(Changed {
+            if a == b {
+                return None;
+            }
+            let (removed, added, kept) = match (set(before, f, qualify), set(after, f, qualify)) {
+                (Some(old), Some(new)) => (
+                    old.difference(&new).cloned().collect(),
+                    new.difference(&old).cloned().collect(),
+                    old.intersection(&new).count(),
+                ),
+                _ => (Vec::new(), Vec::new(), 0),
+            };
+            let times = (f == Field::ExpiresAt)
+                .then_some((before.limits.expires_at, after.limits.expires_at));
+            Some(Changed {
                 field: f,
                 before: a,
                 after: b,
+                removed,
+                added,
+                kept,
+                times,
             })
         })
         .collect()
+}
+
+/// A term's items as a set, each as the value shows it (an expected path quoted); with
+/// `qualify`, a per-repository term's items each after its repository's name. None for a
+/// term that isn't a set. The ticket's lists are sets ([`writ_core::ticket`]): neither the
+/// order nor a repetition is a term, so a set difference is the whole change.
+fn set(ticket: &Ticket, field: Field, qualify: bool) -> Option<std::collections::BTreeSet<String>> {
+    let shown = |f: RepoField, terms: &RepoTerms| -> Vec<String> {
+        match f {
+            RepoField::ExpectedPaths => terms
+                .expected_paths
+                .iter()
+                .map(|p| quoted([p.as_str()]))
+                .collect(),
+            _ => repo_items(terms, f),
+        }
+    };
+    match field {
+        Field::Repos => Some(ticket.repos.keys().map(|r| clean(r.as_str())).collect()),
+        Field::CommitterEmails => Some(
+            ticket
+                .common
+                .committer_emails
+                .iter()
+                .map(|e| clean(e.as_ref()))
+                .collect(),
+        ),
+        Field::Repo(
+            f @ (RepoField::Operations | RepoField::Branches | RepoField::ExpectedPaths),
+        ) => Some(
+            ticket
+                .repos
+                .iter()
+                .flat_map(|(repo, terms)| {
+                    shown(f, terms).into_iter().map(move |item| match qualify {
+                        true => format!("{}: {item}", clean(repo.as_str())),
+                        false => item,
+                    })
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 /// The full display of a ticket waiting for a signature, its agent text as `shown` says.
@@ -748,11 +831,13 @@ pub fn ticket_into(out: &mut Out, ticket: &Ticket, state: State, now: Timestamp,
         "  created {created_at}, expires {expires_at} (in {left})"
     );
     out.row(Some("created"), &created_at.to_string(), Tag::Context);
+    out.at(*created_at);
     out.row(
         Some("expires"),
         &format!("{expires_at} (in {left})"),
         Tag::Enforced,
     );
+    out.at(*expires_at);
     if let Some(lease) = amends {
         let _ = writeln!(out.text, "  amends lease {lease}");
         out.row(Some("amends lease"), lease.as_ref(), Tag::Enforced);
@@ -832,6 +917,7 @@ pub fn ticket_into(out: &mut Out, ticket: &Ticket, state: State, now: Timestamp,
             Tag::Enforced,
         );
         out.items(repo_items(terms, RepoField::ExpectedPaths));
+        out.tree();
         let room = WIDTH.saturating_sub(4 + width(GUTTER));
         let rows: Vec<String> = terms
             .expected_paths
@@ -958,6 +1044,7 @@ pub fn summary_into(out: &mut Out, ticket: &Ticket, narrowed: bool) {
         &expires_at.to_string(),
         Tag::Enforced,
     );
+    out.at(*expires_at);
     for f in [
         Field::Repos,
         Field::Repo(RepoField::Operations),
@@ -1000,6 +1087,7 @@ pub fn summary_into(out: &mut Out, ticket: &Ticket, narrowed: bool) {
         Tag::Enforced,
     );
     out.items(items(ticket, Field::Repo(RepoField::ExpectedPaths)));
+    out.tree();
     // Rows within [`WIDTH`] whatever the numbers: the totals over every repository (`u32`
     // sums, saturating), each repository's counts above.
     let limits = format!(
@@ -1111,6 +1199,7 @@ pub fn renewal_into(out: &mut Out, view: &writ_proto::Renewal, original: &Ticket
         &original.limits.expires_at.to_string(),
         Tag::Context,
     );
+    out.at(original.limits.expires_at);
 }
 
 /// The other active leases from the ticket's source (the daemon's record of where tickets
@@ -1169,6 +1258,7 @@ pub fn others_into(out: &mut Out, others: &writ_proto::Others, now: Timestamp) {
             &format!("{left} left · {scope}{overlap}"),
             tag,
         );
+        out.at(lease.expires_at);
     }
     if others.more > 0 {
         let _ = writeln!(out.text, "  … and {} more (writ ls)", others.more);
@@ -1354,6 +1444,28 @@ pub fn changes_into(out: &mut Out, title: &str, changes: &[Changed], shown: Rows
     let enforced = changes.iter().filter(|c| !c.field.agent_written());
     for change in agent.chain(enforced) {
         let _ = writeln!(out.text, "  {}", change.field.label());
+        if change.by_items() {
+            // A set: the items removed, then added, each whole (an enforced term is never
+            // cut), then how many stay.
+            for (sign, items, tag) in [
+                ("-", &change.removed, Tag::Removed),
+                ("+", &change.added, Tag::Added),
+            ] {
+                for item in items {
+                    for (i, row) in cut(item, room).iter().enumerate() {
+                        let mark = if i == 0 { sign } else { "│" };
+                        let _ = writeln!(out.text, "    {mark} {row}");
+                    }
+                    out.row(Some(change.field.label()), item, tag);
+                }
+            }
+            if change.kept > 0 {
+                let kept = format!("{} kept", change.kept);
+                let _ = writeln!(out.text, "      ({kept})");
+                out.row(Some(change.field.label()), &kept, Tag::Context);
+            }
+            continue;
+        }
         let side = match change.field.agent_written() {
             true => shown,
             false => Rows::All,
@@ -1371,6 +1483,9 @@ pub fn changes_into(out: &mut Out, title: &str, changes: &[Changed], shown: Rows
             }
             side.more(&mut out.text, "    ", limit, rows.len());
             out.row(Some(change.field.label()), value, tag);
+            if let Some((was, is)) = change.times {
+                out.at(if sign == "-" { was } else { is });
+            }
         }
     }
 }
@@ -1521,7 +1636,7 @@ mod tests {
             .unwrap();
         assert_eq!(task.value, "A task\n\nover two paragraphs");
         assert_eq!(task.tag, Tag::Agent);
-        // A change: each side a row, after the agent's words.
+        // A change: each side a row, after the agent's words; a set's, its items (M7.9.5).
         let changes = &out.doc.sections[kinds
             .iter()
             .position(|k| *k == SectionKind::Changes)
@@ -1536,8 +1651,8 @@ mod tests {
             [
                 (Some("task"), Tag::AgentRemoved),
                 (Some("task"), Tag::AgentAdded),
-                (Some("branches"), Tag::Removed),
                 (Some("branches"), Tag::Added),
+                (Some("branches"), Tag::Context),
             ]
         );
     }
@@ -2335,6 +2450,324 @@ mod tests {
         for line in shown.lines() {
             assert!(width(line) <= WIDTH, "{line:?}");
         }
+    }
+
+    /// M7.9.5: an amendment adding one path to many showed both whole lists; a set's change
+    /// is now the items removed and added, each whole, and how many stay.
+    #[test]
+    fn a_set_change_shows_only_the_items_it_removes_and_adds() {
+        let mut before = full_ticket();
+        for i in 0..40 {
+            omega(&mut before)
+                .expected_paths
+                .insert(format!("src/m{i:02}.rs").parse().unwrap());
+        }
+        let mut after = before.clone();
+        omega(&mut after)
+            .expected_paths
+            .insert("src/new.rs".parse().unwrap());
+        omega(&mut after)
+            .expected_paths
+            .retain(|p| p.as_str() != "src/m07.rs");
+        omega(&mut after)
+            .operations
+            .retain(|o| o.to_string() != "push");
+        omega(&mut after)
+            .branches
+            .insert("release/*".parse().unwrap());
+        let changes = diff(&before, &after);
+        let paths = changes
+            .iter()
+            .find(|c| c.field == Field::Repo(RepoField::ExpectedPaths))
+            .unwrap();
+        assert_eq!(paths.removed, ["\"src/m07.rs\""]);
+        assert_eq!(paths.added, ["\"src/new.rs\""]);
+        assert_eq!(paths.kept, 41);
+        let shown = self::changes("Changes", &changes, Rows::All);
+        assert!(
+            shown.contains(
+                "  expected paths\n    - \"src/m07.rs\"\n    + \"src/new.rs\"\n      (41 kept)\n"
+            ),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("src/m08.rs"),
+            "a kept path is not listed: {shown}"
+        );
+        assert!(
+            shown.contains("  operations\n    - push\n      (2 kept)\n"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("  branches\n    + release/*\n      (1 kept)\n"),
+            "{shown}"
+        );
+        // The structure: one row per item, tagged as removed or added, and the count.
+        let mut out = Out::default();
+        changes_into(&mut out, "Changes", &changes, Rows::All);
+        let rows: Vec<(&str, Tag)> = out.doc.sections[0]
+            .rows
+            .iter()
+            .filter(|r| r.label.as_deref() == Some("expected paths"))
+            .map(|r| (r.value.as_str(), r.tag))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("\"src/m07.rs\"", Tag::Removed),
+                ("\"src/new.rs\"", Tag::Added),
+                ("41 kept", Tag::Context),
+            ]
+        );
+        // A scalar still shows both sides; the agent's words too.
+        let mut longer = before.clone();
+        omega(&mut longer).limits.max_pushes = 9;
+        longer.text.plan = vec!["x, y".to_owned()];
+        let shown = self::changes("Changes", &diff(&before, &longer), Rows::All);
+        assert!(
+            shown.contains("  max pushes\n    - 2\n    + 9\n"),
+            "{shown}"
+        );
+        // Items are never merged or split: "a, b" is not "a" and "b".
+        let mut one = before.clone();
+        omega(&mut one).expected_paths = ["a, b".parse().unwrap()].into();
+        let mut two = before.clone();
+        omega(&mut two).expected_paths = ["a".parse().unwrap(), "b".parse().unwrap()].into();
+        let c = diff(&one, &two);
+        let c = c
+            .iter()
+            .find(|c| c.field == Field::Repo(RepoField::ExpectedPaths))
+            .unwrap();
+        assert_eq!(c.removed, ["\"a, b\""]);
+        assert_eq!(c.added, ["\"a\"", "\"b\""]);
+        assert_eq!(c.kept, 0);
+    }
+
+    /// Over several repositories, or a repository swapped for another, each item names its
+    /// repository: the same operation in two repositories is two items.
+    #[test]
+    fn over_several_repositories_each_item_names_its_repository() {
+        let mut before = full_ticket();
+        let terms = om(&before).clone();
+        before.repos.insert("web".parse().unwrap(), terms);
+        let mut after = before.clone();
+        after
+            .repos
+            .get_mut(&"web".parse().unwrap())
+            .unwrap()
+            .operations
+            .retain(|o| o.to_string() != "push");
+        let changes = diff(&before, &after);
+        let ops = changes
+            .iter()
+            .find(|c| c.field == Field::Repo(RepoField::Operations))
+            .unwrap();
+        assert_eq!(ops.removed, ["web: push"]);
+        assert!(ops.added.is_empty());
+        assert_eq!(ops.kept, 5);
+        let shown = self::changes("Changes", &changes, Rows::All);
+        assert!(
+            shown.contains("  operations\n    - web: push\n      (5 kept)\n"),
+            "{shown}"
+        );
+
+        // One of the two swapped for another: everything it held moves from one name to the
+        // other, item by item.
+        let mut swapped = before.clone();
+        let terms = swapped.repos.remove(&"web".parse().unwrap()).unwrap();
+        swapped.repos.insert("www".parse().unwrap(), terms);
+        let changes = diff(&before, &swapped);
+        let repos = changes.iter().find(|c| c.field == Field::Repos).unwrap();
+        assert_eq!(repos.removed, ["web"]);
+        assert_eq!(repos.added, ["www"]);
+        let paths = changes
+            .iter()
+            .find(|c| c.field == Field::Repo(RepoField::ExpectedPaths))
+            .unwrap();
+        assert_eq!(
+            paths.removed,
+            ["web: \"src/auth/**\"", "web: \"tests/auth/**\""]
+        );
+        assert_eq!(
+            paths.added,
+            ["www: \"src/auth/**\"", "www: \"tests/auth/**\""]
+        );
+        assert_eq!(paths.kept, 2, "omega-code's, unchanged");
+
+        // A lone repository renamed, its terms the same: the name is the change.
+        let mut renamed = full_ticket();
+        let terms = renamed
+            .repos
+            .remove(&"omega-code".parse().unwrap())
+            .unwrap();
+        renamed.repos.insert("omega-next".parse().unwrap(), terms);
+        let changes = diff(&full_ticket(), &renamed);
+        let fields: Vec<Field> = changes.iter().map(|c| c.field).collect();
+        assert_eq!(fields, [Field::Repos], "{changes:?}");
+        assert_eq!(changes[0].removed, ["omega-code"]);
+        assert_eq!(changes[0].added, ["omega-next"]);
+    }
+
+    /// The paths' tree (M7.9.5) gives back every path exactly, hostile ones too: nothing
+    /// added, dropped or reordered within a path; a folder merged only when it holds one
+    /// folder and nothing else; each folder's count its paths.
+    #[test]
+    fn the_path_tree_gives_back_every_path_exactly() {
+        fn check(items: &[String]) -> Vec<doc::Node> {
+            let tree = doc::path_tree(items);
+            let mut back = doc::leaves(&tree);
+            back.sort();
+            let mut want = items.to_vec();
+            want.sort();
+            want.dedup();
+            assert_eq!(back, want, "{tree:#?}");
+            fn walk(nodes: &[doc::Node]) -> usize {
+                let mut total = 0;
+                for node in nodes {
+                    match node.kind {
+                        doc::NodeKind::Folder => {
+                            assert!(node.name.ends_with('/'), "{node:?}");
+                            assert!(!node.children.is_empty(), "an empty folder: {node:?}");
+                            assert!(
+                                !(node.children.len() == 1
+                                    && node.children[0].kind == doc::NodeKind::Folder),
+                                "a folder holding one folder alone, not merged: {node:?}"
+                            );
+                            assert_eq!(node.paths, walk(&node.children), "{node:?}");
+                        }
+                        _ => {
+                            assert!(node.children.is_empty());
+                            assert_eq!(node.paths, 1);
+                        }
+                    }
+                    total += node.paths;
+                }
+                total
+            }
+            assert_eq!(walk(&tree), back.len());
+            tree
+        }
+        let hostile = [
+            "src/auth/**",
+            "src/auth/login.rs",
+            "src/a.rs",
+            "docs/*.md",
+            "docs/[ab]?.txt",
+            "a//b",
+            "/abs",
+            "trail/",
+            "x",
+            "x/y",
+            "deep/one/two/three.rs",
+            "deep/one/two/four.rs",
+            ".hidden/f",
+            "../up",
+            "esc\u{1b}[2J/\u{202e}evil",
+            "\\u{1b}/typed",
+            "",
+            "/",
+        ];
+        let items: Vec<String> = hostile.iter().map(|p| clean(p)).collect();
+        let tree = check(&items);
+        let names: Vec<&str> = tree.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"deep/one/two/"), "{names:?}");
+        assert!(names.contains(&"x/") && names.contains(&"x"), "{names:?}");
+        let kind = |path: &str| -> doc::NodeKind {
+            fn find(nodes: &[doc::Node], prefix: &str, path: &str) -> Option<doc::NodeKind> {
+                nodes.iter().find_map(|n| {
+                    let name = format!("{prefix}{}", n.name);
+                    match n.kind {
+                        doc::NodeKind::Folder => find(&n.children, &name, path),
+                        k => (name == path).then_some(k),
+                    }
+                })
+            }
+            find(&tree, "", path).unwrap()
+        };
+        assert_eq!(kind("src/auth/**"), doc::NodeKind::Everything);
+        assert_eq!(kind("docs/*.md"), doc::NodeKind::Pattern);
+        assert_eq!(kind("docs/[ab]?.txt"), doc::NodeKind::Pattern);
+        assert_eq!(kind("src/a.rs"), doc::NodeKind::File);
+        assert!(
+            doc::leaves(&tree)
+                .iter()
+                .all(|p| !p.chars().any(is_hidden_char)),
+            "built from the cleaned items"
+        );
+
+        // Many sets from a seeded generator: the same holds for each.
+        let mut seed: u64 = 0x5eed_7a3e;
+        let mut next = |n: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % n
+        };
+        const PARTS: [&str; 9] = ["a", "b", "src", "*", "**", "", ".", "é", "{x}"];
+        for _ in 0..500 {
+            let count = next(30);
+            let items: Vec<String> = (0..count)
+                .map(|_| {
+                    let depth = next(5) + 1;
+                    (0..depth)
+                        .map(|_| PARTS[usize::try_from(next(PARTS.len() as u64)).unwrap()])
+                        .collect::<Vec<_>>()
+                        .join("/")
+                })
+                .collect();
+            check(&items);
+        }
+    }
+
+    /// Times and the paths' tree ride with their rows (M7.9.5): the app shows a time as how
+    /// far it is and the paths as a tree, never parsing a value for either.
+    #[test]
+    fn times_and_path_trees_ride_with_their_rows() {
+        let t = full_ticket();
+        let out = shown_both(&t, &t);
+        let rows: Vec<&doc::Row> = out.doc.sections.iter().flat_map(|s| &s.rows).collect();
+        let timed: Vec<(Option<&str>, &str)> = rows
+            .iter()
+            .filter_map(|r| r.at.as_deref().map(|at| (r.label.as_deref(), at)))
+            .collect();
+        let expires = t.limits.expires_at.to_string();
+        let created = t.created_at.to_string();
+        assert_eq!(
+            timed,
+            [
+                (Some("created"), created.as_str()),
+                (Some("expires"), expires.as_str()),
+                (Some("expires at"), expires.as_str()),
+            ]
+        );
+        let trees: Vec<&&doc::Row> = rows.iter().filter(|r| !r.tree.is_empty()).collect();
+        assert_eq!(trees.len(), 2, "the repository's paths and the summary's");
+        for row in trees {
+            assert_eq!(row.label.as_deref(), Some("expected paths"));
+            let mut leaves = doc::leaves(&row.tree);
+            leaves.sort();
+            let mut items = row.items.clone();
+            items.sort();
+            assert_eq!(leaves, items);
+        }
+        // An expiry changed: each side's row carries its own time.
+        let mut later = t.clone();
+        later.limits.expires_at = Timestamp::from_unix(t.limits.expires_at.unix() + 3600).unwrap();
+        let mut out = Out::default();
+        changes_into(&mut out, "Changes", &diff(&t, &later), Rows::All);
+        let ats: Vec<Option<String>> = out.doc.sections[0]
+            .rows
+            .iter()
+            .filter(|r| r.label.as_deref() == Some("expires at"))
+            .map(|r| r.at.clone())
+            .collect();
+        assert_eq!(
+            ats,
+            [
+                Some(expires.clone()),
+                Some(later.limits.expires_at.to_string())
+            ]
+        );
     }
 
     #[test]

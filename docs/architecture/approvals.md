@@ -77,7 +77,13 @@ triggering the signature; it is the trusted display
 - The diff sections ("Changes since revision …", "from the terms in force of lease …", "of
   lease …, renewed", "Narrowed by you") list the agent's words first, each side cut at 40
   rows like a field unless `--full`, and the enforced terms last, nearest the prompt, never
-  cut.
+  cut. A term that is a set (repos, committer emails, operations, branches, expected paths)
+  is shown as its items removed (`-`) and added (`+`), each whole, then how many stay
+  (`(41 kept)`), never as both whole lists (M7.9.5); over several repositories, or one
+  swapped for another, each item names its repository (`web: push`). The ticket's lists are
+  sets, so neither an order nor a repetition is a term to show
+  (`a_set_change_shows_only_the_items_it_removes_and_adds`,
+  `over_several_repositories_each_item_names_its_repository`).
 
 ### What `writ sign` shows beside the ticket
 

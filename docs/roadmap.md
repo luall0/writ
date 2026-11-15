@@ -328,7 +328,7 @@ Steps (each one commit, `make ci` green, its docs in the same commit):
 3. **Changes as items, times as fields, paths as a tree** (`writ-cli`'s display and `writ
    sign --ui`'s events): the item-level diff in the text and the structure, each item
    tagged; the expiry and other times structured; each repository's expected paths sent as
-   a tree (folders, files, patterns), built from the paths without changing one. Tests: the display's guarantee tests extended (every leaf
+   a tree (folders, files, patterns), built from the paths without changing one. *Done.* Tests: the display's guarantee tests extended (every leaf
    still changes what is shown; lists that differ only in order or repetition; an item
    removed and another added); the end-to-end scenario's amendment.
 4. **The popup built to the validated design**; the manual check updated.
