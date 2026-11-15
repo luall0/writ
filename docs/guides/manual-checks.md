@@ -488,6 +488,44 @@ Check: after the restart it runs `writ unseal` (Touch ID), then `writ migrate`. 
 `writd recover`: answer n to `writ migrate`. `writ ls` then says to run `writ migrate`. Run it
 again and sign.
 
+## A fetch with no signature on the Mac (M7.9.7)
+
+An agent fetches before its ticket, with no prompt: run it once the milestone's commits are
+in, on the Mac that runs the install.
+
+**1. Upgrade**, from the checkout:
+
+```sh
+make install    # the check's report first: the state 12 → 13; then the summary: y
+```
+
+Check: after the restart, `writ unseal` (Touch ID). `writ ls` lists the same leases.
+
+**2. Turn it on for one repo** (each a signed change, Touch ID):
+
+```sh
+writ admin template add prefetch unsigned_fetch=true max_ttl=15m max_ops_per_minute=20
+writ admin repo set <repo> templates+=prefetch
+```
+
+Check: `writ admin template show prefetch` has no `operations` and no counts.
+
+**3. Wire the repo again**, in its clone:
+
+```sh
+writ init <repo> --agents claude --agents-md
+```
+
+Check: `AGENTS.md` (or `CLAUDE.md`) has one Writ line, naming fetch and pull, the older line
+gone.
+
+**4. An agent plans.** Under `writ run`, ask the agent for a task in that repo. Check: before
+it writes its ticket, it runs `writ git fetch origin` (or `pull --ff-only`), and no popup or
+Touch ID prompt comes up for it. `sudo grep '"event":"grant"' /var/db/writ/state/audit.jsonl`
+shows its grant with `granted with no signature (unsigned_fetch): template prefetch`, no
+`approver`. `ls ~/.writ/sessions` shows no session left for it. The ticket that follows comes
+up in the popup as before.
+
 ## Local mode on Linux (M7.1)
 
 The `local` setup on Linux runs in `make test` against a fake root (its unit checked by

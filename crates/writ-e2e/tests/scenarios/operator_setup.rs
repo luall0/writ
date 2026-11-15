@@ -36,6 +36,7 @@ const REPOS: &[&str] = &[
     "ws-web",
     "pr-api",
     "pr-web",
+    "planning",
     // Behind the SOCKS5 proxy (scenario 25).
     "behind-socks",
 ];
