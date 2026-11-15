@@ -37,6 +37,7 @@ mod lock;
 mod platform;
 mod recover;
 mod supervise;
+mod upgrade;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -88,6 +89,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("run", "<writd.yaml>"),
     ("recover", "<writd.yaml> <policy|approvers|readers> <file>"),
+    ("check-upgrade", "<writd.yaml>"),
     ("host-key", "<writd.yaml>"),
     ("tls-fingerprint", "<writd.yaml>"),
     ("upstream-keys", "<writd.yaml>"),
@@ -169,6 +171,7 @@ fn main() -> ExitCode {
         ["recover", config, target, file] => {
             recover::recover(Path::new(config), target, Path::new(file))
         }
+        ["check-upgrade", config] => upgrade::check_upgrade(Path::new(config)),
         ["upstream-keys", config] => upstream_keys(Path::new(config)),
         ["host-key", config] => host_key(Path::new(config)),
         ["tls-fingerprint", config] => tls_fingerprint(Path::new(config)),

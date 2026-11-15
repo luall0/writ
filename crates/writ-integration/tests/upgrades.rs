@@ -409,3 +409,130 @@ fn a_policy_the_daemon_can_t_rewrite_is_migrated_with_the_operator_s_text() {
     let policy = stdout(&daemon.run(&["admin", "show", "policy"], ""));
     assert!(policy.contains("templates: []"), "{policy}");
 }
+
+/// `writd check-upgrade writd.yaml` on the daemon's directory: (exit code, stdout, stderr).
+fn check_upgrade(daemon: &Daemon, config: &str) -> (Option<i32>, String, String) {
+    let out = daemon.writd_with(&["check-upgrade", config], "");
+    (out.status.code(), stdout(&out), stderr(&out))
+}
+
+#[test]
+fn writd_check_upgrade_says_what_the_start_will_do_and_changes_nothing() {
+    let mut daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    assert!(daemon.unseal().status.success(), "{}", daemon.log());
+
+    // Current, the daemon running: nothing to do.
+    let (code, said, _) = check_upgrade(&daemon, "writd.yaml");
+    assert_eq!(code, Some(0), "{said}");
+    assert_eq!(
+        said,
+        "writd.yaml: read as this writd reads it.\n\
+         The state: version 12, this writd's: nothing to migrate.\n\
+         The policy in force: format 2, this writd's: nothing to migrate.\n\
+         Nothing blocks the upgrade.\n"
+    );
+
+    // An older state: its steps run on a copy, the state itself left as it was.
+    daemon.stop();
+    as_version_11(&db(&daemon));
+    let before = fs::read(db(&daemon)).unwrap();
+    let (code, said, _) = check_upgrade(&daemon, "writd.yaml");
+    assert_eq!(code, Some(0), "{said}");
+    assert!(
+        said.contains(&format!(
+            "The state: version 11; this writd migrates it to version 12 at its start, after a \
+             copy of it in {} (the steps ran on a copy here).\n",
+            fs::canonicalize(daemon.root())
+                .unwrap()
+                .join("s/backups")
+                .display()
+        )),
+        "{said}"
+    );
+    assert_eq!(fs::read(db(&daemon)).unwrap(), before, "the state changed");
+    assert_eq!(version(&db(&daemon)), 11);
+    assert!(!daemon.root().join("s/backups").exists());
+    // No copy left behind.
+    let left: Vec<_> = fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("writd-check-upgrade-")
+        })
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // A newer state blocks it, nothing changed.
+    rusqlite::Connection::open(db(&daemon))
+        .unwrap()
+        .pragma_update(None, "user_version", 13)
+        .unwrap();
+    let (code, said, err) = check_upgrade(&daemon, "writd.yaml");
+    assert_eq!(code, Some(1), "{said}");
+    assert!(
+        said.contains(
+            "Blocks the upgrade: the state (version 13): the state is version 13, this writd \
+             reads version 12 and can't migrate it"
+        ),
+        "{said}"
+    );
+    assert!(
+        err.contains("writd: the upgrade is blocked (1 reason): nothing was changed"),
+        "{err}"
+    );
+    assert_eq!(version(&db(&daemon)), 13);
+
+    // A `writd.yaml` this writd doesn't read blocks it too; no state yet: nothing to migrate.
+    let yaml = fs::read_to_string(daemon.root().join("writd.yaml")).unwrap();
+    fs::write(
+        daemon.root().join("unknown.yaml"),
+        format!("{yaml}not_a_key: 1\n"),
+    )
+    .unwrap();
+    let (code, said, _) = check_upgrade(&daemon, "unknown.yaml");
+    assert_eq!(code, Some(1), "{said}");
+    assert!(
+        said.starts_with("Blocks the upgrade: unknown.yaml: "),
+        "{said}"
+    );
+    assert!(said.contains("not_a_key"), "{said}");
+    let fresh = yaml.replacen("state_dir: s\n", "state_dir: fresh\n", 1);
+    assert_ne!(fresh, yaml);
+    fs::write(daemon.root().join("fresh.yaml"), fresh).unwrap();
+    let (code, said, _) = check_upgrade(&daemon, "fresh.yaml");
+    assert_eq!(code, Some(0), "{said}");
+    assert!(
+        said.contains("The state: none yet (no writd ran here): nothing to migrate.\n"),
+        "{said}"
+    );
+}
+
+#[test]
+fn writd_check_upgrade_says_which_policy_migration_waits() {
+    let mut daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    assert!(daemon.unseal().status.success(), "{}", daemon.log());
+    let started = started_with(&daemon);
+    in_force_as(&mut daemon, &format_1(&started, "[gateway]"));
+    let (code, said, _) = check_upgrade(&daemon, "writd.yaml");
+    assert_eq!(code, Some(0), "{said}");
+    assert!(
+        said.contains(
+            "The policy in force: format 1; this writd reads format 2. After the start, every \
+             request is refused until an approver signs its migration: writ migrate.\n  The \
+             daemon's rewrite is ready: writ migrate shows it, then signs it.\n"
+        ),
+        "{said}"
+    );
+    in_force_as(&mut daemon, &format_1(&started, "[proxy]"));
+    let (code, said, _) = check_upgrade(&daemon, "writd.yaml");
+    assert_eq!(code, Some(0), "not a block: {said}");
+    assert!(
+        said.contains(
+            "  The daemon can't rewrite it: write the policy you want, then writ migrate --file \
+             <policy>. Why:\n    repos.demo.push_modes: [proxy] has no gateway"
+        ),
+        "{said}"
+    );
+}

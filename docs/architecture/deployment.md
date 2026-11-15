@@ -142,6 +142,16 @@ its own in `deploy/setups/`, whose header names it, its OS and its manifest's pa
   order, the keystore, state, configuration and pins kept. When `writ` changed, it says that
   sessions bound under the old one (`writ run`) must be started again: their root's
   executable is no longer the one their leases were bound to.
+- **What an upgrade carries over** (M7.9.6): `writd check-upgrade <writd.yaml>`, the new
+  binary's dry run, run as the daemon's user while the old daemon still runs. It reads
+  `writd.yaml` as a start would, copies the state (read only, SQLite's own copy) into a private
+  temporary directory and runs the migration steps there, and reads the policy in force from
+  the copy as a start would (sealed: a report, nothing acted on). It says what the start will
+  migrate (the state's versions, after a copy in `<state_dir>/backups/`), whether the policy's
+  migration will wait for a signature (`writ migrate`) and whether the daemon has its rewrite,
+  and what blocks: a `writd.yaml` key this binary doesn't read, a state newer than it or one no
+  step migrates, a step that fails, a policy it can't start with. Exit 1 on a block, the state
+  left as it was (the copy removed).
 - `make uninstall` asks whether to delete the daemon's data (keystore, state, ledger, audit
   log, or the Docker volumes): kept on Enter, deleted once `delete` is typed (`PURGE=1`
   without a terminal is refused: a deletion needs a person); then lists what it takes back

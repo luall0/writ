@@ -555,6 +555,22 @@ fn a_sealed_daemon_serves_nothing_until_writ_unseal() {
         format!("{passphrase}\n").as_bytes(),
     );
     expect(&out, 0, "writd recover an older policy");
+    // What the next start will do, asked before it (M7.9.6), the state left as it is.
+    let before = dir.ok("sha256sum data/leases.db");
+    let out = dir.run("writd check-upgrade writd.yaml");
+    let (said, _) = expect(&out, 0, "writd check-upgrade");
+    assert!(
+        said.contains("The state: version 12, this writd's: nothing to migrate.")
+            && said.contains("The policy in force: format 1; this writd reads format 2.")
+            && said.contains("The daemon's rewrite is ready")
+            && said.ends_with("Nothing blocks the upgrade.\n"),
+        "{said}"
+    );
+    assert_eq!(
+        dir.ok("sha256sum data/leases.db"),
+        before,
+        "the state changed"
+    );
     dir.ok("nohup writd run writd.yaml > writd.log 2>&1 & echo $! > writd.pid");
     eventually(
         "the sealed daemon started on an older policy",
