@@ -51,7 +51,8 @@ picked.
 | M7.9.5 | [Operator experience](history/m7.9.5-operator-experience.md) ✅ | Asked by the user after the real install: amendments showing only what changed, the popup redesigned (its design validated first, as an artifact), every guided prompt and the installer's questions with arrow selection, colour and inline checks, a quick setup guide from `make install` to a first agent run |
 | M7.9.6 | [Upgrades](history/m7.9.6-upgrades.md) ✅ | Asked by the user before M8: the state migrated in steps with a backup first, the policy naming its format and every format change a signed migration (`writ migrate`), the daemon refusing everything else until it is signed, `writd check-upgrade` before the installer changes anything, the installer unsealing and migrating; the push modes `proxy` and `direct_ssh` dropped, their keys removed as format 2 |
 | M7.9.7 | [Fetch without a signature](history/m7.9.7-fetch-without-a-signature.md) ✅ | Asked by the user before M8: a template's `unsigned_fetch: <time>` granting a fetch-only ticket with no approver, off by default, the template signing as before for the rest; `writ git fetch` and `pull` asking one themselves; the skills fetch before they plan |
-| M7.9.8 | [Shell completion](#m798--shell-completion) | Asked by the user before M8: `writ`'s commands, flags and values completed in fish, zsh and bash, lease ids and the registry's names read live from the daemon with the reader key, silent when it can't answer; `writ completions <shell>`, installed and removed by the installer |
+| M7.9.8 | [Versions and changelog](#m798--versions-and-changelog) | Asked by the user before M8: one SemVer for the workspace (0.1.0 first, 1.0.0 with M8.5), a hand-written `CHANGELOG.md` with each release's upgrade notes, checked by `make check`; `--version` on the binaries, the daemon's version in `info`, the installer saying from which version to which |
+| M7.9.9 | [Shell completion](#m799--shell-completion) | Asked by the user before M8: `writ`'s commands, flags and values completed in fish, zsh and bash, lease ids and the registry's names read live from the daemon with the reader key, silent when it can't answer; `writ completions <shell>`, installed and removed by the installer |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 
@@ -286,9 +287,78 @@ a template's `unsigned_fetch: <duration>` granting a new fetch-only ticket with 
 the template signing as before for the rest; `writ git fetch` and `pull` asking one
 themselves; the skills fetch before they plan.
 
-## M7.9.8 — Shell completion
+## M7.9.8 — Versions and changelog
 
-Asked by the user before M8: `writ` has some forty commands, most with a lease id or a name
+Asked by the user before M8: every crate is `0.0.0`, no binary says its version, and nothing
+tells an operator what changed between two installs or what an upgrade will ask of them. The
+versions an upgrade depends on exist, each on its own (the state's, 13; the policy's format,
+2; the signed messages', `writ-admin/2`, `writ-ca/1`), and `writd check-upgrade` reads them,
+never a release. Settled with the user ([decision log](decisions.md), 2026-11-15):
+
+- **One SemVer for the workspace**, `[workspace.package] version`, every crate on it as
+  today (they aren't published, and the three binaries ship and are installed together).
+  Before v1, a minor version per milestone closed, a patch for fixes between two; 1.0.0 when
+  M8.5 closes. From 1.0, a major version for an upgrade that owes a signed `writ migrate` or
+  that a `writ` of the previous major can't talk to. The first release is **0.1.0**:
+  everything through M7.9.7, one changelog entry pointing at the [history](history/README.md).
+- **`CHANGELOG.md` at the root, written by hand** for the operator, in the Keep a Changelog
+  sections (Added, Changed, Removed, Fixed, Security), each entry linking to its history page
+  or doc for the details, and an **Upgrading** block per release: the state version, the
+  policy format, whether `writ migrate` is owed, whether a `writ` and a `writd` of the two
+  versions can talk (the protocol's messages refuse unknown fields: two versions talk only
+  when no message changed between them, and the block says so), and what to do in which
+  order. A change people see (a command, a flag, a key, a behavior, a refusal, an upgrade
+  step) adds its line under `Unreleased` in the same change, as rule 15 asks of the docs; a
+  milestone's close turns `Unreleased` into its release, with its date, and sets the version.
+  `make check` checks the file's shape (the sections, one release per version, newest first,
+  dates), that the workspace's version has its release, and that the version changes only
+  with a release added. AGENTS.md's milestone steps and its definition of done say so.
+- **The version shown:** `writ --version`, `writd --version` and `writ-sign --version`
+  print the binary's name and version, each with its end-to-end scenario and coverage row
+  (rule 18). The daemon's version is in its `info` reply (any caller with a reader key; a row
+  in the threat model's [looked at, and not risks](threat-model.md#looked-at-and-not-risks):
+  the code is open and every release's fixes are in the changelog). `writ` says when its
+  version isn't the daemon's, a hint only (rule 1: the daemon decides); a reply that doesn't
+  parse names both versions when the daemon's can still be read, else as today.
+- **The installer:** `make install` over an install says `upgrading <from> → <to>` (the
+  installed `writd --version`, the new one) and shows the Upgrading blocks between the two
+  before the go, beside `writd check-upgrade`'s report; going back to an older version says
+  so and asks the same go. A fresh install names its version.
+- Docs: the operator pages ([install](operators/install.md): the upgrade's from and to and its
+  notes; the clients' settings: `--version`), [conventions](conventions.md) (the changelog's
+  rules, when a version moves), [clients](architecture/clients.md) (the hint), the
+  [approval API](architecture/approvals.md) (`info`'s field), AGENTS.md (the milestone steps,
+  the definition of done), the threat model's row.
+
+Plan, each step leaving Writ working (`make ci`):
+1. This page and the decision.
+2. `CHANGELOG.md` with `Unreleased` and the 0.1.0 entry, the version set to 0.1.0, the
+   conventions and AGENTS.md, the `make check` script and its tests (a file with a section
+   missing, two releases of one version, out of order, a version moved with no release).
+3. `--version` on the three binaries, the daemon's version in `info`, `writ`'s hint and the
+   reply that doesn't parse; the threat model's row.
+4. The installer's from and to, its notes, going back.
+5. The docs left, the end-to-end scenarios (`--version` of each binary, the hint against a
+   daemon of another version) and their registries' rows; then this milestone's close as the
+   first release under these rules (0.2.0).
+
+Acceptance:
+- [ ] `writ --version`, `writd --version` and `writ-sign --version` print the workspace's
+      version, in a test and in `make e2e`.
+- [ ] `writ` against a daemon of another version says so, and acts as before; a reply that
+      doesn't parse names both versions.
+- [ ] `make check` refuses a changelog without the workspace's version, a version moved with
+      no release, two releases of one version, and releases out of order, each with its
+      reason; the tree's own changelog passes.
+- [ ] `make install` over an older install shows `upgrading <from> → <to>` and the Upgrading
+      blocks between them before the go; over a newer one says it goes back; a fresh one names
+      its version.
+- [ ] The milestone closes as 0.2.0: its release in `CHANGELOG.md`, the version moved, the
+      check passing.
+
+## M7.9.9 — Shell completion
+
+Asked by the user before M8, after [M7.9.8](#m798--versions-and-changelog): `writ` has some forty commands, most with a lease id or a name
 from the registry to type (`writ sign wrt_01JD8X…`, `writ admin template show agent-web`), and
 none of it completes. Settled with the user ([decision log](decisions.md), 2026-11-15):
 
