@@ -405,40 +405,72 @@ process chain already refuse a copied key.
   and `writ` only see a socket (`IdentityAgent`), and makes one key per lease. Backends: the
   Secure Enclave on a Mac (CryptoKit, no Touch ID, as M7.5) and a TPM 2.0 on Linux. Never the
   user's own ssh-agent (hard rule 8). The `file` kind stays today's Ed25519 key file.
-- **On when the host can, off when it can't, never switched silently:** the first
-  `writ request` with no recorded choice detects the hardware for real (creates a throwaway
-  key and signs with it), records `hardware` or `file` in `~/.writ/`, and says what it chose
-  and how to change it. `writ session-key` shows the choice and what the host supports;
-  `writ session-key hardware|file` changes it for later leases (current ones keep their key);
-  `WRIT_SESSION_KEY` overrides it. A recorded `hardware` that stops working makes
-  `writ request` refuse with a reason, never fall back to a file.
-- **The kind on the ticket:** the ticket carries the session key's kind (`hardware: secure-enclave`,
-  `hardware: tpm`, `file`), and `writ sign` shows it. A client's claim, shown and never enforced
-  (hard rule 6): the daemon takes Ed25519 and P-256 session keys and can't tell where one
-  lives. Requiring it per template needs attestation (a TPM's), an open question.
+- **The template decides the mode, never the ticket:** a template term
+  `session_key: hardware | file`, default `file` (today's key file, so templates written before
+  M8.5 keep working), edited from the CLI like every template field (`writ admin template`, a
+  signed admin change). The ticket carries its key's kind (`hardware: secure-enclave`,
+  `hardware: tpm`, `file`), checked against the key (Ed25519 can't be `hardware`), and it must
+  be the template's mode exactly: a `file` ticket under a `hardware` template, or a hardware
+  one under a `file` template, is refused by policy with its code, before it reaches the
+  approver. There is no `any`: the ticket has no choice to make. One key serves a whole lease,
+  so over several repositories their templates must name the same mode, or the ticket is
+  refused as the templates disagreeing. A lease keeps the key it was granted with; its
+  renewals and amendments are checked against the template's mode in force. `writ sign`
+  shows the kind. **A client's claim, enforced as one:** the daemon takes Ed25519 and P-256
+  session keys and can't tell where one lives, so the term stops a host set up wrong or
+  switched to `file`, never an agent that lies about its key; the
+  [lease model](lease-model.md#constraints-and-how-much-to-trust-them) and the
+  [threat model](threat-model.md) say so. An `attested` mode the daemon proves (a TPM's chain)
+  stays an open question.
+- **A client setting, `session_key: auto | hardware | file`** in the settings file
+  (`<home>/config`), default `auto`, never switched silently: it says what this host may make,
+  never what a lease gets. `auto` makes the kind the template asks for, read by `writ request`
+  from the ticket's repositories' templates (as `writ policy` reads them). `hardware` and
+  `file` make only that kind: a template asking for the other makes `writ request` refuse
+  before submitting, naming the template's mode and the setting to change (a convenience; the
+  daemon's check is the boundary). A hardware key the host can't make (no hardware, a TPM
+  disabled, an image moved) makes `writ request` refuse with a reason and write no key file,
+  never fall back to a file.
+- **Switched from the CLI:** `writ session-key` shows the setting and what the host supports
+  (detected for real: a throwaway key made and used); `writ session-key auto|hardware|file`
+  writes the setting for later leases, current ones keeping their key; `WRIT_SESSION_KEY`
+  overrides it, for containers and scripts. The installer's setups that wire an agent host
+  (`client`, `local`) ask it, `auto` first.
 - **The new field passes the display's exhaustiveness test** (found by the
   [M7.7 review](#m77--review-after-m76), `U-4`): the test M7.7 adds fails on a ticket field
   that is signed but not shown by `writ sign` or not checked by narrowing.
 - Docs: [identity](architecture/identity.md), [clients](architecture/clients.md), the
-  [client settings](operators/clients.md), the [lease model](lease-model.md) (the ticket's
-  new field) and the [threat model](threat-model.md); the session agent's binary in
-  AGENTS.md's naming table.
+  [client settings](operators/clients.md) (the `session_key` setting), the
+  [policy reference](operators/policy-yaml.md) and its template (the template term), the
+  [lease model](lease-model.md) (the ticket's new field, the term and its trust row) and the
+  [threat model](threat-model.md); the session agent's binary in AGENTS.md's naming table.
 
 Acceptance:
 - [ ] **The graft test for the daemon:** no change beyond the ticket's new field, its
-      validation and its display.
+      validation and its display, and the template term and its check.
 - [ ] Every backend passes the session key contract suite (the Secure Enclave, the TPM, the
       file).
 - [ ] With a hardware session key, the session directory holds no private key; a copy of it
       on another host can't open a connection to the gateway (refused at authentication).
-- [ ] Detection: a host with a working TPM (`swtpm` in a container) records `hardware`; one
-      with none, or a TPM it can't use, records `file`; both say so and how to change it.
-- [ ] A recorded `hardware` with the hardware gone: `writ request` refuses with its exact
-      reason and writes no key file.
-- [ ] `writ session-key`, both values and `WRIT_SESSION_KEY` used for real by an end-to-end
-      scenario (rule 18), with their rows in the registries (rule 19).
+- [ ] Detection: `writ session-key` on a host with a working TPM (`swtpm` in a container)
+      shows the hardware; on one with none, or a TPM it can't use, shows none.
+- [ ] `auto` follows the template: a hardware key under a `hardware` template, a key file
+      under a `file` one (the TPM host making a file). A `hardware` template on a host
+      without the hardware: `writ request` refuses with its exact reason and writes no key
+      file. The host's `hardware` under a `file` template, or `file` under a `hardware` one:
+      `writ request` refuses before submitting, naming both.
+- [ ] `writ session-key`, its three values and `WRIT_SESSION_KEY` used for real by an
+      end-to-end scenario (rule 18); the `session_key` setting and the template term with
+      their rows in the registries (rule 19).
 - [ ] `writ sign` shows the kind; a ticket claiming a kind its key can't be (Ed25519 with
       `hardware`) is refused with its code.
+- [ ] **The ticket can't choose the mode:** a ticket submitted straight to the daemon (no
+      `writ` checks) with a `file` key under a `hardware` template, or a hardware key under a
+      `file` template (the default one included), is refused with its exact code; each
+      accepted with the matching kind. Over two repositories whose templates name different
+      modes, every ticket is refused as the templates disagreeing. A renewal of a `file`
+      lease after its template is switched to `hardware` is refused with its code. The term
+      set and cleared with `writ admin template`.
 - [ ] On the Mac, by hand ([manual checks](guides/manual-checks.md)): a Secure Enclave
       session key works with no prompt, with the screen locked, and can't be exported.
 

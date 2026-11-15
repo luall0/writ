@@ -28,24 +28,28 @@ what to protect.
 The session key lives in hardware that can't export it, held by a Writ session agent on the
 agent host: malware there can use it during the lease, never copy it.
 
-- **On when the host can, off when it can't, never switched silently.** The first
-  `writ request` with no recorded choice detects the hardware for real (a throwaway key made
-  and used), records `hardware` or `file` in `~/.writ/`, and prints what it chose and how to
-  change it.
-- `writ session-key` shows the choice and what the host supports;
-  `writ session-key hardware|file` changes it for later leases (current ones keep their key);
-  `WRIT_SESSION_KEY` overrides it, for containers and scripts.
-- A recorded `hardware` that stops working (a TPM disabled, an image moved) makes
-  `writ request` refuse with a reason; re-detecting or switching is the user's explicit act.
-- The ticket carries the session key's kind (`hardware: secure-enclave`, `hardware: tpm`,
-  `file`) and `writ sign` shows it to the approver.
+- **The template decides the mode, never the ticket:** a template term
+  `session_key: hardware | file` (default `file`), edited from the CLI like every template
+  field (`writ admin template`). The ticket carries its key's kind (`hardware: secure-enclave`,
+  `hardware: tpm`, `file`), which `writ sign` shows, and it must be the template's mode
+  exactly, or the ticket is refused by policy; there is no `any`. Over several repositories
+  their templates must name the same mode (one key per lease).
+- **A client setting, `session_key: auto | hardware | file`** (the settings file, default
+  `auto`): what this host may make, never what a lease gets. `auto` makes what the template
+  asks for; `hardware` or `file` makes only that kind, and `writ request` refuses a template
+  asking for the other. A hardware key the host can't make (no hardware, a TPM disabled, an
+  image moved) is a refusal, never a fallback to a file.
+- **Switched from the CLI:** `writ session-key` shows the setting and what the host supports;
+  `writ session-key auto|hardware|file` writes it for later leases (current ones keep their
+  key); `WRIT_SESSION_KEY` overrides it, for containers and scripts. The installer's agent
+  host setups ask it.
 
 ## Scope and non-goals
 
 - In M8.5: the Secure Enclave (Mac) and a TPM 2.0 (Linux), one key per lease.
 - Not a YubiKey: a few PIV slots, so a key would be reused across leases. Later, if wanted.
-- Not enforced by the daemon: it can't tell where a key lives. Requiring it per template needs
-  attestation (open questions).
+- Not proven to the daemon: it can't tell where a key lives, so the template's mode is
+  enforced on the client's claim. A mode the daemon proves needs attestation (open questions).
 - Never the user's own ssh-agent or keys (hard rule 8).
 
 ## Design
@@ -53,8 +57,14 @@ agent host: malware there can use it during the lease, never copy it.
 - **Why a client setting:** the private key is made and used only on the agent host; the
   daemon sees its public half, which reads the same from a file, the Secure Enclave or a TPM.
   Clients are untrusted (hard rule 1), so the setting is the agent host's hardening, and the
-  ticket's kind is a claim shown as information (hard rule 6), checked only for consistency
-  with the key (Ed25519 can't be `hardware`).
+  ticket's kind is a claim, checked for consistency with the key (Ed25519 can't be
+  `hardware`).
+- **Why the template decides:** the operator decides, in the policy, which kind of key a
+  repository's leases get; a ticket choosing its own mode would let the agent pick the weaker
+  one. It is part of the structured scope, enforced within a template (hard rule 6), but over
+  a claim: it refuses a host set up wrong, or a switch to `file`, before the approver sees the
+  ticket; an agent that lies about its key passes it. The trust row says so. The client
+  setting only limits what a host makes, so a host can never be made to fall back.
 - **The session agent** speaks the ssh-agent protocol: git's `ssh` reaches it through
   `IdentityAgent` in the session's git config, `writ` through the same socket; it makes one key
   per lease (an agent extension message) and forgets it when the session goes.
@@ -70,14 +80,17 @@ agent host: malware there can use it during the lease, never copy it.
   never from elsewhere; the residual risk "session key theft on an agent host" narrows to that.
 - The agent itself can switch to `file` (same host, same user): it doesn't need to steal its
   own key, so the feature isn't against the agent; the ticket's kind makes a downgrade visible
-  to the approver.
+  to the approver, and a template's `session_key: hardware` refuses it unless the agent also
+  lies about the kind.
+- New residual risk: the template's mode trusts the client's claim. It adds no new way in
+  (without it the kind isn't checked at all), but must not read as a guarantee.
 - Local mode gains little: the Unix socket and the process chain already refuse a copied key.
 
 ## Open questions
 
 - The session agent's binary name (AGENTS.md's naming table).
-- Attestation: a TPM can prove a key lives in it (a chain to the maker's certificate), so a
-  template could require `attested`; the Secure Enclave can't without App Attest (a paid
+- Attestation: a TPM can prove a key lives in it (a chain to the maker's certificate), so the
+  template's mode could gain `attested`; the Secure Enclave can't without App Attest (a paid
   Apple account).
 - The session agent's lifetime: per session, or one per host serving every session.
 
