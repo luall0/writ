@@ -48,7 +48,7 @@ picked.
 | M7.7 | [Review after M7.6](history/m7.7-review-after-m7.6.md) ✅ | The security and code quality review of the whole code after M5.7 to M7.6 (the wiping allocator, the skill, amendments and renewals, workspaces, per-repository tickets, the CLI's admin commands, local mode on both systems, upstream proxies, the Secure Enclave signer, hardware-wrapped secrets) by thirteen reviewers: a report discussed with the user, then every finding fixed with its test, or moved to the milestone that owns it |
 | M7.8 | [Approval popup on the Mac](history/m7.8-approval-popup-on-the-mac.md) ✅ | A small native window above every app, full-screen ones too, when a ticket waits for my signature: the whole ticket, Sign or Decline (with feedback), the signature still `writ`'s and Touch ID; a watch route on the approval API |
 | M7.9 | [Local mode checked on the Mac](history/m7.9-local-mode-checked-on-the-mac.md) ✅ | The real install on the Mac, with M7.5's Secure Enclave and M7.6's hardware-wrapped secrets in place: `make install`, `writ unseal`, an agent under `writ run`, the daemon out of my user's reach, a stop through launchd, a reboot, the recovery guide, and `make uninstall` leaving the Mac as before |
-| M7.9.5 | [Operator experience](#m795--operator-experience) | Asked by the user after the real install: amendments showing only what changed, the popup redesigned (its design validated first, as an artifact), every guided prompt and the installer's questions with arrow selection, colour and inline checks, a quick setup guide from `make install` to a first agent run |
+| M7.9.5 | [Operator experience](history/m7.9.5-operator-experience.md) ✅ | Asked by the user after the real install: amendments showing only what changed, the popup redesigned (its design validated first, as an artifact), every guided prompt and the installer's questions with arrow selection, colour and inline checks, a quick setup guide from `make install` to a first agent run |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 | M9 | [`proxy` push mode](#m9--proxy-push-mode) | Relayed pushes with the same checks, no mirror |
@@ -265,106 +265,11 @@ the real-install items of M7, M7.5 and M7.6 ticked.
 
 ## M7.9.5 — Operator experience
 
-Asked by the user after running the real install ([M7.9](history/m7.9-local-mode-checked-on-the-mac.md)):
-what works is still hard to use. Three things, from their own use. The operator docs don't say
-in what order to do things: a quick setup guide is missing (the keys, upstream and signing,
-with how a key is proven and what each signature is; then a template; then a repo). The guided
-commands are plain line prompts, with no colour and no arrow selection. And the popup is hard
-to read: too much at once with no clear place to look, the expiry as a full date rather than
-"in 2h", and an amendment that adds one path prints every path. The forks settled with the
-user at its start: [decision log](decisions.md), 2026-11-15.
-
-- **Amendments show only what changed**, in `writ sign` and in the popup alike (`writ-cli`'s
-  display, written once for both): a list field's change as the items removed and the items
-  added (`- src/old.rs`, `+ src/new.rs`), never both whole lists; a scalar's as before and
-  after. Times reach the app as structured fields beside their row, so it shows them relative
-  ("in 2h") without reading anything out of a value. The trusted display's guarantees stay
-  whole: every change shows, two different lists never read the same, an item's order or
-  repetition that changes what is enforced shows too.
-- **The popup redesigned, its design validated first.** Before any Swift is written, the
-  window is designed as an artifact the user reviews (mockups from real
-  tickets in light and dark: a new ticket, an amendment, a renewal, several waiting) and
-  iterated on until they validate it. Then built to it, the panel's rules kept (above every
-  space and full-screen app, no default button, no button that takes the focus, both held a
-  second, the app styling by tag and never by content). **Validated (2026-11-15): three
-  panes**, and a rail of the waiting tickets on the left only when more than one waits
-  (badges by kind, a card with the title and repositories on hover; chosen by the user over
-  tabs and a pager, to give the panes the width). In the centre what is signed: a header (the kind,
-  the lease it touches, the title quoted as the agent's, the time left relative with the
-  clock time beside it), every enforced term as a tile (none folded away), the expected
-  paths as a file tree, who asks in one line, then the other leases and the details,
-  folded. On the right the agent's words alone (task, plan, estimate, origin hint), marked
-  untrusted, scrolling on its own so text of any length never moves the terms. The paths'
-  tree: one path per row under its folder, a folder holding only one folder merged into one
-  row, a count per folder (which folds), a pattern badged (`**` "everything inside"), a long
-  name wrapped and never cut, the card scrolling past 320 px, a Tree / List switch and a
-  filter; built by `writ` and sent as a structure, so the app never splits a value. An
-  amendment opens on what changes (paths added and removed shown whole, the kept ones
-  folded in the tree), its task before and after in the right pane; a renewal on now → if
-  signed, the counts carried over, and the chain. Over several repositories (validated on
-  mockups after the user's test): the lease's own terms in one strip, then a card per
-  repository with its terms and paths; each change names its repository.
-- **One prompt layer, on `inquire`** (`writ-cli`'s `prompt` module): a select with arrow keys
-  and type-to-filter, a multi-select, text with inline validation and a help line, a confirm;
-  colour, `NO_COLOR` honoured; every value shown cleaned first (a scanned host key, a name
-  from the policy, a remote's answer: [security.md](security.md)'s display rules). The plain
-  line prompts are kept when stdin isn't a terminal, so scripts and variables work as today.
-  On it: `writ admin … add`, `edit` and `rotate`, `writ init`'s questions, `writ sign`'s
-  prompt, `writ unseal`'s. The end-to-end pipeline drives the widgets through a pty with real
-  keystrokes.
-- **The installer's questions in Rust**: each question `deploy/frame.sh` asks on a terminal
-  is drawn by `writ prompt` (a select, text or a confirm, its answer on stdout) with the same
-  widgets; the frame keeps every check and makes every change. Every choice still asked
-  before anything changes, the summary and its go kept; without a terminal the variables
-  answer, as today. (Planned as one `writ` command asking them all into an answers file;
-  settled while building it: one question per call, so no new file to read strictly.)
-- **A quick setup guide** (`docs/operators/quick-start.md`, local mode on the Mac, from a
-  finished `make install`): the upstream key (made by the daemon, added on the remote, the
-  remote's host key pinned), the signing key (made, then proven on the remote with `writ
-  prove-key`; what a commit signature is, what an approval is and its `writ-approval`
-  namespace, which key makes which), a template, a repo, a first agent under `writ run`.
-  [The operators' README](operators/README.md), [setup](operators/setup.md) and
-  [daily operations](operators/sealing.md) reorganised around it (what each thing is first,
-  then each task); the reference pages kept. Its commands run by the pipeline (rule 18).
-
-Steps (each one commit, `make ci` green, its docs in the same commit):
-1. **The plan**: this section, the decision log's rows, the [stack](stack.md)'s line.
-2. **The popup's design**: an artifact with the redesigned window, reviewed and iterated with
-   the user until validated; nothing built before. *Done: three panes, above.*
-3. **Changes as items, times as fields, paths as a tree** (`writ-cli`'s display and `writ
-   sign --ui`'s events): the item-level diff in the text and the structure, each item
-   tagged; the expiry and other times structured; each repository's expected paths sent as
-   a tree (folders, files, patterns), built from the paths without changing one. *Done.* Tests: the display's guarantee tests extended (every leaf
-   still changes what is shown; lists that differ only in order or repetition; an item
-   removed and another added); the end-to-end scenario's amendment.
-4. **The popup built to the validated design**; the manual check updated. *Built; the user's
-   manual check at closing.*
-5. **The prompt layer** on `inquire`, every guided flow moved onto it; the pty driver of the
-   end-to-end pipeline sending keys; the scenarios that answer prompts updated. Tests: each
-   widget's plain fallback, hostile values cleaned before they are shown, `NO_COLOR`. *Done.*
-6. **The installer's questions in Rust**: `writ prompt select|text|confirm`, the frame's
-   `ask`, `confirm`, `choose_one` and setup question through it, the fake-root installer
-   tests driving it on a terminal, its scenario and its coverage rows. *Done.*
-7. **The operator docs**: the quick guide, the reorganised pages, the pipeline's table. *Done.*
-8. **Closing**: the acceptance ticked, the manual check run by the user, the history page.
-
-Acceptance:
-- [ ] An amendment adding one item to a list shows that item alone as added, in `writ sign`
-      and in the popup; one removing an item shows it removed; reordering a list whose order
-      is enforced shows; the guarantee tests of the trusted display pass on the new display.
-- [ ] The popup matches the design the user validated (three panes, every enforced term a
-      tile, the paths a tree that never cuts a path, the agent's words in their own pane);
-      every time relative ("in 2h") with its clock time beside it; the panel's rules held
-      (the manual check, with a 100-path ticket and a long plan).
-- [ ] Every guided question of `writ` is a select, multi-select, validated text or confirm,
-      with colour and a help line; arrow keys and filtering work; without a terminal the
-      plain prompts answer as before; with `NO_COLOR` nothing is coloured; a hostile value
-      (control characters, a forged escape) is shown cleaned.
-- [ ] `make install` asks its questions with the same widgets, every one before anything
-      changes; with its variables and no terminal it runs as before; a malformed answers file
-      is refused before any change.
-- [ ] Someone new follows the quick guide from `make install` to an agent's first pushed
-      commit, nothing else read; its commands are the ones the pipeline runs.
+**Done.** Moved to [history/m7.9.5-operator-experience.md](history/m7.9.5-operator-experience.md):
+amendments shown as what they change, the popup redesigned on validated mockups (three panes,
+the rail, a card per repository), every question of `writ` and the installer a menu on a
+terminal (`inquire`, `writ prompt`), a quick start from `make install` to a verified commit,
+and the operator pages naming no approval agent.
 
 ## M8 — Detached deployment
 
