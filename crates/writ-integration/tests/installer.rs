@@ -83,6 +83,15 @@ esac
 /// `sudo [-u <user>] <command>`: the command, as the test's user.
 const SUDO: &str = "#!/bin/sh\n[ \"$1\" = -u ] && shift 2\nexec \"$@\"\n";
 
+/// fish, zsh and pkg-config as the installer asks them where completions go (M7.9.9): the
+/// directories `STUB_<NAME>` lists (`:`-separated), none by default.
+const SHELL_DIRS: &str = r#"#!/bin/sh
+name=$(basename "$0" | tr 'a-z-' 'A-Z_')
+eval "dirs=\${STUB_$name:-}"
+[ -n "$dirs" ] && printf '%s\n' "$dirs" | tr ':' '\n'
+exit 0
+"#;
+
 /// Which system the fake root stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Os {
@@ -141,6 +150,9 @@ impl Fake {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         };
         script("sudo", SUDO);
+        for shell in ["fish", "zsh", "pkg-config"] {
+            script(shell, SHELL_DIRS);
+        }
         match os {
             Os::Mac => {
                 script("dscl", DSCL);
@@ -1519,4 +1531,82 @@ fn an_upgrade_names_the_versions_and_what_the_changelog_says_it_asks() {
     if major == 0 && minor < 10 {
         first(&said, &format!("Going back: Writ 0.10.0 → {version}"));
     }
+}
+
+#[test]
+fn completion_is_written_for_each_shell_that_names_a_directory_and_taken_back() {
+    let fake = Fake::new();
+    // fish names two vendor directories, the second one here; zsh a site-functions directory
+    // on its fpath among others; bash-completion none.
+    let fish_dir = "/opt/homebrew/share/fish/vendor_completions.d";
+    let zsh_dir = "/usr/local/share/zsh/site-functions";
+    for dir in [fish_dir, zsh_dir] {
+        fs::create_dir_all(fake.at(dir)).unwrap();
+    }
+    let fish_dirs = format!("/usr/local/share/fish/vendor_completions.d:{fish_dir}");
+    let zsh_fpath = format!("/usr/share/zsh/5.9/functions:{zsh_dir}");
+    let env = [
+        ("STUB_FISH", fish_dirs.as_str()),
+        ("STUB_ZSH", zsh_fpath.as_str()),
+    ];
+    let said = fake.shown(&ok(&fake.install(&env)));
+    let writ = fake.at("/opt/writ/bin/writ");
+    for (dir, file, shell) in [(fish_dir, "writ.fish", "fish"), (zsh_dir, "_writ", "zsh")] {
+        let path = fake.at(&format!("{dir}/{file}"));
+        let text = fs::read_to_string(&path).unwrap();
+        // The installed writ, by its absolute path, answers each TAB.
+        assert!(
+            text.contains("WRIT_COMPLETE") && text.contains(&writ.display().to_string()),
+            "{shell}: {text}"
+        );
+        assert!(
+            said.contains(&format!("- Shell completion for {shell} ({dir}/{file})")),
+            "{said}"
+        );
+    }
+    assert!(
+        said.contains(
+            "- bash completion: no completion directory found; add this line to its startup \
+             file: source <(writ completions bash)"
+        ),
+        "{said}"
+    );
+    let manifest = fake.shown(&fs::read_to_string(fake.manifest()).unwrap());
+    for line in [
+        format!("completion {fish_dir}/writ.fish\n"),
+        format!("completion {zsh_dir}/_writ\n"),
+    ] {
+        assert!(manifest.contains(&line), "{line} not in {manifest}");
+    }
+
+    // An upgrade writes them again, recorded once.
+    let fish_file = fake.at(&format!("{fish_dir}/writ.fish"));
+    fs::write(&fish_file, "an older writ's registration\n").unwrap();
+    ok(&fake.run("install", &env, ""));
+    assert!(
+        fs::read_to_string(&fish_file)
+            .unwrap()
+            .contains("WRIT_COMPLETE")
+    );
+    let manifest = fs::read_to_string(fake.manifest()).unwrap();
+    assert_eq!(manifest.matches("writ.fish").count(), 1, "{manifest}");
+
+    // The uninstall takes back exactly those, and no other path a completion line names.
+    let other = fake.at("/etc/paths.d/other");
+    fs::write(&other, "not writ's\n").unwrap();
+    let mut manifest = fs::read_to_string(fake.manifest()).unwrap();
+    manifest.push_str(&format!("completion {}\n", other.display()));
+    fs::write(fake.manifest(), manifest).unwrap();
+    let said = fake.shown(&ok(&fake.run("uninstall", &[], "")));
+    assert!(!fish_file.exists());
+    assert!(!fake.at(&format!("{zsh_dir}/_writ")).exists());
+    assert!(
+        fake.at(fish_dir).is_dir(),
+        "the shell's own directory stays"
+    );
+    assert_eq!(fs::read_to_string(&other).unwrap(), "not writ's\n");
+    assert!(
+        said.contains("left as it is (not one of this installer's paths): /etc/paths.d/other"),
+        "{said}"
+    );
 }

@@ -17,6 +17,9 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
   (the tickets waiting, the leases running, the policy's names), read live with your reader
   key. `writ completions <shell>` prints the line to add
   ([clients](docs/operators/clients.md#shell-completion)).
+- `make install` sets shell completion up for each shell that names a completion directory,
+  and says the line to add for one that doesn't. An upgrade writes the files again, and
+  `make uninstall` removes them ([install](docs/operators/install.md)).
 
 ## 0.2.0 — 2026-11-16
 

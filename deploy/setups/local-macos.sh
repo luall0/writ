@@ -471,6 +471,7 @@ setup_install() {
     record "member $SOCKETS_GROUP $ME"
 
     install_binaries
+    install_completions "$BIN/writ"
     step "On your PATH: $PATHS_D"
     put_root "$PATHS_D" 0644 root:wheel "/opt/writ/bin"
     record "file $PATHS_D"
@@ -594,6 +595,7 @@ setup_upgrade() {
         as_user launchctl bootout "gui/$(id -u)/$POPUP_LABEL" || say "  (it was not running)"
     fi
     install_binaries
+    install_completions "$BIN/writ"
     step "The LaunchDaemon's plist written again ($PLIST): this version's settings"
     put_root "$PLIST" 0644 root:wheel "$(plist)"
     step "The daemon started again: the keystore, state, configuration and pins kept"

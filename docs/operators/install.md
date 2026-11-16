@@ -75,6 +75,7 @@ On the Mac:
 | The daemon's log, readable by you | `/Library/Logs/Writ/writd.log` |
 | The daemon, started at boot | the LaunchDaemon `dev.writ.writd` |
 | Your client: the daemon's host key pinned, the endpoints set, your reader key | `~/.writ` (`known_hosts`, `config`, `reader`, `approver.pub`) |
+| Shell completion for `writ`, for each of bash, zsh and fish that names a completion directory | `writ.fish` in fish's vendor completions, `_writ` in a `site-functions` directory of zsh, `writ` in bash-completion's completions ([shell completion](clients.md#shell-completion)) |
 | The approval popup, started at each login in your session (unless you answered `no`) | the LaunchAgent `dev.writ.popup` (`~/Library/LaunchAgents/dev.writ.popup.plist`) |
 
 On Linux:
@@ -90,6 +91,7 @@ On Linux:
 | The daemon, started at boot | the systemd service `writd` (`/etc/systemd/system/writd.service`) |
 | The daemon's log | the journal: `journalctl -u writd` |
 | Your client: the daemon's host key pinned, the endpoints set, your reader key | `~/.writ` (`known_hosts`, `config`, `reader`, `approver.pub`) |
+| Shell completion for `writ`, for each of bash, zsh and fish that names a completion directory | `writ.fish` in fish's vendor completions, `_writ` in a `site-functions` directory of zsh, `writ` in bash-completion's completions ([shell completion](clients.md#shell-completion)) |
 
 On Linux the service can hold one privilege, `CAP_SYS_PTRACE`, so the daemon can see which
 programs your agents run (Linux shows another user's programs only to a process that has it).
@@ -169,8 +171,8 @@ make uninstall
 
 It asks its questions first, then lists what it takes back and asks `Uninstall?`. Nothing
 changes before you answer `y`. It stops the daemon and removes everything the install made,
-and nothing else: on the Mac, the approval popup too (stopped, its LaunchAgent removed); on
-Linux, your membership of the `writ` group too.
+and nothing else: the shell completion files it wrote; on the Mac, the approval popup too
+(stopped, its LaunchAgent removed); on Linux, your membership of the `writ` group too.
 
 - **The repositories `writ init` set up**: it lists them and asks whether to take Writ out of
   them too. Once `writ` is gone, only a new install can take them back.

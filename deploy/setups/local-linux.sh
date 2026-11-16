@@ -237,6 +237,7 @@ setup_install() {
     record "member $SOCKETS_GROUP $ME"
 
     install_binaries
+    install_completions "$BIN/writ"
 
     step "Your Writ home $WHOME"
     if [ ! -d "$WHOME" ]; then
@@ -334,6 +335,7 @@ setup_upgrade() {
     step "The daemon stopped in order (SIGTERM: what is in flight finishes)"
     as_root systemctl stop "$UNIT.service" || say "  (it was not running)"
     install_binaries
+    install_completions "$BIN/writ"
     step "The systemd unit written again ($UNIT_FILE): this version's settings"
     put_root "$UNIT_FILE" 0644 root:root "$(unit)"
     as_root systemctl daemon-reload

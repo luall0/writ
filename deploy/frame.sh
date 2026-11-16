@@ -358,6 +358,81 @@ upgrade_versions() {
     }
 }
 
+# Shell completion (M7.9.9). The directory a shell reads completions from, as the shell itself
+# says, the first that exists; nothing when the shell isn't here or names none. fish: its
+# vendor directories; zsh: a site-functions directory on its fpath; bash: bash-completion's
+# completionsdir.
+completion_dir() {
+    case $1 in
+        fish)
+            command -v fish >/dev/null 2>&1 || return 0
+            # shellcheck disable=SC2016 # the shell's own variable, expanded by it
+            fish --no-config -c 'for d in $__fish_vendor_completionsdirs; echo $d; end' 2>/dev/null
+            ;;
+        zsh)
+            command -v zsh >/dev/null 2>&1 || return 0
+            # shellcheck disable=SC2016 # the shell's own variable, expanded by it
+            zsh -f -c 'print -rl -- $fpath' 2>/dev/null | grep '/site-functions$'
+            ;;
+        bash)
+            command -v pkg-config >/dev/null 2>&1 || return 0
+            pkg-config --variable=completionsdir bash-completion 2>/dev/null
+            ;;
+    esac | while read -r dir; do
+        if [ -d "$(sys "$dir")" ]; then
+            printf '%s' "$dir"
+            break
+        fi
+    done
+}
+
+# The file each shell loads for writ, in its completion directory.
+completion_file() {
+    case $1 in
+        fish) printf 'writ.fish' ;;
+        zsh) printf '_writ' ;;
+        bash) printf 'writ' ;;
+    esac
+}
+
+# Whether <path> is one the installer writes for completion: the uninstall takes back no other.
+completion_owned() {
+    case $1 in
+        */vendor_completions.d/writ.fish | */site-functions/_writ | */completions/writ) return 0 ;;
+    esac
+    return 1
+}
+
+# writ's registration (`<writ> completions <shell>`) written for each shell installed here, in
+# its completion directory, as root; a shell here that names none gets the line to add by
+# hand. Written again by an upgrade: the registration runs the writ it names.
+install_completions() {
+    writ=$1
+    for shell in fish zsh bash; do
+        command -v "$shell" >/dev/null 2>&1 || continue
+        dir=$(completion_dir "$shell")
+        if [ -z "$dir" ]; then
+            case $shell in
+                fish) line="writ completions fish | source" ;;
+                *) line="source <(writ completions $shell)" ;;
+            esac
+            say "- $shell completion: no completion directory found; add this line to its startup file: $line"
+            continue
+        fi
+        path=$(sys "$dir")/$(completion_file "$shell")
+        step "Shell completion for $shell ($path)"
+        if [ "$DRY_RUN" = 1 ]; then
+            printf '    (root) write %s: writ completions %s\n' "$path" "$shell"
+            continue
+        fi
+        content=$("$writ" completions "$shell") || fail "writ completions $shell failed"
+        new=no
+        [ -e "$path" ] || new=yes
+        put_root "$path" 0644 root:0 "$content"
+        [ "$new" = no ] || record "completion $path"
+    done
+}
+
 # After an upgrade's restart (M7.9.6): on a terminal, the daemon unsealed (unless it opened
 # itself) and the policy's migration signed when one is owed, both as you, each its own
 # approval; declined or failed, what to run. Without a terminal, what to run.
@@ -714,6 +789,12 @@ undo_line() {
     esac
     case $kind in
         user | group | member | daemon | agent) ;;
+        completion)
+            completion_owned "$path" || {
+                say "  left as it is (not one of this installer's paths): $path"
+                return 0
+            }
+            ;;
         *)
             setup_owns "$path" || {
                 say "  left as it is (not one of this installer's paths): $path"
@@ -722,7 +803,7 @@ undo_line() {
             ;;
     esac
     case $kind in
-        file) as_root rm -f "$path" ;;
+        file | completion) as_root rm -f "$path" ;;
         dir) [ ! -d "$path" ] || as_root rmdir "$path" || say "  kept (not empty): $path" ;;
         tree) as_root rm -rf "$path" ;;
         # The daemon's data being made: a `data` line follows once `writd init` made it.
