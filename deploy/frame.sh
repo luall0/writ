@@ -358,16 +358,39 @@ upgrade_versions() {
     }
 }
 
-# Shell completion (M7.9.9). The directory a shell reads completions from, as the shell itself
-# says, the first that exists; nothing when the shell isn't here or names none. fish: its
-# vendor directories; zsh: a site-functions directory on its fpath; bash: bash-completion's
-# completionsdir.
+# Shell completion (M7.9.9). The system directory a shell reads completions from, as the shell
+# itself says, the first that exists outside your home (a file there is root's); nothing when
+# the shell isn't here or names none. fish: its vendor directories; zsh: a site-functions
+# directory on its fpath; bash: bash-completion's completionsdir.
+# fish's vendor completion directories, in its order. fish sets them in its own config.fish,
+# which --no-config skips (it also runs the conf.d snippets, yours among them): built here as
+# it builds them, from XDG_DATA_DIRS and its build paths file (three `set` lines, read as
+# text, never run): fish 4 has the file built in, its default data directories the two
+# below; fish 3 has it in its data directory, the default.
+# shellcheck disable=SC2016 # fish's own variables, expanded by it
+FISH_VENDOR_DIRS='set -l dirs $__fish_vendor_completionsdirs
+if not set -q dirs[1]
+    set -l build (status get-file __fish_build_paths.fish 2>/dev/null)
+    set -l xdg /usr/local/share/fish /usr/share/fish
+    if not set -q build[1]
+        set build (cat $__fish_data_dir/__fish_build_paths.fish 2>/dev/null)
+        set xdg $__fish_data_dir
+    end
+    if test -n "$XDG_DATA_DIRS"
+        set --path xdg $XDG_DATA_DIRS
+        set xdg (string replace -r "([^/])/\$" "\$1" -- $xdg)/fish
+    end
+    set -l extra (string replace -rf "^set __extra_completionsdir (.+)\$" "\$1" -- $build)
+    set dirs $__fish_user_data_dir/vendor_completions.d $xdg/vendor_completions.d
+    contains -- "$extra" $dirs; or set -a dirs $extra
+end
+for d in $dirs; echo $d; end'
+
 completion_dir() {
     case $1 in
         fish)
             command -v fish >/dev/null 2>&1 || return 0
-            # shellcheck disable=SC2016 # the shell's own variable, expanded by it
-            fish --no-config -c 'for d in $__fish_vendor_completionsdirs; echo $d; end' 2>/dev/null
+            fish --no-config -c "$FISH_VENDOR_DIRS" 2>/dev/null
             ;;
         zsh)
             command -v zsh >/dev/null 2>&1 || return 0
@@ -379,6 +402,7 @@ completion_dir() {
             pkg-config --variable=completionsdir bash-completion 2>/dev/null
             ;;
     esac | while read -r dir; do
+        case $dir in "$HOME" | "$HOME"/*) continue ;; esac
         if [ -d "$(sys "$dir")" ]; then
             printf '%s' "$dir"
             break
@@ -403,6 +427,42 @@ completion_owned() {
     return 1
 }
 
+# Your fish configuration directory, where fish reads your own completions first.
+user_config() { printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
+
+# Whether <path> is one the installer writes for your fish completion, or a directory it made
+# for it.
+user_completion_owned() {
+    case $1 in
+        "$(user_config)" | "$(user_config)/fish" | "$(user_config)/fish/completions") return 0 ;;
+        "$(user_config)/fish/completions/writ.fish") return 0 ;;
+    esac
+    return 1
+}
+
+# fish with no system completion directory: writ's registration in yours,
+# ~/.config/fish/completions (each directory missing made), written as you.
+install_user_completion() {
+    writ=$1
+    dir=$(user_config)/fish/completions
+    path=$dir/writ.fish
+    step "Shell completion for fish, yours ($path)"
+    if [ "$DRY_RUN" = 1 ]; then
+        printf '    (you) write %s: writ completions fish\n' "$path"
+        return 0
+    fi
+    content=$("$writ" completions fish) || fail "writ completions fish failed"
+    for made in "$(user_config)" "$(user_config)/fish" "$dir"; do
+        [ -d "$made" ] && continue
+        as_user mkdir "$made"
+        record "usercompletion $made"
+    done
+    new=no
+    [ -e "$path" ] || new=yes
+    put_user "$path" "$content"
+    [ "$new" = no ] || record "usercompletion $path"
+}
+
 # writ's registration (`<writ> completions <shell>`) written for each shell installed here, in
 # its completion directory, as root; a shell here that names none gets the line to add by
 # hand. Written again by an upgrade: the registration runs the writ it names.
@@ -411,11 +471,12 @@ install_completions() {
     for shell in fish zsh bash; do
         command -v "$shell" >/dev/null 2>&1 || continue
         dir=$(completion_dir "$shell")
+        if [ -z "$dir" ] && [ "$shell" = fish ]; then
+            install_user_completion "$writ"
+            continue
+        fi
         if [ -z "$dir" ]; then
-            case $shell in
-                fish) line="writ completions fish | source" ;;
-                *) line="source <(writ completions $shell)" ;;
-            esac
+            line="source <(writ completions $shell)"
             say "- $shell completion: no completion directory found; add this line to its startup file: $line"
             continue
         fi
@@ -795,6 +856,12 @@ undo_line() {
                 return 0
             }
             ;;
+        usercompletion)
+            user_completion_owned "$path" || {
+                say "  left as it is (not one of this installer's paths): $path"
+                return 0
+            }
+            ;;
         *)
             setup_owns "$path" || {
                 say "  left as it is (not one of this installer's paths): $path"
@@ -825,6 +892,13 @@ undo_line() {
             fi
             ;;
         userdir) [ ! -d "$path" ] || as_user rmdir "$path" 2>/dev/null || say "  kept (not empty): $path" ;;
+        usercompletion)
+            if [ -d "$path" ]; then
+                as_user rmdir "$path" 2>/dev/null || say "  kept (not empty): $path"
+            else
+                as_user rm -f "$path"
+            fi
+            ;;
         userline)
             if [ "$DRY_RUN" = 1 ]; then
                 say "    (you) remove from $path: $text"

@@ -424,6 +424,9 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
             + "\ndir /opt\ndir /opt/writ\ndir /opt/writ/bin\nfile /opt/writ/bin/writd\n\
                file /opt/writ/bin/writ\nfile /opt/writ/bin/writ-sign\nfile /opt/writ/bin/writ-se\n\
                file /opt/writ/bin/writ-popup\n\
+               usercompletion ~/.config\nusercompletion ~/.config/fish\n\
+               usercompletion ~/.config/fish/completions\n\
+               usercompletion ~/.config/fish/completions/writ.fish\n\
                file /etc/paths.d/writ\n\
                tree /Library/Application Support/Writ/run\ntree /Library/Logs/Writ\n\
                userdir ~/.writ\nuserdata ~/.writ/reader\nnewdata /var/db/writ\ndata /var/db/writ\n\
@@ -921,6 +924,9 @@ fn on_linux_an_install_upgrades_and_uninstalls_leaving_the_machine_as_before() {
         format!(
             "setup local-linux\nuser writd\ngroup writ\nmember writ {me}\n\
              file /usr/local/bin/writd\nfile /usr/local/bin/writ\nfile /usr/local/bin/writ-sign\n\
+             usercompletion ~/.config\nusercompletion ~/.config/fish\n\
+             usercompletion ~/.config/fish/completions\n\
+             usercompletion ~/.config/fish/completions/writ.fish\n\
              userdir ~/.writ\nuserdata ~/.writ/reader\nfile /etc/writ/writd.yaml\n\
              newdata /var/lib/writ\ndata /var/lib/writ\nfile /etc/systemd/system/writd.service\ndaemon writd\n\
              userfile ~/.writ/known_hosts\nuserfile ~/.writ/config\nuserfile ~/.writ/approver.pub\n"
@@ -1608,5 +1614,141 @@ fn completion_is_written_for_each_shell_that_names_a_directory_and_taken_back() 
     assert!(
         said.contains("left as it is (not one of this installer's paths): /etc/paths.d/other"),
         "{said}"
+    );
+}
+
+#[test]
+fn fish_with_no_system_directory_gets_yours_and_the_uninstall_takes_back_what_it_made() {
+    let fake = Fake::new();
+    // fish names a vendor directory in your home (root's file never goes there) and a system
+    // one that isn't here; your config directory is, fish's own in it isn't yet.
+    let in_home = fake.home.join(".local/share/fish/vendor_completions.d");
+    fs::create_dir_all(&in_home).unwrap();
+    fs::create_dir_all(fake.home.join(".config")).unwrap();
+    let fish_dirs = format!(
+        "{}:/usr/local/share/fish/vendor_completions.d",
+        in_home.display()
+    );
+    let env = [("STUB_FISH", fish_dirs.as_str())];
+    let said = fake.shown(&ok(&fake.install(&env)));
+    let file = fake.home.join(".config/fish/completions/writ.fish");
+    let text = fs::read_to_string(&file).unwrap();
+    let writ = fake.at("/opt/writ/bin/writ");
+    assert!(
+        text.contains("WRIT_COMPLETE") && text.contains(&writ.display().to_string()),
+        "{text}"
+    );
+    assert!(
+        said.contains("- Shell completion for fish, yours (~/.config/fish/completions/writ.fish)"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("fish completion: no completion directory"),
+        "{said}"
+    );
+    assert_eq!(
+        listing(&in_home),
+        Vec::<String>::new(),
+        "nothing of root's in your home"
+    );
+    assert!(!fake.at("/usr/local/share/fish").exists());
+    // Yours: no one else's to read, made as you.
+    let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "{mode:o}");
+    // Recorded: the file and each directory made for it, not the one that was there.
+    let manifest = fake.shown(&fs::read_to_string(fake.manifest()).unwrap());
+    for line in [
+        "usercompletion ~/.config/fish\n",
+        "usercompletion ~/.config/fish/completions\n",
+        "usercompletion ~/.config/fish/completions/writ.fish\n",
+    ] {
+        assert!(manifest.contains(line), "{line} not in {manifest}");
+    }
+    assert!(
+        !manifest.contains("usercompletion ~/.config\n"),
+        "{manifest}"
+    );
+
+    // An upgrade writes it again, recorded once.
+    fs::write(&file, "an older writ's registration\n").unwrap();
+    ok(&fake.run("install", &env, ""));
+    assert!(fs::read_to_string(&file).unwrap().contains("WRIT_COMPLETE"));
+    let manifest = fs::read_to_string(fake.manifest()).unwrap();
+    assert_eq!(manifest.matches("writ.fish").count(), 1, "{manifest}");
+
+    // The uninstall takes back the file and the directories it made, keeps the one that was
+    // there, and leaves a path that isn't one of its own.
+    let other = fake.home.join(".config/other.fish");
+    fs::write(&other, "not writ's\n").unwrap();
+    let mut manifest = fs::read_to_string(fake.manifest()).unwrap();
+    manifest.push_str(&format!("usercompletion {}\n", other.display()));
+    fs::write(fake.manifest(), manifest).unwrap();
+    let said = fake.shown(&ok(&fake.run("uninstall", &[], "")));
+    assert!(!fake.home.join(".config/fish").exists());
+    assert!(fake.home.join(".config").is_dir());
+    assert_eq!(fs::read_to_string(&other).unwrap(), "not writ's\n");
+    assert!(
+        said.contains("left as it is (not one of this installer's paths): ~/.config/other.fish"),
+        "{said}"
+    );
+}
+
+/// The real fish on this machine's `PATH` (the completion tests need it too: CI installs it).
+fn real_fish() -> PathBuf {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("fish"))
+        .find(|candidate| candidate.is_file())
+        .expect("fish is not installed: the completion tests run every shell")
+}
+
+#[test]
+fn the_real_fish_names_its_vendor_directories_to_the_installer() {
+    // fish 4 sets them in its own config.fish, which `--no-config` skips: the installer's
+    // question must still get them, the same first one fish itself reads.
+    let fish = real_fish();
+    let dir = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(dir.path()).unwrap();
+    let path = format!("{}:/usr/bin:/bin", fish.parent().unwrap().display());
+    // What fish reads, with no config of anyone's in the way (an empty home).
+    let out = Command::new(&fish)
+        .args([
+            "-c",
+            "for d in $__fish_vendor_completionsdirs; echo $d; end",
+        ])
+        .env_clear()
+        .env("PATH", &path)
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let listed = stdout(&out);
+    let expected = listed
+        .lines()
+        .find(|d| !d.starts_with(&home.display().to_string()) && Path::new(d).is_dir())
+        .unwrap_or("");
+    assert!(!listed.trim().is_empty(), "fish names no vendor directory");
+    let frame = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy");
+    let installer = |script: &str| {
+        let out = Command::new("/bin/sh")
+            .args(["-c", &format!(". \"$DEPLOY/frame.sh\"; {script}")])
+            .env_clear()
+            .env("PATH", &path)
+            .env("HOME", &home)
+            .env("DEPLOY", &frame)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        stdout(&out)
+    };
+    // Every directory, in fish's order, then the one picked.
+    assert_eq!(
+        installer("fish --no-config -c \"$FISH_VENDOR_DIRS\""),
+        listed
+    );
+    assert_eq!(
+        installer("completion_dir fish"),
+        expected,
+        "fish listed:\n{listed}"
     );
 }

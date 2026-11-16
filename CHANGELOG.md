@@ -26,6 +26,13 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
   `1 GiB`) instead of in bytes; a size that isn't a whole number of a unit shows its exact
   bytes beside it (`1.5 KiB (1500 bytes)`), so a limit never reads rounded.
 
+### Fixed
+
+- `make install` set up no fish completion: fish doesn't name its completion directories
+  when asked without its config. The installer now finds them, and when fish has none it
+  writes `writ.fish` in your own `~/.config/fish/completions`; `make uninstall` takes it
+  back ([install](docs/operators/install.md)).
+
 ## 0.3.0 — 2026-11-16
 
 Shell completion

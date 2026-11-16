@@ -75,7 +75,7 @@ On the Mac:
 | The daemon's log, readable by you | `/Library/Logs/Writ/writd.log` |
 | The daemon, started at boot | the LaunchDaemon `dev.writ.writd` |
 | Your client: the daemon's host key pinned, the endpoints set, your reader key | `~/.writ` (`known_hosts`, `config`, `reader`, `approver.pub`) |
-| Shell completion for `writ`, for each of bash, zsh and fish that names a completion directory | `writ.fish` in fish's vendor completions, `_writ` in a `site-functions` directory of zsh, `writ` in bash-completion's completions ([shell completion](clients.md#shell-completion)) |
+| Shell completion for `writ`, for each of bash, zsh and fish that names a completion directory, and for fish always | `writ.fish` in fish's vendor completions (or in your own `~/.config/fish/completions` when fish has none), `_writ` in a `site-functions` directory of zsh, `writ` in bash-completion's completions ([shell completion](clients.md#shell-completion)) |
 | The approval popup, started at each login in your session (unless you answered `no`) | the LaunchAgent `dev.writ.popup` (`~/Library/LaunchAgents/dev.writ.popup.plist`) |
 
 On Linux:
@@ -91,7 +91,7 @@ On Linux:
 | The daemon, started at boot | the systemd service `writd` (`/etc/systemd/system/writd.service`) |
 | The daemon's log | the journal: `journalctl -u writd` |
 | Your client: the daemon's host key pinned, the endpoints set, your reader key | `~/.writ` (`known_hosts`, `config`, `reader`, `approver.pub`) |
-| Shell completion for `writ`, for each of bash, zsh and fish that names a completion directory | `writ.fish` in fish's vendor completions, `_writ` in a `site-functions` directory of zsh, `writ` in bash-completion's completions ([shell completion](clients.md#shell-completion)) |
+| Shell completion for `writ`, for each of bash, zsh and fish that names a completion directory, and for fish always | `writ.fish` in fish's vendor completions (or in your own `~/.config/fish/completions` when fish has none), `_writ` in a `site-functions` directory of zsh, `writ` in bash-completion's completions ([shell completion](clients.md#shell-completion)) |
 
 On Linux the service can hold one privilege, `CAP_SYS_PTRACE`, so the daemon can see which
 programs your agents run (Linux shows another user's programs only to a process that has it).
