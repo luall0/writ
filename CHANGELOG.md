@@ -11,6 +11,22 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+## 0.3.1 — 2026-11-16
+
+Fixes after 0.3.0: a size limit in its unit, more values for shell completion, fish
+completion set up by `make install`; the dependencies and the Rust toolchain upgraded.
+
+### Upgrading
+
+- **State version 13, policy format 2**, as in 0.3.0: nothing migrates, and no `writ migrate`
+  is owed.
+- **No message changed**: a `writ` 0.3.0 and a `writd` 0.3.1 still talk, and `writ` says the
+  versions differ. Install both together anyway.
+- **Run `make install`.** It now builds with Rust 1.100.0 (rustup fetches it the first time),
+  and sets up fish completion it skipped before. If you added a `writ.fish` to
+  `~/.config/fish/completions` by hand, fish reads that one first: remove it to use the
+  installed one.
+
 ### Added
 
 - Shell completion offers more values: the files of `writ admin show` and `apply` (policy,
