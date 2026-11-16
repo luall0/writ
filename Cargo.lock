@@ -4009,7 +4009,7 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "serde_path_to_error",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
 ]
 
@@ -4022,14 +4022,14 @@ dependencies = [
  "aws-lc-rs",
  "base64ct",
  "bech32",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "p256",
  "rcgen",
  "rustix",
  "rustls",
  "rustls-webpki",
  "sha1-checked",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "signature",
  "ssh-key",
  "tempfile",
@@ -4081,7 +4081,7 @@ name = "writ-git"
 version = "0.3.0"
 dependencies = [
  "sha1-checked",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "writ-core",
@@ -4219,7 +4219,7 @@ version = "0.3.0"
 dependencies = [
  "p256",
  "rustls",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "signature",
  "ssh-key",
  "tempfile",

@@ -5,7 +5,7 @@
 //! is found. (The whole state put back from an older copy carries a valid MAC: that is a
 //! restored backup.)
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
@@ -43,7 +43,7 @@ impl AuthorityKey {
 
     fn mac(&self, head: &[HeadEntry<'_>]) -> Result<HmacSha256> {
         // HMAC takes a key of any length: never refused, but never assumed either.
-        let mut mac = <HmacSha256 as Mac>::new_from_slice(self.0.as_slice())
+        let mut mac = <HmacSha256 as KeyInit>::new_from_slice(self.0.as_slice())
             .map_err(|_| CryptoError::SigningFailed)?;
         mac.update(b"writ-authority-head/1\n");
         for entry in head {

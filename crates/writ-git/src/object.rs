@@ -66,6 +66,8 @@ impl HashAlgo {
         let header = format!("{} {}\0", kind.name(), content.len());
         let raw: Vec<u8> = match self {
             HashAlgo::Sha1 => {
+                // sha1-checked implements the digest 0.10 traits, sha2 those of 0.11.
+                use sha1_checked::Digest as _;
                 let mut hasher = sha1_checked::Sha1::new();
                 hasher.update(header.as_bytes());
                 hasher.update(content);
