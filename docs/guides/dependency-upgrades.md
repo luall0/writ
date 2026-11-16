@@ -37,8 +37,8 @@ These versions are tied to each other; the reason is in [stack.md](../stack.md) 
 
 | Pin | Tied to | Check |
 |---|---|---|
-| `ssh-key = "=0.7.0-rc.11"` (exact) | The version `russh` depends on: the gateway passes certificates and keys between them | `cargo tree --locked -i ssh-key` shows **one** version |
-| `age` 0.11 | `age` 0.12 pulls `ml-kem` 0.2, whose `kem` pre-release conflicts with `russh`'s | Retry 0.12 whenever `russh` moves; drop the hold when it resolves |
+| `ssh-key = "=0.7.0-rc.12"` (exact) | The version `russh` depends on: the gateway passes certificates and keys between them | `cargo tree --locked -i ssh-key` shows **one** version |
+| `age` 0.11 | `age` 0.12 pulls `ml-kem` 0.2, written for the `kem` pre-release, which doesn't build against the stable `kem` 0.3 `russh` takes | Retry 0.12 whenever `russh` moves (`cargo check` on the workspace, not only a resolution: it resolves since russh 0.65.2); drop the hold when it builds |
 | `rustls-webpki` | The version `rustls` uses (it parses reader certificates with rustls's own parser) | `cargo tree --locked -d` lists no second `rustls-webpki` |
 | `rustix` | The version `tempfile` already pulls | `cargo tree --locked -d` lists no second `rustix` |
 | `tokio-rustls`, `rustls`, `rcgen`, `ring` | One TLS stack on `ring`, TLS 1.3 only | One `ring`, one `rustls`; no `aws-lc-rs` in `cargo tree --locked -e normal` |
