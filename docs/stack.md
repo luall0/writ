@@ -60,10 +60,10 @@ Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versi
 - Rust toolchain from **rustup**, pinned to an exact version by `rust-toolchain.toml`
   (`1.99.1` with `rustfmt` and `clippy`); moving it is a change of its own.
 - Every build is `--locked`: what is built is `Cargo.lock`, never a fresh resolution.
-- `cargo-deny` 0.20.2 (`make check`, `deny.toml`): RustSec advisories and yanked crates
+- `cargo-deny` 0.21.0 (`make check`, `deny.toml`): RustSec advisories and yanked crates
   refused (two compile-time-only ones accepted, each with its reason), crates.io as the only
   source, a license allow-list, banned crates (`openssl`, `native-tls`, `rsa`, `log`
-  bridges). Installed with `cargo install --locked cargo-deny --version 0.20.2`; CI uses its
+  bridges). Installed with `cargo install --locked cargo-deny --version 0.21.0`; CI uses its
   release binary, checked against the SHA-256 pinned in `tool/ci-tools.sh`.
 - `cargo-nextest` 0.9.152 (`make test`, `.config/nextest.toml`, which requires that version):
   the test runner ([how `make test` runs](testing.md#how-make-test-runs)). Installed with

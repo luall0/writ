@@ -6,8 +6,8 @@
 # its pin, together): docs/guides/dependency-upgrades.md#the-tool-binaries-ci-downloads.
 set -eu
 
-DENY_VERSION=0.20.2
-DENY_SHA256=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+DENY_VERSION=0.21.0
+DENY_SHA256=a2170b854ff697e79e39c4c538981c9c1bdd803addbae6719a4cb66b4585a903
 NEXTEST_VERSION=0.9.152
 NEXTEST_SHA256=d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a
 
