@@ -37,7 +37,7 @@ sends and does nothing else) and for the later approver apps.
 | Logging | `tracing` 0.1 in every library crate, `tracing-subscriber` 0.3 (`fmt`, `env-filter`) installed by `writd` only, to stderr, filtered by `WRIT_LOG`; the audit log is separate and never goes through it | Decided (M2.5) |
 | Secure Enclave (local mode) | Swift + CryptoKit, key blob under the `_writd` user | Decided (M0 spike, [Q33](decisions.md)); how `writd` calls it is settled in M7.5 |
 | Tests | `proptest` for policy properties, `tempfile`, real `git` and `ssh-keygen` binaries | Decided (M1) |
-| Time | `jiff` (no default features): RFC 3339 for timestamps; the policy never reads a clock | Decided (M1) |
+| Time | `jiff` 1.0 (no default features): RFC 3339 for timestamps; the policy never reads a clock | Decided (M1) |
 | Globs | `globset` for `expected_paths` | Decided (M1) |
 | Canonical encoding | `serde_json`, compact, fixed field order ([lease model](lease-model.md#canonical-encoding)) | Decided (M1) |
 
