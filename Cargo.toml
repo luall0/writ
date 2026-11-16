@@ -79,7 +79,7 @@ clap = { version = "4.6.7", features = ["derive", "env", "string"] }
 # Shell completion (M7.9.9): the dynamic engine, `writ` answering each TAB from its clap
 # tree; `unstable-dynamic` is exempt from semver, so the version is exact and each shell's
 # registration is run for real in a test.
-clap_complete = { version = "=4.6.9", default-features = false, features = ["unstable-dynamic"] }
+clap_complete = { version = "=4.6.11", default-features = false, features = ["unstable-dynamic"] }
 # The authority versions' MAC (HMAC-SHA-256), keyed by a sealed secret; already in the tree.
 hmac = "0.12.1"
 globset = { version = "0.4.21", default-features = false }
