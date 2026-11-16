@@ -44,6 +44,8 @@ jobs:
       - name: Tools the integration tests use
         run: |
           command -v nc || sudo apt-get install -y netcat-openbsd
+          # The shells writ completes in (M7.9.9): its tests run each one.
+          command -v zsh && command -v fish || sudo apt-get install -y zsh fish
           git --version
           ssh -V
 

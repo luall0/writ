@@ -32,7 +32,7 @@ const MAX_DIFF_CELLS: usize = 4_000_000;
 /// A file in force as the daemon showed it, checked against what the connection
 /// authenticated and against itself ([`in_force`]): only that check makes one (its field is
 /// private), and a `writ-admin/2` is only signed over one ([`sign_applied`]).
-pub(super) struct ShownInForce(AdminShown);
+pub(crate) struct ShownInForce(AdminShown);
 
 impl std::ops::Deref for ShownInForce {
     type Target = AdminShown;

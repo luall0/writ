@@ -310,9 +310,10 @@ none of it completes. Settled with the user ([decision log](decisions.md), 2026-
   with its rows in the operator reference and the configuration registry (rule 19). Commands
   meant for scripts, not people (`writ prompt`), are hidden from completion as from `--help`.
 - **Values read live, never cached:** each value comes from the read its command already
-  makes with the reader key, no approver signature involved: ticket and lease ids for `sign`,
-  `refuse`, `revoke`, `report`, `wait` and `close` (from `writ ls`: waiting tickets for
-  `sign` and `refuse`, running leases for the others), the registry's repo, template, key,
+  makes with the reader key, no approver signature involved: ticket and lease ids from `writ ls`:
+  the waiting tickets for `sign`, `refuse` and `wait` (settled while building it: `wait`
+  waits for a decision), the running leases for `revoke`, `report`, `close` and
+  `wait --lease`, the registry's repo, template, key,
   host, proxy and recipient names for `writ admin …` and `writ policy` (from their `list`
   reads), the fields of `writ admin … set|edit` from the list `writ` already checks them
   against. A read has a hard deadline (1 s, from the connection to the last byte); no file is

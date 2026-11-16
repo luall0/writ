@@ -9,6 +9,11 @@ use writ_proto::{FIRST_NAMED_VERSION, VERSION};
 /// Whether this process has said it already: once is enough.
 static SAID: AtomicBool = AtomicBool::new(false);
 
+/// Says nothing from now on: a TAB's process (M7.9.9) writes nothing to the terminal.
+pub fn quiet() {
+    SAID.store(true, Ordering::Relaxed);
+}
+
 /// What to say when the daemon's version, as its reply names it, isn't this `writ`'s: `None`
 /// when they are the same. The version was checked to be digits and dots when it was read.
 pub fn mismatch(theirs: Option<&str>) -> Option<String> {

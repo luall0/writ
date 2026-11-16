@@ -74,7 +74,12 @@ rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pe
 # Parses the client certificate of a reader key (the HTTPS approval API); already rustls's.
 rustls-webpki = { version = "0.103.16", default-features = false, features = ["alloc"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-clap = { version = "4.6.7", features = ["derive", "env"] }
+# `string`: the completion tree is rebuilt from writ's with owned names (M7.9.9).
+clap = { version = "4.6.7", features = ["derive", "env", "string"] }
+# Shell completion (M7.9.9): the dynamic engine, `writ` answering each TAB from its clap
+# tree; `unstable-dynamic` is exempt from semver, so the version is exact and each shell's
+# registration is run for real in a test.
+clap_complete = { version = "=4.6.9", default-features = false, features = ["unstable-dynamic"] }
 # The authority versions' MAC (HMAC-SHA-256), keyed by a sealed secret; already in the tree.
 hmac = "0.12.1"
 globset = { version = "0.4.21", default-features = false }

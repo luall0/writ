@@ -14,6 +14,8 @@ mod admin;
 pub(crate) mod dispatch;
 mod guided;
 mod manage;
+
+pub(crate) use manage::policy_in_force;
 mod narrowing;
 mod prove;
 mod signer;

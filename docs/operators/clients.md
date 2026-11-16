@@ -23,6 +23,7 @@ lists them.
 | none | `WRIT_RUN_PID` | none | Set by `writ run` for the agent it starts: `writ request` binds each ticket to that session. Not yours to set. [Binding a lease to its session](#binding-a-lease-to-its-session-local-mode) |
 | none | `WRIT_SSH_KEYGEN` | `/usr/bin/ssh-keygen` | The `ssh-keygen` that signs your approvals: an absolute path, OpenSSH 8.9 or newer. Never looked up in `PATH`, where anything could sit first and change what gets signed |
 | none | `WRIT_GPG` | `/usr/bin/gpg` | `writ-sign`: the `gpg` it hands git's OpenPGP `--verify` calls to, an absolute path. It never runs gpg to sign: the key is the daemon's |
+| none | `WRIT_COMPLETE` | unset | Set by your shell's completion on each TAB (`bash`, `fish` or `zsh`): `writ` then answers the TAB and does nothing else. Not yours to set. [Shell completion](#shell-completion) |
 | none | `NO_COLOR` | unset | Set to anything: `writ`'s questions without colour (<https://no-color.org>) |
 
 `writ --version` prints the version of this `writ`. When the daemon's version isn't the same,
@@ -70,6 +71,33 @@ the same way: `writ report <id> --full`, or `writ close --full` for the agent.
 Every "Sign …?" question signs only on `y` or `yes`. Answer anything else and nothing is
 signed: `writ` then exits with status 6, whatever the command, so a script can tell a change
 you declined from one that was applied.
+
+## Shell completion
+
+`writ` completes its commands, flags and values when you press TAB, in bash, zsh and fish.
+`make install` sets it up for each of these shells it finds ([install](install.md)). To set
+it up by hand, add one line for your shell:
+
+| Shell | The line | In |
+|---|---|---|
+| bash | `source <(writ completions bash)` | `~/.bashrc` |
+| zsh | `source <(writ completions zsh)` | `~/.zshrc`, after `compinit` |
+| fish | `writ completions fish \| source` | `~/.config/fish/config.fish` |
+
+The values come from the daemon, read with your reader key:
+
+- `writ sign`, `refuse` and `wait`: the tickets waiting for you.
+- `writ revoke`, `report` and `close`: the leases running.
+- `writ admin <noun> show`, `edit`, `set`, `remove`, and `writ policy`: the names in the policy
+  in force. After `set` or `add`, the fields, as `field=`.
+
+Beside a ticket, fish and zsh show its state, its templates and how many repos it covers. They
+never show its title or anything else the agent wrote.
+
+Each TAB waits at most one second for the daemon. When the daemon can't answer (sealed,
+unreachable, not pinned, your reader key missing or refused), no value is offered and nothing
+is printed. Commands and flags still complete. A TAB never asks you anything and never pins a
+key.
 
 ## Files
 

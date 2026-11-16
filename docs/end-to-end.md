@@ -126,6 +126,7 @@ One module per scenario in `crates/writ-e2e/tests/scenarios/`, each on its own r
 | 27 | `approval_popup` | — | The approval popup's side of `writ` (M7.8): `writ sign --ui` driven as `writ-popup` drives it, one JSON line each way; two tickets at once, the oldest shown with the other stacked behind it, its display the very text `writ sign --full` prints; an answer naming the ticket behind refused with nothing signed; the first signed (the agent's lease, one `grant` line), the second refused with feedback the agent reads; a ticket withdrawn while shown closing its window; the end of the app's input ending the command | alone |
 | 28 | `unsigned_fetch` | `planning` | A fetch with no signature (M7.9.7): a clone wired with no lease, its repo's template `prefetch` signing and pushing with `unsigned_fetch: 15m`; `writ policy` showing its operations and that a fetch alone needs no signature; `writ git fetch` getting Forgejo's new commit and `writ git pull --ff-only` moving the branch, each under its own lease granted when submitted (its `grant` line naming the template, no approver; its `fetch` and `close` lines), nothing left in the agent's sessions; then the agent's signed lease, under the same template, committing and pushing as any | shared |
 | 29 | `versions` | `setup` | Versions (M7.9.8): `writd --version` on the operator's host, `writ --version` on the approver's and the agents', `writ-sign --version` on the agents', each the workspace's version and nothing else; `writ ls` over the approval API and `writ policy` over the agents' listener, the daemon of the same version, saying nothing about versions | shared |
+| 30 | `completion` | `setup` | Shell completion (M7.9.9), on the approver's machine: `writ completions` for fish, zsh and bash, each naming `/usr/local/bin/writ` and `WRIT_COMPLETE`; each registration sourced by its shell (zsh's compsys stood in for) and a TAB: a command, a flag, the stack's running leases for `writ revoke` (this agent's among them; fish's description the daemon's facts, never the title), the templates for `writ admin template show`; with the daemon unreachable, no value and nothing said, the commands still completing | shared |
 
 Every scenario checks, where it applies: **what the agent reads** (the exit code and the
 words, never just "it failed"), **the audit line** (event, result, code), **Forgejo's state**
@@ -148,6 +149,7 @@ the scenarios (`tool/check-e2e.py`).
 | `writ --known-hosts` | `every_client_setting_works_as_a_flag` |
 | `writ --tls-pins` | `every_client_setting_works_as_a_flag` |
 | `writ --reader` | `every_client_setting_works_as_a_flag` |
+| `writ completions` | `each_shell_completes_commands_flags_and_the_daemon_s_values_from_writ_completions` |
 | `writ --version` | `every_binary_says_its_version_and_writ_says_nothing_of_the_daemon_s_own` |
 | `writ request` | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |
 | `writ request -` (ticket on stdin) | `tickets_are_requested_signed_refused_revised_amended_and_revoked` |

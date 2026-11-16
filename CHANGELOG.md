@@ -11,6 +11,13 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+### Added
+
+- Shell completion for `writ` in bash, zsh and fish: commands, flags, and the daemon's values
+  (the tickets waiting, the leases running, the policy's names), read live with your reader
+  key. `writ completions <shell>` prints the line to add
+  ([clients](docs/operators/clients.md#shell-completion)).
+
 ## 0.2.0 — 2026-11-16
 
 Versions and this changelog

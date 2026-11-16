@@ -314,6 +314,7 @@ planned milestone is done, or a `WRIT_*` variable a binary reads has no `env:` r
 | `ticket: limits.ttl` | `a_ticket_past_its_template_is_rejected_with_each_reason`, `a_ticket_left_unsigned_expires` |
 | `ticket: limits.max_ops_per_minute` | `signatures_stop_at_the_lease_s_count_and_rate`, `a_fetch_goes_through_the_policy_and_counts_against_the_rate` |
 | `ticket: on_violation` | `a_violation_revokes_a_lease_that_asks_for_it`, `the_approver_narrows_every_term_and_the_lease_holds_to_them` |
+| `env: WRIT_COMPLETE` | `each_shell_completes_a_command_a_flag_an_enum_value_and_a_path_never_a_hidden_command`, `values_come_live_from_the_daemon_and_a_ticket_is_described_by_its_facts`, `each_shell_completes_commands_flags_and_the_daemon_s_values_from_writ_completions` |
 | `env: WRIT_HOME` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
 | `env: WRIT_KNOWN_HOSTS` | `rejected_signed_narrowed_and_refused_tickets_end_to_end`, `every_client_setting_works_as_a_flag` |
 | `env: WRIT_TLS_PINS` | `revocation_and_expiry_drop_sessions_and_refuse_the_certificate`, `every_client_setting_works_as_a_flag` |

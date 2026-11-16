@@ -25,6 +25,7 @@ mod approver;
 mod cli;
 mod client;
 mod close;
+mod complete;
 mod display;
 mod gitopts;
 mod https;
@@ -148,6 +149,10 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
         } => init::undo_all(&paths),
         Commands::Init { undo: true, .. } => init::undo(&paths),
         Commands::Prompt { command } => prompt::command(command),
+        Commands::Completions { shell } => {
+            print!("{}", complete::registration(*shell)?);
+            Ok(Exit::Ok)
+        }
         Commands::Skill {
             command: SkillCommand::Update { all: true },
         } => init::update_skills_all(&paths),
@@ -328,6 +333,8 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
 }
 
 fn main() -> ExitCode {
+    // A TAB (WRIT_COMPLETE set): answered, then the process exits; otherwise nothing happens.
+    complete::answer();
     let cli = Cli::parse();
     // Its own runtime and exit status: the harness's.
     if let Commands::Run { command } = &cli.command {

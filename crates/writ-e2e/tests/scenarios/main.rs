@@ -16,6 +16,7 @@
 )]
 
 mod approval_popup;
+mod completion;
 mod concurrency;
 mod daemon_management;
 mod hardening_limits;

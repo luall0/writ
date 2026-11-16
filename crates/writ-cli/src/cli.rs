@@ -192,7 +192,12 @@ pub(crate) enum Commands {
         agents_md: bool,
     },
     /// One question asked on the terminal with writ's widgets, its answer printed on stdout:
-    /// for a script that asks a person (the installer). Refused without a terminal.
+    /// for a script that asks a person (the installer). Refused without a terminal. Hidden
+    /// from `--help` and completion: a script's, not a person's.
+    /// Print the line that registers writ's shell completion: `make install` writes it into
+    /// each shell's completion directory. Each TAB then asks this writ.
+    Completions { shell: crate::complete::Shell },
+    #[command(hide = true)]
     Prompt {
         #[command(subcommand)]
         command: PromptCommand,

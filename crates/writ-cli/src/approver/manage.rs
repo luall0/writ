@@ -21,7 +21,7 @@ use crate::display::clean;
 use crate::{Exit, Paths};
 
 /// The policy in force, as the daemon holds it, and parsed for showing.
-pub(super) async fn policy_in_force(
+pub(crate) async fn policy_in_force(
     session: &Approvals,
 ) -> anyhow::Result<(ShownInForce, PolicyConfig)> {
     let shown = in_force(session, writ_core::authority::AdminTarget::Policy).await?;

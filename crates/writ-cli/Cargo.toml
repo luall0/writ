@@ -16,6 +16,7 @@ writ-crypto.workspace = true
 writ-proto.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true

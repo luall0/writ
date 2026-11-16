@@ -77,6 +77,31 @@ know and a version apart is the likely reason. `writ --version`, `writd --versio
 `writ-sign --version` print the binary's version; `writ-sign` reads no envelope (the gateway
 sends it the signature itself).
 
+### Shell completion
+
+`writ` completes in bash, zsh and fish (M7.9.9) through clap_complete's dynamic engine
+(`writ-cli`'s `complete` module): each TAB runs `WRIT_COMPLETE=<shell> writ -- <words>`, which
+answers and exits before anything else runs (`complete::answer`, the first thing `main`
+does). It answers from a copy of the clap tree with the commands hidden from `--help` left
+out (`writ prompt`: clap would still offer one typed far enough to match it alone), each
+argument naming something the daemon holds given a source of values by its command's path
+(`complete::source_of`): the waiting tickets (`sign`, `refuse`, `wait`) and the running
+leases (`revoke`, `report`, `close`, `wait --lease`) from `writ ls`, the names of each section
+of the policy in force for `writ admin …` and `writ policy`, and the fields of `set` and `add`
+from `writ_core::config::edit::fields`. A read is the one its command already makes with the
+reader key, within one deadline (`complete::DEADLINE`, 1 s, from the connection to the last
+byte), on a runtime of its own dropped after it; no file is written and nothing is kept. The
+endpoints and files are the flags' variables or the defaults: a TAB has no parsed flags.
+
+Any failure offers no value and says nothing (the version hint quieted too: fish shows
+stderr): completion never prompts, never asks for the approval key, never pins a host key.
+What reaches the shell is bounded (`MAX_VALUES` values of at most `MAX_VALUE` bytes, of
+characters a shell inserts as they are; descriptions stripped of hidden characters and cut to
+`MAX_HELP`), and a ticket's description is the daemon's facts (`pending · feature · 1 repo`),
+never its title. `writ completions <shell>` prints the registration, naming this `writ` by its
+absolute path (an earlier `writ` on `PATH` never answers); zsh's also completes when the file
+is `_writ` on `fpath`.
+
 ## The approval popup (M7.8)
 
 A ticket waiting for my signature comes up in a window in front of every app, full-screen

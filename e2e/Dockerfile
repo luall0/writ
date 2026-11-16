@@ -85,8 +85,9 @@ FROM runtime AS agent
 # GnuPG, for the agent's `git verify-commit` of OpenPGP commits (`writ-sign --verify` hands it
 # to gpg), with its agent: gpg starts one even to import a public key, and exits 2 without it.
 # The daemon's image has none: it never runs gpg.
+# The shells writ completes in (M7.9.9, scenario 30): bash is the base image's; zsh and fish.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gpg gpg-agent \
+    && apt-get install -y --no-install-recommends gpg gpg-agent zsh fish \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --shell /bin/sh agent \
     && useradd --create-home --shell /bin/sh approver
