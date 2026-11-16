@@ -3985,7 +3985,7 @@ dependencies = [
 
 [[package]]
 name = "writ-alloc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "tempfile",
  "writ-alloc",
@@ -3993,7 +3993,7 @@ dependencies = [
 
 [[package]]
 name = "writ-approval"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "rusqlite",
@@ -4014,7 +4014,7 @@ dependencies = [
 
 [[package]]
 name = "writ-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4040,7 +4040,7 @@ dependencies = [
 
 [[package]]
 name = "writ-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "globset",
  "jiff",
@@ -4055,7 +4055,7 @@ dependencies = [
 
 [[package]]
 name = "writ-crypto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "age",
  "age-core",
@@ -4080,7 +4080,7 @@ dependencies = [
 
 [[package]]
 name = "writ-e2e"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64ct",
  "serde_json",
@@ -4089,7 +4089,7 @@ dependencies = [
 
 [[package]]
 name = "writ-gateway"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "http-body-util",
  "hyper",
@@ -4118,7 +4118,7 @@ dependencies = [
 
 [[package]]
 name = "writ-git"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sha1-checked",
  "sha2 0.10.9",
@@ -4129,7 +4129,7 @@ dependencies = [
 
 [[package]]
 name = "writ-integration"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "age",
  "base64ct",
@@ -4161,7 +4161,7 @@ dependencies = [
 
 [[package]]
 name = "writ-mirror"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64ct",
  "russh",
@@ -4182,7 +4182,7 @@ dependencies = [
 
 [[package]]
 name = "writ-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "age",
  "age-core",
@@ -4202,7 +4202,7 @@ dependencies = [
 
 [[package]]
 name = "writ-platform-linux"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "linux-raw-sys",
@@ -4216,7 +4216,7 @@ dependencies = [
 
 [[package]]
 name = "writ-platform-macos"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -4233,7 +4233,7 @@ dependencies = [
 
 [[package]]
 name = "writ-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4243,7 +4243,7 @@ dependencies = [
 
 [[package]]
 name = "writ-sign"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -4255,7 +4255,7 @@ dependencies = [
 
 [[package]]
 name = "writ-signer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "p256",
  "rustls",
@@ -4275,7 +4275,7 @@ dependencies = [
 
 [[package]]
 name = "writ-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -4288,7 +4288,7 @@ dependencies = [
 
 [[package]]
 name = "writd"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "age",
  "anyhow",

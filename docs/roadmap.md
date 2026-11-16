@@ -52,7 +52,7 @@ picked.
 | M7.9.6 | [Upgrades](history/m7.9.6-upgrades.md) ✅ | Asked by the user before M8: the state migrated in steps with a backup first, the policy naming its format and every format change a signed migration (`writ migrate`), the daemon refusing everything else until it is signed, `writd check-upgrade` before the installer changes anything, the installer unsealing and migrating; the push modes `proxy` and `direct_ssh` dropped, their keys removed as format 2 |
 | M7.9.7 | [Fetch without a signature](history/m7.9.7-fetch-without-a-signature.md) ✅ | Asked by the user before M8: a template's `unsigned_fetch: <time>` granting a fetch-only ticket with no approver, off by default, the template signing as before for the rest; `writ git fetch` and `pull` asking one themselves; the skills fetch before they plan |
 | M7.9.8 | [Versions and changelog](history/m7.9.8-versions-and-changelog.md) ✅ | Asked by the user before M8: one SemVer for the workspace (0.1.0 first, 1.0.0 with M8.5), a hand-written `CHANGELOG.md` with each release's upgrade notes, checked by `make check`; `--version` on the binaries, the daemon's version in every reply, the installer saying from which version to which |
-| M7.9.9 | [Shell completion](#m799--shell-completion) | Asked by the user before M8: `writ`'s commands, flags and values completed in fish, zsh and bash, lease ids and the registry's names read live from the daemon with the reader key, silent when it can't answer; `writ completions <shell>`, installed and removed by the installer |
+| M7.9.9 | [Shell completion](history/m7.9.9-shell-completion.md) ✅ | Asked by the user before M8: `writ`'s commands, flags and values completed in fish, zsh and bash, lease ids and the registry's names read live from the daemon with the reader key, silent when it can't answer; `writ completions <shell>`, installed and removed by the installer |
 | M8 | [Detached deployment](#m8--detached-deployment) | Docker image on the homelab, agents on other hosts; the installer's `detached` and `client` setups |
 | M8.5 | [Non-exportable session keys](#m85--non-exportable-session-keys) | The session key in the agent host's hardware (Secure Enclave, TPM) when it has some, detected on first use, switched with `writ session-key` |
 
@@ -296,77 +296,10 @@ version replaces which; released as 0.2.0.
 
 ## M7.9.9 — Shell completion
 
-Asked by the user before M8, after [M7.9.8](#m798--versions-and-changelog): `writ` has some forty commands, most with a lease id or a name
-from the registry to type (`writ sign wrt_01JD8X…`, `writ admin template show agent-web`), and
-none of it completes. Settled with the user ([decision log](decisions.md), 2026-11-15):
-
-- **`writ` only, in fish, zsh and bash.** `writd` is run by the installer and the service,
-  `writ-sign` by git: neither gets completion.
-- **One engine, `writ` itself:** clap_complete's dynamic engine (`CompleteEnv`, its
-  `unstable-dynamic` feature, the exact version pinned, its row in [stack.md](stack.md)). On
-  each TAB the shell runs `WRIT_COMPLETE=<shell> writ -- <words>` and `writ` answers from its
-  clap tree: commands, flags, enum values, paths, and the values below. The variable is named
-  `WRIT_COMPLETE`, not clap's default `COMPLETE` (every variable a binary reads is `WRIT_*`),
-  with its rows in the operator reference and the configuration registry (rule 19). Commands
-  meant for scripts, not people (`writ prompt`), are hidden from completion as from `--help`.
-- **Values read live, never cached:** each value comes from the read its command already
-  makes with the reader key, no approver signature involved: ticket and lease ids from `writ ls`:
-  the waiting tickets for `sign`, `refuse` and `wait` (settled while building it: `wait`
-  waits for a decision), the running leases for `revoke`, `report`, `close` and
-  `wait --lease`, the registry's repo, template, key,
-  host, proxy and recipient names for `writ admin …` and `writ policy` (from their `list`
-  reads), the fields of `writ admin … set|edit` from the list `writ` already checks them
-  against. A read has a hard deadline (1 s, from the connection to the last byte); no file is
-  written on the host, no state kept between two TABs.
-- **Silent when the daemon can't answer:** sealed, unreachable, slow past the deadline, its
-  host key or TLS certificate not pinned, the reader key missing or refused, a reply that
-  doesn't parse: no value is offered, nothing is written to the terminal, the exit is the
-  shell's ordinary empty answer; commands, flags and paths still complete. Completion never
-  prompts, never asks for Touch ID or the approval key, never pins a host key on first use.
-- **Only daemon facts in the menu:** fish and zsh show a description beside each value; a
-  ticket's is its state, template and repository count (`pending · agent-web · 3 repos`),
-  never its title, task or any agent-written text (rule 6). Every candidate and description
-  is bounded (a count and bytes per reply) and has its hidden characters removed before it
-  reaches the shell, a new untrusted input in the [security inventory](security.md#untrusted-inputs)
-  with its hostile-input test.
-- **Installed for the operator:** `writ completions <fish|zsh|bash>` prints the line that
-  registers the engine for that shell. `make install` writes it into each installed shell's
-  system completion directory, asked of the shell itself where it can say (fish's
-  `$__fish_vendor_completionsdirs`, a `site-functions` directory on zsh's `fpath`,
-  bash-completion's `completionsdir`), skipping a shell not installed and printing the line
-  to add by hand for one that names no directory; the files it writes are recorded, and
-  `make uninstall` removes exactly those.
-- Docs: [clients](architecture/clients.md) (the engine, the values and their reads, the
-  silence), the operator page for the client's settings (`writ completions`, `WRIT_COMPLETE`,
-  the line for each shell), [install](operators/install.md) (the files written and removed),
-  the [security inventory](security.md#untrusted-inputs), the end-to-end coverage registry.
-
-Plan, each step leaving Writ working (`make ci`):
-1. This page and the decision.
-2. The dependency (`stack.md`, `cargo deny`), the engine under `WRIT_COMPLETE`, `writ
-   completions`, the hidden commands; each shell run for real in a test (`fish`, `zsh`,
-   `bash` in the test image), completing a command and a flag.
-3. The values: the reads with their deadline, the bounds and the cleaning, the silence;
-   tests against a daemon that is sealed, unreachable, unpinned, slow past the deadline and
-   answering hostile names; the security inventory's row.
-4. The installer and the uninstaller.
-5. The docs left; the end-to-end scenario (`writ completions` and a TAB in each shell against
-   Forgejo, a lease id among the values), the coverage and configuration registries' rows.
-
-Acceptance:
-- [ ] In fish, zsh and bash, a TAB completes a subcommand, a flag, an enum value and a path;
-      a hidden command is never offered.
-- [ ] With the daemon running, `writ sign <TAB>` offers exactly the waiting tickets, `writ
-      revoke <TAB>` the running leases, `writ admin template show <TAB>` the templates; each
-      ticket's description holds no agent text.
-- [ ] With the daemon sealed, unreachable, unpinned or past the deadline (held at 1 s and
-      answering just before it), a TAB returns within the deadline with no value and nothing
-      written to the terminal; static completion still works.
-- [ ] A daemon reply past its bounds, or with hidden characters in a name, offers nothing
-      past the bound and no hidden character.
-- [ ] `make install` writes each installed shell's file, `make uninstall` leaves none.
-- [ ] `make e2e`: `writ completions` for each shell and a TAB in each against Forgejo; the
-      command and `WRIT_COMPLETE` in their registries (rules 18, 19).
+**Done.** Moved to [history/m7.9.9-shell-completion.md](history/m7.9.9-shell-completion.md):
+`writ` completing in bash, zsh and fish, the daemon's values read live with the reader key,
+silent when it can't answer, no agent text in the menu; `writ completions`, written and taken
+back by the installer; released as 0.3.0.
 
 ## M8 — Detached deployment
 

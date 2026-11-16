@@ -11,6 +11,20 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-16
+
+Shell completion
+([M7.9.9](docs/history/m7.9.9-shell-completion.md)).
+
+### Upgrading
+
+- **State version 13, policy format 2**, as in 0.2.0: nothing migrates, and no `writ migrate`
+  is owed.
+- **No message changed**: a `writ` 0.2.0 and a `writd` 0.3.0 still talk, and `writ` says the
+  versions differ. Install both together anyway.
+- **Run `make install`.** It also writes shell completion for each shell that names a
+  completion directory, and says the line to add for one that doesn't.
+
 ### Added
 
 - Shell completion for `writ` in bash, zsh and fish: commands, flags, and the daemon's values
@@ -20,6 +34,10 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 - `make install` sets shell completion up for each shell that names a completion directory,
   and says the line to add for one that doesn't. An upgrade writes the files again, and
   `make uninstall` removes them ([install](docs/operators/install.md)).
+
+### Changed
+
+- `writ prompt`, the installer's, no longer shows in `writ --help` or completion.
 
 ## 0.2.0 — 2026-11-16
 
