@@ -9,8 +9,6 @@ publish.workspace = true
 # OpenSSH) and no external service. Nothing depends on this crate.
 
 [dependencies]
-# The benchmark's switchable allocator (tests/alloc_bench.rs, M5.7).
-writ-alloc = { workspace = true, features = ["testing"] }
 writ-approval = { workspace = true, features = ["testing"] }
 writ-core.workspace = true
 writ-crypto.workspace = true
@@ -38,6 +36,8 @@ tokio-rustls.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+# The benchmark's switchable allocator (tests/alloc_bench.rs, M5.7).
+writ-alloc = { workspace = true, features = ["testing"] }
 # Paused time: a deadline is tested without waiting for it.
 tokio = { workspace = true, features = ["test-util"] }
 # The recovery key read as the operator's `age` would (tests/key_rotation.rs): what an old

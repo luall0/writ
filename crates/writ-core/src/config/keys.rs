@@ -88,20 +88,28 @@ macro_rules! names {
 
 names!(
     /// What a key is for.
-    KeyUse, "a key use", [Signing = "signing", Upstream = "upstream"]
+    KeyUse,
+    "a key use",
+    [Signing = "signing", Upstream = "upstream"]
 );
 names!(
     /// What an upstream credential is: an SSH key (`ssh://`) or a token (`https://`).
-    UpstreamKind, "an upstream credential kind", [Ssh = "ssh", Token = "token"]
+    UpstreamKind,
+    "an upstream credential kind",
+    [Ssh = "ssh", Token = "token"]
 );
 names!(
     /// The format a signing key signs commits in (git's `gpg.format`).
-    KeyFormat, "a signature format (x509 is not supported)", [Ssh = "ssh", Openpgp = "openpgp"]
+    KeyFormat,
+    "a signature format (x509 is not supported)",
+    [Ssh = "ssh", Openpgp = "openpgp"]
 );
 names!(
     /// A key's algorithm. RSA keys are 3072 or 4096 bits: 2048 is about 112-bit security,
     /// deprecated after 2030.
-    KeyAlgorithm, "a key algorithm (RSA keys are 3072 or 4096 bits)", [
+    KeyAlgorithm,
+    "a key algorithm (RSA keys are 3072 or 4096 bits)",
+    [
         Ed25519 = "ed25519",
         P256 = "p256",
         P384 = "p384",
@@ -111,11 +119,9 @@ names!(
 );
 names!(
     /// The hash a signing key's signatures are made with (nothing under SHA-256).
-    HashName, "a hash (nothing under SHA-256 is offered)", [
-        Sha256 = "sha256",
-        Sha384 = "sha384",
-        Sha512 = "sha512",
-    ]
+    HashName,
+    "a hash (nothing under SHA-256 is offered)",
+    [Sha256 = "sha256", Sha384 = "sha384", Sha512 = "sha512",]
 );
 
 /// Where a key lives: a backend the daemon has (`software`, its memory; hardware ones

@@ -240,9 +240,9 @@ either tool moves its pin too, in the same commit, or CI fails on the version ch
 4. **Run it** where CI runs it, an x86_64 Linux with cargo, from the repository:
 
    ```sh
-   docker run --rm --platform linux/amd64 -v "$PWD/tool:/tool:ro" rust:1.99.1-slim-trixie \
+   docker run --rm --platform linux/amd64 -v "$PWD/tool:/tool:ro" rust:1.100.0-slim-trixie \
      sh -c 'apt-get update -qq && apt-get install -yqq curl >/dev/null && sh /tool/ci-tools.sh'
-   docker image rm --force --platform linux/amd64 rust:1.99.1-slim-trixie   # only that variant
+   docker image rm --force --platform linux/amd64 rust:1.100.0-slim-trixie   # only that variant
    ```
 
    It prints both tools' versions, the new one included. A wrong pin stops it before

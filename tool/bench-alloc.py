@@ -152,7 +152,7 @@ def linux(args: argparse.Namespace) -> None:
     subprocess.run(
         ["docker", "run", "--rm", "-v", f"{ROOT}:/src", "-v", "writ-bench-target:/src/target",
          "-v", "writ-bench-cargo:/usr/local/cargo/registry", "-v", f"{results}:/results",
-         "-w", "/src", "-e", "RUSTUP_TOOLCHAIN=1.99.1", "-e", "CARGO_TERM_COLOR=never",
+         "-w", "/src", "-e", "RUSTUP_TOOLCHAIN=1.100.0", "-e", "CARGO_TERM_COLOR=never",
          image, "sh", "-c", setup + " ".join(inner)],
         check=True,
     )

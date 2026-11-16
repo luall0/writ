@@ -22,12 +22,12 @@
 # minimal, read-only, compose) builds on it. Base images are pinned by digest (multi-arch
 # indexes: the same pin on arm64 and amd64); every cargo build is --locked.
 
-ARG RUST_IMAGE=rust:1.99.1-slim-trixie@sha256:b8e062b1c3a80183df83d9ba187cadd2b5ab84bc78d453dbfeb2fccd5f982247
-ARG DEBIAN_IMAGE=debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+ARG RUST_IMAGE=rust:1.100.0-slim-trixie@sha256:e9d95b74296f7126a83ae3d041aeaba1ff4c478f13abc5cc034fcf7c131c3d4a
+ARG DEBIAN_IMAGE=debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 # The apt packages, pinned too: every stage installs from Debian's archive as it was on this
 # date (snapshot.debian.org), never from whatever the mirrors hold the day the image builds.
 # Moved with the base images (docs/guides/dependency-upgrades.md).
-ARG DEBIAN_SNAPSHOT=20261101T000000Z
+ARG DEBIAN_SNAPSHOT=20261115T000000Z
 
 FROM ${RUST_IMAGE} AS build
 ARG DEBIAN_SNAPSHOT
@@ -37,7 +37,7 @@ RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuit
     && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99writ-snapshot
 # The toolchain the image ships (the one rust-toolchain.toml pins), without its extra
 # components: nothing is downloaded here.
-ENV RUSTUP_TOOLCHAIN=1.99.1 CARGO_TERM_COLOR=never
+ENV RUSTUP_TOOLCHAIN=1.100.0 CARGO_TERM_COLOR=never
 # Python, for tool/target-cache.py: the target cache below keeps the last build only.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 \

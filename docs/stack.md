@@ -7,7 +7,7 @@ sends and does nothing else) and for the later approver apps.
 
 | Layer | Choice | Status |
 |---|---|---|
-| Language | Rust 1.99.1 (pinned), edition 2024, Cargo workspace | Decided |
+| Language | Rust 1.100.0 (pinned), edition 2024, Cargo workspace | Decided |
 | SSH server and client | `russh` 0.65 (0.65.2), `ring` backend, without `flate2` (no compression); the gateway lists its algorithms explicitly (mlkem768x25519 or curve25519 with strict kex, chacha20-poly1305 or aes256-gcm, Ed25519 and P-256 keys) | Decided (M0: certificate auth, TCP and Unix socket; algorithms M2.6) |
 | SSH keys, certificates, SSHSIG | `ssh-key` =0.7.0-rc.12 (the exact version russh 0.65.2 pins) | Decided (M0: SSHSIG both ways with OpenSSH, ed25519 and P-256) |
 | Git | Shell out to `git` (`upload-pack`, `receive-pack`, `index-pack`, `rev-list`); parse commit and tree objects an agent sends in Rust (`writ-git`, tested against the real `git`) | Decided |
@@ -50,7 +50,7 @@ Settle each "Proposed" row when the milestone that needs it starts, and change i
 |---|---|---|
 | `git` | 2.34 on agent hosts (M0 ran 2.54); 2.45 on the daemon host (`mirrors.git`, an absolute path), 2.47 with an `https://` upstream, checked at startup; 2.47 for the integration tests | SSH commit signing (`gpg.format = ssh`); the daemon's mirrors: reftable (2.45), `fetch --porcelain` (2.41); HTTPS upstreams: a SOCKS proxy on a Unix socket in `http.proxy` (2.47 keeps its path) |
 | OpenSSH (`ssh`, `ssh-keygen`) | 8.9 (M0 ran 10.5) | `-Y sign/verify`, certificates; the daemon's ssh to upstream (`mirrors.ssh`) |
-| Docker + compose | recent | Detached mode (M8); `make e2e` ([end-to-end](end-to-end.md)): its images and Forgejo `13.0.5` are pinned by digest in `e2e/Dockerfile` (`rust:1.99.1-slim-trixie`, `debian:trixie-slim`: git 2.47, OpenSSH 10.0) and `e2e/compose.yaml` (`codeberg.org/forgejo/forgejo:13.0.5`) |
+| Docker + compose | recent | Detached mode (M8); `make e2e` ([end-to-end](end-to-end.md)): its images and Forgejo `13.0.5` are pinned by digest in `e2e/Dockerfile` (`rust:1.100.0-slim-trixie`, `debian:trixie-slim`: git 2.47, OpenSSH 10.0) and `e2e/compose.yaml` (`codeberg.org/forgejo/forgejo:13.0.5`) |
 | Secretive | any | v1 approver key (Mac) |
 
 Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versions).
@@ -58,7 +58,7 @@ Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versi
 ## Version pinning
 
 - Rust toolchain from **rustup**, pinned to an exact version by `rust-toolchain.toml`
-  (`1.99.1` with `rustfmt` and `clippy`); moving it is a change of its own.
+  (`1.100.0` with `rustfmt` and `clippy`); moving it is a change of its own.
 - Every build is `--locked`: what is built is `Cargo.lock`, never a fresh resolution.
 - `cargo-deny` 0.21.0 (`make check`, `deny.toml`): RustSec advisories and yanked crates
   refused (two compile-time-only ones accepted, each with its reason), crates.io as the only

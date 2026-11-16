@@ -50,7 +50,7 @@ under it is refused naming it. A run takes about as long as its longest other sc
 | `runner` | `runner`: the scenarios' test binary and the Docker client | the scenarios, driving the others through the Docker socket and Forgejo's API | started by `make e2e` |
 
 - **The images** are built from the repository by `e2e/Dockerfile`: a builder stage on the
-  pinned Rust image (`rust:1.99.1-slim-trixie`, the toolchain `rust-toolchain.toml` pins)
+  pinned Rust image (`rust:1.100.0-slim-trixie`, the toolchain `rust-toolchain.toml` pins)
   builds the binaries as they ship (`-p writd -p writ-cli -p writ-sign --locked`, debug
   builds, without the development keystore: the daemon runs on the sealed keystore, as an
   operator's does) and the scenarios' test binary, then each target copies what its host

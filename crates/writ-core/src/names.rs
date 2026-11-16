@@ -70,52 +70,74 @@ macro_rules! string_newtype {
 
 string_newtype!(
     /// A repo in the registry: a plain name (`omega-code`), never a path.
-    RepoName, "repo name", validate_plain_name
+    RepoName,
+    "repo name",
+    validate_plain_name
 );
 string_newtype!(
     /// A template name.
-    TemplateName, "template name", validate_plain_name
+    TemplateName,
+    "template name",
+    validate_plain_name
 );
 string_newtype!(
     /// The id of a key or credential held by the signer (`agent-ed25519-01`).
-    KeyId, "key id", validate_plain_name
+    KeyId,
+    "key id",
+    validate_plain_name
 );
 string_newtype!(
     /// A proxy of the policy (`proxies.<name>`), named by the repos reached through it.
-    ProxyName, "proxy name", validate_plain_name
+    ProxyName,
+    "proxy name",
+    validate_plain_name
 );
 string_newtype!(
     /// A committer email, compared exactly (case included).
-    Email, "email", validate_email
+    Email,
+    "email",
+    validate_email
 );
 string_newtype!(
     /// The name commits under a template must carry as author and committer
     /// (`committer_name`), compared exactly: what git writes, so no character git would strip
     /// or refuse, and nothing hidden.
-    CommitterName, "committer name", validate_committer_name
+    CommitterName,
+    "committer name",
+    validate_committer_name
 );
 string_newtype!(
     /// An OpenPGP user id a key is certified with: `Name <local@domain>` (or `<local@domain>`
     /// alone), printable ASCII, the address an [`Email`].
-    Uid, "OpenPGP user id", validate_uid
+    Uid,
+    "OpenPGP user id",
+    validate_uid
 );
 string_newtype!(
     /// A ticket id, which is also the id of the lease it becomes: `wrt_` + a ULID.
-    TicketId, "ticket id", validate_ticket_id
+    TicketId,
+    "ticket id",
+    validate_ticket_id
 );
 string_newtype!(
     /// A git object id: lowercase hex, 40 (SHA-1) or 64 (SHA-256) characters.
-    CommitId, "commit id", validate_commit_id
+    CommitId,
+    "commit id",
+    validate_commit_id
 );
 string_newtype!(
     /// An SSH key fingerprint as OpenSSH prints it: `SHA256:` + 43 base64 characters.
-    KeyFingerprint, "key fingerprint", validate_fingerprint
+    KeyFingerprint,
+    "key fingerprint",
+    validate_fingerprint
 );
 string_newtype!(
     /// The SSHSIG namespace of a proof an agent signing key makes for a remote (`gitea`):
     /// never `git` (commit signatures, made only under a lease and recorded in the ledger)
     /// nor Writ's own (`writ-approval`, anything starting with `writ`).
-    ProofNamespace, "proof namespace", validate_proof_namespace
+    ProofNamespace,
+    "proof namespace",
+    validate_proof_namespace
 );
 
 /// `[A-Za-z0-9._-]`, 1 to 100 characters, not starting with `.` or `-`, not ending in `.git`.
