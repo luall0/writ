@@ -76,6 +76,11 @@ pub enum Operation {
     Push,
 }
 
+impl Operation {
+    /// Every operation, in the order a ticket lists them.
+    pub const ALL: [Operation; 3] = [Self::Fetch, Self::CommitSign, Self::Push];
+}
+
 impl std::fmt::Display for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -91,7 +96,7 @@ impl std::str::FromStr for Operation {
 
     /// The names of [`Operation`]'s `Display` (and of the ticket's YAML).
     fn from_str(text: &str) -> Result<Self, String> {
-        [Self::Fetch, Self::CommitSign, Self::Push]
+        Self::ALL
             .into_iter()
             .find(|op| op.to_string() == text)
             .ok_or_else(|| format!("unknown operation {text:?} (fetch, commit_sign, push)"))

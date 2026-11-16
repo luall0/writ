@@ -84,12 +84,23 @@ it up by hand, add one line for your shell:
 | zsh | `source <(writ completions zsh)` | `~/.zshrc`, after `compinit` |
 | fish | `writ completions fish \| source` | `~/.config/fish/config.fish` |
 
-The values come from the daemon, read with your reader key:
+Some values are always the same, and complete without the daemon:
+
+- `writ admin show` and `apply`: `policy`, `approvers` or `readers`.
+- `writ mark`: the phases.
+- `writ init --agents`: the agents, one more after each comma, or `none`.
+- `writ sign --drop-op`: the operations, alone or after the repo and a colon (`web:push`; in
+  fish and zsh, as bash splits a word at the colon).
+
+The others come from the daemon, read with your reader key:
 
 - `writ sign`, `refuse` and `wait`: the tickets waiting for you.
-- `writ revoke`, `report` and `close`: the leases running.
-- `writ admin <noun> show`, `edit`, `set`, `remove`, and `writ policy`: the names in the policy
-  in force. After `set` or `add`, the fields, as `field=`.
+- `writ revoke`, `report`, `close`, `wait --lease` and `init --lease`: the leases running.
+- `writ admin <noun> show`, `edit`, `set`, `remove`, `writ policy`, `writ init` and
+  `writ sign --drop-repo`: the names in the policy in force. After `set` or `add`, the fields,
+  as `field=`.
+- `--backend` of `writ admin key rotate`, `tls rotate` and `ca rotate`: the key backends the
+  daemon has, as `writ admin key list` says them.
 
 Beside a ticket, fish and zsh show its state, its templates and how many repos it covers. They
 never show its title or anything else the agent wrote.

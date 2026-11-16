@@ -14,18 +14,23 @@
 //! `writ completions <shell>` prints the registration ([`registration`]) the installer writes
 //! into each shell's completion directory.
 
+use std::ffi::OsStr;
 use std::time::Duration;
 
 use clap::CommandFactory as _;
-use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
+use clap_complete::engine::{ArgValueCandidates, ArgValueCompleter, CompletionCandidate};
 use clap_complete::env::{Bash, EnvCompleter, Fish, Shells, Zsh};
+use writ_core::authority::AdminTarget;
 use writ_core::config::{PolicyConfig, Section};
 use writ_core::lease::State;
-use writ_proto::{Command, Listing};
+use writ_core::ticket::Operation;
+use writ_proto::{Command, KeysShown, Listing};
 
 use crate::Paths;
 use crate::cli::Cli;
 use crate::client::Approvals;
+use crate::skill::Agent;
+use crate::timings::Phase;
 
 /// The variable that asks `writ` for completions (clap's default is `COMPLETE`; every
 /// variable a binary reads is `WRIT_*`).
@@ -112,9 +117,14 @@ fn visible(cmd: &clap::Command, path: &[&str]) -> clap::Command {
     }
     for arg in cmd.get_arguments() {
         let mut arg = arg.clone();
-        if let Some(source) = source_of(path, arg.get_id().as_str()) {
-            arg = arg.add(ArgValueCandidates::new(move || values(source)));
-        }
+        arg = match source_of(path, arg.get_id().as_str()) {
+            // The typed text matters (`claude,` then another agent): each word offered whole.
+            Some(Source::Words(set)) => arg.add(ArgValueCompleter::new(move |typed: &OsStr| {
+                words(set, typed)
+            })),
+            Some(source) => arg.add(ArgValueCandidates::new(move || values(source))),
+            None => arg,
+        };
         out = out.arg(arg);
     }
     for group in cmd.get_groups() {
@@ -140,6 +150,23 @@ pub enum Source {
     /// The fields a section's entries take, as `field=`: the ones `set` can change, or every
     /// one `add` takes (`fixed`: a key's kind, use and algorithm included).
     Fields { section: Section, fixed: bool },
+    /// The key backends the daemon has (what `writ admin key list` says).
+    Backends,
+    /// A fixed set of words, from the list the argument's own parser reads.
+    Words(Words),
+}
+
+/// A fixed set of words an argument takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Words {
+    /// The files `writ admin show` and `apply` name: policy, approvers, readers.
+    AdminFiles,
+    /// The phases `writ mark` takes.
+    Phases,
+    /// The agents of `writ init --agents`: each after the ones typed and a comma, or `none`.
+    Agents,
+    /// The operations `writ sign --drop-op` drops: each alone or after `<repo>:`.
+    Operations,
 }
 
 /// The noun of `writ admin <noun>` and the section of the policy it names.
@@ -157,8 +184,17 @@ const NOUNS: &[(&str, Section)] = &[
 pub fn source_of(path: &[&str], arg: &str) -> Option<Source> {
     match (path, arg) {
         (["sign" | "refuse"], "id") | (["wait"], "id") => Some(Source::Waiting),
-        (["revoke" | "report"], "id") | (["wait" | "close"], "lease") => Some(Source::Running),
-        (["policy"], "repos") => Some(Source::Names(Section::Repos)),
+        (["revoke" | "report"], "id") | (["wait" | "close" | "init"], "lease") => {
+            Some(Source::Running)
+        }
+        (["policy"], "repos") | (["init"], "repo") | (["sign"], "drop_repos") => {
+            Some(Source::Names(Section::Repos))
+        }
+        (["admin", "show" | "apply"], "target") => Some(Source::Words(Words::AdminFiles)),
+        (["mark"], "phase") => Some(Source::Words(Words::Phases)),
+        (["init"], "agents") => Some(Source::Words(Words::Agents)),
+        (["sign"], "drop_ops") => Some(Source::Words(Words::Operations)),
+        (["admin", "key" | "tls" | "ca", "rotate"], "backend") => Some(Source::Backends),
         (["prove-key"], "key_id") | (["admin", "token"], "id") => {
             Some(Source::Names(Section::Keys))
         }
@@ -190,6 +226,10 @@ pub fn source_of(path: &[&str], arg: &str) -> Option<Source> {
 fn values(source: Source) -> Vec<CompletionCandidate> {
     let found = match source {
         Source::Fields { section, fixed } => fields(section, fixed),
+        Source::Words(set) => listed(set)
+            .into_iter()
+            .map(|(word, help)| (word, help.map(str::to_owned)))
+            .collect(),
         _ => read(source).unwrap_or_default(),
     };
     found
@@ -209,7 +249,7 @@ pub fn candidate(value: &str, help: Option<&str>) -> Option<CompletionCandidate>
             b.is_ascii_alphanumeric()
                 || matches!(
                     b,
-                    b'.' | b'_' | b'-' | b':' | b'@' | b'/' | b'+' | b'=' | b'[' | b']'
+                    b'.' | b'_' | b'-' | b':' | b'@' | b'/' | b'+' | b'=' | b'[' | b']' | b','
                 )
         });
     if !plain {
@@ -219,6 +259,69 @@ pub fn candidate(value: &str, help: Option<&str>) -> Option<CompletionCandidate>
         .map(|text| writ_core::text::strip(text, writ_core::text::Newlines::Drop, MAX_HELP))
         .filter(|text| !text.trim().is_empty());
     Some(CompletionCandidate::new(value.to_owned()).help(help.map(Into::into)))
+}
+
+/// The words of `set`, each with what it means, from the list its parser reads.
+fn listed(set: Words) -> Vec<(String, Option<&'static str>)> {
+    match set {
+        Words::AdminFiles => AdminTarget::ALL
+            .into_iter()
+            .map(|target| {
+                let help = match target {
+                    AdminTarget::Policy => "the repo registry and the templates",
+                    AdminTarget::Approvers => "who may sign",
+                    AdminTarget::Readers => "who may use the approval API",
+                };
+                (target.as_str().to_owned(), Some(help))
+            })
+            .collect(),
+        Words::Phases => Phase::ALL
+            .into_iter()
+            .map(|p| (p.as_str().to_owned(), None))
+            .collect(),
+        Words::Agents => Agent::ALL
+            .into_iter()
+            .map(|a| (a.name().to_owned(), Some(a.label())))
+            .chain([("none".to_owned(), Some("no skill installed"))])
+            .collect(),
+        Words::Operations => Operation::ALL
+            .into_iter()
+            .map(|op| (op.to_string(), None))
+            .collect(),
+    }
+}
+
+/// The words of `set` that complete what is typed: after the agents already typed and a
+/// comma (each agent once, `none` only alone), after `<repo>:` for an operation.
+fn words(set: Words, typed: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(typed) = typed.to_str() else {
+        return Vec::new();
+    };
+    let split = match set {
+        Words::Agents => typed
+            .rsplit_once(',')
+            .map(|(before, after)| (before, ',', after)),
+        Words::Operations => typed
+            .split_once(':')
+            .map(|(before, after)| (before, ':', after)),
+        Words::AdminFiles | Words::Phases => None,
+    };
+    let (head, tail) = match split {
+        Some((before, separator, after)) => (format!("{before}{separator}"), after),
+        None => (String::new(), typed),
+    };
+    let chosen: Vec<&str> = head.split(',').map(str::trim).collect();
+    listed(set)
+        .into_iter()
+        .filter(|(word, _)| word.starts_with(tail))
+        .filter(|(word, _)| {
+            set != Words::Agents
+                || head.is_empty()
+                || (word != "none" && !chosen.contains(&word.as_str()))
+        })
+        .filter_map(|(word, help)| candidate(&format!("{head}{word}"), help))
+        .take(MAX_VALUES)
+        .collect()
 }
 
 /// `field=` for each field a section's entries take: the fixed ones (which nothing changes)
@@ -271,7 +374,21 @@ async fn fetch(
             let (_, policy) = crate::approver::policy_in_force(session).await?;
             names(&policy, section)
         }
+        Source::Backends => {
+            let keys: KeysShown = session.call(&Command::AdminKeys, b"").await??;
+            keys.backends
+                .into_iter()
+                .map(|b| {
+                    let made = format!("makes {}", b.algorithms.join(", "));
+                    (b.name, Some(made))
+                })
+                .collect()
+        }
         Source::Fields { section, fixed } => fields(section, fixed),
+        Source::Words(set) => listed(set)
+            .into_iter()
+            .map(|(word, help)| (word, help.map(str::to_owned)))
+            .collect(),
     })
 }
 
@@ -360,6 +477,17 @@ mod tests {
             (&["report"], "id"),
             (&["close"], "lease"),
             (&["policy"], "repos"),
+            (&["init"], "repo"),
+            (&["init"], "lease"),
+            (&["init"], "agents"),
+            (&["sign"], "drop_repos"),
+            (&["sign"], "drop_ops"),
+            (&["mark"], "phase"),
+            (&["admin", "show"], "target"),
+            (&["admin", "apply"], "target"),
+            (&["admin", "key", "rotate"], "backend"),
+            (&["admin", "tls", "rotate"], "backend"),
+            (&["admin", "ca", "rotate"], "backend"),
             (&["prove-key"], "key_id"),
             (&["admin", "token"], "id"),
             (&["admin", "repo", "show"], "name"),
@@ -406,6 +534,92 @@ mod tests {
             assert!(source_of(path, arg).is_some(), "{path:?} {arg}");
         }
         assert!(attached >= expected.len(), "{attached}");
+    }
+
+    /// The words offered for `typed`, values only.
+    fn offered(set: Words, typed: &str) -> Vec<String> {
+        words(set, OsStr::new(typed))
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn each_word_offered_is_one_its_argument_s_parser_takes() {
+        // Read from the parsers' own lists: a word offered is never refused once typed, and
+        // every word they take is offered.
+        let files = offered(Words::AdminFiles, "");
+        assert_eq!(files, ["policy", "approvers", "readers"]);
+        for file in &files {
+            assert!(file.parse::<AdminTarget>().is_ok(), "{file}");
+        }
+        let phases = offered(Words::Phases, "");
+        assert_eq!(phases, ["coding", "checks", "ci"]);
+        for phase in &phases {
+            assert!(crate::cli::parse_phase(phase).is_ok(), "{phase}");
+        }
+        let agents = offered(Words::Agents, "");
+        assert_eq!(agents, ["claude", "agents", "opencode", "cursor", "none"]);
+        for agent in &agents {
+            assert!(crate::cli::parse_agents(agent).is_ok(), "{agent}");
+        }
+        let operations = offered(Words::Operations, "");
+        assert_eq!(operations, ["fetch", "commit_sign", "push"]);
+        for op in &operations {
+            assert!(op.parse::<Operation>().is_ok(), "{op}");
+        }
+        // What isn't one of them is offered nothing.
+        assert!(offered(Words::AdminFiles, "polic").contains(&"policy".to_owned()));
+        assert_eq!(
+            offered(Words::AdminFiles, "templates"),
+            Vec::<String>::new()
+        );
+        assert_eq!(offered(Words::Phases, "deploy"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_agent_follows_the_ones_typed_and_an_operation_its_repo() {
+        // Each agent once, after the ones typed; `none` only alone.
+        assert_eq!(
+            offered(Words::Agents, "claude,"),
+            ["claude,agents", "claude,opencode", "claude,cursor"]
+        );
+        assert_eq!(offered(Words::Agents, "claude,op"), ["claude,opencode"]);
+        assert_eq!(
+            offered(Words::Agents, "claude,cursor,"),
+            ["claude,cursor,agents", "claude,cursor,opencode"]
+        );
+        assert_eq!(offered(Words::Agents, "no"), ["none"]);
+        assert_eq!(offered(Words::Agents, "claude,no"), Vec::<String>::new());
+        for typed in offered(Words::Agents, "claude,cursor,") {
+            assert!(crate::cli::parse_agents(&typed).is_ok(), "{typed}");
+        }
+        // An operation alone, or after the repo typed.
+        assert_eq!(offered(Words::Operations, "web:p"), ["web:push"]);
+        assert_eq!(
+            offered(Words::Operations, "web:"),
+            ["web:fetch", "web:commit_sign", "web:push"]
+        );
+        assert_eq!(offered(Words::Operations, "co"), ["commit_sign"]);
+        // What was typed reaches the shell only as plain as any value: never a space, a
+        // quote or a control character back to it.
+        for hostile in ["a b,", "a'b,", "a$(x),", "a\u{1b}[2J,", "a\nb,"] {
+            assert_eq!(
+                offered(Words::Agents, hostile),
+                Vec::<String>::new(),
+                "{hostile}"
+            );
+        }
+        for hostile in ["a b:", "a;b:", "a\u{202e}:", "\u{0}:"] {
+            assert_eq!(
+                offered(Words::Operations, hostile),
+                Vec::<String>::new(),
+                "{hostile}"
+            );
+        }
+        // Not UTF-8: nothing.
+        use std::os::unix::ffi::OsStrExt as _;
+        assert!(words(Words::Agents, OsStr::from_bytes(b"\xff,")).is_empty());
     }
 
     #[test]

@@ -86,9 +86,18 @@ does). It answers from a copy of the clap tree with the commands hidden from `--
 out (`writ prompt`: clap would still offer one typed far enough to match it alone), each
 argument naming something the daemon holds given a source of values by its command's path
 (`complete::source_of`): the waiting tickets (`sign`, `refuse`, `wait`) and the running
-leases (`revoke`, `report`, `close`, `wait --lease`) from `writ ls`, the names of each section
-of the policy in force for `writ admin …` and `writ policy`, and the fields of `set` and `add`
-from `writ_core::config::edit::fields`. A read is the one its command already makes with the
+leases (`revoke`, `report`, `close`, `wait --lease`, `init --lease`) from `writ ls`, the names
+of each section of the policy in force for `writ admin …`, `writ policy`, `writ init` and
+`writ sign --drop-repo`, the key backends for `--backend` of `admin key|tls|ca rotate` (the
+read `writ admin key list` makes), and the fields of `set` and `add` from
+`writ_core::config::edit::fields`. A fixed set of words (`complete::Words`) needs no daemon:
+the files of `admin show|apply`, the phases of `mark`, the agents of `init --agents`, the
+operations of `sign --drop-op`, each read from the list its argument's parser reads
+(`AdminTarget::ALL`, `Phase::ALL`, `Agent::ALL`, `Operation::ALL`), so a word offered is one
+the parser takes. These see what is typed: an agent after the ones typed and a comma, an
+operation after `<repo>:` (fish and zsh: bash splits a word at `:`, as clap's registration
+leaves `COMP_WORDBREAKS` as it is), the typed part reaching the shell only as plain as any
+value. A read is the one its command already makes with the
 reader key, within one deadline (`complete::DEADLINE`, 1 s, from the connection to the last
 byte), on a runtime of its own dropped after it; no file is written and nothing is kept. The
 endpoints and files are the flags' variables or the defaults: a TAB has no parsed flags.

@@ -11,6 +11,15 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+### Added
+
+- Shell completion offers more values: the files of `writ admin show` and `apply` (policy,
+  approvers, readers), the phases of `writ mark`, the agents of `writ init --agents` (one more
+  after each comma), the operations of `writ sign --drop-op`, the repos of `writ init` and
+  `writ sign --drop-repo`, the running leases of `writ init --lease`, and the daemon's key
+  backends for `--backend` of `writ admin key rotate`, `tls rotate` and `ca rotate`
+  ([clients](docs/operators/clients.md#shell-completion)).
+
 ### Changed
 
 - `writ sign`, the approval popup and `writ policy` show a size limit in its unit (`50 MB`,

@@ -260,6 +260,28 @@ fn each_shell_completes_a_command_a_flag_an_enum_value_and_a_path_never_a_hidden
     assert_eq!(shells.offered("writ si"), ["sign"]);
     assert_eq!(shells.offered("writ sign --appr"), ["--approval-url"]);
     assert_eq!(shells.values("writ completions "), ["bash", "fish", "zsh"]);
+    // The fixed words an argument's parser takes, offered with no daemon.
+    for line in ["writ admin show ", "writ admin apply "] {
+        assert_eq!(
+            shells.values(line),
+            ["approvers", "policy", "readers"],
+            "{line}"
+        );
+    }
+    assert_eq!(shells.offered("writ admin show app"), ["approvers"]);
+    assert_eq!(shells.values("writ mark "), ["checks", "ci", "coding"]);
+    assert_eq!(
+        shells.values("writ init --agents "),
+        ["agents", "claude", "cursor", "none", "opencode"]
+    );
+    assert_eq!(
+        shells.offered("writ init --agents claude,"),
+        ["claude,agents", "claude,cursor", "claude,opencode"]
+    );
+    assert_eq!(
+        shells.values("writ sign --drop-op "),
+        ["commit_sign", "fetch", "push"]
+    );
     // A path, from the directory the shell completes in.
     let dir = shells.dir.path().join("files");
     fs::create_dir_all(&dir).unwrap();
@@ -328,6 +350,33 @@ fn values_come_live_from_the_daemon_and_a_ticket_is_described_by_its_facts() {
     assert_eq!(shells.values("writ admin template show "), ["feature"]);
     assert_eq!(shells.values("writ admin repo show "), ["demo"]);
     assert_eq!(shells.values("writ policy "), ["demo"]);
+    assert_eq!(shells.values("writ init "), ["demo"]);
+    assert_eq!(shells.values("writ sign --drop-repo "), ["demo"]);
+    assert_eq!(
+        shells.values("writ init --lease "),
+        std::slice::from_ref(&lease)
+    );
+    // The key backends the daemon has, the ones `writ admin key list` says (`software`
+    // everywhere, the Secure Enclave's too on a Mac).
+    let list = daemon.run(&["admin", "key", "list"], "");
+    assert_eq!(list.status.code(), Some(0), "{}", stderr(&list));
+    let said = stderr(&list);
+    let mut backends: Vec<String> = said
+        .lines()
+        .find_map(|l| l.strip_prefix("backends: "))
+        .unwrap_or_else(|| panic!("no backends in {said}"))
+        .split("; ")
+        .map(|b| b.split(' ').next().unwrap().to_owned())
+        .collect();
+    backends.sort();
+    assert!(backends.contains(&"software".to_owned()), "{backends:?}");
+    for line in [
+        "writ admin key rotate agent-01 --backend ",
+        "writ admin tls rotate --backend ",
+        "writ admin ca rotate --backend ",
+    ] {
+        assert_eq!(shells.values(line), backends, "{line}");
+    }
     assert_eq!(
         shells.values("writ admin key show "),
         ["agent-01", "upstream-01"]
