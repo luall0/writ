@@ -224,7 +224,7 @@ either tool moves its pin too, in the same commit, or CI fails on the version ch
    empty folder (never run):
 
    ```sh
-   v=0.9.151 repo=nextest-rs/nextest tag=cargo-nextest-$v asset=cargo-nextest-$v-x86_64-unknown-linux-gnu
+   v=0.9.152 repo=nextest-rs/nextest tag=cargo-nextest-$v asset=cargo-nextest-$v-x86_64-unknown-linux-gnu
    # cargo-deny: v=0.20.2 repo=EmbarkStudios/cargo-deny tag=$v asset=cargo-deny-$v-x86_64-unknown-linux-musl
    curl -fsSL "https://api.github.com/repos/$repo/releases/tags/$tag" \
      | python3 -I -c 'import json,sys; [print(a["digest"]) for a in json.load(sys.stdin)["assets"] if a["name"] == sys.argv[1]]' "$asset.tar.gz"

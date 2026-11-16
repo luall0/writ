@@ -1,6 +1,6 @@
 # cargo-nextest, the runner of `make test` (docs/testing.md#how-make-test-runs).
 # The pinned version (docs/stack.md): an older one refuses to run.
-nextest-version = { required = "0.9.151" }
+nextest-version = { required = "0.9.152" }
 
 [profile.default]
 # Never retried: a test that passes on a second try passes by luck (docs/testing.md#hardened-tests).

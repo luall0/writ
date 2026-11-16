@@ -8,8 +8,8 @@ set -eu
 
 DENY_VERSION=0.20.2
 DENY_SHA256=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
-NEXTEST_VERSION=0.9.151
-NEXTEST_SHA256=1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+NEXTEST_VERSION=0.9.152
+NEXTEST_SHA256=d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a
 
 if [ "$(uname -sm)" != "Linux x86_64" ]; then
     echo "ci-tools: these pins are for x86_64 Linux (the CI runner), not $(uname -sm)" >&2

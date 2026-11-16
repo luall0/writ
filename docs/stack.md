@@ -65,9 +65,9 @@ Versions used in M0 are in its [history page](history/m0-protocol-spike.md#versi
   source, a license allow-list, banned crates (`openssl`, `native-tls`, `rsa`, `log`
   bridges). Installed with `cargo install --locked cargo-deny --version 0.20.2`; CI uses its
   release binary, checked against the SHA-256 pinned in `tool/ci-tools.sh`.
-- `cargo-nextest` 0.9.151 (`make test`, `.config/nextest.toml`, which requires that version):
+- `cargo-nextest` 0.9.152 (`make test`, `.config/nextest.toml`, which requires that version):
   the test runner ([how `make test` runs](testing.md#how-make-test-runs)). Installed with
-  `cargo install --locked cargo-nextest --version 0.9.151`; CI uses its release binary,
+  `cargo install --locked cargo-nextest --version 0.9.152`; CI uses its release binary,
   checked against the SHA-256 pinned in `tool/ci-tools.sh`.
 - Release builds keep overflow checks (`[profile.release] overflow-checks = true`).
 - Debug builds (and tests) keep line tables only (`[profile.dev] debug = "line-tables-only"`).
