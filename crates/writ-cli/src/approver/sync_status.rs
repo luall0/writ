@@ -13,7 +13,7 @@ use writ_proto::{
 
 use super::connect;
 use crate::client::Approvals;
-use crate::display::{WIDTH, clean, one_row, rows_after};
+use crate::display::{WIDTH, about_bytes as bytes, clean, one_row, rows_after};
 use crate::{Exit, Paths};
 
 /// How often `writ admin repo check` asks the sync status while it runs.
@@ -191,31 +191,6 @@ fn span(seconds: u64) -> String {
     }
 }
 
-/// A size to read: `512 bytes`, `4.0 KiB`, `412 MiB`, `1.2 GiB`.
-fn bytes(n: u64) -> String {
-    if n < 1024 {
-        return format!("{n} bytes");
-    }
-    // The largest unit the size reaches, in tenths of it, rounded (integers only: a u64 in
-    // tenths fits a u128).
-    let (unit, size) = [
-        ("KiB", 1u128 << 10),
-        ("MiB", 1 << 20),
-        ("GiB", 1 << 30),
-        ("TiB", 1 << 40),
-    ]
-    .into_iter()
-    .take_while(|(_, size)| u128::from(n) >= *size)
-    .last()
-    .unwrap_or(("KiB", 1 << 10));
-    let tenths = (u128::from(n) * 10 + size / 2) / size;
-    if tenths < 100 {
-        format!("{}.{} {unit}", tenths / 10, tenths % 10)
-    } else {
-        format!("{} {unit}", (tenths + 5) / 10)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,7 +344,7 @@ mod tests {
             (412 << 20, "412 MiB"),
             (1 << 30, "1.0 GiB"),
             (64 << 30, "64 GiB"),
-            (u64::MAX, "16777216 TiB"),
+            (u64::MAX, "16 EiB"),
         ] {
             assert_eq!(bytes(n), said, "{n}");
         }

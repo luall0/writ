@@ -294,7 +294,7 @@ fn template_rows(template: &TemplateView) -> String {
     row(
         &mut out,
         "max push size",
-        template.max_push_size.to_string(),
+        display::size(template.max_push_size),
     );
     let paths = match template.paths_check {
         PathsCheck::Off => "not checked",
@@ -383,7 +383,7 @@ mod tests {
             "committer name      Writ agent (every commit, as author and committer",
             "force push          never",
             "max ttl             4h",
-            "max push size       50000000 bytes",
+            "max push size       50 MB",
             "expected_paths      required; files outside them are refused",
             "session             required: the agent runs under `writ run`",
             "renewals            at most 2 per lease",

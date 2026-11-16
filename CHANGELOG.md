@@ -11,6 +11,12 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+### Changed
+
+- `writ sign`, the approval popup and `writ policy` show a size limit in its unit (`50 MB`,
+  `1 GiB`) instead of in bytes; a size that isn't a whole number of a unit shows its exact
+  bytes beside it (`1.5 KiB (1500 bytes)`), so a limit never reads rounded.
+
 ## 0.3.0 — 2026-11-16
 
 Shell completion

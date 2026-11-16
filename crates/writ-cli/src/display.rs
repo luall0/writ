@@ -34,7 +34,7 @@ use writ_core::names::RepoName;
 use writ_core::ticket::{
     Common, Limits, OnViolation, RepoLimits, RepoTerms, Subject, Ticket, TicketText,
 };
-use writ_core::units::Timestamp;
+use writ_core::units::{ByteSize, Timestamp};
 
 /// The gutter in front of every line of agent-written text.
 pub const GUTTER: &str = "│ ";
@@ -466,7 +466,61 @@ pub fn repo_field(terms: &RepoTerms, field: RepoField) -> String {
         RepoField::ExpectedPaths => quoted(expected_paths.iter().map(|p| p.as_str())),
         RepoField::MaxSignatures => max_signatures.to_string(),
         RepoField::MaxPushes => max_pushes.to_string(),
-        RepoField::MaxPushSize => max_push_size.to_string(),
+        RepoField::MaxPushSize => size(*max_push_size),
+    }
+}
+
+/// A size limit as people read it, never rounded: in the largest unit it is a whole number of
+/// (`50 MB`, `1 GiB`), in bytes under 1 KiB, else about it with its exact bytes
+/// (`1.5 KiB (1500 bytes)`). An approver signs what they read: a limit shown rounded would not
+/// be it.
+pub fn size(size: ByteSize) -> String {
+    let n = size.bytes();
+    let units: [(u64, &str); 8] = [
+        (1 << 40, "TiB"),
+        (1_000_000_000_000, "TB"),
+        (1 << 30, "GiB"),
+        (1_000_000_000, "GB"),
+        (1 << 20, "MiB"),
+        (1_000_000, "MB"),
+        (1 << 10, "KiB"),
+        (1_000, "KB"),
+    ];
+    let whole = units
+        .into_iter()
+        .find(|(factor, _)| n != 0 && n.is_multiple_of(*factor));
+    match whole {
+        Some((factor, unit)) => format!("{} {unit}", n.checked_div(factor).unwrap_or(0)),
+        None if n == 1 => "1 byte".to_owned(),
+        None if n < 1 << 10 => format!("{n} bytes"),
+        None => format!("{} ({n} bytes)", about_bytes(n)),
+    }
+}
+
+/// A size to read, rounded: `512 bytes`, `4.0 KiB`, `412 MiB`, `1.2 GiB`.
+pub fn about_bytes(n: u64) -> String {
+    if n < 1024 {
+        return format!("{n} bytes");
+    }
+    // The largest unit the size reaches, in tenths of it, rounded (integers only: a u64 in
+    // tenths fits a u128).
+    let (unit, size) = [
+        ("KiB", 1u128 << 10),
+        ("MiB", 1 << 20),
+        ("GiB", 1 << 30),
+        ("TiB", 1 << 40),
+        ("PiB", 1 << 50),
+        ("EiB", 1 << 60),
+    ]
+    .into_iter()
+    .take_while(|(_, size)| u128::from(n) >= *size)
+    .last()
+    .unwrap_or(("KiB", 1 << 10));
+    let tenths = (u128::from(n) * 10 + size / 2) / size;
+    if tenths < 100 {
+        format!("{}.{} {unit}", tenths / 10, tenths % 10)
+    } else {
+        format!("{} {unit}", (tenths + 5) / 10)
     }
 }
 
@@ -1568,6 +1622,39 @@ mod tests {
     use writ_core::text::is_hidden_char;
 
     #[test]
+    fn a_size_limit_reads_as_people_say_it_and_is_never_rounded() {
+        for (bytes, said) in [
+            (0, "0 bytes"),
+            (1, "1 byte"),
+            (999, "999 bytes"),
+            (1_000, "1 KB"),
+            (1_001, "1001 bytes"),
+            (1_023, "1023 bytes"),
+            (1_024, "1 KiB"),
+            (1_025, "1.0 KiB (1025 bytes)"),
+            (1_500, "1.5 KiB (1500 bytes)"),
+            (10_000_000, "10 MB"),
+            (50_000_000, "50 MB"),
+            (50 << 20, "50 MiB"),
+            ((50 << 20) + 1, "50 MiB (52428801 bytes)"),
+            (1 << 30, "1 GiB"),
+            (2_000_000_000, "2 GB"),
+            (1 << 40, "1 TiB"),
+            (3_000_000_000_000, "3 TB"),
+            (u64::MAX, "16 EiB (18446744073709551615 bytes)"),
+        ] {
+            assert_eq!(size(ByteSize::from_bytes(bytes)), said, "{bytes}");
+        }
+        // Not a whole unit: the exact bytes always beside the rounded value, so two limits
+        // that differ never read the same.
+        assert_ne!(
+            size(ByteSize::from_bytes(1_048_577)),
+            size(ByteSize::from_bytes(1 << 20))
+        );
+        assert!(size(ByteSize::from_bytes(1_048_577)).ends_with("(1048577 bytes)"));
+    }
+
+    #[test]
     fn hidden_characters_are_shown_escaped() {
         assert_eq!(clean("plain text, é ü 日本"), "plain text, é ü 日本");
         assert_eq!(clean("a\x1b[2Jb"), "a\\u{1b}[2Jb");
@@ -2070,7 +2157,7 @@ mod tests {
             // note: no term ever takes a second row.
             assert_eq!(summary.len(), 15, "{summary:#?}");
             assert!(
-                summary.contains(&"  max push size      18446744073709551615 bytes"),
+                summary.contains(&"  max push size      16 EiB (18446744073709551615 bytes)"),
                 "{summary:#?}"
             );
             assert!(
