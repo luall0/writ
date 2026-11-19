@@ -16,6 +16,8 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 - The approval popup kept saying it couldn't reach the daemon after it reached it again:
   `writ sign --ui` now says so (a new `reached` event), and the message goes
   ([clients](docs/architecture/clients.md#the-approval-popup-m78)).
+- In the approval popup, a scroll pushed past the end of a path tree you clicked into moved
+  the whole window. The window now holds still until the pointer leaves the tree.
 
 ## 0.3.1 — 2026-11-16
 

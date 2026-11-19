@@ -167,7 +167,8 @@ times, `--no-wait`):
       folds the other, its changes captioned with the repository.
 - [ ] A ticket with many paths (a hundred, some long) and a long plan: the wheel over the
       paths scrolls the window, the paths saying there is more below; clicked, they scroll
-      inside themselves (an accent border) until the pointer leaves, every path whole; the
+      inside themselves (an accent border) until the pointer leaves, the window holding still
+      even when the wheel is pushed past their first or last path, every path whole; the
       plan scrolls in its pane; Sign stays in sight. The tiles of each strip fill their rows,
       none alone on one, all as tall as each other.
 

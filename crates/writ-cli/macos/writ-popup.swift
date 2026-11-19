@@ -1282,7 +1282,8 @@ struct PathsCard: View {
 /// A box that scrolls only once clicked, so the wheel over it keeps scrolling the page: macOS
 /// gives a nested scroll view every wheel event under the pointer. Past `height`, a fade and a
 /// label say there is more to read and how to reach it; clicked, it takes the wheel (an accent
-/// border shows it) until the pointer leaves.
+/// border shows it) until the pointer leaves, and the page holds still meanwhile
+/// ([`BoxScrolling`]): a scroll pushed past the box's end goes nowhere, never to the page.
 struct ClickToScroll<Content: View>: View {
     let height: CGFloat
     let fade: Color
@@ -1302,8 +1303,11 @@ struct ClickToScroll<Content: View>: View {
         ScrollView {
             content
         }
-        .scrollDisabled(!active)
+        // Set, not combined: the page disables its own scrolling while this one is active,
+        // and that is inherited by the views inside it.
+        .environment(\.isScrollEnabled, active)
         .scrollIndicators(active ? .automatic : .never)
+        .preference(key: BoxScrolling.self, value: active)
         .frame(maxHeight: height)
         .onScrollGeometryChange(for: Place.self) { geometry in
             let visible = geometry.visibleRect
@@ -1518,6 +1522,20 @@ struct Centre: View {
             }
             .padding(20)
         }
+        // A box that took the wheel keeps it: the page holds still until the pointer leaves
+        // the box, so a scroll pushed past the box's end never moves the page instead.
+        .scrollDisabled(boxScrolling)
+        .onPreferenceChange(BoxScrolling.self) { [$boxScrolling] now in $boxScrolling.wrappedValue = now }
+    }
+
+    @State private var boxScrolling = false
+}
+
+/// Whether a `ClickToScroll` box inside holds the wheel (any of them).
+struct BoxScrolling: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
     }
 }
 
