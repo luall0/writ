@@ -139,6 +139,7 @@ They talk one JSON object per line each way, on `writ`'s stdout and stdin:
 | `failed` | `id` (or `null`), `message` | an answer that signed nothing, a ticket that couldn't be shown, a signature that failed (Touch ID cancelled: the ticket is shown again) |
 | `idle` | | nothing waits: the window goes |
 | `status` | `message` | the daemon lost or refused the watch: tried again after 1 s, then up to 30 s |
+| `reached` | | the daemon answered a watch again after a `status`: that message goes (`the_popup_is_told_when_the_daemon_is_reached_again`) |
 
 | From the app (`answer`) | |
 |---|---|

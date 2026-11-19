@@ -6,7 +6,7 @@
 //!
 //! The protocol is one JSON object per line each way. To the app (stdout), an [`Event`]: the
 //! ticket to show with the others waiting behind it, the others when they change, a ticket
-//! gone, what an answer did, nothing waiting. From the app (stdin), an [`Answer`] naming the
+//! gone, what an answer did, nothing waiting, the daemon lost and reached again. From the app (stdin), an [`Answer`] naming the
 //! ticket shown: `sign`, `refuse` (with feedback, which may be empty) or `skip` (its window
 //! closed: it stays waiting, and isn't shown again by this run). An answer that names another
 //! ticket, isn't one, or is longer than [`MAX_ANSWER`] signs nothing and is said. The end of
@@ -70,8 +70,11 @@ pub enum Event {
     },
     /// Nothing waits any more.
     Idle,
-    /// How the connection to the daemon goes (lost, reached again). Cleaned.
+    /// The connection to the daemon was lost or refused, and is tried again. Cleaned.
     Status { message: String },
+    /// The daemon answered a watch again after a [`Event::Status`]: what that said no longer
+    /// holds.
+    Reached,
 }
 
 /// What a ticket shown is.
@@ -228,6 +231,8 @@ struct Popup {
     skipped: BTreeSet<TicketId>,
     /// Whether the app was last told nothing waits.
     idle: bool,
+    /// Whether the app was told the daemon can't be reached, and not yet that it is again.
+    lost: bool,
 }
 
 impl Popup {
@@ -517,6 +522,10 @@ impl Popup {
                         match watched {
                             Ok(Ok(watched)) => {
                                 answered = true;
+                                if self.lost {
+                                    self.lost = false;
+                                    send(output, &Event::Reached)?;
+                                }
                                 since = Some(watched.cursor.clone());
                                 self.update(session, signer, watched.tickets, output).await?;
                             }
@@ -575,6 +584,7 @@ pub async fn run(paths: &Paths, url: &str, signer: &Signer) -> anyhow::Result<Ex
             backoff.as_secs()
         ));
         send(&mut output, &Event::Status { message })?;
+        popup.lost = true;
         // Answers while away sign nothing; the end of the input still ends this.
         let retry = tokio::time::sleep(backoff);
         tokio::pin!(retry);
@@ -725,6 +735,7 @@ mod tests {
         )
         .unwrap();
         send(&mut out, &Event::Idle).unwrap();
+        send(&mut out, &Event::Reached).unwrap();
         send(
             &mut out,
             &Event::Failed {
@@ -743,6 +754,7 @@ mod tests {
                 )
                 .as_str(),
                 r#"{"type":"idle"}"#,
+                r#"{"type":"reached"}"#,
                 r#"{"type":"failed","id":null,"message":"m"}"#,
             ]
         );

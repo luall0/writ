@@ -177,7 +177,8 @@ more and close the window with its close button: nothing is signed, `writ ls` st
 and the popup doesn't show it again (`writ sign` in a terminal still reaches it).
 
 **5. The daemon stopped and started again** (Ctrl-C in terminal 1, then `make run`): the popup
-says it can't reach the daemon, then picks up what waits once it is back. Quit it with Ctrl-C
+says it can't reach the daemon, then picks up what waits once it is back, and that message
+goes. Quit it with Ctrl-C
 in terminal 3.
 
 Run by the user to close M7.8 (2026-11-15, its acceptance items on

@@ -11,6 +11,12 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+### Fixed
+
+- The approval popup kept saying it couldn't reach the daemon after it reached it again:
+  `writ sign --ui` now says so (a new `reached` event), and the message goes
+  ([clients](docs/architecture/clients.md#the-approval-popup-m78)).
+
 ## 0.3.1 — 2026-11-16
 
 Fixes after 0.3.0: a size limit in its unit, more values for shell completion, fish

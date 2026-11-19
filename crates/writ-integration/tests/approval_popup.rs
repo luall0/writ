@@ -373,6 +373,37 @@ fn the_popup_signs_refuses_and_follows_what_waits_over_https() {
     the_popup_signs_refuses_and_follows_what_waits(Approvals::Https);
 }
 
+/// The daemon refusing the watch (sealed) is said, and so is its answering again (unsealed):
+/// the window's message that it can't be reached never outlives the loss.
+#[test]
+fn the_popup_is_told_when_the_daemon_is_reached_again() {
+    let daemon = Daemon::start_sealed(POLICY, Approvals::Ssh);
+    let popup = Popup::start(&daemon);
+    let lost = popup.expect("status");
+    let message = lost["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("the daemon can't be reached ("),
+        "{lost}"
+    );
+    assert!(message.contains("sealed"), "{lost}");
+
+    let out = daemon.unseal();
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Tried again until the daemon answers (each try said), then `reached`, once, before
+    // what the watch gave.
+    let mut event = popup.next();
+    while event["type"] == "status" {
+        event = popup.next();
+    }
+    assert_eq!(event["type"], "reached", "{event}");
+    popup.expect("idle");
+
+    // A ticket then shows with no second `reached`: it was said once.
+    let id = submit(&daemon, "after", &ticket("agent/a", "After", ""));
+    assert_eq!(popup.expect("show")["id"], id.as_str());
+    popup.close();
+}
+
 /// No narrowing in the popup: `writ sign --ui` with a narrowing flag, or a ticket named, is
 /// refused before it connects.
 #[test]

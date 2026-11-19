@@ -10,8 +10,8 @@
 // WRIT_APPROVAL_URL, WRIT_APPROVAL_KEY, WRIT_APPROVAL_AGENT).
 //
 // The protocol: one JSON object per line each way. From `writ`: {"type": "show" | "queue" |
-// "gone" | "done" | "failed" | "idle" | "status", …}. To `writ`: {"answer": "sign" | "refuse"
-// | "skip" | "pick", "id": …, "feedback": …}.
+// "gone" | "done" | "failed" | "idle" | "status" | "reached", …}. To `writ`: {"answer": "sign"
+// | "refuse" | "skip" | "pick", "id": …, "feedback": …}.
 
 import AppKit
 import SwiftUI
@@ -228,6 +228,8 @@ final class Model: ObservableObject {
     var onVisible: ((Bool) -> Void)?
     private var arming: Task<Void, Never>?
     private var clearing: Task<Void, Never>?
+    /// The last `status` banner: dropped when the daemon is reached again.
+    private var status: Banner?
 
     init(bridge: Bridge) {
         self.bridge = bridge
@@ -257,7 +259,14 @@ final class Model: ObservableObject {
             declining = false
             onVisible?(false)
         case "status":
-            say(Banner(kind: .info, text: event.message ?? ""))
+            let lost = Banner(kind: .info, text: event.message ?? "")
+            status = lost
+            say(lost)
+        case "reached":
+            // The daemon answers again: the message that said it couldn't goes (another
+            // shown since stays).
+            if let status, banner == status { banner = nil }
+            status = nil
         default: break
         }
     }
