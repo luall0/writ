@@ -11,6 +11,7 @@ version = 2
 ignore = [
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 (unmaintained): compile time only, inside age's i18n-embed-fl proc macro; no runtime code; no upgrade without leaving age" },
     { id = "RUSTSEC-2026-0374", reason = "basic-toml (unmaintained): compile time only, read by age's i18n-embed macros (i18n-config); no runtime code; no upgrade without leaving age" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono (unmaintained): a dependency of russh's russh-util on wasm32 only (cfg(target_arch = \"wasm32\")); never built for the Mac or Linux; no runtime code; goes when russh drops it" },
 ]
 yanked = "deny"
 
