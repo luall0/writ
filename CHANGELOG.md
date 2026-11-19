@@ -11,6 +11,20 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+## 0.3.2 — 2026-11-20
+
+Two fixes to the approval popup.
+
+### Upgrading
+
+- **State version 13, policy format 2**, as in 0.3.1: nothing migrates, and no `writ migrate`
+  is owed.
+- **No message between `writ` and `writd` changed**: a `writ` 0.3.1 and a `writd` 0.3.2 still
+  talk, and `writ` says the versions differ. Install both together anyway.
+- **Run `make install`.** It puts the new `writ` and `writ-popup` in place and starts the
+  popup again. The two go together: an older popup ignores the new `reached` event and keeps
+  the message it showed.
+
 ### Fixed
 
 - The approval popup kept saying it couldn't reach the daemon after it reached it again:
