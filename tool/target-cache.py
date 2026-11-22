@@ -15,6 +15,12 @@ files beside it. Two commands:
       directories can't be matched to a unit: for each crate the newest are kept, as many as
       the recorded units of that crate. Deleting any of these is safe: cargo rebuilds what is
       missing. Nothing is deleted without a record, nor outside the recorded profiles.
+
+Two layouts of cargo's build directory are read. Before Rust 1.100 a unit's hash ends its
+names (`deps/libwrit_core-<hash>.rlib`, `build/writ-core-<hash>/`, `.fingerprint/…-<hash>/`);
+from 1.100 (build-dir layout v2) each unit is one directory, `build/<package>/<hash>/`, with
+its `fingerprint/`, `out/` (rlibs, test and binary executables) and `run/` inside. A record
+that names no unit at all is refused: it means cargo moved its layout again.
 """
 
 import fcntl
@@ -33,7 +39,10 @@ RECORDS = ROOT / "target" / "writ-cache"
 # A unit's hash in an artifact's name: `libwrit_core-0391c38aea9412df.rlib`,
 # `writ_sign-4ab53e1a87b3a754.<cgu>.rcgu.o`, the directory `writ-core-0391c38aea9412df`.
 HASH = re.compile(r"-([0-9a-f]{16})(?=\.|$)")
+# Layout v2 (Rust 1.100): the unit's directory, build/<package>/<hash>/.
+UNIT_HASH = re.compile(r"[0-9a-f]{16}")
 UNIT_DIRS = ("deps", "build", ".fingerprint")
+LOCKS = (".cargo-lock", ".cargo-build-lock", ".cargo-artifact-lock")
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
@@ -45,23 +54,38 @@ def fail(message: str) -> None:
 def units_of(path: Path, crate: str) -> list[tuple[Path, str]]:
     """The profile directory and unit hash of an artifact cargo reported."""
     parts = path.parts
-    for i, part in enumerate(parts[:-1]):
-        if part in ("deps", "build"):
-            found = HASH.search(parts[i + 1])
-            return [(Path(*parts[:i]), found.group(1))] if found else []
-    # Uplifted (target/debug/writ-sign): a copy of deps/writ_sign-<hash> (a hard link on
-    # Linux, a copy on macOS), found by its content among that crate's binaries.
-    profile, deps = path.parent, path.parent / "deps"
+    # From the end: an OUT_DIR or a checkout path may hold a `build` of its own.
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i] not in ("deps", "build"):
+            continue
+        found = HASH.search(parts[i + 1])
+        if found:
+            return [(Path(*parts[:i]), found.group(1))]
+        if parts[i] == "build" and i + 2 < len(parts) and UNIT_HASH.fullmatch(parts[i + 2]):
+            return [(Path(*parts[:i]), parts[i + 2])]
+    profile = path.parent
     try:
-        size = path.stat().st_size
-        candidates = [e for e in os.scandir(deps)
-                      if re.fullmatch(re.escape(crate) + r"-[0-9a-f]{16}", e.name)
-                      and e.is_file(follow_symlinks=False)]
+        # Uplifted (target/debug/writ-sign) before 1.100: a copy of deps/writ_sign-<hash> (a
+        # hard link on Linux, a copy on macOS), found by its content.
+        if (profile / "deps").is_dir():
+            size = path.stat().st_size
+            name = re.compile(re.escape(crate) + r"-[0-9a-f]{16}")
+            twins = [(profile, e.name[-16:]) for e in os.scandir(profile / "deps")
+                     if name.fullmatch(e.name) and e.is_file(follow_symlinks=False)
+                     and e.stat(follow_symlinks=False).st_size == size
+                     and filecmp.cmp(path, e.path, shallow=False)]
+            if twins:
+                return twins
+        # From 1.100 a binary target keeps no hashed copy: cargo links it straight to its
+        # final path, and its unit is the directory whose fingerprint names it,
+        # build/<package>/<hash>/fingerprint/bin-<target>. Every link overwrites the final
+        # path, so with several such units the binary is the most recently built one's.
+        units = [(f.stat().st_mtime, f.parent.parent.name)
+                 for f in profile.glob(f"build/*/*/fingerprint/bin-{path.name}")
+                 if UNIT_HASH.fullmatch(f.parent.parent.name)]
+        return [(profile, max(units)[1])] if units else []
     except OSError:
         return []
-    return [(profile, e.name[-16:]) for e in candidates
-            if e.stat(follow_symlinks=False).st_size == size
-            and filecmp.cmp(path, e.path, shallow=False)]
 
 
 def record(name: str, args: list[str]) -> int:
@@ -100,6 +124,11 @@ def record(name: str, args: list[str]) -> int:
     status = process.wait()
     if status != 0:
         return status
+    if not units:
+        # Cargo reported artifacts and none had a unit: an unknown layout. Saving it would
+        # make every prune keep everything again, silently.
+        fail(f"{name}: no unit found in cargo's artifact paths (a new build-dir layout?); "
+             f"record not saved")
     RECORDS.mkdir(parents=True, exist_ok=True)
     temporary = RECORDS / f".{name}.json.tmp"
     temporary.write_text(json.dumps(
@@ -146,11 +175,16 @@ def prune() -> int:
     for profile_name, hashes in sorted(live.items()):
         profile = Path(profile_name)
         # Only a cargo profile directory, inside this repository's target directories.
-        if not (profile / ".fingerprint").is_dir() or ROOT not in profile.parents:
+        if (not ((profile / ".fingerprint").is_dir() or (profile / "build").is_dir())
+                or ROOT not in profile.parents):
             continue
-        with open(profile / ".cargo-lock", "a") as lock:
-            # Cargo's own build lock: never prune under a running build.
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        locks = []
+        try:
+            # Cargo's own build locks: never prune under a running build.
+            for name in LOCKS:
+                if (profile / name).exists() or name == ".cargo-lock":
+                    locks.append(open(profile / name, "a"))
+                    fcntl.flock(locks[-1], fcntl.LOCK_EX)
             count, freed = 0, 0
             for sub in UNIT_DIRS:
                 directory = profile / sub
@@ -158,9 +192,22 @@ def prune() -> int:
                     continue
                 for entry in os.scandir(directory):
                     found = HASH.search(entry.name)
-                    if found and found.group(1) not in hashes:
-                        freed += remove(Path(entry.path))
-                        count += 1
+                    if found:
+                        if found.group(1) not in hashes:
+                            freed += remove(Path(entry.path))
+                            count += 1
+                    elif sub == "build" and entry.is_dir(follow_symlinks=False):
+                        # layout v2: build/<package>/<hash>/
+                        package = Path(entry.path)
+                        for unit in os.scandir(package):
+                            # Cargo recreates an empty out/ per workspace package on every
+                            # test build, unit or not: nothing to free, nothing to report.
+                            if (UNIT_HASH.fullmatch(unit.name) and unit.name not in hashes
+                                    and any(files for _, _, files in os.walk(unit.path))):
+                                freed += remove(Path(unit.path))
+                                count += 1
+                        if not any(package.iterdir()):
+                            package.rmdir()
             incremental = profile / "incremental"
             if incremental.is_dir():
                 by_crate = defaultdict(list)
@@ -173,6 +220,9 @@ def prune() -> int:
                     for stale in directories[compiled[profile_name][crate]:]:
                         freed += remove(stale)
                         count += 1
+        finally:
+            for lock in locks:
+                lock.close()
         if count:
             print(f"target-cache: {profile.relative_to(ROOT)}: pruned {count} stale "
                   f"artifacts ({freed / 2**20:.0f} MiB)")
