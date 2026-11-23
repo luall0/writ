@@ -1,7 +1,7 @@
 # Backlog
 
-Ideas and new requirements for Writ, not built yet, and not part of the
-[roadmap](../roadmap.md) to v1. What was built, in order, is in the
+Ideas and new requirements for Writ, not built yet. v1 is complete (1.0.0); what comes next
+is picked here by the user. What was built, in order, is in the
 [history](../history/README.md).
 
 ## How it works
@@ -59,7 +59,7 @@ The commits, each leaving Writ working. Added when the idea is picked.
 |---|---|---|---|---|
 | [LLM task-conformance check](llm-task-conformance.md) | Policy | feature | L | idea, sketched |
 | [HTTP credential proxy (v2)](http-credential-proxy.md) | Credentials | feature | L | idea, sketched |
-| [Multi-user daemon](multi-user.md) | Identity, Approvals, Upstream | feature | L | specified up to its open questions; not on the roadmap |
+| [Multi-user daemon](multi-user.md) | Identity, Approvals, Upstream | feature | L | specified up to its open questions |
 | [YubiKey PIV signer backend](#yubikey-piv-signer-backend) | Signers | feature | M | idea |
 | [TPM signer backend](#tpm-signer-backend) | Signers | feature | M | idea |
 | [Cloud KMS signer backend](#cloud-kms-signer-backend) | Signers | feature | M | idea |
@@ -71,7 +71,8 @@ The commits, each leaving Writ working. Added when the idea is picked.
 | [Own Mac approver app](#own-mac-approver-app) | Approvals | feature | L | idea |
 | [Mac app for every command](#mac-app-for-every-command) | Approvals, Clients | feature | L | idea; after [M7.8](../history/m7.8-approval-popup-on-the-mac.md)'s popup, the approval client linked into the app first |
 | [iPhone approver app](#iphone-approver-app) | Approvals | feature | L | idea |
-| [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys) |
+| [Detached deployment](detached-deployment.md) | Deployment, Clients | feature | L | specified (M8 until v1 closed) |
+| [Non-exportable session keys](non-exportable-session-keys.md) | Identity | hardening | M | specified (M8.5 until v1 closed) |
 | [Source-address pinning](#source-address-pinning) | Identity | hardening | S | idea |
 | [Per-session submission rates](#per-session-submission-rates) | Identity | hardening | S | idea |
 | [Narrower upstream credentials](#narrower-upstream-credentials) | Upstream | hardening | M | idea |
@@ -158,7 +159,7 @@ policy). Replacing it with the rotation means a new key, the head of the version
 signed again with it, and the store and the keystore changed together crash-safe (the head
 re-signed in the same commit as the rotation's record, or both recorded and the older one
 dropped at the next unseal). Worth it once the state and the keys can be copied apart (a
-backup kept elsewhere, M8's volumes).
+backup kept elsewhere, the [detached deployment](detached-deployment.md)'s volumes).
 
 ### x509 commit signatures
 

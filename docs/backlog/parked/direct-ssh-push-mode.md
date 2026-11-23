@@ -3,8 +3,8 @@
 **Status:** parked (2026-11-15). **Area:** Gateway, Upstream. **Kind:** feature.
 
 This page explains why we are not building it, and what would make us reconsider. It was M10
-on the roadmap; its keys (`push_modes`, `direct_ssh.hosts`, `direct_ssh.allow_account_wide`)
-leave the policy in [M7.9.6](../../roadmap.md#m796--upgrades)'s format 2.
+on the roadmap (gone since v1 closed); its keys (`push_modes`, `direct_ssh.hosts`, `direct_ssh.allow_account_wide`)
+leave the policy in [M7.9.6](../../history/m7.9.6-upgrades.md)'s format 2.
 
 ## The idea
 

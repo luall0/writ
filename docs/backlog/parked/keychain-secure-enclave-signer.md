@@ -5,7 +5,7 @@
 This page explains why we are not building it, and what would make us reconsider. The signer
 that local mode uses is `se-cryptokit` under the dedicated `_writd` user (Plan B in
 [macOS Secure Enclave](../../architecture/macos-secure-enclave.md), built in
-[M7.5](../../roadmap.md#m75--secure-enclave-signer-on-the-mac)). Paying for the Apple
+[M7.5](../../history/m7.5-secure-enclave-signer.md)). Paying for the Apple
 Developer Program only for clean code signatures, without this backend, is a separate idea:
 [Developer ID signed binaries](../README.md#developer-id-signed-binaries).
 

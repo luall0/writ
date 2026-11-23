@@ -99,7 +99,8 @@ being signed gets no signature ([Policy and state](architecture/policy-and-state
 Signing happens at **commit time** so commit hashes never change. The ledger links signing to
 the later push: it records the id of the commit git writes once the signature is in it (git
 puts it in a `gpgsig` header, `writ_git::signed`), so the same commit without its signature,
-which has another id, never matches. Denial notifications come with M8.
+which has another id, never matches. Denial notifications are in the
+[backlog](backlog/detached-deployment.md).
 
 ## 3. Push
 

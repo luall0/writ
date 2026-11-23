@@ -72,7 +72,7 @@ Acceptance checklist, all must pass:
     blob to another Mac not run (no second Mac).*
   - [x] If A and B fail: Plan D's YubiKey PIN caching per PC/SC session.
     *Not needed: Plan B passed.*
-  - [x] The result recorded: the backend for [M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac)
+  - [x] The result recorded: the backend for [M7.5](m7.5-secure-enclave-signer.md)
         and how the daemon runs in [M7](m7-local-mode-on-the-mac.md) (app bundle or dedicated
         user), in the [decision log](../decisions.md) (settles Q27); the doc's status, its ⚠️
         marks and its "What doesn't work" list updated.

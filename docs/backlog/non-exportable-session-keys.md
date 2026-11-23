@@ -1,6 +1,6 @@
 # Non-exportable session keys
 
-**Status:** specified; picked as [M8.5](../roadmap.md#m85--non-exportable-session-keys).
+**Status:** specified (M8.5 on the roadmap until 2026-11-23, when v1 was closed without it).
 **Area:** Identity. **Kind:** hardening. **Size:** M.
 
 ## Problem
@@ -46,7 +46,7 @@ agent host: malware there can use it during the lease, never copy it.
 
 ## Scope and non-goals
 
-- In M8.5: the Secure Enclave (Mac) and a TPM 2.0 (Linux), one key per lease.
+- The Secure Enclave (Mac) and a TPM 2.0 (Linux), one key per lease.
 - Not a YubiKey: a few PIV slots, so a key would be reused across leases. Later, if wanted.
 - Not proven to the daemon: it can't tell where a key lives, so the template's mode is
   enforced on the client's claim. A mode the daemon proves needs attestation (open questions).
@@ -74,6 +74,21 @@ agent host: malware there can use it during the lease, never copy it.
 - **The daemon:** already takes Ed25519 and P-256 session keys; it gains the ticket's kind,
   its validation and its display, nothing else.
 
+- **A lease granted with no signature** ([M7.9.7](../history/m7.9.7-fetch-without-a-signature.md))
+  is always `file`, whatever its template's `session_key` (the mode of the leases the approver
+  signs under it): a ticket for one that declares `hardware` is refused with its code, and
+  `writ git`'s fetch without a lease makes a key file whatever the client setting says.
+- **A lease keeps the key it was granted with;** its renewals and amendments are checked
+  against the template's mode in force.
+- **The new field passes the display's exhaustiveness test** (found by the
+  [M7.7 review](../history/m7.7-review-after-m7.6.md), `U-4`): the test M7.7 added fails on a
+  ticket field that is signed but not shown by `writ sign` or not checked by narrowing.
+- **Docs:** [identity](../architecture/identity.md), [clients](../architecture/clients.md),
+  the [client settings](../operators/clients.md) (the `session_key` setting), the
+  [policy reference](../operators/policy-yaml.md) and its template (the template term), the
+  [lease model](../lease-model.md) (the ticket's new field, the term and its trust row) and the
+  [threat model](../threat-model.md); the session agent's binary in AGENTS.md's naming table.
+
 ## Threat model impact
 
 - Malware on an agent host with a hardware session key can use the lease while it runs there,
@@ -96,8 +111,34 @@ agent host: malware there can use it during the lease, never copy it.
 
 ## Acceptance
 
-[M8.5's checklist](../roadmap.md#m85--non-exportable-session-keys).
+- [ ] **The graft test for the daemon:** no change beyond the ticket's new field, its
+      validation and its display, and the template term and its check.
+- [ ] Every backend passes the session key contract suite (the Secure Enclave, the TPM, the
+      file).
+- [ ] With a hardware session key, the session directory holds no private key; a copy of it
+      on another host can't open a connection to the gateway (refused at authentication).
+- [ ] Detection: `writ session-key` on a host with a working TPM (`swtpm` in a container)
+      shows the hardware; on one with none, or a TPM it can't use, shows none.
+- [ ] `auto` follows the template: a hardware key under a `hardware` template, a key file
+      under a `file` one (the TPM host making a file). A `hardware` template on a host
+      without the hardware: `writ request` refuses with its exact reason and writes no key
+      file. The host's `hardware` under a `file` template, or `file` under a `hardware` one:
+      `writ request` refuses before submitting, naming both.
+- [ ] `writ session-key`, its three values and `WRIT_SESSION_KEY` used for real by an
+      end-to-end scenario (rule 18); the `session_key` setting and the template term with
+      their rows in the registries (rule 19).
+- [ ] `writ sign` shows the kind; a ticket claiming a kind its key can't be (Ed25519 with
+      `hardware`) is refused with its code.
+- [ ] **The ticket can't choose the mode:** a ticket submitted straight to the daemon (no
+      `writ` checks) with a `file` key under a `hardware` template, or a hardware key under a
+      `file` template (the default one included), is refused with its exact code; each
+      accepted with the matching kind. Over two repositories whose templates name different
+      modes, every ticket is refused as the templates disagreeing. A renewal of a `file`
+      lease after its template is switched to `hardware` is refused with its code. The term
+      set and cleared with `writ admin template`.
+- [ ] On the Mac, by hand ([manual checks](../guides/manual-checks.md)): a Secure Enclave
+      session key works with no prompt, with the screen locked, and can't be exported.
 
 ## Plan
 
-Written when M8.5 starts.
+Written when the user picks it.

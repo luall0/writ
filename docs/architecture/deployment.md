@@ -112,8 +112,8 @@ listed, nothing done before a confirmation; variables answer without a terminal)
 |---|---|---|---|
 | `local` | The Mac | The `_writd` user, the binaries, the LaunchDaemon, `writd init`, my user's `~/.writ/` | [M7](../history/m7-local-mode-on-the-mac.md) |
 | `local` | A Linux workstation | The `writd` user and `writ` group, the binaries, the systemd unit, `writd init`, my user's `~/.writ/` | [M7.1](../history/m7.1-local-mode-on-linux.md) |
-| `detached` | The daemon host (Linux, Docker) | The image, the compose file and `writd.yaml`, the volumes, `writd init`, the stack started | [M8](../roadmap.md#m8--detached-deployment) |
-| `client` | A machine using a detached daemon (the approver's Mac, an agent host) | `writ` and `writ-sign`, `~/.writ/` with the daemon's endpoints and pins, the approval and reader keys on the approver's machine | [M8](../roadmap.md#m8--detached-deployment) |
+| `detached` | The daemon host (Linux, Docker) | The image, the compose file and `writd.yaml`, the volumes, `writd init`, the stack started | Not built yet ([backlog](../backlog/detached-deployment.md)) |
+| `client` | A machine using a detached daemon (the approver's Mac, an agent host) | `writ` and `writ-sign`, `~/.writ/` with the daemon's endpoints and pins, the approval and reader keys on the approver's machine | Not built yet ([backlog](../backlog/detached-deployment.md)) |
 
 Every setup shares the same frame (`deploy/install.sh`, `deploy/frame.sh`; each setup a file of
 its own in `deploy/setups/`, whose header names it, its OS and its manifest's path):

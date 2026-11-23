@@ -17,7 +17,7 @@
   - every `doc_step*` literal in the e2e crate is a line its file is shown with, by a listed
     page or a marked block;
   - every operator page (docs/operators/*.md) holding an `sh` block is listed, or owed by a
-    milestone the roadmap still lists as to come (a row `| [page](…) | owed by M<n> |`).
+    backlog page (a row `| [page](…) | owed by [idea](backlog/<page>.md) … |`).
 """
 
 import pathlib
@@ -112,12 +112,8 @@ def command(line: str) -> str:
 
 shown: dict[str, set[str]] = {}
 
-# Milestones still to come: the roadmap's table rows not marked done.
-pending = set()
-for line in (ROOT / "docs/roadmap.md").read_text().splitlines():
-    match = re.match(r"\| (M[0-9.]+) \|", line)
-    if match and "✅" not in line:
-        pending.add(match.group(1))
+# Work still to come: the backlog's pages (docs/backlog/<page>.md, the parked ones aside).
+pending = {p.stem for p in (ROOT / "docs/backlog").glob("*.md") if p.name != "README.md"}
 
 # Pages run whole: the table's rows, `[page](path) | `file`, `file``; pages owed by a
 # milestone to come: `[page](path) | owed by M<n>`.
@@ -128,14 +124,18 @@ for cells in table_rows(section("Commands the docs show")):
     if cells and cells[0] == "Page":
         continue  # the owed table's header
     link = re.search(r"\]\(([^)#]+)\)", cells[0]) if cells else None
-    owed = re.fullmatch(r"owed by (M[0-9.]+)(?: .*)?", cells[1]) if len(cells) == 2 else None
+    owed = (
+        re.fullmatch(r"owed by \[[^\]]+\]\(backlog/([a-z0-9-]+)\.md\)(?: .*)?", cells[1])
+        if len(cells) == 2
+        else None
+    )
     if link and owed:
         page = (DOC.parent / link.group(1)).resolve()
         if not page.is_file():
             errors.append(f"owed row: {link.group(1)} does not exist")
         elif owed.group(1) not in pending:
             errors.append(
-                f"{link.group(1)} is owed by {owed.group(1)}, which the roadmap doesn't list as to come"
+                f"{link.group(1)} is owed by backlog/{owed.group(1)}.md, which is no backlog page"
             )
         owed_paths[page] = owed.group(1)
         continue

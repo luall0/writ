@@ -54,7 +54,8 @@ under it is refused naming it. A run takes about as long as its longest other sc
   builds the binaries as they ship (`-p writd -p writ-cli -p writ-sign --locked`, debug
   builds, without the development keystore: the daemon runs on the sealed keystore, as an
   operator's does) and the scenarios' test binary, then each target copies what its host
-  needs. A test image, decided with the user: M8's deploy image builds on it.
+  needs. A test image, decided with the user: the
+  [detached deployment](backlog/detached-deployment.md)'s image would build on it.
 - **No port is published**: everything talks on the project's network, by name. Fixed ports
   inside it are fine (nothing else binds there).
 - **The configuration** the operator installs is `e2e/config/writd.yaml` and
@@ -497,11 +498,11 @@ not checked).
 | [Hardening](operators/hardening.md) | `crates/writ-e2e/tests/scenarios/local_mode.rs` |
 | [Good practice](operators/good-practice.md) | `crates/writ-e2e/tests/scenarios/wrapper_mode.rs` |
 | [Sealing](operators/sealing.md) | `crates/writ-e2e/src/setup.rs`, `crates/writ-e2e/tests/scenarios/daemon_management.rs`, `crates/writ-e2e/tests/scenarios/keystore_recipients.rs` |
-| [Recovery](operators/recovery.md) | owed by M8 (the detached deployment it shows) |
-| [Install](operators/install.md) | owed by M8 (its `client` setup in the pipeline; the `local` setup run by hand in M7.9) |
+| [Recovery](operators/recovery.md) | owed by [detached deployment](backlog/detached-deployment.md) (the Docker steps it shows) |
+| [Install](operators/install.md) | owed by [detached deployment](backlog/detached-deployment.md) (its `client` setup in the pipeline; the `local` setup run by hand in M7.9) |
 
 `make check` refuses an operator page that shows an `sh` block and has no row here, run
-whole or owed by a milestone still to come (`tool/check-e2e.py`).
+whole or owed by an idea of the backlog (`tool/check-e2e.py`).
 
 **Developer guides, where only some blocks are run**, mark each run block with the file that
 runs it, on the line before:

@@ -446,8 +446,8 @@ that set `unsigned_fetch` is the approval that stands for it.
   lease that signs or pushes.
 - **Only while its templates allow it.** Every request under it is denied (`config`) once its
   templates in force no longer have `unsigned_fetch`, or grant it for less than its time.
-- **Always a file key.** M8.5's `session_key` is the template's mode for the leases you sign;
-  a ticket granted with no signature is always `file`.
+- **Always a file key.** If [non-exportable session keys](backlog/non-exportable-session-keys.md)
+  are built, a ticket granted with no signature stays a `file` key.
 - It counts against the submission rates, not against `max_active_per_source`, and is
   recorded as unsigned (the store's `unsigned`), shown so in `writ ls`, `writ report` and
   `writ sign`'s other leases.

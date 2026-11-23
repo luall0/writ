@@ -111,7 +111,8 @@ through Writ.
 ## More isolation
 
 - **The agent on another machine** (a VM, a container) against a daemon on another host:
-  detached mode ([M8](../roadmap.md#m8--detached-deployment)). The agent host then holds no
+  detached mode, **not built yet** ([detached deployment](../backlog/detached-deployment.md)). The
+  agent host would then hold no
   key and no remote credential at all.
 - **A daemon running as its own user** on your Mac or your Linux workstation: local mode
   ([Installing on your machine](install.md)). The agent can't read the daemon's keys,

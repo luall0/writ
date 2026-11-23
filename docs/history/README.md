@@ -3,9 +3,10 @@
 What was built, in the order it was built: one page each, with what was planned, what was
 done, the decisions and the numbers.
 
-The milestones M0 to M10 of the [roadmap](../roadmap.md) (with M2.5, M2.6, M3.5, M3.6, M4.5, M4.6, M7.5) come first: when one is done, its
-section moves from the roadmap to a page here (`m<N>-<slug>.md`), its checklist ticked with a
-note under each item saying how it was verified, and a row is added below. After v1, work
+The milestones of the roadmap to v1, M0 to M7.9.9, come first: each one's section moved from
+the roadmap to a page here (`m<N>-<slug>.md`), its checklist ticked with a note under each item
+saying how it was verified. v1 closed with them (1.0.0, 2026-11-23): the roadmap's last two
+milestones, M8 and M8.5, went to the backlog, and the roadmap was removed. From then on, work
 starts in the [backlog](../backlog/README.md) and its pages move here when done, ending with a
 "What was done" section.
 

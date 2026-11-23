@@ -246,7 +246,7 @@ is written for the person running it, who may not know Writ yet (asked by the us
 - **Rustdoc links point at items**; documentation pages are named in plain text
   (`docs/flows.md` § 1), since relative paths don't resolve in rustdoc.
 - **No milestone promises in code comments** beyond "until M<n>" on a known stopgap; the
-  history and the roadmap hold the plan.
+  history and the backlog hold the plan.
 - **Docs change with the code** (hard rule 15): behavior → its page, a decision → the
   decision log.
 
@@ -267,8 +267,8 @@ environment variable a binary reads, does in the same change (hard rule 19):
 4. **A test that sets it and checks its effect**: an integration test (`crates/writ-integration`)
    or an end-to-end scenario, named in the
    [configuration coverage registry](testing.md#configuration-coverage-every-key); a parser's
-   unit test is not enough. A key accepted for a later milestone names it there
-   (`planned: M8`) until its effect exists.
+   unit test is not enough. A key accepted before its effect is built names the backlog
+   idea that brings it (for instance `planned: [detached deployment](backlog/detached-deployment.md)`) until its effect exists.
 5. **The examples** that show it: the [development configuration](../dev/writd.yaml), the
    [lease model](lease-model.md), a guide.
 
@@ -306,7 +306,8 @@ Writ has one version, `[workspace.package] version` in the root `Cargo.toml`; ev
 takes it (`version.workspace = true`). It is SemVer (M7.9.8):
 
 - **Before 1.0**, a milestone's close is a minor version (`0.N.0`), and a fix released on
-  its own between two milestones a patch. **1.0.0** comes with M8.5, which completes v1.
+  its own between two milestones a patch. **1.0.0** closed v1 (after M7.9.9, detached
+  deployment and non-exportable session keys moved to the backlog).
 - **From 1.0**, a major version is an upgrade that owes a signed `writ migrate` (a policy
   format change), or one where a `writ` of the previous major can't talk to the new `writd`.
   A new feature is a minor version, a fix a patch. A state step alone is neither: it
@@ -326,7 +327,7 @@ Writ, under the [operator writing rules](#writing-operator-docs):
   whether `writ migrate` is owed, whether a `writ` and a `writd` of the two versions can talk
   (the protocol's messages refuse fields they don't know, so two versions talk only when no
   message changed between them), and the steps, in order.
-- **A release** is made by a milestone's closing commit (or a patch's): `## Unreleased`
+- **A release** is made by the closing commit of a milestone or a backlog idea (or a patch's): `## Unreleased`
   becomes `## <version> — <YYYY-MM-DD>`, a new empty `## Unreleased` goes above it, and the
   workspace's version moves to it (`cargo update --workspace` then updates `Cargo.lock`),
   all in that one commit.
@@ -384,8 +385,8 @@ fixing it, often in a hurry. It must stay readable by a human. The design pages 
 
 **Status**
 
-- **Not built yet** is said in bold with its milestone and a roadmap link ("**Refused by this
-  build** ([M8](roadmap.md#m8--detached-deployment))"), and nowhere else: no milestone
+- **Not built yet** is said in bold with a link to its backlog page ("**Not built yet**
+  ([detached deployment](backlog/detached-deployment.md))"), and nowhere else: no milestone
   history, no internal names (crates, functions, test names) unless the reader needs them.
 - **Commands the pipeline runs keep their exact text** (hard rule 18): every `sh` block of a
   page listed in [commands the docs show](end-to-end.md#commands-the-docs-show) is run by

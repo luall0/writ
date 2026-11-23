@@ -1,6 +1,6 @@
 //! The client's settings file, `<home>/config` (M7): the daemon's endpoints when no flag or
 //! environment variable gives them, so a machine set up once (`make install` writes it for
-//! local mode; M8's `client` setup for a detached daemon) needs nothing exported. Flags and
+//! local mode; a `client` setup would for a detached daemon) needs nothing exported. Flags and
 //! environment variables still win.
 //!
 //! ```text

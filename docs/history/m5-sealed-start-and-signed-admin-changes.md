@@ -210,10 +210,10 @@ Each is now an item, with its acceptance, in the milestone that brings it:
 
 - `docs/operators/recovery.md`'s platform commands: the macOS ones in
   [M7](m7-local-mode-on-the-mac.md) (launchd label, paths), the Docker ones in
-  [M8](../roadmap.md#m8--detached-deployment) (paths in the image, its user).
+  [M8](../backlog/detached-deployment.md) (paths in the image, its user).
 - `writd recover` checking the daemon is stopped (today it assumes it; two writers would
   refuse each other's versions): [M7](m7-local-mode-on-the-mac.md), where a
   service manager starts the daemon.
 - Q38, binding each sealed secret file to the state (the recipient is public): settled before
-  building [M8](../roadmap.md#m8--detached-deployment), where the keys directory sits on a
+  building [M8](../backlog/detached-deployment.md), where the keys directory sits on a
   volume.

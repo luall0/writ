@@ -1,6 +1,6 @@
 # macOS Secure Enclave signer without a paid Apple Developer account
 
-Status: **tested in the [M0 spike](../roadmap.md#m0--protocol-spike-gono-go) on 2026-10-31.
+Status: **tested in the [M0 spike](../history/m0-protocol-spike.md) on 2026-10-31.
 Plan B is the local-mode signer**: a CryptoKit Secure Enclave key under a dedicated `_writd`
 user, built in [M7.5](../history/m7.5-secure-enclave-signer.md) (`se-cryptokit`, through the
 `writ-se` helper: [signer](signer.md#a-helper-process)); the `_writd`

@@ -51,11 +51,10 @@ In the templates, required keys are set and optional ones are commented out at t
   `approvers`, `readers`). It must be owned by the daemon's user and not
   writable by group or others, or the daemon refuses it.
 - **Sealed**: the daemon is running but can't use any secret until you run `writ unseal`.
-- **M7, M8…**: a feature that isn't built yet, and the [roadmap](../roadmap.md) milestone that
-  brings it.
+- **Not built yet**: a feature in the [backlog](../backlog/README.md), linked to its page.
 
 ## Going further
 
 [Lease model](../lease-model.md): how the policy, templates and tickets combine ·
 [Threat model](../threat-model.md): what Writ guarantees, and what it doesn't ·
-[Deployment](../architecture/deployment.md) · [Roadmap](../roadmap.md)
+[Deployment](../architecture/deployment.md) · [Backlog](../backlog/README.md)

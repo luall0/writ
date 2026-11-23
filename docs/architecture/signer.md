@@ -41,7 +41,7 @@ pub trait Signer: Send + Sync {
 
 ### Formats, algorithms and hashes
 
-Since [M5.5](../roadmap.md#m55--signature-formats-and-key-algorithms) the caller names the
+Since [M5.5](../history/m5.5-signature-formats-and-key-algorithms.md) the caller names the
 hash (`writ_crypto::algorithm`). Two hashes are at play:
 
 - the **format's hash**, the one a key is declared with: the SSHSIG message hash (`ssh`), or
@@ -364,7 +364,7 @@ header, so the ledger is unchanged.
 
 v1 ships the software backend; the others are in the [backlog](../backlog/README.md) (and
 the Secure Enclave in local mode, `se-cryptokit`, in
-[M7.5](../roadmap.md#m75--secure-enclave-signer-on-the-mac)).
+[M7.5](../history/m7.5-secure-enclave-signer.md)).
 
 ## Startup and sealing
 

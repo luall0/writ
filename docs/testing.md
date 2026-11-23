@@ -200,8 +200,8 @@ Every key of `writd.yaml`, `policy.yaml` and the ticket file, and every environm
 binary reads, is set by a test that checks its effect: an integration test
 (`crates/writ-integration/tests/`, the real binaries, or the in-process gateway and mirrors
 for the mirror bounds) or an end-to-end scenario. A parser's unit test doesn't count: it shows
-the key is read, not that it does anything. A key whose effect comes with a later milestone
-names it (`planned: M8`); one this build refuses at start names the test that shows the
+the key is read, not that it does anything. A key whose effect isn't built yet names the
+backlog idea that brings it (for instance `planned: [detached deployment](backlog/detached-deployment.md)`); one this build refuses at start names the test that shows the
 refusal. Hard rule 19; the [conventions](conventions.md#configuration-keys) say what else a
 key change touches.
 

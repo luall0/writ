@@ -142,8 +142,8 @@ docs/
 Planned, created by the milestone that needs them:
 
 ```
-deploy/                 the detached deployment's Dockerfile and compose.yaml (M8, built on
-                        e2e/'s images)
+deploy/                 the installer (install.sh, frame.sh, a file per setup); later the
+                        detached deployment's Dockerfile and compose.yaml (backlog)
 spikes/                 throwaway spike code, outside the workspace, removed once done
 ```
 

@@ -142,7 +142,9 @@ log is `/Library/Logs/Writ/writd.log`.
 you) from the daemon's keys, so your user must not have passwordless `sudo`
 ([threat model](../threat-model.md#6-local-mode-the-daemon-vs-my-own-user)).
 
-### Docker, detached mode (M8)
+### Docker, detached mode
+
+**Not built yet** ([detached deployment](../backlog/detached-deployment.md)).
 
 The daemon runs in its container as the image's non-root user, its state and keys in volumes.
 Run `writd recover` in a one-off container of the same image, with the same volumes, while the

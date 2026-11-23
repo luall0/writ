@@ -112,7 +112,7 @@ pub const MAX_RETIRED_CAS: usize = 16;
 
 /// The farthest a retired CA's deadline may be from now (a year): no lease is meant to last
 /// that long, so a farther one is a record no rotation wrote (the record is bound to nothing
-/// yet: Q38, M8), refused.
+/// yet: Q38), refused.
 pub const RETIRED_HORIZON: u64 = 366 * 86_400;
 
 /// The CAs rotations replaced, each with until when it is trusted, as of `now`: at most

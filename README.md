@@ -8,4 +8,4 @@ push keys and is the only thing allowed to push.
 - Running it (setup, every configuration key, templates, good practice): [operator docs](docs/operators/README.md)
 - Working on this repo (humans and agents): [`AGENTS.md`](AGENTS.md)
 - What changed in each release, and what an upgrade asks: [`CHANGELOG.md`](CHANGELOG.md)
-- Status: version 0.3.2, M0 to M7.9.9 done ([history](docs/history/README.md)); next, [M8](docs/roadmap.md#m8--detached-deployment), detached deployment
+- Status: v1 complete, M0 to M7.9.9 ([history](docs/history/README.md)); what could come next is in the [backlog](docs/backlog/README.md)

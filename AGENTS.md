@@ -16,16 +16,16 @@ know before touching the repo.
 If the repo has no `Cargo.toml` yet, the project is not initialized: follow
 [docs/guides/initialization.md](docs/guides/initialization.md) first.
 
-Work follows the [roadmap](docs/roadmap.md) **strictly in order**, M0 to M8.5 (M8.5 completes v1); each milestone
-ends with a working, tested commit. When a milestone is done, move its section from the
-roadmap to `docs/history/m<N>-<slug>.md`, tick its checklist with a note under each item on
-how it was verified, add a row at the end of the [history](docs/history/README.md), leave
-a one-line row pointing there in the roadmap's table, and make its release: `## Unreleased`
-in [CHANGELOG.md](CHANGELOG.md) becomes the next minor version with its date and its
-Upgrading notes, and the workspace's version moves to it
-([versions](docs/conventions.md#versions-and-the-changelog)). After v1, ideas live in
-[docs/backlog/](docs/backlog/README.md); the user picks what comes next, and a picked idea
-gets its page (the template there) written up to its plan before any code.
+v1 is complete (1.0.0): M0 to M7.9.9, in the [history](docs/history/README.md). What
+comes next lives in the [backlog](docs/backlog/README.md), detached deployment and
+non-exportable session keys among it: the user picks what comes next, and a picked idea gets
+its page (the template there) written up to its plan before any code. Each commit of its plan
+leaves Writ working and tested. When it is done, its page moves to `docs/history/` with its
+acceptance checklist ticked (a note under each item on how it was verified) and a "What was
+done" section, a row is added at the end of the [history](docs/history/README.md), and it
+makes its release: `## Unreleased` in [CHANGELOG.md](CHANGELOG.md) becomes the next version
+with its date and its Upgrading notes, and the workspace's version moves to it
+([versions](docs/conventions.md#versions-and-the-changelog)).
 
 ## Naming
 
@@ -181,7 +181,6 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | The wiping allocator's benchmark: `writd` with and without it under heavy load, in release (by hand; `LINUX=1` in a Linux container) | `make bench-alloc [RUNS=<n>] [LINUX=1]` |
 | The guided installer (by hand: `sudo`): a setup to pick, every choice asked before anything changes; run again, it upgrades ([install](docs/operators/install.md)) | `make install` |
 | Take the install back (the daemon's data kept unless `delete` is typed) | `make uninstall` |
-| Build the Docker image (from M8) | `make docker` |
 | Add a dependency | add its version to `[workspace.dependencies]` in the root `Cargo.toml`, then `dep.workspace = true` in the crate |
 
 ## Where to look
@@ -189,10 +188,9 @@ From the [Makefile](Makefile) (created in M0 by the [initialization guide](docs/
 | If you are working on… | Read |
 |---|---|
 | What Writ is, the user story, scope v1, non-goals, principles | [docs/product.md](docs/product.md) |
-| What comes next, acceptance checklists | [docs/roadmap.md](docs/roadmap.md) |
+| What could come next, each idea's design and acceptance checklist | [docs/backlog/](docs/backlog/README.md) |
 | Security conventions, the checklist for every change, untrusted inputs and their bounds | [docs/security.md](docs/security.md) |
 | What was built, in order | [docs/history/](docs/history/README.md) |
-| Ideas beyond v1 (LLM check, HTTP proxy, hardware signers, apps) | [docs/backlog/](docs/backlog/README.md) |
 | Why something is the way it is, open questions | [docs/decisions.md](docs/decisions.md) |
 | Attackers, trust boundaries, guarantees, residual risks, concerns set aside as not risks | [docs/threat-model.md](docs/threat-model.md) |
 | Tickets, leases, templates, repo registry, lifecycle (`writ-core`) | [docs/lease-model.md](docs/lease-model.md) |

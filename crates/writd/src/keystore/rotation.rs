@@ -38,7 +38,7 @@
 //! A `rotation` that isn't a directory, or a record that isn't well formed (its header, an
 //! entry out of the keystore's own files, a digest neither the staged file nor the file in
 //! place has), is refused by name: the start, the unseal or the recovery stops there. Who can
-//! write the keys directory is Q38's subject (M8): a record they plant moves only their own
+//! write the keys directory is Q38's subject (open): a record they plant moves only their own
 //! files into place, which they could have written there directly.
 
 use std::path::{Path, PathBuf};

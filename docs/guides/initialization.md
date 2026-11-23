@@ -1,7 +1,7 @@
 # Project initialization
 
 Run this only when the repo holds nothing but docs. **Skip if `Cargo.toml` exists.** It is
-the first step of [M0](../roadmap.md#m0--protocol-spike-gono-go).
+the first step of [M0](../history/m0-protocol-spike.md).
 
 ## 1. Prerequisites (verify, install if missing)
 
@@ -9,7 +9,7 @@ the first step of [M0](../roadmap.md#m0--protocol-spike-gono-go).
 rustup --version          # https://rustup.rs (not Homebrew Rust)
 git --version             # ≥ 2.47 (SSH commit signing; the daemon's reftable mirrors, HTTPS upstreams)
 ssh -V                    # OpenSSH ≥ 8.9
-docker compose version    # for the test remote (M4) and detached mode (M8)
+docker compose version    # for the test remote (M4, make e2e)
 ```
 
 On the Mac: Secretive with a **dedicated approval key** ("require authentication" on), used
@@ -83,7 +83,6 @@ cargo new --bin crates/writ-sign
 | `make fmt` | `cargo fmt --all` |
 | `make run` | `writd` with the dev config in `dev/` (test keys and test repos only) |
 | `make e2e` | End-to-end scenarios: the binaries in containers against Forgejo ([end-to-end](../end-to-end.md), from M4.1) |
-| `make docker` | Build the `writd` image (from M8) |
 
 Then update the commands table in [AGENTS.md](../../AGENTS.md#commands) so it matches.
 

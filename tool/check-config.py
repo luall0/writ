@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Checks the configuration coverage registry (docs/testing.md#configuration-coverage-every-key):
 
-- every row names at least one test, or the milestone its effect comes with (`planned: M8`);
+- every row names at least one test, or the backlog idea its effect comes with
+  (`planned: [idea](backlog/<page>.md)`);
 - every test named is a test function of the integration crate (crates/writ-integration/tests/,
   not `#[ignore]`d) or an end-to-end scenario (crates/writ-e2e/tests/): a parser's unit test
   doesn't show a key's effect;
-- a planned milestone is one the roadmap still lists, not one that is done;
+- a planned idea is a page of the backlog (docs/backlog/), not a parked or a done one;
 - every `WRIT_*` environment variable a shipped binary reads has an `env:` row, and every
   `env:` row is one of them;
 - `config:` rows are the client's settings file (`<home>/config`, M7).
@@ -21,7 +22,6 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTING = ROOT / "docs/testing.md"
-ROADMAP = ROOT / "docs/roadmap.md"
 TEST_DIRS = [ROOT / "crates/writ-integration/tests", ROOT / "crates/writ-e2e/tests"]
 # The binaries' sources: the variables an operator or a user sets.
 SOURCES = [ROOT / "crates/writd/src", ROOT / "crates/writ-cli/src", ROOT / "crates/writ-sign/src"]
@@ -56,12 +56,8 @@ for directory in TEST_DIRS:
             ignored = "#[ignore" in attrs and 'end to end: make e2e' not in attrs
             tests[match.group(1)] = ignored
 
-# Milestones still to come: the roadmap's table rows not marked done.
-pending = set()
-for line in ROADMAP.read_text().splitlines():
-    match = re.match(r"\| (M[0-9.]+) \|", line)
-    if match and "✅" not in line:
-        pending.add(match.group(1))
+# Work still to come: the backlog's pages (docs/backlog/<page>.md, the parked ones aside).
+pending = {p.stem for p in (ROOT / "docs/backlog").glob("*.md") if p.name != "README.md"}
 
 rows = 0
 env_rows = set()
@@ -81,9 +77,9 @@ for line in section.splitlines():
     if match.group(1) == "env":
         env_rows.add(match.group(2))
     names = re.findall(r"`([a-z0-9_]+)`", cell)
-    planned = re.findall(r"planned: (M[0-9.]+)", cell)
+    planned = re.findall(r"planned: \[[^\]]+\]\(backlog/([a-z0-9-]+)\.md\)", cell)
     if not names and not planned:
-        errors.append(f"{key}: names no test and no planned milestone")
+        errors.append(f"{key}: names no test and no planned backlog idea")
     for name in names:
         if name not in tests:
             errors.append(
@@ -91,9 +87,9 @@ for line in section.splitlines():
             )
         elif tests[name]:
             errors.append(f"{key}: `{name}` is #[ignore]d")
-    for milestone in planned:
-        if milestone not in pending:
-            errors.append(f"{key}: planned for {milestone}, which the roadmap doesn't list as to come")
+    for idea in planned:
+        if idea not in pending:
+            errors.append(f"{key}: planned for backlog/{idea}.md, which is no backlog page")
 if rows < 50:
     errors.append(f"only {rows} rows: the registry moved or changed shape")
 

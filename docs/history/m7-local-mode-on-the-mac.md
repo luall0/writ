@@ -54,7 +54,7 @@ that fits their workflow (done 2026-11-15, every item ticked below).
   which asks which setup to install, listing only the ones this build offers on this OS
   (`SETUP=<name>` answers without asking; an unknown or unavailable one is refused with the
   list). M7 brings `local` on macOS; [M7.1](../history/m7.1-local-mode-on-linux.md) adds `local` on Linux,
-  and [M8](../roadmap.md#m8--detached-deployment) `detached` and `client`. Every setup shares one frame:
+  and [M8](../backlog/detached-deployment.md) `detached` and `client`. Every setup shares one frame:
   the dry run, the manifest, the upgrade, the uninstall; each setup is its own steps, and
   adding one changes no other. The installer runs as my user and asks `sudo` only for the
   steps that need root. **POSIX sh** (settled with the user): the frame in

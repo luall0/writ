@@ -1,7 +1,6 @@
 # Multi-user daemon
 
-**Status:** specified up to its open questions; after v1, not on the
-[roadmap](../roadmap.md). **Area:** Identity, Approvals, Upstream.
+**Status:** specified up to its open questions; after v1. **Area:** Identity, Approvals, Upstream.
 **Kind:** feature. **Size:** L.
 
 Multi-user is a [v1 non-goal](../product.md#non-goals); this page is its design, for when it is
@@ -156,7 +155,7 @@ To settle with the user before the plan.
    distinct from the one that approves leases. A Touch ID prompt naming the admin key outside
    an admin task is then the alarm, where today one key's prompt looks the same for a lease
    and for a change to the templates themselves (found by the
-   [M7.7 review](../roadmap.md#m77--review-after-m76), H2: in local mode an agent running
+   [M7.7 review](../history/m7.7-review-after-m7.6.md), H2: in local mode an agent running
    as the approver's user can get an admin change signed that was never shown).
 
 ## Acceptance
