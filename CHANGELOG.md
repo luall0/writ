@@ -11,6 +11,23 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+## 1.0.0 — 2026-11-23
+
+v1 is complete: Writ is in daily use in local mode, on the Mac and on Linux. Detached mode
+(the daemon in Docker, agents on other hosts) and session keys held by the agent host's
+hardware move to the [backlog](docs/backlog/README.md), with everything else that could come
+next. From now on, a major version is an upgrade that needs `writ migrate`, or one where the
+previous `writ` can't talk to the new `writd`.
+
+### Upgrading
+
+- **State version 13, policy format 2**, as in 0.3.2: nothing migrates, and no `writ migrate`
+  is owed.
+- **No message between `writ` and `writd` changed**: a `writ` 0.3.2 and a `writd` 1.0.0 still
+  talk, and `writ` says the versions differ. Install both together anyway.
+- **Run `make install`.** It says `Upgrading Writ: 0.3.2 → 1.0.0.`, puts the new binaries in
+  place and restarts the daemon, then on a terminal runs `writ unseal` for you.
+
 ### Added
 
 - The license file: Writ is under the [Apache License 2.0](LICENSE) alone (its crates declared
@@ -25,7 +42,6 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
   Outside a repository it lists everything, as before. Shell completion of running leases
   follows the same rule, and the agent skill tells agents to work only under the lease they
   asked for ([client settings](docs/operators/clients.md#several-agents-on-one-host)).
-
 - The questions of `writ admin key add` and `writ admin repo add`, and the backends line of
   `writ admin key list`, name each key backend for what it is: `Secure Enclave (se-cryptokit)`
   rather than `se-cryptokit` alone. `backend=` and `--backend` still take the name.
