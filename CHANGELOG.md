@@ -11,6 +11,16 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+### Changed
+
+- The questions of `writ admin key add` and `writ admin repo add`, and the backends line of
+  `writ admin key list`, name each key backend for what it is: `Secure Enclave (se-cryptokit)`
+  rather than `se-cryptokit` alone. `backend=` and `--backend` still take the name.
+- `writ admin template add` says what `require_session` means when it asks: turned on, every
+  agent must be started through Writ (`writ run -- claude`). It stays off by default.
+- The [quick start](docs/operators/quick-start.md) says that starting the agent under
+  `writ run` is optional, unless the template asks for it.
+
 ## 0.3.2 — 2026-11-20
 
 Two fixes to the approval popup.

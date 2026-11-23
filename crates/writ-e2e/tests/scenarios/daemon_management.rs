@@ -660,7 +660,7 @@ fn entries_are_added_edited_and_a_key_rotated_step_by_step_on_a_terminal() {
     let listed = approver.run("writ admin key list");
     assert!(
         writ_e2e::stderr(&listed)
-            .contains("backends: software (ed25519, p256, p384, rsa3072, rsa4096)"),
+            .contains("backends: software: ed25519, p256, p384, rsa3072, rsa4096"),
         "{}",
         writ_e2e::stderr(&listed)
     );

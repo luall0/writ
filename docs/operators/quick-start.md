@@ -95,6 +95,9 @@ where several can be picked, space ticks. For a first template:
 - **branches**: `agent/*`, so agents push only to their own branches.
 - **committer_emails**: one of your account's verified emails, for the verified badge.
 - **signing_key**: `agent-01`.
+- **require_session**: keep `false`, the default. Set to `true`, every agent must be started
+  through Writ (`writ run -- claude`, step 6): an agent started on its own gets no lease
+  under this template.
 - Enter keeps the default of every other field.
 
 It then shows the change in full and asks you to sign it.
@@ -149,16 +152,20 @@ with your `<repo>` in place of `demo`, and the agent you use (`claude`, `agents`
 others, `opencode`, `cursor`). It routes the clone's git through the daemon and installs the
 Writ skill, which tells the agent how to ask for a ticket. Your own git setup is not touched.
 
-**Start the agent under Writ**, in the same folder:
+**Start the agent**, in the same folder: `claude` as usual works. Starting it under Writ is
+optional, unless the template has `require_session: true`:
 
 ```text
 writ run -- claude
 ```
 
+Under `writ run`, the lease is bound to that agent and the programs it starts: another
+program of yours can't use it, and it is revoked when the agent quits.
+
 Give it a task. It writes a ticket and asks for it. The approval popup comes up: read what
 you sign in the middle, and the agent's plan on the right. Sign, then confirm it in your agent. The
 agent commits and pushes through the daemon. On the remote, its commit shows as verified.
-When the agent quits, its lease is revoked.
+When the task is done, the agent closes its lease.
 
 ## Next
 

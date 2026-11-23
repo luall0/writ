@@ -263,7 +263,8 @@ const TEMPLATE_FIELDS: &[Field] = &[
         field(
             "require_session",
             Flag,
-            "whether a ticket must be bound to a session (writ run, local mode)",
+            "whether a ticket must be bound to a session: if true, every agent must be started \
+             through writ (writ run -- claude); local mode only",
         ),
         "false",
     ),

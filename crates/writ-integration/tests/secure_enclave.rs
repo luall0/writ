@@ -371,7 +371,8 @@ fn a_key_moves_to_the_secure_enclave_and_back_from_the_cli_alone() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
         stderr(&out).contains(
-            "backends: software (ed25519, p256, p384, rsa3072, rsa4096); se-cryptokit (p256)"
+            "backends: software: ed25519, p256, p384, rsa3072, rsa4096; \
+             Secure Enclave (se-cryptokit): p256"
         ),
         "{}",
         stderr(&out)

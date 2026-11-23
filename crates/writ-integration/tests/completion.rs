@@ -366,7 +366,15 @@ fn values_come_live_from_the_daemon_and_a_ticket_is_described_by_its_facts() {
         .find_map(|l| l.strip_prefix("backends: "))
         .unwrap_or_else(|| panic!("no backends in {said}"))
         .split("; ")
-        .map(|b| b.split(' ').next().unwrap().to_owned())
+        // `software: ed25519, …` or `Secure Enclave (se-cryptokit): p256`: the name the
+        // policy takes, in parentheses when the line says what the backend is first.
+        .map(|b| {
+            let shown = b.split(": ").next().unwrap();
+            match shown.split_once('(') {
+                Some((_, name)) => name.trim_end_matches(')').to_owned(),
+                None => shown.to_owned(),
+            }
+        })
         .collect();
     backends.sort();
     assert!(backends.contains(&"software".to_owned()), "{backends:?}");

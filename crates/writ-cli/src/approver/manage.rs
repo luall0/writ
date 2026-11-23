@@ -79,11 +79,7 @@ pub async fn list(paths: &Paths, url: &str, section: Section) -> anyhow::Result<
                 let backends: Vec<String> = keys
                     .backends
                     .iter()
-                    .map(|b| {
-                        let algorithms: Vec<String> =
-                            b.algorithms.iter().map(|a| clean(a)).collect();
-                        format!("{} ({})", clean(&b.name), algorithms.join(", "))
-                    })
+                    .map(super::guided::backend_choice)
                     .collect();
                 eprintln!("backends: {}", backends.join("; "));
             }

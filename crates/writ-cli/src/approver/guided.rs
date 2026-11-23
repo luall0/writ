@@ -313,18 +313,20 @@ fn choices(
     }
 }
 
-/// A backend as a prompt offers it: its name and the algorithms it makes.
-fn backend_choice(backend: &BackendShown) -> String {
-    format!(
-        "{} ({})",
-        clean(&backend.name),
-        backend
-            .algorithms
-            .iter()
-            .map(|a| clean(a))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+/// A backend as a prompt or a listing offers it: what it is, and the algorithms it makes
+/// (`Secure Enclave (se-cryptokit): p256`).
+pub(super) fn backend_choice(backend: &BackendShown) -> String {
+    format!("{}: {}", backend_label(&backend.name), makes_list(backend))
+}
+
+/// A backend's name as people read it: what it is first when the policy's name alone doesn't
+/// say it (`se-cryptokit`), the name itself otherwise. The name stays in sight: it is what
+/// `backend=` and `--backend` take.
+fn backend_label(name: &str) -> String {
+    match name {
+        "se-cryptokit" => format!("Secure Enclave ({})", clean(name)),
+        other => clean(other),
+    }
 }
 
 /// The backend a key being declared lives on, as the daemon described it: the one answered,
@@ -416,7 +418,11 @@ fn asked(
             _ => None,
         };
         let help = match (makes, choices(policy, section, field.name, backends)) {
-            (Some(shown), _) => format!("what {} makes: {}", clean(&shown.name), makes_list(shown)),
+            (Some(shown), _) => format!(
+                "what {} makes: {}",
+                backend_label(&shown.name),
+                makes_list(shown)
+            ),
             (None, Some(names)) => format!("{}; in force: {names}", field.help),
             (None, None) => field.help.to_owned(),
         };
@@ -1807,6 +1813,19 @@ mod tests {
         assert!(relevant(Section::Keys, "backend", &signing, &both));
         assert!(!relevant(Section::Keys, "backend", &token, &both));
         assert!(!relevant(Section::Keys, "backend", &signing, &both[..1]));
+        // Each offered as what it is, the name the policy takes kept in sight.
+        assert_eq!(
+            both.iter().map(backend_choice).collect::<Vec<_>>(),
+            [
+                "software: ed25519, p256",
+                "Secure Enclave (se-cryptokit): p256"
+            ]
+        );
+        // A name from the daemon is cleaned, never shown raw.
+        assert_eq!(
+            backend_choice(&backend("odd\u{1b}[2J", &["p256"])),
+            "odd\\u{1b}[2J: p256"
+        );
         let notes = values(&[("ticket_link", "notes")]);
         assert!(relevant(Section::Repos, "notes_ref", &notes, &[]));
         assert!(!relevant(Section::Repos, "notes_ref", &values(&[]), &[]));
