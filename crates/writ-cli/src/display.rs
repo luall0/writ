@@ -30,7 +30,7 @@ pub mod doc;
 pub use doc::{Doc, Out, SectionKind, Tag};
 
 use writ_core::lease::State;
-use writ_core::names::RepoName;
+use writ_core::names::{RepoName, TicketId};
 use writ_core::ticket::{
     Common, Limits, OnViolation, RepoLimits, RepoTerms, Subject, Ticket, TicketText,
 };
@@ -276,7 +276,9 @@ pub fn list(items: impl IntoIterator<Item = impl ToString>) -> String {
 /// `writ ls`: per ticket, a row with its id, state, revision, template and time left; a row
 /// with its repos (and the lease it amends); then its title behind the gutter. Every row fits
 /// [`WIDTH`].
-pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
+/// `writ ls`'s lines. `mine`: the lease of this repository's session, marked `yours` with
+/// its amendments (in a repository, `writ_cli::scope`).
+pub fn listing(listing: &writ_proto::Listing, now: Timestamp, mine: Option<&TicketId>) -> String {
     let mut out = String::new();
     for t in &listing.tickets {
         let left = match t.state {
@@ -302,6 +304,10 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
         // Every template shown, the rows past the first behind the gutter: nothing cut, so
         // no hint names a command (the review after M7.6, U-5: it named `writ show`, which
         // isn't one).
+        let yours = match mine == Some(&t.lease) {
+            true => " · yours",
+            false => "",
+        };
         let templates = format!("{templates}{}", unsigned_mark(t.unsigned));
         rows_after(
             &mut out,
@@ -314,7 +320,11 @@ pub fn listing(listing: &writ_proto::Listing, now: Timestamp) -> String {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        rows_after(&mut out, "    repos ", &clean(&format!("{repos}{lease}")));
+        rows_after(
+            &mut out,
+            "    repos ",
+            &clean(&format!("{repos}{lease}{yours}")),
+        );
         out.push_str(&block(&t.title, "    ", Rows::All));
     }
     out
@@ -1954,7 +1964,7 @@ mod tests {
             tickets: vec![summary(vec!["lifecycle".parse().unwrap()], lease.clone())],
         };
         assert_eq!(
-            listing(&one, now),
+            listing(&one, now, None),
             format!(
                 "{id}  pending   r2  feature        59m59s left\n    \
                  repos lifecycle (amends {lease})\n    │ First\n"
@@ -1973,6 +1983,7 @@ mod tests {
                 tickets: vec![summary(many.clone(), id.clone())],
             },
             now,
+            None,
         );
         for line in shown.lines() {
             assert!(width(line) <= WIDTH, "{} columns: {line:?}", width(line));
@@ -2605,7 +2616,7 @@ mod tests {
                 title: "First".into(),
             }],
         };
-        let shown = self::listing(&listing, t.created_at);
+        let shown = self::listing(&listing, t.created_at, None);
         assert!(!shown.contains("writ show"), "{shown}");
         let joined: String = shown.lines().collect::<String>().replace([' ', '│'], "");
         for template in &templates {

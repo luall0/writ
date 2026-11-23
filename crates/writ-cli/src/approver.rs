@@ -70,16 +70,40 @@ fn now() -> anyhow::Result<Timestamp> {
 }
 
 /// `writ ls`.
-pub async fn list(paths: &Paths, url: &str, all: bool) -> anyhow::Result<Exit> {
+pub async fn list(paths: &Paths, url: &str, all: bool, global: bool) -> anyhow::Result<Exit> {
+    // Where it runs, read before connecting: a record that can't be read stops it here.
+    let scope = match global {
+        true => None,
+        false => {
+            let dir = std::env::current_dir().context("cannot read the current folder")?;
+            crate::scope::here(&paths.home, &dir)?
+        }
+    };
     connect(paths, url)
         .await?
         .run(async |session| {
             let listing: Listing = session.call(&Command::List { all }, b"").await??;
-            if listing.tickets.is_empty() {
-                println!("Nothing waiting and no active lease.");
+            let Some(scope) = &scope else {
+                if listing.tickets.is_empty() {
+                    println!("Nothing waiting and no active lease.");
+                    return Ok(Exit::Ok);
+                }
+                print!("{}", display::listing(&listing, now()?, None));
                 return Ok(Exit::Ok);
+            };
+            println!("Here: {}. Every repository: writ ls --global.", scope.label);
+            let scoped = crate::scope::apply(scope, listing.tickets);
+            if scoped.shown.is_empty() {
+                println!("Nothing waiting and no active lease here.");
+            } else {
+                let shown = Listing {
+                    tickets: scoped.shown,
+                };
+                print!("{}", display::listing(&shown, now()?, scope.mine.as_ref()));
             }
-            print!("{}", display::listing(&listing, now()?));
+            if let Some(line) = crate::scope::hidden_line(scoped.hidden) {
+                println!("{line}");
+            }
             Ok(Exit::Ok)
         })
         .await

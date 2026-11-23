@@ -212,6 +212,14 @@ would follow it and swap leases. Give each agent its own lease:
 - Or give each agent its own home (`WRIT_HOME`), or its own OS user: see
   [good practice](good-practice.md#more-isolation).
 
+In a wired repository, `writ ls` lists only that repository's tickets and leases: your own
+lease (the one this repository's commands use) marked `yours`, the tickets waiting for a
+signature, and a count of the other sessions' leases, without their ids. At the root of a
+folder of repositories, it lists that folder's repositories. `writ ls --global` lists
+everything, as it does outside a repository. This keeps agents from wandering onto a lease
+that isn't theirs; it doesn't stop one that tries: the lease's scope and
+[`writ run`](#binding-a-lease-to-its-session-local-mode) do.
+
 ## Binding a lease to its session (local mode)
 
 With a daemon on this Mac, start the agent through `writ run` (here Claude Code):

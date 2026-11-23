@@ -349,11 +349,20 @@ fn read(source: Source) -> Option<Vec<(String, Option<String>)>> {
         .enable_all()
         .build()
         .ok()?;
+    // Running leases are offered as `writ ls` lists them where the shell is
+    // (`crate::scope`); a record that can't be read offers none.
+    let scope = match source {
+        Source::Running => {
+            let dir = std::env::current_dir().ok()?;
+            crate::scope::here(&paths.home, &dir).ok()?
+        }
+        _ => None,
+    };
     let found = runtime.block_on(async {
         tokio::time::timeout(DEADLINE, async {
             Approvals::connect(&paths, &url)
                 .await?
-                .run(async |session| fetch(session, source).await)
+                .run(async |session| fetch(session, source, scope.as_ref()).await)
                 .await
         })
         .await
@@ -366,10 +375,11 @@ fn read(source: Source) -> Option<Vec<(String, Option<String>)>> {
 async fn fetch(
     session: &Approvals,
     source: Source,
+    scope: Option<&crate::scope::Scope>,
 ) -> anyhow::Result<Vec<(String, Option<String>)>> {
     Ok(match source {
-        Source::Waiting => tickets(session, State::Pending).await?,
-        Source::Running => tickets(session, State::Active).await?,
+        Source::Waiting => tickets(session, State::Pending, None).await?,
+        Source::Running => tickets(session, State::Active, scope).await?,
         Source::Names(section) => {
             let (_, policy) = crate::approver::policy_in_force(session).await?;
             names(&policy, section)
@@ -393,14 +403,18 @@ async fn fetch(
 }
 
 /// The tickets in `state`, each described by the daemon's facts alone (its state, templates
-/// and repository count), never its title.
+/// and repository count), never its title; within `scope` as `writ ls` shows them there.
 async fn tickets(
     session: &Approvals,
     state: State,
+    scope: Option<&crate::scope::Scope>,
 ) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let listing: Listing = session.call(&Command::List { all: false }, b"").await??;
-    Ok(listing
-        .tickets
+    let tickets = match scope {
+        Some(scope) => crate::scope::apply(scope, listing.tickets).shown,
+        None => listing.tickets,
+    };
+    Ok(tickets
         .iter()
         .filter(|t| t.state == state)
         .map(|t| (t.id.to_string(), Some(described(t))))

@@ -288,11 +288,15 @@ pub(crate) enum Commands {
         #[command(flatten)]
         url: ApprovalUrl,
     },
-    /// List tickets waiting and active leases.
+    /// List tickets waiting and active leases. In a wired repository (or a workspace root),
+    /// only its own: your lease marked, other sessions' leases counted, not named.
     Ls {
         /// Every ticket, ended ones included.
         #[arg(long)]
         all: bool,
+        /// Every repository's, wherever it runs (as outside a repository).
+        #[arg(long)]
+        global: bool,
         #[command(flatten)]
         url: ApprovalUrl,
     },

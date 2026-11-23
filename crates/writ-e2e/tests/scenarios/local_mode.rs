@@ -380,6 +380,23 @@ fn local_mode_on_linux_binds_a_lease_to_its_session_and_keeps_the_daemon_out_of_
     assert!(chain.contains(&"/usr/bin/git"), "{chain:?}");
     assert!(!chain.iter().any(|p| p.contains("unbindable")), "{chain:?}");
 
+    // `writ ls` in the wired repository: only its own, the session's lease marked yours
+    // (`current`); `--global` lists every repository's, nothing marked.
+    let here = approver.ok("cd work && writ ls");
+    assert!(
+        here.starts_with("Here: local. Every repository: writ ls --global.\n"),
+        "{here}"
+    );
+    assert!(
+        here.contains(&lease) && here.contains(" · yours\n"),
+        "{here}"
+    );
+    let global = approver.ok("cd work && writ ls --global");
+    assert!(
+        global.contains(&lease) && !global.contains("Here:") && !global.contains("yours"),
+        "{global}"
+    );
+
     // Outside the session (another login of `dev`): the same lease refused, the caller's
     // chain not the session's.
     let outside = dev.run("cd work && writ git fetch -q origin");

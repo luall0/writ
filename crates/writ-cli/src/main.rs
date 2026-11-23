@@ -35,6 +35,7 @@ mod prompt;
 mod reader;
 mod repos;
 mod run;
+mod scope;
 mod session;
 mod settings;
 mod skill;
@@ -240,7 +241,9 @@ async fn run(cli: Cli) -> anyhow::Result<Exit> {
             println!("{}", reader::ensure(&paths.reader, name)?);
             Ok(Exit::Ok)
         }
-        Commands::Ls { all, url } => approver::list(&paths, &url.get(&paths)?, *all).await,
+        Commands::Ls { all, global, url } => {
+            approver::list(&paths, &url.get(&paths)?, *all, *global).await
+        }
         Commands::Sign {
             ui: true,
             url,

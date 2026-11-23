@@ -86,7 +86,8 @@ does). It answers from a copy of the clap tree with the commands hidden from `--
 out (`writ prompt`: clap would still offer one typed far enough to match it alone), each
 argument naming something the daemon holds given a source of values by its command's path
 (`complete::source_of`): the waiting tickets (`sign`, `refuse`, `wait`) and the running
-leases (`revoke`, `report`, `close`, `wait --lease`, `init --lease`) from `writ ls`, the names
+leases (`revoke`, `report`, `close`, `wait --lease`, `init --lease`) from `writ ls`, scoped
+as it is in a repository ([what `writ ls` shows](#what-writ-ls-shows-in-a-repository)), the names
 of each section of the policy in force for `writ admin …`, `writ policy`, `writ init` and
 `writ sign --drop-repo`, the key backends for `--backend` of `admin key|tls|ca rotate` (the
 read `writ admin key list` makes), and the fields of `set` and `add` from
@@ -436,6 +437,39 @@ commit's signature header. So a whole-repo clone follows its lease when the next
 signs in another format, with no change to its config. Settings without `writ.session` (a
 wiring from before M6) ask in git's way, and the daemon refuses the other format
 (`signature_format`).
+
+### What `writ ls` shows in a repository
+
+Agents run `writ ls` to see where they stand, and some then tried a lease they saw there:
+another repository's (refused by its scope), or another session's on the same repository
+(which its scope would let through, unless it is bound with `writ run`). So in a repository
+`writ init` wired, or at a workspace root, `writ ls` shows only what concerns it
+(`writ_cli::scope`):
+
+- **Which repositories:** the wired repository's registry name (its record), or the
+  workspace's members at its root. Elsewhere, or with `--global`, everything shows, as before.
+  A ticket or lease is in scope when one of its repositories is.
+- **Which lease is yours:** the session the repository's commands use
+  ([which session a command uses](#which-session-a-command-uses): `WRIT_SESSION`, then the
+  pinned lease, then `current`), marked `yours`, with its amendments. A session that can't be
+  used (ended, unknown here) makes no lease yours: the list then hides more, never less.
+- **Shown with their ids:** your lease, the waiting tickets that start a lease (an agent
+  follows its own request by its id, and a waiting ticket grants nothing), and with `--all`
+  the ended ones.
+- **Counted, never named:** every other active lease in scope, and every waiting amendment
+  of one (its line would name the lease). One line says how many there are, and that
+  `writ ls --global` lists them.
+- **A header** names the scope, so a short list is never a puzzle.
+
+Running leases offered by [shell completion](#shell-completion) (`revoke`, `report`, `close`,
+`wait --lease`, `init --lease`) follow the same scope.
+
+A nudge, never a boundary (hard rule 1): any agent can type `--global`, and the reader key
+it uses is readable by every program of the user. What keeps a lease to its holder is the
+daemon: its scope, and the session binding of `writ run`
+([binding a lease to its session](#binding-a-lease-to-its-session)). A wiring record that
+can't be read makes `writ ls` refuse with the reason (the record is the agent's to write):
+`--global` still lists everything.
 
 ### Fetching with no lease
 

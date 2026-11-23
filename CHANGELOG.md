@@ -15,8 +15,16 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 - The license file: Writ is under the [Apache License 2.0](LICENSE) alone (its crates declared
   `MIT OR Apache-2.0` until now).
+- `writ ls --global`: every repository's tickets and leases, wherever it runs.
 
 ### Changed
+
+- `writ ls` in a repository wired by `writ init` lists only that repository's tickets and
+  leases (at a folder of repositories, that folder's): your own lease marked `yours`, the
+  tickets waiting for a signature, and a count of other sessions' leases without their ids.
+  Outside a repository it lists everything, as before. Shell completion of running leases
+  follows the same rule, and the agent skill tells agents to work only under the lease they
+  asked for ([client settings](docs/operators/clients.md#several-agents-on-one-host)).
 
 - The questions of `writ admin key add` and `writ admin repo add`, and the backends line of
   `writ admin key list`, name each key backend for what it is: `Secure Enclave (se-cryptokit)`

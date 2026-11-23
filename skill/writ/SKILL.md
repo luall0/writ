@@ -35,6 +35,10 @@ The timings file for this repository: `{{TIMINGS}}`. Read it before writing a ti
 - After a grant, set `WRIT_SESSION` to your lease for every command (`writ request` prints the
   line: `export WRIT_SESSION=wrt_…`). Another agent may share this host and its `current`
   lease; `WRIT_SESSION` keeps your work under your own lease.
+- **Work only under the lease you asked for.** `writ ls`, run in the repository, shows it
+  marked `yours`. Never set `WRIT_SESSION` to another lease, pin one (`writ init --lease`) or
+  close one, even one that would allow what you need, and don't go looking for one with
+  `writ ls --global`: if your lease falls short, amend it (section 5) or ask the human.
 - Never put a secret, a token or a key in a ticket, a commit message or a summary.
 - Never try to reach the remote another way, or to work around a denial. A denial is the
   lease doing its job: amend, renew or ask the human.

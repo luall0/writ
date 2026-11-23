@@ -873,3 +873,177 @@ fn the_list_of_wired_repositories_is_read_as_untrusted_and_undoes_only_what_writ
         "{again}"
     );
 }
+
+/// A ticket for one repository of [`POLICY`], on a branch of its own.
+fn one_repo(repo: &str, branch: &str) -> String {
+    format!(
+        "repos:\n  {repo}:\n    operations: [fetch, commit_sign, push]\n    branches: [\"{branch}\"]\n\
+         ticket:\n  title: \"Work on {repo}\"\n  task: A ticket for writ ls\nlimits:\n  ttl: 1h\n"
+    )
+}
+
+/// `writ ls` in `cwd`, under `session` (`WRIT_SESSION`) when one is given.
+fn ls(daemon: &Daemon, cwd: &Path, args: &[&str], session: Option<&str>) -> Output {
+    let mut command = daemon.writ(&[&["ls"][..], args].concat());
+    command
+        .current_dir(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null());
+    if let Some(session) = session {
+        command.env("WRIT_SESSION", session);
+    }
+    command.output().unwrap()
+}
+
+fn ls_ok(daemon: &Daemon, cwd: &Path, args: &[&str], session: Option<&str>) -> String {
+    let out = ls(daemon, cwd, args, session);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "writ ls {args:?}: {}",
+        stderr(&out)
+    );
+    stdout(&out)
+}
+
+/// `writ ls` in a wired repository lists only that repository's tickets and leases: the
+/// session's lease marked yours (`current`, or `WRIT_SESSION`), a waiting ticket by its id,
+/// every other session's active lease on it counted and never named, another repository's
+/// left out; at a workspace root, its members'. `--global`, or a folder outside any
+/// repository, lists everything as before. A wiring record that can't be read refuses the
+/// scoped list (`--global` still lists).
+#[test]
+fn writ_ls_in_a_repository_shows_its_own_lease_and_counts_other_sessions_leases() {
+    let (daemon, both, root) = workspace();
+    writ_ok(
+        &daemon,
+        &root,
+        &[
+            "init", "--agents", "none", "--repo", "api=demo", "--repo", "web=web",
+        ],
+    );
+    let other = daemon.lease("other", &one_repo("demo", "agent/other"));
+    let web_only = daemon.lease("web-only", &one_repo("web", "agent/web"));
+    // Granted last: `current` points at it.
+    let mine = daemon.lease("mine", &one_repo("demo", "agent/mine"));
+    let file = daemon.root().join("waiting.yaml");
+    fs::write(&file, one_repo("demo", "agent/waiting")).unwrap();
+    let out = daemon.run(&["request", file.to_str().unwrap(), "--no-wait"], "");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let waiting = stdout(&out)
+        .split_whitespace()
+        .find(|w| w.starts_with("wrt_"))
+        .unwrap()
+        .trim_end_matches([':', '.', ','])
+        .to_owned();
+    let api = root.join("api");
+    // A ticket's lines: its own, then its repos and title, up to the next ticket.
+    let line_of = |listed: &str, id: &str| -> String {
+        let start = listed
+            .find(id)
+            .unwrap_or_else(|| panic!("{id} not listed: {listed}"));
+        let rest = &listed[start..];
+        let end = rest[1..].find("\nwrt_").map_or(rest.len(), |at| at + 1);
+        rest[..end].to_owned()
+    };
+
+    // In the repository, under `current`: its lease yours, the waiting ticket by its id; the
+    // other session's lease and the two-repository lease counted, the web lease left out.
+    let listed = ls_ok(&daemon, &api, &[], None);
+    assert!(
+        listed.starts_with("Here: demo. Every repository: writ ls --global.\n"),
+        "{listed}"
+    );
+    assert!(
+        line_of(&listed, &mine).contains("    repos demo · yours\n"),
+        "{listed}"
+    );
+    assert!(!line_of(&listed, &waiting).contains("yours"), "{listed}");
+    for unnamed in [&other, &both, &web_only] {
+        assert!(
+            !listed.contains(unnamed.as_str()),
+            "{unnamed} named: {listed}"
+        );
+    }
+    assert!(
+        listed.ends_with(
+            "2 more here belong to other sessions, not shown: writ ls --global lists them.\n"
+        ),
+        "{listed}"
+    );
+
+    // `WRIT_SESSION` names another lease: that one is yours now, `current`'s counted.
+    let listed = ls_ok(&daemon, &api, &[], Some(&other));
+    assert!(
+        line_of(&listed, &other).contains("    repos demo · yours\n"),
+        "{listed}"
+    );
+    assert!(!listed.contains(mine.as_str()), "{listed}");
+    // A session that can't be used (unknown on this host) is refused by the command's
+    // session rules elsewhere; here it makes no lease yours: all three counted.
+    let unknown = "wrt_01JD8X0000000000000000000Z";
+    let listed = ls_ok(&daemon, &api, &[], Some(unknown));
+    assert!(!listed.contains("yours"), "{listed}");
+    for unnamed in [&mine, &other, &both] {
+        assert!(
+            !listed.contains(unnamed.as_str()),
+            "{unnamed} named: {listed}"
+        );
+    }
+    assert!(
+        listed.contains("3 more here belong to other sessions"),
+        "{listed}"
+    );
+
+    // At the workspace root: both members, so the web lease is counted too.
+    let listed = ls_ok(&daemon, &root, &[], None);
+    assert!(
+        listed.starts_with(
+            "Here: the workspace's repositories (demo, web). Every repository: writ ls --global.\n"
+        ),
+        "{listed}"
+    );
+    assert!(
+        line_of(&listed, &mine).contains("    repos demo · yours\n"),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("3 more here belong to other sessions"),
+        "{listed}"
+    );
+
+    // `--global`, and outside any repository: every ticket, as before, nothing marked.
+    let outside = fs::canonicalize(daemon.root()).unwrap();
+    for listed in [
+        ls_ok(&daemon, &api, &["--global"], None),
+        ls_ok(&daemon, &outside, &[], None),
+    ] {
+        assert!(
+            !listed.contains("Here:") && !listed.contains("yours"),
+            "{listed}"
+        );
+        for id in [&mine, &other, &both, &web_only, &waiting] {
+            assert!(listed.contains(id.as_str()), "{id} missing: {listed}");
+        }
+    }
+
+    // A wiring record that can't be read (the agent can write it): the scoped list refused
+    // with the reason, never widened; `--global` still lists.
+    fs::write(api.join(".git/writ/config"), "[writ]\n\tmode = nonsense\n").unwrap();
+    let out = ls(&daemon, &api, &[], None);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out)
+            .contains("cannot tell which repository this is (writ ls --global lists every one)"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert!(ls_ok(&daemon, &api, &["--global"], None).contains(mine.as_str()));
+}
