@@ -11,6 +11,11 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+### Added
+
+- The license file: Writ is under the [Apache License 2.0](LICENSE) alone (its crates declared
+  `MIT OR Apache-2.0` until now).
+
 ### Changed
 
 - The questions of `writ admin key add` and `writ admin repo add`, and the backends line of
