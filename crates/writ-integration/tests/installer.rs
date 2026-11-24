@@ -432,7 +432,8 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
                userdir ~/.writ\nuserdata ~/.writ/reader\nnewdata /var/db/writ\ndata /var/db/writ\n\
                file /Library/LaunchDaemons/dev.writ.writd.plist\ndaemon dev.writ.writd\n\
                userfile ~/.writ/known_hosts\nuserfile ~/.writ/config\nuserfile ~/.writ/approver.pub\n\
-               userdir ~/Library\nuserdir ~/Library/LaunchAgents\n\
+               userdir ~/Library\nuserdir ~/Library/LaunchAgents\nuserdir ~/Library/Logs\n\
+               userfile ~/Library/Logs/writ-popup.log\n\
                userfile ~/Library/LaunchAgents/dev.writ.popup.plist\nagent dev.writ.popup\n"
     );
     // The popup's LaunchAgent: writ-popup in your session, your Writ home and Secretive's
@@ -447,6 +448,7 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
         "<key>WRIT_APPROVAL_AGENT</key><string>~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh</string>",
         "<key>LimitLoadToSessionType</key><string>Aqua</string>",
         "<key>KeepAlive</key><true/>",
+        "<key>StandardErrorPath</key><string>~/Library/Logs/writ-popup.log</string>",
     ] {
         assert!(popup.contains(part), "{part} not in {popup}");
     }
@@ -519,7 +521,39 @@ fn an_install_upgrades_and_uninstalls_leaving_the_mac_as_before() {
     let plist_path = fake.at("/Library/LaunchDaemons/dev.writ.writd.plist");
     fs::write(&plist_path, "<plist>an older install's</plist>\n").unwrap();
     fs::write(fake.at("/opt/writ/bin/writ"), "an older writ").unwrap();
+    // The popup's LaunchAgent as an install before its log wrote it, with another agent
+    // answered: written again with this version's settings, that answer kept.
+    let popup_path = fake.home.join("Library/LaunchAgents/dev.writ.popup.plist");
+    let answered = fake.home.join("agents/approval.sock");
+    fs::write(
+        &popup_path,
+        popup_before_its_log(
+            &fs::read_to_string(&popup_path).unwrap(),
+            &answered.display().to_string(),
+        ),
+    )
+    .unwrap();
+    // And its manifest, which had no log: the line is added once, at the end (the uninstall
+    // takes the log back first).
+    let log_line = format!(
+        "userfile {}\n",
+        fake.home.join("Library/Logs/writ-popup.log").display()
+    );
+    assert!(manifest.contains(&log_line), "{manifest}");
+    fs::write(fake.manifest(), manifest.replace(&log_line, "")).unwrap();
     let said = ok(&fake.run("install", &[], ""));
+    let popup = fake.shown(&fs::read_to_string(&popup_path).unwrap());
+    for part in [
+        "<key>WRIT_APPROVAL_AGENT</key><string>~/agents/approval.sock</string>",
+        "<key>StandardErrorPath</key><string>~/Library/Logs/writ-popup.log</string>",
+    ] {
+        assert!(popup.contains(part), "{part} not in {popup}");
+    }
+    assert_eq!(
+        fs::read_to_string(fake.manifest()).unwrap(),
+        manifest.replace(&log_line, "") + &log_line,
+        "each line once"
+    );
     assert!(said.contains("Upgrading the installed setup"), "{said}");
     assert!(!said.contains("keystore made"), "{said}");
     // The new writd's dry run first (M7.9.6), then, with no terminal, what to run after.
@@ -1413,12 +1447,14 @@ fn the_approval_popup_is_started_at_login_as_answered_and_taken_back() {
     let manifest = fake.shown(&fs::read_to_string(fake.manifest()).unwrap());
     assert!(
         manifest.ends_with(
-            "userdir ~/Library\nuserdir ~/Library/LaunchAgents\n\
+            "userdir ~/Library\nuserdir ~/Library/LaunchAgents\nuserdir ~/Library/Logs\n\
+             userfile ~/Library/Logs/writ-popup.log\n\
              userfile ~/Library/LaunchAgents/dev.writ.popup.plist\nagent dev.writ.popup\n"
         ),
         "{manifest}"
     );
-    // The next upgrade keeps that plist (your answers) and starts the popup again.
+    // The next upgrade writes that plist again with your answer (the same one) and starts
+    // the popup again.
     fs::write(fake.root.join(".calls"), "").unwrap();
     ok(&fake.run("install", &[], ""));
     assert_eq!(
@@ -1435,7 +1471,13 @@ fn the_approval_popup_is_started_at_login_as_answered_and_taken_back() {
         "{calls}"
     );
 
-    // Uninstalled: the popup stopped, its plist and the folders the install made gone.
+    // Uninstalled: the popup stopped, its plist, its log (written by launchd as it ran) and
+    // the folders the install made gone.
+    fs::write(
+        fake.home.join("Library/Logs/writ-popup.log"),
+        "2026-11-24T10:51:46Z show wrt_…\n",
+    )
+    .unwrap();
     fs::write(fake.root.join(".calls"), "").unwrap();
     ok(&fake.run("uninstall", &[("REPOS", "keep")], ""));
     assert!(
@@ -1751,4 +1793,22 @@ fn the_real_fish_names_its_vendor_directories_to_the_installer() {
         expected,
         "fish listed:\n{listed}"
     );
+}
+
+/// A popup LaunchAgent as an install before its log (1.0.0) wrote it: no `StandardErrorPath`,
+/// and `agent` as the socket answered.
+fn popup_before_its_log(plist: &str, agent: &str) -> String {
+    plist
+        .lines()
+        .filter(|line| !line.contains("StandardErrorPath"))
+        .map(|line| {
+            if line.contains("<key>WRIT_APPROVAL_AGENT</key>") {
+                format!("\t\t<key>WRIT_APPROVAL_AGENT</key><string>{agent}</string>")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }

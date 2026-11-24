@@ -11,8 +11,13 @@
 //! closed: it stays waiting, and isn't shown again by this run). An answer that names another
 //! ticket, isn't one, or is longer than [`MAX_ANSWER`] signs nothing and is said. The end of
 //! the app's output ends this command.
+//!
+//! A ticket that can't be shown is never dropped unsaid: the app is told why, and the list
+//! carries it with its reason, so the window comes up with it. One the daemon couldn't give
+//! (a lost connection, a refusal) is fetched again each time the waiting tickets are looked
+//! at anew; one whose reply failed the checks stays aside until it stops waiting or is picked.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -21,9 +26,9 @@ use writ_core::authority::TextDigest;
 use writ_core::lease::State;
 use writ_core::names::TicketId;
 use writ_core::ticket::Ticket;
-use writ_proto::{Command, Summary, Watched};
+use writ_proto::{ApiError, Command, Summary, Watched};
 
-use super::{Reviewed, Signer, approve, fetch_reviewed, now, refuse_with, render_out};
+use super::{Reviewed, Signer, approve, now, refuse_with, render_out, review};
 use crate::client::Approvals;
 use crate::{Exit, Paths, display};
 
@@ -101,6 +106,9 @@ pub struct Waiting {
     pub repos: Vec<String>,
     /// Put aside by a `skip`: not shown again by this run.
     pub skipped: bool,
+    /// Why this run couldn't show it (cleaned): the window says so beside it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
 }
 
 /// What the app sends back, one per line.
@@ -214,6 +222,42 @@ enum Ended {
     Lost { reason: String, answered: bool },
 }
 
+/// Where the popup gets a ticket to show: the daemon's approval API, or a fake in the tests.
+pub(crate) trait Fetch {
+    /// The daemon's reply to a `show` of ticket `id`, as [`Approvals::call`] gives it.
+    async fn show(&self, id: &TicketId) -> anyhow::Result<Result<writ_proto::Shown, ApiError>>;
+}
+
+impl Fetch for Approvals {
+    async fn show(&self, id: &TicketId) -> anyhow::Result<Result<writ_proto::Shown, ApiError>> {
+        self.call(&Command::Show { id: id.clone() }, b"").await
+    }
+}
+
+/// A waiting ticket this run couldn't show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Unshown {
+    /// Why, cleaned.
+    message: String,
+    /// The daemon couldn't give it (the connection, a refusal): fetched again at the next
+    /// look at the waiting tickets. Otherwise its reply failed the checks: left aside.
+    again: bool,
+}
+
+/// Ticket `id` fetched and checked as [`super::fetch_reviewed`] does, a failure saying
+/// whether it is worth fetching again.
+async fn fetch(source: &impl Fetch, id: &TicketId) -> Result<Reviewed, Unshown> {
+    let unshown = |message: String, again| Unshown {
+        message: display::clean_lines(&message),
+        again,
+    };
+    match source.show(id).await {
+        Ok(Ok(shown)) => review(id, shown).map_err(|e| unshown(format!("{e:#}"), false)),
+        Ok(Err(refused)) => Err(unshown(refused.to_string(), true)),
+        Err(e) => Err(unshown(format!("{e:#}"), true)),
+    }
+}
+
 /// The ticket on screen, as it will be signed.
 struct Shown {
     reviewed: Reviewed,
@@ -227,12 +271,17 @@ struct Popup {
     /// those this run decided since).
     waiting: Vec<Summary>,
     shown: Option<Shown>,
-    /// Put aside by a `skip`, or a ticket that couldn't be shown: not shown again.
+    /// Put aside by a `skip`: not shown again unless picked.
     skipped: BTreeSet<TicketId>,
+    /// The waiting tickets this run couldn't show, and why.
+    unshown: BTreeMap<TicketId, Unshown>,
     /// Whether the app was last told nothing waits.
     idle: bool,
     /// Whether the app was told the daemon can't be reached, and not yet that it is again.
     lost: bool,
+    /// The list last sent while no ticket was shown: sent again only when it changes, or
+    /// with a failure just said.
+    listed: Option<Vec<Waiting>>,
 }
 
 impl Popup {
@@ -254,6 +303,7 @@ impl Popup {
                 title: display::clean(&t.title),
                 repos: t.repos.iter().map(ToString::to_string).collect(),
                 skipped: self.skipped.contains(&t.id),
+                failed: self.unshown.get(&t.id).map(|u| u.message.clone()),
             })
             .collect()
     }
@@ -261,7 +311,7 @@ impl Popup {
     /// The waiting tickets now: the shown one gone if it left, the next one shown if none is.
     async fn update(
         &mut self,
-        session: &Approvals,
+        session: &impl Fetch,
         signer: &Signer,
         tickets: Vec<Summary>,
         output: &mut impl Write,
@@ -273,6 +323,8 @@ impl Popup {
             .collect();
         self.skipped
             .retain(|id| self.waiting.iter().any(|t| &t.id == id));
+        self.unshown
+            .retain(|id, _| self.waiting.iter().any(|t| &t.id == id));
         if let Some(id) = self.shown_id().cloned()
             && !self.waiting.iter().any(|t| t.id == id)
         {
@@ -289,10 +341,13 @@ impl Popup {
         self.show_next(session, signer, output).await
     }
 
-    /// Shows the oldest waiting ticket not put aside, or says nothing waits.
+    /// Shows the oldest waiting ticket not put aside (one the daemon couldn't give before is
+    /// fetched again). A ticket that can't be shown is said, and the list then carries it
+    /// with why: the window lists what waits rather than going. Only when nothing waits but
+    /// what was put aside does it say nothing waits.
     async fn show_next(
         &mut self,
-        session: &Approvals,
+        session: &impl Fetch,
         signer: &Signer,
         output: &mut impl Write,
     ) -> anyhow::Result<()> {
@@ -301,30 +356,45 @@ impl Popup {
             .iter()
             .map(|t| t.id.clone())
             .filter(|id| !self.skipped.contains(id))
+            .filter(|id| self.unshown.get(id).is_none_or(|u| u.again))
             .collect();
+        let mut failed = false;
         for id in candidates {
-            match fetch_reviewed(session, &id).await {
+            match fetch(session, &id).await {
                 Ok(reviewed) => {
+                    self.unshown.remove(&id);
                     let signed = reviewed.submitted.clone();
                     self.shown = Some(Shown { reviewed, signed });
                     self.idle = false;
                     return self.send_shown(signer, output);
                 }
-                // A ticket that can't be shown (no longer waiting, or a reply the checks
-                // refuse): said, put aside, the next one tried.
-                Err(e) => {
-                    self.skipped.insert(id.clone());
-                    let message = display::clean_lines(&format!("{e:#}"));
+                Err(unshown) => {
+                    failed = true;
                     send(
                         output,
                         &Event::Failed {
-                            id: Some(id),
-                            message,
+                            id: Some(id.clone()),
+                            message: unshown.message.clone(),
                         },
                     )?;
+                    self.unshown.insert(id, unshown);
                 }
             }
         }
+        if self
+            .waiting
+            .iter()
+            .any(|t| self.unshown.contains_key(&t.id))
+        {
+            self.idle = false;
+            let behind = self.behind();
+            if failed || self.listed.as_ref() != Some(&behind) {
+                self.listed = Some(behind.clone());
+                send(output, &Event::Queue { waiting: behind })?;
+            }
+            return Ok(());
+        }
+        self.listed = None;
         if !self.idle {
             self.idle = true;
             send(output, &Event::Idle)?;
@@ -333,7 +403,8 @@ impl Popup {
     }
 
     /// Sends the ticket shown, with the others behind it.
-    fn send_shown(&self, signer: &Signer, output: &mut impl Write) -> anyhow::Result<()> {
+    fn send_shown(&mut self, signer: &Signer, output: &mut impl Write) -> anyhow::Result<()> {
+        self.listed = None;
         let Some(shown) = &self.shown else {
             return Ok(());
         };
@@ -464,7 +535,7 @@ impl Popup {
     /// the ticket shown stays.
     async fn pick(
         &mut self,
-        session: &Approvals,
+        session: &impl Fetch,
         signer: &Signer,
         id: TicketId,
         output: &mut impl Write,
@@ -479,23 +550,30 @@ impl Popup {
                 },
             );
         }
-        match fetch_reviewed(session, &id).await {
+        match fetch(session, &id).await {
             Ok(reviewed) => {
                 self.skipped.remove(&id);
+                self.unshown.remove(&id);
                 let signed = reviewed.submitted.clone();
                 self.shown = Some(Shown { reviewed, signed });
                 self.idle = false;
                 self.send_shown(signer, output)
             }
-            Err(e) => {
-                let message = display::clean_lines(&format!("{e:#}"));
+            // Said, and the list carries it with why.
+            Err(unshown) => {
                 send(
                     output,
                     &Event::Failed {
-                        id: Some(id),
-                        message,
+                        id: Some(id.clone()),
+                        message: unshown.message.clone(),
                     },
-                )
+                )?;
+                self.unshown.insert(id, unshown);
+                let behind = self.behind();
+                if self.shown.is_none() {
+                    self.listed = Some(behind.clone());
+                }
+                send(output, &Event::Queue { waiting: behind })
             }
         }
     }
@@ -730,6 +808,21 @@ mod tests {
                     title: "w".to_owned(),
                     repos: vec!["api".to_owned()],
                     skipped: true,
+                    failed: None,
+                }],
+            },
+        )
+        .unwrap();
+        send(
+            &mut out,
+            &Event::Queue {
+                waiting: vec![Waiting {
+                    id: id.clone(),
+                    kind: Kind::Ticket,
+                    title: "w".to_owned(),
+                    repos: vec![],
+                    skipped: false,
+                    failed: Some("why".to_owned()),
                 }],
             },
         )
@@ -753,10 +846,228 @@ mod tests {
                     r#"{{"type":"show","id":"{id}","kind":"amendment","title":"t","repos":["api"],"expires_at":"2027-01-15T12:00:00Z","display":"a\nb","doc":{{"sections":[]}},"key":"/k.pub","waiting":[{{"id":"{id}","kind":"ticket","title":"w","repos":["api"],"skipped":true}}]}}"#
                 )
                 .as_str(),
+                format!(
+                    r#"{{"type":"queue","waiting":[{{"id":"{id}","kind":"ticket","title":"w","repos":[],"skipped":false,"failed":"why"}}]}}"#
+                )
+                .as_str(),
                 r#"{"type":"idle"}"#,
                 r#"{"type":"reached"}"#,
                 r#"{"type":"failed","id":null,"message":"m"}"#,
             ]
         );
+    }
+
+    /// Replies scripted for the popup's `show` calls, in order, and the tickets asked for.
+    #[derive(Default)]
+    struct Replies {
+        replies: std::sync::Mutex<
+            std::collections::VecDeque<anyhow::Result<Result<writ_proto::Shown, ApiError>>>,
+        >,
+        asked: std::sync::Mutex<Vec<TicketId>>,
+    }
+
+    impl Replies {
+        fn then(self, reply: anyhow::Result<Result<writ_proto::Shown, ApiError>>) -> Self {
+            self.replies.lock().unwrap().push_back(reply);
+            self
+        }
+
+        fn asked(&self) -> Vec<TicketId> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl Fetch for Replies {
+        async fn show(&self, id: &TicketId) -> anyhow::Result<Result<writ_proto::Shown, ApiError>> {
+            self.asked.lock().unwrap().push(id.clone());
+            self.replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(anyhow::anyhow!("no reply scripted")))
+        }
+    }
+
+    /// The shared fixture's ticket, pending.
+    fn pending_ticket() -> Ticket {
+        use writ_core::canonical::Canonical as _;
+        const FULL: &[u8] = include_bytes!("../../../writ-core/tests/fixtures/ticket-full.json");
+        Ticket::from_canonical(FULL).unwrap()
+    }
+
+    fn summary(ticket: &Ticket) -> Summary {
+        Summary {
+            id: ticket.id.clone(),
+            lease: ticket.id.clone(),
+            state: State::Pending,
+            templates: vec![],
+            revision: 1,
+            repos: ticket.repos.keys().cloned().collect(),
+            created_at: ticket.created_at,
+            expires_at: ticket.limits.expires_at,
+            title: ticket.text.title.clone(),
+            unsigned: false,
+        }
+    }
+
+    /// The daemon's reply showing `ticket`, waiting.
+    fn shown(ticket: &Ticket) -> writ_proto::Shown {
+        use writ_core::canonical::Canonical as _;
+        writ_proto::Shown {
+            state: State::Pending,
+            canonical: String::from_utf8(ticket.canonical_bytes().unwrap()).unwrap(),
+            previous: None,
+            renewal: None,
+            others: writ_proto::Others::default(),
+        }
+    }
+
+    fn signer() -> Signer {
+        Signer {
+            key: "/k.pub".into(),
+            agent: None,
+        }
+    }
+
+    /// The events written to `out`, each one JSON line.
+    fn events(out: &mut Vec<u8>) -> Vec<serde_json::Value> {
+        let text = String::from_utf8(std::mem::take(out)).unwrap();
+        text.lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn kinds(events: &[serde_json::Value]) -> Vec<&str> {
+        events.iter().map(|e| e["type"].as_str().unwrap()).collect()
+    }
+
+    /// The bug found on 2026-11-24: a ticket the popup couldn't fetch was put aside unsaid,
+    /// `idle` closed the window, and it was never tried again. Now it is said, listed with why
+    /// (the window stays), and fetched again at the next look at what waits.
+    #[tokio::test]
+    async fn a_ticket_the_daemon_couldnt_give_is_said_listed_and_fetched_again() {
+        let ticket = pending_ticket();
+        let id = ticket.id.clone();
+        let source = Replies::default()
+            .then(Err(anyhow::anyhow!("the connection was lost")))
+            .then(Ok(Err(ApiError::new(
+                "refused: \u{1b}[2Jthe daemon is sealed",
+            ))))
+            .then(Ok(Ok(shown(&ticket))));
+        let mut popup = Popup::default();
+        let mut out = Vec::new();
+
+        popup
+            .update(&source, &signer(), vec![summary(&ticket)], &mut out)
+            .await
+            .unwrap();
+        let said = events(&mut out);
+        assert_eq!(kinds(&said), ["failed", "queue"], "{said:?}");
+        assert_eq!(said[0]["id"], id.to_string());
+        assert_eq!(said[0]["message"], "the connection was lost");
+        assert_eq!(said[1]["waiting"][0]["id"], id.to_string());
+        assert_eq!(said[1]["waiting"][0]["failed"], "the connection was lost");
+        assert_eq!(said[1]["waiting"][0]["skipped"], false);
+
+        // The next watch answer, the same ticket waiting: fetched again, refused by the
+        // daemon this time (said again, cleaned), then again: shown.
+        popup
+            .update(&source, &signer(), vec![summary(&ticket)], &mut out)
+            .await
+            .unwrap();
+        let said = events(&mut out);
+        assert_eq!(kinds(&said), ["failed", "queue"], "{said:?}");
+        let message = said[0]["message"].as_str().unwrap();
+        assert!(!message.contains('\u{1b}'), "{message:?}");
+        assert!(message.ends_with("the daemon is sealed"), "{message:?}");
+
+        popup
+            .update(&source, &signer(), vec![summary(&ticket)], &mut out)
+            .await
+            .unwrap();
+        let said = events(&mut out);
+        assert_eq!(kinds(&said), ["show"], "{said:?}");
+        assert_eq!(said[0]["id"], id.to_string());
+        assert!(said[0]["waiting"][0].get("failed").is_none(), "{said:?}");
+        assert_eq!(source.asked(), [id.clone(), id.clone(), id]);
+    }
+
+    /// A reply that fails the checks (here, another ticket than the one asked for) is said
+    /// once and left aside: not fetched again at each look, nor listed again unchanged (the
+    /// window isn't brought back every few minutes), and never `idle` while it waits. A
+    /// click on it in the list fetches it again; it shows once the reply is right.
+    #[tokio::test]
+    async fn a_reply_that_fails_the_checks_stays_aside_until_picked() {
+        let ticket = pending_ticket();
+        let id = ticket.id.clone();
+        let mut other = ticket.clone();
+        other.id = TicketId::from_parts(1_800_000_000_000, [9; 10]);
+        let source = Replies::default()
+            .then(Ok(Ok(shown(&other))))
+            .then(Ok(Ok(shown(&ticket))));
+        let mut popup = Popup::default();
+        let mut out = Vec::new();
+
+        popup
+            .update(&source, &signer(), vec![summary(&ticket)], &mut out)
+            .await
+            .unwrap();
+        let said = events(&mut out);
+        assert_eq!(kinds(&said), ["failed", "queue"], "{said:?}");
+        let refused = format!(
+            "the daemon sent ticket {} instead of {id}: not signing it",
+            other.id
+        );
+        assert_eq!(said[0]["message"], refused.as_str());
+        assert_eq!(said[1]["waiting"][0]["failed"], refused.as_str());
+
+        // The next looks: nothing fetched, nothing said.
+        for _ in 0..2 {
+            popup
+                .update(&source, &signer(), vec![summary(&ticket)], &mut out)
+                .await
+                .unwrap();
+            assert_eq!(events(&mut out), Vec::<serde_json::Value>::new());
+        }
+        assert_eq!(source.asked(), std::slice::from_ref(&id));
+
+        popup
+            .pick(&source, &signer(), id.clone(), &mut out)
+            .await
+            .unwrap();
+        let said = events(&mut out);
+        assert_eq!(kinds(&said), ["show"], "{said:?}");
+        assert_eq!(said[0]["id"], id.to_string());
+        assert_eq!(source.asked(), [id.clone(), id]);
+
+        // It stops waiting: gone, and nothing waits.
+        popup
+            .update(&source, &signer(), vec![], &mut out)
+            .await
+            .unwrap();
+        assert_eq!(kinds(&events(&mut out)), ["gone", "idle"]);
+    }
+
+    /// A ticket left aside that stops waiting takes its failure with it: nothing waits, so
+    /// the window is told to go.
+    #[tokio::test]
+    async fn a_ticket_left_aside_that_stops_waiting_leaves_nothing_said() {
+        let ticket = pending_ticket();
+        let mut other = ticket.clone();
+        other.id = TicketId::from_parts(1_800_000_000_000, [9; 10]);
+        let source = Replies::default().then(Ok(Ok(shown(&other))));
+        let mut popup = Popup::default();
+        let mut out = Vec::new();
+        popup
+            .update(&source, &signer(), vec![summary(&ticket)], &mut out)
+            .await
+            .unwrap();
+        assert_eq!(kinds(&events(&mut out)), ["failed", "queue"]);
+        popup
+            .update(&source, &signer(), vec![], &mut out)
+            .await
+            .unwrap();
+        assert_eq!(kinds(&events(&mut out)), ["idle"]);
+        assert!(popup.unshown.is_empty());
     }
 }

@@ -27,6 +27,9 @@ BINARIES_SHIPPED="writd writ writ-sign writ-se writ-popup"
 # The approval popup (M7.8): writ-popup in your session, started at login.
 POPUP_LABEL=dev.writ.popup
 POPUP_PLIST=$HOME/Library/LaunchAgents/$POPUP_LABEL.plist
+# Its log: what it was sent and did (each ticket's id, each failure, the window shown or
+# hidden), never an agent's text.
+POPUP_LOG=$HOME/Library/Logs/writ-popup.log
 SECRETIVE_SOCKET=$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
 # The agent the popup signs through when none is given: the one your terminal uses
 # (SSH_AUTH_SOCK, as writ sign does), else Secretive's on this Mac.
@@ -42,6 +45,7 @@ setup_owns() {
         "$(sys /opt)" | "$PREFIX" | "$PREFIX"/* | "$PATHS_D" | "$PLIST" | "$DATA" | "$APP"/* | "$LOGS" | "$LOGS"/*) return 0 ;;
         "$WHOME" | "$WHOME"/*) return 0 ;;
         "$HOME/Library" | "$HOME/Library/LaunchAgents" | "$POPUP_PLIST") return 0 ;;
+        "$HOME/Library/Logs" | "$POPUP_LOG") return 0 ;;
     esac
     return 1
 }
@@ -394,24 +398,40 @@ popup_plist() {
 	<key>ProcessType</key><string>Interactive</string>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
+	<key>StandardErrorPath</key><string>$POPUP_LOG</string>
 </dict>
 </plist>
 PLIST
 }
 
-# The approval popup started at login: its LaunchAgent written and started in your session.
-install_popup() {
-    step "The approval popup ($POPUP_PLIST), started in your session"
-    for dir in "$HOME/Library" "$HOME/Library/LaunchAgents"; do
+# The popup's LaunchAgent written, with the folders it and its log go in; each recorded once
+# (an upgrade writes it again).
+write_popup() {
+    for dir in "$HOME/Library" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"; do
         if [ ! -d "$dir" ]; then
             as_user mkdir -m 0755 "$dir"
             record "userdir $dir"
         fi
     done
     put_user "$POPUP_PLIST" "$(popup_plist)"
-    record "userfile $POPUP_PLIST"
+    for line in "userfile $POPUP_LOG" "userfile $POPUP_PLIST"; do
+        if [ ! -f "$MANIFEST" ] || ! grep -qxF -- "$line" "$MANIFEST"; then
+            record "$line"
+        fi
+    done
+}
+
+# The approval popup started at login: its LaunchAgent written and started in your session.
+install_popup() {
+    step "The approval popup ($POPUP_PLIST), started in your session"
+    write_popup
     as_user launchctl bootstrap "gui/$(id -u)" "$POPUP_PLIST"
     record "agent $POPUP_LABEL"
+}
+
+# The agent socket the popup's LaunchAgent names: your answer at the install.
+popup_agent() {
+    sed -n 's|.*<key>WRIT_APPROVAL_AGENT</key><string>\(.*\)</string>.*|\1|p' "$POPUP_PLIST" | head -n 1
 }
 
 # Whether this install started the popup (its manifest line).
@@ -601,7 +621,15 @@ setup_upgrade() {
     step "The daemon started again: the keystore, state, configuration and pins kept"
     as_root launchctl bootstrap system "$PLIST"
     if popup_installed; then
-        step "The approval popup started again ($POPUP_PLIST kept: your answers)"
+        # This version's settings (its log), with the agent you answered (APPROVAL_AGENT
+        # changes it).
+        APPROVAL_AGENT=${APPROVAL_AGENT:-$(popup_agent)}
+        [ -n "$APPROVAL_AGENT" ] ||
+            fail "no agent socket in $POPUP_PLIST: run again with APPROVAL_AGENT=<the socket of the agent holding your approval key>"
+        check_approval_agent
+        step "The approval popup's LaunchAgent written again ($POPUP_PLIST): this version's settings, signing through $APPROVAL_AGENT"
+        write_popup
+        step "The approval popup started again"
         as_user launchctl bootstrap "gui/$(id -u)" "$POPUP_PLIST"
     elif [ "${POPUP:-yes}" != no ] && ! grep -qxF -- "choice popup no" "$MANIFEST"; then
         # An install from before M7.8: the popup added, through DEFAULT_AGENT unless

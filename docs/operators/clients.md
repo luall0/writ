@@ -263,10 +263,21 @@ every app, full-screen ones too:
 - Closing the window decides nothing: the ticket keeps waiting, and the popup doesn't show it
   again until it restarts. Sign it in a terminal with `writ sign <id>`, where you can also
   narrow it. The popup never narrows.
+- The window comes up on the desktop you are on, full screen or not, and comes forward each
+  time another ticket joins the ones waiting.
+- A ticket the popup can't show (the daemon out of reach, or a reply it refuses) still brings
+  the window up: it lists the ticket with why, and **Try again** asks for it again. One the
+  daemon couldn't give is also tried again by itself every few minutes. `writ sign <id>` in a
+  terminal reaches it too.
 
 The window goes by itself when the ticket stops waiting (you signed it in a terminal, the
 agent withdrew it, it expired). The popup never shows an admin change or an unseal: those stay
 in the terminal.
+
+What the popup did goes to `~/Library/Logs/writ-popup.log`: each ticket's id, each failure,
+the window shown or hidden. It never holds what an agent wrote. Look there first when a
+ticket waits and no window came up. It is in your home, so your agents can write to it too:
+it helps you find a problem, and the daemon's audit log stays the record.
 
 It runs `writ sign --ui` with your settings, and two of them come from its LaunchAgent
 (`~/Library/LaunchAgents/dev.writ.popup.plist`): `WRIT_HOME`, and `WRIT_APPROVAL_AGENT`, the

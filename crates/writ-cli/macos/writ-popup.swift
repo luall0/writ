@@ -12,6 +12,10 @@
 // The protocol: one JSON object per line each way. From `writ`: {"type": "show" | "queue" |
 // "gone" | "done" | "failed" | "idle" | "status" | "reached", …}. To `writ`: {"answer": "sign"
 // | "refuse" | "skip" | "pick", "id": …, "feedback": …}.
+//
+// What it does goes to stderr, one line each (its LaunchAgent's log): each event's type and
+// ticket id, each failure's message, the window shown or hidden. Never a title or any other
+// text of the agent's.
 
 import AppKit
 import SwiftUI
@@ -23,6 +27,13 @@ let maxLine = 8 * 1024 * 1024
 let armDelay: UInt64 = 1_000_000_000
 /// How long before `writ` is started again when it ends.
 let restartDelay: TimeInterval = 3.0
+
+/// One line of this program's log, on stderr: the time, then `text` (ids and `writ`'s cleaned
+/// messages, never the agent's text).
+func note(_ text: String) {
+    let line = "\(ISO8601DateFormatter().string(from: Date())) \(text)\n"
+    FileHandle.standardError.write(Data(line.utf8))
+}
 
 // MARK: - What `writ` sends
 
@@ -70,6 +81,8 @@ struct Entry: Decodable, Hashable, Identifiable {
     let title: String
     let repos: [String]
     let skipped: Bool
+    /// Why `writ` couldn't show it (cleaned): said beside it, a click tries again.
+    let failed: String?
 }
 
 /// One line from `writ`; only the fields its type carries are set.
@@ -235,14 +248,23 @@ final class Model: ObservableObject {
         self.bridge = bridge
         bridge.onEvent = { [weak self] event in self?.handle(event) }
         bridge.onEnd = { [weak self] message in
+            note(message)
             self?.say(Banner(kind: .failure, text: message))
         }
     }
 
     func handle(_ event: Event) {
+        note([event.type, event.id, event.message].compactMap { $0 }.joined(separator: " "))
         switch event.type {
         case "show": show(event)
-        case "queue": waiting = event.waiting ?? []
+        case "queue":
+            let before = Set(waiting.map(\.id))
+            waiting = event.waiting ?? []
+            // A ticket joining the stack brings the window forward, on the Space you are on;
+            // with none shown, the tickets listed are ones that couldn't be shown: it comes up
+            // with them.
+            let arrived = waiting.contains { !before.contains($0.id) }
+            if shown == nil ? !waiting.isEmpty : arrived { onVisible?(true) }
         case "gone":
             if event.id == shown?.id { shown = nil }
         case "done":
@@ -252,6 +274,8 @@ final class Model: ObservableObject {
             busy = false
             // The ticket stays: `writ` sends it again, and the buttons come back then.
             say(Banner(kind: .failure, text: event.message ?? "Failed."))
+            // Nothing shown: the window comes up to say it, never a failure unseen.
+            if shown == nil { onVisible?(true) }
         case "idle":
             shown = nil
             waiting = []
@@ -623,6 +647,54 @@ struct Folding<Content: View>: View {
     }
 }
 
+// MARK: - The window: tickets that couldn't be shown
+
+/// Tickets waiting that `writ` couldn't show (the daemon out of reach, a reply that failed its
+/// checks) or that were put aside: each with why, and a button that asks for it again. They
+/// are only ever shown through `writ`, as any ticket is.
+struct Unshown: View {
+    @ObservedObject var model: Model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Waiting for your signature, but not shown", systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.orange)
+            Text("writ couldn't show these tickets. Try again, or review them with writ sign <id> in a terminal.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(model.waiting) { entry in
+                        HStack(alignment: .top, spacing: 12) {
+                            KindBadge(kind: entry.kind)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(entry.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                                Text("\(entry.id) · \(entry.repos.joined(separator: ", "))")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                Text(entry.failed ?? "Put aside (its window was closed).")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(entry.failed == nil ? Color.secondary : Color.red)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                            }
+                            Spacer()
+                            Button(entry.failed == nil ? "Show it" : "Try again") { model.pick(entry.id) }
+                                .focusable(false)
+                        }
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
 // MARK: - The window: the rail
 
 /// The tickets waiting, as a narrow rail of badges, oldest first: only when more than one
@@ -679,7 +751,11 @@ struct HoverCard: View {
             Text(entry.repos.joined(separator: ", "))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text("Click to show it").font(.system(size: 11)).foregroundStyle(.secondary)
+            if let failed = entry.failed {
+                Text("Couldn't be shown: \(failed)").font(.system(size: 11)).foregroundStyle(.red).lineLimit(4)
+            }
+            Text(entry.failed == nil ? "Click to show it" : "Click to try again")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
         }
         .padding(12)
         .frame(width: 260, alignment: .leading)
@@ -709,6 +785,14 @@ struct RailBadge: View {
                 RoundedRectangle(cornerRadius: 9)
                     .strokeBorder(Color.accentColor, lineWidth: selected ? 2 : 0)
             )
+            .overlay(alignment: .topTrailing) {
+                if entry.failed != nil {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                        .offset(x: 4, y: -4)
+                }
+            }
             .opacity(entry.skipped && !selected ? 0.45 : 1)
             .contentShape(Rectangle())
             .onTapGesture(perform: pick)
@@ -1726,7 +1810,7 @@ struct Root: View {
     var body: some View {
         HStack(spacing: 0) {
             // The rail only when another ticket waits beside the one shown.
-            if model.waiting.count > 1 {
+            if model.shown != nil && model.waiting.count > 1 {
                 Rail(model: model, hovered: $hovered)
                 Divider()
             }
@@ -1740,6 +1824,8 @@ struct Root: View {
                     Divider()
                     Footer(model: model, shown: shown)
                 }
+            } else if !model.waiting.isEmpty {
+                Unshown(model: model)
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "checkmark.seal").font(.system(size: 30)).foregroundStyle(.secondary)
@@ -1769,18 +1855,28 @@ struct Root: View {
 
 /// The panel the window lives in: above every app's windows, on every space, full-screen
 /// ones too (as Touch ID's prompt comes up), below the system's own prompts.
+///
+/// A panel shown again comes up where macOS last put it: a Space you left, a full-screen
+/// app's Space that is gone, not the one you are on (found on 2026-11-24: a long-running
+/// popup's window sat on another Space, every ticket after it stacked there unseen). A new
+/// panel comes up on the Space you are on, so each time the window comes back from hidden, or
+/// is asked forward while it sits on another Space, it is a new one, the model kept.
 @MainActor
 final class Popup: NSObject, NSWindowDelegate {
-    private let panel: NSPanel
+    private var panel: NSPanel?
     private let model: Model
 
     init(model: Model) {
         self.model = model
-        panel = NSPanel(
+        super.init()
+        model.onVisible = { [weak self] visible in self?.setVisible(visible) }
+    }
+
+    private func makePanel() -> NSPanel {
+        let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false)
-        super.init()
         panel.title = "Writ: waiting for your signature"
         panel.level = .modalPanel
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -1788,18 +1884,36 @@ final class Popup: NSObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: Root(model: model))
-        model.onVisible = { [weak self] visible in self?.setVisible(visible) }
+        return panel
     }
 
     private func setVisible(_ visible: Bool) {
         if !visible {
-            panel.orderOut(nil)
+            if let panel, panel.isVisible {
+                panel.orderOut(nil)
+                note("window hidden")
+            }
             return
         }
-        if !panel.isVisible { panel.center() }
         NSApp.activate()
-        panel.makeKeyAndOrderFront(nil)
-        panel.orderFrontRegardless()
+        if let panel, panel.isVisible, panel.isOnActiveSpace {
+            panel.makeKeyAndOrderFront(nil)
+            panel.orderFrontRegardless()
+            note("window brought forward")
+            return
+        }
+        let elsewhere = panel?.isVisible == true
+        if let old = panel {
+            old.delegate = nil
+            old.orderOut(nil)
+            old.close()
+        }
+        let fresh = makePanel()
+        panel = fresh
+        fresh.center()
+        fresh.makeKeyAndOrderFront(nil)
+        fresh.orderFrontRegardless()
+        note(elsewhere ? "window shown again here (it was on another Space)" : "window shown")
     }
 
     /// The window closed: the ticket stays waiting, put aside by this run (`writ sign` in a

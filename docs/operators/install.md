@@ -76,7 +76,7 @@ On the Mac:
 | The daemon, started at boot | the LaunchDaemon `dev.writ.writd` |
 | Your client: the daemon's host key pinned, the endpoints set, your reader key | `~/.writ` (`known_hosts`, `config`, `reader`, `approver.pub`) |
 | Shell completion for `writ`, for each of bash, zsh and fish that names a completion directory, and for fish always | `writ.fish` in fish's vendor completions (or in your own `~/.config/fish/completions` when fish has none), `_writ` in a `site-functions` directory of zsh, `writ` in bash-completion's completions ([shell completion](clients.md#shell-completion)) |
-| The approval popup, started at each login in your session (unless you answered `no`) | the LaunchAgent `dev.writ.popup` (`~/Library/LaunchAgents/dev.writ.popup.plist`) |
+| The approval popup, started at each login in your session (unless you answered `no`) | the LaunchAgent `dev.writ.popup` (`~/Library/LaunchAgents/dev.writ.popup.plist`), and its log, `~/Library/Logs/writ-popup.log` |
 
 On Linux:
 
@@ -146,8 +146,9 @@ which keys and why: write the policy you want, then run `writ migrate --file <po
 
 A copy in `backups/` holds what the state holds. Guard it like the state, and delete it once
 the new version works. On the
-Mac, the approval popup is stopped and started again with its settings kept; an install made
-before the popup existed gets it, through the agent your terminal uses (or the one
+Mac, the approval popup is stopped, its LaunchAgent written again with this version's
+settings and the agent you answered (`APPROVAL_AGENT` changes it), then started again; an
+install made before the popup existed gets it, through the agent your terminal uses (or the one
 `APPROVAL_AGENT` names), unless you upgrade with `POPUP=no`, and an install where you answered `no` stays
 without it. If `writ` changed, it says so:
 

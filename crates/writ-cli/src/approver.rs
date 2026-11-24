@@ -208,6 +208,12 @@ async fn fetch_reviewed(session: &Approvals, id: &TicketId) -> anyhow::Result<Re
     let shown: Shown = session
         .call(&Command::Show { id: id.clone() }, b"")
         .await??;
+    review(id, shown)
+}
+
+/// Checks the daemon's reply to a `show` of ticket `id`: it is the one asked for, canonical,
+/// and waiting, and what it follows is the ticket it names.
+fn review(id: &TicketId, shown: Shown) -> anyhow::Result<Reviewed> {
     // Decoded strictly: only canonical bytes, re-encoded to exactly themselves.
     let submitted = Ticket::from_canonical(shown.canonical.as_bytes())
         .context("the daemon sent a ticket that isn't canonical: not signing it")?;

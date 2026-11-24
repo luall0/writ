@@ -11,6 +11,31 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+### Upgrading
+
+- **State version 13, policy format 2**, as in 1.0.0: nothing migrates, and no `writ migrate`
+  is owed.
+- **No message between `writ` and `writd` changed**: a `writ` 1.0.0 and this `writd` still
+  talk. Install both together anyway: the approval popup and its `writ` go together.
+- **Run `make install`.** On the Mac it also writes the approval popup's LaunchAgent again,
+  with the agent socket you answered, to add its log.
+
+### Added
+
+- **The approval popup's log**, `~/Library/Logs/writ-popup.log`: each ticket's id, each
+  failure, the window shown or hidden; never what an agent wrote
+  ([the approval popup](docs/operators/clients.md#the-approval-popup-on-the-mac)).
+
+### Fixed
+
+- **The approval popup comes up on the desktop you are on.** After a while, its window could
+  stay on another desktop or a full-screen app's Space, and every ticket after it stacked
+  there unseen. The window now comes up where you are each time it shows, and comes forward
+  when another ticket joins the ones waiting.
+- **A ticket the popup can't show is never dropped unseen.** The window comes up listing it
+  with why, with **Try again**; one the daemon couldn't give is tried again by itself.
+  Before, it was put aside without a word until the popup restarted.
+
 ## 1.0.0 — 2026-11-23
 
 v1 is complete: Writ is in daily use in local mode, on the Mac and on Linux. Detached mode

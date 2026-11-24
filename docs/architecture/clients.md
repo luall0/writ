@@ -124,7 +124,14 @@ ones too, with the whole ticket and two buttons, **Sign** and **Decline**. Two p
   <id> --full` prints above its question, and the same as a structure of sections and tagged
   rows, written by the same calls: `display::Out`), and signs with `writ sign`'s signer
   (`ssh-keygen -Y sign` through the approval agent, which asks its own confirmation). Nothing of that
-  exists anywhere else.
+  exists anywhere else. A ticket it can't show is never dropped unsaid: it says why
+  (`failed`), and the list carries the ticket with that reason (`failed` on its entry), so
+  the window comes up listing it rather than going. One the daemon couldn't give (the
+  connection, a refusal) is fetched again at each look at what waits (each watch answer, at
+  least every 4 minutes); one whose reply failed `fetch_reviewed`'s checks stays aside, said
+  once, until it stops waiting or is picked
+  (`a_ticket_the_daemon_couldnt_give_is_said_listed_and_fetched_again`,
+  `a_reply_that_fails_the_checks_stays_aside_until_picked`).
 - **`writ-popup`** (Swift: SwiftUI in an AppKit `NSPanel`; `crates/writ-cli/macos/`) only shows what `writ` sends and
   says what was clicked ([decision log](../decisions.md), 2026-11-14: before any richer UI,
   or one on another platform, the approval client is linked into the app instead).
@@ -133,11 +140,11 @@ They talk one JSON object per line each way, on `writ`'s stdout and stdin:
 
 | From `writ` (`type`) | What it carries | The window |
 |---|---|---|
-| `show` | `id`, `kind` (`ticket`, `revision`, `amendment`, `renewal`), `title`, `repos`, `expires_at`, `display` (the terminal's text), `doc` (the same as sections of tagged rows, below), `key` (the approval key's path), `waiting` (every ticket waiting, the one shown among them, oldest first: `id`, `kind`, `title`, `repos`, `skipped`) | shows the ticket; the list beside it, the one shown highlighted |
-| `queue` | `waiting` | the list changed |
+| `show` | `id`, `kind` (`ticket`, `revision`, `amendment`, `renewal`), `title`, `repos`, `expires_at`, `display` (the terminal's text), `doc` (the same as sections of tagged rows, below), `key` (the approval key's path), `waiting` (every ticket waiting, the one shown among them, oldest first: `id`, `kind`, `title`, `repos`, `skipped`, and `failed`, why it couldn't be shown, when it couldn't) | shows the ticket; the list beside it, the one shown highlighted |
+| `queue` | `waiting` | the list changed; a ticket joining it brings the window forward. With no ticket shown, the tickets listed are ones that couldn't be shown (or were put aside): the window comes up with them, each with why and a button that picks it |
 | `gone` | `id` | the ticket shown stopped waiting (signed or refused elsewhere, withdrawn, expired): its window closes |
 | `done` | `id`, `message` | what an answer did (`Signed: lease … is active.`) |
-| `failed` | `id` (or `null`), `message` | an answer that signed nothing, a ticket that couldn't be shown, a signature that failed (Touch ID cancelled: the ticket is shown again) |
+| `failed` | `id` (or `null`), `message` | an answer that signed nothing, a ticket that couldn't be shown, a signature that failed (Touch ID cancelled: the ticket is shown again); with no ticket shown, the window comes up to say it |
 | `idle` | | nothing waits: the window goes |
 | `status` | `message` | the daemon lost or refused the watch: tried again after 1 s, then up to 30 s |
 | `reached` | | the daemon answered a watch again after a `status`: that message goes (`the_popup_is_told_when_the_daemon_is_reached_again`) |
@@ -147,7 +154,7 @@ They talk one JSON object per line each way, on `writ`'s stdout and stdin:
 | `sign` | `id`: the ticket shown, signed as shown |
 | `refuse` | `id`, `feedback` (may be empty: the agent then reads *Declined in the approval popup, with no feedback.*), signed under `decisions: signed` like `writ refuse` |
 | `skip` | `id`: the window closed; the ticket stays waiting, put aside by this run (`writ sign` in a terminal reaches it) |
-| `pick` | `id`: a ticket of the list clicked: fetched and checked like any other and shown, one put aside coming back; one not waiting refused (`failed`), the one shown staying |
+| `pick` | `id`: a ticket of the list clicked: fetched and checked like any other and shown, one put aside or that couldn't be shown coming back; one not waiting refused (`failed`), the one shown staying; one that still can't be shown said (`failed`) and listed with why (`queue`) |
 
 **The structure** (`doc`, `writ_cli::display::doc`): `sections`, each with a `kind` (`ticket`,
 `who`, `lease`, `repository`, `agent`, `feedback`, `renewal`, `changes`, `others`, `signing`),
@@ -217,6 +224,21 @@ The tickets that arrive together are all listed: the window shows the oldest, an
 beside it every ticket waiting, each with its title, repositories and kind; a click shows
 another one (`pick`); once the one shown is decided or gone, the oldest left comes up, with no
 window to reopen.
+
+**The window on the Space you are on.** The panel joins every Space, full-screen ones too
+(`canJoinAllSpaces`, `fullScreenAuxiliary`), but a panel shown again comes up where macOS
+last put it: a Space you left, a full-screen app's Space that is gone. So each time the
+window comes back from hidden, or is asked forward while it sits on another Space
+(`isOnActiveSpace` false), it is a new panel over the same model, which comes up where you
+are; one already in front of you is only brought forward. Found on 2026-11-24: a popup
+running for hours kept its window on another Space, and every ticket after it stacked there
+unseen.
+
+**Its log.** `writ-popup` writes a line to stderr for each event (its type, the ticket's id,
+a failure's message, all cleaned by `writ`), each time the window is shown or hidden, and
+when `writ sign --ui` ends: never a title or any other text of the agent's. The install's
+LaunchAgent sends it to `~/Library/Logs/writ-popup.log`
+([deployment](deployment.md#local-mac)).
 
 ## Repo setup on an agent host
 

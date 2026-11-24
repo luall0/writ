@@ -179,8 +179,18 @@ and the popup doesn't show it again (`writ sign` in a terminal still reaches it)
 
 **5. The daemon stopped and started again** (Ctrl-C in terminal 1, then `make run`): the popup
 says it can't reach the daemon, then picks up what waits once it is back, and that message
-goes. Quit it with Ctrl-C
-in terminal 3.
+goes.
+
+**6. Spaces** (the bug of 2026-11-24: the window stuck on another Space):
+
+- [ ] With a ticket shown, switch to another desktop (Ctrl-→) and submit a second ticket: the
+      window comes up on the desktop you are on, the second badge in the rail.
+- [ ] Sign or refuse both. Put an app full screen, leave it full screen (its Space goes),
+      put it full screen again, and submit a ticket: the window comes up over it.
+- [ ] Terminal 3 printed a line for each event (its type and ticket id), each window shown or
+      hidden, and no ticket title.
+
+Quit it with Ctrl-C in terminal 3.
 
 Run by the user to close M7.8 (2026-11-15, its acceptance items on
 [its history page](../history/m7.8-approval-popup-on-the-mac.md#acceptance)); run it again
