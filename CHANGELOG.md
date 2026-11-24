@@ -11,12 +11,18 @@ The rules for this file are in the [conventions](docs/conventions.md#versions-an
 
 ## Unreleased
 
+## 1.1.0 — 2026-11-24
+
+The approval popup comes up on the desktop you are on, says a ticket it can't show, and keeps
+a log.
+
 ### Upgrading
 
 - **State version 13, policy format 2**, as in 1.0.0: nothing migrates, and no `writ migrate`
   is owed.
-- **No message between `writ` and `writd` changed**: a `writ` 1.0.0 and this `writd` still
-  talk. Install both together anyway: the approval popup and its `writ` go together.
+- **No message between `writ` and `writd` changed**: a `writ` 1.0.0 and a `writd` 1.1.0
+  still talk, and `writ` says the versions differ. Install both together anyway: the
+  approval popup and its `writ` go together.
 - **Run `make install`.** On the Mac it also writes the approval popup's LaunchAgent again,
   with the agent socket you answered, to add its log.
 
